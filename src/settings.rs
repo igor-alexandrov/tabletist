@@ -444,6 +444,44 @@ impl From<Option<String>> for Theme {
     }
 }
 
+/// How often Tabletist asks GitHub for a newer release.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UpdateCheck {
+    #[default]
+    Daily,
+    Weekly,
+    /// Only when the person asks: Check now, the menu's Check for
+    /// Updates…, `c` or `:update`.
+    Never,
+}
+
+impl UpdateCheck {
+    /// Every choice, as the menu lists them.
+    pub const ALL: [Self; 3] = [Self::Daily, Self::Weekly, Self::Never];
+
+    /// As the file says it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Daily => "daily",
+            Self::Weekly => "weekly",
+            Self::Never => "never",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|choice| choice.name() == name)
+    }
+}
+
+/// Whether `text` is a release's version: three numbers, `0.4.0`.
+fn is_version(text: &str) -> bool {
+    let parts: Vec<&str> = text.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
 /// How long a connection may go unused before its session is closed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 pub enum Idle {
@@ -593,6 +631,9 @@ pub struct Settings {
     pub group_digits: Option<bool>,
     /// Enum, CHECK and boolean values drawn as coloured tags.
     pub value_tags: bool,
+    /// A calendar under the editor of a date, a time or a timestamp, with
+    /// time fields, beside the line that says what the text is stored as.
+    pub date_picker: bool,
     /// Where a new connection to production starts its "Open read-only"
     /// switch, which it is saved with. A saved connection whose switch was
     /// never set keeps the built-in rule: production is read-only.
@@ -693,6 +734,13 @@ pub struct Settings {
     pub table_list: TableList,
     /// How the connection bar shows a connection's environment.
     pub env_bar: EnvBar,
+    /// How often a check for a newer release runs on its own.
+    #[serde(skip)]
+    pub update_check: UpdateCheck,
+    /// A version the person said to skip: no check offers it, but one they
+    /// ask for. A later version is offered.
+    #[serde(skip)]
+    pub update_skip: Option<String>,
     /// The person's changes to the keymap: `[keys.<scope>]` and
     /// `[keys.unbind]`. As the file says them: whether the keymap can take
     /// each is the look's to say ([`crate::keymap::Keymap::with`]).
@@ -710,6 +758,7 @@ pub enum Key {
     Tz,
     GroupDigits,
     ValueTags,
+    DatePicker,
     ProductionReadOnly,
     ConfirmCloseEdits,
     IdleDisconnect,
@@ -747,13 +796,15 @@ pub enum Key {
     ColumnTypes,
     TableList,
     EnvBar,
+    UpdatesCheck,
+    UpdatesSkip,
 }
 
 impl Key {
     /// In the order the file has them: a table's keys together.
     /// An old key comes before the one that took its place: the new one
     /// is read over it.
-    pub const ALL: [Key; 40] = [
+    pub const ALL: [Key; 43] = [
         Self::OnLaunch,
         Self::RestoreTabs,
         Self::PageSize,
@@ -761,6 +812,7 @@ impl Key {
         Self::Tz,
         Self::GroupDigits,
         Self::ValueTags,
+        Self::DatePicker,
         Self::ProductionReadOnly,
         Self::ConfirmCloseEdits,
         Self::IdleDisconnect,
@@ -794,6 +846,8 @@ impl Key {
         Self::ColumnTypes,
         Self::TableList,
         Self::EnvBar,
+        Self::UpdatesCheck,
+        Self::UpdatesSkip,
     ];
 
     /// The key's table and its name there.
@@ -806,6 +860,7 @@ impl Key {
             Self::Tz => ("data", "tz"),
             Self::GroupDigits => ("data", "group_digits"),
             Self::ValueTags => ("data", "value_tags"),
+            Self::DatePicker => ("data", "date_picker"),
             Self::ProductionReadOnly => ("safety", "production_read_only"),
             Self::ConfirmCloseEdits => ("safety", "confirm_close_edits"),
             Self::IdleDisconnect => ("safety", "idle_disconnect"),
@@ -839,6 +894,8 @@ impl Key {
             Self::ColumnTypes => ("appearance.grid", "column_types"),
             Self::TableList => ("appearance.grid", "table_list"),
             Self::EnvBar => ("appearance.env", "bar"),
+            Self::UpdatesCheck => ("updates", "check"),
+            Self::UpdatesSkip => ("updates", "skip"),
         }
     }
 
@@ -874,6 +931,8 @@ impl Key {
             Self::RowHeight => Some("compact | regular | roomy"),
             Self::TableList => Some("tree | flat"),
             Self::EnvBar => Some("tint | label"),
+            Self::UpdatesCheck => Some("daily | weekly | never"),
+            Self::UpdatesSkip => Some("a version to stop offering"),
             Self::InterfaceSize => Some("small | default | large"),
             // The fonts of the look the platform draws, as the theme's.
             // Windows draws its data in Inter, whatever the key says.
@@ -906,6 +965,8 @@ pub enum OptionId {
     Tz,
     GroupDigits,
     ValueTags,
+    /// The calendar under a date's editor: `data.date_picker`.
+    DatePicker,
     /// Where a new production connection's read-only switch starts:
     /// `safety.production_read_only`.
     ProductionReadOnly,
@@ -956,12 +1017,14 @@ pub enum OptionId {
     Commas,
     /// Queries the history keeps: `editor.history.keep`.
     HistoryKeep,
+    /// How often a check for a newer release runs: `updates.check`.
+    UpdatesCheck,
 }
 
 impl OptionId {
     /// Every option, the General pane's, the Appearance pane's, the Editor
-    /// pane's and then the Agents pane's.
-    pub const ALL: [OptionId; 37] = [
+    /// pane's, the Agents pane's and then the Updates pane's.
+    pub const ALL: [OptionId; 39] = [
         Self::OnLaunch,
         Self::RestoreTabs,
         Self::PageSize,
@@ -969,6 +1032,7 @@ impl OptionId {
         Self::Tz,
         Self::GroupDigits,
         Self::ValueTags,
+        Self::DatePicker,
         Self::ProductionReadOnly,
         Self::ConfirmCloseEdits,
         Self::IdleDisconnect,
@@ -999,9 +1063,10 @@ impl OptionId {
         Self::AgentsOn,
         Self::LogDays,
         Self::AgentsNotify,
+        Self::UpdatesCheck,
     ];
     /// The General pane's, in the order it has them.
-    pub const GENERAL: [OptionId; 10] = [
+    pub const GENERAL: [OptionId; 11] = [
         Self::OnLaunch,
         Self::RestoreTabs,
         Self::PageSize,
@@ -1009,18 +1074,20 @@ impl OptionId {
         Self::Tz,
         Self::GroupDigits,
         Self::ValueTags,
+        Self::DatePicker,
         Self::ProductionReadOnly,
         Self::ConfirmCloseEdits,
         Self::IdleDisconnect,
     ];
     /// The General pane's sections, in order: Startup, Data and Safety.
     pub const STARTUP: [OptionId; 2] = [Self::OnLaunch, Self::RestoreTabs];
-    pub const DATA: [OptionId; 5] = [
+    pub const DATA: [OptionId; 6] = [
         Self::PageSize,
         Self::Timestamps,
         Self::Tz,
         Self::GroupDigits,
         Self::ValueTags,
+        Self::DatePicker,
     ];
     pub const SAFETY: [OptionId; 3] = [
         Self::ProductionReadOnly,
@@ -1108,6 +1175,9 @@ impl OptionId {
     pub const HISTORY: [OptionId; 1] = [Self::HistoryKeep];
     /// The Agents pane's, in the order it has them.
     pub const AGENTS: [OptionId; 3] = [Self::AgentsOn, Self::LogDays, Self::AgentsNotify];
+    /// The Updates pane's. The version to skip has no row: its card's
+    /// Skip this version sets it.
+    pub const UPDATES: [OptionId; 1] = [Self::UpdatesCheck];
 
     /// The key of the file the option is stored under.
     pub fn key(self) -> Key {
@@ -1119,6 +1189,7 @@ impl OptionId {
             Self::Tz => Key::Tz,
             Self::GroupDigits => Key::GroupDigits,
             Self::ValueTags => Key::ValueTags,
+            Self::DatePicker => Key::DatePicker,
             Self::ProductionReadOnly => Key::ProductionReadOnly,
             Self::ConfirmCloseEdits => Key::ConfirmCloseEdits,
             Self::IdleDisconnect => Key::IdleDisconnect,
@@ -1149,6 +1220,7 @@ impl OptionId {
             Self::Keywords => Key::Keywords,
             Self::Commas => Key::Commas,
             Self::HistoryKeep => Key::HistoryKeep,
+            Self::UpdatesCheck => Key::UpdatesCheck,
         }
     }
 
@@ -1169,6 +1241,7 @@ pub enum OptionValue {
     /// `None` is the look's default.
     GroupDigits(Option<bool>),
     ValueTags(bool),
+    DatePicker(bool),
     ProductionReadOnly(bool),
     ConfirmCloseEdits(bool),
     IdleDisconnect(Idle),
@@ -1208,6 +1281,7 @@ pub enum OptionValue {
     Commas(Commas),
     /// 0 keeps none.
     HistoryKeep(u32),
+    UpdatesCheck(UpdateCheck),
 }
 
 impl OptionValue {
@@ -1245,6 +1319,7 @@ impl OptionValue {
             Self::Tz(_) => OptionId::Tz,
             Self::GroupDigits(_) => OptionId::GroupDigits,
             Self::ValueTags(_) => OptionId::ValueTags,
+            Self::DatePicker(_) => OptionId::DatePicker,
             Self::ProductionReadOnly(_) => OptionId::ProductionReadOnly,
             Self::ConfirmCloseEdits(_) => OptionId::ConfirmCloseEdits,
             Self::IdleDisconnect(_) => OptionId::IdleDisconnect,
@@ -1275,6 +1350,7 @@ impl OptionValue {
             Self::Keywords(_) => OptionId::Keywords,
             Self::Commas(_) => OptionId::Commas,
             Self::HistoryKeep(_) => OptionId::HistoryKeep,
+            Self::UpdatesCheck(_) => OptionId::UpdatesCheck,
         }
     }
 
@@ -1288,6 +1364,7 @@ impl OptionValue {
             Self::Tz(zone) => settings.tz = zone,
             Self::GroupDigits(on) => settings.group_digits = on,
             Self::ValueTags(on) => settings.value_tags = on,
+            Self::DatePicker(on) => settings.date_picker = on,
             Self::ProductionReadOnly(on) => settings.production_read_only = on,
             Self::ConfirmCloseEdits(on) => settings.confirm_close_edits = on,
             Self::IdleDisconnect(choice) => settings.idle_disconnect = choice,
@@ -1329,6 +1406,7 @@ impl OptionValue {
             Self::Keywords(case) => settings.keywords = case,
             Self::Commas(commas) => settings.commas = commas,
             Self::HistoryKeep(keep) => settings.history_keep = keep.min(Settings::MAX_HISTORY),
+            Self::UpdatesCheck(check) => settings.update_check = check,
         }
     }
 }
@@ -1953,6 +2031,7 @@ impl Settings {
             OptionId::Tz => OptionValue::Tz(self.tz.clone()),
             OptionId::GroupDigits => OptionValue::GroupDigits(self.group_digits),
             OptionId::ValueTags => OptionValue::ValueTags(self.value_tags),
+            OptionId::DatePicker => OptionValue::DatePicker(self.date_picker),
             OptionId::ProductionReadOnly => {
                 OptionValue::ProductionReadOnly(self.production_read_only)
             }
@@ -1987,6 +2066,7 @@ impl Settings {
             OptionId::Keywords => OptionValue::Keywords(self.keywords),
             OptionId::Commas => OptionValue::Commas(self.commas),
             OptionId::HistoryKeep => OptionValue::HistoryKeep(self.history_keep),
+            OptionId::UpdatesCheck => OptionValue::UpdatesCheck(self.update_check),
         }
     }
 
@@ -2038,6 +2118,7 @@ impl Settings {
             // Grouped is the left of the two.
             OptionId::GroupDigits => OptionValue::GroupDigits(Some(!forward)),
             OptionId::ValueTags => OptionValue::ValueTags(forward),
+            OptionId::DatePicker => OptionValue::DatePicker(forward),
             OptionId::ProductionReadOnly => OptionValue::ProductionReadOnly(forward),
             OptionId::ConfirmCloseEdits => OptionValue::ConfirmCloseEdits(forward),
             OptionId::RestoreTabs => OptionValue::RestoreTabs(forward),
@@ -2194,6 +2275,11 @@ impl Settings {
                 },
                 forward,
             )),
+            OptionId::UpdatesCheck => OptionValue::UpdatesCheck(stepped_among(
+                &UpdateCheck::ALL,
+                self.update_check,
+                forward,
+            )),
         }
     }
 
@@ -2292,6 +2378,7 @@ impl Settings {
                 !self.group_digits.unwrap_or_default(),
             ))),
             OptionId::ValueTags => Some(OptionValue::ValueTags(!self.value_tags)),
+            OptionId::DatePicker => Some(OptionValue::DatePicker(!self.date_picker)),
             OptionId::ProductionReadOnly => {
                 Some(OptionValue::ProductionReadOnly(!self.production_read_only))
             }
@@ -2352,7 +2439,8 @@ impl Settings {
             | OptionId::Autocomplete
             | OptionId::LineNumbers
             | OptionId::Keywords
-            | OptionId::HistoryKeep => None,
+            | OptionId::HistoryKeep
+            | OptionId::UpdatesCheck => None,
         }
     }
 
@@ -2367,6 +2455,7 @@ impl Settings {
             Key::Tz => toml_string(self.tz.name()),
             Key::GroupDigits => self.group_digits?.to_string(),
             Key::ValueTags => self.value_tags.to_string(),
+            Key::DatePicker => self.date_picker.to_string(),
             Key::ProductionReadOnly => self.production_read_only.to_string(),
             Key::ConfirmCloseEdits => self.confirm_close_edits.to_string(),
             Key::IdleDisconnect => toml_string(self.idle_disconnect.name()),
@@ -2400,6 +2489,8 @@ impl Settings {
             Key::ColumnTypes => self.column_types.to_string(),
             Key::TableList => toml_string(self.table_list.name()),
             Key::EnvBar => toml_string(self.env_bar.name()),
+            Key::UpdatesCheck => toml_string(self.update_check.name()),
+            Key::UpdatesSkip => toml_string(self.update_skip.as_deref()?),
         })
     }
 
@@ -2676,6 +2767,7 @@ impl Settings {
             Key::Tz => text.and_then(Zone::from_name).map(|zone| self.tz = zone),
             Key::GroupDigits => flag.map(|flag| self.group_digits = Some(flag)),
             Key::ValueTags => flag.map(|flag| self.value_tags = flag),
+            Key::DatePicker => flag.map(|flag| self.date_picker = flag),
             Key::ProductionReadOnly => flag.map(|flag| self.production_read_only = flag),
             Key::ConfirmCloseEdits => flag.map(|flag| self.confirm_close_edits = flag),
             Key::IdleDisconnect => text
@@ -2749,6 +2841,16 @@ impl Settings {
             Key::EnvBar => text
                 .and_then(EnvBar::from_name)
                 .map(|bar| self.env_bar = bar),
+            Key::UpdatesCheck => text
+                .and_then(UpdateCheck::from_name)
+                .map(|check| self.update_check = check),
+            // A version, with its `v` or without; an empty one skips none.
+            Key::UpdatesSkip => text
+                .map(|text| crate::update::release::version_of(text.trim()))
+                .filter(|version| version.is_empty() || is_version(version))
+                .map(|version| {
+                    self.update_skip = (!version.is_empty()).then(|| version.to_owned());
+                }),
         }
         .is_some()
     }
@@ -2885,6 +2987,7 @@ impl Settings {
             Key::Tz => self.tz = other.tz.clone(),
             Key::GroupDigits => self.group_digits = other.group_digits,
             Key::ValueTags => self.value_tags = other.value_tags,
+            Key::DatePicker => self.date_picker = other.date_picker,
             Key::ProductionReadOnly => self.production_read_only = other.production_read_only,
             Key::ConfirmCloseEdits => self.confirm_close_edits = other.confirm_close_edits,
             Key::IdleDisconnect => self.idle_disconnect = other.idle_disconnect,
@@ -2918,6 +3021,8 @@ impl Settings {
             Key::ColumnTypes => self.column_types = other.column_types,
             Key::TableList => self.table_list = other.table_list,
             Key::EnvBar => self.env_bar = other.env_bar,
+            Key::UpdatesCheck => self.update_check = other.update_check,
+            Key::UpdatesSkip => self.update_skip = other.update_skip.clone(),
         }
     }
 
@@ -2970,6 +3075,7 @@ impl Default for Settings {
             tz: Zone::System,
             group_digits: None,
             value_tags: true,
+            date_picker: true,
             production_read_only: true,
             confirm_close_edits: true,
             idle_disconnect: Idle::default(),
@@ -3001,6 +3107,8 @@ impl Default for Settings {
             column_types: true,
             table_list: TableList::Tree,
             env_bar: EnvBar::Tint,
+            update_check: UpdateCheck::Daily,
+            update_skip: None,
             keys: crate::keymap::Overrides::default(),
         }
     }
@@ -3266,6 +3374,7 @@ mod tests {
             tz: Zone::Named("America/New_York".into()),
             group_digits: Some(true),
             value_tags: false,
+            date_picker: false,
             production_read_only: false,
             confirm_close_edits: false,
             idle_disconnect: Idle::Hours4,
@@ -3297,6 +3406,8 @@ mod tests {
             column_types: false,
             table_list: TableList::Flat,
             env_bar: EnvBar::Label,
+            update_check: UpdateCheck::Weekly,
+            update_skip: Some("0.4.0".into()),
             keys: crate::keymap::Overrides::default(),
         }
     }
@@ -3324,6 +3435,7 @@ timestamps = \"full\"  # second | full
 tz = \"America/New_York\"  # system | utc | \"Area/City\"
 group_digits = true
 value_tags = false
+date_picker = false
 
 [safety]
 production_read_only = false
@@ -3375,6 +3487,10 @@ table_list = \"flat\"  # tree | flat
 
 [appearance.env]
 bar = \"label\"  # tint | label
+
+[updates]
+check = \"weekly\"  # daily | weekly | never
+skip = \"0.4.0\"  # a version to stop offering
 "
             )
         );
@@ -3443,37 +3559,40 @@ bar = \"label\"  # tint | label
                 (Key::Tz, 9),
                 (Key::GroupDigits, 10),
                 (Key::ValueTags, 11),
-                (Key::ProductionReadOnly, 14),
-                (Key::ConfirmCloseEdits, 15),
-                (Key::IdleDisconnect, 16),
-                (Key::ShowSystemSchemas, 19),
-                (Key::NewTab, 22),
-                (Key::SqlLimit, 23),
-                (Key::SqlTimeoutSecs, 24),
-                (Key::RunScope, 25),
-                (Key::ConfirmUnsafeWrites, 26),
-                (Key::EditorKeys, 29),
-                (Key::Indent, 30),
-                (Key::Autocomplete, 31),
-                (Key::ClosePairs, 32),
-                (Key::LineNumbers, 33),
-                (Key::HighlightLine, 34),
-                (Key::Wrap, 35),
-                (Key::Keywords, 38),
-                (Key::Commas, 39),
-                (Key::HistoryKeep, 42),
-                (Key::McpEnabled, 45),
-                (Key::McpLogDays, 46),
-                (Key::McpNotify, 47),
-                (Key::Theme, 50),
-                (Key::InterfaceSize, 51),
-                (Key::Font, 52),
-                (Key::FontSize, 53),
-                (Key::RowHeight, 56),
-                (Key::Zebra, 57),
-                (Key::ColumnTypes, 58),
-                (Key::TableList, 59),
-                (Key::EnvBar, 62),
+                (Key::DatePicker, 12),
+                (Key::ProductionReadOnly, 15),
+                (Key::ConfirmCloseEdits, 16),
+                (Key::IdleDisconnect, 17),
+                (Key::ShowSystemSchemas, 20),
+                (Key::NewTab, 23),
+                (Key::SqlLimit, 24),
+                (Key::SqlTimeoutSecs, 25),
+                (Key::RunScope, 26),
+                (Key::ConfirmUnsafeWrites, 27),
+                (Key::EditorKeys, 30),
+                (Key::Indent, 31),
+                (Key::Autocomplete, 32),
+                (Key::ClosePairs, 33),
+                (Key::LineNumbers, 34),
+                (Key::HighlightLine, 35),
+                (Key::Wrap, 36),
+                (Key::Keywords, 39),
+                (Key::Commas, 40),
+                (Key::HistoryKeep, 43),
+                (Key::McpEnabled, 46),
+                (Key::McpLogDays, 47),
+                (Key::McpNotify, 48),
+                (Key::Theme, 51),
+                (Key::InterfaceSize, 52),
+                (Key::Font, 53),
+                (Key::FontSize, 54),
+                (Key::RowHeight, 57),
+                (Key::Zebra, 58),
+                (Key::ColumnTypes, 59),
+                (Key::TableList, 60),
+                (Key::EnvBar, 63),
+                (Key::UpdatesCheck, 66),
+                (Key::UpdatesSkip, 67),
             ]
         );
     }
@@ -4568,6 +4687,7 @@ bar = \"label\"  # tint | label
                 Key::Tz,
                 Key::GroupDigits,
                 Key::ValueTags,
+                Key::DatePicker,
                 Key::ProductionReadOnly,
                 Key::ConfirmCloseEdits,
                 Key::IdleDisconnect,
@@ -4598,6 +4718,7 @@ bar = \"label\"  # tint | label
                 Key::McpEnabled,
                 Key::McpLogDays,
                 Key::McpNotify,
+                Key::UpdatesCheck,
             ]
         );
         // Each pane has its own, and every one is on a pane.
@@ -4606,6 +4727,7 @@ bar = \"label\"  # tint | label
             &OptionId::APPEARANCE[..],
             &OptionId::EDITOR[..],
             &OptionId::AGENTS[..],
+            &OptionId::UPDATES[..],
         ]
         .concat();
         // The sections of the General and Appearance panes hold their

@@ -15,6 +15,7 @@ mod catalog;
 mod check;
 mod class;
 pub mod complete;
+pub mod ddl;
 mod dialect;
 mod error;
 pub mod fixtures;
@@ -42,6 +43,7 @@ pub use catalog::{
     ReferencingKey, Structure,
 };
 pub use class::{ColumnClass, Temporal, column_class, temporal};
+pub use ddl::Ddl;
 pub use dialect::{
     DeleteParts, Dialect, InsertParts, InsertStatement, RowDeletion, RowUpdate, Sql, UpdateParts,
     escape_like, quote_literal,
@@ -312,6 +314,18 @@ impl Connection {
         }
     }
 
+    /// The zone the server moves a moment it keeps without an offset to
+    /// and from, as the server names it (`UTC`, `+00:00`, `Europe/Berlin`,
+    /// or the system's abbreviation, `CET`): MySQL's `TIMESTAMP`. `None`
+    /// for an engine that keeps no such moment.
+    pub async fn session_zone(&self) -> Result<Option<String>> {
+        match &self.inner {
+            Inner::Sqlite(conn) => conn.session_zone().await,
+            Inner::Postgres(conn) => conn.session_zone().await,
+            Inner::MySql(conn) => conn.session_zone().await,
+        }
+    }
+
     /// Databases the session can switch to. Empty when switching does not
     /// apply (SQLite, and MySQL where databases are listed as schemas).
     pub async fn list_databases(&self) -> Result<Vec<String>> {
@@ -345,6 +359,20 @@ impl Connection {
             Inner::Sqlite(conn) => conn.describe(object).await,
             Inner::Postgres(conn) => conn.describe(object).await,
             Inner::MySql(conn) => conn.describe(object).await,
+        }
+    }
+
+    /// The definition of the table or view `object` as text, by its parts
+    /// (see [`Ddl`]): built from PostgreSQL's catalog, and as MySQL's
+    /// `SHOW CREATE` and SQLite's `sqlite_master` return it. It only
+    /// reads the catalog: in a read-only transaction on PostgreSQL and
+    /// MySQL, under `query_only` on SQLite. All of it or an error, never a
+    /// part.
+    pub async fn ddl(&self, object: &ObjectRef) -> Result<Ddl> {
+        match &self.inner {
+            Inner::Sqlite(conn) => conn.ddl(object).await,
+            Inner::Postgres(conn) => conn.ddl(object).await,
+            Inner::MySql(conn) => conn.ddl(object).await,
         }
     }
 

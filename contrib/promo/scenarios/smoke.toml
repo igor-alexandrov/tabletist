@@ -1,0 +1,13 @@
+# A few seconds of an open, a click, a command and a hold: for checking
+# that the pipeline works, not for posting.
+title = "Smoke"
+tempo = 120
+
+[[scene]]
+caption = "Open a table."
+steps = [
+  { open = "books" },
+  { click = "Lanterns" },
+  { command = "move_row", key = "down", times = 2 },
+  { hold = 0.5 },
+]

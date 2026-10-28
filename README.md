@@ -21,7 +21,7 @@ A fast, native database client for **PostgreSQL**, **MySQL** and
 Linux (Omarchy and Hyprland first), macOS and Windows.
 
 The guide and the reference are on the website:
-**[igor-alexandrov.github.io/tabletist](https://igor-alexandrov.github.io/tabletist/)**.
+**[igor.works/tabletist](https://igor.works/tabletist/)**.
 
 <p align="center">
   <img src="assets/screenshots/macos.png" width="900" alt="Tabletist 0.1.0, the macOS look: a table's data grid with the sidebar of tables on the left and the row panel on the right">
@@ -105,9 +105,12 @@ The guide and the reference are on the website:
   `xattr -dr com.apple.quarantine /Applications/Tabletist.app`.
 - **Windows:** run `tabletist-v<version>-x86_64-pc-windows-msvc-setup.exe`
   (or the `aarch64` one on ARM). No administrator rights needed.
-- **Other Linux:** download `tabletist-<version>-x86_64.AppImage` (or the
-  `aarch64` one), make it executable and run it. Or take the release
-  `.tar.gz`, which holds the binary, a `.desktop` file and the icon.
+- **Other Linux:** to try it, download `tabletist-<version>-x86_64.AppImage`
+  (or the `aarch64` one), make it executable and run it. It adds nothing to
+  the app launcher. To install it with a launcher entry, take the release
+  `.tar.gz`, which holds the binary, a `.desktop` file and the icon, and
+  follow the steps on the
+  [Download](https://igor.works/tabletist/download/#install-it-the-release-archive) page.
 
 The Linux release binaries are built on Ubuntu 24.04 and need glibc 2.39 or
 newer (Ubuntu 24.04, Debian 13, Fedora 40 or later). On an older system,

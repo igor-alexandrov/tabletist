@@ -1,0 +1,330 @@
+//! The menu bar on macOS and Windows: which items, in which menus, with
+//! which titles and keys. What is enabled and what a click does are the
+//! app's (`src/app/menu.rs`); the live bar is `bar.rs`, and a key AppKit
+//! took for an item goes back to egui through `replay.rs`.
+//!
+//! A key stays the keymap's: a key press does what it does without a
+//! menu, and a click runs the command as quick open runs it.
+
+mod bar;
+mod replay;
+#[cfg(test)]
+mod tests;
+
+pub use bar::Bar;
+pub use replay::Replay;
+pub use tabletist_menubar::{Native, Role, Via};
+
+use crate::keymap::{Command, EditItem, Keymap, Layout, MenuKey};
+
+/// The platforms with a menu bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Platform {
+    MacOs,
+    Windows,
+}
+
+impl Platform {
+    /// The platform this runs on, where it has a menu bar.
+    pub fn current() -> Option<Self> {
+        if cfg!(target_os = "macos") {
+            Some(Self::MacOs)
+        } else if cfg!(windows) {
+            Some(Self::Windows)
+        } else {
+            None
+        }
+    }
+}
+
+/// One line of a menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Item {
+    /// A command quick open runs (`RUNNABLE`): clicked, it does what
+    /// quick open's row does.
+    Command(Command),
+    About,
+    QuickOpen,
+    /// Windows: the window's close, which asks about pending changes.
+    Exit,
+    Edit(EditItem),
+    Native(Native),
+    Separator,
+}
+
+/// One menu of the bar: its title and its items, in order.
+pub struct Menu {
+    /// An msgid.
+    pub title: &'static str,
+    pub role: Role,
+    pub items: Vec<Item>,
+}
+
+/// The bar on `platform`.
+pub fn bar(platform: Platform) -> Vec<Menu> {
+    use Command as C;
+    use Item::{Command as Run, Separator as Sep};
+    let mac = match platform {
+        Platform::MacOs => true,
+        Platform::Windows => false,
+    };
+    let native = Item::Native;
+    let mut menus = Vec::new();
+    if mac {
+        menus.push(Menu {
+            title: "Tabletist",
+            role: Role::Plain,
+            items: vec![
+                Item::About,
+                Run(C::CheckForUpdates),
+                Sep,
+                Run(C::Settings),
+                Sep,
+                native(Native::Services),
+                Sep,
+                native(Native::Hide),
+                native(Native::HideOthers),
+                native(Native::ShowAll),
+                Sep,
+                native(Native::Quit),
+            ],
+        });
+    }
+    let mut file = vec![
+        Run(C::NewConnection),
+        Run(C::NewSqlTab),
+        Run(C::Connections),
+        Sep,
+        Run(C::EditConnection),
+        Run(C::CloseConnection),
+        Sep,
+        Run(C::CloseTab),
+    ];
+    if !mac {
+        file.extend([Sep, Run(C::Settings), Sep, Item::Exit]);
+    }
+    menus.push(Menu {
+        title: "File",
+        role: Role::Plain,
+        items: file,
+    });
+    menus.push(Menu {
+        title: "Edit",
+        role: Role::Plain,
+        items: vec![
+            Item::Edit(EditItem::Undo),
+            Item::Edit(EditItem::Redo),
+            Sep,
+            Item::Edit(EditItem::Cut),
+            Item::Edit(EditItem::Copy),
+            Item::Edit(EditItem::Paste),
+            Item::Edit(EditItem::SelectAll),
+        ],
+    });
+    let mut view = vec![
+        Run(C::ToggleSidebar),
+        Run(C::ToggleInspector),
+        Run(C::FilterBar),
+        Sep,
+        Run(C::History),
+        Item::QuickOpen,
+    ];
+    if crate::endpoint::AVAILABLE {
+        view.push(Run(C::ShowAgents));
+    }
+    view.extend([
+        Sep,
+        Run(C::LargerText),
+        Run(C::SmallerText),
+        Run(C::DefaultTextSize),
+    ]);
+    menus.push(Menu {
+        title: "View",
+        role: Role::Plain,
+        items: view,
+    });
+    menus.push(Menu {
+        title: "Query",
+        role: Role::Plain,
+        items: vec![
+            Run(C::RunAll),
+            Run(C::CancelQuery),
+            Run(C::Format),
+            Run(C::ToggleSqlMode),
+            Sep,
+            Run(C::ReviewSql),
+            Run(C::SaveChanges),
+            Run(C::DiscardChanges),
+            Sep,
+            Run(C::Reload),
+            Run(C::SwitchDatabase),
+        ],
+    });
+    let cycle = [
+        Run(C::NextTab),
+        Run(C::PreviousTab),
+        Run(C::NextConnection),
+        Run(C::PreviousConnection),
+    ];
+    let window = if mac {
+        let mut items = vec![native(Native::Minimize), native(Native::Zoom), Sep];
+        items.extend(cycle);
+        items.extend([Sep, native(Native::BringAllToFront)]);
+        items
+    } else {
+        cycle.to_vec()
+    };
+    menus.push(Menu {
+        title: "Window",
+        role: Role::Window,
+        items: window,
+    });
+    let mut help = vec![Run(C::Help)];
+    if !mac {
+        // macOS has it under About, in the Tabletist menu.
+        help.extend([Sep, Run(C::CheckForUpdates), Item::About]);
+    }
+    menus.push(Menu {
+        title: "Help",
+        role: Role::Help,
+        items: help,
+    });
+    menus
+}
+
+/// `item`'s title, an msgid. `on` picks a toggle's second title: the
+/// sidebar or the row panel shown, the tab read-only.
+pub fn title(item: Item, on: bool) -> &'static str {
+    use Command as C;
+    match item {
+        Item::Command(command) => match command {
+            C::NewConnection => "New Connection",
+            C::NewSqlTab => "New SQL Query",
+            C::Connections => "Connections",
+            C::EditConnection => "Edit Connection",
+            C::CloseConnection => "Close Connection",
+            C::CloseTab => "Close Tab",
+            C::Settings => "Settings…",
+            C::CheckForUpdates => "Check for Updates…",
+            C::ToggleSidebar if on => "Hide Sidebar",
+            C::ToggleSidebar => "Show Sidebar",
+            C::ToggleInspector if on => "Hide Row Panel",
+            C::ToggleInspector => "Show Row Panel",
+            C::FilterBar => "Filter Rows",
+            C::History => "History",
+            C::ShowAgents => "Agents",
+            C::LargerText => "Larger Text",
+            C::SmallerText => "Smaller Text",
+            C::DefaultTextSize => "Default Text Size",
+            C::RunAll => "Run All",
+            C::CancelQuery => "Cancel Query",
+            C::Format => "Format SQL",
+            C::ToggleSqlMode if on => "Make Tab Read-Write",
+            C::ToggleSqlMode => "Make Tab Read-Only",
+            C::ReviewSql => "Review Pending SQL",
+            C::SaveChanges => "Save Changes",
+            C::DiscardChanges => "Discard All Changes",
+            C::Reload => "Reload Schema",
+            C::SwitchDatabase => "Switch Database",
+            C::NextTab => "Next Tab",
+            C::PreviousTab => "Previous Tab",
+            C::NextConnection => "Next Connection",
+            C::PreviousConnection => "Previous Connection",
+            C::Help => "Keyboard Shortcuts",
+            // Never in the bar (the model's tests hold it to RUNNABLE).
+            _ => "",
+        },
+        Item::About => "About Tabletist",
+        Item::QuickOpen => "Quick Open",
+        Item::Exit => "Exit",
+        Item::Edit(edit) => match edit {
+            EditItem::Undo => "Undo",
+            EditItem::Redo => "Redo",
+            EditItem::Cut => "Cut",
+            EditItem::Copy => "Copy",
+            EditItem::Paste => "Paste",
+            EditItem::SelectAll => "Select All",
+        },
+        Item::Native(native) => match native {
+            Native::Services => "Services",
+            Native::Hide => "Hide Tabletist",
+            Native::HideOthers => "Hide Others",
+            Native::ShowAll => "Show All",
+            Native::Quit => "Quit Tabletist",
+            Native::Minimize => "Minimize",
+            Native::Zoom => "Zoom",
+            Native::BringAllToFront => "Bring All to Front",
+        },
+        Item::Separator => "",
+    }
+}
+
+/// The key `item` shows in `layout`: its command's chord, quick open's
+/// (the key that opens it), or the Edit item's.
+pub fn key_of(keymap: &Keymap, layout: Layout, item: Item) -> Option<MenuKey> {
+    match item {
+        Item::Command(command) => keymap.menu_key(command, layout),
+        Item::QuickOpen => keymap.menu_key(Command::FindObject, layout),
+        Item::Edit(edit) => keymap.edit_key(edit, layout),
+        Item::About | Item::Exit | Item::Native(_) | Item::Separator => None,
+    }
+}
+
+/// What the window does for a click on `item`, where the window, not the
+/// app, does it: Exit closes it as its close button does (pending changes
+/// ask first), and Paste has it read the clipboard and hand egui a paste.
+/// None for the app's items (`App::choose`).
+pub fn window_command(item: Item) -> Option<egui::ViewportCommand> {
+    match item {
+        Item::Exit => Some(egui::ViewportCommand::Close),
+        Item::Edit(EditItem::Paste) => Some(egui::ViewportCommand::RequestPaste),
+        Item::Edit(_)
+        | Item::Command(_)
+        | Item::About
+        | Item::QuickOpen
+        | Item::Native(_)
+        | Item::Separator => None,
+    }
+}
+
+/// What a menu choice does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Handling {
+    /// Into the frame's input as the press of `key` (`Replay`).
+    Replay(MenuKey, Via),
+    /// A click: `App::choose`, or `Window::logic` for Exit and Paste.
+    Click,
+    /// Nothing: an item the app greys, clicked by a script.
+    Ignore,
+}
+
+/// What a choice of `item` (made `via`, `key` its menu key) does, kept
+/// apart from muda so it is tested headlessly.
+pub fn handling(app: &crate::app::App, item: Item, via: Via, key: Option<MenuKey>) -> Handling {
+    match (item, via, key) {
+        // The window reads the clipboard: never a replay.
+        (Item::Edit(EditItem::Paste), _, _) => Handling::Click,
+        // Clicked or by key, the Edit items are the presses they stand for.
+        (Item::Edit(_), _, Some(key)) => Handling::Replay(key, via),
+        // A command's key, given back where the keymap reads it; under a
+        // dialog that does not (`⌘,` over the shortcuts), a click.
+        (Item::Command(command), Via::Key, Some(key)) if app.key_reaches(command) => {
+            Handling::Replay(key, Via::Key)
+        }
+        // Quick open's key is read while quick open is open (it selects
+        // the typed text), so it needs no dialog rule.
+        (Item::QuickOpen, Via::Key, Some(key)) => Handling::Replay(key, Via::Key),
+        // On macOS an item stays enabled for AppKit outside an open menu
+        // (the crate's `NSMenuDelegate`), so AppKit takes the key of a
+        // command the app greys (⌘T under a dialog). It goes back as the
+        // press all the same: the dialog may read it (the connection
+        // form's Test), and the window's keys do not run under a dialog,
+        // so otherwise nothing does, as without a menu.
+        (Item::Command(_), Via::Key, Some(key)) if !app.menu_state(item).enabled => {
+            Handling::Replay(key, Via::Key)
+        }
+        // A script's click on a greyed item does nothing.
+        _ if !app.menu_state(item).enabled => Handling::Ignore,
+        _ => Handling::Click,
+    }
+}

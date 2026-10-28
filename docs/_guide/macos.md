@@ -43,11 +43,21 @@ launch, are on the
 - **Light and dark follow the system.** Tabletist changes with the
   Appearance setting while it runs. **Settings › Appearance** can keep it
   light or dark whatever the system says.
-- **The app menu has the usual two.** **Tabletist → About Tabletist**
-  shows the version, a link to the source code and the licenses of the
-  fonts it bundles, and **Tabletist → Settings…** opens Settings. **View → History** shows the
+- **The menu bar holds the commands.** **File**, **Edit**, **View**,
+  **Query**, **Window** and **Help** list the commands quick open runs,
+  each with its key; **Tabletist → About Tabletist** shows the version, a
+  link to the source code and the licenses of the fonts it bundles, and
+  **Tabletist → Settings…** opens Settings. **Tabletist → Check for
+  Updates…** opens Settings › Updates and asks GitHub for a newer
+  version. **View → History** shows the
   window's [History tab]({% link _guide/sql-editor.md %}#history), and
-  **View → Quick Open** opens quick open.
+  **View → Quick Open** opens quick open. A menu greys the commands that
+  do not apply now, while it is open. Its keys do what they do where you
+  are: Cmd+N in the grid still adds a row, and the menu's **New
+  Connection** is a click away. Settings, New Connection, Connections,
+  Keyboard Shortcuts and the text sizes work from the connection picker
+  too. Previous Tab and Next Tab show no key in the menu, and their keys
+  work all the same.
 - **The sidebar's SQL Editor button has a clock.** Its main part opens a
   new SQL editor; the clock at its right shows the History tab, and looks
   pressed while that tab is in front.
@@ -143,7 +153,7 @@ keyboard.
 | Cmd+N | New connection |
 | Cmd+E | Edit |
 | Cmd+D | Duplicate |
-| Backspace | Delete |
+| Cmd+Backspace | Delete, once you say so. Esc keeps the connection |
 | Esc | Cancel connecting |
 
 ### The connection dialog
@@ -181,6 +191,7 @@ keyboard.
 | Cmd+. | Cancel the running query |
 | Cmd+I | Open the row panel, with the keyboard on its fields. Esc goes back to the rows |
 | Cmd+Shift+R | Show or hide the row panel |
+| Ctrl+Cmd+1, 2, 3 | Show the rows, the structure, the DDL |
 
 In its Structure view:
 
@@ -192,6 +203,13 @@ In its Structure view:
 
 The last two work with the keyboard on the view's columns: click a
 column's line, or come to them with Tab or F6.
+
+In its DDL view:
+
+| Keys | Do |
+| --- | --- |
+| Cmd+Shift+C | Copy the DDL: the selected text, or all of it |
+| Option+Return | Open the DDL in a new SQL editor |
 
 ### Editing
 

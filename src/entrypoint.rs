@@ -59,13 +59,18 @@ pub const APP_ID: &str = "dev.tabletist.Tabletist";
 /// build on Windows has no console, and an app launched from a menu has no
 /// terminal, so stderr alone would be a silent exit.
 pub fn run() -> std::process::ExitCode {
-    let cli = Cli::parse();
+    // First of all: `--apply-update <job>` makes this process an update's
+    // helper, which installs it and exits. Otherwise the receipt or the
+    // error an update's relaunch carries is taken out of the arguments
+    // before clap reads them (src/update.rs).
+    let launch = fastframe_update::intercept(&crate::update::CONFIG);
+    let cli = Cli::parse_from(&launch.arguments);
     // Before the logger, the settings and the window: the relay writes
     // nothing but the protocol to stdout and shows no dialog.
     if let Some(Sub::Mcp { endpoint }) = cli.command {
         return crate::relay::main(endpoint);
     }
-    match main(cli) {
+    match main(cli, launch) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             report_startup_error(&error);
@@ -97,9 +102,12 @@ fn report_startup_error(error: &anyhow::Error) {
         .show();
 }
 
-pub fn main(cli: Cli) -> anyhow::Result<()> {
-    // Demo runs use a throwaway profile: nothing touches the user's files.
-    // It lives until the window closes and is removed when `main` returns.
+pub fn main(cli: Cli, launch: fastframe_update::Launch) -> anyhow::Result<()> {
+    // Demo runs use a throwaway profile: their settings, connections and
+    // secrets are never the user's. Like any start they take the desktop's
+    // theme and font (and, installed from a package, set up its Omarchy
+    // theme as a first start does). The profile lives until the window
+    // closes and is removed when `main` returns.
     let demo_root = if cli.demo {
         Some(demo_profile()?)
     } else {
@@ -121,9 +129,16 @@ pub fn main(cli: Cli) -> anyhow::Result<()> {
         logging = logging.file(dirs.log_file()).panic_log(dirs.panic_log());
     }
     logging.init()?;
+    // The helper put the previous version back: this one. The next run
+    // shows it in the window; until then the log has it.
+    if let Some(message) = &launch.error {
+        log::error!("{message}");
+    }
+    let update_receipt = launch.receipt;
 
     let settings = Settings::load(&dirs);
     let demo = cli.demo;
+    let follow_desktop = follows_desktop(&cli);
     let shot = cli.demo_shot.clone().map(Shot::new);
     eframe::run_native(
         "Tabletist",
@@ -135,67 +150,43 @@ pub fn main(cli: Cli) -> anyhow::Result<()> {
                 keyring_for(demo),
             );
             let mut app = App::new(dirs, settings, backend);
-            app.attach(&cc.egui_ctx, !demo);
+            app.attach(&cc.egui_ctx, follow_desktop);
             // Not for a demo: its profile and its keyring are throwaway.
             if !demo {
                 app.serve_agents();
             }
             if demo {
                 demo_setup(&mut app);
+            } else {
+                // Not for a demo either: it checks only when asked.
+                app.watch_updates();
             }
-            // The menu bar is up by now: winit builds it before the window.
-            #[cfg(target_os = "macos")]
-            let about_menu = crate::macos::AboutMenu::attach(
-                &cc.egui_ctx,
-                &crate::i18n::gettext(app.locale, "About Tabletist"),
-            );
-            #[cfg(target_os = "macos")]
-            if about_menu.is_none() {
-                log::warn!("the app menu has no About item to take over");
+            // The menu bar is up by now: winit builds its own before the
+            // window, and this one takes its place.
+            let menu = crate::menu::Bar::attach(cc, &app, &cc.egui_ctx);
+            if menu.is_none() && crate::menu::Platform::current().is_some() {
+                log::warn!("the menu bar could not be attached");
             }
-            #[cfg(target_os = "macos")]
-            let settings_menu = crate::macos::SettingsMenu::attach(
-                &cc.egui_ctx,
-                &crate::i18n::gettext(app.locale, "Settings…"),
-            );
-            #[cfg(target_os = "macos")]
-            if settings_menu.is_none() {
-                log::warn!("the app menu has no place for a Settings item");
-            }
-            #[cfg(target_os = "macos")]
-            let history_menu = crate::macos::HistoryMenu::attach(
-                &cc.egui_ctx,
-                &crate::i18n::gettext(app.locale, "View"),
-                &crate::i18n::gettext(app.locale, "History"),
-            );
-            #[cfg(target_os = "macos")]
-            if history_menu.is_none() {
-                log::warn!("the menu bar has no place for a View menu");
-            }
-            #[cfg(target_os = "macos")]
-            let quick_open_menu = crate::macos::QuickOpenMenu::attach(
-                &cc.egui_ctx,
-                &crate::i18n::gettext(app.locale, "View"),
-                &crate::i18n::gettext(app.locale, "Quick Open"),
-            );
             Ok(Box::new(Window {
                 app,
                 shot,
                 demo,
+                update_receipt,
                 #[cfg(target_os = "macos")]
                 title_bar: None,
-                #[cfg(target_os = "macos")]
-                about_menu,
-                #[cfg(target_os = "macos")]
-                settings_menu,
-                #[cfg(target_os = "macos")]
-                history_menu,
-                #[cfg(target_os = "macos")]
-                quick_open_menu,
+                menu,
             }))
         }),
     )
     .map_err(|error| anyhow::anyhow!("could not open the window: {error}"))
+}
+
+/// Whether the window takes the desktop's theme and font: a demo does, to
+/// show the app as it looks there, but a demo's screenshot does not, so the
+/// picture does not change with them. It still takes the system's light or
+/// dark, as every start does.
+fn follows_desktop(cli: &Cli) -> bool {
+    cli.demo_shot.is_none()
 }
 
 /// The keyring for saved passwords. Demo runs keep secrets in memory, so a
@@ -317,23 +308,16 @@ struct Window {
     app: App,
     shot: Option<Shot>,
     demo: bool,
+    /// Set when an update's helper started this version. Confirmed once
+    /// the first frame is painted: until then the helper stands ready to
+    /// put the previous version back.
+    update_receipt: Option<fastframe_update::Receipt>,
     /// macOS: the window whose unified title bar the tabs share, once it
     /// exists.
     #[cfg(target_os = "macos")]
     title_bar: Option<crate::macos::UnifiedTitleBar>,
-    /// macOS: the app menu's About item, which opens the About dialog.
-    #[cfg(target_os = "macos")]
-    about_menu: Option<crate::macos::AboutMenu>,
-    /// macOS: the app menu's Settings item, which opens the Settings
-    /// window.
-    #[cfg(target_os = "macos")]
-    settings_menu: Option<crate::macos::SettingsMenu>,
-    /// macOS: View › History, which shows the window's History tab.
-    #[cfg(target_os = "macos")]
-    history_menu: Option<crate::macos::HistoryMenu>,
-    /// macOS: View › Quick Open, which opens quick open.
-    #[cfg(target_os = "macos")]
-    quick_open_menu: Option<crate::macos::QuickOpenMenu>,
+    /// The menu bar, where the platform has one.
+    menu: Option<crate::menu::Bar>,
 }
 
 impl Window {
@@ -378,49 +362,29 @@ impl eframe::App for Window {
         !self.demo
     }
 
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        // Before the frame's `logic`: a key a menu took goes back into
+        // this frame's input.
+        if let Some(menu) = &mut self.menu {
+            menu.input(raw, &self.app);
+        }
+    }
+
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // The same dialog the shortcuts dialog's About button opens.
-        #[cfg(target_os = "macos")]
-        if self
-            .about_menu
-            .as_ref()
-            .is_some_and(crate::macos::AboutMenu::take)
-        {
-            self.app.actions.push(crate::model::Action::ShowAbout);
-        }
-        // The same window `Mod+,` opens. AppKit takes that key for the
-        // item before egui sees it, so on macOS the key arrives here; where
-        // the item could not be added, the key handler still has it. Asked
-        // for while it is open, the window stays as it is, so a press that
-        // reached both would still open it once.
-        #[cfg(target_os = "macos")]
-        if self
-            .settings_menu
-            .as_ref()
-            .is_some_and(crate::macos::SettingsMenu::take)
-        {
-            self.app.actions.push(crate::model::Action::ShowSettings);
-        }
-        // The History tab of the connection in front, as ⌘Y shows it.
-        #[cfg(target_os = "macos")]
-        if self
-            .history_menu
-            .as_ref()
-            .is_some_and(crate::macos::HistoryMenu::take)
-        {
-            let tab = self.app.active_tab_id();
-            self.app
-                .actions
-                .push(crate::model::Action::ShowHistory(tab));
-        }
-        // Quick open, as ⌘P opens it: while it is open, its text selected.
-        #[cfg(target_os = "macos")]
-        if self
-            .quick_open_menu
-            .as_ref()
-            .is_some_and(crate::macos::QuickOpenMenu::take)
-        {
-            self.app.actions.push(crate::model::Action::OpenQuickOpen);
+        let clicks = self
+            .menu
+            .as_mut()
+            .map(crate::menu::Bar::clicks)
+            .unwrap_or_default();
+        for item in clicks {
+            match crate::menu::window_command(item) {
+                Some(command) => {
+                    ctx.send_viewport_cmd(command);
+                    // A paste lands in the next frame's input.
+                    ctx.request_repaint();
+                }
+                None => self.app.choose(item),
+            }
         }
         self.app.logic(ctx);
         self.drive_shot(ctx);
@@ -444,10 +408,27 @@ impl eframe::App for Window {
             }
         }
         self.app.frame_ui(ui);
+        // The first frame is painted, and the window shown, before the
+        // second runs: then tell the update's helper this version started,
+        // so it keeps it. Off the interface thread, as the receipt asks.
+        if self.update_receipt.is_some() && ui.ctx().cumulative_frame_nr() == 0 {
+            ui.ctx().request_repaint();
+        } else if let Some(receipt) = self.update_receipt.take() {
+            std::thread::spawn(move || {
+                if let Err(error) = receipt.acknowledge() {
+                    log::error!("could not confirm the update: {error:#}");
+                }
+            });
+        }
         #[cfg(target_os = "macos")]
         if let Some(title_bar) = &self.title_bar {
             let zoom = ui.ctx().zoom_factor();
             title_bar.place_buttons(crate::ui::window_buttons_line(&self.app, zoom) * zoom);
+        }
+        // After the frame's actions (`frame_ui` applies them): what is
+        // enabled now, and the keys if the keymap or the look changed.
+        if let Some(menu) = &mut self.menu {
+            menu.sync(&self.app);
         }
     }
 }
@@ -545,6 +526,17 @@ mod tests {
     fn demo_mode_never_uses_the_os_keyring() {
         assert!(!keyring_for(true).is_native());
         assert!(keyring_for(false).is_native());
+    }
+
+    #[test]
+    fn the_demo_follows_the_desktop_and_its_screenshot_does_not() {
+        let follows = |args: &[&str]| {
+            follows_desktop(&Cli::try_parse_from([&["tabletist"], args].concat()).unwrap())
+        };
+        assert!(follows(&[]));
+        assert!(follows(&["--demo"]));
+        assert!(follows(&["--demo", "--demo-size", "1200x750"]));
+        assert!(!follows(&["--demo", "--demo-shot", "demo.png"]));
     }
 
     #[test]

@@ -680,6 +680,7 @@ mod tests {
                 ..Default::default()
             },
             pinned: true,
+            view: String::new(),
             rest: Default::default(),
         });
         let mut failed = read("SELECT id, created FROM book_covers");

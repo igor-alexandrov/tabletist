@@ -16,6 +16,8 @@ mod editor_preview;
 mod preview;
 mod sheet;
 mod terminal;
+mod updates;
+mod updates_terminal;
 
 use std::borrow::Cow;
 
@@ -27,7 +29,7 @@ use crate::model::{Action, AgentsView, Dialog, SettingsDialog, SettingsPane, Set
 use crate::settings::{
     Autocomplete, Commas, EditorKeys, EnvBar, Idle, InterfaceSize, KeywordCase, Launch,
     LineNumbers, Mode, NewTab, OptionId, OptionValue, RowHeight, RunScope, Settings, TableList,
-    Theme, ThemeChoice, Timestamps, Zone,
+    Theme, ThemeChoice, Timestamps, UpdateCheck, Zone,
 };
 
 /// The label of an option's row. English: the caller translates, and the
@@ -41,6 +43,7 @@ pub(crate) fn label(option: OptionId) -> &'static str {
         OptionId::Tz => "Time zone for timestamptz",
         OptionId::GroupDigits => "Numbers",
         OptionId::ValueTags => "Value tags",
+        OptionId::DatePicker => "Show a calendar when editing dates",
         OptionId::ProductionReadOnly => "New production connections open read-only",
         OptionId::ConfirmCloseEdits => "Ask before closing with unsaved edits",
         OptionId::IdleDisconnect => "Disconnect when idle",
@@ -72,6 +75,7 @@ pub(crate) fn label(option: OptionId) -> &'static str {
         OptionId::Keywords => "Keywords",
         OptionId::Commas => "Commas",
         OptionId::HistoryKeep => "Keep query history",
+        OptionId::UpdatesCheck => "Check for updates",
     }
 }
 
@@ -106,6 +110,7 @@ pub(super) fn terminal_label(option: OptionId) -> &'static str {
         OptionId::Tz => "timestamptz zone",
         OptionId::ProductionReadOnly => "production opens read-only",
         OptionId::ConfirmCloseEdits => "confirm close with edits",
+        OptionId::DatePicker => "calendar for dates",
         OptionId::RowHeight => "Row height",
         OptionId::Zebra => "Alternate rows",
         OptionId::ColumnTypes => "Column types",
@@ -140,7 +145,8 @@ pub(super) fn terminal_label(option: OptionId) -> &'static str {
         | OptionId::HighlightLine
         | OptionId::Wrap
         | OptionId::Keywords
-        | OptionId::Commas => label(option),
+        | OptionId::Commas
+        | OptionId::UpdatesCheck => label(option),
     }
 }
 
@@ -154,6 +160,7 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
         OptionId::OnLaunch => Some("Or: show Connections · open a chosen connection"),
         OptionId::PageSize => Some("Table view; the SQL editor has its own limit"),
         OptionId::ValueTags => Some("Colors for enum, CHECK (…IN…) and boolean columns"),
+        OptionId::DatePicker => Some("Under date and time fields; typing always works"),
         OptionId::LogDays => Some("Every call and its SQL, never the rows. On this computer only"),
         OptionId::Tz => Some("Values are shown in this zone and sent with their offset"),
         OptionId::ProductionReadOnly => Some("Default for the switch in each connection"),
@@ -174,7 +181,9 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
         OptionId::HistoryKeep => Some(
             "Per connection, on this computer: SQL editor, grid saves, filters and agent runs. Results are never stored.",
         ),
-        OptionId::Timeout
+        // When the last check ran, with Check now: the pane writes it.
+        OptionId::UpdatesCheck
+        | OptionId::Timeout
         | OptionId::RunScope
         | OptionId::EditorKeys
         | OptionId::Indent
@@ -286,6 +295,16 @@ pub(super) fn idle_text(locale: Locale, choice: Idle) -> String {
     ngettext(locale, one, many, count).replace("{n}", &count.to_string())
 }
 
+/// How often a check for updates runs, as the window writes it.
+pub(super) fn check_text(locale: Locale, choice: UpdateCheck) -> String {
+    let words = match choice {
+        UpdateCheck::Daily => "Every day",
+        UpdateCheck::Weekly => "Every week",
+        UpdateCheck::Never => "Only when I ask",
+    };
+    gettext(locale, words).into_owned()
+}
+
 /// The days the log keeps a call, as the window writes them.
 pub(super) fn days(locale: Locale, days: u32) -> String {
     ngettext(locale, "{n} day", "{n} days", days).replace("{n}", &days.to_string())
@@ -297,6 +316,7 @@ pub(super) fn is_on(value: &OptionValue) -> bool {
         value,
         OptionValue::RestoreTabs(true)
             | OptionValue::ValueTags(true)
+            | OptionValue::DatePicker(true)
             | OptionValue::ProductionReadOnly(true)
             | OptionValue::ConfirmCloseEdits(true)
             | OptionValue::AgentsOn(true)
@@ -434,6 +454,10 @@ pub(super) fn choices(
             (Word("off"), OptionValue::ValueTags(false)),
             (Word("on"), OptionValue::ValueTags(true)),
         ],
+        OptionId::DatePicker => vec![
+            (Word("off"), OptionValue::DatePicker(false)),
+            (Word("on"), OptionValue::DatePicker(true)),
+        ],
         OptionId::ProductionReadOnly => vec![
             (Word("off"), OptionValue::ProductionReadOnly(false)),
             (Word("on"), OptionValue::ProductionReadOnly(true)),
@@ -450,7 +474,7 @@ pub(super) fn choices(
             (Word("off"), OptionValue::AgentsOn(false)),
             (Word("on"), OptionValue::AgentsOn(true)),
         ],
-        OptionId::LogDays | OptionId::IdleDisconnect => vec![
+        OptionId::LogDays | OptionId::IdleDisconnect | OptionId::UpdatesCheck => vec![
             (Word("fewer"), settings.stepped(option, false)),
             (Word("more"), settings.stepped(option, true)),
         ],
@@ -640,6 +664,10 @@ enum Asked {
     Copy,
     /// Answer the history's question: delete what it kept, or keep it.
     History(bool),
+    /// The Updates pane's: check now, the notes, skip the version offered.
+    CheckNow,
+    Notes,
+    Skip,
 }
 
 /// What `event` asks of the screen, if it is a press of one of its keys,
@@ -649,10 +677,26 @@ enum Asked {
 /// workspace: the screen's plain keys but its close. Its letters, the
 /// chord that opens the file and the key that closes are the screen's
 /// wherever the keyboard is.
-fn asked(keymap: &Keymap, event: &egui::Event, held: egui::Modifiers, free: bool) -> Option<Asked> {
+fn asked(
+    keymap: &Keymap,
+    event: &egui::Event,
+    held: egui::Modifiers,
+    (free, pane): (bool, SettingsPane),
+) -> Option<Asked> {
     // The screen is Omarchy's.
     let layout = Layout::Omarchy;
-    let commands = [
+    // The Updates pane's own come first there, and are read nowhere else:
+    // its `n` is the notes, which the history's question has elsewhere.
+    let updates = [
+        Command::SettingsCheckNow,
+        Command::SettingsReleaseNotes,
+        Command::SettingsSkipVersion,
+    ];
+    let updates = match pane {
+        SettingsPane::Updates => &updates[..],
+        _ => &[],
+    };
+    let commands = updates.iter().copied().chain([
         Command::SettingsOpenFile,
         Command::SettingsReset,
         Command::SettingsClose,
@@ -664,7 +708,7 @@ fn asked(keymap: &Keymap, event: &egui::Event, held: egui::Modifiers, free: bool
         Command::SettingsCopyCommand,
         Command::SettingsDeleteHistory,
         Command::SettingsKeepHistory,
-    ];
+    ]);
     // A letter is read as the key that types it, with Shift for its
     // capital and nothing else held.
     let typed = match event {
@@ -713,6 +757,9 @@ fn asked(keymap: &Keymap, event: &egui::Event, held: egui::Modifiers, free: bool
                 Command::SettingsCopyCommand => Asked::Copy,
                 Command::SettingsDeleteHistory => Asked::History(true),
                 Command::SettingsKeepHistory => Asked::History(false),
+                Command::SettingsCheckNow => Asked::CheckNow,
+                Command::SettingsReleaseNotes => Asked::Notes,
+                Command::SettingsSkipVersion => Asked::Skip,
                 _ => Asked::Flip,
             });
         }
@@ -747,10 +794,11 @@ fn keys(
     let keymap = app.keymap.clone();
     // Copied once the input is let go: the clipboard is the context's.
     let mut copy = false;
+    let mut update_command = None;
     ctx.input_mut(|input| {
         let held = input.modifiers;
         input.events.retain(|event| {
-            let Some(asked) = asked(&keymap, event, held, free) else {
+            let Some(asked) = asked(&keymap, event, held, (free, pane)) else {
                 return true;
             };
             if preview && !matches!(asked, Asked::Edit | Asked::Pane { .. }) {
@@ -797,11 +845,35 @@ fn keys(
                         actions.extend(opens);
                     }
                 }
-                Asked::Copy => {
-                    if pane != SettingsPane::Agents {
-                        return true;
+                Asked::Copy => match pane {
+                    SettingsPane::Agents => copy |= !repeat,
+                    // The command that updates a copy something else
+                    // installed, where it has one.
+                    SettingsPane::Updates => match updates::managed_command(app) {
+                        Some(command) => {
+                            if !repeat {
+                                update_command = Some(command);
+                            }
+                        }
+                        None => return true,
+                    },
+                    _ => return true,
+                },
+                // Fresh presses only: a held key would ask again and again.
+                Asked::CheckNow => {
+                    if !repeat {
+                        actions.push(Action::CheckForUpdates);
                     }
-                    copy |= !repeat;
+                }
+                Asked::Notes => {
+                    if !repeat {
+                        actions.push(Action::ShowReleaseNotes);
+                    }
+                }
+                Asked::Skip => {
+                    if !repeat {
+                        actions.push(Action::SkipUpdate);
+                    }
                 }
                 // Only while the question stands.
                 Asked::History(delete) => {
@@ -857,6 +929,9 @@ fn keys(
     });
     if copy {
         crate::ui::agents::copy_command(ctx, app.locale);
+    }
+    if let Some(command) = update_command {
+        updates::copy_command(ctx, command, app.locale);
     }
 }
 

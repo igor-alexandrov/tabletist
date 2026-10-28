@@ -15,11 +15,12 @@ pub const SECONDS: f64 = 4.0;
 /// How far above the window's bottom edge it floats.
 const LIFT: f32 = 16.0;
 
-/// What is being said, and since when, in egui's seconds.
+/// What is being said, since when in egui's seconds, and for how long.
 #[derive(Clone)]
 struct Said {
     text: String,
     when: f64,
+    seconds: f64,
 }
 
 fn id() -> Id {
@@ -29,9 +30,16 @@ fn id() -> Id {
 /// Says `text`, already in the user's language, for [`SECONDS`]. It takes
 /// the place of what was being said.
 pub fn say(ctx: &egui::Context, text: &str) {
+    say_for(ctx, text, SECONDS);
+}
+
+/// [`say`], for `seconds`: what is told of rather than what was done (an
+/// update available) stays longer.
+pub fn say_for(ctx: &egui::Context, text: &str, seconds: f64) {
     let said = Said {
         text: text.to_owned(),
         when: ctx.input(|input| input.time),
+        seconds,
     };
     ctx.data_mut(|data| data.insert_temp(id(), said));
     ctx.request_repaint();
@@ -41,7 +49,7 @@ pub fn say(ctx: &egui::Context, text: &str) {
 /// moment ends: it goes without waiting for the pointer to move.
 pub fn said(ctx: &egui::Context) -> Option<String> {
     let said: Said = ctx.data(|data| data.get_temp(id()))?;
-    let left = SECONDS - (ctx.input(|input| input.time) - said.when);
+    let left = said.seconds - (ctx.input(|input| input.time) - said.when);
     if left <= 0.0 {
         ctx.data_mut(|data| data.remove::<Said>(id()));
         return None;
@@ -78,7 +86,12 @@ pub fn show(app: &App, ctx: &egui::Context) {
                     color: palette.shadow,
                 })
                 .show(ui, |ui| {
-                    widgets::label(ui, widgets::body(look), &text, palette.window, look);
+                    let said = widgets::label(ui, widgets::body(look), &text, palette.window, look);
+                    // Read out as it appears, without taking the user's
+                    // place.
+                    ui.ctx().accesskit_node_builder(said.id, |node| {
+                        node.set_live(egui::accesskit::Live::Polite);
+                    });
                 });
         });
 }

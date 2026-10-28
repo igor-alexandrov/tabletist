@@ -19,6 +19,7 @@ Cmd/Ctrl+, opens Settings. Changes apply right away.
 | **Time zone for timestamptz** | System, UTC or any zone. A PostgreSQL `timestamptz` is shown in this zone, a copy gives the value as the server sent it, and a value you type without an offset is sent with this zone's. In the Omarchy look `h`/`l` choose System, UTC or the last zone the file named; any other zone is set in the file | System |
 | **Numbers** | `1,240.50` or `1240.50`. Grouping is for display only: a copy gives the raw value | `1,240.50` on macOS and Windows, `1240.50` in the Omarchy look |
 | **Value tags** | Colors for enum, CHECK and boolean columns | On |
+| **Show a calendar when editing dates** | On or off. On, the month and the time fields stand under the editor of a date, a time or a timestamp (a date has no time fields, a time no month), with the line that says what is stored; off, the line alone. In the Omarchy look `:set calendar` and `:set nocalendar` set it too | On |
 | **New production connections open read-only** | On or off: where the **Open read-only** box of a new production connection starts. A connection you saved keeps its own box | On |
 | **Ask before closing with unsaved edits** | On or off. Off, closing a table, its connection or the window, or loading another page of it, discards its pending changes without asking | On |
 | **Disconnect when idle** | Never, or after 5, 15 or 30 minutes, 1 hour or 4 hours unused. The server session is closed; the tabs stay, and the connection connects again when something next needs it: a refresh, a page, a table opened, a run or a save | After 30 min |
@@ -93,6 +94,35 @@ hold, and shows how to connect an agent:
 | **Keep the activity log** | 7, 30, 90 or 365 days | 30 days |
 | **Notify when an agent connects** | On or off | On |
 
+The last pane, **Updates**, says whether a newer version is out, and sets
+how often Tabletist asks. Its card shows one of: not checked yet; up to date (with when
+the last check ran); checking; a version available, with what is new in
+it (the first four points of its release notes), its size and **Release
+notes on GitHub** (its page has the downloads), and **Skip this
+version**; that a release has no build for this computer yet; that
+another tool updates this copy (Homebrew, cargo or your package manager),
+with the command to run and **Copy**; or that the check failed, and why.
+While a version is offered, Updates has a dot in the window's list of
+panes (Omarchy: a `●` after `updates`), and the Omarchy look's status
+line says `0.4.0 available · :update` for 8 seconds, once a day at most.
+Nothing opens over your work. Tabletist does not download or install the
+update itself yet.
+
+| Option | Choices | Default |
+| --- | --- | --- |
+| **Check for updates** | Every day, Every week or Only when I ask. A check runs at launch when the last one that worked is older than that, then again at that interval while Tabletist is open, and waits for a running query to end. **Check now** under it (Omarchy: `c`) checks whatever it says, and so do **Tabletist › Check for Updates…** on macOS, **Help › Check for Updates…** on Windows and `:update` in the Omarchy look | Every day |
+
+The check is one request to
+`https://api.github.com/repos/igor-alexandrov/tabletist/releases/latest`,
+which sends a user agent of this version, the system and the processor
+(`Tabletist/0.3.0 (macOS 15.1; arm64)`, `Tabletist/0.3.0 (Linux; x86_64)`)
+and nothing else: no cookie, no ID, nothing of your databases. It gives
+up after 10 seconds. A check that fails does not count as a check: a
+scheduled one tries again an interval later. Drafts and pre-releases are
+never offered. **Skip this version** (Omarchy: `S`) sets `updates.skip`:
+that version is not offered by a scheduled check, and a newer one is. A
+check you ask for offers it anyway.
+
 On macOS and Windows the window shows where the settings file is, and can
 reveal it in your file manager, export it, or reset the options of the
 pane it shows (on the Editor pane, every key of the `[editor.…]` tables). On the Agents pane, a reset leaves the server's switch as
@@ -120,6 +150,7 @@ page_size = 1000
 timestamps = "second"
 tz = "system"
 value_tags = true
+date_picker = true
 
 [safety]
 production_read_only = true
@@ -164,6 +195,9 @@ table_list = "tree"
 
 [appearance.env]
 bar = "tint"
+
+[updates]
+check = "daily"
 ```
 
 | Key | Values | Default |
@@ -175,6 +209,7 @@ bar = "tint"
 | `data.tz` | `"system"`, `"utc"` or a zone such as `"America/New_York"`. A name the zone database does not know is a line that cannot be read. A PostgreSQL `timestamptz` value is shown and edited in this zone, a copy gives it as the server sent it, and one you type without an offset is sent with this zone's | `"system"` |
 | `data.group_digits` | `true` or `false` | Not set: grouped on macOS and Windows, not in the Omarchy look |
 | `data.value_tags` | `true` or `false` | `true` |
+| `data.date_picker` | `true` or `false`. The calendar (the month and the time fields) under the editor of a date, a time or a timestamp; the line that says what is stored shows either way. `:set calendar` and `:set nocalendar` set it in the Omarchy look | `true` |
 | `safety.production_read_only` | `true` or `false`. Where the **Open read-only** box of a new production connection starts; the connection is saved with its box set, so a change here changes no saved connection | `true` |
 | `safety.confirm_close_edits` | `true` asks before pending changes are dropped; `false` discards them without asking. While a save runs, what would drop them does nothing until it ends, and closing the window asks either way | `true` |
 | `safety.idle_disconnect` | `"never"`, `"5m"`, `"15m"`, `"30m"`, `"1h"` or `"4h"`. A connection left unused that long has its server session closed; its tabs stay as they were, and it connects again when you next refresh, page, open a table, run or save. Never while changes are pending or something is still loading, running or saving | `"30m"` |
@@ -206,6 +241,8 @@ bar = "tint"
 | `mcp.enabled` | `true` lets agents reach the connections you open to them, through `tabletist mcp` | `false` |
 | `mcp.log_days` | 1 to 3650 days. How long the log of agents' calls keeps a call | `30` |
 | `mcp.notify` | `true` tells you when an agent connects: a notification on Linux, the Dock icon bouncing on macOS, the taskbar button flashing on Windows | `true` |
+| `updates.check` | `"daily"`, `"weekly"` or `"never"`. `"never"` checks only when you ask | `"daily"` |
+| `updates.skip` | A version, `"0.4.0"` (a `v` before it is read too): the one **Skip this version** stops offering. An empty string skips none | Not set |
 
 `show_system_schemas` is set only in the file, and so is a pin by a
 name or a path other than the Omarchy theme of the moment, and a font by
@@ -346,6 +383,8 @@ An administrator's policy, `managed.toml`, is in a third place of its own:
 | `agents.sqlite3` | State | Every call agents made: the tool, the statement and its values, and how it ended. Never a row |
 | `history.sqlite3` | State | The query history, by saved connection: each statement run from the SQL editor, a grid's save (its whole transaction, with the values you typed written in) and a filter or sort you set, with when, how long, its rows and how it ended, and a filter's table, filter and sort. An agent's run is kept as its call's place in `agents.sqlite3`, its tool, rows, time and result, never what it sent, its name included: the History tab reads that from `agents.sqlite3`. Never a result's rows. Kept to `editor.history.keep` per connection, and written on its own: a statement never waits for it |
 | `agents_shown.json` | State | What agents may do as Tabletist last showed it: whether the server is on, and each connection's access, hidden tables and masked columns |
+| `updates.json` | State | What the checks for updates found: when the last one that worked ran, the newest version seen, that release's page and notes while it is newer than this version, and when the Omarchy status line last told of it |
+| `release-notes-<version>.md` | State | A release's notes, written for `$PAGER` when `n` shows them in the Omarchy look |
 | `mcp.sock`, `mcp.key`, `mcp.lock` | Runtime, else State | Where `tabletist mcp` reaches the app, the key each proves it holds before either says more, and the lock the app holds while it listens. The socket and the key are there while agents are on |
 | `mcp.pipe` | State | On Windows, in the socket's place: the name of the pipe `tabletist mcp` reaches the app by, new each time agents are turned on |
 
@@ -634,4 +673,6 @@ policy.
 | `mcp` | Connects an agent to the running Tabletist, over its stdin and stdout. An agent starts it. When Tabletist is not running, or agents are off in it, it says so to the agent and ends |
 
 `--help` also lists `--demo-shot`, which saves a picture of the demo's
-window to a file, and `--demo-size`, which sets that window's size.
+window to a file, and `--demo-size`, which sets that window's size. The
+picture does not take the desktop's theme or font, only the system's light
+or dark.

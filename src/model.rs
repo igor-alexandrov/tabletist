@@ -39,6 +39,12 @@ pub struct PickerState {
     pub folded: Vec<String>,
     /// Focus the search on the next frame.
     pub focus_search: bool,
+    /// Delete was asked for this connection: the footer asks whether to,
+    /// and its answer is the only key until it is given.
+    pub deleting: Option<ConnectionId>,
+    /// The connection's form the question was asked from, as it was:
+    /// keeping the connection opens it again, edits and all.
+    pub form: Option<Box<ConnectionForm>>,
 }
 
 /// Everything that changes application state. Views push these; `App::apply`
@@ -76,6 +82,16 @@ pub enum Action {
     NewConnection,
     EditConnection(ConnectionId),
     DuplicateConnection(ConnectionId),
+    /// The picker's key, its rows' Delete and the connection form's: show
+    /// the picker on the connection, and ask there whether to delete it.
+    AskDeleteConnection(ConnectionId),
+    /// The answer to that question: delete it, or keep it.
+    AnswerDeleteConnection {
+        tab: ConnTabId,
+        delete: bool,
+    },
+    /// Delete a saved connection with its secrets, at once: what the
+    /// question's Delete does.
     DeleteConnection(ConnectionId),
     CloseDialog,
     /// Hide the notice above the window's content.
@@ -974,6 +990,20 @@ pub enum Action {
     SettingShown,
     /// Show how this agent is connected, in Settings › Agents.
     ChooseAgentSetup(crate::endpoint::Agent),
+    /// Ask GitHub for a newer release now: Check now, Try again, the
+    /// menu's Check for Updates…, `c`, `:update`. A version the settings
+    /// skip is offered by a check asked for.
+    CheckForUpdates,
+    /// Show Settings › Updates and check there now: the menu's Check for
+    /// Updates…, quick open's, `:update`.
+    ShowUpdates,
+    /// Drop the check under way: what it brings is not read.
+    CancelUpdateCheck,
+    /// Stop offering the version offered: `updates.skip`.
+    SkipUpdate,
+    /// Show the notes of the version offered in `$PAGER`, in a terminal;
+    /// where there is none to start, open its page.
+    ShowReleaseNotes,
     /// Close Settings and show the Agents tab on this view: the window's in
     /// front, or with Connections in front the last window's.
     ShowAgentsFromSettings(AgentsView),
@@ -1098,6 +1128,49 @@ pub enum Action {
         tab: ConnTabId,
         object_tab: TabId,
     },
+    /// Read the DDL view's definition again: its Try again, and the view
+    /// that holds none and waits for none.
+    RetryDdl {
+        tab: ConnTabId,
+        object_tab: TabId,
+    },
+    /// Move the cursor of the terminal look's DDL text `by` lines.
+    MoveDdlCursor {
+        tab: ConnTabId,
+        id: TabId,
+        by: isize,
+    },
+    /// Put that cursor on `line` (the last one where it has fewer).
+    DdlCursorTo {
+        tab: ConnTabId,
+        id: TabId,
+        line: usize,
+    },
+    /// Move it to the start of the next part of the text, or of the one
+    /// before (`]]`, `[[`).
+    DdlSection {
+        tab: ConnTabId,
+        id: TabId,
+        forward: bool,
+    },
+    /// Start the selection of lines at the cursor, or end it (`V`).
+    ToggleDdlVisual {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// End the selection of lines.
+    LeaveDdlVisual {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Open the DDL view's text in a new SQL editor, which runs nothing.
+    OpenDdlInEditor {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// The terminal's `:ddl`: the DDL view of the table under the tree's
+    /// cursor, or of the tab in front.
+    OpenDdl(ConnTabId),
     /// The connection dialog's driver switch.
     SetDriver(Driver),
     /// Drop the connection dialog's saved database password: saved with
@@ -1143,6 +1216,10 @@ pub struct Workspace {
     pub next_query: u32,
     /// "PostgreSQL 17.2", asked for when the first SQL editor opens.
     pub server_version: Fetch<String>,
+    /// The zone a MySQL session moves its `TIMESTAMP` values to and from,
+    /// asked for once the session is up: `Some(None)` where the server
+    /// names one the zone database does not know.
+    pub session_zone: Fetch<Option<jiff::tz::TimeZone>>,
     /// The columns of tables and views, for the SQL editors' completion:
     /// fetched for the tables a statement names, and filled by a table
     /// tab's structure. A fetch that failed stays failed, so it is not
@@ -2003,6 +2080,22 @@ impl Default for ConnectionForm {
 }
 
 impl ConnectionForm {
+    /// Set aside while the Connections list asks whether to delete its
+    /// connection: an answer to what it waits for would find no form to
+    /// fill, so it waits for nothing. A running Test stops, as if never
+    /// pressed, and comes back idle.
+    pub fn set_aside(&mut self) {
+        if let TestState::Running(_) = self.test {
+            self.test = TestState::Idle;
+            self.test_started = None;
+            self.test_spec = None;
+            self.test_secrets = tabletist_db::Secrets::default();
+            self.test_waiting = 0;
+        }
+        self.pick_request = None;
+        self.ssh_hosts_request = None;
+    }
+
     /// The config's Host whose alias is the typed SSH host, compared as
     /// OpenSSH compares Host names (ignoring case).
     pub fn ssh_config_host(&self) -> Option<&ConfigHost> {
@@ -2922,6 +3015,8 @@ pub enum SettingsPane {
     Keyboard,
     /// How agents reach the app. Listed where they can.
     Agents,
+    /// Whether a newer version is out, and how often to ask.
+    Updates,
 }
 
 impl SettingsPane {
@@ -2934,6 +3029,7 @@ impl SettingsPane {
                 Self::Editor,
                 Self::Keyboard,
                 Self::Agents,
+                Self::Updates,
             ]
         } else {
             &[
@@ -2941,6 +3037,7 @@ impl SettingsPane {
                 Self::Appearance,
                 Self::Editor,
                 Self::Keyboard,
+                Self::Updates,
             ]
         }
     }
@@ -2953,15 +3050,22 @@ impl SettingsPane {
             Self::Editor => "Editor",
             Self::Keyboard => "Keyboard",
             Self::Agents => "Agents",
+            Self::Updates => "Updates",
         }
     }
 
     /// The pane whose rows hold `option`.
     pub fn of(option: crate::settings::OptionId) -> Self {
-        [Self::General, Self::Appearance, Self::Editor, Self::Agents]
-            .into_iter()
-            .find(|pane| pane.options().contains(&option))
-            .unwrap_or_default()
+        [
+            Self::General,
+            Self::Appearance,
+            Self::Editor,
+            Self::Agents,
+            Self::Updates,
+        ]
+        .into_iter()
+        .find(|pane| pane.options().contains(&option))
+        .unwrap_or_default()
     }
 
     /// The sections the sheet (macOS, Windows) shows the pane's options
@@ -2989,7 +3093,7 @@ impl SettingsPane {
                 ("Format · {format}", &OptionId::FORMAT),
                 ("History", &OptionId::HISTORY),
             ],
-            Self::Keyboard | Self::Agents => &[],
+            Self::Keyboard | Self::Agents | Self::Updates => &[],
         }
     }
 
@@ -2999,6 +3103,7 @@ impl SettingsPane {
     pub fn sheet_options(self) -> Vec<crate::settings::OptionId> {
         match self {
             Self::Agents => crate::settings::OptionId::AGENTS.to_vec(),
+            Self::Updates => crate::settings::OptionId::UPDATES.to_vec(),
             Self::Keyboard => Vec::new(),
             Self::General | Self::Appearance | Self::Editor => self
                 .sections()
@@ -3016,6 +3121,7 @@ impl SettingsPane {
             Self::Editor => &crate::settings::OptionId::EDITOR,
             Self::Keyboard => &[],
             Self::Agents => &crate::settings::OptionId::AGENTS,
+            Self::Updates => &crate::settings::OptionId::UPDATES,
         }
     }
 
@@ -3032,6 +3138,7 @@ impl SettingsPane {
             // Reset all… of its own, which asks first.
             Self::Keyboard => &[],
             Self::Agents => &[OptionId::LogDays, OptionId::AgentsNotify],
+            Self::Updates => &OptionId::UPDATES,
         }
     }
 
@@ -3047,6 +3154,7 @@ impl SettingsPane {
                 SettingsRow::Option(OptionId::Tz),
                 SettingsRow::Option(OptionId::GroupDigits),
                 SettingsRow::Option(OptionId::ValueTags),
+                SettingsRow::Option(OptionId::DatePicker),
                 SettingsRow::Option(OptionId::ProductionReadOnly),
                 SettingsRow::Option(OptionId::ConfirmCloseEdits),
                 SettingsRow::Option(OptionId::IdleDisconnect),
@@ -3087,6 +3195,8 @@ impl SettingsPane {
                 SettingsRow::Option(OptionId::LogDays),
                 SettingsRow::Option(OptionId::AgentsNotify),
             ],
+            // The status over it is no row: its keys are the pane's.
+            Self::Updates => &[SettingsRow::Option(OptionId::UpdatesCheck)],
         }
     }
 }
@@ -3579,9 +3689,12 @@ impl StartRecent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ObjectView {
+    /// The rows, which the switch calls Rows.
     #[default]
     Data,
     Structure,
+    /// The definition as text (`tabletist_db::Ddl`).
+    Ddl,
 }
 
 /// A cell of an object tab's page or of a SQL result: its row there, and
@@ -3681,6 +3794,19 @@ pub struct ObjectTab {
     pub page_size: u32,
     pub rows: Fetch<RowPage>,
     pub structure: Fetch<Structure>,
+    /// The definition the DDL view shows, read when the view is first
+    /// shown and kept with the tab, as its structure is: a refresh reads
+    /// it again. A read the view was left during is dropped.
+    pub ddl: Fetch<tabletist_db::Ddl>,
+    /// When the definition the tab holds arrived: the view says how long
+    /// ago it was read.
+    pub ddl_read: Option<std::time::Instant>,
+    /// The terminal look's cursor in the DDL view's text: a line, from
+    /// nought. Held inside the text's lines.
+    pub ddl_cursor: usize,
+    /// Where the terminal look's selection of lines (`V`) started, while
+    /// it is on: it runs from there to the cursor's line.
+    pub ddl_visual: Option<usize>,
     pub selection: Option<CellPos>,
     /// The rows selected with the cursor's, where there are several.
     /// Written with the cursor, by [`ObjectTab::set_cursor`].
@@ -3928,6 +4054,10 @@ impl ObjectTab {
             view: ObjectView::Data,
             rows: Fetch::default(),
             structure: Fetch::default(),
+            ddl: Fetch::default(),
+            ddl_read: None,
+            ddl_cursor: 0,
+            ddl_visual: None,
             selection: None,
             range: None,
             estimated_rows,
@@ -3944,6 +4074,30 @@ impl ObjectTab {
         }
     }
 
+    /// The DDL view's text as the view shows it: none while it is first
+    /// read, nor where its read failed (a failed Reload keeps the text it
+    /// had, under the error).
+    pub fn ddl_shown(&self) -> Option<&tabletist_db::Ddl> {
+        self.ddl
+            .value
+            .as_ref()
+            .filter(|_| self.ddl.shown_error().is_none())
+    }
+
+    /// How many lines the DDL view's text has, as it shows: none before it
+    /// is read.
+    pub fn ddl_lines(&self) -> usize {
+        self.ddl_shown().map_or(0, |ddl| ddl.text().lines().count())
+    }
+
+    /// The lines the terminal look's selection takes, while it is on: from
+    /// its start to the cursor's line, whichever comes first.
+    pub fn ddl_selected(&self) -> Option<std::ops::Range<usize>> {
+        let anchor = self.ddl_visual?;
+        let (from, to) = (anchor.min(self.ddl_cursor), anchor.max(self.ddl_cursor));
+        Some(from..to + 1)
+    }
+
     /// Forgets the exact count: the rows it counted changed (filters,
     /// refresh). Returns the count still running for them, to cancel.
     #[must_use]
@@ -3957,6 +4111,7 @@ impl ObjectTab {
         [
             self.rows.pending,
             self.structure.pending,
+            self.ddl.pending,
             self.count.pending,
             self.edits.saving.as_ref().map(|saving| saving.request),
         ]
@@ -5376,6 +5531,7 @@ impl Workspace {
             tabs: Vec::new(),
             next_query: 1,
             server_version: Fetch::default(),
+            session_zone: Fetch::default(),
             columns: HashMap::new(),
             catalog_generation: 0,
             active_tab: None,
@@ -5734,6 +5890,7 @@ impl Workspace {
             object.edits.holders.clear();
         }
         self.server_version = Fetch::default();
+        self.session_zone = Fetch::default();
         // Fetches the old session will never answer, and names that may
         // not be the new one's.
         self.columns.clear();

@@ -24,9 +24,10 @@ use crate::agent::{Catalog, ColumnName, Limits, Read, Sources};
 use crate::script::retry_cancelled;
 use crate::{
     Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, ConnectSpec,
-    Dialect, Error, ForeignKeyInfo, IndexInfo, Lookup, LookupPage, MAX_LISTED, Named, ObjectInfo,
-    ObjectKind, ObjectRef, ReferencingKey, Result, RowPage, RowQuery, ScriptMode, ScriptOutcome,
-    Secrets, StopFlag, Structure, TlsMode, Value, ValueKind, WriteOutcome, column_class,
+    Ddl, Dialect, Error, ForeignKeyInfo, IndexInfo, Lookup, LookupPage, MAX_LISTED, Named,
+    ObjectInfo, ObjectKind, ObjectRef, ReferencingKey, Result, RowPage, RowQuery, ScriptMode,
+    ScriptOutcome, Secrets, StopFlag, Structure, TlsMode, Value, ValueKind, WriteOutcome,
+    column_class,
 };
 
 /// A column as `describe` reads it from `information_schema.columns`: its
@@ -201,6 +202,19 @@ impl Adapter for Conn {
     /// See [`crate::Connection::server_version`]. Asked at connect.
     async fn server_version(&self) -> Result<String> {
         Ok(version_name(&self.version))
+    }
+
+    /// See [`crate::Connection::session_zone`]: the session's zone, or the
+    /// server's own where the session follows it (`SYSTEM`).
+    async fn session_zone(&self) -> Result<Option<String>> {
+        let zones: Vec<String> = self
+            .catalog(
+                "SELECT IF(@@session.time_zone = 'SYSTEM', @@global.system_time_zone, \
+                 @@session.time_zone)",
+                (),
+            )
+            .await?;
+        Ok(zones.into_iter().next())
     }
 
     /// None: MySQL's databases are listed as its schemas.
@@ -466,6 +480,21 @@ impl Adapter for Conn {
         })
     }
 
+    /// `SHOW CREATE TABLE`, or `SHOW CREATE VIEW` for a view, as the
+    /// server returns it, then `SHOW CREATE TRIGGER` for each of the
+    /// table's triggers by name, in one read-only transaction.
+    async fn ddl(&self, object: &ObjectRef) -> Result<Ddl> {
+        let mut conn = self.conn.lock().await;
+        let mut transaction = conn
+            .start_transaction(read_only())
+            .await
+            .map_err(query_error)?;
+        let outcome = show_create(&mut transaction, object).await;
+        let parts = finish(transaction, outcome).await?;
+        let server = version_name(&self.version);
+        Ok(Ddl::new(crate::Driver::MySql, server, None, parts))
+    }
+
     /// One page, through a prepared statement inside a read-only
     /// transaction. Reading stops after `limit + 1` rows.
     async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
@@ -691,6 +720,83 @@ fn parameter(spelled: &str, hint: Option<&str>) -> Error {
         hint: hint.map(str::to_owned),
         named: Box::default(),
     }
+}
+
+/// The parts of `object`'s definition, read by [`Adapter::ddl`] in
+/// `transaction`.
+async fn show_create(
+    transaction: &mut mysql_async::Transaction<'_>,
+    object: &ObjectRef,
+) -> Result<Vec<crate::ddl::Part>> {
+    use crate::ddl::{Part, PartKind};
+    let kind: Option<String> = transaction
+        .exec_first(
+            "SELECT table_type FROM information_schema.tables \
+             WHERE table_schema = ? AND table_name = ?",
+            (&object.schema, &object.name),
+        )
+        .await
+        .map_err(query_error)?;
+    let Some(kind) = kind else {
+        return Err(Error::query(format!(
+            "no such table or view: {}",
+            object.name
+        )));
+    };
+    let name = format!(
+        "{}.{}",
+        Dialect::MySql.quote_ident(&object.schema),
+        Dialect::MySql.quote_ident(&object.name)
+    );
+    let shown = if kind.contains("VIEW") {
+        format!("SHOW CREATE VIEW {name}")
+    } else {
+        format!("SHOW CREATE TABLE {name}")
+    };
+    // Its second column, whichever it is: `Create Table` or `Create View`.
+    let own = nth_text(transaction, &shown, 1).await?;
+    let names: Vec<String> = transaction
+        .exec(
+            "SELECT trigger_name FROM information_schema.triggers \
+             WHERE event_object_schema = ? AND event_object_table = ? \
+             ORDER BY trigger_name",
+            (&object.schema, &object.name),
+        )
+        .await
+        .map_err(query_error)?;
+    let mut triggers = Vec::with_capacity(names.len());
+    for trigger in names {
+        let shown = format!(
+            "SHOW CREATE TRIGGER {}.{}",
+            Dialect::MySql.quote_ident(&object.schema),
+            Dialect::MySql.quote_ident(&trigger)
+        );
+        // `SQL Original Statement`, after the name and the `sql_mode`.
+        triggers.push(nth_text(transaction, &shown, 2).await?);
+    }
+    Ok(vec![
+        Part {
+            kind: PartKind::Object,
+            statements: vec![own],
+        },
+        Part {
+            kind: PartKind::Triggers,
+            statements: triggers,
+        },
+    ])
+}
+
+/// Column `index` of the one row `sql` answers, as text.
+async fn nth_text(
+    transaction: &mut mysql_async::Transaction<'_>,
+    sql: &str,
+    index: usize,
+) -> Result<String> {
+    let row: Option<mysql_async::Row> = transaction.query_first(sql).await.map_err(query_error)?;
+    row.and_then(|row| row.get_opt::<String, _>(index))
+        .transpose()
+        .map_err(|_| Error::query("unexpected data from the server: the text is not text"))?
+        .ok_or_else(|| Error::query(format!("{sql} returned nothing")))
 }
 
 /// Ends a read transaction whatever happened inside it. mysql_async only

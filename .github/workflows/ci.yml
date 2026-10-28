@@ -51,6 +51,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - name: GUI build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -58,6 +60,12 @@ jobs:
           sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked --workspace --all-targets
+      # The quality job's clippy runs on Linux, which compiles none of the
+      # macOS and Windows `unsafe` (`fonts.rs`, `macos/opening.rs`,
+      # `windows.rs`): this holds their SAFETY notes.
+      - name: SAFETY notes in this platform's unsafe code
+        if: runner.os == 'Windows' || runner.os == 'macOS'
+        run: cargo clippy --locked -p tabletist-appkit -p tabletist-menubar -p tabletist-sqlite-ffi --all-targets -- -D warnings
       # The relay is the app's own program, which a release build on
       # Windows makes a GUI program: an agent must reach the app through
       # that one too.
@@ -100,7 +108,7 @@ jobs:
             pg_isready -h localhost -p 55432 && break
             sleep 1
           done
-      - run: cargo test --locked -p tabletist-db --lib --test postgres --test insert_audit --test lookup --test delete_rows --test agent
+      - run: cargo test --locked -p tabletist-db --lib --test postgres --test insert_audit --test lookup --test delete_rows --test agent --test ddl
         env:
           TABLETIST_TEST_PG_URL: postgres://tabletist:tabletist@localhost:55432/tabletist
       # The app's gateway for the MCP server, which opens its own sessions.
@@ -123,7 +131,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Start MySQL
         run: docker compose up -d --wait mysql
-      - run: cargo test --locked -p tabletist-db --lib --test mysql --test insert_audit --test lookup --test delete_rows --test agent
+      - run: cargo test --locked -p tabletist-db --lib --test mysql --test insert_audit --test lookup --test delete_rows --test agent --test ddl
         env:
           TABLETIST_TEST_MYSQL_URL: mysql://tabletist:tabletist@localhost:53306/tabletist
       # The app's gateway for the MCP server, which opens its own sessions.

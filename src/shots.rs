@@ -1580,8 +1580,9 @@ fn sidebar_width_over_time() {
 }
 
 /// The design screens at the mockups' scales, so each PNG lines up pixel
-/// for pixel with its mockup: `target/shots/mock-<screen>.png`.
-mod mock {
+/// for pixel with its mockup: `target/shots/mock-<screen>.png`. The
+/// promotional videos film Omarchy in its [`mock::tokyo_night`].
+pub(crate) mod mock {
     use super::*;
     use crate::theme::{Look, Palette};
 
@@ -2337,7 +2338,7 @@ mod mock {
             let palette = screen.palette();
             let mut harness = Harness::for_shots(screen.size(), screen.design_scale(), true, look);
             harness.app.palette = palette;
-            crate::theme::apply(&harness.ctx, &palette, &look);
+            harness.app.apply_style(&harness.ctx);
             screen.stage(&mut harness);
             harness.shot(&out(&format!("mock-{}.png", screen.name())));
         }

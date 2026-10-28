@@ -762,6 +762,7 @@ mod tests {
             added: &[],
             deleted: &crate::edit::NONE_DELETED,
             zone: Some(&crate::testing::UTC),
+            session_zone: None,
         }
     }
 

@@ -1917,6 +1917,18 @@ async fn a_script_stopped_before_it_starts_runs_nothing() {
 }
 
 #[tokio::test]
+async fn the_session_names_the_zone_its_timestamps_are_kept_in() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    // The session's, or the server's where it follows the system's: never
+    // the word SYSTEM.
+    let zone = within(connection.session_zone()).await.unwrap();
+    let zone = zone.expect("a MySQL session has a zone");
+    assert!(!zone.is_empty() && zone != "SYSTEM", "{zone}");
+}
+
+#[tokio::test]
 async fn the_server_version_names_the_server() {
     let Some(connection) = connect().await else {
         return;

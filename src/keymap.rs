@@ -227,6 +227,9 @@ pub enum When {
     ConnectionForm,
     /// The Settings screen.
     SettingsScreen,
+    /// The Settings screen shows its Updates pane, where the history's
+    /// question never stands: its keys are that pane's.
+    UpdatesPane,
     /// Quick open.
     QuickOpen,
     /// The question before a save to production.
@@ -253,11 +256,16 @@ pub enum When {
     /// grid's keys that act on a row have nothing to act on, and the
     /// view's own act on the line of a column.
     Structure,
+    /// The DDL view of a table shows, in place of its rows: its own keys
+    /// act on its text, by line in the terminal look.
+    Ddl,
     /// The Agents tab shows its Log view: its keys come before the
     /// activity's.
     AgentsLog,
     /// The History tab asks whether to clear the connection's history.
     ClearingHistory,
+    /// The Connections list asks whether to delete a connection.
+    DeletingConnection,
     /// The start screen's search is on: its field has the keyboard. The
     /// keys that move among the matches, open one and clear the search are
     /// read then, and only then.
@@ -435,6 +443,7 @@ commands! {
     GoToConnectionWindow = "go_to_connection_window",
     SwitchDatabase = "switch_database",
     Settings = "settings",
+    CheckForUpdates = "check_for_updates",
     LargerText = "larger_text",
     SmallerText = "smaller_text",
     DefaultTextSize = "default_text_size",
@@ -446,6 +455,8 @@ commands! {
     EditConnection = "edit_connection",
     DuplicateConnection = "duplicate_connection",
     DeleteConnection = "delete_connection",
+    ConfirmDeleteConnection = "confirm_delete_connection",
+    KeepConnection = "keep_connection",
     Connect = "connect",
     ConnectAgain = "connect_again",
     MoveInConnections = "move_in_connections",
@@ -502,6 +513,8 @@ commands! {
     Help = "help",
     KeysDefault = "keys_default",
     KeysCheatsheet = "keys_cheatsheet",
+    ShowCalendar = "show_calendar",
+    HideCalendar = "hide_calendar",
     // Grid and editing.
     MoveRow = "move_row",
     MoveColumn = "move_column",
@@ -561,6 +574,19 @@ commands! {
     LabelAutomatic = "label_automatic",
     LabelKeysOnly = "label_keys_only",
     LabelColumn = "label_column",
+    ShowRows = "show_rows",
+    ShowStructure = "show_structure",
+    ShowDdl = "show_ddl",
+    OpenDdl = "open_ddl",
+    CopyDdl = "copy_ddl",
+    OpenDdlInEditor = "open_ddl_in_editor",
+    MoveInDdl = "move_in_ddl",
+    DdlTop = "ddl_top",
+    DdlBottom = "ddl_bottom",
+    NextDdlSection = "next_ddl_section",
+    PreviousDdlSection = "previous_ddl_section",
+    SelectDdlLines = "select_ddl_lines",
+    LeaveDdlVisual = "leave_ddl_visual",
     ReviewSql = "review_sql",
     NextChange = "next_change",
     CopyReviewSql = "copy_review_sql",
@@ -654,6 +680,10 @@ commands! {
     SettingsCopyCommand = "settings_copy_command",
     SettingsDeleteHistory = "settings_delete_history",
     SettingsKeepHistory = "settings_keep_history",
+    SettingsCheckNow = "settings_check_now",
+    SettingsReleaseNotes = "settings_release_notes",
+    SettingsSkipVersion = "settings_skip_version",
+    SettingsInstallUpdate = "settings_install_update",
     SettingsUnbind = "settings_unbind",
     SettingsFilter = "settings_filter",
     SettingsFindKey = "settings_find_key",
@@ -734,6 +764,7 @@ impl Command {
             }
             C::SwitchDatabase => info("Switch database", "Switch database", Window),
             C::Settings => info("Settings", "Settings", Window),
+            C::CheckForUpdates => info("Check for Updates…", "", Window),
             C::LargerText => info("Larger text", "", Window),
             C::SmallerText => info("Smaller text", "", Window),
             C::DefaultTextSize => info("Default text size", "", Window),
@@ -745,6 +776,8 @@ impl Command {
             C::EditConnection => info("Edit connection", "Edit connection", Window),
             C::DuplicateConnection => info("Duplicate connection", "Duplicate connection", Window),
             C::DeleteConnection => info("Delete connection", "Delete connection", Window),
+            C::ConfirmDeleteConnection => info("Delete the connection, as asked", "", Prompts),
+            C::KeepConnection => info("Keep the connection, as asked", "", Prompts),
             C::Connect => info("Connect / go to window", "Connect / go to window", Window),
             C::ConnectAgain => info("Open the connection again", "", Window),
             C::MoveInConnections => info("Move in the connections", "", Window),
@@ -843,6 +876,8 @@ impl Command {
             C::Help => info("Help, all keys", "Help, all keys", Navigation),
             C::KeysDefault => info("Write the full list of keys", "", Navigation),
             C::KeysCheatsheet => info("Write a cheat sheet of the keys", "", Navigation),
+            C::ShowCalendar => info("Show a calendar when editing dates", "", Navigation),
+            C::HideCalendar => info("Edit dates without the calendar", "", Navigation),
             C::MoveRow => info("Move by row", "", Editing),
             C::MoveColumn => info("Move by column", "", Editing),
             C::MovePage => info("Move by page", "", Editing),
@@ -924,6 +959,19 @@ impl Command {
             C::LabelAutomatic => info("Label foreign keys automatically", "", Editing),
             C::LabelKeysOnly => info("Label foreign keys by their keys alone", "", Editing),
             C::LabelColumn => info("Label foreign keys by a column", "", Editing),
+            C::ShowRows => info("Show the rows", "", Navigation),
+            C::ShowStructure => info("Show the structure", "", Navigation),
+            C::ShowDdl => info("Show the DDL", "", Navigation),
+            C::OpenDdl => info("Open the DDL view", "", Navigation),
+            C::CopyDdl => info("Copy the DDL", "", Editing),
+            C::OpenDdlInEditor => info("Open the DDL in the SQL editor", "", Sql),
+            C::MoveInDdl => info("Move by line in the DDL", "", Navigation),
+            C::DdlTop => info("Top of the DDL", "", Navigation),
+            C::DdlBottom => info("Bottom of the DDL", "", Navigation),
+            C::NextDdlSection => info("Next section of the DDL", "", Navigation),
+            C::PreviousDdlSection => info("Previous section of the DDL", "", Navigation),
+            C::SelectDdlLines => info("Select lines of the DDL", "", Navigation),
+            C::LeaveDdlVisual => info("Leave the selection of lines", "", Navigation),
             C::ReviewSql => info("Review pending SQL", "Review pending SQL", Editing),
             C::NextChange => info("Next change", "Review pending SQL", Editing).reserved(),
             C::CopyReviewSql => info("Copy the pending SQL", "", Editing),
@@ -1028,11 +1076,27 @@ impl Command {
                 Prompts,
             ),
             C::SettingsOpenRow => info("Open what the settings' row shows", "", Prompts),
-            C::SettingsCopyCommand => agents(info(
-                "Copy the command that connects an agent, in the settings",
+            C::SettingsCopyCommand => info(
+                "Copy the command the settings show: an agent's, or the update's",
                 "",
                 Prompts,
-            )),
+            ),
+            C::SettingsCheckNow => info("Check for updates now, in the settings", "", Prompts),
+            C::SettingsReleaseNotes => info(
+                "Read the release notes of the version offered, in the settings",
+                "",
+                Prompts,
+            ),
+            C::SettingsSkipVersion => {
+                info("Skip the version offered, in the settings", "", Prompts)
+            }
+            // Downloading and installing come in the next run.
+            C::SettingsInstallUpdate => info(
+                "Download and install the version offered, in the settings",
+                "",
+                Prompts,
+            )
+            .reserved(),
             C::SettingsDeleteHistory => info(
                 "Delete the query history kept, as the settings ask",
                 "",
@@ -1072,14 +1136,25 @@ pub struct Binding {
     pub when: When,
     pub mac: Bound,
     pub omarchy: Bound,
+    /// Windows' own keys, where the Mac's with Ctrl for Cmd would not do.
+    pub windows: Option<Bound>,
 }
 
 impl Binding {
     pub fn bound(&self, layout: Layout) -> &Bound {
         match layout {
-            Layout::Mac | Layout::Windows => &self.mac,
+            Layout::Mac => &self.mac,
+            Layout::Windows => self.windows.as_ref().unwrap_or(&self.mac),
             Layout::Omarchy => &self.omarchy,
         }
+    }
+
+    /// Every look's keys of the line: the Mac's, Omarchy's, and Windows'
+    /// where it has its own.
+    pub fn every_bound(&self) -> impl Iterator<Item = &Bound> {
+        [Some(&self.mac), Some(&self.omarchy), self.windows.as_ref()]
+            .into_iter()
+            .flatten()
     }
 }
 
@@ -1127,12 +1202,21 @@ const fn bind(command: Command, scopes: &'static [Scope], mac: Bound, omarchy: B
         when: When::Always,
         mac,
         omarchy,
+        windows: None,
     }
 }
 
 impl Binding {
     const fn when(self, when: When) -> Self {
         Self { when, ..self }
+    }
+
+    /// Windows' own keys for the line.
+    const fn windows(self, windows: Bound) -> Self {
+        Self {
+            windows: Some(windows),
+            ..self
+        }
     }
 }
 
@@ -1175,6 +1259,8 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("ctrl+shift+1..9")]),
         ),
         bind(C::SwitchDatabase, GLOBAL, NONE, keys(&[k("ctrl+shift+d")])),
+        // macOS's Tabletist menu has it; Omarchy's prompt.
+        bind(C::CheckForUpdates, GLOBAL, NONE, keys(&[k(":update")])),
         bind(
             C::Settings,
             GLOBAL,
@@ -1239,12 +1325,30 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("cmd+d")]),
             keys(&[k("yy p")]),
         ),
+        // A connection goes with its secrets and cannot be had back, so
+        // the key only asks: Finder's chord, which no stray Backspace is.
         bind(
             C::DeleteConnection,
             CONNECTIONS,
-            keys(&[k("backspace")]),
+            keys(&[k("cmd+backspace")]),
             keys(&[k("dd")]),
         ),
+        // The question's Delete is its button on macOS and Windows, which
+        // Enter presses when it has the keyboard.
+        bind(
+            C::ConfirmDeleteConnection,
+            CONNECTIONS,
+            NONE,
+            keys(&[k("y")]),
+        )
+        .when(When::DeletingConnection),
+        bind(
+            C::KeepConnection,
+            CONNECTIONS,
+            keys(&[k("esc")]),
+            keys(&[k("n"), k("esc")]).shown("n"),
+        )
+        .when(When::DeletingConnection),
         bind(
             C::Connect,
             CONNECTIONS,
@@ -1463,6 +1567,10 @@ pub const BINDINGS: &[Binding] = {
             NONE,
             keys(&[k(":keys cheatsheet")]),
         ),
+        // The setting of the calendar under a date's editor, as Settings
+        // has it.
+        bind(C::ShowCalendar, GLOBAL, NONE, keys(&[k(":set calendar")])),
+        bind(C::HideCalendar, GLOBAL, NONE, keys(&[k(":set nocalendar")])),
         // Grid and editing.
         bind(
             C::MoveRow,
@@ -1518,7 +1626,7 @@ pub const BINDINGS: &[Binding] = {
             C::MoveField,
             INSPECTOR,
             keys(&[k("up"), k("down")]),
-            keys(&[k("j"), k("k")]).shown("j/k"),
+            keys(&[k("j"), k("k"), k("up"), k("down")]).shown("j/k"),
         ),
         bind(
             C::PreviousRow,
@@ -1558,7 +1666,8 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("enter"), k("f2")]),
             keys(&[k("enter"), k("i")]),
         ),
-        bind(C::ReplaceCell, CELLS, NONE, keys(&[k("cc"), k("s")])),
+        // Vim's `s` is the Structure view's: `cc` does the same.
+        bind(C::ReplaceCell, CELLS, NONE, keys(&[k("cc")])),
         bind(
             C::CommitDown,
             CELL_EDITOR,
@@ -1698,6 +1807,9 @@ pub const BINDINGS: &[Binding] = {
         bind(C::YankRow, CELLS, NONE, keys(&[k("yy")])),
         bind(C::PutRow, CELLS, NONE, keys(&[k("p")])),
         bind(C::PutRowAbove, CELLS, NONE, keys(&[k("P")])),
+        // Backspace alone, where a connection takes Cmd+Backspace: a
+        // deleted row is only marked until Save writes it, and the same key
+        // brings it back, while Cmd+Backspace is Set NULL here.
         bind(
             C::DeleteRow,
             GRID,
@@ -1763,6 +1875,63 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k(":label {column}")]),
         )
         .when(When::Structure),
+        // A table's views, from any of them. Windows has one Ctrl for the
+        // Mac's Control and Command, and Ctrl with a digit goes to a
+        // connection's window there: its keys are Alt's.
+        bind(
+            C::ShowRows,
+            GRID,
+            keys(&[k("ctrl+cmd+1")]).any(),
+            keys(&[k("r")]),
+        )
+        .windows(keys(&[k("alt+1")]).any()),
+        bind(
+            C::ShowStructure,
+            GRID,
+            keys(&[k("ctrl+cmd+2")]).any(),
+            keys(&[k("s")]),
+        )
+        .windows(keys(&[k("alt+2")]).any()),
+        bind(
+            C::ShowDdl,
+            GRID,
+            keys(&[k("ctrl+cmd+3")]).any(),
+            keys(&[k("S")]),
+        )
+        .windows(keys(&[k("alt+3")]).any()),
+        // The DDL view of what is under the tree's cursor, or of the tab
+        // in front, from any pane.
+        bind(C::OpenDdl, GLOBAL, NONE, keys(&[k(":ddl")])),
+        // The DDL view's own. Its text is a field in the looks with a
+        // pointer, where the chords are read in it too; the terminal look
+        // moves in it by line, and selects whole lines.
+        bind(
+            C::CopyDdl,
+            GRID,
+            keys(&[k("cmd+shift+c")]).any(),
+            keys(&[k("y")]),
+        )
+        .when(When::Ddl),
+        bind(
+            C::OpenDdlInEditor,
+            GRID,
+            keys(&[k("alt+enter")]).any(),
+            keys(&[k("e")]),
+        )
+        .when(When::Ddl),
+        bind(
+            C::MoveInDdl,
+            GRID,
+            NONE,
+            keys(&[k("j"), k("k"), k("up"), k("down")]).shown("j/k"),
+        )
+        .when(When::Ddl),
+        bind(C::DdlTop, GRID, NONE, keys(&[k("gg")])).when(When::Ddl),
+        bind(C::DdlBottom, GRID, NONE, keys(&[k("G")])).when(When::Ddl),
+        bind(C::NextDdlSection, GRID, NONE, keys(&[k("]]")])).when(When::Ddl),
+        bind(C::PreviousDdlSection, GRID, NONE, keys(&[k("[[")])).when(When::Ddl),
+        bind(C::SelectDdlLines, GRID, NONE, keys(&[k("V")])).when(When::Ddl),
+        bind(C::LeaveDdlVisual, GRID, NONE, keys(&[k("esc")])).when(When::Ddl),
         bind(
             C::ReviewSql,
             GRID,
@@ -2200,6 +2369,11 @@ pub const BINDINGS: &[Binding] = {
         bind(C::SettingsCopyCommand, PROMPT, NONE, keys(&[k("y")])).when(When::SettingsScreen),
         bind(C::SettingsDeleteHistory, PROMPT, NONE, keys(&[k("D")])).when(When::SettingsScreen),
         bind(C::SettingsKeepHistory, PROMPT, NONE, keys(&[k("n")])).when(When::SettingsScreen),
+        // The Updates pane's own.
+        bind(C::SettingsCheckNow, PROMPT, NONE, keys(&[k("c")])).when(When::UpdatesPane),
+        bind(C::SettingsReleaseNotes, PROMPT, NONE, keys(&[k("n")])).when(When::UpdatesPane),
+        bind(C::SettingsSkipVersion, PROMPT, NONE, keys(&[k("S")])).when(When::UpdatesPane),
+        bind(C::SettingsInstallUpdate, PROMPT, NONE, keys(&[k("U")])).when(When::UpdatesPane),
         // The Keyboard pane's own: Enter records the row (the screen's
         // Enter), `R` resets it, and the arrows' letters move as on any
         // pane.
@@ -2770,6 +2944,64 @@ impl Default for Keymap {
     }
 }
 
+/// An item of the Edit menu: the text editing every field reads, whose
+/// keys the system keeps (`reserved`), so no command has them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EditItem {
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+}
+
+impl EditItem {
+    pub const ALL: [EditItem; 6] = [
+        Self::Undo,
+        Self::Redo,
+        Self::Cut,
+        Self::Copy,
+        Self::Paste,
+        Self::SelectAll,
+    ];
+
+    /// Its chord, one of `reserved`'s.
+    fn keys(self) -> &'static str {
+        match self {
+            Self::Undo => "cmd+z",
+            Self::Redo => "cmd+shift+z",
+            Self::Cut => "cmd+x",
+            Self::Copy => "cmd+c",
+            Self::Paste => "cmd+v",
+            Self::SelectAll => "cmd+a",
+        }
+    }
+}
+
+/// One chord as a menu shows it beside an item. It is spelled as the Mac
+/// column spells it: on Windows the keymap's Cmd is Ctrl, so a caller folds
+/// Cmd into Ctrl itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MenuKey {
+    pub mods: Mods,
+    pub key: Key,
+}
+
+/// `keys` as one press, if it is one.
+fn one_press(keys: &'static str) -> Option<MenuKey> {
+    let Ok(Spelled::Strokes(strokes)) = spell(keys) else {
+        return None;
+    };
+    let [Stroke::Key { mods, key }] = strokes.as_slice() else {
+        return None;
+    };
+    Some(MenuKey {
+        mods: *mods,
+        key: *key,
+    })
+}
+
 impl Keymap {
     pub fn bindings(&self) -> &[Binding] {
         &self.bindings
@@ -2780,6 +3012,44 @@ impl Keymap {
         self.bindings
             .iter()
             .filter(move |binding| binding.command == command)
+    }
+
+    /// The chord a menu shows for `command` in `layout`: the one its own
+    /// keys share. None where it has no key, more than one, a key that is
+    /// no single press (a sequence, a count, a line of the prompt, a typed
+    /// character), or a press with neither Cmd nor Ctrl held: AppKit would
+    /// take that from every text field, and a key it gives back carries no
+    /// text. Spellings are compared as written, so on Windows `cmd+t` and
+    /// `ctrl+t` count as two chords and show none.
+    pub fn menu_key(&self, command: Command, layout: Layout) -> Option<MenuKey> {
+        if !command.info().built {
+            return None;
+        }
+        let mut found: Option<MenuKey> = None;
+        for binding in self.of(command) {
+            for chord in binding.bound(layout).chords {
+                if chord.kind != Kind::Own {
+                    continue;
+                }
+                let key = one_press(chord.keys)?;
+                match found {
+                    Some(seen) if seen != key => return None,
+                    _ => found = Some(key),
+                }
+            }
+        }
+        found.filter(|key| key.mods.cmd || key.mods.ctrl)
+    }
+
+    /// The chord of an Edit item in `layout`, where the system keeps one.
+    /// It takes `&self` though it reads only `reserved`: the Edit keys are
+    /// the keymap's, and a later override of them would land here.
+    pub fn edit_key(&self, item: EditItem, layout: Layout) -> Option<MenuKey> {
+        let keys = item.keys();
+        reserved(layout)
+            .contains(&keys)
+            .then(|| one_press(keys))
+            .flatten()
     }
 
     /// The spellings that answer `command` in `scope`: its own keys, and
@@ -4030,7 +4300,7 @@ mod tests {
     #[test]
     fn every_spelling_reads() {
         for binding in BINDINGS {
-            for bound in [&binding.mac, &binding.omarchy] {
+            for bound in binding.every_bound() {
                 for chord in bound.chords {
                     assert!(spell(chord.keys).is_ok(), "{:?}", spell(chord.keys));
                 }
@@ -4104,7 +4374,7 @@ mod tests {
             assert!(!command.info().name.is_empty(), "{command:?}");
             for line in lines {
                 assert!(!line.scopes.is_empty(), "{command:?}");
-                for bound in [&line.mac, &line.omarchy] {
+                for bound in line.every_bound() {
                     // Keys, or what does it in their place, never both.
                     assert!(
                         bound.chords.is_empty() || bound.control.is_empty(),
@@ -4227,7 +4497,8 @@ mod tests {
         }
         // The Mac's layout names no Omarchy letters' modifier by mistake.
         for binding in BINDINGS {
-            for chord in binding.mac.chords {
+            let windows = binding.windows.iter().flat_map(|bound| bound.chords);
+            for chord in binding.mac.chords.iter().chain(windows) {
                 assert!(!chord.keys.contains("super"), "{}", chord.keys);
             }
         }
@@ -4385,7 +4656,28 @@ mod tests {
         assert_eq!(mac(Command::GoToConnectionWindow), "⌘1…9");
         assert_eq!(omarchy(Command::GoToConnectionWindow), "ctrl+shift+1..9");
         assert_eq!(omarchy(Command::EditCell), "i, enter");
-        assert_eq!(omarchy(Command::ReplaceCell), "cc, s");
+        assert_eq!(omarchy(Command::ReplaceCell), "cc");
+        // A table's views and the DDL view's own keys. Windows' Ctrl with a
+        // digit goes to a connection's window: its views' keys are Alt's.
+        let windows = |command| keymap.label(Layout::Windows, command);
+        for (command, chord, alt, letter) in [
+            (Command::ShowRows, "⌃⌘1", "Alt+1", "r"),
+            (Command::ShowStructure, "⌃⌘2", "Alt+2", "s"),
+            (Command::ShowDdl, "⌃⌘3", "Alt+3", "S"),
+        ] {
+            assert_eq!(mac(command), chord);
+            assert_eq!(windows(command), alt);
+            assert_eq!(omarchy(command), letter);
+        }
+        assert_eq!(windows(Command::GoToConnectionWindow), "Ctrl+1…9");
+        assert_eq!(mac(Command::CopyDdl), "⇧⌘C");
+        assert_eq!(windows(Command::CopyDdl), "Ctrl+Shift+C");
+        assert_eq!(omarchy(Command::CopyDdl), "y");
+        assert_eq!(mac(Command::OpenDdlInEditor), "⌥↩");
+        assert_eq!(omarchy(Command::OpenDdlInEditor), "e");
+        assert_eq!(omarchy(Command::OpenDdl), ":ddl");
+        assert_eq!(omarchy(Command::NextDdlSection), "]]");
+        assert_eq!(omarchy(Command::PreviousDdlSection), "[[");
         assert_eq!(omarchy(Command::PasteNewRows), "\"+p, ctrl+shift+v");
         assert_eq!(omarchy(Command::DuplicateConnection), "yy p");
         assert_eq!(omarchy(Command::DuplicateRow), "yy p");
@@ -4436,7 +4728,11 @@ mod tests {
         assert_eq!(omarchy(Scope::Grid, "d"), Waiting);
         assert_eq!(omarchy(Scope::Grid, "dd"), command(Command::DeleteRow));
         assert_eq!(omarchy(Scope::Grid, "i"), command(Command::EditCell));
-        assert_eq!(omarchy(Scope::Grid, "s"), command(Command::ReplaceCell));
+        // `s` is the Structure view's, from any view; `r` and `S` the
+        // rows' and the DDL's.
+        assert_eq!(omarchy(Scope::Grid, "s"), command(Command::ShowStructure));
+        assert_eq!(omarchy(Scope::Grid, "r"), command(Command::ShowRows));
+        assert_eq!(omarchy(Scope::Grid, "S"), command(Command::ShowDdl));
         assert_eq!(omarchy(Scope::Grid, "cc"), command(Command::ReplaceCell));
         assert_eq!(omarchy(Scope::Grid, "x"), command(Command::SetNull));
         assert_eq!(
@@ -4578,6 +4874,14 @@ mod tests {
         assert_eq!(
             ex(Scope::SqlEditor, "keys cheatsheet"),
             command(Command::KeysCheatsheet)
+        );
+        assert_eq!(
+            ex(Scope::Grid, "set calendar"),
+            command(Command::ShowCalendar)
+        );
+        assert_eq!(
+            ex(Scope::SqlEditor, "set nocalendar"),
+            command(Command::HideCalendar)
         );
         // Each in its own scope only, and `:w` never anything but a save.
         assert_eq!(ex(Scope::Grid, "rw"), Nothing);
@@ -4866,5 +5170,101 @@ mod tests {
         assert_eq!(digit(Layout::Omarchy, 2), "ctrl+shift+2");
         assert_eq!(digit(Layout::Omarchy, 10), "");
         assert_eq!(keymap.digit_label(Layout::Mac, Command::Settings, 2), "");
+    }
+
+    #[test]
+    fn a_menu_shows_a_command_s_one_chord() {
+        let keymap = Keymap::default();
+        let held = |cmd, shift| Mods {
+            cmd,
+            shift,
+            ..Mods::default()
+        };
+        // One line, one chord.
+        assert_eq!(
+            keymap.menu_key(Command::History, Layout::Mac),
+            Some(MenuKey {
+                mods: held(true, false),
+                key: Key::Y
+            })
+        );
+        // Two lines with the same chord are one chord.
+        assert_eq!(
+            keymap.menu_key(Command::Format, Layout::Mac),
+            Some(MenuKey {
+                mods: held(true, true),
+                key: Key::F
+            })
+        );
+        // Not built yet: Explain has a chord on the Mac and shows none.
+        assert!(!Command::Explain.info().built);
+        assert!(
+            keymap
+                .of(Command::Explain)
+                .any(|binding| !binding.mac.chords.is_empty())
+        );
+        assert_eq!(keymap.menu_key(Command::Explain, Layout::Mac), None);
+        // No key on the Mac.
+        assert_eq!(keymap.menu_key(Command::SwitchDatabase, Layout::Mac), None);
+        // A typed character, not a chord.
+        assert_eq!(keymap.menu_key(Command::Help, Layout::Mac), None);
+    }
+
+    #[test]
+    fn a_menu_key_holds_cmd_or_ctrl_and_is_one_press() {
+        let keymap = Keymap::default();
+        for layout in [Layout::Mac, Layout::Windows] {
+            for command in crate::app::RUNNABLE {
+                if let Some(key) = keymap.menu_key(command, layout) {
+                    assert!(key.mods.cmd || key.mods.ctrl, "{command:?}: {key:?}");
+                    // It is one of the command's own chords, spelled as one
+                    // press.
+                    let own = keymap
+                        .of(command)
+                        .flat_map(|binding| binding.bound(layout).chords.iter())
+                        .filter(|chord| chord.kind == Kind::Own)
+                        .any(|chord| {
+                            spell(chord.keys).is_ok_and(|spelled| {
+                                spelled
+                                    == Spelled::Strokes(vec![Stroke::Key {
+                                        mods: key.mods,
+                                        key: key.key,
+                                    }])
+                            })
+                        });
+                    assert!(own, "{command:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_edit_items_keys_are_the_ones_the_system_keeps() {
+        let keymap = Keymap::default();
+        let cmd = Mods {
+            cmd: true,
+            ..Mods::default()
+        };
+        assert_eq!(
+            keymap.edit_key(EditItem::Copy, Layout::Mac),
+            Some(MenuKey {
+                mods: cmd,
+                key: Key::C
+            })
+        );
+        assert_eq!(
+            keymap.edit_key(EditItem::Redo, Layout::Windows),
+            Some(MenuKey {
+                mods: Mods { shift: true, ..cmd },
+                key: Key::Z
+            })
+        );
+        for item in EditItem::ALL {
+            for layout in [Layout::Mac, Layout::Windows] {
+                assert!(keymap.edit_key(item, layout).is_some(), "{item:?}");
+            }
+            // Omarchy keeps none: Super is Hyprland's.
+            assert_eq!(keymap.edit_key(item, Layout::Omarchy), None);
+        }
     }
 }

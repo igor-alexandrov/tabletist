@@ -35,6 +35,49 @@ fn demo_flags_require_demo() {
     );
 }
 
+/// An update's helper relaunches the app with `--update-receipt` (or, after
+/// a rollback, `--update-error`) beside the arguments it was started with.
+/// Those flags are taken out before clap reads the rest; clap alone would
+/// refuse them.
+#[test]
+fn update_flags_are_taken_out_before_the_arguments_are_read() {
+    for flags in [
+        [
+            "--update-receipt",
+            "/missing/.tabletist-update-0000000000000000/handoff.json",
+        ],
+        [
+            "--update-error",
+            "The update could not start. The previous version has been restored.",
+        ],
+    ] {
+        let output = tabletist()
+            .args(flags)
+            .arg("--version")
+            .output()
+            .expect("run tabletist");
+        assert!(output.status.success(), "{flags:?}: {output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            format!("tabletist {}", env!("CARGO_PKG_VERSION"))
+        );
+    }
+}
+
+/// `--apply-update <job>` makes the process the helper, before anything
+/// else: with no job to read it fails and exits, and never opens a window.
+#[test]
+fn the_helper_flag_runs_the_helper_and_nothing_else() {
+    let output = tabletist()
+        .args([
+            "--apply-update",
+            "/missing/.tabletist-update-0000000000000000/handoff.json",
+        ])
+        .output()
+        .expect("run tabletist");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+}
+
 /// A release build on Windows is a GUI program (`src/main.rs`), and the
 /// relay is that same program: CI runs the relay's tests below on it too,
 /// and this says that they ran on what a person installs.

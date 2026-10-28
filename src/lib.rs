@@ -6,6 +6,7 @@ pub mod backend;
 pub mod clock;
 pub mod completion;
 pub mod connections;
+pub mod dates;
 pub mod desktop_theme;
 pub mod edit;
 pub mod endpoint;
@@ -20,8 +21,11 @@ pub mod labels;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod managed;
+pub mod menu;
 pub mod model;
 pub mod paths;
+#[cfg(test)]
+mod promo;
 pub mod recents;
 pub mod relay;
 pub mod review;
@@ -36,6 +40,7 @@ pub mod testing;
 pub mod theme;
 pub mod typography;
 pub mod ui;
+pub mod update;
 pub mod util;
 pub mod vim;
 pub mod zones;

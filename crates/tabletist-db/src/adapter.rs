@@ -2,8 +2,8 @@
 
 use crate::agent::{Catalog, ColumnName, Limits, Read, Sources};
 use crate::{
-    CancelHandle, ChangeSet, Lookup, LookupPage, ObjectInfo, ObjectRef, Result, RowPage, RowQuery,
-    ScriptMode, ScriptOutcome, StopFlag, Structure, WriteOutcome,
+    CancelHandle, ChangeSet, Ddl, Lookup, LookupPage, ObjectInfo, ObjectRef, Result, RowPage,
+    RowQuery, ScriptMode, ScriptOutcome, StopFlag, Structure, WriteOutcome,
 };
 
 /// An open session with one kind of database. [`crate::Connection`] holds
@@ -19,6 +19,8 @@ pub(crate) trait Adapter {
 
     async fn server_version(&self) -> Result<String>;
 
+    async fn session_zone(&self) -> Result<Option<String>>;
+
     async fn list_databases(&self) -> Result<Vec<String>>;
 
     async fn list_schemas(&self) -> Result<Vec<String>>;
@@ -26,6 +28,8 @@ pub(crate) trait Adapter {
     async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>>;
 
     async fn describe(&self, object: &ObjectRef) -> Result<Structure>;
+
+    async fn ddl(&self, object: &ObjectRef) -> Result<Ddl>;
 
     async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage>;
 

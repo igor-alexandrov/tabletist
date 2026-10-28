@@ -523,20 +523,6 @@ fn offset_of(text: &str) -> Option<jiff::tz::Offset> {
     jiff::tz::Offset::from_seconds(sign * seconds).ok()
 }
 
-/// An offset as [`offset_of`] reads it: the minutes and the seconds only
-/// where they are not nothing.
-fn written_offset(offset: jiff::tz::Offset) -> String {
-    let seconds = offset.seconds();
-    let sign = if seconds < 0 { '-' } else { '+' };
-    let seconds = seconds.unsigned_abs();
-    let (hours, minutes, seconds) = (seconds / 3_600, seconds / 60 % 60, seconds % 60);
-    match (minutes, seconds) {
-        (0, 0) => format!("{sign}{hours:02}"),
-        (_, 0) => format!("{sign}{hours:02}:{minutes:02}"),
-        _ => format!("{sign}{hours:02}:{minutes:02}:{seconds:02}"),
-    }
-}
-
 /// `at` written as a [`Stamp`] is, with `digits` of its fraction.
 fn written_stamp(at: jiff::civil::DateTime, separator: char, digits: usize) -> String {
     let mut out = format!(
@@ -575,7 +561,7 @@ pub fn in_zone(text: &str, zone: &jiff::tz::TimeZone) -> Option<String> {
     Some(format!(
         "{}{}",
         written_stamp(shown.datetime(), stamp.separator, stamp.digits),
-        written_offset(shown.offset())
+        crate::dates::written_offset(shown.offset())
     ))
 }
 
@@ -591,44 +577,6 @@ pub fn same_moment(a: &str, b: &str) -> bool {
         written.or_else(|| text.parse::<jiff::Timestamp>().ok())
     };
     matches!((moment(a), moment(b)), (Some(a), Some(b)) if a == b)
-}
-
-/// `text`, a date and a time typed with no offset, with the offset `zone`
-/// has at that time: `2026-01-12 04:14` in New York is sent as
-/// `2026-01-12 04:14-05`, so the server reads it in the zone the person
-/// sees and not in its session's. A date alone is its midnight. A time the
-/// zone skips or has twice (a change of the clocks) takes the offset from
-/// before the change. `None` for anything else: a text with an offset
-/// already, or no date and time.
-pub fn with_offset(text: &str, zone: &jiff::tz::TimeZone) -> Option<String> {
-    let typed = text.trim();
-    // One with an offset, or a `Z`, reads as a moment: it is sent as typed.
-    if typed.parse::<jiff::Timestamp>().is_ok() {
-        return None;
-    }
-    // Only a date of four digits for its year, as PostgreSQL reads one,
-    // and no zone's name in brackets, which it does not: anything else is
-    // the person's to send as typed.
-    let bytes = typed.as_bytes();
-    let plain = bytes.len() >= 10
-        && bytes[..4].iter().all(u8::is_ascii_digit)
-        && bytes[4] == b'-'
-        && !typed.contains('[');
-    if !plain {
-        return None;
-    }
-    let at: jiff::civil::DateTime = typed.parse().ok()?;
-    let offset = match zone.to_ambiguous_timestamp(at).offset() {
-        jiff::tz::AmbiguousOffset::Unambiguous { offset } => offset,
-        jiff::tz::AmbiguousOffset::Gap { before, .. }
-        | jiff::tz::AmbiguousOffset::Fold { before, .. } => before,
-    };
-    let typed = if typed.contains(':') {
-        typed.to_owned()
-    } else {
-        written_stamp(at, ' ', 0)
-    };
-    Some(format!("{typed}{}", written_offset(offset)))
 }
 
 /// `text` cut in the middle with "…" to fit `max` points as measured by
@@ -1252,50 +1200,6 @@ mod tests {
             "2026-01-12 09:14:03+00",
             "2026-01-12 09:14:03+00:00"
         ));
-    }
-
-    #[test]
-    fn a_date_and_time_typed_with_no_offset_gets_the_zones() {
-        let zone = new_york();
-        assert_eq!(
-            with_offset("2026-01-12 04:14:03", &zone).as_deref(),
-            Some("2026-01-12 04:14:03-05")
-        );
-        assert_eq!(
-            with_offset(" 2026-07-01 08:00 ", &zone).as_deref(),
-            Some("2026-07-01 08:00-04")
-        );
-        assert_eq!(
-            with_offset("2026-01-12T04:14:03.5", &zone).as_deref(),
-            Some("2026-01-12T04:14:03.5-05")
-        );
-        // A date alone is its midnight there.
-        assert_eq!(
-            with_offset("2026-01-12", &zone).as_deref(),
-            Some("2026-01-12 00:00:00-05")
-        );
-        // The hour the clocks skip, and the one they have twice, take the
-        // offset from before the change.
-        assert_eq!(
-            with_offset("2026-03-08 02:30:00", &zone).as_deref(),
-            Some("2026-03-08 02:30:00-05")
-        );
-        assert_eq!(
-            with_offset("2026-11-01 01:30:00", &zone).as_deref(),
-            Some("2026-11-01 01:30:00-04")
-        );
-        // Typed with an offset, or as no date: as typed.
-        for typed in [
-            "2026-01-12 04:14:03+02",
-            "2026-01-12T04:14:03Z",
-            "soon",
-            "2026-01-12T04:14[America/New_York]",
-            "-002026-01-12",
-            "+002026-01-12",
-            "04:14",
-        ] {
-            assert_eq!(with_offset(typed, &zone), None, "{typed}");
-        }
     }
 
     #[test]

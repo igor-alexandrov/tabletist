@@ -15,6 +15,9 @@ mod agents_tests;
 mod agent_settings_tests;
 #[cfg(test)]
 mod appearance_settings_tests;
+pub mod calendar;
+#[cfg(test)]
+mod calendar_tests;
 pub mod cell_editor;
 #[cfg(test)]
 mod comment_tests;
@@ -23,6 +26,14 @@ mod complete_tests;
 pub mod conflict_prompt;
 pub mod connect_dialog;
 pub mod data_view;
+pub mod date_line;
+#[cfg(test)]
+mod date_tests;
+pub mod ddl;
+#[cfg(test)]
+mod ddl_act_tests;
+#[cfg(test)]
+mod ddl_tests;
 #[cfg(test)]
 mod delete_many_tests;
 #[cfg(test)]
@@ -106,6 +117,8 @@ mod theme_settings_tests;
 pub mod toast;
 #[cfg(test)]
 mod typing_settings_tests;
+#[cfg(test)]
+mod update_settings_tests;
 pub mod value_tags;
 #[cfg(test)]
 mod vim_tests;
@@ -1264,7 +1277,7 @@ value_tags   = true
         ];
         let omarchy = [
             ("i, enter", "Edit cell"),
-            ("cc, s", "Edit cell from nothing"),
+            ("cc", "Edit cell from nothing"),
             ("x", "Set NULL"),
             ("u", "Undo one cell"),
             ("ctrl+c", "Cancel cell edit"),
@@ -1894,7 +1907,7 @@ value_tags   = true
             let lead = harness.painted_rect(lead).expect("the tab's lead");
             assert!(control.top() > lead.bottom(), "{control:?} {lead:?}");
             // And back up with it: the first row's menu.
-            for _ in 0..7 {
+            for _ in 0..8 {
                 harness.press(egui::Key::Tab, egui::Modifiers::SHIFT);
             }
             let tree = harness.settle();
@@ -2844,19 +2857,26 @@ value_tags   = true
             selection(&harness, tab),
             Some(crate::model::CellPos { row: 1, col: 1 })
         );
-        // `s` and `d` showed the Structure and the Data view. They are
-        // letters of the cell and the row now, and the views are clicked.
-        for key in [Key::S, Key::D] {
-            harness.press(key, Modifiers::NONE);
-            let view = harness
-                .app
-                .workspace(tab)
-                .unwrap()
-                .active_object_tab()
-                .unwrap()
-                .view;
-            assert_eq!(view, crate::model::ObjectView::Data, "{key:?}");
-        }
+        // `s`, `S` and `r` show the Structure, the DDL and the rows
+        // again, from any view; `d` begins the row's `dd`.
+        let view = |harness: &Harness| {
+            let workspace = harness.app.workspace(tab).unwrap();
+            workspace.active_object_tab().unwrap().view
+        };
+        type_key(&mut harness, Key::D, "d");
+        assert_eq!(view(&harness), crate::model::ObjectView::Data);
+        harness.press(Key::Escape, Modifiers::NONE);
+        type_key(&mut harness, Key::S, "s");
+        assert_eq!(view(&harness), crate::model::ObjectView::Structure);
+        harness.frame(vec![
+            crate::testing::key(Key::S, Modifiers::SHIFT),
+            egui::Event::Text("S".into()),
+        ]);
+        harness.frame(vec![crate::testing::release(Key::S, Modifiers::SHIFT)]);
+        harness.settle();
+        assert_eq!(view(&harness), crate::model::ObjectView::Ddl);
+        type_key(&mut harness, Key::R, "r");
+        assert_eq!(view(&harness), crate::model::ObjectView::Data);
     }
 
     #[test]
@@ -2905,15 +2925,34 @@ value_tags   = true
     }
 
     #[test]
-    fn the_terminal_picker_deletes_only_on_dd() {
+    fn the_terminal_picker_asks_on_dd_and_deletes_on_y() {
         let mut harness = Harness::new();
         harness.set_look(crate::theme::Look::omarchy());
         add_saved(&mut harness, "Alpha");
         harness.press(Key::J, Modifiers::NONE);
         harness.press(Key::D, Modifiers::NONE);
-        assert_eq!(harness.app.connections.connections.len(), 1, "one d waits");
+        assert!(!asks_to_delete(&harness), "one d waits");
         harness.press(Key::D, Modifiers::NONE);
+        assert!(asks_to_delete(&harness));
+        assert_eq!(harness.app.connections.connections.len(), 1, "dd only asks");
+        // `n` keeps it.
+        harness.press(Key::N, Modifiers::NONE);
+        assert!(!asks_to_delete(&harness));
+        assert_eq!(harness.app.connections.connections.len(), 1);
+        // And `y` deletes it.
+        harness.press(Key::D, Modifiers::NONE);
+        harness.press(Key::D, Modifiers::NONE);
+        harness.press(Key::Y, Modifiers::NONE);
+        assert!(!asks_to_delete(&harness));
         assert!(harness.app.connections.connections.is_empty());
+    }
+
+    /// Whether the picker asks whether to delete a connection.
+    fn asks_to_delete(harness: &Harness) -> bool {
+        matches!(
+            &harness.app.active_tab().content,
+            crate::model::ConnTabContent::Picker(picker) if picker.deleting.is_some()
+        )
     }
 
     #[test]
@@ -3197,28 +3236,326 @@ value_tags   = true
         assert_eq!(saved(&harness), 2);
         // A bare key press, as a test may send a letter, is read too.
         harness.press(Key::D, Modifiers::NONE);
-        assert_eq!(saved(&harness), 2, "one d waits");
+        assert!(!asks_to_delete(&harness), "one d waits");
         harness.press(Key::D, Modifiers::NONE);
+        assert!(asks_to_delete(&harness));
+        type_key(&mut harness, Key::Y, "y");
         assert_eq!(saved(&harness), 1);
     }
 
     #[test]
-    fn the_other_looks_delete_a_connection_with_backspace_alone() {
+    fn the_other_looks_ask_to_delete_a_connection_with_mod_backspace() {
         for look in desktop_looks() {
             let mut harness = picker_with_one(look);
-            harness.press(Key::Backspace, Modifiers::COMMAND);
-            assert_eq!(saved(&harness), 1, "{}: not with the chord", look.name);
+            harness.press(Key::Backspace, Modifiers::NONE);
+            assert!(
+                !asks_to_delete(&harness),
+                "{}: not with Backspace alone",
+                look.name
+            );
             harness.press(Key::D, Modifiers::COMMAND);
             assert_eq!(saved(&harness), 2, "{}: duplicated", look.name);
-            harness.press(Key::Backspace, Modifiers::NONE);
+            harness.press(Key::Backspace, Modifiers::COMMAND);
+            assert!(asks_to_delete(&harness), "{}", look.name);
+            assert_eq!(saved(&harness), 2, "{}: the chord only asks", look.name);
+            // While it asks, its answers are the only keys: Enter connects
+            // nothing.
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(on_picker(&harness), "{}", look.name);
+            // Esc keeps it.
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(!asks_to_delete(&harness), "{}", look.name);
+            assert_eq!(saved(&harness), 2, "{}: kept", look.name);
+            // Delete deletes it.
+            harness.press(Key::Backspace, Modifiers::COMMAND);
+            harness.click("Delete");
+            assert!(!asks_to_delete(&harness), "{}", look.name);
             assert_eq!(saved(&harness), 1, "{}", look.name);
             // The letters are Omarchy's.
-            for (key, text) in [(Key::D, "d"), (Key::D, "d"), (Key::N, "n")] {
+            for (key, text) in [(Key::D, "d"), (Key::D, "d"), (Key::Y, "y")] {
                 type_key(&mut harness, key, text);
             }
             assert_eq!(saved(&harness), 1, "{}", look.name);
+            assert!(!asks_to_delete(&harness), "{}", look.name);
             assert!(harness.app.dialog.is_none(), "{}", look.name);
         }
+    }
+
+    #[test]
+    fn a_rows_menu_and_the_connection_form_ask_before_deleting() {
+        for look in desktop_looks() {
+            // The row's menu.
+            let mut harness = picker_with_one(look);
+            harness.click("More actions for Bookshop");
+            harness.click("Delete");
+            assert!(asks_to_delete(&harness), "{}: the menu", look.name);
+            assert_eq!(saved(&harness), 1, "{}: the menu", look.name);
+            // The form's Delete closes the form, and the picker asks.
+            let mut harness = picker_with_one(look);
+            let conn = harness.app.connections.connections[0].id.clone();
+            harness.app.apply(Action::EditConnection(conn));
+            harness.click("Delete Bookshop");
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert!(asks_to_delete(&harness), "{}: the form", look.name);
+            assert_eq!(saved(&harness), 1, "{}: the form", look.name);
+        }
+    }
+
+    #[test]
+    fn a_question_about_a_connection_gone_meanwhile_keeps_no_keys() {
+        for look in desktop_looks() {
+            let mut harness = picker_with_one(look);
+            let bookshop = harness.app.connections.connections[0].id.clone();
+            let other = add_saved(&mut harness, "Other");
+            harness.press(Key::Backspace, Modifiers::COMMAND);
+            assert!(asks_to_delete(&harness), "{}", look.name);
+            // Gone some other way, as connections.toml read again may take it.
+            harness.app.connections.remove(&bookshop);
+            harness.settle();
+            // The list's own keys work again: the arrows, and its delete.
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            harness.press(Key::Backspace, Modifiers::COMMAND);
+            let crate::model::ConnTabContent::Picker(picker) = &harness.app.active_tab().content
+            else {
+                unreachable!()
+            };
+            assert_eq!(picker.deleting.as_ref(), Some(&other), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_terminal_question_names_the_connection_as_it_was_typed() {
+        let mut harness = picker_with_one(Look::omarchy());
+        type_key(&mut harness, Key::D, "d");
+        type_key(&mut harness, Key::D, "d");
+        assert!(asks_to_delete(&harness));
+        assert!(harness.has("delete Bookshop? this can't be undone."));
+    }
+
+    #[test]
+    fn a_long_question_grows_the_footer_and_covers_no_row() {
+        let name = "Bookshop reporting replica in the second region, read by the nightly jobs";
+        for look in Look::ALL {
+            let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
+            harness.set_look(look);
+            let conn = add_saved(&mut harness, name);
+            harness.app.apply(Action::AskDeleteConnection(conn));
+            let tree = harness.settle();
+            let row = crate::testing::bounds(&tree, name, egui::accesskit::Role::Button)
+                .unwrap_or_else(|| panic!("{}: no row", look.name));
+            let (_, question) = harness
+                .text_rects
+                .iter()
+                .find(|(text, _)| text.contains(name) && text.contains("undone"))
+                .unwrap_or_else(|| panic!("{}: no question", look.name));
+            assert!(question.height() > 20.0, "{}: wraps", look.name);
+            assert!(
+                question.top() >= row.bottom(),
+                "{}: over its row",
+                look.name
+            );
+            assert!(question.bottom() <= 480.0, "{}: off the window", look.name);
+        }
+    }
+
+    #[test]
+    fn the_question_names_each_secret_that_goes_with_the_connection() {
+        use crate::connections::PasswordMode::{Keyring, None as NoSecret};
+        use tabletist_db::SshAuth;
+        let key = SshAuth::KeyFile {
+            path: "/home/me/.ssh/id_ed25519".into(),
+        };
+        for (password, ssh, said) in [
+            (NoSecret, None, "Delete Bookshop? This can't be undone."),
+            (
+                Keyring,
+                None,
+                "Delete Bookshop and its saved password? This can't be undone.",
+            ),
+            (
+                NoSecret,
+                Some(key),
+                "Delete Bookshop and its saved key's passphrase? This can't be undone.",
+            ),
+            (
+                Keyring,
+                Some(SshAuth::Password),
+                "Delete Bookshop and its saved password and SSH password? This can't be undone.",
+            ),
+        ] {
+            let mut harness = picker_with_one(Look::macos());
+            let mut saved = harness.app.connections.connections[0].clone();
+            saved.password = password;
+            saved.ssh_secret = if ssh.is_some() { Keyring } else { NoSecret };
+            saved.spec.ssh = ssh.map(|auth| tabletist_db::SshSpec {
+                host: "bastion".into(),
+                port: None,
+                user: "ops".into(),
+                auth,
+            });
+            let conn = saved.id.clone();
+            harness.app.connections.upsert(saved);
+            harness.app.apply(Action::AskDeleteConnection(conn));
+            assert!(harness.has(said), "{said}");
+        }
+    }
+
+    #[test]
+    fn keeping_a_connection_gives_its_form_back_as_it_was() {
+        for look in desktop_looks() {
+            let mut harness = picker_with_one(look);
+            let conn = harness.app.connections.connections[0].id.clone();
+            harness.app.apply(Action::EditConnection(conn));
+            harness.settle();
+            let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog else {
+                panic!("{}: no form", look.name);
+            };
+            form.name = "Edited".into();
+            harness.click("Delete Edited");
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert!(asks_to_delete(&harness), "{}", look.name);
+            harness.press(Key::Escape, Modifiers::NONE);
+            let Some(crate::model::Dialog::Connection(form)) = &harness.app.dialog else {
+                panic!("{}: the form did not come back", look.name);
+            };
+            assert_eq!(form.name, "Edited", "{}: as it was", look.name);
+            assert_eq!(saved(&harness), 1, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_held_form_waits_for_nothing_and_comes_back_idle() {
+        use crate::model::{Dialog, TestState};
+        let mut harness = picker_with_one(Look::macos());
+        let conn = harness.app.connections.connections[0].id.clone();
+        harness.app.apply(Action::EditConnection(conn.clone()));
+        harness.app.apply(Action::TestConnection);
+        let Some(Dialog::Connection(form)) = &harness.app.dialog else {
+            panic!("no form");
+        };
+        let TestState::Running(request) = form.test else {
+            panic!("{:?}", form.test);
+        };
+        harness.app.apply(Action::AskDeleteConnection(conn));
+        // The test's answer comes while the form is held: nobody takes it.
+        harness
+            .app
+            .apply(Action::Backend(crate::backend::Event::Tested {
+                request,
+                result: Ok(()),
+            }));
+        let tab = harness.app.active_tab_id();
+        harness
+            .app
+            .apply(Action::AnswerDeleteConnection { tab, delete: false });
+        let Some(Dialog::Connection(form)) = &harness.app.dialog else {
+            panic!("the form did not come back");
+        };
+        assert_eq!(form.test, TestState::Idle, "no Test left running");
+        assert!(form.pick_request.is_none());
+    }
+
+    #[test]
+    fn a_held_form_outlasts_whatever_else_the_picker_is_asked() {
+        use crate::model::Dialog;
+        for look in desktop_looks() {
+            let mut harness = picker_with_one(look);
+            let conn = harness.app.connections.connections[0].id.clone();
+            harness.app.apply(Action::EditConnection(conn.clone()));
+            harness.settle();
+            let Some(Dialog::Connection(form)) = &mut harness.app.dialog else {
+                panic!("{}: no form", look.name);
+            };
+            form.name = "Edited".into();
+            harness.click("Delete Edited");
+            // Asked again (a row's menu), and New connection (its button):
+            // neither takes the question, nor the form it holds.
+            harness.app.apply(Action::AskDeleteConnection(conn.clone()));
+            harness.app.apply(Action::NewConnection);
+            harness.app.apply(Action::EditConnection(conn));
+            assert!(
+                harness.app.dialog.is_none(),
+                "{}: no form over it",
+                look.name
+            );
+            assert!(asks_to_delete(&harness), "{}", look.name);
+            harness.press(Key::Escape, Modifiers::NONE);
+            let Some(Dialog::Connection(form)) = &harness.app.dialog else {
+                panic!("{}: the form did not come back", look.name);
+            };
+            assert_eq!(form.name, "Edited", "{}: as it was", look.name);
+            assert!(
+                form.ssh_hosts_request.is_some(),
+                "{}: asks for the SSH hosts again",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn nothing_connects_while_the_picker_asks() {
+        let mut harness = picker_with_one(Look::macos());
+        let tab = harness.app.active_tab_id();
+        let conn = harness.app.connections.connections[0].id.clone();
+        harness.app.apply(Action::AskDeleteConnection(conn.clone()));
+        // A row's menu, a double-click: both connect by this action.
+        harness.app.apply(Action::Connect { tab, conn });
+        assert!(on_picker(&harness));
+        assert!(asks_to_delete(&harness));
+    }
+
+    #[test]
+    fn asking_shows_a_row_a_search_or_a_folded_group_hid() {
+        let mut harness = Harness::new();
+        let tab = harness.app.active_tab_id();
+        let shop = add_saved(&mut harness, "Shop");
+        add_saved(&mut harness, "Shop");
+        let alpha = add_saved(&mut harness, "Alpha");
+        // A search that hides the row is cleared.
+        harness.app.picker_mut(tab).unwrap().search = "alp".into();
+        harness.app.apply(Action::AskDeleteConnection(shop.clone()));
+        let shown = harness.app.picker_mut(tab).unwrap();
+        assert_eq!(shown.search, "");
+        assert_eq!(shown.deleting.as_ref(), Some(&shop));
+        harness
+            .app
+            .apply(Action::AnswerDeleteConnection { tab, delete: false });
+        // One that shows it stays.
+        harness.app.picker_mut(tab).unwrap().search = "alp".into();
+        harness
+            .app
+            .apply(Action::AskDeleteConnection(alpha.clone()));
+        assert_eq!(harness.app.picker_mut(tab).unwrap().search, "alp");
+        harness
+            .app
+            .apply(Action::AnswerDeleteConnection { tab, delete: false });
+        // Its folded group opens, and only its own.
+        harness.app.picker_mut(tab).unwrap().search.clear();
+        harness.app.picker_mut(tab).unwrap().folded = vec!["Shop".into(), "Local".into()];
+        harness.app.apply(Action::AskDeleteConnection(shop.clone()));
+        assert_eq!(
+            harness.app.picker_mut(tab).unwrap().folded,
+            vec!["Local".to_owned()]
+        );
+    }
+
+    #[test]
+    fn deleting_a_connection_from_its_window_asks_in_the_picker() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let conn = harness.app.workspace(tab).unwrap().conn_id.clone();
+        harness.app.apply(Action::AskDeleteConnection(conn.clone()));
+        harness.settle();
+        assert!(on_picker(&harness));
+        assert!(asks_to_delete(&harness));
+        let crate::model::ConnTabContent::Picker(picker) = &harness.app.active_tab().content else {
+            unreachable!()
+        };
+        assert_eq!(
+            picker.selected.as_ref(),
+            Some(&conn),
+            "on the row it asks about"
+        );
     }
 
     #[test]
@@ -3237,8 +3574,9 @@ value_tags   = true
                 type_key(&mut harness, Key::D, "d");
                 type_key(&mut harness, Key::D, "d");
             } else {
-                harness.press(Key::Backspace, Modifiers::NONE);
+                harness.press(Key::Backspace, Modifiers::COMMAND);
             }
+            assert!(!asks_to_delete(&harness), "{}: from a button", look.name);
             assert_eq!(saved(&harness), 1, "{}: from a button", look.name);
             // In the search field it is the text's.
             let mut harness = picker_with_one(look);
@@ -3247,11 +3585,12 @@ value_tags   = true
             harness.settle();
             assert!(harness.ctx.text_edit_focused(), "{}", look.name);
             harness.frame(vec![egui::Event::Text("boo".into())]);
-            harness.press(Key::Backspace, Modifiers::NONE);
+            harness.press(Key::Backspace, Modifiers::COMMAND);
             if look.terminal {
                 harness.frame(vec![egui::Event::Text("dd".into())]);
             }
             harness.settle();
+            assert!(!asks_to_delete(&harness), "{}: from the search", look.name);
             assert_eq!(saved(&harness), 1, "{}: from the search", look.name);
         }
     }
@@ -3278,11 +3617,11 @@ value_tags   = true
             );
         }
         let mac = painted(Look::macos());
-        for hint in ["↩ connect", "⌘E edit", "⌘D duplicate", "⌫ delete"] {
+        for hint in ["↩ connect", "⌘E edit", "⌘D duplicate", "⌘⌫ delete"] {
             assert!(mac.iter().any(|text| text == hint), "{hint}: {mac:?}");
         }
         let standard = painted(Look::standard());
-        for hint in ["Enter connect", "Ctrl+E edit", "Backspace delete"] {
+        for hint in ["Enter connect", "Ctrl+E edit", "Ctrl+Backspace delete"] {
             assert!(
                 standard.iter().any(|text| text == hint),
                 "{hint}: {standard:?}"
@@ -4743,7 +5082,7 @@ value_tags   = true
     }
 
     /// Types `text` into whatever has the keyboard.
-    fn type_text(harness: &mut Harness, text: &str) {
+    pub(super) fn type_text(harness: &mut Harness, text: &str) {
         harness.frame(vec![egui::Event::Text(text.into())]);
         harness.settle();
     }
@@ -6541,7 +6880,7 @@ value_tags   = true
         harness.click("Row 1");
         assert!(harness.has("user1@example.com"));
         harness.click("Structure");
-        harness.click("Data");
+        harness.click("Rows");
         assert!(harness.has("user1@example.com"));
     }
 
@@ -6600,7 +6939,7 @@ value_tags   = true
     }
 
     /// A key that `keys::letters` reads as the character it types.
-    pub(super) fn type_key(harness: &mut Harness, key: Key, text: &str) {
+    pub(crate) fn type_key(harness: &mut Harness, key: Key, text: &str) {
         harness.settle();
         harness.frame(vec![
             crate::testing::key(key, Modifiers::NONE),
@@ -6792,7 +7131,7 @@ value_tags   = true
         focus_grid(&mut harness, tab);
         harness.app.apply(crate::model::Action::ToggleRowPanel(tab));
         assert!(!harness.app.workspace(tab).unwrap().row_panel);
-        focus(&mut harness, "Structure", egui::accesskit::Role::Button);
+        focus(&mut harness, "Structure", egui::accesskit::Role::Tab);
         assert_eq!(focused_name(&harness.settle()), "Structure");
         harness.press(Key::Enter, Modifiers::NONE);
         let workspace = harness.app.workspace(tab).unwrap();
@@ -8843,6 +9182,8 @@ value_tags   = true
         assert!(harness.has("Edit connection"));
         harness.click("Delete Shop");
         assert!(harness.app.dialog.is_none());
+        assert!(harness.app.connections.get(&id).is_some(), "it asks first");
+        harness.click("Delete");
         assert!(harness.app.connections.get(&id).is_none());
         new_connection(&mut harness);
         let tree = harness.settle();
@@ -12115,17 +12456,25 @@ value_tags   = true
             harness.set_look(look);
             harness.click("orders");
             harness.answer_rows(crate::testing::page(3, true));
-            let tab_to = |harness: &mut Harness, name: &str| {
+            // The stop named `name`, of `role` where one is given: the
+            // switch's Rows tab comes before the rows.
+            let tab_to = |harness: &mut Harness,
+                          name: &str,
+                          role: Option<egui::accesskit::Role>| {
                 for _ in 0..60 {
                     harness.press(Key::Tab, Modifiers::NONE);
-                    if focused_name(&harness.settle()) == name {
+                    let tree = harness.settle();
+                    let focused = tree.nodes.iter().find(|(id, _)| *id == tree.focus);
+                    let of_role = role
+                        .is_none_or(|role| focused.is_some_and(|(_, node)| node.role() == role));
+                    if focused_name(&tree) == name && of_role {
                         return;
                     }
                 }
                 panic!("{name} is no Tab stop in {}", look.name);
             };
             // Onto the tree: its cursor is on the open table, and moves.
-            tab_to(&mut harness, "Objects");
+            tab_to(&mut harness, "Objects", None);
             let workspace = harness.app.workspace(tab).unwrap();
             assert_eq!(workspace.pane, Pane::Tree, "{}", look.name);
             let before = workspace.tree.cursor.clone();
@@ -12135,7 +12484,7 @@ value_tags   = true
             assert_ne!(workspace.tree.cursor, before, "{}", look.name);
             assert_eq!(focused_name(&harness.settle()), "Objects", "{}", look.name);
             // Onto the grid: its first cell, and the arrows are its own.
-            tab_to(&mut harness, "Rows");
+            tab_to(&mut harness, "Rows", Some(egui::accesskit::Role::Group));
             let selection = |harness: &Harness| {
                 let workspace = harness.app.workspace(tab).unwrap();
                 workspace.active_object_tab().unwrap().selection
@@ -12176,13 +12525,17 @@ value_tags   = true
             let workspace = harness.app.workspace(tab).unwrap();
             workspace.active_object_tab().unwrap().view
         };
-        focus(&mut harness, "Data", egui::accesskit::Role::Button);
+        focus(&mut harness, "Rows", egui::accesskit::Role::Tab);
         harness.press(Key::ArrowRight, Modifiers::NONE);
         assert_eq!(view(&harness), crate::model::ObjectView::Structure);
         assert_eq!(focused_name(&harness.settle()), "Structure");
+        harness.press(Key::ArrowRight, Modifiers::NONE);
+        assert_eq!(view(&harness), crate::model::ObjectView::Ddl);
+        assert_eq!(focused_name(&harness.settle()), "DDL");
+        harness.press(Key::ArrowLeft, Modifiers::NONE);
         harness.press(Key::ArrowLeft, Modifiers::NONE);
         assert_eq!(view(&harness), crate::model::ObjectView::Data);
-        assert_eq!(focused_name(&harness.settle()), "Data");
+        assert_eq!(focused_name(&harness.settle()), "Rows");
         // Tab passes the choice not made.
         let mut stops = std::collections::HashSet::new();
         for _ in 0..60 {
@@ -12190,7 +12543,7 @@ value_tags   = true
             stops.insert(focused_name(&harness.settle()));
         }
         assert!(
-            stops.contains("Data") && !stops.contains("Structure"),
+            stops.contains("Rows") && !stops.contains("Structure") && !stops.contains("DDL"),
             "{stops:?}"
         );
     }
@@ -12219,9 +12572,10 @@ value_tags   = true
             };
             assert_eq!(
                 forward,
+                // The switch's Rows tab, then the rows.
                 [
                     "orders tab",
-                    "Data",
+                    "Rows",
                     "Rows",
                     "Connections",
                     field,
@@ -13649,6 +14003,9 @@ value_tags   = true
         use egui::accesskit::Role;
         for look in desktop_looks() {
             let (mut harness, tab, id) = stamped_in(look);
+            // The database's now, where no calendar is under the field:
+            // a calendar's Now is the clock's (`date_tests`).
+            harness.app.settings.date_picker = false;
             // In the grid, and in the row panel's field.
             for panel in [false, true] {
                 harness.app.workspace_mut(tab).unwrap().row_panel = panel;
@@ -15528,15 +15885,18 @@ value_tags   = true
     }
 
     #[test]
-    fn s_replaces_the_cell_as_cc_does_and_shows_no_structure() {
+    fn cc_replaces_the_cell_and_s_shows_the_structure() {
         let (mut harness, tab, id) = normal_mode((1, 1));
+        type_key(&mut harness, Key::C, "c");
+        type_key(&mut harness, Key::C, "c");
+        assert_eq!(editor_text(&harness, tab, id).as_deref(), Some(""));
+        harness.press(Key::Escape, Modifiers::NONE);
         type_key(&mut harness, Key::S, "s");
         let workspace = harness.app.workspace(tab).unwrap();
         assert_eq!(
             workspace.object_tab(id).unwrap().view,
-            crate::model::ObjectView::Data
+            crate::model::ObjectView::Structure
         );
-        assert_eq!(editor_text(&harness, tab, id).as_deref(), Some(""));
     }
 
     #[test]
@@ -16466,14 +16826,14 @@ value_tags   = true
             changes.rows[0].set[0].new,
             tabletist_db::NewValue::Text("bob@example.comx".into())
         );
-        // `s` alone is the cell's letter: it saves nothing, and shows no
-        // other view.
+        // `s` alone saves nothing: it shows the Structure view.
         harness.answer_written(Ok(written_row("bob@example.comx")));
         type_key(&mut harness, Key::S, "s");
+        assert_eq!(writes(&harness), 2);
         let workspace = harness.app.workspace(tab).unwrap();
         assert_eq!(
             workspace.object_tab(id).unwrap().view,
-            crate::model::ObjectView::Data
+            crate::model::ObjectView::Structure
         );
         assert_eq!(writes(&harness), 2);
     }
@@ -16618,12 +16978,12 @@ value_tags   = true
         let (mut harness, tab, id) = normal_mode((1, 1));
         let palette = harness.app.palette;
         // Enter is the inspector's key, and `i` edits a cell that can be
-        // edited. The cell is copied with `v y`, and the views have no
-        // letters any more.
+        // edited. The cell is copied with `v y`. The views' letters are
+        // the header's to name, beside their words.
         assert!(painted(&harness, "enter inspect"), "{:?}", harness.painted);
         assert!(painted(&harness, "i edit"));
         assert!(painted(&harness, "v y copy"));
-        for gone in ["space inspect", "i inspector", "y copy", "s structure"] {
+        for gone in ["space inspect", "i inspector", "y copy"] {
             assert!(!painted(&harness, gone), "{gone}");
         }
         // Not on the row's key, which cannot.
@@ -16820,10 +17180,7 @@ value_tags   = true
         // Until the selection moves.
         type_key(&mut harness, Key::J, "j");
         assert!(!painted(&harness, why));
-        // `s` and `cc` ask as `i` does.
-        type_key(&mut harness, Key::S, "s");
-        assert!(painted(&harness, why));
-        type_key(&mut harness, Key::K, "k");
+        // `cc` asks as `i` does.
         type_key(&mut harness, Key::C, "c");
         type_key(&mut harness, Key::C, "c");
         assert!(painted(&harness, why));
@@ -23501,7 +23858,8 @@ value_tags   = true
 
     #[test]
     fn up_and_down_step_the_fields_and_escape_gives_the_keys_to_the_grid() {
-        for look in desktop_looks() {
+        // The terminal look's arrows too, beside its `j` and `k`.
+        for look in Look::ALL {
             let (mut harness, tab, id) = form_row(look, 1);
             focus_field(&mut harness, tab, id, 1);
             harness.press(Key::ArrowDown, Modifiers::NONE);
@@ -23529,7 +23887,11 @@ value_tags   = true
             assert_eq!(selected(&harness, tab, id), Some((1, 1)), "{}", look.name);
             harness.press(Key::ArrowDown, Modifiers::NONE);
             assert_eq!(selected(&harness, tab, id), Some((2, 1)), "{}", look.name);
-            // And Enter edits the cell in the grid.
+            // And Enter edits the cell in the grid. The terminal look's
+            // Enter opens the panel there instead.
+            if look.terminal {
+                continue;
+            }
             harness.press(Key::Enter, Modifiers::NONE);
             assert_eq!(
                 form_editor(&harness, tab, id),

@@ -3,12 +3,14 @@
 -- engine. The three files hold the same rows. Keep them deterministic.
 -- Loaded into a database of its own, `bookshop`, which the tests make.
 
-DROP VIEW IF EXISTS customer_tally, customer_sheet;
-DROP TABLE IF EXISTS stock_moves;
+DROP MATERIALIZED VIEW IF EXISTS publisher_totals;
+DROP VIEW IF EXISTS customer_tally, customer_sheet, in_stock;
+DROP TABLE IF EXISTS stock_moves, price_changes, basket_lines, shelf_bookings;
 DROP FUNCTION IF EXISTS customer_count();
 DROP FUNCTION IF EXISTS book_reach(books);
 DROP VIEW IF EXISTS recent_orders, customer_names;
 DROP TABLE IF EXISTS order_items, orders, customers, book_covers, books, authors, publishers;
+DROP FUNCTION IF EXISTS book_covers_check();
 
 CREATE TABLE publishers (
     id integer PRIMARY KEY,
@@ -187,3 +189,51 @@ CREATE TABLE stock_moves_2026 PARTITION OF stock_moves
 INSERT INTO stock_moves (book_id, moved_on, quantity) VALUES
     (1, '2026-02-03', 4),
     (2, '2026-03-14', -1);
+
+-- What the DDL view is tested on: a table with indexes, triggers (one
+-- disabled) and comments, and a view, as on the other engines; and here
+-- alone, what only PostgreSQL's text is built for. The triggers are made
+-- in the order their names are not: the text lists them by name.
+CREATE INDEX book_covers_book_id ON book_covers (book_id);
+CREATE UNIQUE INDEX book_covers_book_id_kind ON book_covers (book_id, kind);
+CREATE FUNCTION book_covers_check() RETURNS trigger LANGUAGE plpgsql
+    AS $$BEGIN RETURN NEW; END$$;
+CREATE TRIGGER book_covers_check BEFORE INSERT OR UPDATE OF image ON book_covers
+    FOR EACH ROW EXECUTE FUNCTION book_covers_check();
+CREATE TRIGGER book_covers_audit AFTER DELETE ON book_covers
+    FOR EACH ROW EXECUTE FUNCTION book_covers_check();
+ALTER TABLE book_covers DISABLE TRIGGER book_covers_audit;
+COMMENT ON TABLE book_covers IS 'Cover images, one for each side of a book';
+COMMENT ON COLUMN book_covers.kind IS 'front or back, as the shop''s scanner names it';
+CREATE VIEW in_stock AS
+    SELECT b.id AS book_id, b.title, p.name AS publisher
+    FROM books b JOIN publishers p ON p.id = b.publisher_id
+    WHERE b.in_print;
+COMMENT ON VIEW in_stock IS 'Books in print, with their publisher''s name';
+-- An identity and a generated column.
+CREATE TABLE price_changes (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    book_id integer NOT NULL REFERENCES books (id),
+    old_price numeric(8, 2) NOT NULL,
+    new_price numeric(8, 2) NOT NULL,
+    change numeric(8, 2) GENERATED ALWAYS AS (new_price - old_price) STORED,
+    changed_on date NOT NULL DEFAULT CURRENT_DATE
+);
+-- A table the server does not log, with a check of its own.
+CREATE UNLOGGED TABLE basket_lines (
+    customer_id integer NOT NULL REFERENCES customers (id),
+    book_id integer NOT NULL REFERENCES books (id),
+    quantity integer NOT NULL CHECK (quantity > 0)
+);
+-- An exclusion constraint: one booking of a shelf at a time.
+CREATE TABLE shelf_bookings (
+    shelf text COLLATE "C" NOT NULL,
+    during daterange NOT NULL,
+    EXCLUDE USING gist (during WITH &&)
+);
+-- A materialized view, with an index.
+CREATE MATERIALIZED VIEW publisher_totals AS
+    SELECT p.id AS publisher_id, count(b.id) AS books
+    FROM publishers p LEFT JOIN books b ON b.publisher_id = p.id
+    GROUP BY p.id;
+CREATE UNIQUE INDEX publisher_totals_publisher_id ON publisher_totals (publisher_id);

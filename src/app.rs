@@ -35,12 +35,15 @@ mod keyboard;
 #[cfg(test)]
 mod keyboard_tests;
 mod labels;
+mod menu;
 mod quick_open;
 #[cfg(test)]
 mod startup_tests;
+mod updates;
 
 pub use commands::{About, RUNNABLE, Runnable, TabName};
 pub use keyboard::{CHEAT_SHEET, cheat_sheet, keys_list};
+pub use menu::ItemState;
 pub use quick_open::{
     Found, GROUP_SHOWN, QuickCommand, QuickHeading, QuickItem, QuickList, QuickRow, StartRow,
     setting_path,
@@ -100,6 +103,15 @@ pub struct App {
     /// The computer's time zone as the app found it at its start: what the
     /// System zone of the settings is.
     pub system_zone: jiff::tz::TimeZone,
+    /// The order the person writes a day's numbers in (`15/01/2026`), by
+    /// the region of the system's locale, as the app found it at its start.
+    pub date_order: crate::dates::Order,
+    /// The day the system's locale starts its weeks on, as the app found
+    /// it at its start: the first column of the calendar.
+    pub week_start: jiff::civil::Weekday,
+    /// A time the clock is stopped at, for a test: `None` reads the
+    /// system's clock. What `today` and `now` typed into a date are.
+    pub stopped_clock: Option<jiff::Timestamp>,
     /// The time zone database, once the backend has read it
     /// (`Command::LoadZones`): the zone menu's names, and each zone.
     pub zones: Option<std::sync::Arc<crate::zones::Zones>>,
@@ -154,6 +166,9 @@ pub struct App {
     /// start screen's search: built when first searched, and again once
     /// the catalog changes.
     indexes: quick_open::Indexes,
+    /// Whether the script last asked about has a statement: Run All's
+    /// check, which the menu bar makes after every frame.
+    scripts: commands::Scripts,
     pub dialog: Option<Dialog>,
     /// Keyring reads in flight, and what each is for.
     pending_secrets: HashMap<RequestId, SecretPurpose>,
@@ -171,7 +186,8 @@ pub struct App {
     pub titlebar: TitleBar,
     /// The OS theme seen last frame, to notice light/dark switches.
     system_theme: Option<egui::Theme>,
-    /// Whether the desktop's themes are followed (not in tests or the demo).
+    /// Whether the desktop's themes are followed (not in tests or a demo's
+    /// screenshot).
     pub(crate) follow_desktop: bool,
     /// The settings named another theme since the last `logic`.
     theme_changed: bool,
@@ -191,12 +207,12 @@ pub struct App {
     /// once.
     pin_told: Option<String>,
     /// What fontconfig gave the terminal look for the font the settings
-    /// name, or CoreText macOS's data: nothing in tests, the demo and
-    /// Windows.
+    /// name, or CoreText macOS's data: nothing in tests, a demo's screenshot
+    /// and Windows.
     pub desktop_font: crate::typography::desktop_font::Read,
     /// The installed monospace families macOS's data font menu lists after
     /// the bundled faces: read each time Settings opens, none in tests and
-    /// the demo.
+    /// a demo's screenshot.
     pub installed_fonts: Vec<String>,
     /// The number of the last font read asked for, and of the newest one
     /// taken, as for the theme's.
@@ -225,6 +241,10 @@ pub struct App {
     /// How long after the last keystroke a foreign key picker's search is
     /// sent. `key_picker::DELAY`; nothing in the tests.
     pub lookup_delay: std::time::Duration,
+    /// A text field's caret blinks, as egui's does. Not in the tests: on
+    /// the harness's clock it would show in one frame and not the next,
+    /// with nothing else changed.
+    pub caret_blinks: bool,
     /// The lookups in flight, and the pickers they were sent for. The
     /// matches' read of one whose picker is gone is cancelled
     /// (`send_due_lookups`): an editor goes in many ways.
@@ -248,6 +268,19 @@ pub struct App {
     /// which nothing in the person's files lifts. It is applied where the
     /// app tells the backend what to do, never written into those files.
     pub managed: crate::managed::Managed,
+    /// What the checks for updates found, and where the one under way
+    /// stands.
+    pub updates: crate::update::Updates,
+    /// Whether checks run on their own ([`App::watch_updates`]): not in
+    /// tests, nor in the demo.
+    pub updates_scheduled: bool,
+    /// Where a check asks: GitHub, or a test's server.
+    pub updates_url: String,
+    /// A version the status line is to tell of, by the next frame.
+    pub update_announcement: Option<String>,
+    /// A page the next frame opens in the browser: a release's, where its
+    /// notes could not be shown in a terminal.
+    pub url_to_open: Option<String>,
     next_id: u64,
 }
 
@@ -314,6 +347,10 @@ impl App {
         let (table_lists, table_lists_unread) = load_table_lists(&dirs.table_lists_file());
         let session = crate::session::Session::load(&dirs.session_file());
         let recents = crate::recents::Recents::load(&dirs.recents_file());
+        let updates = crate::update::Updates {
+            seen: crate::update::Seen::load(&dirs.updates_file()),
+            ..Default::default()
+        };
         let writes_session = loaded_connections.problem.is_none();
         // An installed data font is read once the window exists (`attach`).
         let look = crate::theme::Look::for_platform().with_text(&settings, false);
@@ -322,6 +359,9 @@ impl App {
             settings,
             settings_file,
             system_zone: system_zone(),
+            date_order: date_order(),
+            week_start: week_start(),
+            stopped_clock: None,
             named_zone,
             zones: None,
             locale: Locale::default(),
@@ -344,6 +384,7 @@ impl App {
             writes_session,
             recents,
             indexes: Default::default(),
+            scripts: Default::default(),
             dialog: None,
             pending_secrets: HashMap::new(),
             pending_stores: HashMap::new(),
@@ -377,6 +418,7 @@ impl App {
             window_asks: Vec::new(),
             closed_editors: Vec::new(),
             lookup_delay: crate::key_picker::DELAY,
+            caret_blinks: true,
             lookups: Vec::new(),
             closing: false,
             serves_agents: false,
@@ -384,6 +426,11 @@ impl App {
             agents_shown,
             agents_held: Vec::new(),
             managed,
+            updates,
+            updates_scheduled: false,
+            updates_url: crate::update::check::LATEST.to_owned(),
+            update_announcement: None,
+            url_to_open: None,
             next_id: 1,
         };
         app.refresh_keymap();
@@ -701,6 +748,28 @@ impl App {
             .resolve(&self.system_zone, self.zones.as_deref())
     }
 
+    /// The calendar under the editor of a date, where the settings show
+    /// one: its days read at [`App::date_clock`], its weeks the locale's.
+    pub fn calendar(&self) -> Option<crate::ui::cell_editor::Calendar> {
+        self.settings
+            .date_picker
+            .then(|| crate::ui::cell_editor::Calendar {
+                clock: self.date_clock(),
+                week: self.week_start,
+            })
+    }
+
+    /// What a date typed into an editor is read at: the time it is, the
+    /// zone of the settings (the system's until a named one is read), and
+    /// the order the person writes a day's numbers in.
+    pub fn date_clock(&self) -> crate::dates::Clock {
+        crate::dates::Clock {
+            now: self.stopped_clock.unwrap_or_else(jiff::Timestamp::now),
+            zone: self.zone().unwrap_or_else(|| self.system_zone.clone()),
+            order: self.date_order,
+        }
+    }
+
     /// Gives every workspace the zone of the settings, and has the row
     /// panels' texts made again in it.
     fn refresh_zone(&mut self) {
@@ -767,6 +836,13 @@ impl App {
 
     pub fn active_tab_id(&self) -> ConnTabId {
         self.active_tab().id
+    }
+
+    /// Whether Settings may open now: with no dialog open, or over the
+    /// shortcuts dialog, which offers it and gives way to it. Every way
+    /// in (its key, quick open, a menu item, a pane asked for) holds to it.
+    fn settings_may_open(&self) -> bool {
+        matches!(self.dialog, None | Some(Dialog::Help))
     }
 
     fn tab_index(&self, id: ConnTabId) -> Option<usize> {
@@ -903,6 +979,12 @@ impl App {
                 self.active = (self.active as isize + step).rem_euclid(len) as usize;
             }
             Action::Connect { tab, conn } => {
+                // While the picker asks whether to delete a connection,
+                // nothing connects from it: a row's menu or a double-click
+                // would take the question away, and the form it holds.
+                if self.picker_asks() == Some(tab) {
+                    return;
+                }
                 if let Some(saved) = self.connections.get(&conn).cloned() {
                     self.connect_tab(tab, saved, Secrets::default());
                 }
@@ -945,8 +1027,73 @@ impl App {
                 }
             }
             Action::SelectConnection { tab, conn } => {
+                // A click on another row leaves the question, and keeps the
+                // connection.
+                let asked = self
+                    .picker_mut(tab)
+                    .and_then(|picker| picker.deleting.clone());
+                if asked.is_some() && asked != conn {
+                    self.apply(Action::AnswerDeleteConnection { tab, delete: false });
+                }
                 if let Some(picker) = self.picker_mut(tab) {
                     picker.selected = conn;
+                }
+            }
+            Action::AskDeleteConnection(conn) => {
+                // One question at a time: asked again, the first stands, with
+                // the form it holds.
+                if self.connections.get(&conn).is_none() || self.picker_asks().is_some() {
+                    return;
+                }
+                // Asked from the connection's form: the form goes, and is
+                // kept as it was for a Keep.
+                let form = match self.dialog.take() {
+                    Some(Dialog::Connection(mut form)) if form.editing.as_ref() == Some(&conn) => {
+                        form.set_aside();
+                        Some(form)
+                    }
+                    other => {
+                        self.dialog = other;
+                        None
+                    }
+                };
+                self.apply(Action::ShowConnections);
+                let tab = self.active_tab_id();
+                // The row it asks about shows: a search that hides it is
+                // cleared, and its group unfolded.
+                let search = self
+                    .picker_mut(tab)
+                    .map(|picker| picker.search.clone())
+                    .unwrap_or_default();
+                let shown = crate::ui::picker::visible(self, &search).contains(&conn);
+                let search = if shown { search } else { String::new() };
+                let found = self.connections.search(&search);
+                let group = crate::ui::picker::groups(&found)
+                    .into_iter()
+                    .find(|group| group.connections.iter().any(|saved| saved.id == conn))
+                    .map(|group| group.title);
+                if let Some(picker) = self.picker_mut(tab) {
+                    picker.search = search;
+                    picker.folded.retain(|title| Some(title) != group.as_ref());
+                    picker.selected = Some(conn.clone());
+                    picker.deleting = Some(conn);
+                    picker.form = form;
+                }
+            }
+            Action::AnswerDeleteConnection { tab, delete } => {
+                let Some(picker) = self.picker_mut(tab) else {
+                    return;
+                };
+                let (asked, form) = (picker.deleting.take(), picker.form.take());
+                match (asked, delete) {
+                    (Some(conn), true) => self.apply(Action::DeleteConnection(conn)),
+                    // Kept: the form it was asked from opens again as it was.
+                    (Some(_), false) if self.dialog.is_none() => {
+                        self.dialog = form.map(Dialog::Connection);
+                        // What it waited for was dropped while it was held.
+                        self.list_ssh_hosts();
+                    }
+                    _ => {}
                 }
             }
             Action::MovePickerSelection { tab, step } => {
@@ -1301,6 +1448,24 @@ impl App {
                 if changes {
                     self.close_editor(tab, object_tab, true);
                 }
+                // Leaving the DDL view stops its read: the view reads it
+                // again when it is shown next. A definition it already
+                // had stays.
+                let left = self.object_tab_mut(tab, object_tab).and_then(|object| {
+                    let leaves = object.view == ObjectView::Ddl && view != ObjectView::Ddl;
+                    leaves.then(|| {
+                        object.ddl.started = None;
+                        object.ddl.asked = false;
+                        object.ddl_visual = None;
+                        object.ddl.pending.take()
+                    })?
+                });
+                if let Some(session) = self.workspace(tab).map(|workspace| workspace.session) {
+                    self.cancel(session, left);
+                }
+                let read = self
+                    .object_tab_mut(tab, object_tab)
+                    .is_some_and(|object| view == ObjectView::Ddl && object.ddl.needs_load());
                 let describe = self.object_tab_mut(tab, object_tab).is_some_and(|object| {
                     object.view = view;
                     // A visual selection is of the rows on screen: another
@@ -1316,6 +1481,9 @@ impl App {
                 });
                 if describe {
                     self.describe(tab, object_tab);
+                }
+                if read {
+                    self.read_ddl(tab, object_tab);
                 }
                 self.forget_refusal(tab);
             }
@@ -1586,10 +1754,11 @@ impl App {
                 }
             }
             Action::EditorTyped { tab, id } => {
-                let problem = self.editor_problem(tab, id);
+                let (problem, moment) = self.editor_problem(tab, id);
                 let delay = self.lookup_delay;
                 if let Some(editor) = self.editor_mut(tab, id) {
                     editor.problem = problem;
+                    editor.moment = moment;
                     editor.touched = true;
                     // The row panel's field wraps, and Enter commits it: a
                     // line break can only be pasted into it. Its text is
@@ -1960,6 +2129,7 @@ impl App {
                     });
                 match active {
                     Some((id, described)) => {
+                        self.reload_ddl(tab, id);
                         self.reset_count(tab, id);
                         // Over an error box a refresh is a retry: what the
                         // error replaced is not what comes back if it is
@@ -2294,9 +2464,8 @@ impl App {
                 });
             }
             Action::ShowSettings => {
-                // The shortcuts dialog offers it, and gives way to it. Asked
-                // for while it is open, it stays as it is.
-                if matches!(self.dialog, None | Some(Dialog::Help)) {
+                // Asked for while it is open, it stays as it is.
+                if self.settings_may_open() {
                     self.dialog = Some(Dialog::Settings(Box::default()));
                     self.list_fonts();
                 }
@@ -2304,7 +2473,7 @@ impl App {
             Action::ShowAgentSettings => {
                 // From the Agents tab: there is nothing of agents to show
                 // where they cannot reach the app.
-                if crate::endpoint::AVAILABLE && matches!(self.dialog, None | Some(Dialog::Help)) {
+                if crate::endpoint::AVAILABLE && self.settings_may_open() {
                     self.dialog = Some(Dialog::Settings(Box::new(crate::model::SettingsDialog {
                         pane: crate::model::SettingsPane::Agents,
                         ..Default::default()
@@ -2316,8 +2485,7 @@ impl App {
             Action::ShowSettingsPane(pane) => {
                 // From the window, where Settings is not open (History's
                 // Open Settings › Editor): it opens on the pane.
-                if matches!(self.dialog, None | Some(Dialog::Help))
-                    && crate::model::SettingsPane::listed().contains(&pane)
+                if self.settings_may_open() && crate::model::SettingsPane::listed().contains(&pane)
                 {
                     self.dialog = Some(Dialog::Settings(Box::new(crate::model::SettingsDialog {
                         pane,
@@ -2350,7 +2518,7 @@ impl App {
                 if !crate::model::SettingsPane::listed().contains(&pane) {
                     return;
                 }
-                if matches!(self.dialog, None | Some(Dialog::Help)) {
+                if self.settings_may_open() {
                     self.dialog = Some(Dialog::Settings(Box::default()));
                     self.list_fonts();
                 }
@@ -2375,6 +2543,19 @@ impl App {
                     dialog.reveal = false;
                 }
             }
+            Action::ShowUpdates => {
+                self.apply(Action::ShowSettingsPane(
+                    crate::model::SettingsPane::Updates,
+                ));
+                if matches!(&self.dialog, Some(Dialog::Settings(dialog)) if dialog.pane == crate::model::SettingsPane::Updates)
+                {
+                    self.apply(Action::CheckForUpdates);
+                }
+            }
+            Action::CheckForUpdates
+            | Action::CancelUpdateCheck
+            | Action::SkipUpdate
+            | Action::ShowReleaseNotes => self.update_action(action),
             Action::ChooseAgentSetup(agent) => {
                 if let Some(Dialog::Settings(dialog)) = &mut self.dialog {
                     dialog.agent = agent;
@@ -2522,17 +2703,25 @@ impl App {
                 let Some((tab, id)) = self.active_object().filter(|(t, _)| *t == tab) else {
                     return;
                 };
+                // From the Structure or the DDL view: show the data, with
+                // the bar, leaving the view as a switch of view does (the
+                // DDL's read stops, its lines' selection ends).
+                let from_structure = self
+                    .object_tab_mut(tab, id)
+                    .is_some_and(|object| object.view != ObjectView::Data);
+                if from_structure {
+                    self.apply(Action::SetView {
+                        tab,
+                        object_tab: id,
+                        view: ObjectView::Data,
+                    });
+                }
                 if let Some(object) = self.object_tab_mut(tab, id) {
                     let first = object
                         .page()
                         .and_then(|page| page.columns.first())
                         .map(|column| column.name.clone())
                         .unwrap_or_default();
-                    // From the Structure view: show the data, with the bar.
-                    let from_structure = object.view != ObjectView::Data;
-                    object.view = ObjectView::Data;
-                    // A chooser that was open in that view was the view's.
-                    object.label_chooser = None;
                     let bar = &mut object.filter;
                     bar.open = !bar.open || from_structure;
                     bar.focus = bar.open;
@@ -2621,6 +2810,57 @@ impl App {
                 }
                 self.describe(tab, object_tab);
             }
+            Action::RetryDdl { tab, object_tab } => {
+                if let Some(object) = self.object_tab_mut(tab, object_tab) {
+                    object.ddl.value = None;
+                }
+                self.read_ddl(tab, object_tab);
+            }
+            Action::MoveDdlCursor { tab, id, by } => {
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    let last = object.ddl_lines().saturating_sub(1);
+                    object.ddl_cursor = object.ddl_cursor.saturating_add_signed(by).min(last);
+                }
+            }
+            Action::DdlCursorTo { tab, id, line } => {
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.ddl_cursor = line.min(object.ddl_lines().saturating_sub(1));
+                }
+            }
+            Action::DdlSection { tab, id, forward } => {
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    let starts: Vec<usize> = object.ddl_shown().map_or(Vec::new(), |ddl| {
+                        ddl.laid_out()
+                            .1
+                            .iter()
+                            .map(|(_, lines)| lines.start)
+                            .collect()
+                    });
+                    let cursor = object.ddl_cursor;
+                    let to = match forward {
+                        true => starts.into_iter().find(|start| *start > cursor),
+                        false => starts.into_iter().rev().find(|start| *start < cursor),
+                    };
+                    if let Some(to) = to {
+                        object.ddl_cursor = to;
+                    }
+                }
+            }
+            Action::ToggleDdlVisual { tab, id } => {
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.ddl_visual = match object.ddl_visual {
+                        Some(_) => None,
+                        None => object.ddl_shown().map(|_| object.ddl_cursor),
+                    };
+                }
+            }
+            Action::LeaveDdlVisual { tab, id } => {
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.ddl_visual = None;
+                }
+            }
+            Action::OpenDdlInEditor { tab, id } => self.open_ddl_in_editor(tab, id),
+            Action::OpenDdl(tab) => self.open_ddl(tab),
             Action::SetDriver(driver) => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
                     // A port left at the old driver's default follows the driver.
@@ -2716,6 +2956,10 @@ impl App {
                 self.reconnect(tab);
             }
             Action::Backend(event) => self.apply_event(event),
+            // Not over a question about deleting a connection: a form opened
+            // there would take the form the question holds.
+            Action::NewConnection | Action::EditConnection(_)
+                if self.picker_asks() == Some(self.active_tab_id()) => {}
             Action::NewConnection => {
                 self.dialog = Some(Dialog::Connection(Box::new(ConnectionForm {
                     production_read_only: self.settings.production_read_only,
@@ -3733,6 +3977,7 @@ impl App {
                             .is_some_and(|workspace| std::mem::take(&mut workspace.woken));
                         if woken {
                             self.ask_server_version(tab);
+                            self.ask_session_zone(tab);
                         } else {
                             self.after_connect(tab);
                         }
@@ -4119,6 +4364,32 @@ impl App {
                 // A picker that waited for these columns learns them.
                 self.picker_columns(tab);
             }
+            Event::Ddl {
+                session,
+                request,
+                result,
+            } => {
+                let Some(tab) = self.tab_for_session(session) else {
+                    return;
+                };
+                let waiting = self.workspace_mut(tab).and_then(|workspace| {
+                    workspace
+                        .object_tabs_mut()
+                        .find(|object| object.ddl.pending == Some(request))
+                });
+                if let Some(object) = waiting {
+                    let read = result.is_ok();
+                    object.ddl.finish(request, result);
+                    if read {
+                        object.ddl_read = Some(std::time::Instant::now());
+                    }
+                    // A text read again may be shorter: the cursor stays on
+                    // a line of it. What was selected goes with any answer,
+                    // a failed one too.
+                    object.ddl_cursor = object.ddl_cursor.min(object.ddl_lines().saturating_sub(1));
+                    object.ddl_visual = None;
+                }
+            }
             Event::SecretLoaded { request, result } => {
                 match self.pending_secrets.remove(&request) {
                     Some(SecretPurpose::Connect {
@@ -4392,12 +4663,24 @@ impl App {
                     workspace.server_version.finish(request, result);
                 }
             }
+            Event::SessionZone {
+                session,
+                request,
+                result,
+            } => {
+                if let Some(tab) = self.tab_for_session(session)
+                    && let Some(workspace) = self.workspace_mut(tab)
+                {
+                    workspace.session_zone.finish(request, result);
+                }
+            }
             Event::Written {
                 session,
                 request,
                 result,
             } => self.written(session, request, result),
             Event::History(event) => self.history_event(event),
+            Event::Updates(event) => self.updates_event(event),
             Event::SqlRan {
                 session,
                 request,
@@ -4486,6 +4769,23 @@ impl App {
             }),
             _ => None,
         }
+    }
+
+    /// The picker's tab, while it asks whether to delete a connection that
+    /// is still saved. Nothing may take that question away meanwhile, nor
+    /// the connection's form it holds.
+    fn picker_asks(&self) -> Option<ConnTabId> {
+        self.tabs.iter().find_map(|open| match &open.content {
+            ConnTabContent::Picker(picker)
+                if picker
+                    .deleting
+                    .as_ref()
+                    .is_some_and(|asked| self.connections.get(asked).is_some()) =>
+            {
+                Some(open.id)
+            }
+            ConnTabContent::Picker(_) | ConnTabContent::Workspace(_) => None,
+        })
     }
 
     /// Asks the backend for ~/.ssh/config's Host aliases for the open
@@ -5493,6 +5793,27 @@ impl App {
         }
     }
 
+    /// The zone a MySQL session moves its `TIMESTAMP` values to and from:
+    /// asked for once a session is up, where it is not known. The other
+    /// engines keep no such moment.
+    fn ask_session_zone(&mut self, tab: ConnTabId) {
+        let Some(workspace) = self.workspace(tab) else {
+            return;
+        };
+        let asks = match workspace.driver {
+            Driver::MySql => workspace.session_zone.needs_load(),
+            Driver::Postgres | Driver::Sqlite => false,
+        };
+        if asks {
+            let session = workspace.session;
+            let request = RequestId(self.next_id());
+            if let Some(workspace) = self.workspace_mut(tab) {
+                workspace.session_zone.start(request);
+            }
+            self.backend.send(Command::SessionZone { session, request });
+        }
+    }
+
     /// After a (re)connect: load the tree, restart everything that waited on
     /// the old session, and open anything queued for this connection.
     pub fn after_connect(&mut self, tab: ConnTabId) {
@@ -5512,6 +5833,7 @@ impl App {
             }
         }
         self.ask_server_version(tab);
+        self.ask_session_zone(tab);
         self.refresh_tree(tab);
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
@@ -5527,6 +5849,22 @@ impl App {
                 let asked = object.count.asked;
                 let _ = object.reset_count();
                 object.count.asked = asked;
+            }
+        }
+        // The definition the tab in front shows in its DDL view is read
+        // on the new session; one that was on its way, or was lost, on a
+        // tab behind is forgotten, for its view to read when shown. A
+        // reopened tab reads it with its rows.
+        let mut ddl = Vec::new();
+        for object in workspace.object_tabs_mut() {
+            let is_active = Some(object.id) == active;
+            if object.reopened {
+                continue;
+            }
+            if is_active && object.view == ObjectView::Ddl {
+                ddl.push(object.id);
+            } else if object.ddl.is_loading() || lost(&object.ddl) || object.ddl.asked {
+                object.ddl = Fetch::default();
             }
         }
         let stale: Vec<(TabId, bool, bool, bool)> = workspace
@@ -5577,6 +5915,9 @@ impl App {
                 self.count_rows(tab, id);
             }
         }
+        for id in ddl {
+            self.read_ddl(tab, id);
+        }
         if let Some((object, kind)) = pending {
             self.open_object(tab, object, kind, true);
         }
@@ -5609,6 +5950,12 @@ impl App {
                 )
             })
             .collect();
+        // A definition asked for meanwhile, whatever the tab holds.
+        let ddl: Vec<TabId> = workspace
+            .object_tabs()
+            .filter(|object| object.ddl.asked && !object.reopened)
+            .map(|object| object.id)
+            .collect();
         for (id, rows, structure) in waited {
             if rows {
                 self.fetch_rows(tab, id);
@@ -5617,7 +5964,41 @@ impl App {
                 self.describe(tab, id);
             }
         }
+        for id in ddl {
+            self.read_ddl(tab, id);
+        }
     }
+}
+
+/// The order the system's locale writes a day's numbers in
+/// ([`crate::dates::Order::of_locale`]). Day first in a test, whatever the
+/// machine's.
+fn date_order() -> crate::dates::Order {
+    if cfg!(test) {
+        return crate::dates::Order::DayMonth;
+    }
+    let variable = |name: &str| std::env::var(name).ok();
+    crate::dates::Order::of_locale(
+        variable("LC_ALL").as_deref(),
+        variable("LC_TIME").as_deref(),
+        fastframe_i18n::system_languages(),
+    )
+}
+
+/// The day the system's locale starts its weeks on
+/// ([`crate::dates::first_weekday`]). Monday in a test, whatever the
+/// machine's.
+fn week_start() -> jiff::civil::Weekday {
+    if cfg!(test) {
+        return jiff::civil::Weekday::Monday;
+    }
+    let variable = |name: &str| std::env::var(name).ok();
+    let region = crate::dates::locale_region(
+        variable("LC_ALL").as_deref(),
+        variable("LC_TIME").as_deref(),
+        fastframe_i18n::system_languages(),
+    );
+    crate::dates::first_weekday(region.as_deref())
 }
 
 /// The computer's time zone, or UTC where it cannot be found. Tests have
@@ -6919,6 +7300,14 @@ impl App {
         // brings it.
         if reopened {
             self.describe(tab, id);
+            // And the definition, where it was reopened in the DDL view.
+            let ddl = self
+                .workspace(tab)
+                .and_then(|workspace| workspace.object_tab(id))
+                .is_some_and(|object| object.view == ObjectView::Ddl);
+            if ddl {
+                self.read_ddl(tab, id);
+            }
         }
         self.fetch_page(tab, id, size);
     }
@@ -7123,6 +7512,110 @@ impl App {
         });
     }
 
+    /// Asks for the definition the DDL view of the tab `id` shows,
+    /// replacing a read still on its way.
+    pub fn read_ddl(&mut self, tab: ConnTabId, id: TabId) {
+        let reads = self.wake_to_read(tab);
+        let request = RequestId(self.next_id());
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        let session = workspace.session;
+        let Some(object) = workspace.object_tab_mut(id) else {
+            return;
+        };
+        if !reads {
+            object.ddl.asked = true;
+            return;
+        }
+        let superseded = object.ddl.pending;
+        object.ddl.start(request);
+        let target = object.object.clone();
+        self.cancel(session, superseded);
+        self.backend.send(Command::ReadDdl {
+            session,
+            request,
+            object: target,
+        });
+    }
+
+    /// Opens the DDL view's text of the tab `id`, as it shows, in a new
+    /// SQL editor. Nothing is run: the editor's mode is a new tab's
+    /// (Settings › Editor), read-only on production and on a connection
+    /// that cannot write whatever that says.
+    fn open_ddl_in_editor(&mut self, tab: ConnTabId, id: TabId) {
+        let Some(text) = self
+            .workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .and_then(|object| object.ddl_shown())
+            .map(tabletist_db::Ddl::text)
+        else {
+            return;
+        };
+        let Some(sql_id) = self.new_sql_tab(tab) else {
+            return;
+        };
+        if let Some(sql) = self
+            .workspace_mut(tab)
+            .and_then(|workspace| workspace.sql_tab_mut(sql_id))
+        {
+            sql.text = text;
+        }
+    }
+
+    /// The terminal's `:ddl`: the DDL view of the table or view under the
+    /// tree's cursor where the tree has the keys, opened (and kept) if it
+    /// is not, else of the table's tab in front. With neither (a SQL
+    /// editor in front, no tab), nothing: the terminal's line says what a
+    /// table's prompt refused only over a table.
+    fn open_ddl(&mut self, tab: ConnTabId) {
+        let Some(workspace) = self.workspace(tab) else {
+            return;
+        };
+        let under = match (&workspace.pane, &workspace.tree.cursor) {
+            (Pane::Tree, Some(TreeNode::Object(object, kind))) => Some((object.clone(), *kind)),
+            _ => None,
+        };
+        if let Some((object, kind)) = under {
+            self.open_object(tab, object, kind, true);
+        }
+        let front = self
+            .workspace(tab)
+            .and_then(|workspace| workspace.active_object_tab())
+            .map(|object| object.id);
+        if let Some(object_tab) = front {
+            self.apply(Action::SetView {
+                tab,
+                object_tab,
+                view: ObjectView::Ddl,
+            });
+        }
+    }
+
+    /// Reload's part for the DDL view of the tab `id`: the definition is
+    /// read again where the view shows, and forgotten where it does not,
+    /// for the view to read when it is shown next. One under an error
+    /// goes, as a retry's does.
+    fn reload_ddl(&mut self, tab: ConnTabId, id: TabId) {
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        let session = workspace.session;
+        let Some(object) = workspace.object_tab_mut(id) else {
+            return;
+        };
+        if object.view == ObjectView::Ddl {
+            if object.ddl.shown_error().is_some() {
+                object.ddl.value = None;
+            }
+            self.read_ddl(tab, id);
+        } else {
+            let pending = std::mem::take(&mut object.ddl).pending;
+            object.ddl_read = None;
+            self.cancel(session, pending);
+        }
+    }
+
     /// Text for the clipboard: the selected cell, or its whole row as TSV.
     /// What the grid shows: a pending cell gives its new value, as the row
     /// panel's copy does.
@@ -7148,8 +7641,18 @@ impl App {
         })
     }
 
-    /// Called once the window exists. `follow_desktop` is false in demo mode
-    /// and tests, which must not scan the user's themes or Omarchy.
+    /// The palette and the look, applied to egui's style, with the caret
+    /// as [`Self::caret_blinks`] says.
+    pub fn apply_style(&self, ctx: &egui::Context) {
+        theme::apply(ctx, &self.palette, &self.look);
+        if !self.caret_blinks {
+            ctx.all_styles_mut(|style| style.visuals.text_cursor.blink = false);
+        }
+    }
+
+    /// Called once the window exists. `follow_desktop` is false in tests and
+    /// for a demo's screenshot, which must not scan the user's themes or
+    /// Omarchy: what they draw is the same on every desktop.
     pub fn attach(&mut self, ctx: &egui::Context, follow_desktop: bool) {
         self.follow_desktop = follow_desktop;
         // The font size keys are the keymap's: they change the setting,
@@ -7173,13 +7676,13 @@ impl App {
                 &fastframe_theme::Waker::new(move || repaint.request_repaint()),
             );
             self.read_desktop_theme();
-            // Not in tests or the demo, which must not watch the user's
-            // directories any more than they scan them.
+            // Not in tests or a demo's screenshot, which must not watch the
+            // user's directories any more than they scan them.
             self.watch_settings();
         }
         self.system_theme = ctx.system_theme();
         self.palette = self.resolve_palette();
-        theme::apply(ctx, &self.palette, &self.look);
+        self.apply_style(ctx);
         // In tests and the demo too: the zones are a database, not the
         // person's files.
         self.backend.send(Command::LoadZones);
@@ -7213,7 +7716,7 @@ impl App {
     /// Whether the font the settings name is read from the system: the
     /// terminal look's, and on macOS an installed one for the data (no
     /// bundled face's name), where the desktop's fonts are read (not in
-    /// tests or the demo).
+    /// tests or a demo's screenshot).
     fn reads_font(&self) -> bool {
         let installed = self.look.faces.typeface == crate::theme::Typeface::Plex
             && crate::theme::DataFace::of(self.settings.font.as_deref()).is_err();
@@ -7251,7 +7754,7 @@ impl App {
 
     /// Asks the backend for the installed monospace families the data
     /// font's menu lists, where macOS draws data in a face of its own and
-    /// the desktop's fonts are read (not in tests or the demo).
+    /// the desktop's fonts are read (not in tests or a demo's screenshot).
     fn list_fonts(&mut self) {
         if self.follow_desktop && self.look.faces.typeface == crate::theme::Typeface::Plex {
             self.backend.send(Command::ListFonts);
@@ -7326,7 +7829,7 @@ impl App {
             return Some(PinState::Drawn(pinned));
         }
         // A file waits for the themes folder, a name or a path for the
-        // backend: in tests and the demo they are never read.
+        // backend: in tests and a demo's screenshot they are never read.
         let read = match theme::PinFrom::of(pin) {
             theme::PinFrom::File(_) => !self.themes.loading(),
             theme::PinFrom::Name(_) | theme::PinFrom::Path(_) => {
@@ -7376,7 +7879,7 @@ impl App {
             let palette = self.resolve_palette();
             if palette != self.palette {
                 self.palette = palette;
-                theme::apply(ctx, &palette, &self.look);
+                self.apply_style(ctx);
             }
         }
         self.tell_missing_pin(ctx);
@@ -7393,7 +7896,7 @@ impl App {
             }
         }
         if std::mem::take(&mut self.restyle) {
-            theme::apply(ctx, &self.palette, &self.look);
+            self.apply_style(ctx);
         }
         let zoom = self.zoom_factor();
         if self.zoom != Some(zoom) {
@@ -7423,6 +7926,10 @@ impl App {
         if let Some(wait) = self.close_idle(std::time::Instant::now()) {
             ctx.request_repaint_after(wait);
         }
+        if let Some(wait) = self.tick_updates() {
+            ctx.request_repaint_after(wait);
+        }
+        self.say_updates(ctx);
     }
 
     /// Closes the session of each connection left unused for longer than
@@ -7453,8 +7960,10 @@ impl App {
                 None => {
                     workspace.status = SessionStatus::Idle;
                     // The version it was asked for, where it had not
-                    // answered, is asked of the next session.
+                    // answered, is asked of the next session, and so is
+                    // its zone.
                     workspace.server_version.pending = None;
+                    workspace.session_zone.pending = None;
                     due.push(workspace.session);
                 }
             }
@@ -8218,6 +8727,26 @@ mod tests {
         assert!(!app.settings_file.live);
     }
 
+    /// The app's caret blinks. The harness's stays, through each restyle:
+    /// on its clock a blink would change a frame nothing else changed.
+    #[test]
+    fn the_caret_blinks_but_not_in_the_harness() {
+        let (app, _dir) = app();
+        assert!(app.caret_blinks);
+        let ctx = egui::Context::default();
+        app.apply_style(&ctx);
+        assert!(ctx.global_style().visuals.text_cursor.blink);
+
+        let blinks = |harness: &Harness| harness.ctx.global_style().visuals.text_cursor.blink;
+        let mut harness = Harness::new();
+        assert!(!blinks(&harness));
+        harness.app.restyle = true;
+        harness.app.logic(&harness.ctx.clone());
+        assert!(!blinks(&harness));
+        harness.set_look(crate::theme::Look::macos());
+        assert!(!blinks(&harness));
+    }
+
     #[test]
     fn a_new_theme_name_is_resolved_at_the_next_logic_pass() {
         let mut harness = Harness::new();
@@ -8507,7 +9036,7 @@ mod tests {
             .app
             .change_settings(|settings| settings.page_size = 500);
         assert_eq!(fonts_asked(&mut harness), vec![]);
-        // Not in tests and the demo.
+        // Not in tests and a demo's screenshot.
         harness.app.follow_desktop = false;
         font(&mut harness, Some("Iosevka"));
         assert_eq!(fonts_asked(&mut harness), vec![]);
@@ -8554,8 +9083,8 @@ mod tests {
             .app
             .apply(Action::Backend(Event::Fonts(vec!["Menlo".into()])));
         assert_eq!(harness.app.installed_fonts, ["Menlo"]);
-        // Not in tests and the demo, nor in the looks that draw no data
-        // in a face of their own.
+        // Not in tests and a demo's screenshot, nor in the looks that draw
+        // no data in a face of their own.
         for (look, follow) in [
             (crate::theme::Look::macos(), false),
             (crate::theme::Look::omarchy(), true),
@@ -11268,7 +11797,7 @@ masked = ["orders.email"]
 
     #[test]
     fn a_start_that_does_not_follow_the_desktop_does_not_watch_the_users_directories() {
-        // The harness attaches as the demo does.
+        // The harness attaches as a demo's screenshot does.
         let harness = crate::testing::Harness::new();
         assert!(
             !harness
@@ -18975,8 +19504,10 @@ masked = ["orders.email"]
             type_into(&mut harness, tab, id, at(row, 4), "DEFAULT");
             let edits = &object(&harness, tab, id).edits;
             assert!(!edits.cells.contains_key(&(row, 4)));
-            // The time of the save goes out in the row's INSERT.
-            type_into(&mut harness, tab, id, at(row, 4), "now");
+            // The time of the save goes out in the row's INSERT. `now`
+            // alone is the time by the clock, as the line under the editor
+            // says: the database's is `now()`.
+            type_into(&mut harness, tab, id, at(row, 4), "now()");
             type_into(&mut harness, tab, id, at(row, 1), "9100000000000000004");
             let before = harness.app.backend.sent.len();
             harness.app.apply(Action::WriteEdits { tab, id });
@@ -21163,6 +21694,8 @@ masked = ["orders.email"]
                         top: false,
                         touched: true,
                         problem: None,
+                        moment: None,
+                        was: None,
                         picker: None,
                         select: false,
                     });

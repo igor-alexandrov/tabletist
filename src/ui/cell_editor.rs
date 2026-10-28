@@ -67,8 +67,20 @@ pub struct Target {
     pub json: bool,
     /// No dialog is up: an editor that is open has the keyboard.
     pub hold: bool,
-    /// The column keeps a date or a time: the editor offers now.
+    /// The column keeps a date or a time and the calendar is not shown:
+    /// the editor offers the database's now.
     pub now: bool,
+    /// The column as its dates and times are read, where it keeps them:
+    /// the line under the editor says what the text is stored as, and
+    /// says what it fails in the place of the note under the field.
+    pub dates: Option<crate::dates::Column>,
+    /// The column takes NULL, and it has a default: what the calendar's
+    /// footer offers.
+    pub nullable: bool,
+    pub default: bool,
+    /// The calendar under the line of a date's editor, where the settings
+    /// show one.
+    pub calendar: Option<Calendar>,
     /// The keys that end the edit, as the keymap has them.
     pub keys: Keys,
     /// The cell is a foreign key's, and its editor searches the table the
@@ -89,6 +101,17 @@ impl Target {
             None => format!("{} {}", gettext(locale, "Edit"), display_safe(&self.name)),
         }
     }
+}
+
+/// What the calendar under a date's editor reads its days at, where the
+/// settings show one.
+#[derive(Clone, Debug)]
+pub struct Calendar {
+    /// The time it is, the zone a day is counted in, and how a day's
+    /// numbers are written.
+    pub clock: crate::dates::Clock,
+    /// The day the locale's weeks start on.
+    pub week: jiff::civil::Weekday,
 }
 
 /// What a foreign key cell's field says of its search.
@@ -598,7 +621,13 @@ pub fn field(
     // foreign key's text is a search until a commit takes it: what its
     // column would say of it shows only once it was refused.
     let said = target.search.as_ref().is_none_or(|search| search.refused);
-    let failing = editor.problem.is_some() && said;
+    // A warning is no fault: a time the clocks skip has the line's way
+    // out, and the field is not red for it.
+    let failing = editor
+        .problem
+        .as_ref()
+        .is_some_and(|problem| !problem.warns())
+        && said;
     if look.terminal {
         // The cursor's line, as the grid draws it round the cell its keys
         // are on, and no halo: the grid marks its own cell.
@@ -619,7 +648,10 @@ pub fn field(
     } else {
         focus::hint(ui, &response, rect, Ring::Field { radius: 0 });
     }
-    if let (Some(problem), true, true) = (&editor.problem, target.hold, said) {
+    // A date's line says what it fails, where it is drawn: not under a
+    // foreign key's list.
+    let lined = target.dates.is_some() && editor.picker.is_none();
+    if let (Some(problem), true, true, false) = (&editor.problem, target.hold, said, lined) {
         let message = problem_text(problem, &target.type_name, Some(&editor.text), locale);
         // The list is under a foreign key's cell: the note goes over it.
         let above = target.search.is_some();
@@ -783,7 +815,13 @@ pub fn in_panel(
     // A foreign key's text is a search until a commit takes it: what its
     // column would say of it shows only once it was refused.
     let said = target.search.as_ref().is_none_or(|search| search.refused);
-    let failing = editor.problem.is_some() && said;
+    // A warning is no fault: a time the clocks skip has the line's way
+    // out, and the field is not red for it.
+    let failing = editor
+        .problem
+        .as_ref()
+        .is_some_and(|problem| !problem.warns())
+        && said;
     // A field's own ring, red while the text fails its check. The ring
     // shows once the keyboard is in use; the red border does not wait for
     // that, since a pasted text can fail before any key is pressed.
@@ -810,7 +848,7 @@ pub fn in_panel(
     let problem = editor
         .problem
         .as_ref()
-        .filter(|_| said)
+        .filter(|_| said && (target.dates.is_none() || editor.picker.is_some()))
         .map(|problem| problem_text(problem, &target.type_name, Some(&editor.text), locale));
     // While the text is a search it is no value, and its length is none
     // of the column's business.
@@ -1448,6 +1486,7 @@ pub fn problem_text(
         Problem::TooLarge => {
             say("Over 256 KiB: values this large cannot be edited yet").into_owned()
         }
+        Problem::Moment(refusal) => crate::ui::date_line::refusal_text(refusal, type_name, locale),
     }
 }
 
@@ -1797,6 +1836,8 @@ mod tests {
             top: false,
             touched: true,
             problem: None,
+            moment: None,
+            was: None,
             picker: None,
             select: false,
         };
@@ -1808,6 +1849,10 @@ mod tests {
             json: false,
             hold: true,
             now: false,
+            dates: None,
+            nullable: false,
+            default: false,
+            calendar: None,
             keys: Keys::of(&Keymap::default(), Layout::of(look)),
             search: search.map(|(count, refused)| Search {
                 table: "publishers".into(),

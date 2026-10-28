@@ -20,11 +20,13 @@ use crate::secrets::{Keyring, SecretString};
 
 mod agents;
 mod history;
+mod updates;
 
 pub use agents::{
     Agentable, AgentsCommand, AgentsEvent, AppGateway, LOG_PAGE, agent_names, agentable,
 };
 pub use history::{HistoryCommand, HistoryEvent};
+pub use updates::{UpdatesCommand, UpdatesEvent};
 
 /// Wakes the UI from any thread. The default does nothing (tests).
 #[derive(Clone)]
@@ -99,6 +101,14 @@ pub enum Command {
         request: RequestId,
         object: ObjectRef,
     },
+    /// Read the definition of a table or view for the DDL view (see
+    /// `Connection::ddl`): the app's own read of the catalog, never a run
+    /// of the SQL editor's, and kept in no history.
+    ReadDdl {
+        session: SessionId,
+        request: RequestId,
+        object: ObjectRef,
+    },
     FetchRows {
         session: SessionId,
         request: RequestId,
@@ -160,6 +170,13 @@ pub enum Command {
     },
     /// The server's name and version, for the SQL editor's footer.
     ServerVersion {
+        session: SessionId,
+        request: RequestId,
+    },
+    /// The zone the server moves MySQL's `TIMESTAMP` values to and from,
+    /// for the editor of one: its changes of the clocks, and its limits in
+    /// UTC.
+    SessionZone {
         session: SessionId,
         request: RequestId,
     },
@@ -226,6 +243,8 @@ pub enum Command {
     Agents(AgentsCommand),
     /// The query history's file.
     History(HistoryCommand),
+    /// The check for updates.
+    Updates(UpdatesCommand),
 }
 
 /// The contents of a state file the backend saves.
@@ -249,6 +268,8 @@ pub enum StateFile {
     Session(crate::session::Session),
     /// What was opened lately on each connection.
     Recents(crate::recents::Recents),
+    /// What the checks for updates found.
+    Updates(crate::update::Seen),
 }
 
 impl StateFile {
@@ -266,6 +287,7 @@ impl StateFile {
             Self::TableLists(lists) => crate::util::save_json(path, lists),
             Self::Session(session) => session.save(path),
             Self::Recents(recents) => recents.save(path),
+            Self::Updates(seen) => crate::util::save_json(path, seen),
         }
     }
 }
@@ -309,6 +331,11 @@ pub enum Event {
         session: SessionId,
         request: RequestId,
         result: Result<Structure, Error>,
+    },
+    Ddl {
+        session: SessionId,
+        request: RequestId,
+        result: Result<tabletist_db::Ddl, Error>,
     },
     Rows {
         session: SessionId,
@@ -373,6 +400,14 @@ pub enum Event {
         request: RequestId,
         result: Result<String, Error>,
     },
+    /// The session's zone, read from the zone database: `None` where the
+    /// engine has none, or the server names it in a way the database does
+    /// not know (an abbreviation such as `CET`).
+    SessionZone {
+        session: SessionId,
+        request: RequestId,
+        result: Result<Option<jiff::tz::TimeZone>, Error>,
+    },
     /// A `Save` was written, or why it was not.
     Saved {
         path: PathBuf,
@@ -413,6 +448,8 @@ pub enum Event {
     Agents(AgentsEvent),
     /// What came of a [`HistoryCommand`].
     History(HistoryEvent),
+    /// What came of an [`UpdatesCommand`].
+    Updates(UpdatesEvent),
 }
 
 /// What the settings file was handed to.
@@ -2075,6 +2112,7 @@ impl Worker {
             }
             Command::Agents(command) => self.agents.handle(command, &self.outbox),
             Command::History(command) => self.history.handle(command, &self.outbox),
+            Command::Updates(command) => updates::handle(command, &self.outbox),
             query => {
                 let session = session_of(&query);
                 match self.sessions.get(&session) {
@@ -2107,13 +2145,15 @@ fn session_of(command: &Command) -> SessionId {
         | Command::ListSchemas { session, .. }
         | Command::ListObjects { session, .. }
         | Command::Describe { session, .. }
+        | Command::ReadDdl { session, .. }
         | Command::FetchRows { session, .. }
         | Command::CountRows { session, .. }
         | Command::Lookup { session, .. }
         | Command::Write { session, .. }
         | Command::ListDatabases { session, .. }
         | Command::RunSql { session, .. }
-        | Command::ServerVersion { session, .. } => *session,
+        | Command::ServerVersion { session, .. }
+        | Command::SessionZone { session, .. } => *session,
         Command::Test { .. }
         | Command::LoadSecret { .. }
         | Command::StoreSecret { .. }
@@ -2128,7 +2168,8 @@ fn session_of(command: &Command) -> SessionId {
         | Command::ListFonts
         | Command::Flush { .. }
         | Command::Agents(_)
-        | Command::History(_) => SessionId(0),
+        | Command::History(_)
+        | Command::Updates(_) => SessionId(0),
     }
 }
 
@@ -2138,13 +2179,15 @@ fn request_of(command: &Command) -> Option<RequestId> {
         Command::ListSchemas { request, .. }
         | Command::ListObjects { request, .. }
         | Command::Describe { request, .. }
+        | Command::ReadDdl { request, .. }
         | Command::FetchRows { request, .. }
         | Command::CountRows { request, .. }
         | Command::Lookup { request, .. }
         | Command::Write { request, .. }
         | Command::ListDatabases { request, .. }
         | Command::RunSql { request, .. }
-        | Command::ServerVersion { request, .. } => Some(*request),
+        | Command::ServerVersion { request, .. }
+        | Command::SessionZone { request, .. } => Some(*request),
         Command::Connect { .. }
         | Command::Test { .. }
         | Command::Close { .. }
@@ -2162,7 +2205,8 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::ListFonts
         | Command::Flush { .. }
         | Command::Agents(_)
-        | Command::History(_) => None,
+        | Command::History(_)
+        | Command::Updates(_) => None,
     }
 }
 
@@ -2187,6 +2231,13 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         Command::Describe {
             session, request, ..
         } => Event::Structure {
+            session,
+            request,
+            result: Err(error),
+        },
+        Command::ReadDdl {
+            session, request, ..
+        } => Event::Ddl {
             session,
             request,
             result: Err(error),
@@ -2237,6 +2288,11 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
             request,
             result: Err(error),
         },
+        Command::SessionZone { session, request } => Event::SessionZone {
+            session,
+            request,
+            result: Err(error),
+        },
         Command::Connect { .. }
         | Command::Test { .. }
         | Command::Close { .. }
@@ -2254,7 +2310,8 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         | Command::ListFonts
         | Command::Flush { .. }
         | Command::Agents(_)
-        | Command::History(_) => return,
+        | Command::History(_)
+        | Command::Updates(_) => return,
     };
     outbox.emit(event);
 }
@@ -2399,6 +2456,20 @@ async fn run_session(
                 });
                 lost
             }
+            Command::ReadDdl {
+                session,
+                request,
+                object,
+            } => {
+                let result = connection.ddl(object).await;
+                let lost = lost_error(&result);
+                outbox.emit(Event::Ddl {
+                    session: *session,
+                    request: *request,
+                    result,
+                });
+                lost
+            }
             Command::FetchRows {
                 session,
                 request,
@@ -2525,6 +2596,18 @@ async fn run_session(
                 });
                 lost
             }
+            Command::SessionZone { session, request } => {
+                let result = connection.session_zone().await;
+                let lost = lost_error(&result);
+                // The zone database is read here, on the backend.
+                let result = result.map(|named| named.as_deref().and_then(crate::zones::session));
+                outbox.emit(Event::SessionZone {
+                    session: *session,
+                    request: *request,
+                    result,
+                });
+                lost
+            }
             Command::Connect { .. }
             | Command::Test { .. }
             | Command::Close { .. }
@@ -2542,7 +2625,8 @@ async fn run_session(
             | Command::ListFonts
             | Command::Flush { .. }
             | Command::Agents(_)
-            | Command::History(_) => None,
+            | Command::History(_)
+            | Command::Updates(_) => None,
         };
         end.command = None;
         {
@@ -4643,9 +4727,15 @@ mod tests {
         }
     }
 
+    /// How long a test waits for the history's file to answer. Each entry
+    /// is a transaction SQLite syncs to the disk, and a loaded Windows
+    /// runner's disk has taken longer than `WAIT` over the few a test
+    /// writes before it reads. The app waits for none of it.
+    const HISTORY_WAIT: Duration = Duration::from_secs(60);
+
     fn history_loaded(backend: &mut Backend) -> (u64, Result<Vec<crate::history::Entry>, String>) {
         loop {
-            match backend.wait(WAIT) {
+            match backend.wait(HISTORY_WAIT) {
                 Some(Event::History(HistoryEvent::Loaded { asked, result })) => {
                     return (asked, result);
                 }

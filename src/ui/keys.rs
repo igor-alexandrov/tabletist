@@ -108,7 +108,12 @@ pub(crate) fn held_is(layout: Layout, held: Modifiers, mods: Mods) -> bool {
                 command: mods.cmd,
             };
             // As `is_press`: Cmd is held only where the chord names it.
-            held.matches_exact(pattern) && (mods.cmd || !held.mac_cmd)
+            // On a Mac, where Control is a key of its own beside Cmd, it
+            // is held only where the chord names it too: egui lets it by
+            // a chord of Cmd's, and ⌃⌘1 would be ⌘1 as well.
+            held.matches_exact(pattern)
+                && (mods.cmd || !held.mac_cmd)
+                && (!held.mac_cmd || held.ctrl == mods.ctrl)
         }
     }
 }
@@ -495,17 +500,31 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             .and_then(|workspace| workspace.object_tab(id))
             .is_some_and(|object| object.view == crate::model::ObjectView::Structure)
     });
+    // The DDL view of the table on screen: its text has the arrows while
+    // it has the keyboard, and none goes to the tree from it.
+    let ddl_tab = object.filter(|&(tab, id)| {
+        app.workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .is_some_and(|object| object.view == crate::model::ObjectView::Ddl)
+    });
+    let ddl = ddl_tab.is_some();
     // The History tab's list is somewhere else: its arrows are its own,
     // unless the person went to the tree.
     let tree_arrows = !editing
         && app.workspace(active).is_some_and(|workspace| {
-            let nowhere_else = !any_grid && structure.is_none() && !workspace.history_in_front();
+            let nowhere_else =
+                !any_grid && structure.is_none() && !ddl && !workspace.history_in_front();
             workspace.pane == crate::model::Pane::Tree || nowhere_else
         });
     // That view has the keys: the tree does not, nor a field, a button or
     // a dialog.
     let on_structure =
         structure.filter(|_| !editing && !tree_arrows && !focused && app.dialog.is_none());
+    // The terminal look's DDL view, by the same rule: its text is lines
+    // with a cursor, not a field.
+    let on_ddl = ddl_tab.filter(|_| {
+        app.look.terminal && !editing && !tree_arrows && !focused && app.dialog.is_none()
+    });
     // The SQL editor on screen, while it has the keyboard: the completion
     // list's keys are its keys, and no other pane's. (A text field then
     // has the keyboard: no need to ask `editing` as well.)
@@ -696,6 +715,8 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     // Whether the menu of the server's other databases was asked for, by
     // the chord that opens it under the bar's own chip.
     let mut menu_asked = false;
+    // The DDL view's text was asked to be copied, by its chord.
+    let mut copy_ddl = None;
     ctx.input_mut(|input| {
         // The keymap says which key: each line asks whether its command's
         // chord went down, in the scope it is read in. The guards say when
@@ -982,6 +1003,64 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 actions.push(Action::UseAsLabel { tab, id, line });
             }
         }
+        // The terminal look's DDL view: its cursor by the arrows (its
+        // letters are read with the letters), and Esc ends the selection.
+        if let Some((tab, id)) = on_ddl {
+            let scope = Scope::Grid;
+            for keys in keymap.chords_now(layout, Command::MoveInDdl, scope, normal) {
+                let by = match keys {
+                    "up" => -1,
+                    "down" => 1,
+                    _ => continue,
+                };
+                let presses = presses(input, layout, keys).count;
+                actions.extend((0..presses).map(|_| Action::MoveDdlCursor { tab, id, by }));
+            }
+            // Esc is the selection's only while there is one: else it
+            // closes what it closes in the other views (Review SQL, the
+            // save's note).
+            let visual = app
+                .workspace(tab)
+                .and_then(|workspace| workspace.object_tab(id))
+                .is_some_and(|object| object.ddl_visual.is_some());
+            if visual && on(input, Command::LeaveDdlVisual, scope).fresh {
+                actions.push(Action::LeaveDdlVisual { tab, id });
+            }
+        }
+        // A table's views, wherever the keyboard is in the window, by the
+        // chords of the looks with a pointer (the terminal's are letters).
+        if !terminal
+            && app.dialog.is_none()
+            && let Some((tab, object_tab)) = object
+        {
+            use crate::model::ObjectView;
+            let views = [
+                (Command::ShowRows, ObjectView::Data),
+                (Command::ShowStructure, ObjectView::Structure),
+                (Command::ShowDdl, ObjectView::Ddl),
+            ];
+            for (command, view) in views {
+                if on(input, command, Scope::Grid).fresh {
+                    actions.push(Action::SetView {
+                        tab,
+                        object_tab,
+                        view,
+                    });
+                }
+            }
+        }
+        // The DDL view's chords, in its text too.
+        if !terminal
+            && app.dialog.is_none()
+            && let Some((tab, id)) = ddl_tab
+        {
+            if on(input, Command::CopyDdl, Scope::Grid).fresh {
+                copy_ddl = Some((tab, id));
+            }
+            if on(input, Command::OpenDdlInEditor, Scope::Grid).fresh {
+                actions.push(Action::OpenDdlInEditor { tab, id });
+            }
+        }
         if tree_arrows && !focused {
             use crate::model::TreeKey;
             let tab = active;
@@ -1094,6 +1173,9 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             }
         }
     });
+    if let Some((tab, id)) = copy_ddl {
+        crate::ui::ddl::copy(app, ctx, tab, id);
+    }
     // The menu opens as a click on the chip opens it: a server with one
     // database has none, and the key does nothing.
     if menu_asked {
@@ -2313,6 +2395,32 @@ fn letters(
         let on = |command: Command| {
             ctx.input_mut(|input| asked(input, &app.keymap, layout, command, scope, true))
         };
+        // While the list asks whether to delete a connection, its answers
+        // are the only keys: nothing connects, moves or deletes meanwhile.
+        // A connection gone some other way (connections.toml read again)
+        // leaves no question on screen, and keeps no keys.
+        let asking = picker.deleting.as_ref();
+        if asking.is_some_and(|conn| app.connections.get(conn).is_some()) {
+            let answer = |delete: bool| Action::AnswerDeleteConnection { tab, delete };
+            if on(Command::KeepConnection).fresh {
+                actions.push(answer(false));
+            }
+            let deleting =
+                |when: crate::keymap::When| when == crate::keymap::When::DeletingConnection;
+            for char in typed_chars(ctx) {
+                take_char(ctx, char);
+                match app
+                    .keymap
+                    .typed(layout, scope, &deleting, &char.to_string())
+                {
+                    Typed::Command(Command::ConfirmDeleteConnection) => actions.push(answer(true)),
+                    Typed::Command(Command::KeepConnection) => actions.push(answer(false)),
+                    _ => {}
+                }
+            }
+            ctx.data_mut(|data| data.insert_temp(typed_id(), String::new()));
+            return;
+        }
         // The list's arrows. Its letters are read with the letters, below.
         for keys in app
             .keymap
@@ -2345,9 +2453,8 @@ fn letters(
         };
         // With the keyboard on a control of the picker (a button, its
         // search field) the keys that connect are the control's, and so is
-        // the one that deletes: a connection goes at once, with its
-        // secrets, and a Backspace meant for something else must not be
-        // the one that takes it.
+        // the one that deletes: in the search field Cmd+Backspace deletes
+        // the text before the cursor, not the connection.
         let on_list = !crate::ui::focus::on_control(ctx);
         if let Some(conn) = &selected {
             if on_list {
@@ -2365,7 +2472,7 @@ fn letters(
                 actions.push(Action::DuplicateConnection(conn.clone()));
             }
             if on_list && on(Command::DeleteConnection).count > 0 {
-                actions.push(Action::DeleteConnection(conn.clone()));
+                actions.push(Action::AskDeleteConnection(conn.clone()));
             }
         }
         // The letters, with the wait the keymap needs for a key of
@@ -2408,7 +2515,7 @@ fn letters(
                     actions.push(Action::DuplicateConnection(conn.clone()));
                 }
                 (Some(Command::DeleteConnection), Some(conn)) if on_list => {
-                    actions.push(Action::DeleteConnection(conn.clone()));
+                    actions.push(Action::AskDeleteConnection(conn.clone()));
                 }
                 (Some(Command::ChangeAgentAccess), Some(conn)) if crate::endpoint::AVAILABLE => {
                     actions.push(Action::OpenAgentAccess(conn.clone()));
@@ -2439,6 +2546,7 @@ fn letters(
     let rows_show = object.is_some_and(|object| object.view == crate::model::ObjectView::Data);
     let structure_shows =
         object.is_some_and(|object| object.view == crate::model::ObjectView::Structure);
+    let ddl_shows = object.is_some_and(|object| object.view == crate::model::ObjectView::Ddl);
     // The cursor's row is a new one: the row panel is its form, and the
     // key that drops the row is read from the form's fields too.
     let on_new = selection.is_some_and(|cell| crate::edit::new_id(cell.row).is_some());
@@ -2592,7 +2700,9 @@ fn letters(
         offers(Command::RunWithoutTimeout),
     );
     let holds = |when: crate::keymap::When| match when {
-        crate::keymap::When::InspectorOpen => panel,
+        // The DDL view shows no row panel: its brackets are its own
+        // (`]]`, `[[`), not the panel's step.
+        crate::keymap::When::InspectorOpen => panel && !ddl_shows,
         crate::keymap::When::Review => reviewing.is_some(),
         crate::keymap::When::Note => note.is_some(),
         crate::keymap::When::RefusedWrite => has_card,
@@ -2603,6 +2713,7 @@ fn letters(
         // The Structure view shows where the rows would: its own keys
         // come before the rows' there.
         crate::keymap::When::Structure => structure_shows,
+        crate::keymap::When::Ddl => ddl_shows,
         crate::keymap::When::AgentsLog => {
             agents_view(app, tab) == Some(crate::model::AgentsView::Log)
         }
@@ -3084,7 +3195,53 @@ fn letters(
                 let line = None;
                 actions.push(Action::UseAsLabel { tab, id, line });
             }
-            (Some(Command::CopyCells), Some(_)) => {
+            // A table's views, from any of them.
+            (
+                Some(command @ (Command::ShowRows | Command::ShowStructure | Command::ShowDdl)),
+                Some(id),
+            ) => {
+                use crate::model::ObjectView;
+                let view = match command {
+                    Command::ShowStructure => ObjectView::Structure,
+                    Command::ShowDdl => ObjectView::Ddl,
+                    _ => ObjectView::Data,
+                };
+                actions.push(Action::SetView {
+                    tab,
+                    object_tab: id,
+                    view,
+                });
+            }
+            // The DDL view's text, by line.
+            (Some(Command::MoveInDdl), Some(id)) => {
+                let by = if char == 'k' { -1 } else { 1 };
+                actions.push(Action::MoveDdlCursor { tab, id, by });
+            }
+            (Some(command @ (Command::DdlTop | Command::DdlBottom)), Some(id)) => {
+                let line = if command == Command::DdlTop {
+                    0
+                } else {
+                    usize::MAX
+                };
+                actions.push(Action::DdlCursorTo { tab, id, line });
+            }
+            (Some(command @ (Command::NextDdlSection | Command::PreviousDdlSection)), Some(id)) => {
+                let forward = command == Command::NextDdlSection;
+                actions.push(Action::DdlSection { tab, id, forward });
+            }
+            (Some(Command::SelectDdlLines), Some(id)) => {
+                actions.push(Action::ToggleDdlVisual { tab, id });
+            }
+            (Some(Command::CopyDdl), Some(id)) => {
+                crate::ui::ddl::copy(app, ctx, tab, id);
+                actions.push(Action::LeaveDdlVisual { tab, id });
+            }
+            (Some(Command::OpenDdlInEditor), Some(id)) => {
+                actions.push(Action::OpenDdlInEditor { tab, id });
+            }
+            // The rows' cell, where the rows show: no other view copies
+            // one it hides.
+            (Some(Command::CopyCells), Some(_)) if rows_show => {
                 if let Some(text) = app.copy_text(false) {
                     ctx.copy_text(text);
                 }
@@ -3219,14 +3376,8 @@ mod tests {
         };
         let cmd = Modifiers::MAC_CMD | Modifiers::COMMAND;
         let ctrl_elsewhere = Modifiers::CTRL | Modifiers::COMMAND;
-        // The command key: Cmd on macOS, with Ctrl or without, and Ctrl
-        // elsewhere.
-        for held in [
-            Modifiers::COMMAND,
-            cmd,
-            cmd | Modifiers::CTRL,
-            ctrl_elsewhere,
-        ] {
+        // The command key: Cmd on macOS, and Ctrl elsewhere.
+        for held in [Modifiers::COMMAND, cmd, ctrl_elsewhere] {
             assert!(is(held, named(true, false)), "{held:?}");
         }
         for held in [
@@ -3237,6 +3388,18 @@ mod tests {
         ] {
             assert!(is_not(held, named(true, false)), "{held:?}");
         }
+        // On a Mac, Cmd with Control is ⌃⌘, a chord of its own (the views'
+        // ⌃⌘1), and not Cmd's.
+        assert!(!held_is(
+            Layout::Mac,
+            cmd | Modifiers::CTRL,
+            named(true, false)
+        ));
+        assert!(held_is(
+            Layout::Mac,
+            cmd | Modifiers::CTRL,
+            named(true, true)
+        ));
         // Ctrl: alone on macOS, with the command key elsewhere, never Cmd.
         for held in [Modifiers::CTRL, ctrl_elsewhere] {
             assert!(is(held, named(false, true)), "{held:?}");

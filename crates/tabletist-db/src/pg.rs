@@ -14,14 +14,15 @@ use tokio_postgres::{SimpleQueryMessage, Socket};
 use crate::adapter::Adapter;
 use crate::agent::{Catalog, ColumnName, Limits, Read, Sources};
 use crate::{
-    Access, CancelHandle, CancelInner, ChangeSet, ColumnInfo, ColumnMeta, ConnectSpec, Dialect,
-    Error, ForeignKeyInfo, IndexInfo, Lookup, LookupPage, MAX_LISTED, Named, ObjectInfo,
+    Access, CancelHandle, CancelInner, ChangeSet, ColumnInfo, ColumnMeta, ConnectSpec, Ddl,
+    Dialect, Error, ForeignKeyInfo, IndexInfo, Lookup, LookupPage, MAX_LISTED, Named, ObjectInfo,
     ObjectKind, ObjectRef, ReferencingKey, Result, RowPage, RowQuery, ScriptMode, ScriptOutcome,
     Secrets, Sql, StopFlag, Structure, Value, ValueKind, WriteOutcome, value_from_pg_text,
 };
 use tokio_postgres::error::SqlState;
 use tokio_postgres_rustls::MakeRustlsConnect;
 
+mod ddl;
 mod hidden;
 mod script;
 mod write;
@@ -500,6 +501,12 @@ impl Adapter for Conn {
         })
     }
 
+    /// None: a `timestamptz` comes with its offset, and the app shows it in
+    /// the zone of its own settings.
+    async fn session_zone(&self) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     /// See [`crate::Connection::server_version`].
     async fn server_version(&self) -> Result<String> {
         let client = self.client.lock().await;
@@ -567,6 +574,10 @@ impl Adapter for Conn {
                 })
             })
             .collect()
+    }
+
+    async fn ddl(&self, object: &ObjectRef) -> Result<Ddl> {
+        self.read_ddl(object).await
     }
 
     async fn describe(&self, object: &ObjectRef) -> Result<Structure> {

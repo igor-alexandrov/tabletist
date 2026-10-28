@@ -6,6 +6,7 @@ use tabletist_db::{Access, ChangeSet, ColumnClass, Error, NewValue, WriteOutcome
 
 use super::App;
 use crate::backend::{Command, RequestId, SessionId};
+use crate::dates::{Reading, Refusal};
 use crate::edit::{
     Answer, Duplicate, Editor, EditorPlace, Effect, Holder, Lock, NEW_ROWS, Note, Order, Pending,
     Place, Problem, Saved, Saving, Sent, State, Sweep, Table, Taken, Told, change_set, check,
@@ -144,7 +145,7 @@ struct Typed {
 
 /// What closing the tab's editor makes of its text: `None` where no editor
 /// is open, it was not typed into, or its cell is no longer on the page.
-fn typed(table: &Table<'_>, object: &ObjectTab) -> Option<Typed> {
+fn typed(table: &Table<'_>, object: &ObjectTab, clock: &crate::dates::Clock) -> Option<Typed> {
     let editor = object.edits.editor.as_ref()?;
     let cell = editor.cell;
     let column = table.column(cell.col)?;
@@ -161,14 +162,29 @@ fn typed(table: &Table<'_>, object: &ObjectTab) -> Option<Typed> {
     }
     // What was typed, as the column reads it: a keyword where it is one.
     let mut new = crate::edit::typed_as(table.dialect, column, &editor.text);
-    // A moment typed with no offset is the zone's, where the column keeps
-    // one: the server would read it in its own.
-    if let NewValue::Text(text) = &new
-        && crate::edit::keeps_offset(table.dialect, &column.type_name)
-        && let Some(zone) = table.zone
-        && let Some(sent) = crate::ui::format::with_offset(text, zone)
-    {
-        new = NewValue::Text(sent);
+    // A date or a time is stored as the line under its editor said: the
+    // literal of what the text read as when it was typed (a `now` is that
+    // moment, not this one), or what it is read as now where the editor
+    // kept no reading of this text.
+    let moment = match &editor.moment {
+        Some(Ok(reading)) if reading.typed == editor.text => Some(Ok(reading.clone())),
+        _ => crate::edit::moment(table, cell.col, &editor.text, clock),
+    };
+    let mut refused = None;
+    // A day or a time typed back as the cell has it, however each is
+    // written (`.250` for `.25`, another zone, BC after an offset), is
+    // the moment that was loaded.
+    let mut same = false;
+    match moment {
+        Some(Ok(reading)) => {
+            same = loaded.is_some_and(|loaded| {
+                let was = crate::edit::moment(table, cell.col, &start_text(loaded, class), clock);
+                matches!(was, Some(Ok(was)) if was.moment == reading.moment)
+            });
+            new = NewValue::Text(reading.literal);
+        }
+        Some(Err(refusal)) => refused = Some(Problem::Moment(refusal)),
+        None => {}
     }
     // A moment typed back as it was, in the zone it is shown in or in any
     // other, is the moment that was loaded: in a column of dates and
@@ -178,15 +194,18 @@ fn typed(table: &Table<'_>, object: &ObjectTab) -> Option<Typed> {
     let changed = match (&new, loaded) {
         // A new row's unset cell is its default already.
         (NewValue::Default { .. }, None) => false,
-        (new, loaded) => loaded.is_none_or(|loaded| {
-            is_change(loaded, new, class)
-                && !(temporal
-                    && crate::edit::shows_in_zone(table.dialect)
-                    && crate::edit::same_moment_typed(loaded, new))
-        }),
+        (new, loaded) => {
+            !same
+                && loaded.is_none_or(|loaded| {
+                    is_change(loaded, new, class)
+                        && !(temporal
+                            && crate::edit::shows_in_zone(table.dialect)
+                            && crate::edit::same_moment_typed(loaded, new))
+                })
+        }
     };
     let problem = changed
-        .then(|| crate::edit::problem(table.dialect, column, &editor.text))
+        .then(|| refused.or_else(|| crate::edit::problem(table.dialect, column, &editor.text)))
         .flatten();
     Some(Typed {
         cell,
@@ -194,6 +213,31 @@ fn typed(table: &Table<'_>, object: &ObjectTab) -> Option<Typed> {
         changed,
         problem,
     })
+}
+
+/// The text an editor opens on for the value the page's cell `cell`
+/// loaded, of the class `class`: `None` for a new row's cell, which loaded
+/// nothing. A moment with an offset as the cell shows it: in the zone, and
+/// edited there, where the engine sends one. SQLite's seconds since 1970
+/// as the day they are.
+fn opened_text(table: &Table<'_>, cell: CellPos, class: ColumnClass) -> Option<String> {
+    let loaded = table.loaded(cell)?;
+    let seconds = table
+        .dates(cell.col)
+        .and_then(|dates| crate::dates::opened(loaded, &dates));
+    if let Some(day) = seconds {
+        return Some(day);
+    }
+    let start = start_text(loaded, class);
+    let temporal = table.page.columns.get(cell.col).map(|column| column.kind)
+        == Some(tabletist_db::ValueKind::Temporal);
+    Some(
+        temporal
+            .then_some(table.zone)
+            .flatten()
+            .and_then(|zone| crate::ui::format::in_zone(&start, zone))
+            .unwrap_or(start),
+    )
 }
 
 impl App {
@@ -353,8 +397,9 @@ impl App {
         };
         // On a row of the page only: what is typed into a new row is part
         // of that row, which is counted as one whatever it holds.
+        let clock = self.date_clock();
         let closed = self
-            .table(tab, id, typed)
+            .table(tab, id, |table, object| typed(table, object, &clock))
             .flatten()
             .filter(|typed| new_id(typed.cell.row).is_none());
         let pending = closed
@@ -736,14 +781,30 @@ impl App {
         self.object_tab_mut(tab, id)?.edits.editor.as_mut()
     }
 
-    /// What the open editor's text fails, if anything.
-    pub(super) fn editor_problem(&self, tab: ConnTabId, id: TabId) -> Option<Problem> {
+    /// What the open editor's text fails, if anything, and what it reads
+    /// as where its column keeps dates or times.
+    pub(super) fn editor_problem(
+        &self,
+        tab: ConnTabId,
+        id: TabId,
+    ) -> (Option<Problem>, Option<Result<Reading, Refusal>>) {
+        let clock = self.date_clock();
         self.table(tab, id, |table, object| {
-            let editor = object.edits.editor.as_ref()?;
-            let column = table.column(editor.cell.col)?;
-            crate::edit::problem(table.dialect, column, &editor.text)
+            let Some(editor) = object.edits.editor.as_ref() else {
+                return (None, None);
+            };
+            let col = editor.cell.col;
+            let moment = crate::edit::moment(table, col, &editor.text, &clock);
+            let problem = match &moment {
+                Some(Err(refusal)) => Some(Problem::Moment(refusal.clone())),
+                Some(Ok(_)) => None,
+                None => table
+                    .column(col)
+                    .and_then(|column| crate::edit::problem(table.dialect, column, &editor.text)),
+            };
+            (problem, moment)
         })
-        .flatten()
+        .unwrap_or_default()
     }
 
     /// The column of the tab's open editor, when the row panel draws it.
@@ -842,6 +903,7 @@ impl App {
         };
         // Opened from its value, to be read before it is changed.
         let from_value = matches!(start, EditStart::Value);
+        let clock = self.date_clock();
         let opened = self.table(tab, id, |table, object| {
             if let Some(lock) = table.lock(cell) {
                 return Err(lock);
@@ -852,37 +914,22 @@ impl App {
             // holds: its check holds for it, empty or not, and Enter does
             // not close on it while its column refuses it.
             let mut kept = false;
+            // What the cell shows before this edit, as text: its pending
+            // text, or the value it loaded (none for a new row's cell).
+            let pending = object.edits.cells.get(&(cell.row, cell.col));
+            let before = match pending.map(|pending| &pending.new) {
+                Some(NewValue::Text(text)) => Some(text.clone()),
+                Some(NewValue::Null | NewValue::Default { .. } | NewValue::Now) => None,
+                None => opened_text(table, cell, class),
+            };
             let text = match start {
                 EditStart::Replace(text) | EditStart::Typed(text) => text,
-                EditStart::Value => match object.edits.cells.get(&(cell.row, cell.col)) {
-                    Some(pending) => match &pending.new {
-                        NewValue::Text(text) => {
-                            kept = true;
-                            text.clone()
-                        }
-                        // As a pending NULL: nothing of it is text
-                        // to go on from.
-                        NewValue::Null | NewValue::Default { .. } | NewValue::Now => String::new(),
-                    },
-                    // A new row's cell starts from nothing.
-                    // A moment with an offset as the cell shows it: in
-                    // the zone, and edited there, where the engine sends
-                    // one.
-                    None => table
-                        .loaded(cell)
-                        .map(|loaded| {
-                            let start = start_text(loaded, class);
-                            let temporal =
-                                table.page.columns.get(cell.col).map(|column| column.kind)
-                                    == Some(tabletist_db::ValueKind::Temporal);
-                            temporal
-                                .then_some(table.zone)
-                                .flatten()
-                                .and_then(|zone| crate::ui::format::in_zone(&start, zone))
-                                .unwrap_or(start)
-                        })
-                        .unwrap_or_default(),
-                },
+                // As a pending NULL: nothing of it is text to go on from.
+                // A new row's cell starts from nothing.
+                EditStart::Value => {
+                    kept = matches!(pending.map(|pending| &pending.new), Some(NewValue::Text(_)));
+                    before.clone().unwrap_or_default()
+                }
             };
             // A value of several lines, a long one or a document is edited
             // in the large editor, where its edit was asked for: a popover
@@ -893,10 +940,25 @@ impl App {
             // character typed on a cell that does not take it. Not the
             // empty text a NULL opens with, or an edit from nothing: that
             // one nobody typed.
-            let problem = table
-                .column(cell.col)
-                .filter(|_| kept || !text.is_empty())
-                .and_then(|column| crate::edit::problem(table.dialect, column, &text));
+            let typed = kept || !text.is_empty();
+            let moment = crate::edit::moment(table, cell.col, &text, &clock);
+            // The value the cell shows before this edit, where it reads
+            // as a moment: what the calendar marks.
+            let was = before
+                .and_then(|text| crate::edit::moment(table, cell.col, &text, &clock))
+                .and_then(Result::ok)
+                .map(|reading| reading.moment);
+            let problem = match &moment {
+                // MySQL's zero date, as the cell holds it: said, and
+                // refused only once it is typed.
+                Some(Err(Refusal::Zero)) if !kept => None,
+                Some(Err(refusal)) => typed.then(|| Problem::Moment(refusal.clone())),
+                Some(Ok(_)) => None,
+                None => table
+                    .column(cell.col)
+                    .filter(|_| typed)
+                    .and_then(|column| crate::edit::problem(table.dialect, column, &text)),
+            };
             Ok(Editor {
                 cell,
                 place,
@@ -908,6 +970,8 @@ impl App {
                 top: large && from_value,
                 touched: touched || kept,
                 problem,
+                moment,
+                was,
                 picker: None,
                 select: false,
             })
@@ -1496,7 +1560,8 @@ impl App {
     /// as a cell to fix, so typing is never lost. Says whether the editor
     /// closed.
     pub(super) fn close_editor(&mut self, tab: ConnTabId, id: TabId, left: bool) -> bool {
-        let verdict = self.table(tab, id, typed);
+        let clock = self.date_clock();
+        let verdict = self.table(tab, id, |table, object| typed(table, object, &clock));
         // Whether the text is the key of an option taken from the
         // picker's list: read before the editor goes.
         let taken = self
@@ -1855,8 +1920,12 @@ impl App {
         let structure = workspace
             .active_object_tab()
             .is_some_and(|object| object.view == crate::model::ObjectView::Structure);
+        let ddl = workspace
+            .active_object_tab()
+            .is_some_and(|object| object.view == crate::model::ObjectView::Ddl);
         let holds = |when: crate::keymap::When| match when {
             crate::keymap::When::Structure => structure,
+            crate::keymap::When::Ddl => ddl,
             _ => false,
         };
         // The prompt is Omarchy's, in whatever look it is driven.
@@ -1872,8 +1941,21 @@ impl App {
             // The keys in force: the full list in the editor, or a cheat
             // sheet where the person says. Neither touches the settings.
             (Typed::Command(Command::KeysDefault), _) => Action::KeysDefault,
+            // Settings › Updates, checking.
+            (Typed::Command(Command::CheckForUpdates), _) => Action::ShowUpdates,
             (Typed::Command(Command::KeysCheatsheet), _) => Action::ExportCheatSheet,
+            // The calendar under a date's editor, saved as its switch in
+            // Settings saves it.
+            (Typed::Command(Command::ShowCalendar), _) => {
+                Action::SetOption(crate::settings::OptionValue::DatePicker(true))
+            }
+            (Typed::Command(Command::HideCalendar), _) => {
+                Action::SetOption(crate::settings::OptionValue::DatePicker(false))
+            }
             (Typed::Command(Command::ClearHistory), _) => Action::ClearHistory(tab),
+            // From any pane: of what the tree's cursor is on, or the tab in
+            // front.
+            (Typed::Command(Command::OpenDdl), _) => Action::OpenDdl(tab),
             // From any tab of the window, where agents can reach the app.
             (Typed::Command(Command::ShowAgents), _) if crate::endpoint::AVAILABLE => {
                 Action::ShowAgents(tab)

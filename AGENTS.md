@@ -32,9 +32,14 @@ MySQL, SQLite) on egui/eframe and fastframe. The design lives in
   `tests/engines.rs` finds `==`, `!=` and `matches!`. Nothing finds a `_`
   arm, or a comparison written with `Self::` in the enums' own methods.
 - The workspace forbids `unsafe`. AppKit calls that cannot be made without it
-  go in `crates/tabletist-appkit`, and SQLite calls in
-  `crates/tabletist-sqlite-ffi`, behind a safe API, each with a SAFETY note;
-  `src/macos.rs`, `crates/tabletist-db` and everything else stay free of it.
+  go in `crates/tabletist-appkit`, the menu bar's in `crates/tabletist-menubar`
+  (its menu delegate in `src/macos/opening.rs`, and muda's Windows attach,
+  which subclasses the window, in `src/windows.rs`), and SQLite calls in
+  `crates/tabletist-sqlite-ffi`, behind a safe API. Each `unsafe` block and
+  impl has a `// SAFETY:` note above it, or above the statement that holds
+  it: those three crates deny `clippy::undocumented_unsafe_blocks`, and CI
+  runs clippy on macOS and Windows for their code too. `src/macos.rs`,
+  `crates/tabletist-db` and everything else stay free of `unsafe`.
 - Platform code sits behind `cfg`. A fix for one platform keeps Linux, macOS,
   and Windows compiling.
 - Settings and state files stay readable, backward compatible, and atomically
@@ -69,7 +74,8 @@ tree, a grid) marks where its arrows are by itself: its cursor, its cell.
 A key is spelled in `src/keymap.rs` (and `src/keymap/overrides.rs`, which
 lays the person's keys from `settings.toml` over it) and nowhere else: each
 command with the scopes it holds in and its keys for macOS and for Omarchy
-(Windows has the Mac's, with Ctrl for Cmd). `src/ui/keys.rs` and the
+(Windows has the Mac's, with Ctrl for Cmd, unless a line gives it keys of
+its own: `Binding::windows`). `src/ui/keys.rs` and the
 dialogs ask the keymap whether a command's key went down, and name no key
 themselves. What paints a key beside a word (a hint, a button's shortcut)
 takes a `keymap::Written`, which only the keymap makes; `tests/keys.rs`
@@ -81,6 +87,10 @@ modes in the SQL editor are typing, as a text field's keys are: their
 letters are the engine's (`src/vim.rs`), and Esc, Enter, the arrows and
 the field's own deleting chords are the field's; vim's chords (`VimRedo`,
 `VimNormal`) are in the keymap.
+
+The menu bar (`src/menu.rs`) shows the keymap's keys and changes none: a key
+AppKit takes for a menu item goes back to egui as the same press
+(`src/menu/replay.rs`), and only a click runs a command as quick open does.
 
 Add a focused regression test for every behaviour change. UI behaviour is
 tested headlessly through `src/testing.rs` (AccessKit tree + events). Do not
@@ -196,7 +206,9 @@ the `release-signing` environment, which only `v*` tags may use. The
 or with another key, the release stops before anything is published. The
 key is in 1Password. Never commit it, and never replace
 `assets/update-public-key.hex` alone: installed copies trust only the key
-they were built with.
+they were built with. The environment's deployment rule is `v*` of type
+tag, not branch: GitHub matches a branch rule against branch names only,
+so with one every tag is refused and the release stops at `sign`.
 
 Whoever can push a `v*` tag runs `release.yml` as it is at that tag, with
 the key: keep `v*` tags to the owner (a tag ruleset), or give the
@@ -230,3 +242,32 @@ source AUR package, and builds and runs the AppImage, whenever `packaging/`
 changes. `packaging/linux/appimage.sh` pins appimagetool and the AppImage
 runtime by version and SHA-256; move them together. Locally,
 `packaging/arch/render.sh` fills a PKGBUILD from a release's checksums.
+
+## Updates
+
+`src/update.rs` holds the check Settings › Updates shows and configures
+fastframe-update, which installs an update. The check is one GET of
+`releases/latest` that sends `Tabletist/<version> (<system>; <chip>)` and
+no other header of the person's: `src/update/check.rs` tests what goes on
+the wire. Tests never reach GitHub; they serve fixture JSON from a local
+port (`tests/fixtures/update/latest.json`). A test harness never checks on
+its own: only `App::watch_updates`, which the window calls outside a demo,
+turns the schedule on.
+
+The version that installs an update is the old one, and its helper runs
+the new one, so these hold for every release, and a change to any of them
+needs a release that accepts both ways first:
+
+- `tabletist --version` prints `tabletist <version>`, and
+  `--update-receipt <job>`, `--update-error <message>` and
+  `--apply-update <job>` are handled by `fastframe_update::intercept` before
+  clap reads the command line (`tests/cli.rs`).
+- The receipt is confirmed once the first frame is painted, on the second
+  (`entrypoint.rs`): eframe paints a frame after its `ui` returns.
+- The release's file names, the markers (`packaging/tabletist-portable.txt`
+  in the archives, `packaging/windows/tabletist-installer.txt` installed
+  beside the app) and `checksums.txt.sig` stay as `release.yml` makes them
+  (`tests/update_release.rs`).
+- `assets/update-public-key.hex` changes only through
+  `additional_publisher_keys`: ship the next key there, keep signing with
+  the old one, and switch once installed copies trust the next.

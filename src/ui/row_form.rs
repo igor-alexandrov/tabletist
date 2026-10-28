@@ -104,7 +104,12 @@ impl<'a> Form<'a> {
         tab: ConnTabId,
         row: usize,
         editor: Option<&'a mut Editor>,
-        (hold, terminal, keys): (bool, bool, &crate::ui::cell_editor::Keys),
+        (hold, terminal, keys, calendar): (
+            bool,
+            bool,
+            &crate::ui::cell_editor::Keys,
+            Option<&crate::ui::cell_editor::Calendar>,
+        ),
     ) -> Self {
         // Only an editor on this row is the panel's to draw.
         let editor = editor.filter(|editor| editor.cell.row == row);
@@ -153,13 +158,8 @@ impl<'a> Form<'a> {
             })
             .collect();
         let target = editor.as_ref().and_then(|editor| {
-            let how = (hold, keys);
-            let mut target =
-                crate::ui::data_view::editor_target(workspace, object, tab, editor.cell, how)?;
-            // The panel's editor is out of the tab while the panel draws:
-            // its search is read from the editor in hand.
-            target.search = crate::ui::data_view::search_of(workspace, object, editor);
-            Some(target)
+            let how = (hold, keys, calendar);
+            crate::ui::data_view::editor_target(workspace, object, tab, editor, how)
         });
         Self {
             editor,
@@ -263,6 +263,14 @@ impl<'a> Form<'a> {
             if let Some(asked) = shown.label {
                 self.ending.push(asked.action(tab, id));
             }
+        }
+        // A date or time field's line, under the field while it is in
+        // sight.
+        if !editor.large
+            && let Some(anchor) = outcome.rect
+            && let Some(anchor) = crate::ui::key_picker::hung_from(anchor, ui.clip_rect())
+        {
+            crate::ui::date_line::under(ui, anchor, editor, target, &mut outcome, skin);
         }
         // The text is noted as typed before anything ends the edit, as for
         // a cell's field.

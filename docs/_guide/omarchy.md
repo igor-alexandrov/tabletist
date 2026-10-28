@@ -48,6 +48,8 @@ second Esc gives the keyboard back.
 | `:history clear` | Clear this connection's history, once you answer `y` |
 | `:keys default` | Open every key in force in your editor, as `settings.toml` spells them, commented: a file to copy lines from, written again each time and never read |
 | `:keys cheatsheet` | Save the keys in force as a Markdown cheat sheet, where you say |
+| `:set calendar`, `:set nocalendar` | Show or hide the [calendar]({% link _guide/editing-data.md %}#the-calendar) under a date's editor, saved as its switch in Settings is |
+| `:update` | Show Settings › Updates, and check for a newer version there |
 | `?` | The list of keys |
 
 Ctrl+P opens quick open from any pane: a picker at the top of the
@@ -75,7 +77,7 @@ numbered; once you type, it lists what matches. Its commands stay on `:`.
 | `n` | New connection |
 | `e` | Edit |
 | `yy` then `p` | Duplicate |
-| `dd` | Delete |
+| `dd` | Delete, once you say so: `y` deletes it, `n` or Esc keeps it |
 | `/` | Filter the list |
 | `a` | What agents may do on the connection: `j` `k`, Enter to set it, `t` for its Agents tab, Esc |
 | Esc | Cancel connecting |
@@ -154,9 +156,10 @@ With the search open, the matches replace the start lists:
 | `v` then `y` | Copy the cell |
 | `R` | Reload |
 | Ctrl+C | Cancel the running query |
+| `r`, `s`, `S` | Show the rows, the structure or the DDL, from any of them |
+| `:ddl` | The DDL view of the table under the sidebar's cursor (with the keyboard in the sidebar), or else of the table in front |
 
-The Structure and Data views are clicked: switching between them has no
-key. Nor has copying a whole row.
+Copying a whole row has no key.
 
 ### The Agents tab
 
@@ -198,13 +201,35 @@ foreign key that points at it:
 what it does. A key or a column of bytes is not taken, and the status line
 says why.
 
+### The DDL view
+
+`S` (or `ddl` in a table's header) shows its definition as text, as
+[Browsing Data]({% link _guide/browsing-data.md %}#ddl) says: read-only,
+with line numbers. The header says where it comes from and from which
+server, and the outline beside the text lists its parts with how much each
+holds, the part the cursor is in marked. Click a part to go to it.
+
+| Keys | Do |
+| --- | --- |
+| `j` `k`, Up, Down | Move by line |
+| `gg` `G` | The first line and the last |
+| `]]` `[[` | The next part and the one before |
+| `V` | Select whole lines from the cursor's, or end the selection |
+| `y` | Copy the selected lines, or all of the text with none selected |
+| `e` | Open the text in a new SQL editor, which runs nothing |
+| Esc | End the selection (with none, Esc does what it does elsewhere: it closes Review SQL) |
+| `R` | Read it again; after an error, try again |
+
+The status line says how many lines are selected and which line the
+cursor is on.
+
 ### The row panel
 
 | Keys | Do |
 | --- | --- |
 | Enter | Open the row panel, with the keyboard on its fields. Ctrl+L goes to it too |
 | Ctrl+Shift+R | Show or hide the row panel |
-| `j` `k` | Move between its fields |
+| `j` `k`, Up, Down | Move between its fields |
 | Enter, `i` | Edit the field |
 | `[` `]` | Previous and next row, while the panel shows. Where there is an error to go to, the bracket waits for the key after it: `e` goes to the error, and any other key steps the row. A key that moves then moves on from there; a key that edits, and `:`, are dropped, so the edit never lands on the row you left: press it again |
 | `za` | Fold the documents in it |
@@ -217,7 +242,7 @@ says why.
 | Keys | Do |
 | --- | --- |
 | `i` | Edit the cell |
-| `cc`, `s` | Edit the cell from nothing |
+| `cc` | Edit the cell from nothing |
 | `o`, `O` | Add a row below the cursor's row, or above it |
 | `yy` | Yank the cursor's row, and put it on the clipboard |
 | `p`, `P` | Put a copy of the yanked row below the cursor's row, or above it |
@@ -249,7 +274,8 @@ A date or time cell has no key for the time of the save: type `now()`
 into it.
 
 The `:` prompt takes `w`, `e!` and `diff` on a table, the `label` lines in
-its Structure view, `ro` and `rw` in a SQL editor, and nothing else.
+its Structure view, `ddl` from any pane, `ro` and `rw` in a SQL editor, and
+nothing else.
 
 {% include shot.html file="omarchy-edit-review" alt="The :diff panel above the status line, showing the statement a save will run" %}
 
@@ -332,9 +358,12 @@ stopped a run, `t` runs it again without one. Times read "45s", "1m" and
 | `j` `k` | Move |
 | `h` `l` | Change the option |
 | Space | Toggle the option |
-| Ctrl+H, Ctrl+L | The pane before or after: General, Appearance, Editor, Keyboard, Agents |
+| Ctrl+H, Ctrl+L | The pane before or after: General, Appearance, Editor, Keyboard, Agents, Updates |
 | Enter | On the Agents pane: show the Agents tab, Connections or the log, from the status, access or log row. On the Editor pane's keep row: show the History tab |
-| `y` | On the Agents pane: copy the command that connects Claude Code |
+| `y` | On the Agents pane: copy the command that connects Claude Code. On the Updates pane, where your package manager, Homebrew or cargo updates Tabletist: copy its command |
+| `c` | On the Updates pane: check for a newer version now |
+| `n` | On the Updates pane, while a version is offered: its release notes in `$PAGER` (`less` without one), in a terminal; where none can be started, its page in the browser |
+| `S` | On the Updates pane: skip the version offered |
 | Ctrl+E | Open `settings.toml` in your editor |
 | `R` | Reset the option. The agent server's switch is left as it is |
 | `D`, `n` | On the Editor pane, once keep is set to don't keep: delete the history kept, or keep it |

@@ -112,6 +112,17 @@ impl AppDirs {
         self.state.join("labels.json")
     }
 
+    /// What the checks for updates found: when the last one ran, and the
+    /// newest release with its notes. Of this computer, and no setting.
+    pub fn updates_file(&self) -> PathBuf {
+        self.state.join("updates.json")
+    }
+
+    /// A release's notes, written for the pager to show.
+    pub fn release_notes_file(&self, version: &str) -> PathBuf {
+        self.state.join(format!("release-notes-{version}.md"))
+    }
+
     /// How each connection lists its tables where its user chose: tree or
     /// flat, by its id. Of this computer, and no setting: the setting is
     /// the default for a connection with no choice.
