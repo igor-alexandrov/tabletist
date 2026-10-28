@@ -75,11 +75,22 @@ fastframe-theme = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" 
 fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
 # Log file for bug reports and a panic log without payloads.
 fastframe-log = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
+# Self-update from GitHub releases (src/update.rs): detects how this copy
+# was installed, checks the signature on checksums.txt, hands an update to
+# a helper that installs it and rolls back if the new version does not
+# start.
+fastframe-update = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
 # The database layer (no UI dependencies).
 tabletist-db = { path = "crates/tabletist-db" }
 # The MCP server agents reach the saved connections through. The backend
 # runs it, and is its gateway to the databases (src/backend/agents.rs).
 tabletist-mcp = { path = "crates/tabletist-mcp" }
+# The check for updates and the updater's HTTP client: blocking GETs to
+# GitHub, on rustls with ring and Mozilla's roots (webpki-roots), all
+# already in the tree. Adds ureq, ureq-proto, http, httparse, utf8-zero
+# and base64 0.23 (beside the tree's 0.22); reqwest would add hyper, h2
+# and tower. No gzip: release files are compressed already.
+ureq = { version = "3.4", default-features = false, features = ["rustls"] }
 # The menu bar on macOS and Windows, built with muda from `src/menu.rs`'s
 # model. Empty elsewhere.
 tabletist-menubar = { path = "crates/tabletist-menubar" }
