@@ -47,7 +47,9 @@ launch, are on the
   **Query**, **Window** and **Help** list the commands quick open runs,
   each with its key; **Tabletist → About Tabletist** shows the version, a
   link to the source code and the licenses of the fonts it bundles, and
-  **Tabletist → Settings…** opens Settings. **View → History** shows the
+  **Tabletist → Settings…** opens Settings. **Tabletist → Check for
+  Updates…** opens Settings › Updates and asks GitHub for a newer
+  version. **View → History** shows the
   window's [History tab]({% link _guide/sql-editor.md %}#history), and
   **View → Quick Open** opens quick open. A menu greys the commands that
   do not apply now, while it is open. Its keys do what they do where you

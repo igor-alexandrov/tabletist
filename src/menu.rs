@@ -76,6 +76,7 @@ pub fn bar(platform: Platform) -> Vec<Menu> {
             role: Role::Plain,
             items: vec![
                 Item::About,
+                Run(C::CheckForUpdates),
                 Sep,
                 Run(C::Settings),
                 Sep,
@@ -180,7 +181,8 @@ pub fn bar(platform: Platform) -> Vec<Menu> {
     });
     let mut help = vec![Run(C::Help)];
     if !mac {
-        help.extend([Sep, Item::About]);
+        // macOS has it under About, in the Tabletist menu.
+        help.extend([Sep, Run(C::CheckForUpdates), Item::About]);
     }
     menus.push(Menu {
         title: "Help",
@@ -203,6 +205,7 @@ pub fn title(item: Item, on: bool) -> &'static str {
             C::CloseConnection => "Close Connection",
             C::CloseTab => "Close Tab",
             C::Settings => "Settings…",
+            C::CheckForUpdates => "Check for Updates…",
             C::ToggleSidebar if on => "Hide Sidebar",
             C::ToggleSidebar => "Show Sidebar",
             C::ToggleInspector if on => "Hide Row Panel",

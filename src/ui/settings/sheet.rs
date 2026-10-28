@@ -13,7 +13,7 @@ use crate::model::{Action, SettingsDialog, SettingsPane};
 use crate::settings::{
     Autocomplete, Commas, EditorKeys, EnvBar, FontSizes, Idle, Indent, InterfaceSize, KeywordCase,
     Launch, LineNumbers, Mode, NewTab, OptionId, OptionValue, RowHeight, RunScope, Settings,
-    TableList, ThemeChoice, Timestamps, Zone,
+    TableList, ThemeChoice, Timestamps, UpdateCheck, Zone,
 };
 use crate::theme::{DataFace, Look, Palette, Typeface};
 use crate::typography::{Laid, Text, TextRole};
@@ -174,7 +174,8 @@ pub(super) fn show(
             // laid out after it: its fill waits here, under its words, for
             // that height.
             let fill = ui.painter().add(egui::Shape::Noop);
-            nav(ui, room.min, dialog.pane, &skin, actions);
+            let offered = super::updates::offered(app);
+            nav(ui, (room.min, offered), dialog.pane, &skin, actions);
             // No bottom of its own: its rows end where `content` is told to
             // end them. The sheet's bottom is the one the frame before left
             // it, and rows held to that would get their height back a
@@ -251,6 +252,9 @@ pub(super) fn show(
                 SettingsPane::Agents => {
                     super::agents::content(&mut pane, app, dialog.agent, limit, &skin, actions);
                 }
+                SettingsPane::Updates => {
+                    super::updates::content(&mut pane, app, limit, &skin, actions);
+                }
             }
             let rows = pane.min_rect().bottom();
             // Lower than the rows' end, unless a window too short for even
@@ -305,10 +309,11 @@ pub(super) fn show(
 }
 
 /// The window's name and its panes, down the left from `corner`, the one
-/// shown filled: a click shows another.
+/// shown filled: a click shows another. Updates has a dot while a newer
+/// version is `offered`.
 fn nav(
     ui: &mut Ui,
-    corner: egui::Pos2,
+    (corner, offered): (egui::Pos2, bool),
     shown: SettingsPane,
     skin: &Skin,
     actions: &mut Vec<Action>,
@@ -357,6 +362,13 @@ fn nav(
             item.center().y,
             Text::one(look, role, &name, color),
         );
+        if pane == SettingsPane::Updates && offered {
+            let dot =
+                Rect::from_center_size(pos2(item.right() - 12.0, item.center().y), vec2(7.0, 7.0));
+            ui.painter()
+                .circle_filled(dot.center(), 3.5, palette.accent);
+            widgets::announce(ui, dot, &skin.say("Update available"));
+        }
         // An item of a list: the ring is inside its fill, as a row's is.
         focus::hint(ui, &button, item, Ring::Inset { radius: 5 });
     }
@@ -670,6 +682,43 @@ pub(super) fn row(
     actions: &mut Vec<Action>,
     after: Option<After<'_>>,
 ) {
+    row_of(
+        ui,
+        (option, ruled, column),
+        settings,
+        skin,
+        actions,
+        (after, None),
+    );
+}
+
+/// What a row says under its label where that is not its small print but
+/// changes as the app runs, and the link at its end.
+pub(super) struct Print<'a> {
+    pub(super) text: &'a str,
+    pub(super) link: Option<(&'a str, Action)>,
+}
+
+/// [`row`], with `print` under its label in place of its small print.
+pub(super) fn row_with(
+    ui: &mut Ui,
+    place: (OptionId, bool, f32),
+    settings: &Settings,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+    print: Print<'_>,
+) {
+    row_of(ui, place, settings, skin, actions, (None, Some(print)));
+}
+
+fn row_of(
+    ui: &mut Ui,
+    (option, ruled, column): (OptionId, bool, f32),
+    settings: &Settings,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+    (after, shown): (Option<After<'_>>, Option<Print<'_>>),
+) {
     let Skin { look, palette, .. } = *skin;
     // Wrapped in its column too: a narrow sheet takes from the labels'
     // column, and a long label would run under the control.
@@ -690,13 +739,18 @@ pub(super) fn row(
                 .replace("{name}", missing);
             Some((said, palette.warning))
         }
-        None => small_print(option).map(|print| (skin.say(print), palette.dim)),
+        None => match &shown {
+            Some(shown) => Some((shown.text.to_owned(), palette.dim)),
+            None => small_print(option).map(|print| (skin.say(print), palette.dim)),
+        },
     };
     // What the row says under its label, or beside its control where it
     // says nothing under it, is what its controls are for: a screen reader
-    // reads it as their description.
+    // reads it as their description. What changes as the app runs (when
+    // the last check ran) describes nothing: it is read where it stands.
     let description = print
         .as_ref()
+        .filter(|_| shown.is_none())
         .map(|(print, _)| print.clone())
         .or_else(|| super::helper(option).map(|words| skin.say(words)));
     let print = print.map(|(print, color)| {
@@ -715,9 +769,31 @@ pub(super) fn row(
     }
     let middle = rect.top() + ROW_PAD + inner / 2.0;
     let mut top = middle - words / 2.0;
+    let mut end = None;
     for line in std::iter::once(name).chain(print) {
         write(ui, rect.left(), top + line.height() / 2.0, &line);
+        end = Some(pos2(rect.left() + line.width(), top + line.height() / 2.0));
         top += line.height() + 2.0;
+    }
+    // The link at the end of what changes: `· Check now`.
+    if let (Some(end), Some((text, action))) = (end, shown.and_then(|shown| shown.link)) {
+        let role = TextRole::Secondary;
+        let dot = Text::one(look, role, " · ", palette.dim).layout(ui.ctx());
+        write(ui, end.x, end.y, &dot);
+        let at = end.x + dot.width();
+        let width = role.width(ui.ctx(), look.faces, text).ceil();
+        let link = link(
+            ui,
+            ui.id().with(("row-link", label(option))),
+            pos2(at, end.y),
+            width,
+            text,
+            palette.accent,
+            skin,
+        );
+        if pressed(ui, &link) {
+            actions.push(action);
+        }
     }
     // The control and its hint, on the row's middle. Each row's controls
     // have ids of their own: two segmented controls in one `Ui` would
@@ -859,7 +935,9 @@ fn control_height(option: OptionId, look: &Look) -> f32 {
         | OptionId::AgentsNotify
         | OptionId::Zebra
         | OptionId::ColumnTypes => SWITCH,
-        OptionId::LogDays | OptionId::IdleDisconnect => look.control_height,
+        OptionId::LogDays | OptionId::IdleDisconnect | OptionId::UpdatesCheck => {
+            look.control_height
+        }
         // The Theme section is tiles, drawn on their own: no row's.
         OptionId::Theme => 0.0,
     }
@@ -1051,6 +1129,25 @@ fn control(
                 info.current_text_value = Some(value.clone());
                 info
             });
+        }
+        OptionId::UpdatesCheck => {
+            let current = settings.update_check;
+            let choices = UpdateCheck::ALL.into_iter().map(|choice| {
+                (
+                    super::check_text(skin.locale, choice),
+                    choice == current,
+                    OptionValue::UpdatesCheck(choice),
+                )
+            });
+            let shown = super::check_text(skin.locale, current);
+            choice_menu(
+                ui,
+                ("update-check", &name, description),
+                &shown,
+                choices,
+                skin,
+                actions,
+            );
         }
         OptionId::Tz => zone_menu(ui, (&name, description), settings, skin, actions),
         OptionId::OnLaunch => launch_menu(ui, (&name, description), settings, skin, actions),
@@ -1507,6 +1604,15 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
             &skin.say("A selection always wins"),
             palette.dim,
         ),
+        // The other two choices.
+        OptionId::UpdatesCheck => {
+            let others = match settings.update_check {
+                UpdateCheck::Daily => "Or: every week · only when I ask",
+                UpdateCheck::Weekly => "Or: every day · only when I ask",
+                UpdateCheck::Never => "Or: every day · every week",
+            };
+            Text::one(look, TextRole::Secondary, &skin.say(others), palette.dim)
+        }
         // What the Appearance pane's rows say is their small print, and its
         // tiles have their own line.
         OptionId::Theme
@@ -1682,9 +1788,10 @@ fn reset_question(pane: SettingsPane) -> &'static str {
     match pane {
         SettingsPane::General => "Reset all General settings to their defaults?",
         SettingsPane::Editor => "Reset all Editor settings to their defaults?",
-        SettingsPane::Appearance | SettingsPane::Keyboard | SettingsPane::Agents => {
-            "Reset every option on this tab?"
-        }
+        SettingsPane::Appearance
+        | SettingsPane::Keyboard
+        | SettingsPane::Agents
+        | SettingsPane::Updates => "Reset every option on this tab?",
     }
 }
 
@@ -1737,6 +1844,13 @@ fn footer(
     };
     if shown_pane == SettingsPane::Keyboard {
         keyboard_footer(ui, (left, right, middle), app, skin, actions);
+        return;
+    }
+    // Where else a check is asked for: the menu bar's item, on macOS.
+    if shown_pane == SettingsPane::Updates && cfg!(target_os = "macos") && asking.is_none() {
+        let said = skin.say("Also in the menu: Tabletist › Check for Updates…");
+        let text = Text::one(look, role, &said, palette.secondary).layout(ui.ctx());
+        write(ui, right - text.width(), middle, &text);
         return;
     }
     // The right side first: what it leaves is the path's.

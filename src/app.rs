@@ -2543,6 +2543,15 @@ impl App {
                     dialog.reveal = false;
                 }
             }
+            Action::ShowUpdates => {
+                self.apply(Action::ShowSettingsPane(
+                    crate::model::SettingsPane::Updates,
+                ));
+                if matches!(&self.dialog, Some(Dialog::Settings(dialog)) if dialog.pane == crate::model::SettingsPane::Updates)
+                {
+                    self.apply(Action::CheckForUpdates);
+                }
+            }
             Action::CheckForUpdates
             | Action::CancelUpdateCheck
             | Action::SkipUpdate

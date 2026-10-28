@@ -67,7 +67,8 @@ impl App {
     /// it). `keys::handle` does not run under a dialog, so a greyed
     /// Settings would lose `⌘,` there.
     fn clickable_now(&self, command: Command) -> bool {
-        self.key_reaches(command) || (command == Command::Settings && self.settings_may_open())
+        let opens_settings = matches!(command, Command::Settings | Command::CheckForUpdates);
+        self.key_reaches(command) || (opens_settings && self.settings_may_open())
     }
 
     /// Whether a press of `command`'s key is read now: always without a

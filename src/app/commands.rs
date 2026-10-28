@@ -79,7 +79,7 @@ impl Scripts {
 /// review, which the key shows and hides by turns; and its Agents shows
 /// the Agents tab, which the key does but where History has an agent's
 /// statement picked (there it shows that call).
-pub const RUNNABLE: [Command; 29] = [
+pub const RUNNABLE: [Command; 30] = [
     Command::NewSqlTab,
     Command::SwitchDatabase,
     Command::ShowAgents,
@@ -93,6 +93,7 @@ pub const RUNNABLE: [Command; 29] = [
     Command::NewConnection,
     Command::ToggleSidebar,
     Command::Settings,
+    Command::CheckForUpdates,
     Command::Help,
     Command::LargerText,
     Command::SmallerText,
@@ -409,6 +410,11 @@ impl App {
                 vec![Action::NewConnection],
             ),
             Command::Settings => ("Settings", About::Nothing, vec![Action::ShowSettings]),
+            Command::CheckForUpdates => (
+                "Check for Updates…",
+                About::Nothing,
+                vec![Action::ShowUpdates],
+            ),
             Command::Help => ("Keyboard shortcuts", About::Nothing, vec![Action::ShowHelp]),
             // Each where it changes the size: not at the end of the steps,
             // nor back to the look's own where it is that already.

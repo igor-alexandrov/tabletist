@@ -1017,12 +1017,14 @@ pub enum OptionId {
     Commas,
     /// Queries the history keeps: `editor.history.keep`.
     HistoryKeep,
+    /// How often a check for a newer release runs: `updates.check`.
+    UpdatesCheck,
 }
 
 impl OptionId {
     /// Every option, the General pane's, the Appearance pane's, the Editor
-    /// pane's and then the Agents pane's.
-    pub const ALL: [OptionId; 38] = [
+    /// pane's, the Agents pane's and then the Updates pane's.
+    pub const ALL: [OptionId; 39] = [
         Self::OnLaunch,
         Self::RestoreTabs,
         Self::PageSize,
@@ -1061,6 +1063,7 @@ impl OptionId {
         Self::AgentsOn,
         Self::LogDays,
         Self::AgentsNotify,
+        Self::UpdatesCheck,
     ];
     /// The General pane's, in the order it has them.
     pub const GENERAL: [OptionId; 11] = [
@@ -1172,6 +1175,9 @@ impl OptionId {
     pub const HISTORY: [OptionId; 1] = [Self::HistoryKeep];
     /// The Agents pane's, in the order it has them.
     pub const AGENTS: [OptionId; 3] = [Self::AgentsOn, Self::LogDays, Self::AgentsNotify];
+    /// The Updates pane's. The version to skip has no row: its card's
+    /// Skip this version sets it.
+    pub const UPDATES: [OptionId; 1] = [Self::UpdatesCheck];
 
     /// The key of the file the option is stored under.
     pub fn key(self) -> Key {
@@ -1214,6 +1220,7 @@ impl OptionId {
             Self::Keywords => Key::Keywords,
             Self::Commas => Key::Commas,
             Self::HistoryKeep => Key::HistoryKeep,
+            Self::UpdatesCheck => Key::UpdatesCheck,
         }
     }
 
@@ -1274,6 +1281,7 @@ pub enum OptionValue {
     Commas(Commas),
     /// 0 keeps none.
     HistoryKeep(u32),
+    UpdatesCheck(UpdateCheck),
 }
 
 impl OptionValue {
@@ -1342,6 +1350,7 @@ impl OptionValue {
             Self::Keywords(_) => OptionId::Keywords,
             Self::Commas(_) => OptionId::Commas,
             Self::HistoryKeep(_) => OptionId::HistoryKeep,
+            Self::UpdatesCheck(_) => OptionId::UpdatesCheck,
         }
     }
 
@@ -1397,6 +1406,7 @@ impl OptionValue {
             Self::Keywords(case) => settings.keywords = case,
             Self::Commas(commas) => settings.commas = commas,
             Self::HistoryKeep(keep) => settings.history_keep = keep.min(Settings::MAX_HISTORY),
+            Self::UpdatesCheck(check) => settings.update_check = check,
         }
     }
 }
@@ -2056,6 +2066,7 @@ impl Settings {
             OptionId::Keywords => OptionValue::Keywords(self.keywords),
             OptionId::Commas => OptionValue::Commas(self.commas),
             OptionId::HistoryKeep => OptionValue::HistoryKeep(self.history_keep),
+            OptionId::UpdatesCheck => OptionValue::UpdatesCheck(self.update_check),
         }
     }
 
@@ -2264,6 +2275,11 @@ impl Settings {
                 },
                 forward,
             )),
+            OptionId::UpdatesCheck => OptionValue::UpdatesCheck(stepped_among(
+                &UpdateCheck::ALL,
+                self.update_check,
+                forward,
+            )),
         }
     }
 
@@ -2423,7 +2439,8 @@ impl Settings {
             | OptionId::Autocomplete
             | OptionId::LineNumbers
             | OptionId::Keywords
-            | OptionId::HistoryKeep => None,
+            | OptionId::HistoryKeep
+            | OptionId::UpdatesCheck => None,
         }
     }
 
@@ -4701,6 +4718,7 @@ skip = \"0.4.0\"  # a version to stop offering
                 Key::McpEnabled,
                 Key::McpLogDays,
                 Key::McpNotify,
+                Key::UpdatesCheck,
             ]
         );
         // Each pane has its own, and every one is on a pane.
@@ -4709,6 +4727,7 @@ skip = \"0.4.0\"  # a version to stop offering
             &OptionId::APPEARANCE[..],
             &OptionId::EDITOR[..],
             &OptionId::AGENTS[..],
+            &OptionId::UPDATES[..],
         ]
         .concat();
         // The sections of the General and Appearance panes hold their
