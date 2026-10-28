@@ -112,6 +112,8 @@ A second reviewer read this plan against its diffs and the prompt. Besides the c
 - **Checks by hand:** they now say how to see Available without a newer release on GitHub.
 - **Leftovers:** two leftover lines (`let _ = …`) are gone.
 
+Task 1's review in the run found one more: `Window::ui` runs before eframe paints the frame and shows the window, so the receipt was confirmed before anything was on screen, and a version whose first paint fails would be kept. The receipt is now confirmed on the second frame, as fastframe-update's `acknowledge` asks ("after the first frame is drawn"), in a commit of its own after Task 1's.
+
 ## Files
 
 | File | Task | What |

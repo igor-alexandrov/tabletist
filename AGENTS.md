@@ -260,7 +260,8 @@ needs a release that accepts both ways first:
   `--update-receipt <job>`, `--update-error <message>` and
   `--apply-update <job>` are handled by `fastframe_update::intercept` before
   clap reads the command line (`tests/cli.rs`).
-- The receipt is confirmed after the first frame (`entrypoint.rs`).
+- The receipt is confirmed once the first frame is painted, on the second
+  (`entrypoint.rs`): eframe paints a frame after its `ui` returns.
 - The release's file names, the markers (`packaging/tabletist-portable.txt`
   in the archives, `packaging/windows/tabletist-installer.txt` installed
   beside the app) and `checksums.txt.sig` stay as `release.yml` makes them

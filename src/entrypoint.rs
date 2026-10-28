@@ -305,9 +305,9 @@ struct Window {
     app: App,
     shot: Option<Shot>,
     demo: bool,
-    /// Set when an update's helper started this version. Confirmed after
-    /// the first frame: until then the helper stands ready to put the
-    /// previous version back.
+    /// Set when an update's helper started this version. Confirmed once
+    /// the first frame is painted: until then the helper stands ready to
+    /// put the previous version back.
     update_receipt: Option<fastframe_update::Receipt>,
     /// macOS: the window whose unified title bar the tabs share, once it
     /// exists.
@@ -405,9 +405,12 @@ impl eframe::App for Window {
             }
         }
         self.app.frame_ui(ui);
-        // The window is up: tell the update's helper this version started,
+        // The first frame is painted, and the window shown, before the
+        // second runs: then tell the update's helper this version started,
         // so it keeps it. Off the interface thread, as the receipt asks.
-        if let Some(receipt) = self.update_receipt.take() {
+        if self.update_receipt.is_some() && ui.ctx().cumulative_frame_nr() == 0 {
+            ui.ctx().request_repaint();
+        } else if let Some(receipt) = self.update_receipt.take() {
             std::thread::spawn(move || {
                 if let Err(error) = receipt.acknowledge() {
                     log::error!("could not confirm the update: {error:#}");
