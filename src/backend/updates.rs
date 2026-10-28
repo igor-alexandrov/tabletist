@@ -158,10 +158,19 @@ mod tests {
     #[test]
     fn a_launcher_that_ends_well_or_runs_on_has_shown_its_terminal() {
         assert!(launched(sh("exit 0"), LAUNCH_FAILS_WITHIN).is_ok());
-        // A terminal open past the wait, failing later or not, was shown.
-        let started = std::time::Instant::now();
-        assert!(launched(sh("sleep 1; exit 1"), Duration::from_millis(200)).is_ok());
-        assert!(started.elapsed() < Duration::from_secs(1));
+        // A terminal open past the wait, failing later or not, was shown:
+        // the launcher runs until the test lets it go, after the answer.
+        let dir = tempfile::tempdir().unwrap();
+        let go = dir.path().join("go");
+        let mut command = sh(r#"while [ ! -e "$1" ]; do sleep 0.05; done; exit 1"#);
+        command.arg("sh").arg(&go);
+        let (answer, answered) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = answer.send(launched(command, Duration::from_millis(200)).is_ok());
+        });
+        let shown = answered.recv_timeout(Duration::from_secs(30));
+        std::fs::write(&go, "").unwrap();
+        assert_eq!(shown, Ok(true));
     }
 
     #[test]
