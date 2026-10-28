@@ -166,6 +166,9 @@ pub struct Updates {
     /// A version found by a check the person asked for, though they had
     /// said to skip it: offered until the next check.
     pub asked_offer: Option<Offer>,
+    /// A check's answer that came before the detection did: taken in once
+    /// it does, so the offer keeps this copy's kind's download.
+    pub held: Option<(u64, Result<release::Latest, Failed>)>,
 }
 
 impl Updates {

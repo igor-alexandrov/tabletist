@@ -133,7 +133,12 @@ impl App {
 
     pub(super) fn updates_event(&mut self, event: UpdatesEvent) {
         match event {
-            UpdatesEvent::Detected(installed) => self.updates.installed = Some(installed),
+            UpdatesEvent::Detected(installed) => {
+                self.updates.installed = Some(installed);
+                if let Some((asked, result)) = self.updates.held.take() {
+                    self.updates_event(UpdatesEvent::Checked { asked, result });
+                }
+            }
             UpdatesEvent::NotesUnshown { url } => self.url_to_open = Some(url),
             UpdatesEvent::Checked { asked, result } => {
                 let Phase::Checking {
@@ -144,6 +149,12 @@ impl App {
                     return;
                 };
                 if waited != asked {
+                    return;
+                }
+                // The detection is under way (a demo has none): the card
+                // says Checking until it answers.
+                if self.updates_scheduled && self.updates.installed.is_none() {
+                    self.updates.held = Some((asked, result));
                     return;
                 }
                 let now = self.now_secs();
@@ -616,6 +627,50 @@ mod tests {
     }
 
     /// A harness whose installation is not known yet.
+    /// A check asked for before the detection answers keeps this copy's
+    /// download: its answer waits for the detection, and says Checking.
+    #[test]
+    fn a_check_answered_before_the_detection_keeps_this_copy_s_download() {
+        let mut harness = harness_detecting(UpdateCheck::Never);
+        harness.app.apply(Action::CheckForUpdates);
+        let latest = latest("v99.0.0");
+        answer(&mut harness, Ok(latest.clone()));
+        assert!(harness.app.updates.checking());
+        assert_eq!(harness.app.updates.seen.offer, None);
+        let kind = release::Kind::AppImage;
+        harness
+            .app
+            .apply(Action::Backend(Event::Updates(UpdatesEvent::Detected(
+                crate::update::Installed::Itself(kind),
+            ))));
+        assert!(!harness.app.updates.checking());
+        let os = release::Os::current();
+        let Found::Newer(expected) =
+            release::found(&latest, crate::update::CURRENT, None, os, Some(kind))
+        else {
+            panic!("newer");
+        };
+        let offer = harness.app.updates.seen.offer.clone().expect("offered");
+        assert_eq!(offer.download, expected.download);
+    }
+
+    /// An answer held for the detection is dropped where the check was
+    /// cancelled meanwhile.
+    #[test]
+    fn a_held_answer_to_a_cancelled_check_is_dropped() {
+        let mut harness = harness_detecting(UpdateCheck::Never);
+        harness.app.apply(Action::CheckForUpdates);
+        answer(&mut harness, Ok(latest("v99.0.0")));
+        harness.app.apply(Action::CancelUpdateCheck);
+        harness
+            .app
+            .apply(Action::Backend(Event::Updates(UpdatesEvent::Detected(
+                crate::update::Installed::Itself(release::Kind::AppImage),
+            ))));
+        assert!(!harness.app.updates.checking());
+        assert_eq!(harness.app.updates.seen.offer, None);
+    }
+
     fn harness_detecting(check: UpdateCheck) -> Harness {
         let mut harness = harness(check, None);
         harness.app.updates.installed = None;
