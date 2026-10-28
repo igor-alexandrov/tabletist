@@ -121,8 +121,12 @@ pub(super) fn released(locale: Locale, at: u64, now: u64) -> String {
     gettext(locale, words).replace("{day}", &day)
 }
 
+/// `secs` as a time; one past what the system's clock holds is the epoch,
+/// so the card never panics on it.
 fn time_of(secs: u64) -> SystemTime {
-    SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
+    SystemTime::UNIX_EPOCH
+        .checked_add(Duration::from_secs(secs))
+        .unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
 /// When the last check that worked ran, as the row under the card says

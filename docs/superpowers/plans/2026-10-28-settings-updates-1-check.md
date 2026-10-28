@@ -118,6 +118,8 @@ Task 2's review found two more, fixed in its commit. A failed check now holds th
 
 Task 3's review found two more, fixed in a commit of their own after Task 3's. The notes' items were the card's children in the accessibility tree, beside an empty What's new list; they are now drawn in a `Ui` whose parent is the list, and the two list tests check the list's own children. And Check for Updates… was greyed while Settings was open, the Updates pane's footer that points to it included; it now stays enabled there and shows the pane (`check_for_updates_in_the_menu_works_with_settings_open`).
 
+The final review found one more: an `updates.json` that parses but holds a time past what the clock holds (written by hand) panicked the Settings window, every frame in the Omarchy look. Such a time is left out when the file is read, and the card's conversion no longer adds past the clock (`a_time_no_clock_can_show_is_left_out`, `a_time_past_the_clock_does_not_stop_the_pane`).
+
 ## Files
 
 | File | Task | What |

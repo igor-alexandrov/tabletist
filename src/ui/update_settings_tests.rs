@@ -133,6 +133,22 @@ fn check_for_updates_in_the_menu_works_with_settings_open() {
     assert_eq!(checks(&harness), 1);
 }
 
+/// Times past what the clock holds, which a file written by hand may
+/// give, do not stop the pane drawing in either look.
+#[test]
+fn a_time_past_the_clock_does_not_stop_the_pane() {
+    for look in looks() {
+        let mut harness = harness(look);
+        harness.app.updates.installed = Some(Installed::Itself(Kind::Portable));
+        harness.app.updates.seen.last_checked = Some(u64::MAX);
+        let mut offer = offer();
+        offer.published = Some(u64::MAX);
+        harness.app.updates.seen.offer = Some(offer);
+        on_the_pane(&mut harness);
+        assert_eq!(pane(&harness), Some(SettingsPane::Updates), "{}", look.name);
+    }
+}
+
 #[test]
 fn settings_lists_an_updates_pane_last() {
     for look in looks() {

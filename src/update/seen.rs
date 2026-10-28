@@ -32,9 +32,17 @@ pub const ANNOUNCE_EVERY: u64 = 24 * 60 * 60;
 
 impl Seen {
     /// Reads `path`. A missing file is no check yet; one that does not
-    /// parse is kept aside, as every state file is.
+    /// parse is kept aside, as every state file is. A time no clock can
+    /// show (a file written by hand) is left out.
     pub fn load(path: &std::path::Path) -> Self {
-        crate::util::load_json(path)
+        let mut seen: Self = crate::util::load_json(path);
+        let shown =
+            |at: &u64| i64::try_from(*at).is_ok_and(|at| jiff::Timestamp::from_second(at).is_ok());
+        seen.last_checked = seen.last_checked.filter(shown);
+        if let Some(offer) = &mut seen.offer {
+            offer.published = offer.published.filter(shown);
+        }
+        seen
     }
 
     /// The release to offer, when the file holds one newer than `current`.
@@ -82,6 +90,22 @@ mod tests {
             Seen::load(&dir.path().join("missing.json")),
             Seen::default()
         );
+    }
+
+    #[test]
+    fn a_time_no_clock_can_show_is_left_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("updates.json");
+        std::fs::write(
+            &path,
+            r#"{"last_checked": 18446744073709551615, "offer": {"version": "9.9.9", "url": "https://github.com/igor-alexandrov/tabletist/releases", "published": 253402300800}}"#,
+        )
+        .unwrap();
+        let seen = Seen::load(&path);
+        assert_eq!(seen.last_checked, None);
+        let offer = seen.offer.expect("the offer is kept");
+        assert_eq!(offer.version, "9.9.9");
+        assert_eq!(offer.published, None);
     }
 
     #[test]
