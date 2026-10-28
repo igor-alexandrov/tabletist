@@ -513,6 +513,37 @@ fn the_status_line_tells_of_a_version_for_eight_seconds() {
     assert_eq!(crate::ui::toast::said(&mac.ctx), None);
 }
 
+/// The status line names Check for Updates' key as the keymap holds it:
+/// another the file gives it, and none where the file unbinds it.
+#[test]
+fn the_status_line_names_the_key_the_keymap_holds() {
+    let said = |text: &str| {
+        let mut harness = harness(Look::omarchy());
+        let file = crate::backend::Event::SettingsFile {
+            text: text.to_owned(),
+            own: false,
+        };
+        harness.app.apply(Action::Backend(file));
+        assert!(
+            harness.app.settings_file.invalid.is_empty(),
+            "{:?}",
+            harness.app.settings_file.invalid
+        );
+        harness.app.update_announcement = Some("99.0.0".into());
+        let ctx = harness.ctx.clone();
+        harness.app.say_updates(&ctx);
+        crate::ui::toast::said(&harness.ctx)
+    };
+    assert_eq!(
+        said("[keys.window]\n\":upd\" = \"check_for_updates\"\n").as_deref(),
+        Some("99.0.0 available · :upd")
+    );
+    assert_eq!(
+        said("[keys.unbind]\nwindow = [\":update\"]\n").as_deref(),
+        Some("99.0.0 available")
+    );
+}
+
 #[test]
 fn the_settings_file_sets_the_check_live_and_marks_a_bad_value() {
     let mut harness = harness(Look::omarchy());

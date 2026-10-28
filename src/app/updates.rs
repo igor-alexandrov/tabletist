@@ -12,8 +12,10 @@ use crate::model::{Action, ConnTabContent};
 use crate::update::{Failed, Found, Phase, release};
 
 /// What the terminal look's status line says of a version available,
-/// `{version}` for it, for [`ANNOUNCED_FOR`].
-pub const ANNOUNCEMENT: &str = "{version} available · :update";
+/// `{version}` for it and `{key}` for Check for Updates' key as the keymap
+/// has it, for [`ANNOUNCED_FOR`]. With no key, [`ANNOUNCEMENT_KEYLESS`].
+pub const ANNOUNCEMENT: &str = "{version} available · {key}";
+pub const ANNOUNCEMENT_KEYLESS: &str = "{version} available";
 
 /// How long the status line says it.
 pub const ANNOUNCED_FOR: f64 = 8.0;
@@ -217,8 +219,17 @@ impl App {
         if let Some(version) = self.update_announcement.take()
             && self.look.terminal
         {
-            let said =
-                crate::i18n::gettext(self.locale, ANNOUNCEMENT).replace("{version}", &version);
+            let layout = crate::keymap::Layout::of(&self.look);
+            let key = self
+                .keymap
+                .key(layout, crate::keymap::Command::CheckForUpdates);
+            let words = match key.is_empty() {
+                true => ANNOUNCEMENT_KEYLESS,
+                false => ANNOUNCEMENT,
+            };
+            let said = crate::i18n::gettext(self.locale, words)
+                .replace("{version}", &version)
+                .replace("{key}", key.as_str());
             crate::ui::toast::say_for(ctx, &said, ANNOUNCED_FOR);
         }
         if let Some(url) = self.url_to_open.take() {
