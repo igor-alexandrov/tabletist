@@ -1,7 +1,8 @@
 //! Updates from Tabletist's GitHub releases: the check Settings › Updates
 //! shows (`check`, `release`), what it found as the state folder keeps it
 //! (`seen`), how this copy was installed (`installed`), and the updater
-//! that installs one, fastframe-update.
+//! that installs one, fastframe-update, over a client of our own
+//! (`transport`), with what the card makes of its download (`download`).
 //!
 //! What a later release's helper relies on from this build, which must not
 //! change: `tabletist --version` prints `tabletist <version>`;
@@ -12,13 +13,13 @@
 //! checksums) is in `release.yml` and `tests/update_release.rs`.
 
 pub mod check;
+pub mod download;
 pub mod installed;
 pub mod release;
 pub mod seen;
+pub mod transport;
 
-use std::time::Duration;
-
-use fastframe_update::{MacConfig, Request, Response, Transport, UpdateConfig, Updater};
+use fastframe_update::{MacConfig, UpdateConfig, Updater};
 
 pub use check::Failed;
 pub use installed::{Installed, Managed};
@@ -55,58 +56,12 @@ pub const CONFIG: UpdateConfig = UpdateConfig {
 /// An updater, on an HTTP client of its own. Its calls block: run them on
 /// a thread of their own, never on the interface thread.
 pub fn updater() -> Updater {
-    Updater::new(CONFIG, UreqTransport::new())
+    Updater::new(CONFIG, transport::UreqTransport::new())
 }
 
 /// The release page of the version that runs: What's new in it.
 pub fn this_release() -> String {
     format!("https://github.com/igor-alexandrov/tabletist/releases/tag/v{CURRENT}")
-}
-
-/// The updater's HTTP client: one GET at a time, redirects handed back
-/// rather than followed (the updater follows them, to GitHub's hosts
-/// only), any status returned as an answer, 15 seconds to connect and 15
-/// minutes for a whole download, as fastframe-update asks of a transport.
-/// It says what the check says of this copy, and nothing else.
-struct UreqTransport {
-    agent: ureq::Agent,
-    user_agent: String,
-}
-
-impl UreqTransport {
-    fn new() -> Self {
-        let config = ureq::Agent::config_builder()
-            .max_redirects(0)
-            .http_status_as_error(false)
-            .timeout_connect(Some(Duration::from_secs(15)))
-            .timeout_global(Some(Duration::from_secs(15 * 60)))
-            .build();
-        Self {
-            agent: config.into(),
-            user_agent: check::user_agent(CURRENT, check::macos_version().as_deref()),
-        }
-    }
-}
-
-impl Transport for UreqTransport {
-    fn get(&self, request: &Request<'_>) -> anyhow::Result<Response> {
-        let response = self
-            .agent
-            .get(request.url)
-            .header("Accept", request.accept)
-            .header("User-Agent", &self.user_agent)
-            .call()?;
-        let location = response
-            .headers()
-            .get("location")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        Ok(Response {
-            status: response.status().as_u16(),
-            location,
-            body: Box::new(response.into_body().into_reader()),
-        })
-    }
 }
 
 /// How long `check` waits between scheduled checks; None where checks

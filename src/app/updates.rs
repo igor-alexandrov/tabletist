@@ -140,6 +140,11 @@ impl App {
                 }
             }
             UpdatesEvent::NotesUnshown { url } => self.url_to_open = Some(url),
+            // Nothing asks for a download yet.
+            UpdatesEvent::Progress { .. }
+            | UpdatesEvent::Waiting { .. }
+            | UpdatesEvent::Downloaded { .. }
+            | UpdatesEvent::Handed(_) => {}
             UpdatesEvent::Checked { asked, result } => {
                 let Phase::Checking {
                     asked: waited,

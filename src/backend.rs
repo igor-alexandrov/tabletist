@@ -1760,6 +1760,8 @@ struct Worker {
     /// The MCP server, its gateway and what agents may use.
     agents: agents::Agents,
     history: history::History,
+    /// The download under way, and the one that verified.
+    updates: updates::Updates,
     #[cfg(test)]
     watched: Watched,
 }
@@ -1779,6 +1781,7 @@ impl Worker {
             waiting: HashMap::new(),
             settings_watch: None,
             history: history::History::default(),
+            updates: updates::Updates::default(),
             #[cfg(test)]
             watched: Watched::default(),
         };
@@ -2112,7 +2115,7 @@ impl Worker {
             }
             Command::Agents(command) => self.agents.handle(command, &self.outbox),
             Command::History(command) => self.history.handle(command, &self.outbox),
-            Command::Updates(command) => updates::handle(command, &self.outbox),
+            Command::Updates(command) => self.updates.handle(command, &self.outbox),
             query => {
                 let session = session_of(&query);
                 match self.sessions.get(&session) {

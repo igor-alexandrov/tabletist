@@ -93,6 +93,8 @@ Every defect below is fixed in the tasks, with a test that fails without the fix
   - `restart_when_done_becomes_dont_restart_and_show_them_shows_the_work` and `u_downloads_then_restarts_in_the_terminal_look` now check what their names say.
   - `macos.md` no longer reads as if the restart happens on its own.
 
+Task 1's review in the run found one more, fixed in its commit. A cancel was not seen while a request or a reconnect was blocked inside ureq's `call()`: up to 45 s with a network gone dead, while the download went on and a new one could start beside it. Each request now runs on a thread of its own, and the transport checks the cancel flag every 50 ms. A download's request that has gone 1 s with no answer says Waiting for the network (`a_cancel_ends_a_reconnect_that_gets_no_answer`).
+
 What held, among what the reviewers tried:
 - **The transport:**
   - a 206 at the wrong byte is refused;
