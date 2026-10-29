@@ -138,15 +138,16 @@ install it, and the next launch offers it again. Restart now first looks
 at every window, and the restart waits for what it would interrupt:
 unsaved edits in a table, a save running, a table's page, count or
 structure being read, a write running in a SQL editor, and any other
-query an editor runs. With any of them, or another dialog open, the card
-says **Finish your work first** and lists them (`Bookshop · dev: 3
-unsaved edits in book_covers`, `Bookshop · dev: query running for 1 min
-12 s`), with **Restart when done** (Omarchy: `U`), which restarts as soon
-as the list is empty, and **Show them**, which closes Settings and
+query an editor runs. With any of them, the card says **Finish your
+work first** and lists them (`Bookshop · dev: 3 unsaved edits in
+book_covers`, `Bookshop · dev: query running for 1 min 12 s`), with
+**Restart when done** (Omarchy: `U`), which restarts as soon as the list
+is empty and no other dialog is open, and **Show them**, which closes Settings and
 brings the first window with work forward, on its tab. Nothing is
 dropped to restart. Once Restart when done is chosen, the card says
 `Tabletist restarts once this is done:`, and **Don't restart** (Omarchy:
-`U` again) takes it back.
+`U` again) takes it back. Where only another dialog is open, such as About
+or quick open, the restart waits for it to close.
 
 While the restart begins, the card says **Installing 0.4.0…**. Tabletist
 writes `relaunch.json`, hands the update to its installer, quits, and

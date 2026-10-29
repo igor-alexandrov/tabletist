@@ -453,7 +453,9 @@ impl App {
 
     /// Restart now: the restart goes ahead where it may. Otherwise the
     /// card lists the work, in Settings › Updates, and waits for Restart
-    /// when done.
+    /// when done. Where only a dialog Settings cannot open over is in the
+    /// way (`:update`'s yes, a download that turned ready under quick
+    /// open), the restart waits for it to close, armed.
     fn restart_to_update(&mut self) {
         let (version, handed) = match &self.updates.install {
             Install::Ready { version, handed }
@@ -475,7 +477,7 @@ impl App {
         if let Install::Ready { .. } = self.updates.install {
             self.updates.install = Install::Held {
                 version,
-                when_done: false,
+                when_done: self.work_in_progress().is_empty(),
                 handed,
             };
         }
@@ -2101,6 +2103,29 @@ mod tests {
         harness.app.dialog = Some(Dialog::Help);
         harness.app.apply_actions();
         assert!(installs(&harness).is_empty());
+        harness.app.dialog = None;
+        harness.app.apply_actions();
+        assert_eq!(installs(&harness).len(), 1);
+    }
+
+    /// A restart asked for under a dialog Settings cannot open over, with
+    /// no work open: it waits for the dialog to close, then goes ahead,
+    /// as `:update`'s yes does when the download turns ready under About.
+    #[test]
+    fn restart_now_under_a_dialog_waits_for_it_to_close() {
+        let mut harness = offered();
+        ready(&mut harness);
+        harness.app.dialog = Some(Dialog::About);
+        harness.app.apply(Action::RestartToUpdate);
+        harness.app.apply_actions();
+        assert!(installs(&harness).is_empty());
+        assert!(matches!(
+            harness.app.updates.install,
+            Install::Held {
+                when_done: true,
+                ..
+            }
+        ));
         harness.app.dialog = None;
         harness.app.apply_actions();
         assert_eq!(installs(&harness).len(), 1);
