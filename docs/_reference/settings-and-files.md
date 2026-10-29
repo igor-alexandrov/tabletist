@@ -152,7 +152,8 @@ While the restart begins, the card says **Installing 0.4.0…**. Tabletist
 writes `relaunch.json`, hands the update to its installer, quits, and
 the new version takes its place and opens the windows you had, with
 their tables, filters and SQL editors, whatever **On launch** and
-**Reopen tabs** say. The installer waits a minute for Tabletist to quit.
+**Restore tabs and filters** say. The installer waits a minute for
+Tabletist to quit.
 Work you open in the seconds before it is ready is waited for as above
 for the first 50 seconds of that minute; work that ends later, or Restart
 now chosen later, gives **Couldn't install 0.4.0**, with **Try again**,

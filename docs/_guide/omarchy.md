@@ -49,7 +49,7 @@ second Esc gives the keyboard back.
 | `:keys default` | Open every key in force in your editor, as `settings.toml` spells them, commented: a file to copy lines from, written again each time and never read |
 | `:keys cheatsheet` | Save the keys in force as a Markdown cheat sheet, where you say |
 | `:set calendar`, `:set nocalendar` | Show or hide the [calendar]({% link _guide/editing-data.md %}#the-calendar) under a date's editor, saved as its switch in Settings is |
-| `:update` | Show Settings › Updates, and check for a newer version there. Where Tabletist can install it, the footer asks `install 0.4.0 and restart?`: `y` downloads it and, once it is ready, restarts as Restart now does: with work open, the block lists the work, and `U` restarts when it is done; `n`, `N` or Esc does not |
+| `:update` | Show Settings › Updates, and check for a newer version there. Where Tabletist can install it, the footer asks `install <version> and restart?`: `y` downloads it and, once it is ready, restarts as Restart now does: with work open, the block lists the work, and `U` restarts when it is done; `n`, `N` or Esc does not |
 | `?` | The list of keys |
 
 Ctrl+P opens quick open from any pane: a picker at the top of the
