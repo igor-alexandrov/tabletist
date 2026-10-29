@@ -270,6 +270,8 @@ pub enum StateFile {
     Recents(crate::recents::Recents),
     /// What the checks for updates found.
     Updates(crate::update::Seen),
+    /// The SQL editors, for the copy an update's helper starts.
+    Relaunch(crate::update::relaunch::Relaunch),
 }
 
 impl StateFile {
@@ -288,6 +290,7 @@ impl StateFile {
             Self::Session(session) => session.save(path),
             Self::Recents(recents) => recents.save(path),
             Self::Updates(seen) => crate::util::save_json(path, seen),
+            Self::Relaunch(relaunch) => crate::util::save_json(path, relaunch),
         }
     }
 }

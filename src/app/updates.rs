@@ -574,18 +574,19 @@ impl App {
     /// At the quit, while a helper may still wait for it: the SQL editors
     /// as they are now, for the copy it starts. The file Restart now wrote
     /// is older, and Couldn't install deleted it. The window calls it as
-    /// the app quits.
-    pub fn save_relaunch(&self) {
+    /// the app quits, before the backend's flush.
+    pub fn save_relaunch(&mut self) {
         let Some(at) = self.updates.handoff_ready else {
             return;
         };
         if at.elapsed() >= crate::update::HELPER_GIVES_UP {
             return;
         }
-        let path = self.dirs.relaunch_file();
-        if let Err(error) = crate::util::save_json(&path, &self.kept_for_relaunch()) {
-            log::error!("could not write {}: {error}", path.display());
-        }
+        let file = StateFile::Relaunch(self.kept_for_relaunch());
+        self.backend.send(Command::Save {
+            path: self.dirs.relaunch_file(),
+            file,
+        });
     }
 
     /// The helper's answer, taken in `logic` too: with the window hidden
@@ -1968,8 +1969,20 @@ mod tests {
         assert!(harness.app.closing);
         harness.app.save_relaunch();
         let path = harness.app.dirs.relaunch_file();
-        let saved = crate::update::relaunch::Relaunch::take(&path);
-        let editors = &saved.windows[0].editors;
+        let saved = harness
+            .app
+            .backend
+            .sent
+            .iter()
+            .rev()
+            .find_map(|sent| match sent {
+                Command::Save {
+                    path: to,
+                    file: StateFile::Relaunch(saved),
+                } if *to == path => Some(saved),
+                _ => None,
+            });
+        let editors = &saved.expect("the quit saves the relaunch file").windows[0].editors;
         assert_eq!(editors.len(), 1, "{editors:?}");
         assert_eq!(editors[0].text, "SELECT * FROM book_covers");
     }
