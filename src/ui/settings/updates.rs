@@ -277,6 +277,7 @@ pub(super) fn progress_bar(ui: &Ui, rect: Rect, downloading: &Downloading, skin:
         total => (release::megabytes_value(downloading.received) / release::megabytes_value(total))
             .clamp(0.0, 1.0),
     };
+    // A share from 0 to 1, for a width in points: f32 is plenty.
     #[allow(clippy::cast_possible_truncation)]
     let filled = Rect::from_min_size(rect.min, vec2(rect.width() * share as f32, rect.height()));
     ui.painter().rect_filled(filled, corner, palette.accent);

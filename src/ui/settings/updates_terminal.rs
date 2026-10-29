@@ -77,7 +77,8 @@ fn progress_row(ui: &Ui, downloading: &crate::update::Downloading, skin: &Skin) 
         ..
     } = *skin;
     let time = ui.input(|input| input.time);
-    // Ten frames a second, as long as it shows.
+    // Ten frames a second, as long as it shows. The time is never
+    // negative, and the remainder keeps the frame in range.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let frame = SPINNER[(time * 10.0) as usize % SPINNER.len()];
     ui.ctx()
@@ -87,8 +88,11 @@ fn progress_row(ui: &Ui, downloading: &crate::update::Downloading, skin: &Skin) 
         total => (release::megabytes_value(downloading.received) / release::megabytes_value(total))
             .clamp(0.0, 1.0),
     };
+    // The share is clamped to 0 to 1: the cells fit, and are never
+    // negative.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let filled = ((share * CELLS as f64).round() as usize).min(CELLS);
+    // 0 to 100, from the share clamped to 0 to 1.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let percent = (share * 100.0).floor() as u32;
     let said = look.label(&downloading_said(downloading, locale));
