@@ -571,18 +571,22 @@ impl App {
             }));
     }
 
-    /// At the quit, while a helper may still wait for it: the SQL editors
-    /// as they are now, for the copy it starts. The file Restart now wrote
-    /// is older, and Couldn't install deleted it. The window calls it as
-    /// the app quits, before the backend's flush.
+    /// At the quit, while a helper may still wait for it, or be handed
+    /// the update still: the SQL editors as they are now, for the copy it
+    /// starts. The file Restart now wrote is older, and Couldn't install
+    /// deleted it. The window calls it as the app quits, before the
+    /// backend's flush; queued after Restart now's own write, it lands
+    /// after it.
     pub fn save_relaunch(&mut self) {
-        let Some(at) = self.updates.handoff_ready else {
-            return;
-        };
-        if at.elapsed() >= crate::update::HELPER_GIVES_UP {
+        let handing = matches!(self.updates.install, Install::Restarting { .. });
+        let waits = self
+            .updates
+            .handoff_ready
+            .is_some_and(|at| at.elapsed() < crate::update::HELPER_GIVES_UP);
+        if !handing && !waits {
             return;
         }
-        let file = StateFile::Relaunch(self.kept_for_relaunch());
+        let file = StateFile::Relaunch(Some(self.kept_for_relaunch()));
         self.backend.send(Command::Save {
             path: self.dirs.relaunch_file(),
             file,
@@ -1978,11 +1982,49 @@ mod tests {
             .find_map(|sent| match sent {
                 Command::Save {
                     path: to,
-                    file: StateFile::Relaunch(saved),
+                    file: StateFile::Relaunch(Some(saved)),
                 } if *to == path => Some(saved),
                 _ => None,
             });
         let editors = &saved.expect("the quit saves the relaunch file").windows[0].editors;
+        assert_eq!(editors.len(), 1, "{editors:?}");
+        assert_eq!(editors[0].text, "SELECT * FROM book_covers");
+    }
+
+    /// A quit while the helper is still being started: the editors as
+    /// they are then go after Restart now's write, for the helper may yet
+    /// start and install.
+    #[test]
+    fn a_quit_while_installing_keeps_the_editors_as_they_are_then() {
+        let mut harness = offered();
+        ready(&mut harness);
+        harness.app.apply(Action::RestartToUpdate);
+        assert!(matches!(
+            harness.app.updates.install,
+            Install::Restarting { .. }
+        ));
+        let (tab, _) = harness.book_covers();
+        let sql = harness.add_sql_tab(tab);
+        harness.app.sql_tab_mut(tab, sql).unwrap().text = "SELECT * FROM book_covers".into();
+        harness.app.save_relaunch();
+        let path = harness.app.dirs.relaunch_file();
+        let sent = &harness.app.backend.sent;
+        let install = sent
+            .iter()
+            .position(|sent| matches!(sent, Command::Updates(UpdatesCommand::Install { .. })));
+        let (quit, saved) = sent
+            .iter()
+            .enumerate()
+            .find_map(|(at, sent)| match sent {
+                Command::Save {
+                    path: to,
+                    file: StateFile::Relaunch(Some(saved)),
+                } if *to == path => Some((at, saved)),
+                _ => None,
+            })
+            .expect("the quit saves the relaunch file");
+        assert!(install.is_some_and(|install| install < quit));
+        let editors = &saved.windows[0].editors;
         assert_eq!(editors.len(), 1, "{editors:?}");
         assert_eq!(editors[0].text, "SELECT * FROM book_covers");
     }

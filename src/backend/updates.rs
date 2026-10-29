@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use fastframe_update::{Prepared, Release};
 
+use super::StateFile;
 use crate::update::check::Failed;
 use crate::update::download::Failure;
 use crate::update::release::Latest;
@@ -50,17 +51,18 @@ pub enum UpdatesCommand {
     /// Stops the download under way: fastframe-update deletes what it
     /// wrote. Nothing answers it.
     CancelDownload,
-    /// Writes `relaunch` to `path`, then hands the download held to
-    /// fastframe-update's helper, which installs it once the app quits
-    /// and starts it with `arguments`. The file goes again where the
-    /// helper does not start. Answered with [`UpdatesEvent::Handed`].
+    /// Queues `relaunch` for `path` with the state files, then hands the
+    /// download held to fastframe-update's helper, which installs it once
+    /// the app quits and starts it with `arguments`. The file goes again
+    /// where the helper does not start. Answered with
+    /// [`UpdatesEvent::Handed`].
     Install {
         arguments: Vec<String>,
         relaunch: crate::update::relaunch::Relaunch,
         path: PathBuf,
     },
-    /// Deletes the relaunch file at `path`: the handoff did not end in
-    /// the quit.
+    /// Deletes the relaunch file at `path`, after any write of it queued
+    /// before: the handoff did not end in the quit.
     ForgetRelaunch { path: PathBuf },
 }
 
@@ -116,7 +118,12 @@ pub struct Updates {
 }
 
 impl Updates {
-    pub fn handle(&mut self, command: UpdatesCommand, outbox: &super::Outbox) {
+    pub fn handle(
+        &mut self,
+        command: UpdatesCommand,
+        saves: &super::Saves,
+        outbox: &super::Outbox,
+    ) {
         match command {
             UpdatesCommand::Download {
                 asked,
@@ -148,18 +155,23 @@ impl Updates {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .take();
+                // Through the state files' queue, as the quit's own write
+                // of it is: an older write cannot land after a newer one.
+                if held.is_some() {
+                    saves.save(path.clone(), StateFile::Relaunch(Some(relaunch)), outbox);
+                }
+                let saves = saves.clone();
                 let outbox = outbox.clone();
                 tokio::task::spawn_blocking(move || {
                     let handed = match held {
-                        Some(prepared) => crate::util::save_json(&path, &relaunch)
-                            .map_err(anyhow::Error::from)
-                            .and_then(|()| crate::update::updater().handoff(prepared, arguments))
+                        Some(prepared) => crate::update::updater()
+                            .handoff(prepared, arguments)
                             .map_err(|error| format!("{error:#}")),
                         None => Err("no update is ready to install".to_owned()),
                     };
                     if let Err(error) = &handed {
                         log::error!("could not hand the update over: {error}");
-                        forget(&path);
+                        saves.save(path, StateFile::Relaunch(None), &outbox);
                     }
                     outbox.emit(super::Event::Updates(UpdatesEvent::Handed {
                         result: handed,
@@ -168,7 +180,7 @@ impl Updates {
                 });
             }
             UpdatesCommand::ForgetRelaunch { path } => {
-                tokio::task::spawn_blocking(move || forget(&path));
+                saves.save(path, StateFile::Relaunch(None), outbox);
             }
             command => handle(command, outbox),
         }
@@ -232,15 +244,6 @@ impl Updates {
                 result,
             }));
         });
-    }
-}
-
-/// Deletes the relaunch file at `path`, where there is one.
-fn forget(path: &std::path::Path) {
-    if let Err(error) = std::fs::remove_file(path)
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        log::warn!("could not delete {}: {error}", path.display());
     }
 }
 
@@ -419,6 +422,11 @@ mod handed {
             answer(&mut backend),
             UpdatesEvent::Handed { result: Err(_), .. }
         ));
+        // Deleted through the state files' queue: it lands soon after.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while path.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert!(!path.exists());
     }
 
@@ -484,7 +492,11 @@ mod handed {
             kind: fastframe_update::Kind::Portable,
         };
         *updates.held.lock().unwrap() = Some(Prepared::sample(installation, "99.0.0"));
-        updates.handle(UpdatesCommand::CancelDownload, &outbox);
+        updates.handle(
+            UpdatesCommand::CancelDownload,
+            &crate::backend::Saves::default(),
+            &outbox,
+        );
         assert!(updates.held.lock().unwrap().is_none());
     }
 }
