@@ -1004,6 +1004,27 @@ pub enum Action {
     /// Show the notes of the version offered in `$PAGER`, in a terminal;
     /// where there is none to start, open its page.
     ShowReleaseNotes,
+    /// Download and verify the version offered, where this copy can
+    /// install it: Download and install, Download again, `U`.
+    DownloadUpdate,
+    /// Stop the download under way: Cancel, `ctrl+c`.
+    CancelDownload,
+    /// Install the download that verified and restart into it, once no
+    /// window has work open: Restart now, the start screen's Restart,
+    /// `U`. With work open the card lists it instead.
+    RestartToUpdate,
+    /// Restart as soon as the work listed is done.
+    RestartWhenDone,
+    /// Go back to Ready from waiting for the work: Don't restart.
+    DontRestart,
+    /// Keep the download for later, and close Settings.
+    UpdateLater,
+    /// Bring the first window with work forward, on the tab that holds
+    /// it: Show them.
+    ShowWork,
+    /// Open a new issue on GitHub about the download that failed, filled
+    /// in: Report on GitHub.
+    ReportUpdateFailure,
     /// Close Settings and show the Agents tab on this view: the window's in
     /// front, or with Connections in front the last window's.
     ShowAgentsFromSettings(AgentsView),

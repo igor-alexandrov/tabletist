@@ -95,6 +95,8 @@ Every defect below is fixed in the tasks, with a test that fails without the fix
 
 Task 1's review in the run found one more, fixed in its commit. A cancel was not seen while a request or a reconnect was blocked inside ureq's `call()`: up to 45 s with a network gone dead, while the download went on and a new one could start beside it. Each request now runs on a thread of its own, and the transport checks the cancel flag every 50 ms. A download's request that has gone 1 s with no answer says Waiting for the network (`a_cancel_ends_a_reconnect_that_gets_no_answer`).
 
+Task 2's review found two more, fixed in its commit. A quit could begin after `QUIT_IN_TIME`, when work ended or Restart now was pressed between 50 and 55 s: the helper then gave up first, and Tabletist closed with nothing opening again. A quit after a handoff now begins only within 50 s; later, the card says Couldn't install (`work_done_too_late_in_the_helper_s_minute_quits_nothing`, `restart_now_too_late_in_the_helper_s_minute_is_couldnt_install`). And `relaunch.json` was written once, at Restart now, so an SQL editor opened or typed into during the helper's minute was lost. It is written again at the quit while a helper may still be waiting (`HELPER_GIVES_UP`; `the_quit_keeps_the_editors_as_they_are_then`).
+
 What held, among what the reviewers tried:
 - **The transport:**
   - a 206 at the wrong byte is refused;

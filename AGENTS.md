@@ -264,6 +264,10 @@ needs a release that accepts both ways first:
   clap reads the command line (`tests/cli.rs`).
 - The receipt is confirmed once the first frame is painted, on the second
   (`entrypoint.rs`): eframe paints a frame after its `ui` returns.
+- The helper starts the new version with the old one's arguments and
+  `--relaunch`, a hidden flag every release accepts: it reopens the windows
+  of the restart, and the SQL editors `relaunch.json` kept
+  (`App::relaunched`).
 - The release's file names, the markers (`packaging/tabletist-portable.txt`
   in the archives, `packaging/windows/tabletist-installer.txt` installed
   beside the app) and `checksums.txt.sig` stay as `release.yml` makes them

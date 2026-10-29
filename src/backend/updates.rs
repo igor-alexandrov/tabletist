@@ -50,10 +50,18 @@ pub enum UpdatesCommand {
     /// Stops the download under way: fastframe-update deletes what it
     /// wrote. Nothing answers it.
     CancelDownload,
-    /// Hands the download held to fastframe-update's helper, which
-    /// installs it once the app quits and starts it with `arguments`.
-    /// Answered with [`UpdatesEvent::Handed`].
-    Install { arguments: Vec<String> },
+    /// Writes `relaunch` to `path`, then hands the download held to
+    /// fastframe-update's helper, which installs it once the app quits
+    /// and starts it with `arguments`. The file goes again where the
+    /// helper does not start. Answered with [`UpdatesEvent::Handed`].
+    Install {
+        arguments: Vec<String>,
+        relaunch: crate::update::relaunch::Relaunch,
+        path: PathBuf,
+    },
+    /// Deletes the relaunch file at `path`: the handoff did not end in
+    /// the quit.
+    ForgetRelaunch { path: PathBuf },
 }
 
 /// What came of an [`UpdatesCommand`].
@@ -88,10 +96,13 @@ pub enum UpdatesEvent {
         asked: u64,
         result: Result<(), Failure>,
     },
-    /// The helper stands ready, and the app is to quit now; or it did not
-    /// start, in fastframe-update's words. The download held is gone
-    /// either way.
-    Handed(Result<(), String>),
+    /// The helper stands ready since `at`, and the app is to quit now; or
+    /// it did not start, in fastframe-update's words. The download held is
+    /// gone either way.
+    Handed {
+        result: Result<(), String>,
+        at: Instant,
+    },
 }
 
 /// What the backend keeps of updates between commands.
@@ -127,7 +138,11 @@ impl Updates {
                     tokio::task::spawn_blocking(move || held.discard());
                 }
             }
-            UpdatesCommand::Install { arguments } => {
+            UpdatesCommand::Install {
+                arguments,
+                relaunch,
+                path,
+            } => {
                 let held = self
                     .held
                     .lock()
@@ -136,16 +151,24 @@ impl Updates {
                 let outbox = outbox.clone();
                 tokio::task::spawn_blocking(move || {
                     let handed = match held {
-                        Some(prepared) => crate::update::updater()
-                            .handoff(prepared, arguments)
+                        Some(prepared) => crate::util::save_json(&path, &relaunch)
+                            .map_err(anyhow::Error::from)
+                            .and_then(|()| crate::update::updater().handoff(prepared, arguments))
                             .map_err(|error| format!("{error:#}")),
                         None => Err("no update is ready to install".to_owned()),
                     };
                     if let Err(error) = &handed {
                         log::error!("could not hand the update over: {error}");
+                        forget(&path);
                     }
-                    outbox.emit(super::Event::Updates(UpdatesEvent::Handed(handed)));
+                    outbox.emit(super::Event::Updates(UpdatesEvent::Handed {
+                        result: handed,
+                        at: Instant::now(),
+                    }));
                 });
+            }
+            UpdatesCommand::ForgetRelaunch { path } => {
+                tokio::task::spawn_blocking(move || forget(&path));
             }
             command => handle(command, outbox),
         }
@@ -212,6 +235,15 @@ impl Updates {
     }
 }
 
+/// Deletes the relaunch file at `path`, where there is one.
+fn forget(path: &std::path::Path) {
+    if let Err(error) = std::fs::remove_file(path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        log::warn!("could not delete {}: {error}", path.display());
+    }
+}
+
 fn handle(command: UpdatesCommand, outbox: &super::Outbox) {
     let outbox = outbox.clone();
     match command {
@@ -254,7 +286,8 @@ fn handle(command: UpdatesCommand, outbox: &super::Outbox) {
         // Kept between commands: [`Updates::handle`]'s.
         UpdatesCommand::Download { .. }
         | UpdatesCommand::CancelDownload
-        | UpdatesCommand::Install { .. } => {}
+        | UpdatesCommand::Install { .. }
+        | UpdatesCommand::ForgetRelaunch { .. } => {}
     }
 }
 
@@ -369,13 +402,40 @@ mod handed {
         panic!("no answer");
     }
 
+    /// Nothing held: nothing is handed over, and no relaunch file is
+    /// left for a next copy that will not come.
     #[test]
     fn install_with_no_download_held_hands_nothing_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relaunch.json");
+        std::fs::write(&path, "{}").unwrap();
         let mut backend = Backend::start_with(Waker::default(), crate::secrets::Keyring::memory());
         backend.send(Command::Updates(UpdatesCommand::Install {
             arguments: vec!["--relaunch".into()],
+            relaunch: crate::update::relaunch::Relaunch::default(),
+            path: path.clone(),
         }));
-        assert!(matches!(answer(&mut backend), UpdatesEvent::Handed(Err(_))));
+        assert!(matches!(
+            answer(&mut backend),
+            UpdatesEvent::Handed { result: Err(_), .. }
+        ));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn forget_relaunch_deletes_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relaunch.json");
+        std::fs::write(&path, "{}").unwrap();
+        let mut backend = Backend::start_with(Waker::default(), crate::secrets::Keyring::memory());
+        backend.send(Command::Updates(UpdatesCommand::ForgetRelaunch {
+            path: path.clone(),
+        }));
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while path.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!path.exists());
     }
 
     /// A test binary is no installation fastframe-update can replace: it
@@ -397,10 +457,16 @@ mod handed {
             } => {}
             other => panic!("{other:?}"),
         }
+        let dir = tempfile::tempdir().unwrap();
         backend.send(Command::Updates(UpdatesCommand::Install {
             arguments: Vec::new(),
+            relaunch: crate::update::relaunch::Relaunch::default(),
+            path: dir.path().join("relaunch.json"),
         }));
-        assert!(matches!(answer(&mut backend), UpdatesEvent::Handed(Err(_))));
+        assert!(matches!(
+            answer(&mut backend),
+            UpdatesEvent::Handed { result: Err(_), .. }
+        ));
     }
 
     /// A download that verified as the cancel came is not left held: the

@@ -387,7 +387,7 @@ impl App {
     /// typed back to what it loaded is one fewer: closing the editor
     /// takes it out of the set. An open editor with nothing pending yet
     /// still counts as one: a tab that holds edits never counts as none.
-    fn unwritten(&self, tab: ConnTabId, id: TabId) -> usize {
+    pub(super) fn unwritten(&self, tab: ConnTabId, id: TabId) -> usize {
         let Some(edits) = self
             .workspace(tab)
             .and_then(|workspace| workspace.object_tab(id))

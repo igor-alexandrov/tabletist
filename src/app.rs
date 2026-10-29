@@ -281,6 +281,15 @@ pub struct App {
     /// A page the next frame opens in the browser: a release's, where its
     /// notes could not be shown in a terminal.
     pub url_to_open: Option<String>,
+    /// The command line this copy was started with, without the program's
+    /// name: an update's helper starts the new version with it.
+    pub launch_arguments: Vec<String>,
+    /// What a restart to update kept, while the relaunched windows open:
+    /// each window's own, by its tab.
+    relaunch_windows: HashMap<ConnTabId, crate::update::relaunch::Window>,
+    /// The SQL editors a restart to update kept, while the relaunched
+    /// windows open: each takes its own.
+    relaunch: Option<crate::update::relaunch::Relaunch>,
     next_id: u64,
 }
 
@@ -315,6 +324,18 @@ fn load_table_lists(path: &std::path::Path) -> (TableLists, Unread) {
 
 impl App {
     pub fn new(dirs: AppDirs, loaded: Loaded, backend: Backend) -> Self {
+        Self::opened(dirs, loaded, backend, false)
+    }
+
+    /// [`App::new`], for the copy an update's helper started after a
+    /// restart to install it (`--relaunch`): the windows open at the quit
+    /// come back whatever the launch setting says, with their tables and
+    /// the SQL editors `relaunch.json` kept.
+    pub fn relaunched(dirs: AppDirs, loaded: Loaded, backend: Backend) -> Self {
+        Self::opened(dirs, loaded, backend, true)
+    }
+
+    fn opened(dirs: AppDirs, loaded: Loaded, backend: Backend, relaunched: bool) -> Self {
         let source = loaded.source;
         let (settings, settings_file) = loaded.into_parts();
         let loaded_connections = SavedConnections::load(&dirs);
@@ -431,10 +452,13 @@ impl App {
             updates_url: crate::update::check::LATEST.to_owned(),
             update_announcement: None,
             url_to_open: None,
+            launch_arguments: Vec::new(),
+            relaunch: None,
+            relaunch_windows: HashMap::new(),
             next_id: 1,
         };
         app.refresh_keymap();
-        app.launch();
+        app.launch(relaunched);
         // What an older version kept in connections.json is written as
         // this one keeps it, once, off the UI thread. So is a file in
         // which a connection had no id yet.
@@ -867,6 +891,8 @@ impl App {
         self.read_reopened();
         self.format_rows();
         self.make_reviews();
+        // Restart when done goes ahead in the frame the work ended in.
+        self.tick_restart();
     }
 
     /// Formats the row each open row panel shows, once per selection or
@@ -2555,7 +2581,15 @@ impl App {
             Action::CheckForUpdates
             | Action::CancelUpdateCheck
             | Action::SkipUpdate
-            | Action::ShowReleaseNotes => self.update_action(action),
+            | Action::ShowReleaseNotes
+            | Action::DownloadUpdate
+            | Action::CancelDownload
+            | Action::RestartToUpdate
+            | Action::RestartWhenDone
+            | Action::DontRestart
+            | Action::UpdateLater
+            | Action::ShowWork
+            | Action::ReportUpdateFailure => self.update_action(action),
             Action::ChooseAgentSetup(agent) => {
                 if let Some(Dialog::Settings(dialog)) = &mut self.dialog {
                     dialog.agent = agent;
@@ -3297,9 +3331,21 @@ impl App {
     /// picker, so that the next launch does what the menu says; with
     /// connections that could not be read, nothing is known to be
     /// deleted, and the option stays. Whatever opens nothing opens the
-    /// picker.
-    fn launch(&mut self) {
-        match self.settings.on_launch.clone() {
+    /// picker. A relaunch after an update opens the last windows,
+    /// whatever the settings say, as [`App::relaunched`] says.
+    fn launch(&mut self, relaunched: bool) {
+        if relaunched {
+            let path = self.dirs.relaunch_file();
+            self.relaunch = Some(crate::update::relaunch::Relaunch::take(&path));
+            self.open_last_session();
+            self.relaunch = None;
+            self.relaunch_windows.clear();
+        }
+        let on_launch = match relaunched {
+            true => crate::settings::Launch::Connections,
+            false => self.settings.on_launch.clone(),
+        };
+        match on_launch {
             crate::settings::Launch::Restore => self.open_last_session(),
             crate::settings::Launch::Connections => {}
             crate::settings::Launch::Connection { id, .. } => {
@@ -3359,6 +3405,13 @@ impl App {
                 }
             };
             let tab = self.picker_tab();
+            // What a restart to update kept of this window: windows of
+            // one connection take theirs in the bar's order.
+            if let (Some(relaunch), Some(saved)) = (&mut self.relaunch, &saved)
+                && let Some(window) = relaunch.window_of(&saved.id.0)
+            {
+                self.relaunch_windows.insert(tab.id, window);
+            }
             windows.push((tab.id, saved));
             self.tabs.push(tab);
             if index <= self.session.active {
@@ -3520,9 +3573,11 @@ impl App {
         // are of the database it opens on.
         let kept = self.session.connections.get(&saved.id.0).cloned();
         let row_panel = kept.as_ref().is_none_or(|kept| kept.row_panel);
-        let tables = kept.filter(|kept| {
-            self.settings.restore_tabs && kept.database == crate::session::database_of(&saved.spec)
-        });
+        // A relaunch after an update puts back what the restart took away,
+        // whatever the settings reopen.
+        let restore = self.settings.restore_tabs || self.relaunch.is_some();
+        let tables = kept
+            .filter(|kept| restore && kept.database == crate::session::database_of(&saved.spec));
         let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) else {
             return;
         };
@@ -3534,6 +3589,9 @@ impl App {
         entry.content = ConnTabContent::Workspace(Box::new(workspace));
         if let Some(kept) = tables {
             self.reopen_tabs(tab, &kept);
+        }
+        if let Some(window) = self.relaunch_windows.remove(&tab) {
+            self.reopen_editors(tab, window);
         }
         if replaced {
             self.save_session();
@@ -3569,6 +3627,45 @@ impl App {
                 .map(|object| Tab::Object(Box::new(object))),
         );
         workspace.active_tab = active;
+    }
+
+    /// Puts the SQL editors a restart to update kept in `tab`'s window,
+    /// each in its place among the tables, with its number, its text and
+    /// its mode, and the tab that was in front in front again. The new
+    /// ones count on from the last.
+    fn reopen_editors(&mut self, tab: ConnTabId, window: crate::update::relaunch::Window) {
+        let (limit, timeout) = (self.settings.sql_limit, self.settings.sql_timeout());
+        let mut editors = window.editors;
+        editors.sort_by_key(|editor| editor.at);
+        let ids: Vec<TabId> = editors.iter().map(|_| TabId(self.next_id())).collect();
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        for (editor, id) in editors.into_iter().zip(ids) {
+            let sql = workspace.push_sql_tab(id, limit, timeout);
+            sql.mode = match editor.writes {
+                true => RunMode::ReadWrite,
+                false => RunMode::ReadOnly,
+            };
+            sql.number = editor.number;
+            sql.text = editor.text;
+            workspace.next_query = workspace.next_query.max(editor.number.saturating_add(1));
+            // Pushed at the end: moved to its place.
+            if let Some(pushed) = workspace.tabs.pop() {
+                let at = editor.at.min(workspace.tabs.len());
+                workspace.tabs.insert(at, pushed);
+            }
+        }
+        let front = window
+            .front
+            .and_then(|at| workspace.tabs.get(at))
+            .map(Tab::id);
+        if let Some(front) = front {
+            workspace.active_tab = Some(front);
+        }
+        if workspace.active_tab.is_none() {
+            workspace.active_tab = workspace.tabs.first().map(Tab::id);
+        }
     }
 
     /// Reads the table in front of each window that was reopened and not
@@ -7925,6 +8022,12 @@ impl App {
         // The window comes back when the next session is due.
         if let Some(wait) = self.close_idle(std::time::Instant::now()) {
             ctx.request_repaint_after(wait);
+        }
+        // The helper's answer, and the quit it asks for, while the
+        // window is hidden too: the helper waits a minute at most.
+        self.take_handoff();
+        if self.closing {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if let Some(wait) = self.tick_updates() {
             ctx.request_repaint_after(wait);

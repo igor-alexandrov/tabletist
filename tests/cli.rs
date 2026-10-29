@@ -64,6 +64,20 @@ fn update_flags_are_taken_out_before_the_arguments_are_read() {
     }
 }
 
+/// The helper starts the new version with `--relaunch` after the launch's
+/// own arguments, and that version reads it: every release accepts it,
+/// and `--help` does not list it.
+#[test]
+fn the_relaunch_flag_is_read_and_not_listed() {
+    let output = tabletist()
+        .args(["--relaunch", "--version"])
+        .output()
+        .expect("run tabletist");
+    assert!(output.status.success(), "{output:?}");
+    let help = tabletist().arg("--help").output().expect("run tabletist");
+    assert!(!String::from_utf8_lossy(&help.stdout).contains("--relaunch"));
+}
+
 /// `--apply-update <job>` makes the process the helper, before anything
 /// else: with no job to read it fails and exits, and never opens a window.
 #[test]

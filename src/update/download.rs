@@ -16,6 +16,12 @@ pub enum Failure {
     /// Couldn't install: the helper that swaps the app did not start.
     /// fastframe-update's words.
     NotHanded(String),
+    /// Couldn't install: work was opened while the helper got ready, and
+    /// was not done before the helper gave up.
+    WorkBegan,
+    /// Couldn't install: the helper's answer came when it was too late to
+    /// quit in time (the window was hidden).
+    TooLate,
 }
 
 /// What did not verify.
@@ -139,6 +145,10 @@ impl Failure {
                 Undone::Other(_) => "{error}",
             },
             Self::NotHanded(_) => "The installer didn't start: {error}",
+            Self::WorkBegan => {
+                "Work was still open when the installer stopped waiting, so Tabletist didn't restart."
+            }
+            Self::TooLate => "Tabletist couldn't quit in time, so the installer stopped waiting.",
         }
     }
 
@@ -226,7 +236,7 @@ pub fn issue_url(version: &str, failure: &Failure, said: &str) -> String {
     let kind = match failure {
         Failure::Unverified(_) => "didn't verify",
         Failure::Undone(_) => "didn't download",
-        Failure::NotHanded(_) => "didn't install",
+        Failure::NotHanded(_) | Failure::WorkBegan | Failure::TooLate => "didn't install",
     };
     let title = format!("Update to {version} {kind}");
     let body = format!(
