@@ -214,6 +214,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         })
         .unwrap_or_default();
     let searching = !query.trim().is_empty();
+    // An update downloaded and verified, on macOS: Restart installs it.
+    let ready = match &app.updates.install {
+        crate::update::Install::Ready { version, .. } if !look.terminal => Some(version.clone()),
+        _ => None,
+    };
     let skin = Skin {
         look: &look,
         palette: &palette,
@@ -277,6 +282,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     search_footer(&mut ui, &keys, skin);
                 }
             } else {
+                if let Some(version) = &ready {
+                    ready_line(&mut ui, version, skin, &mut actions);
+                    ui.add_space(gap(&look));
+                }
                 lists(&mut ui, &shown, &keys, skin, &mut claimed, &mut actions);
                 ui.add_space(gap(&look));
                 starts(&mut ui, &shown, &keys, skin, &mut claimed, &mut actions);
@@ -290,6 +299,33 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         actions.push(Action::StartSearchChanged(tab));
     }
     app.actions.extend(actions);
+}
+
+/// What waits where the start screen tells of something waiting, between
+/// the search field and the recents: `0.2.0 is ready · Restart`, muted,
+/// with Restart a link that does what Restart now does.
+fn ready_line(ui: &mut egui::Ui, version: &str, skin: Skin<'_>, actions: &mut Vec<Action>) {
+    let (look, palette, locale) = (skin.look, skin.palette, skin.locale);
+    let height = look.control_height;
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    let said = gettext(locale, "{version} is ready").replace("{version}", version);
+    let role = widgets::secondary(look);
+    let y = rect.center().y;
+    let mut x = rect.left();
+    x += widgets::paint_label(
+        ui,
+        x,
+        y,
+        Text::one(look, role, &format!("{said} ·"), palette.dim),
+    );
+    x += 4.0;
+    let restart = gettext(locale, "Restart");
+    let button = ButtonSpec::new(&restart).link();
+    let width = button.width(ui, look);
+    let place = Rect::from_min_size(pos2(x, rect.top()), vec2(width, height));
+    if button.show_at(ui, place, look, palette).clicked() {
+        actions.push(Action::RestartToUpdate);
+    }
 }
 
 /// The words after the database's name: `Read-only` on a production

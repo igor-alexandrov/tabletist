@@ -239,6 +239,8 @@ impl App {
             // Ready stays: the next Restart now installs it.
             Action::UpdateLater => self.close_settings(),
             Action::ShowWork => self.show_work(),
+            Action::UpdateNow => self.update_now(),
+            Action::AnswerUpdateQuestion(yes) => self.answer_update_question(yes),
             Action::ReportUpdateFailure => {
                 if let Install::Failed { version, failure } = &self.updates.install {
                     let said = failure.with_parts(failure.said());
@@ -248,6 +250,7 @@ impl App {
             // The schedule's next check waits an interval from it, as
             // from one that failed.
             Action::CancelUpdateCheck => {
+                self.updates.ask_after_check = false;
                 if self.updates.checking() {
                     self.updates.phase = Phase::Idle;
                     self.updates.tried = Some(self.now_secs());
@@ -384,6 +387,61 @@ impl App {
                 version,
                 url,
             }));
+    }
+
+    /// `:update`: the pane, checking. In the terminal look a version this
+    /// copy can install is asked about in the footer: the one downloading
+    /// or ready at once, else the one the check finds.
+    fn update_now(&mut self) {
+        self.apply(Action::ShowUpdates);
+        if !self.look.terminal {
+            return;
+        }
+        let version = match &self.updates.install {
+            Install::Downloading(downloading) => Some(downloading.version.clone()),
+            Install::Ready { version, .. } => Some(version.clone()),
+            Install::Held { .. } | Install::Restarting { .. } => None,
+            Install::Idle | Install::Failed { .. } => {
+                self.updates.ask_after_check = self.updates.checking();
+                None
+            }
+        };
+        if let Some(version) = version {
+            self.ask_to_install(version);
+        }
+    }
+
+    /// Asks in the Updates pane's footer whether to install `version` and
+    /// restart.
+    fn ask_to_install(&mut self, version: String) {
+        if let Some(Dialog::Settings(dialog)) = &mut self.dialog
+            && dialog.pane == SettingsPane::Updates
+        {
+            dialog.update_question = Some(version);
+        }
+    }
+
+    /// The footer's answer: yes downloads, then restarts once the
+    /// download is ready, through the same check for work as Restart now.
+    fn answer_update_question(&mut self, yes: bool) {
+        let asked = match &mut self.dialog {
+            Some(Dialog::Settings(dialog)) => dialog.update_question.take(),
+            _ => None,
+        };
+        if asked.is_none() || !yes {
+            return;
+        }
+        if let Install::Idle | Install::Failed { .. } = self.updates.install {
+            self.download_update();
+        }
+        match &mut self.updates.install {
+            Install::Downloading(downloading) => downloading.then_restart = true,
+            Install::Ready { .. } => self.restart_to_update(),
+            Install::Idle
+            | Install::Held { .. }
+            | Install::Restarting { .. }
+            | Install::Failed { .. } => {}
+        }
     }
 
     /// Whether the app may quit for the restart now: no window has work
@@ -654,6 +712,13 @@ impl App {
             Found::Newer(_) | Found::UpToDate => None,
         };
         self.save_updates();
+        if std::mem::take(&mut self.updates.ask_after_check) {
+            let skip = self.settings.update_skip.as_deref();
+            if let Some(offer) = self.updates.installable(skip) {
+                let version = offer.version.clone();
+                self.ask_to_install(version);
+            }
+        }
     }
 
     /// In the terminal look, the status line tells of a version offered,
@@ -674,6 +739,7 @@ impl App {
     /// A check that got no answer: it does not count as checked, and the
     /// schedule tries again an interval later, whoever asked.
     fn check_failed(&mut self, failed: Failed, asked_for: bool, now: u64) {
+        self.updates.ask_after_check = false;
         self.updates.tried = Some(now);
         self.updates.phase = Phase::Failed { failed, asked_for };
     }

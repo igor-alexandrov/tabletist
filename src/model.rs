@@ -995,8 +995,15 @@ pub enum Action {
     /// skip is offered by a check asked for.
     CheckForUpdates,
     /// Show Settings › Updates and check there now: the menu's Check for
-    /// Updates…, quick open's, `:update`.
+    /// Updates…, quick open's.
     ShowUpdates,
+    /// `:update`: [`Action::ShowUpdates`], and in the terminal look, where
+    /// the check finds a version this copy can install, the footer asks
+    /// whether to install it and restart.
+    UpdateNow,
+    /// The answer to that question: download it, then restart once it is
+    /// ready, as Restart now does; or not.
+    AnswerUpdateQuestion(bool),
     /// Drop the check under way: what it brings is not read.
     CancelUpdateCheck,
     /// Stop offering the version offered: `updates.skip`.
@@ -2939,6 +2946,9 @@ pub struct SettingsDialog {
     /// A question of the query history's waits for its answer, where the
     /// footer asks it as it asks Reset's.
     pub history_question: Option<HistoryQuestion>,
+    /// `:update` asks whether to install this version and restart: the
+    /// Updates pane's footer asks it, as it asks the history's.
+    pub update_question: Option<String>,
     /// The agent Settings › Agents says how to connect.
     pub agent: crate::endpoint::Agent,
     /// The option quick open opened the window at: the sheet draws its row

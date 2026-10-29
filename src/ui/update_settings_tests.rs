@@ -10,10 +10,11 @@ use crate::model::{Action, Dialog, SettingsPane};
 use crate::settings::UpdateCheck;
 use crate::testing::{Harness, node};
 use crate::theme::Look;
-use crate::update::Phase;
 use crate::update::check::Failed;
+use crate::update::download::{Failure, Undone, Unverified};
 use crate::update::installed::{Installed, Managed};
 use crate::update::release::{self, Kind, Latest, Offer, Os};
+use crate::update::{Downloading, Install, Phase};
 
 fn looks() -> [Look; 2] {
     [Look::macos(), Look::omarchy()]
@@ -462,8 +463,13 @@ fn the_terminal_keys_check_show_the_notes_and_skip() {
     assert_eq!(checks(&harness), 1);
     harness.app.apply(Action::CancelUpdateCheck);
     harness.app.updates.seen.offer = Some(offer());
-    // The block's keys, as the keymap writes them.
-    assert!(harness.has("n release notes  S skip 99.0.0"));
+    // The block's keys, as the keymap writes them: `U` where this copy
+    // downloads, which Windows does not.
+    let keys = match crate::update::DOWNLOADS {
+        true => "U update now  n release notes  S skip 99.0.0",
+        false => "n release notes  S skip 99.0.0",
+    };
+    assert!(harness.has(keys));
     crate::ui::tests::type_key(&mut harness, Key::N, "n");
     let shown = harness
         .app
@@ -666,4 +672,560 @@ fn a_failed_check_asked_for_is_shown_over_a_version_found_before() {
         harness.settle();
         assert!(!harness.has(&error), "{}", look.name);
     }
+}
+
+// The download and the restart.
+
+/// A harness offered 99.0.0, which this copy installs itself.
+fn installs(look: Look) -> Harness {
+    let mut harness = harness(look);
+    harness.app.updates.installed = Some(Installed::Itself(Kind::Portable));
+    harness.app.updates.seen.offer = Some(offer());
+    harness
+}
+
+fn downloads(harness: &Harness) -> usize {
+    harness
+        .app
+        .backend
+        .sent
+        .iter()
+        .filter(|sent| matches!(sent, Command::Updates(UpdatesCommand::Download { .. })))
+        .count()
+}
+
+/// 18.4 of 31.2 MB, at 2 MB a second for the last five seconds.
+fn downloading() -> Downloading {
+    let mut downloading = Downloading::new(7, "99.0.0".into(), 31_200_000);
+    for (secs, received) in [(4, 8_400_000), (9, 18_400_000)] {
+        downloading.progressed(received, 31_200_000, std::time::Duration::from_secs(secs));
+    }
+    downloading
+}
+
+fn ready() -> Install {
+    Install::Ready {
+        version: "99.0.0".into(),
+        handed: None,
+    }
+}
+
+#[test]
+fn available_offers_download_and_install_where_this_copy_installs_it() {
+    let mut harness = installs(Look::macos());
+    on_the_pane(&mut harness);
+    if !crate::update::DOWNLOADS {
+        // Windows: the release page, as before.
+        assert!(!harness.has("Download and install"));
+        return;
+    }
+    // The page is a link beside it now.
+    assert!(harness.has("Release notes on GitHub"));
+    harness.click("Download and install");
+    harness.settle();
+    assert_eq!(downloads(&harness), 1);
+    assert!(harness.has("Downloading 99.0.0…"));
+}
+
+#[test]
+fn a_copy_that_does_not_install_it_offers_the_page_alone() {
+    for installed in [
+        Installed::Elsewhere(Managed {
+            said: "Tabletist can't replace itself here",
+            command: None,
+        }),
+        Installed::Itself(Kind::Portable),
+    ] {
+        let mut harness = harness(Look::macos());
+        let mut offer = offer();
+        if matches!(installed, Installed::Itself(_)) {
+            // A release with no build for this computer.
+            offer.download = None;
+        }
+        harness.app.updates.installed = Some(installed);
+        harness.app.updates.seen.offer = Some(offer);
+        on_the_pane(&mut harness);
+        assert!(!harness.has("Download and install"));
+        assert!(harness.has("Release notes on GitHub"));
+    }
+}
+
+#[test]
+fn downloading_shows_how_much_came_and_the_time_left() {
+    for look in looks() {
+        let mut harness = installs(look);
+        harness.app.updates.install = Install::Downloading(downloading());
+        on_the_pane(&mut harness);
+        let title = said(&look, "Downloading 99.0.0…");
+        assert!(harness.has(&title), "{}", look.name);
+        let line = said(&look, "18.4 of 31.2 MB · about 10 s left");
+        let tree = harness.settle();
+        assert!(
+            crate::testing::labels(&tree)
+                .iter()
+                .any(|label| label.contains(&line)),
+            "{}: {:?}",
+            look.name,
+            crate::testing::labels(&tree)
+        );
+    }
+}
+
+/// The bar is a progress indicator, from 0 to the size in megabytes.
+#[test]
+fn the_progress_bar_tells_a_screen_reader_what_came_in_megabytes() {
+    for look in looks() {
+        let mut harness = installs(look);
+        harness.app.updates.install = Install::Downloading(downloading());
+        on_the_pane(&mut harness);
+        let tree = harness.settle();
+        let (_, bar) = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == Role::ProgressIndicator)
+            .unwrap_or_else(|| panic!("{}: no progress indicator", look.name));
+        assert_eq!(bar.min_numeric_value(), Some(0.0), "{}", look.name);
+        assert_eq!(bar.max_numeric_value(), Some(31.2), "{}", look.name);
+        assert_eq!(bar.numeric_value(), Some(18.4), "{}", look.name);
+        assert_eq!(bar.value(), Some("18.4 of 31.2 MB"), "{}", look.name);
+    }
+}
+
+#[test]
+fn a_download_says_when_it_waits_for_the_network_and_when_it_verifies() {
+    for look in looks() {
+        let mut harness = installs(look);
+        let mut waiting = downloading();
+        waiting.waiting = true;
+        harness.app.updates.install = Install::Downloading(waiting);
+        on_the_pane(&mut harness);
+        let line = said(&look, "Waiting for the network · 18.4 of 31.2 MB");
+        let has = |harness: &mut Harness, part: &str| {
+            let tree = harness.settle();
+            crate::testing::labels(&tree)
+                .iter()
+                .any(|label| label.contains(part))
+        };
+        assert!(has(&mut harness, &line), "{}", look.name);
+        let mut verifying = downloading();
+        verifying.progressed(31_200_000, 31_200_000, std::time::Duration::from_secs(14));
+        harness.app.updates.install = Install::Downloading(verifying);
+        assert!(
+            has(&mut harness, &said(&look, "Verifying…")),
+            "{}",
+            look.name
+        );
+    }
+}
+
+#[test]
+fn cancel_and_ctrl_c_stop_the_download() {
+    for look in looks() {
+        let mut harness = installs(look);
+        harness.app.updates.install = Install::Downloading(downloading());
+        on_the_pane(&mut harness);
+        if look.terminal {
+            assert!(harness.has(&said(&look, "Downloading 99.0.0…")));
+            harness.press(Key::C, Modifiers::CTRL);
+        } else {
+            harness.click("Cancel");
+        }
+        harness.settle();
+        assert_eq!(harness.app.updates.install, Install::Idle, "{}", look.name);
+        let cancelled = harness
+            .app
+            .backend
+            .sent
+            .iter()
+            .any(|sent| matches!(sent, Command::Updates(UpdatesCommand::CancelDownload)));
+        assert!(cancelled, "{}", look.name);
+    }
+}
+
+#[test]
+fn ready_offers_restart_now_and_later() {
+    let mut harness = installs(Look::macos());
+    harness.app.updates.install = ready();
+    on_the_pane(&mut harness);
+    assert!(harness.has("99.0.0 is ready to install"));
+    assert!(harness.has("Signature checked · restart to finish"));
+    harness.click("Later");
+    harness.settle();
+    assert!(harness.app.dialog.is_none());
+    assert_eq!(harness.app.updates.install, ready());
+    on_the_pane(&mut harness);
+    harness.click("Restart now");
+    harness.settle();
+    assert!(matches!(
+        harness.app.updates.install,
+        Install::Restarting { .. }
+    ));
+}
+
+/// The start screen on macOS has one line of it, and its Restart is
+/// Restart now. The Omarchy look has none.
+#[test]
+fn the_start_screen_tells_of_an_update_ready() {
+    for look in looks() {
+        let mut harness = installs(look);
+        let _tab = harness.connect_fake();
+        harness.app.updates.install = ready();
+        harness.settle();
+        let line = "99.0.0 is ready ·";
+        assert_eq!(harness.has(line), !look.terminal, "{}", look.name);
+        if !look.terminal {
+            harness.click("Restart");
+            harness.settle();
+            assert!(matches!(
+                harness.app.updates.install,
+                Install::Restarting { .. }
+            ));
+        }
+    }
+}
+
+/// `book_covers` with a cell changed, on a window named Bookshop.
+fn with_an_unsaved_edit(harness: &mut Harness) {
+    let (tab, id) = harness.book_covers();
+    harness.app.workspace_mut(tab).unwrap().name = "Bookshop".into();
+    harness.app.apply(Action::EditCell {
+        tab,
+        id,
+        cell: crate::model::CellPos { row: 0, col: 2 },
+        start: crate::model::EditStart::Replace("ebook".into()),
+    });
+    harness.app.apply(Action::CommitEdit {
+        tab,
+        id,
+        then: crate::model::Advance::Stay,
+    });
+}
+
+/// The items of the work list a screen reader hears.
+fn work_items(tree: &egui::accesskit::TreeUpdate, look: &Look) -> Vec<String> {
+    let node_of = |wanted: egui::accesskit::NodeId| {
+        tree.nodes
+            .iter()
+            .find(|(id, _)| *id == wanted)
+            .map(|(_, node)| node)
+            .expect("a node of the tree")
+    };
+    let list = node_of(node(tree, &said(look, "Work in progress"), Role::List).expect("the list"));
+    let mut items = Vec::new();
+    let mut open: Vec<egui::accesskit::NodeId> = list.children().to_vec();
+    while let Some(child) = open.pop() {
+        let child = node_of(child);
+        match child.role() {
+            Role::ListItem => {
+                let said = child.label().or(child.value()).unwrap_or_default();
+                items.push(said.to_owned());
+            }
+            _ => open.extend(child.children()),
+        }
+    }
+    items
+}
+
+#[test]
+fn work_in_progress_lists_what_a_restart_would_interrupt() {
+    for look in looks() {
+        let mut harness = installs(look);
+        with_an_unsaved_edit(&mut harness);
+        harness.app.updates.install = ready();
+        harness.app.apply(Action::RestartToUpdate);
+        harness.settle();
+        assert_eq!(pane(&harness), Some(SettingsPane::Updates), "{}", look.name);
+        assert!(
+            harness.has(&said(&look, "Finish your work first")),
+            "{}",
+            look.name
+        );
+        let tree = harness.settle();
+        // As the window's title names it: the terminal's tag is `DEV`.
+        let dev = crate::env::Environment::Dev.label(crate::env::Platform::of(&look));
+        assert_eq!(
+            work_items(&tree, &look),
+            [format!("Bookshop · {dev}: 1 unsaved edit in book_covers")],
+            "{}",
+            look.name
+        );
+    }
+}
+
+#[test]
+fn restart_when_done_becomes_dont_restart_and_show_them_shows_the_work() {
+    let mut harness = installs(Look::macos());
+    with_an_unsaved_edit(&mut harness);
+    let (tab, id) = {
+        let work = harness.app.work_in_progress();
+        (work[0].tab, work[0].id)
+    };
+    // Another window in front, on its picker.
+    harness.app.apply(Action::ShowConnections);
+    harness.app.updates.install = ready();
+    harness.app.apply(Action::RestartToUpdate);
+    harness.click("Restart when done");
+    harness.settle();
+    assert!(harness.has("Tabletist restarts once this is done:"));
+    harness.click("Don't restart");
+    harness.settle();
+    assert_eq!(harness.app.updates.install, ready());
+    harness.app.apply(Action::RestartToUpdate);
+    harness.click("Show them");
+    harness.settle();
+    assert!(harness.app.dialog.is_none());
+    // The window with the edit is in front, on its table.
+    assert_eq!(harness.app.active_tab_id(), tab);
+    assert_eq!(harness.app.workspace(tab).unwrap().active_tab, Some(id));
+}
+
+#[test]
+fn a_download_that_did_not_verify_says_what_failed_once() {
+    for look in looks() {
+        let mut harness = installs(look);
+        harness.app.updates.install = Install::Failed {
+            version: "99.0.0".into(),
+            failure: Failure::Unverified(Unverified::Signature),
+        };
+        on_the_pane(&mut harness);
+        assert!(
+            harness.has(&said(&look, "The 99.0.0 download didn't verify")),
+            "{}",
+            look.name
+        );
+        let error = said(
+            &look,
+            "The signature doesn't match Tabletist's release key. The file was deleted.",
+        );
+        let tree = harness.settle();
+        let id = node(&tree, &error, Role::Label).expect("the error");
+        let told = tree.nodes.iter().find(|(at, _)| *at == id).unwrap();
+        assert_eq!(told.1.live(), Some(Live::Assertive), "{}", look.name);
+        if !look.terminal {
+            assert!(harness.has("Nothing was installed. Your copy is unchanged."));
+            harness.click("Report on GitHub");
+            harness.settle();
+            let opened = harness.app.url_to_open.take().unwrap_or_default();
+            assert!(
+                opened.starts_with("https://github.com/igor-alexandrov/tabletist/issues/new?"),
+                "{opened}"
+            );
+            harness.click("Download again");
+            harness.settle();
+            // Windows downloads nothing (row 16).
+            assert_eq!(downloads(&harness), usize::from(crate::update::DOWNLOADS));
+        }
+    }
+}
+
+/// A network that went is no bad file: Couldn't download, and Try again.
+#[test]
+fn a_download_that_never_came_whole_is_couldnt_download() {
+    let mut harness = installs(Look::macos());
+    harness.app.updates.install = Install::Failed {
+        version: "99.0.0".into(),
+        failure: Failure::Undone(Undone::Lost),
+    };
+    on_the_pane(&mut harness);
+    assert!(harness.has("Couldn't download 99.0.0"));
+    assert!(harness.has("The connection was lost and didn't come back."));
+    assert!(!harness.has("Report on GitHub"));
+    harness.click("Try again");
+    harness.settle();
+    // Windows downloads nothing (row 16).
+    assert_eq!(downloads(&harness), usize::from(crate::update::DOWNLOADS));
+}
+
+/// `U` does what the block's key line says: update now, restart now,
+/// restart when done.
+#[test]
+fn u_downloads_then_restarts_in_the_terminal_look() {
+    if !crate::update::DOWNLOADS {
+        return;
+    }
+    let mut harness = installs(Look::omarchy());
+    with_an_unsaved_edit(&mut harness);
+    on_the_pane(&mut harness);
+    assert!(harness.has("U update now  n release notes  S skip 99.0.0"));
+    capital(&mut harness, Key::U);
+    assert_eq!(downloads(&harness), 1);
+    harness.app.updates.install = ready();
+    assert!(harness.has("U restart now"));
+    capital(&mut harness, Key::U);
+    // The edit holds it.
+    assert!(harness.has("U restart when done"));
+    let tree = harness.settle();
+    assert_eq!(
+        work_items(&tree, &Look::omarchy()),
+        ["Bookshop · DEV: 1 unsaved edit in book_covers"]
+    );
+    capital(&mut harness, Key::U);
+    assert!(matches!(
+        harness.app.updates.install,
+        Install::Held {
+            when_done: true,
+            ..
+        }
+    ));
+    // The edit goes: the restart does.
+    let work = harness.app.work_in_progress();
+    let (tab, id) = (work[0].tab, work[0].id);
+    harness.app.apply(Action::DiscardEdits { tab, id });
+    harness.settle();
+    let handed = harness
+        .app
+        .backend
+        .sent
+        .iter()
+        .any(|sent| matches!(sent, Command::Updates(UpdatesCommand::Install { .. })));
+    assert!(handed);
+    assert!(matches!(
+        harness.app.updates.install,
+        Install::Restarting { .. }
+    ));
+}
+
+/// `S` is the block's only while it offers the version: with the update
+/// ready it is left, and the version still installs.
+#[test]
+fn s_skips_nothing_while_an_update_is_ready() {
+    let mut harness = installs(Look::omarchy());
+    harness.app.updates.install = ready();
+    on_the_pane(&mut harness);
+    assert!(!harness.has("S skip 99.0.0"));
+    capital(&mut harness, Key::S);
+    assert_eq!(harness.app.settings.update_skip, None);
+    assert_eq!(harness.app.updates.install, ready());
+}
+
+/// The work listed went before Restart when done was chosen: the card
+/// is Ready again, and says nothing would be interrupted.
+#[test]
+fn a_work_list_that_empties_shows_ready_again() {
+    let mut harness = installs(Look::macos());
+    with_an_unsaved_edit(&mut harness);
+    harness.app.updates.install = ready();
+    harness.app.apply(Action::RestartToUpdate);
+    assert!(harness.has("Restart now would interrupt:"));
+    let work = harness.app.work_in_progress();
+    let (tab, id) = (work[0].tab, work[0].id);
+    harness.app.apply(Action::DiscardEdits { tab, id });
+    harness.settle();
+    assert!(!harness.has("Restart now would interrupt:"));
+    assert!(harness.has("99.0.0 is ready to install"));
+}
+
+/// The window turns ctrl+c into a copy on Linux and Windows: that too
+/// cancels the download.
+#[test]
+fn ctrl_c_as_the_window_sends_it_cancels_the_download() {
+    let mut harness = installs(Look::omarchy());
+    harness.app.updates.install = Install::Downloading(downloading());
+    on_the_pane(&mut harness);
+    harness.frame(vec![
+        egui::Event::ModifiersChanged(Modifiers::CTRL),
+        egui::Event::Copy,
+    ]);
+    harness.frame(vec![egui::Event::ModifiersChanged(Modifiers::NONE)]);
+    harness.settle();
+    assert_eq!(harness.app.updates.install, Install::Idle);
+}
+
+/// Where the helper waits already, Ready says a quit installs it.
+#[test]
+fn ready_after_the_handoff_says_a_quit_installs_it() {
+    let mut harness = installs(Look::macos());
+    harness.app.updates.install = Install::Ready {
+        version: "99.0.0".into(),
+        handed: Some(std::time::Instant::now()),
+    };
+    on_the_pane(&mut harness);
+    assert!(harness.has("Signature checked · quitting Tabletist now installs it"));
+}
+
+/// `:update` checks; a version this copy installs is asked about in the
+/// footer, and `y` downloads it, to restart once it is ready.
+#[test]
+fn update_on_the_prompt_asks_before_installing() {
+    if !crate::update::DOWNLOADS {
+        return;
+    }
+    let mut harness = harness(Look::omarchy());
+    harness.app.updates.installed = Some(Installed::Itself(Kind::Portable));
+    let tab = harness.connect_fake();
+    harness.app.workspace_mut(tab).unwrap().command = Some("update".into());
+    harness.app.apply(Action::RunCommand(tab));
+    harness.settle();
+    let asked = harness
+        .app
+        .backend
+        .sent
+        .iter()
+        .rev()
+        .find_map(|sent| match sent {
+            Command::Updates(UpdatesCommand::Check { asked, .. }) => Some(*asked),
+            _ => None,
+        })
+        .expect("a check");
+    let json = crate::update::check::tests::RELEASE.replace("v0.4.0", "v99.0.0");
+    let mut latest: Latest = serde_json::from_str(&json).unwrap();
+    // A build of this computer's, whatever it is.
+    let name = release::asset_name("99.0.0", Os::current(), Some(Kind::Portable))
+        .unwrap_or_else(|| "tabletist.tar.gz".into());
+    latest.assets.push(release::Asset {
+        name,
+        size: 31_200_000,
+    });
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::Updates(
+            crate::backend::UpdatesEvent::Checked {
+                asked,
+                result: Ok(latest),
+            },
+        )));
+    assert!(harness.has("install 99.0.0 and restart?"));
+    assert!(harness.has("[y] yes"));
+    assert!(harness.has("[N] no"));
+    crate::ui::tests::type_key(&mut harness, Key::Y, "y");
+    assert_eq!(downloads(&harness), 1);
+    assert!(matches!(
+        &harness.app.updates.install,
+        Install::Downloading(downloading) if downloading.then_restart
+    ));
+    assert!(!harness.has("install 99.0.0 and restart?"));
+}
+
+#[test]
+fn no_to_the_question_installs_nothing() {
+    if !crate::update::DOWNLOADS {
+        return;
+    }
+    for (key, text) in [(Key::N, Some("n")), (Key::Escape, None)] {
+        let mut harness = installs(Look::omarchy());
+        harness.app.updates.install = ready();
+        let tab = harness.connect_fake();
+        harness.app.workspace_mut(tab).unwrap().command = Some("update".into());
+        harness.app.apply(Action::RunCommand(tab));
+        assert!(harness.has("install 99.0.0 and restart?"));
+        match text {
+            Some(text) => crate::ui::tests::type_key(&mut harness, key, text),
+            None => harness.press(key, Modifiers::NONE),
+        }
+        harness.settle();
+        assert_eq!(harness.app.updates.install, ready(), "{key:?}");
+        // The question went, and the pane stays.
+        assert_eq!(pane(&harness), Some(SettingsPane::Updates), "{key:?}");
+        assert!(!harness.has("install 99.0.0 and restart?"), "{key:?}");
+    }
+}
+
+/// The dot on Updates tells of an update ready too.
+#[test]
+fn the_dot_tells_of_an_update_ready() {
+    let mut harness = installs(Look::macos());
+    harness.app.settings.update_skip = Some("99.0.0".into());
+    harness.app.updates.install = ready();
+    on_the_pane(&mut harness);
+    assert!(harness.has("Update available"));
 }

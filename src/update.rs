@@ -274,6 +274,9 @@ pub struct Updates {
     pub held: Option<(u64, Result<release::Latest, Failed>)>,
     /// Where the download of the version offered stands.
     pub install: Install,
+    /// `:update` waits for its check, to ask whether to install what it
+    /// finds.
+    pub ask_after_check: bool,
 }
 
 impl Updates {

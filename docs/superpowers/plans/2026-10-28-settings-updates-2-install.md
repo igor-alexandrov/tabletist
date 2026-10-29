@@ -97,6 +97,8 @@ Task 1's review in the run found one more, fixed in its commit. A cancel was not
 
 Task 2's review found two more, fixed in its commit. A quit could begin after `QUIT_IN_TIME`, when work ended or Restart now was pressed between 50 and 55 s: the helper then gave up first, and Tabletist closed with nothing opening again. A quit after a handoff now begins only within 50 s; later, the card says Couldn't install (`work_done_too_late_in_the_helper_s_minute_quits_nothing`, `restart_now_too_late_in_the_helper_s_minute_is_couldnt_install`). And `relaunch.json` was written once, at Restart now, so an SQL editor opened or typed into during the helper's minute was lost. It is written again at the quit while a helper may still be waiting (`HELPER_GIVES_UP`; `the_quit_keeps_the_editors_as_they_are_then`).
 
+Task 3's review found three more, all in the docs and fixed in its commit. `omarchy.md` said `:update`'s yes restarts once no window has work open, but it restarts as Restart now does. `settings-and-files.md` read as if the download goes on after 10 minutes offline, and said work during the handoff is waited for all minute, where Task 2's review fix made it 50 s; it now also says `relaunch.json` is written again at the quit.
+
 What held, among what the reviewers tried:
 - **The transport:**
   - a 206 at the wrong byte is refused;

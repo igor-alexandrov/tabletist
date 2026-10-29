@@ -48,6 +48,7 @@ pub use quick_open::{
     Found, GROUP_SHOWN, QuickCommand, QuickHeading, QuickItem, QuickList, QuickRow, StartRow,
     setting_path,
 };
+pub use updates::{Pending, Work};
 
 /// What a keyring read is for; each names the exact request it serves, so
 /// a late answer for an earlier attempt is dropped.
@@ -2589,7 +2590,9 @@ impl App {
             | Action::DontRestart
             | Action::UpdateLater
             | Action::ShowWork
-            | Action::ReportUpdateFailure => self.update_action(action),
+            | Action::ReportUpdateFailure
+            | Action::UpdateNow
+            | Action::AnswerUpdateQuestion(_) => self.update_action(action),
             Action::ChooseAgentSetup(agent) => {
                 if let Some(Dialog::Settings(dialog)) = &mut self.dialog {
                     dialog.agent = agent;
