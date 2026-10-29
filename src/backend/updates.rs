@@ -221,20 +221,16 @@ impl Updates {
                     after: started.elapsed(),
                 }));
             });
-            let result = match (result, download.cancelled()) {
-                (Ok(prepared), true) => {
-                    prepared.discard();
-                    return;
-                }
-                (Err(error), true) => {
+            let result = match result {
+                Ok(prepared) => match keep(&held, &download, prepared) {
+                    true => Ok(()),
+                    false => return,
+                },
+                Err(error) if download.cancelled() => {
                     log::info!("the update download stopped: {error:#}");
                     return;
                 }
-                (Ok(prepared), false) => {
-                    *held.lock().unwrap_or_else(PoisonError::into_inner) = Some(prepared);
-                    Ok(())
-                }
-                (Err(error), false) => {
+                Err(error) => {
                     log::error!("the update download failed: {error:#}");
                     Err(Failure::of(&error))
                 }
@@ -245,6 +241,21 @@ impl Updates {
             }));
         });
     }
+}
+
+/// Holds `prepared` for Install, unless `download` was cancelled: then it
+/// goes, and so does its folder. The cancel is read under the lock, and
+/// CancelDownload sets it before it takes the lock, so a cancel either is
+/// read here or finds the download held and discards it.
+fn keep(held: &Mutex<Option<Prepared>>, download: &Download, prepared: Prepared) -> bool {
+    let mut slot = held.lock().unwrap_or_else(PoisonError::into_inner);
+    if download.cancelled() {
+        drop(slot);
+        prepared.discard();
+        return false;
+    }
+    *slot = Some(prepared);
+    true
 }
 
 fn handle(command: UpdatesCommand, outbox: &super::Outbox) {
@@ -475,6 +486,32 @@ mod handed {
             answer(&mut backend),
             UpdatesEvent::Handed { result: Err(_), .. }
         ));
+    }
+
+    /// A cancel read before the download that verified is stored: it is
+    /// not held, for no Install will come for it. Without a cancel it is.
+    #[test]
+    fn a_cancel_before_the_download_is_held_drops_it() {
+        let installation = || fastframe_update::Installation {
+            executable: std::path::PathBuf::from("/opt/tabletist/tabletist"),
+            kind: fastframe_update::Kind::Portable,
+        };
+        let held = Mutex::new(None);
+        let download = Download::new(|_| {});
+        download.cancel();
+        assert!(!keep(
+            &held,
+            &download,
+            Prepared::sample(installation(), "99.0.0")
+        ));
+        assert!(held.lock().unwrap().is_none());
+        let download = Download::new(|_| {});
+        assert!(keep(
+            &held,
+            &download,
+            Prepared::sample(installation(), "99.0.0")
+        ));
+        assert!(held.lock().unwrap().is_some());
     }
 
     /// A download that verified as the cancel came is not left held: the
