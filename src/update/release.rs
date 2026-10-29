@@ -239,12 +239,22 @@ fn asset_name_on(version: &str, os: Os, arch: &str, kind: Option<Kind>) -> Optio
     }
 }
 
-/// A size as the pane writes it: `31.2 MB`.
-pub fn megabytes(bytes: u64) -> String {
-    // Shown to a tenth: the precision of f64 is no matter here.
+/// A size in megabytes to a tenth, without its unit: `18.4`.
+pub fn megabytes_figure(bytes: u64) -> String {
+    format!("{:.1}", megabytes_value(bytes))
+}
+
+/// A size in megabytes: what a screen reader is told of a download.
+pub fn megabytes_value(bytes: u64) -> f64 {
+    // Told to a tenth: the precision of f64 is no matter here.
     #[allow(clippy::cast_precision_loss)]
     let megabytes = bytes as f64 / 1_000_000.0;
-    format!("{megabytes:.1} MB")
+    megabytes
+}
+
+/// A size as the pane writes it: `31.2 MB`.
+pub fn megabytes(bytes: u64) -> String {
+    format!("{} MB", megabytes_figure(bytes))
 }
 
 #[cfg(test)]
@@ -400,6 +410,7 @@ mod tests {
 
     #[test]
     fn a_size_is_written_in_megabytes_to_a_tenth() {
+        assert_eq!(megabytes_figure(18_400_000), "18.4");
         assert_eq!(megabytes(31_200_000), "31.2 MB");
         assert_eq!(megabytes(29_849_999), "29.8 MB");
     }

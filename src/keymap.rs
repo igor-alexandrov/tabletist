@@ -242,6 +242,9 @@ pub enum When {
     Leaving,
     /// The question before a run that changes every row of a table.
     EveryRow,
+    /// The settings footer asks whether to install an update and restart,
+    /// as `:update` has it.
+    UpdateQuestion,
     /// The cursor's row is a new one, not saved yet: the row panel is its
     /// form.
     NewRow,
@@ -684,6 +687,9 @@ commands! {
     SettingsReleaseNotes = "settings_release_notes",
     SettingsSkipVersion = "settings_skip_version",
     SettingsInstallUpdate = "settings_install_update",
+    SettingsCancelDownload = "settings_cancel_download",
+    SettingsInstallYes = "settings_install_yes",
+    SettingsInstallNo = "settings_install_no",
     SettingsUnbind = "settings_unbind",
     SettingsFilter = "settings_filter",
     SettingsFindKey = "settings_find_key",
@@ -1090,13 +1096,20 @@ impl Command {
             C::SettingsSkipVersion => {
                 info("Skip the version offered, in the settings", "", Prompts)
             }
-            // Downloading and installing come in the next run.
             C::SettingsInstallUpdate => info(
-                "Download and install the version offered, in the settings",
+                "Download and install the version offered, or restart into it, in the settings",
                 "",
                 Prompts,
-            )
-            .reserved(),
+            ),
+            C::SettingsCancelDownload => {
+                info("Cancel the update's download, in the settings", "", Prompts)
+            }
+            C::SettingsInstallYes => info(
+                "Install the update and restart, as :update asks",
+                "",
+                Prompts,
+            ),
+            C::SettingsInstallNo => info("Keep this version, as :update asks", "", Prompts),
             C::SettingsDeleteHistory => info(
                 "Delete the query history kept, as the settings ask",
                 "",
@@ -2374,6 +2387,29 @@ pub const BINDINGS: &[Binding] = {
         bind(C::SettingsReleaseNotes, PROMPT, NONE, keys(&[k("n")])).when(When::UpdatesPane),
         bind(C::SettingsSkipVersion, PROMPT, NONE, keys(&[k("S")])).when(When::UpdatesPane),
         bind(C::SettingsInstallUpdate, PROMPT, NONE, keys(&[k("U")])).when(When::UpdatesPane),
+        bind(
+            C::SettingsCancelDownload,
+            PROMPT,
+            NONE,
+            keys(&[k("ctrl+c")]),
+        )
+        .when(When::UpdatesPane),
+        // `:update`'s question, as the components' confirm row has it:
+        // `N` the answer Esc gives.
+        bind(
+            C::SettingsInstallYes,
+            PROMPT,
+            NONE,
+            keys(&[k("y"), k("Y")]).shown("y"),
+        )
+        .when(When::UpdateQuestion),
+        bind(
+            C::SettingsInstallNo,
+            PROMPT,
+            NONE,
+            keys(&[k("n"), k("N"), k("esc")]).shown("N"),
+        )
+        .when(When::UpdateQuestion),
         // The Keyboard pane's own: Enter records the row (the screen's
         // Enter), `R` resets it, and the arrows' letters move as on any
         // pane.

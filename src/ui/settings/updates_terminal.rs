@@ -1,6 +1,7 @@
 //! Settings › Updates as the terminal look draws it: the status block
-//! with its keys, the row of how often a check runs, and what a package
-//! manager's copy does, with what the check sends.
+//! with its keys (a download's progress row among its lines, and the work
+//! a restart would interrupt), the row of how often a check runs, and
+//! what a package manager's copy does, with what the check sends.
 
 use egui::accesskit::Live;
 use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
@@ -15,7 +16,10 @@ use crate::ui::widgets;
 use crate::update::release;
 
 use super::terminal::{ROW_SIDE, Skin, columns, heading, key, option_row, widths};
-use super::updates::{Card, announce_live, released, when};
+use super::updates::{
+    Card, announce_live, downloading_said, failure_said, installs, progress_node, released, when,
+    work_said,
+};
 
 /// What the note under the row says, word for word as the board has it.
 const NOTE: &str = "installed with a package manager (pacman, an AUR helper, nix, cargo install)? then that tool updates tabletist: this pane only checks and shows the command, for example";
@@ -57,6 +61,61 @@ pub(super) fn rows(
 /// One line of the block: its pieces, each its text and colour.
 type Line = Vec<(String, egui::Color32)>;
 
+/// The spinner of the components' progress row, a frame at a time.
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// The cells of the progress row's bar.
+const CELLS: usize = 12;
+
+/// The components' progress row: the spinner, the bar of cells and the
+/// share, then what the card's line says, and the key that cancels.
+fn progress_row(ui: &Ui, downloading: &crate::update::Downloading, skin: &Skin) -> Line {
+    let Skin {
+        look,
+        palette,
+        locale,
+        ..
+    } = *skin;
+    let time = ui.input(|input| input.time);
+    // Ten frames a second, as long as it shows. The time is never
+    // negative, and the remainder keeps the frame in range.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let frame = SPINNER[(time * 10.0) as usize % SPINNER.len()];
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(100));
+    let share = match downloading.total {
+        0 => 0.0,
+        total => (release::megabytes_value(downloading.received) / release::megabytes_value(total))
+            .clamp(0.0, 1.0),
+    };
+    // The share is clamped to 0 to 1: the cells fit, and are never
+    // negative.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let filled = ((share * CELLS as f64).round() as usize).min(CELLS);
+    // 0 to 100, from the share clamped to 0 to 1.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let percent = (share * 100.0).floor() as u32;
+    let said = look.label(&downloading_said(downloading, locale));
+    vec![
+        // The components' progress row: the spinner in accent, the
+        // bracket in the text's colour, the filled cells in accent and
+        // the rest muted, and what it says and its key muted.
+        (format!("  {frame}"), palette.accent),
+        (" [".to_owned(), palette.text),
+        ("█".repeat(filled), palette.accent),
+        ("░".repeat(CELLS - filled), palette.dim),
+        (format!("] {percent}%"), palette.text),
+        (format!(" · {said} · "), palette.dim),
+        (
+            key(ui, look, Command::SettingsCancelDownload)
+                .as_str()
+                .to_owned(),
+            palette.dim,
+        ),
+        (format!(" {}", skin.say("cancel")), palette.dim),
+    ]
+}
+
 /// The status block: what the card of the other looks says, a line at a
 /// time, with the pane's keys that act on it.
 fn block(ui: &mut Ui, app: &App, skin: &Skin) {
@@ -77,13 +136,18 @@ fn block(ui: &mut Ui, app: &App, skin: &Skin) {
         _ => look.label(&shown.title(locale)),
     };
     let title_color = match shown {
-        Card::Failed { .. } => palette.danger,
+        Card::Failed { .. } | Card::NotInstalled { .. } => palette.danger,
         Card::UpToDate { .. } => palette.success,
+        Card::Held { .. } => palette.warning,
         _ => palette.accent,
     };
     let say = |text: &'static str| skin.say(text);
     let mut sub: Vec<String> = Vec::new();
     let mut lines: Vec<Line> = Vec::new();
+    // Which of `lines` are the progress row, and which the work a restart
+    // would interrupt: a list for a screen reader.
+    let mut progress = None;
+    let mut work = 0..0;
     match shown {
         Card::NotChecked => sub.push(say("not checked yet")),
         Card::Checking => sub.push(crate::update::check::ASKED.to_owned()),
@@ -135,6 +199,34 @@ fn block(ui: &mut Ui, app: &App, skin: &Skin) {
             let said = failed.with_numbers(&gettext(locale, failed.said()));
             lines.push(vec![(look.label(&said), palette.danger)]);
         }
+        Card::Downloading(downloading) => {
+            progress = Some((lines.len(), downloading));
+            lines.push(progress_row(ui, downloading, skin));
+        }
+        Card::Ready(_) => sub.push(say(super::updates::ready_said(app))),
+        Card::Held { when_done, .. } => {
+            sub.push(say(match when_done {
+                false => "restart now would interrupt:",
+                true => "tabletist restarts once this is done:",
+            }));
+            let listed = app.work_in_progress();
+            let start = lines.len();
+            for item in &listed {
+                lines.push(vec![
+                    (format!("  - {}", item.window), palette.text),
+                    (format!(": {}", work_said(item, locale)), palette.text),
+                ]);
+            }
+            work = start..lines.len();
+        }
+        Card::Restarting(_) => sub.push(say("tabletist restarts in a moment")),
+        Card::NotInstalled { failure, .. } => {
+            sub.push(say("nothing was installed. your copy is unchanged."));
+            lines.push(vec![(
+                look.label(&failure_said(failure, locale)),
+                palette.danger,
+            )]);
+        }
     }
     // The pane's keys that act on what the block shows.
     let keys: Vec<(Command, String)> = match shown {
@@ -143,13 +235,31 @@ fn block(ui: &mut Ui, app: &App, skin: &Skin) {
         }
         Card::Failed { .. } => vec![(Command::SettingsCheckNow, say("try again"))],
         Card::Checking => Vec::new(),
-        Card::Available(offer) | Card::NoBuild(offer) => vec![
-            (Command::SettingsReleaseNotes, say("release notes")),
-            (
+        Card::Available(offer) | Card::NoBuild(offer) => {
+            let mut keys = Vec::new();
+            if matches!(shown, Card::Available(_)) && installs(app) {
+                keys.push((Command::SettingsInstallUpdate, say("update now")));
+            }
+            keys.push((Command::SettingsReleaseNotes, say("release notes")));
+            keys.push((
                 Command::SettingsSkipVersion,
                 format!("{} {}", say("skip"), offer.version),
-            ),
-        ],
+            ));
+            keys
+        }
+        // The progress row has its key.
+        Card::Downloading(_) | Card::Restarting(_) => Vec::new(),
+        Card::Ready(_) => vec![(Command::SettingsInstallUpdate, say("restart now"))],
+        Card::Held { when_done, .. } => vec![(
+            Command::SettingsInstallUpdate,
+            say(match when_done {
+                false => "restart when done",
+                true => "don't restart",
+            }),
+        )],
+        Card::NotInstalled { .. } => {
+            vec![(Command::SettingsInstallUpdate, say("download again"))]
+        }
         Card::Elsewhere(_, managed) => match managed.command {
             Some(_) => vec![
                 (Command::SettingsCopyCommand, say("copy")),
@@ -240,7 +350,33 @@ fn block(ui: &mut Ui, app: &App, skin: &Skin) {
             said.trim(),
         );
     }
-    for pieces in lines.iter().chain((!keyed.is_empty()).then_some(&keyed)) {
+    // The work a restart would interrupt is a list: its items are the
+    // list's children, not the block's.
+    let items = (!work.is_empty()).then(|| {
+        let top = y + line / 2.0 + line * work.start as f32;
+        let rect = Rect::from_min_max(
+            pos2(left, top),
+            pos2(right.max(left), top + line * work.len() as f32),
+        );
+        let list_id = ui.id().with("update-work");
+        let list = ui.interact(rect, list_id, Sense::hover());
+        let named = skin.say("Work in progress");
+        list.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, &named));
+        ui.ctx().accesskit_node_builder(list_id, |node| {
+            node.set_role(egui::accesskit::Role::List);
+        });
+        let items = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .accessibility_parent(list_id),
+        );
+        (list_id, items)
+    });
+    for (index, pieces) in lines
+        .iter()
+        .chain((!keyed.is_empty()).then_some(&keyed))
+        .enumerate()
+    {
         y += line;
         if std::ptr::eq(pieces, &keyed) {
             y += 6.0;
@@ -261,11 +397,31 @@ fn block(ui: &mut Ui, app: &App, skin: &Skin) {
             pos2(left + laid.width() / 2.0, y),
             vec2(laid.width().max(1.0), line),
         );
-        let error = matches!(shown, Card::Failed { .. })
+        let error = matches!(shown, Card::Failed { .. } | Card::NotInstalled { .. })
             && pieces
                 .first()
                 .is_some_and(|(_, color)| *color == palette.danger);
-        if error {
+        if let Some((at, downloading)) = progress
+            && at == index
+        {
+            // Read without the spinner and the bar's cells, which the
+            // progress indicator says.
+            let row: String = pieces[4..]
+                .iter()
+                .map(|(piece, _)| piece.as_str())
+                .collect();
+            widgets::announce(ui, place, row.trim_start_matches("] ").trim());
+            progress_node(ui, place, downloading, locale);
+        } else if let Some((list_id, items)) = &items
+            && work.contains(&index)
+        {
+            let item = items.interact(place, list_id.with(index), Sense::hover());
+            let said = said.trim().trim_start_matches("- ").to_owned();
+            item.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &said));
+            ui.ctx().accesskit_node_builder(item.id, |node| {
+                node.set_role(egui::accesskit::Role::ListItem);
+            });
+        } else if error {
             announce_live(ui, place, (said.trim(), "error"), Live::Assertive);
         } else {
             widgets::announce(ui, place, said.trim());

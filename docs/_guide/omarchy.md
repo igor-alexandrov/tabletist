@@ -49,7 +49,7 @@ second Esc gives the keyboard back.
 | `:keys default` | Open every key in force in your editor, as `settings.toml` spells them, commented: a file to copy lines from, written again each time and never read |
 | `:keys cheatsheet` | Save the keys in force as a Markdown cheat sheet, where you say |
 | `:set calendar`, `:set nocalendar` | Show or hide the [calendar]({% link _guide/editing-data.md %}#the-calendar) under a date's editor, saved as its switch in Settings is |
-| `:update` | Show Settings › Updates, and check for a newer version there |
+| `:update` | Show Settings › Updates, and check for a newer version there. Where Tabletist can install it, the footer asks `install <version> and restart?`: `y` downloads it and, once it is ready, restarts as Restart now does: with work open, the block lists the work, and `U` restarts when it is done; `n`, `N` or Esc does not |
 | `?` | The list of keys |
 
 Ctrl+P opens quick open from any pane: a picker at the top of the
@@ -364,6 +364,8 @@ stopped a run, `t` runs it again without one. Times read "45s", "1m" and
 | `c` | On the Updates pane: check for a newer version now |
 | `n` | On the Updates pane, while a version is offered: its release notes in `$PAGER` (`less` without one), in a terminal; where none can be started, its page in the browser |
 | `S` | On the Updates pane: skip the version offered |
+| `U` | On the Updates pane: download and install the version offered; once it is ready, restart into it; with work open, restart when it is done, or, pressed again, don't; after a download or an install that failed, download it again |
+| Ctrl+C | On the Updates pane: cancel the download |
 | Ctrl+E | Open `settings.toml` in your editor |
 | `R` | Reset the option. The agent server's switch is left as it is |
 | `D`, `n` | On the Editor pane, once keep is set to don't keep: delete the history kept, or keep it |

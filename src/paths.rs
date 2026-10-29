@@ -118,6 +118,13 @@ impl AppDirs {
         self.state.join("updates.json")
     }
 
+    /// The SQL editors open when a restart to install an update began,
+    /// for the copy it starts: written before the restart, and deleted by
+    /// that copy once read.
+    pub fn relaunch_file(&self) -> PathBuf {
+        self.state.join("relaunch.json")
+    }
+
     /// A release's notes, written for the pager to show.
     pub fn release_notes_file(&self, version: &str) -> PathBuf {
         self.state.join(format!("release-notes-{version}.md"))

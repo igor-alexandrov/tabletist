@@ -1149,3 +1149,170 @@ fn a_launch_restores_the_picker_after_a_window_and_in_front() {
     assert_eq!(windows(&app), vec![Some(kept), None]);
     assert_eq!(app.active, 1);
 }
+
+/// A copy an update's helper started opens the windows of the restart,
+/// whatever the launch setting and the tables' setting say, and their SQL
+/// editors with their text, and deletes what kept them.
+#[test]
+fn a_relaunch_after_an_update_restores_the_windows_and_their_sql_editors() {
+    use crate::update::relaunch::{Editor, Relaunch, Window};
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = bookshop(&mut app, "Bookshop");
+    let tab = open_window(&mut app, &conn);
+    books(&mut app, tab, "book_covers");
+    app.save_session();
+    app.apply(Action::SetOption(crate::settings::OptionValue::OnLaunch(
+        crate::settings::Launch::Connections,
+    )));
+    app.change_settings(|settings| settings.restore_tabs = false);
+    write_files(&app);
+    written(&app)
+        .unwrap()
+        .save(&app.dirs.session_file())
+        .unwrap();
+    let kept = Relaunch {
+        windows: vec![Window {
+            connection: conn.0.clone(),
+            editors: vec![Editor {
+                number: 3,
+                text: "SELECT * FROM book_covers".into(),
+                writes: false,
+                at: 1,
+            }],
+            front: None,
+        }],
+    };
+    let path = app.dirs.relaunch_file();
+    crate::util::save_json(&path, &kept).unwrap();
+    // A launch of its own shows Connections, as the setting says.
+    assert_eq!(windows(&start(dir.path())), vec![None]);
+    let dirs = AppDirs::at(dir.path());
+    let settings = Settings::load(&dirs);
+    let app = App::relaunched(dirs, settings, Backend::recording());
+    assert_eq!(windows(&app), vec![Some(conn)]);
+    let workspace = app.workspace(app.tabs[0].id).unwrap();
+    assert_eq!(workspace.object_tabs().count(), 1);
+    let editors: Vec<(u32, &str)> = workspace
+        .tabs
+        .iter()
+        .filter_map(|open| open.as_sql())
+        .map(|sql| (sql.number, sql.text.as_str()))
+        .collect();
+    assert_eq!(editors, [(3, "SELECT * FROM book_covers")]);
+    // The next new one counts on.
+    assert_eq!(workspace.next_query, 4);
+    assert!(!path.exists());
+}
+
+/// The SQL editors of `app`'s windows, by window, as their text.
+fn sql_texts(app: &App) -> Vec<Vec<String>> {
+    app.tabs
+        .iter()
+        .map(|tab| match &tab.content {
+            ConnTabContent::Workspace(workspace) => workspace
+                .tabs
+                .iter()
+                .filter_map(|open| open.as_sql())
+                .map(|sql| sql.text.clone())
+                .collect(),
+            ConnTabContent::Picker(_) => Vec::new(),
+        })
+        .collect()
+}
+
+/// A SQL editor holding `text`, in front of `tab`'s window.
+fn add_sql(app: &mut App, tab: ConnTabId, text: &str) -> TabId {
+    let id = TabId(app.next_id());
+    let workspace = app.workspace_mut(tab).unwrap();
+    let sql = workspace.push_sql_tab(id, 1_000, None);
+    sql.text = text.into();
+    workspace.active_tab = Some(id);
+    id
+}
+
+/// Restart now in `app`, then a relaunch over the files it leaves: the
+/// relaunch file the backend writes, and the session the quit saves.
+fn restart_and_relaunch(mut app: App, dir: &std::path::Path) -> App {
+    app.updates.install = crate::update::Install::Ready {
+        version: "99.0.0".into(),
+        handed: None,
+    };
+    app.apply(Action::RestartToUpdate);
+    let kept = app
+        .backend
+        .sent
+        .iter()
+        .find_map(|sent| match sent {
+            Command::Updates(crate::backend::UpdatesCommand::Install { relaunch, .. }) => {
+                Some(relaunch.clone())
+            }
+            _ => None,
+        })
+        .expect("handed over");
+    app.save_session();
+    write_files(&app);
+    written(&app)
+        .unwrap()
+        .save(&app.dirs.session_file())
+        .unwrap();
+    crate::util::save_json(&app.dirs.relaunch_file(), &kept).unwrap();
+    let dirs = AppDirs::at(dir);
+    let settings = Settings::load(&dirs);
+    App::relaunched(dirs, settings, Backend::recording())
+}
+
+/// One connection in two windows, the second in front, which connects
+/// first: each window gets its own editors back.
+#[test]
+fn each_window_of_one_connection_gets_its_own_editors_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = bookshop(&mut app, "Bookshop");
+    let first = open_window(&mut app, &conn);
+    add_sql(&mut app, first, "SELECT 'first window'");
+    let second = open_window(&mut app, &conn);
+    add_sql(&mut app, second, "SELECT 'second window'");
+    app.active = app.tab_index(second).unwrap();
+    let app = restart_and_relaunch(app, dir.path());
+    assert_eq!(
+        sql_texts(&app),
+        [
+            vec!["SELECT 'first window'"],
+            vec!["SELECT 'second window'"]
+        ]
+    );
+}
+
+/// A SQL editor in front between two tables is in front again, between
+/// them, in its mode.
+#[test]
+fn a_relaunch_puts_each_sql_editor_back_in_its_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = bookshop(&mut app, "Bookshop");
+    let tab = open_window(&mut app, &conn);
+    books(&mut app, tab, "book_covers");
+    let sql = add_sql(&mut app, tab, "SELECT 2");
+    if let Some(editor) = app.sql_tab_mut(tab, sql) {
+        editor.mode = RunMode::ReadWrite;
+    }
+    books(&mut app, tab, "publishers");
+    app.workspace_mut(tab).unwrap().active_tab = Some(sql);
+    let app = restart_and_relaunch(app, dir.path());
+    let workspace = app.workspace(app.tabs[0].id).unwrap();
+    let kinds: Vec<bool> = workspace
+        .tabs
+        .iter()
+        .map(|open| open.as_sql().is_some())
+        .collect();
+    assert_eq!(kinds, [false, true, false]);
+    let front = workspace
+        .active_tab
+        .and_then(|id| workspace.tabs.iter().find(|open| open.id() == id))
+        .and_then(|open| open.as_sql());
+    assert_eq!(
+        front.map(|sql| (sql.text.as_str(), sql.mode)),
+        Some(("SELECT 2", RunMode::ReadWrite))
+    );
+}

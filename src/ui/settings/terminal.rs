@@ -251,12 +251,19 @@ pub(super) fn show(
                 Some(crate::model::Dialog::Settings(dialog)) => dialog.history_question,
                 _ => None,
             };
-            match question {
-                Some(question) => history_question(ui, question, &skin, actions),
-                None if pane == SettingsPane::Keyboard => {
+            let update = match &app.dialog {
+                Some(crate::model::Dialog::Settings(dialog)) if pane == SettingsPane::Updates => {
+                    dialog.update_question.clone()
+                }
+                _ => None,
+            };
+            match (question, update) {
+                (Some(question), _) => history_question(ui, question, &skin, actions),
+                (None, Some(version)) => update_question(ui, &version, &skin, actions),
+                (None, None) if pane == SettingsPane::Keyboard => {
                     keyboard_footer(ui, app, &dialog.keyboard, &skin, actions);
                 }
-                None => footer(ui, pane, option, opens, &settings, &skin, actions),
+                (None, None) => footer(ui, pane, option, opens, &settings, &skin, actions),
             }
         });
 }
@@ -305,6 +312,60 @@ fn history_question(
         left += width + 16.0;
         if ButtonSpec::new(&what).hidden_at(ui, place).clicked() {
             actions.push(Action::AnswerHistoryQuestion(answer));
+        }
+    }
+}
+
+/// The footer while `:update` asks whether to install `version` and
+/// restart, as the components' confirm row has it: the question on the
+/// sunken ground under a red rule, then `[y] yes  [N] no`. Each hint is
+/// its button too.
+fn update_question(ui: &mut Ui, version: &str, skin: &Skin, actions: &mut Vec<Action>) {
+    let Skin {
+        look,
+        palette,
+        locale,
+        ..
+    } = *skin;
+    let (rect, _) =
+        ui.allocate_exact_size(vec2(ui.available_width(), FOOTER + 1.0), Sense::hover());
+    ui.painter()
+        .rect_filled(rect, CornerRadius::ZERO, palette.panel);
+    widgets::hline(ui, rect.x_range(), rect.top() + 0.5, palette.danger);
+    let y = rect.top() + 1.0 + FOOTER / 2.0;
+    let role = TextRole::OSecondary;
+    let asks = skin
+        .say("install {version} and restart?")
+        .replace("{version}", version);
+    let mut left = rect.left() + 12.0;
+    left += widgets::paint_label(ui, left, y, Text::one(look, role, &asks, palette.text)) + 18.0;
+    for (command, word, name, yes) in [
+        (
+            Command::SettingsInstallYes,
+            "yes",
+            "Install and restart",
+            true,
+        ),
+        (Command::SettingsInstallNo, "no", "Cancel", false),
+    ] {
+        let written = key(ui, look, command).bracketed();
+        let word = skin.say(word);
+        let hint = Text::new(look)
+            .add(role, &written, palette.accent)
+            .space(role, " ")
+            .add(role, &word, palette.secondary);
+        let width = widgets::paint_text(ui, left, y, hint);
+        let place = Rect::from_min_max(
+            pos2(left, rect.top() + 5.0),
+            pos2(left + width, rect.bottom() - 4.0),
+        );
+        widgets::announce(ui, place, &format!("{} {word}", written.as_str()));
+        left += width + 16.0;
+        if ButtonSpec::new(&gettext(locale, name))
+            .hidden_at(ui, place)
+            .clicked()
+        {
+            actions.push(Action::AnswerUpdateQuestion(yes));
         }
     }
 }

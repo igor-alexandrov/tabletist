@@ -387,7 +387,7 @@ impl App {
     /// typed back to what it loaded is one fewer: closing the editor
     /// takes it out of the set. An open editor with nothing pending yet
     /// still counts as one: a tab that holds edits never counts as none.
-    fn unwritten(&self, tab: ConnTabId, id: TabId) -> usize {
+    pub(super) fn unwritten(&self, tab: ConnTabId, id: TabId) -> usize {
         let Some(edits) = self
             .workspace(tab)
             .and_then(|workspace| workspace.object_tab(id))
@@ -1941,8 +1941,8 @@ impl App {
             // The keys in force: the full list in the editor, or a cheat
             // sheet where the person says. Neither touches the settings.
             (Typed::Command(Command::KeysDefault), _) => Action::KeysDefault,
-            // Settings › Updates, checking.
-            (Typed::Command(Command::CheckForUpdates), _) => Action::ShowUpdates,
+            // Settings › Updates, checking, then asking to install.
+            (Typed::Command(Command::CheckForUpdates), _) => Action::UpdateNow,
             (Typed::Command(Command::KeysCheatsheet), _) => Action::ExportCheatSheet,
             // The calendar under a date's editor, saved as its switch in
             // Settings saves it.

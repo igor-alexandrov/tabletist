@@ -22,6 +22,11 @@ pub struct Cli {
     /// With --demo: the window's inner size, as WIDTHxHEIGHT.
     #[arg(long, requires = "demo", value_parser = parse_size)]
     pub demo_size: Option<[f32; 2]>,
+    /// Started by an update's helper after a restart to install it: the
+    /// windows of the last quit come back, whatever the launch setting
+    /// says, with their SQL editors. Every later release accepts it.
+    #[arg(long, hide = true)]
+    pub relaunch: bool,
 }
 
 /// What `tabletist` can be asked to do besides opening its window.
@@ -135,6 +140,15 @@ pub fn main(cli: Cli, launch: fastframe_update::Launch) -> anyhow::Result<()> {
         log::error!("{message}");
     }
     let update_receipt = launch.receipt;
+    // What the helper starts the next version with, but the program's
+    // name.
+    let launch_arguments: Vec<String> = launch
+        .arguments
+        .iter()
+        .skip(1)
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect();
+    let relaunched = cli.relaunch && !cli.demo;
 
     let settings = Settings::load(&dirs);
     let demo = cli.demo;
@@ -149,7 +163,11 @@ pub fn main(cli: Cli, launch: fastframe_update::Launch) -> anyhow::Result<()> {
                 crate::backend::Waker::new(move || repaint.request_repaint()),
                 keyring_for(demo),
             );
-            let mut app = App::new(dirs, settings, backend);
+            let mut app = match relaunched {
+                true => App::relaunched(dirs, settings, backend),
+                false => App::new(dirs, settings, backend),
+            };
+            app.launch_arguments = launch_arguments;
             app.attach(&cc.egui_ctx, follow_desktop);
             // Not for a demo: its profile and its keyring are throwaway.
             if !demo {
@@ -393,6 +411,8 @@ impl eframe::App for Window {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // What is open, for the next launch.
         self.app.save_session();
+        // And the SQL editors, where the quit installs an update.
+        self.app.save_relaunch();
         // Connections and known hosts saved just before quitting still land.
         self.app.backend.flush(std::time::Duration::from_secs(5));
     }

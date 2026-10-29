@@ -995,8 +995,15 @@ pub enum Action {
     /// skip is offered by a check asked for.
     CheckForUpdates,
     /// Show Settings › Updates and check there now: the menu's Check for
-    /// Updates…, quick open's, `:update`.
+    /// Updates…, quick open's.
     ShowUpdates,
+    /// `:update`: [`Action::ShowUpdates`], and in the terminal look, where
+    /// the check finds a version this copy can install, the footer asks
+    /// whether to install it and restart.
+    UpdateNow,
+    /// The answer to that question: download it, then restart once it is
+    /// ready, as Restart now does; or not.
+    AnswerUpdateQuestion(bool),
     /// Drop the check under way: what it brings is not read.
     CancelUpdateCheck,
     /// Stop offering the version offered: `updates.skip`.
@@ -1004,6 +1011,27 @@ pub enum Action {
     /// Show the notes of the version offered in `$PAGER`, in a terminal;
     /// where there is none to start, open its page.
     ShowReleaseNotes,
+    /// Download and verify the version offered, where this copy can
+    /// install it: Download and install, Download again, `U`.
+    DownloadUpdate,
+    /// Stop the download under way: Cancel, `ctrl+c`.
+    CancelDownload,
+    /// Install the download that verified and restart into it, once no
+    /// window has work open: Restart now, the start screen's Restart,
+    /// `U`. With work open the card lists it instead.
+    RestartToUpdate,
+    /// Restart as soon as the work listed is done.
+    RestartWhenDone,
+    /// Go back to Ready from waiting for the work: Don't restart.
+    DontRestart,
+    /// Keep the download for later, and close Settings.
+    UpdateLater,
+    /// Bring the first window with work forward, on the tab that holds
+    /// it: Show them.
+    ShowWork,
+    /// Open a new issue on GitHub about the download that failed, filled
+    /// in: Report on GitHub.
+    ReportUpdateFailure,
     /// Close Settings and show the Agents tab on this view: the window's in
     /// front, or with Connections in front the last window's.
     ShowAgentsFromSettings(AgentsView),
@@ -2918,6 +2946,9 @@ pub struct SettingsDialog {
     /// A question of the query history's waits for its answer, where the
     /// footer asks it as it asks Reset's.
     pub history_question: Option<HistoryQuestion>,
+    /// `:update` asks whether to install this version and restart: the
+    /// Updates pane's footer asks it, as it asks the history's.
+    pub update_question: Option<String>,
     /// The agent Settings › Agents says how to connect.
     pub agent: crate::endpoint::Agent,
     /// The option quick open opened the window at: the sheet draws its row

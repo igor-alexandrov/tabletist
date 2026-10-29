@@ -97,16 +97,78 @@ hold, and shows how to connect an agent:
 The last pane, **Updates**, says whether a newer version is out, and sets
 how often Tabletist asks. Its card shows one of: not checked yet; up to date (with when
 the last check ran); checking; a version available, with what is new in
-it (the first four points of its release notes), its size and **Release
-notes on GitHub** (its page has the downloads), and **Skip this
-version**; that a release has no build for this computer yet; that
-another tool updates this copy (Homebrew, cargo or your package manager),
-with the command to run and **Copy**; or that the check failed, and why.
-While a version is offered, Updates has a dot in the window's list of
-panes (Omarchy: a `●` after `updates`), and the Omarchy look's status
-line says `0.4.0 available · :update` for 8 seconds, once a day at most.
-Nothing opens over your work. Tabletist does not download or install the
-update itself yet.
+it (the first four points of its release notes), its size, **Download
+and install**, **Release notes on GitHub** and **Skip this version**;
+that a release has no build for this computer yet; that another tool
+updates this copy (Homebrew, cargo or your package manager), with the
+command to run and **Copy**; or that the check failed, and why. Where
+Tabletist cannot replace itself (another tool's copy, a release with no
+build for this computer, and Windows, which updates from the release
+page), **Release notes on GitHub** takes the place of **Download and
+install**. While a version is offered, Updates has a dot in the window's
+list of panes (Omarchy: a `●` after `updates`), and the Omarchy look's
+status line says `0.4.0 available · :update` for 8 seconds, once a day
+at most. Nothing opens over your work.
+
+**Download and install** (Omarchy: `U`) downloads the version offered
+beside the app, in a folder of its own (`.tabletist-update-…`, deleted on
+a cancel or a failure, and by the next download), and the card shows how
+much came and about how long is left, with **Cancel** (Omarchy: Ctrl+C).
+When the network goes, or is not there as the download starts, the card
+says **Waiting for the network** and the download tries again every 2
+seconds, and goes on where it stopped once the network is back; after 10
+minutes without it, the card says **Couldn't download 0.4.0**, with
+**Try again**. A connection that sends nothing for 8 seconds counts as
+gone. Before anything is
+kept it checks the release's signed `checksums.txt`, then the file's
+checksum and that the new version starts; on macOS also that it is
+Tabletist, signed by its developer, and approved by Gatekeeper. A file
+that fails is deleted and nothing is installed: **The 0.4.0 download
+didn't verify** says what failed, with **Download again** and **Report on
+GitHub**, which opens a new issue with the versions, the system and the
+error filled in (nothing is sent until you submit it there). A download
+that never came whole says **Couldn't download 0.4.0**, with **Try
+again**.
+
+Once it verified, the card says **0.4.0 is ready to install**, with
+**Restart now** (Omarchy: `U`) and **Later**, which closes Settings and
+keeps it ready; on macOS the start screen says `0.4.0 is ready ·
+Restart`. It installs only when you choose Restart now: a quit does not
+install it, and the next launch offers it again. Restart now first looks
+at every window, and the restart waits for what it would interrupt:
+unsaved edits in a table, a save running, a table's page, count or
+structure being read, a write running in a SQL editor, and any other
+query an editor runs. With any of them, the card says **Finish your
+work first** and lists them (`Bookshop · dev: 3 unsaved edits in
+book_covers`, `Bookshop · dev: query running for 1 min 12 s`), with
+**Restart when done** (Omarchy: `U`), which restarts as soon as the list
+is empty and no other dialog is open, and **Show them**, which closes Settings and
+brings the first window with work forward, on its tab. Nothing is
+dropped to restart. Once Restart when done is chosen, the card says
+`Tabletist restarts once this is done:`, and **Don't restart** (Omarchy:
+`U` again) takes it back. Where only another dialog is open, such as About
+or quick open, the restart waits for it to close.
+
+While the restart begins, the card says **Installing 0.4.0…**. Tabletist
+writes `relaunch.json`, hands the update to its installer, quits, and
+the new version takes its place and opens the windows you had, with
+their tables, filters and SQL editors, whatever **On launch** and
+**Restore tabs and filters** say. The installer waits a minute for
+Tabletist to quit.
+Work you open in the seconds before it is ready is waited for as above
+for the first 50 seconds of that minute; work that ends later, or Restart
+now chosen later, gives **Couldn't install 0.4.0**, with **Try again**,
+since a quit begun then would land after the installer gave up. A quit of
+your own inside the minute still installs the update, and `relaunch.json`
+is written again as Tabletist quits, so editors opened meanwhile come
+back too. The card says Couldn't install too where the installer did not
+start. `relaunch.json` is then deleted, as it is by the new version once
+read.
+
+`:update` in the Omarchy look shows the pane and checks; where it finds a
+version Tabletist can install, the footer asks `install 0.4.0 and
+restart? [y] yes [N] no`. `y` downloads it and restarts once it is ready,
+with the same look for work first; `n`, `N` or Esc leaves it offered.
 
 | Option | Choices | Default |
 | --- | --- | --- |
@@ -385,6 +447,7 @@ An administrator's policy, `managed.toml`, is in a third place of its own:
 | `agents_shown.json` | State | What agents may do as Tabletist last showed it: whether the server is on, and each connection's access, hidden tables and masked columns |
 | `updates.json` | State | What the checks for updates found: when the last one that worked ran, the newest version seen, that release's page and notes while it is newer than this version, and when the Omarchy status line last told of it |
 | `release-notes-<version>.md` | State | A release's notes, written for `$PAGER` when `n` shows them in the Omarchy look |
+| `relaunch.json` | State | Each window's SQL editors (their number, text, mode and place among the tabs) and the tab in front, written as Restart now hands an update to its installer, and again as Tabletist quits for it, for the new version to reopen. That version deletes it once read, and so does Tabletist where the installer does not start or gives up |
 | `mcp.sock`, `mcp.key`, `mcp.lock` | Runtime, else State | Where `tabletist mcp` reaches the app, the key each proves it holds before either says more, and the lock the app holds while it listens. The socket and the key are there while agents are on |
 | `mcp.pipe` | State | On Windows, in the socket's place: the name of the pipe `tabletist mcp` reaches the app by, new each time agents are turned on |
 
