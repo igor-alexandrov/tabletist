@@ -56,7 +56,7 @@ features:
     link_text: Open the guide
   - icon: 🤖
     title: Agents
-    details: Let Claude Code, Cursor and other agents read the databases you choose, over MCP. Reads only, within your limits, and every call in a log.
+    details: Let Claude Code, Cursor and other agents read the databases you choose, over MCP. Reads only, within your limits, with a log of their calls.
     link: /agents/
     link_text: Connect an agent
   - icon: 🔓

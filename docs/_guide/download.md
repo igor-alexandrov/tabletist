@@ -31,8 +31,9 @@ rights.
 To run Tabletist without an installer, download the `.zip` for your PC,
 extract it and open `tabletist.exe`.
 
-To update either one, open **Settings › Updates** and choose **Download
-and install**: the new version goes in when you restart.
+**Settings › Updates** says when there is a newer version, with a link to
+its release on GitHub. To update, run the new setup program, or extract
+the new `.zip` in place of the old folder.
 
 ## Linux
 

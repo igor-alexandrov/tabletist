@@ -39,7 +39,8 @@ Windows.
   [Open the SQL editor guide]({% link _guide/sql-editor.md %}).
 - **Lets agents read your databases.** Claude Code, Cursor and other
   agents ask Tabletist over MCP. They read only the connections you
-  allow, never see a password, and every call is in a log you can read.
+  allow, never get the connection's password, and see none of the tables
+  you hide or the columns you mask. You can read a log of their calls.
   [Connect an agent]({% link _guide/agents.md %}).
 - **Is careful with production.** A production connection opens read-only
   unless you turn that off, and a save to production asks first, with the
@@ -49,9 +50,9 @@ Windows.
   changes the keys.
   Read about [the Omarchy look]({% link _guide/omarchy.md %}) and
   [Tabletist on macOS]({% link _guide/macos.md %}).
-- **Keeps itself up to date.** It checks GitHub for a new version and,
-  where you installed it from the download page, installs it when you
-  restart.
+- **Keeps itself up to date.** It checks GitHub for a new version. On
+  macOS and Linux, a copy from the download page installs it when you
+  restart; on Windows it links to the release.
 
 ## What it does not do yet
 
