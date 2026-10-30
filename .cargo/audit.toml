@@ -1,9 +1,13 @@
 # cargo audit, which audit.yml runs. Every ignored advisory says why it does
-# not apply; take it out once a fixed release is locked.
+# not apply, or which risk is accepted; take it out once a fixed release is
+# locked.
 [advisories]
 ignore = [
-    # rsa: Marvin timing side channel, no fixed release. russh signs with an
-    # RSA key file once per SSH connection, to a server the user chose: the
-    # attack needs many timed private-key operations.
+    # rsa: Marvin timing side channel, no fixed release. An accepted risk:
+    # russh signs with an RSA key file once per SSH connection, so only the
+    # SSH server sees the timing, and the attack needs many timed signatures.
+    # This trusts the server the user chose. A hostile or compromised one
+    # could gather them over many reconnects; if that comes into scope, stop
+    # signing with RSA key files.
     "RUSTSEC-2023-0071",
 ]
