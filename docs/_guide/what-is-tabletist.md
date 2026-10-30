@@ -52,8 +52,10 @@ Windows.
   Read about [the Omarchy look]({% link _guide/omarchy.md %}) and
   [Tabletist on macOS]({% link _guide/macos.md %}).
 - **Keeps itself up to date.** It checks GitHub for a new version. On
-  macOS and Linux, a copy from the download page installs it when you
-  restart; on Windows it links to the release.
+  macOS from Applications, and on Linux from the AppImage or the unpacked
+  archive, it installs the new version when you restart; on Windows it
+  links to the release.
+  [See the download page]({% link _guide/download.md %}).
 
 ## What it does not do yet
 
