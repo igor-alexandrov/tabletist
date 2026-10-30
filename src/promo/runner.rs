@@ -13,6 +13,7 @@ use serde::Serialize;
 
 use super::changed::changed;
 use super::live::Live;
+use super::omarchy;
 use super::pick;
 use super::scenario::{self, Database, Keys, Look, Scenario, Scene, Step};
 use crate::connections::{ConnectionId, PasswordMode, SavedConnection};
@@ -111,6 +112,10 @@ struct Event {
     /// the first event its frame shows, where that frame is new.
     #[serde(skip_serializing_if = "Option::is_none")]
     changed: Option<[f32; 4]>,
+    /// Of a theme switch, the new theme's accent, `#rrggbb`: Hyprland
+    /// edges the window in it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    accent: Option<String>,
 }
 
 /// The harness, the database that answers it, and what has been filmed.
@@ -126,6 +131,8 @@ struct Film {
     changed: Option<[f32; 4]>,
     scene: Option<usize>,
     events: Vec<Event>,
+    /// How many times Omarchy switched its theme: the app's reads of it.
+    switches: u64,
     /// The step being played, for its errors.
     at: String,
 }
@@ -222,6 +229,7 @@ impl Film {
             changed: None,
             scene: None,
             events: Vec::new(),
+            switches: 0,
             at,
         };
         film.must_take();
@@ -275,6 +283,7 @@ impl Film {
             seconds: None,
             rect: None,
             changed: self.changed.take(),
+            accent: None,
         });
         self.events.last_mut().unwrap()
     }
@@ -306,7 +315,23 @@ impl Film {
                 std::thread::sleep(std::time::Duration::from_secs_f64(*seconds));
                 self.record("hold").seconds = Some(*seconds);
             }
+            Step::Omarchy(theme) => self.omarchy(theme),
         }
+    }
+
+    /// Omarchy switched to `theme`: the whole window recolours.
+    fn omarchy(&mut self, theme: &str) {
+        let palette =
+            omarchy::palette(theme).unwrap_or_else(|error| panic!("{}: {error}", self.at));
+        self.switches += 1;
+        let ctx = self.harness.ctx.clone();
+        omarchy::switch(&mut self.harness.app, &ctx, self.switches, theme, palette);
+        self.must_take();
+        let [r, g, b, _] = self.harness.app.palette.accent.to_array();
+        let event = self.record("theme");
+        event.text = Some(theme.into());
+        event.rect = Some([0.0, 0.0, SIZE.x, SIZE.y]);
+        event.accent = Some(format!("#{r:02x}{g:02x}{b:02x}"));
     }
 
     /// The sidebar tree's item called `object`, clicked. Only the tree's
