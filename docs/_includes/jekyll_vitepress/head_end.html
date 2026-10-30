@@ -13,6 +13,15 @@
     border-radius: 10px;
     box-shadow: 0 8px 28px rgba(0, 0, 0, 0.12);
   }
+
+  /* The Download page is in the Guide collection, so the theme marks both
+     Guide and Download as the current menu item, here and in the mobile
+     menu, and again after each frame visit. A link to the page itself wins
+     over a link to its collection. */
+  .VPNavBarMenu:has(.VPNavBarMenuLink.active:not([data-collections])) .VPNavBarMenuLink.active[data-collections]:not(:hover),
+  .VPNavScreenMenu:has(.VPNavScreenMenuLink.active:not([data-collections])) .VPNavScreenMenuLink.active[data-collections]:not(:hover) {
+    color: var(--vp-c-text-1);
+  }
 </style>
 
 <!-- Simple Analytics: cookie-free visit counts, in igor.works' dashboard. It

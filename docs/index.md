@@ -41,19 +41,24 @@ features:
     details: A production connection opens read-only unless you say otherwise, and a save to production asks first, with its SQL on screen.
   - icon: ✏️
     title: Edit in the grid
-    details: Changes wait until you save and go in as one transaction. When someone else changed the same row, the save stops and asks you.
+    details: Change values, add, duplicate and delete rows, pick dates from a calendar and foreign keys from a list. A save is one transaction, and stops to ask when someone else changed the row.
     link: /editing-data/
     link_text: How editing works
   - icon: 🧭
     title: Made for browsing
-    details: Sort, filter and page on the server. Open a row to read every field, follow its foreign keys, and read the table's structure.
+    details: Sort, filter and page on the server. Find any table with quick open, read a row's every field, follow its foreign keys, and read a table's structure and DDL.
     link: /browsing-data/
     link_text: Browse a table
   - icon: ⌨️
     title: SQL editor
-    details: Run the statement at the cursor or the whole script, with completion, a formatter, a row limit and a timeout.
+    details: Run the statement at the cursor or the whole script, read-only or read-write, with completion, a formatter, Vim keys and a history of every run.
     link: /sql-editor/
     link_text: Open the guide
+  - icon: 🤖
+    title: Agents
+    details: Let Claude Code, Cursor and other agents read the databases you choose, over MCP. Reads only, within your limits, and every call in a log.
+    link: /agents/
+    link_text: Connect an agent
   - icon: 🔓
     title: Open source
     details: Free to use, study and improve, under the MIT license.
