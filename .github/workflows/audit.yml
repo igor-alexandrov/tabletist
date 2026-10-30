@@ -1,0 +1,42 @@
+name: Audit
+
+# Checks Cargo.lock against the RustSec advisory database: every day, since
+# advisories arrive without a change here, and on a change to the
+# dependencies. A vulnerability fails it; unmaintained and yanked crates are
+# only listed. .cargo/audit.toml holds the advisories that do not apply. The
+# paths are listed twice: change them together.
+on:
+  push:
+    branches: [main]
+    paths:
+      - Cargo.lock
+      - "**/Cargo.toml"
+      - .cargo/audit.toml
+      - .github/workflows/audit.yml
+  pull_request:
+    paths:
+      - Cargo.lock
+      - "**/Cargo.toml"
+      - .cargo/audit.toml
+      - .github/workflows/audit.yml
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit --file Cargo.lock
