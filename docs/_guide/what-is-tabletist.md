@@ -39,8 +39,9 @@ Windows.
   [Open the SQL editor guide]({% link _guide/sql-editor.md %}).
 - **Lets agents read your databases.** Claude Code, Cursor and other
   agents ask Tabletist over MCP. They read only the connections you
-  allow, never get the connection's password, and see none of the tables
-  you hide or the columns you mask. You can read a log of their calls.
+  allow, never get the connection's password, and are kept from what is
+  in the tables you hide and the values of the columns you mask. You can
+  read a log of their calls.
   [Connect an agent]({% link _guide/agents.md %}).
 - **Is careful with production.** A production connection opens read-only
   unless you turn that off, and a save to production asks first, with the
