@@ -21,6 +21,8 @@ pub struct Harness {
     pub viewport_commands: Vec<egui::ViewportCommand>,
     /// Whether the window reports itself fullscreen.
     pub fullscreen: bool,
+    /// Whether the window reports itself maximized.
+    pub maximized: bool,
     /// The system's light or dark, as every frame is told it: unknown
     /// until a test says.
     pub system_theme: Option<egui::Theme>,
@@ -89,6 +91,11 @@ impl Harness {
             .entry(egui::ViewportId::ROOT)
             .or_default()
             .fullscreen = Some(self.fullscreen);
+        input
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .maximized = Some(self.maximized);
         if std::mem::take(&mut self.close_requested) {
             // What `ViewportInfo::close_requested` reads.
             input
@@ -1683,6 +1690,7 @@ impl Harness {
             scale: 1.0,
             viewport_commands: Vec::new(),
             fullscreen: false,
+            maximized: false,
             system_theme: None,
             close_requested: false,
             painted: Vec::new(),
