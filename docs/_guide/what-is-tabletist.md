@@ -28,14 +28,15 @@ Windows.
   and Structure and DDL views.
   [Browse a table]({% link _guide/browsing-data.md %}).
 - **Edits data safely.** Change values, and add, duplicate and delete
-  rows. Dates have a calendar, and a foreign key searches the table it
-  points at as you type. Changes stay pending until you save. A save is
+  rows. Dates have a calendar, and a foreign key of one column searches
+  the table it points at as you type. Changes stay pending until you
+  save. A save is
   one transaction. When someone else changed the same row, the save
   writes nothing and asks you what to do.
   [See how editing works]({% link _guide/editing-data.md %}).
 - **Runs SQL.** An editor per connection with completion, a formatter,
-  Vim keys, a row limit and a timeout, read-only or read-write, and a
-  History tab of every statement run on the connection.
+  Vim keys if you want them, a row limit and a timeout, read-only or
+  read-write, and a History tab of what ran on the connection lately.
   [Open the SQL editor guide]({% link _guide/sql-editor.md %}).
 - **Lets agents read your databases.** Claude Code, Cursor and other
   agents ask Tabletist over MCP. They read only the connections you

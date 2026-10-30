@@ -41,7 +41,7 @@ features:
     details: A production connection opens read-only unless you say otherwise, and a save to production asks first, with its SQL on screen.
   - icon: ✏️
     title: Edit in the grid
-    details: Change values, add, duplicate and delete rows, pick dates from a calendar and foreign keys from a list. A save is one transaction, and stops to ask when someone else changed the row.
+    details: Change values, add, duplicate and delete rows, pick dates from a calendar, and search the table a one-column foreign key points at. A save is one transaction, and stops to ask when someone else changed the row.
     link: /editing-data/
     link_text: How editing works
   - icon: 🧭
@@ -51,7 +51,7 @@ features:
     link_text: Browse a table
   - icon: ⌨️
     title: SQL editor
-    details: Run the statement at the cursor or the whole script, read-only or read-write, with completion, a formatter, Vim keys and a history of every run.
+    details: Run the statement at the cursor or the whole script, read-only or read-write, with completion, a formatter, optional Vim keys and a history of recent runs.
     link: /sql-editor/
     link_text: Open the guide
   - icon: 🤖
