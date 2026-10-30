@@ -13,8 +13,7 @@ switches to another look.
 ## Install
 
 Tabletist needs macOS 11 or later. One download runs on both Apple
-Silicon and Intel. The steps, and what to do when macOS blocks the first
-launch, are on the
+Silicon and Intel. The steps are on the
 [Download page]({% link _guide/download.md %}#macos).
 
 ## The window
