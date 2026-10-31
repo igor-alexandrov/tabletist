@@ -153,6 +153,11 @@ impl Paint {
             look: app.look,
         }
     }
+
+    /// The keyboard layout the look writes keys in, as `App::layout` has it.
+    pub fn layout(&self) -> crate::keymap::Layout {
+        crate::keymap::Layout::of(&self.look)
+    }
 }
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
@@ -173,17 +178,35 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let asked = password_prompt::show(&ui.ctx().clone(), paint, prompt);
         app.actions.extend(asked);
     }
-    host_key_prompt::show(app, &ui.ctx().clone());
+    if let Some(Dialog::HostKey(prompt)) = &app.dialog {
+        let asked = host_key_prompt::show(&ui.ctx().clone(), paint, prompt);
+        app.actions.extend(asked);
+    }
     quick_open::show(app, &ui.ctx().clone());
-    help::show(app, &ui.ctx().clone());
-    about::show(app, &ui.ctx().clone());
+    if matches!(app.dialog, Some(Dialog::Help)) {
+        let asked = help::show(&ui.ctx().clone(), paint, &app.keymap);
+        app.actions.extend(asked);
+    }
+    if matches!(app.dialog, Some(Dialog::About)) {
+        let asked = about::show(&ui.ctx().clone(), paint);
+        app.actions.extend(asked);
+    } else {
+        about::fold(ui.ctx());
+    }
     settings::show(app, &ui.ctx().clone());
     write_prompts::show(app, &ui.ctx().clone());
-    every_row_prompt::show(app, &ui.ctx().clone());
+    if let Some(Dialog::ConfirmEveryRow(prompt)) = &app.dialog {
+        let editor_open = app
+            .workspace(prompt.tab)
+            .and_then(|workspace| workspace.sql_tab(prompt.id))
+            .is_some();
+        let asked = every_row_prompt::show(&ui.ctx().clone(), paint, prompt, editor_open);
+        app.actions.extend(asked);
+    }
     conflict_prompt::show(app, &ui.ctx().clone());
     agent_access::show(app, &ui.ctx().clone());
     // Last: it says what was done, whatever is on screen by now.
-    toast::show(app, ui.ctx());
+    toast::show(ui.ctx(), paint);
 }
 
 /// What the screen draws under the bar that leads the window, which on
