@@ -2186,6 +2186,14 @@ impl Default for ConnectionForm {
     }
 }
 
+/// What a connection's files are on disk, for the connections list: a
+/// Files connection's files, or a SQLite file's size.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceFacts {
+    Files(tabletist_db::files::Scan),
+    File { size: u64 },
+}
+
 impl ConnectionForm {
     /// Set aside while the Connections list asks whether to delete its
     /// connection: an answer to what it waits for would find no form to

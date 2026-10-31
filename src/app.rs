@@ -144,6 +144,11 @@ pub struct App {
     pub actions: Vec<Action>,
     pub backend: Backend,
     pub connections: SavedConnections,
+    /// What the saved connections' files are on disk, for the list's rows,
+    /// as the backend last read them.
+    pub sources: HashMap<crate::connections::ConnectionId, crate::model::SourceFacts>,
+    /// The read of `sources` in flight: an older one's answer is dropped.
+    pub sources_request: Option<RequestId>,
     /// The label columns chosen for the tables foreign keys point at, from
     /// labels.json. Read through `App::label_of` only.
     pub labels: crate::labels::Labels,
@@ -399,6 +404,8 @@ impl App {
             actions: Vec::new(),
             backend,
             connections,
+            sources: HashMap::new(),
+            sources_request: None,
             labels,
             table_lists,
             table_lists_unread,
@@ -480,6 +487,7 @@ impl App {
         // What the files let agents do against what was last shown: the
         // connections are read now alone, the settings at every edit too.
         app.check_agents();
+        app.read_sources();
         if adopted {
             app.save_labels();
         }
@@ -4275,6 +4283,12 @@ impl App {
                     form.ssh_hosts = hosts;
                 }
             }
+            Event::SourcesRead { request, facts } => {
+                if self.sources_request == Some(request) {
+                    self.sources_request = None;
+                    self.sources = facts.into_iter().collect();
+                }
+            }
             Event::FilePicked { request, path } => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog
                     && form.pick_request == Some(request)
@@ -5268,10 +5282,33 @@ impl App {
             path: self.dirs.connections_file(),
             file: StateFile::Connections(self.connections.clone()),
         });
+        // The list's rows say what a connection's files are.
+        self.read_sources();
         // Every change to a connection is saved: what agents may use
         // changes with it. One deleted is held no more.
         self.check_agents();
         self.send_agents_policy();
+    }
+
+    /// Has the backend read what every saved connection's files are on
+    /// disk, for the connections list.
+    fn read_sources(&mut self) {
+        let specs: Vec<_> = self
+            .connections
+            .connections
+            .iter()
+            .filter(|saved| match saved.spec.driver {
+                Driver::Files | Driver::Sqlite => true,
+                Driver::Postgres | Driver::MySql => false,
+            })
+            .map(|saved| (saved.id.clone(), saved.spec.clone()))
+            .collect();
+        if specs.is_empty() {
+            return;
+        }
+        let request = RequestId(self.next_id());
+        self.sources_request = Some(request);
+        self.backend.read_sources(request, specs);
     }
 
     /// Takes the agent server on: tells the backend what agents may use,

@@ -398,6 +398,13 @@ pub enum Event {
         request: RequestId,
         hosts: Vec<tabletist_db::ssh_config::ConfigHost>,
     },
+    /// What the saved connections' files are on disk, for the list's rows:
+    /// those of a Files connection, a SQLite file's size. A connection
+    /// whose files cannot be read is left out.
+    SourcesRead {
+        request: RequestId,
+        facts: Vec<(crate::connections::ConnectionId, crate::model::SourceFacts)>,
+    },
     SecretLoaded {
         request: RequestId,
         result: Result<Option<SecretString>, String>,
@@ -841,6 +848,42 @@ impl Backend {
         runtime.spawn_blocking(move || {
             let hosts = tabletist_db::ssh_config::hosts();
             outbox.emit(Event::SshHosts { request, hosts });
+        });
+    }
+
+    /// Reads what the saved connections' files are on disk, off the UI
+    /// thread: each Files connection's Source, each SQLite file's size.
+    pub fn read_sources(
+        &mut self,
+        request: RequestId,
+        specs: Vec<(crate::connections::ConnectionId, ConnectSpec)>,
+    ) {
+        let Some(runtime) = &self.runtime else {
+            return;
+        };
+        let outbox = self.outbox.clone();
+        runtime.spawn_blocking(move || {
+            let facts = specs
+                .into_iter()
+                .filter_map(|(id, spec)| {
+                    let facts = match spec.driver {
+                        tabletist_db::Driver::Files => {
+                            let source = spec.files.as_ref()?;
+                            crate::model::SourceFacts::Files(
+                                tabletist_db::files::scan(source).ok()?,
+                            )
+                        }
+                        tabletist_db::Driver::Sqlite => crate::model::SourceFacts::File {
+                            size: std::fs::metadata(spec.sqlite_path.as_ref()?).ok()?.len(),
+                        },
+                        tabletist_db::Driver::Postgres | tabletist_db::Driver::MySql => {
+                            return None;
+                        }
+                    };
+                    Some((id, facts))
+                })
+                .collect();
+            outbox.emit(Event::SourcesRead { request, facts });
         });
     }
 
