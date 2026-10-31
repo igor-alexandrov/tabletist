@@ -14130,11 +14130,13 @@ value_tags   = true
     }
 
     /// The middle of the cell that shows `text`.
+    /// Where a cell writes `text`: not a row's number.
     fn cell_of(harness: &Harness, text: &str) -> egui::Pos2 {
-        harness
-            .painted_rect(text)
+        let mut pieces = harness.text_rects.iter();
+        pieces
+            .find(|(piece, rect)| piece == text && !harness.is_row_number(*rect))
+            .map(|(_, rect)| rect.center())
             .unwrap_or_else(|| panic!("no cell shows {text}"))
-            .center()
     }
 
     fn edits(harness: &Harness, tab: ConnTabId, id: TabId) -> &crate::edit::Edits {
@@ -14900,7 +14902,8 @@ value_tags   = true
             // It is a note at the cell: beside the key it is about.
             // (The row panel writes the key too: the grid's is leftmost.)
             let note = harness.painted_rect(why).unwrap();
-            let keys = harness.text_rects.iter().filter(|(text, _)| text == "2");
+            let pieces = harness.text_rects.iter();
+            let keys = pieces.filter(|(text, rect)| text == "2" && !harness.is_row_number(*rect));
             let cell = keys
                 .map(|(_, rect)| *rect)
                 .min_by(|a, b| a.left().total_cmp(&b.left()))
@@ -17283,7 +17286,9 @@ value_tags   = true
         make_pending(&mut harness, tab, id, (1, 1), "ann@example.com");
         harness.press(Key::S, Modifiers::COMMAND);
         harness.answer_written(Err(tabletist_db::Error::Cancelled));
-        harness.size.x = 720.0;
+        // Narrow enough that the keys give way, wide enough for the grid
+        // and the rows' numbers to keep every column in sight.
+        harness.size.x = 820.0;
         harness.settle();
         let said = "save cancelled. nothing was written.";
         assert!(painted(&harness, said), "{:?}", harness.painted);
@@ -24423,10 +24428,14 @@ value_tags   = true
         for look in Look::ALL {
             let (mut harness, tab, id) = editing_a_document(look);
             let palette = harness.app.palette;
+            // The editor's, not the grid's row numbers: those are written
+            // in the same colour.
             let numbered = |harness: &Harness, number: &str| {
                 let pieces = harness.text_rects.iter().zip(&harness.painted);
                 pieces
-                    .filter(|((text, _), (_, color))| text == number && *color == palette.faint)
+                    .filter(|((text, rect), (_, color))| {
+                        text == number && *color == palette.faint && !harness.is_row_number(*rect)
+                    })
                     .count()
             };
             let valid = |harness: &Harness| {

@@ -187,8 +187,12 @@ keyboard.
 | Cmd+Left, Cmd+Right | First and last column |
 | Cmd+Option+Left and Right | Previous and next page |
 | Cmd+F | Filter bar |
-| Cmd+C | Copy the cell |
-| Cmd+Shift+C | Copy the row |
+| Cmd+C | Copy the selection, or the cell |
+| Cmd+Shift+C | Copy the selected rows |
+| Shift+arrows, Shift-click, drag | Select cells |
+| Click a row's number | Select the row. Shift-click selects through to another, Cmd-click adds or takes out one |
+| Shift+Space | Select the rows of the selected cells |
+| Cmd+A | Select every row loaded |
 | Cmd+R | Reload |
 | Cmd+. | Cancel the running query |
 | Cmd+I | Open the row panel, with the keyboard on its fields. Esc goes back to the rows |
@@ -220,9 +224,9 @@ In its DDL view:
 | Return, F2 | Edit the cell. Typing on a selected cell starts an edit too, and so does a double-click |
 | Cmd+N | Add a row, at the top of the grid |
 | Down | On the table's last row, on its last page: add a row below it |
-| Cmd+D | Duplicate the row, as a new row at the top of the grid |
+| Cmd+D | Duplicate the selected rows, as new rows at the top of the grid |
 | Backspace, Forward Delete | Delete the row: mark it for deletion, or restore a marked row. A new row that is not saved yet is dropped |
-| Shift+Up, Shift+Down | Select the row above or below with the selected rows. Backspace then deletes them all |
+| Shift+Up, Shift+Down | Select cells across the rows above or below. Backspace then deletes their rows |
 | Return, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Esc | Cancel the edit |
 | Cmd+L | In a foreign key cell's list: choose the column that labels it. In the chooser, Up and Down move, Return chooses and Esc closes |

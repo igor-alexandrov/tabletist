@@ -1741,12 +1741,23 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         // among them. A place is the grid's; a row is the set's and the
         // page's, and the reducer's.
         let order = crate::edit::Order::of(&object.edits.added, page.rows.len());
-        // The whole rows selected with the cursor's, as places of the grid.
-        // Read here, before the tab is taken for its editor's text.
-        let whole = object
-            .selected()
+        // What is selected with the cursor's cell, as places of the grid:
+        // whole rows, or a rectangle of cells. Read here, before the tab is
+        // taken for its editor's text.
+        let width = page.columns.len();
+        let selected = object.selected();
+        let whole = selected
             .map(|selected| selected.ranged())
             .unwrap_or_default();
+        let block = selected.and_then(|selected| selected.block(width));
+        let said = selected.and_then(|selected| {
+            let whole_rows = object
+                .range
+                .as_ref()
+                .is_some_and(crate::selection::Range::rows);
+            let size = selected.size(width)?;
+            Some(crate::selection::said(locale, size, whole_rows))
+        });
         let ranged = |place: usize| whole.contains(&place);
         let placed = |cell: CellPos| {
             let row = order.place(cell.row)?;
@@ -1800,6 +1811,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             &columns,
             order.len(),
             object.selection.and_then(placed),
+            grid::Picked {
+                block,
+                said: said.as_deref(),
+            },
             keys,
             &palette,
             &grid_look,
@@ -1966,6 +1981,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 Action::ExtendTo { tab, id, cell }
             } else {
                 Action::SelectCell { tab, id, cell }
+            });
+        }
+        // A drag over the cells: the range runs to the one under it.
+        if let Some(cell) = output.dragged.and_then(held) {
+            actions.push(Action::ExtendTo { tab, id, cell });
+        }
+        if let Some((place, click)) = output.row_clicked
+            && let Some(row) = order.row(place)
+        {
+            actions.push(Action::RowNumberClicked {
+                tab,
+                id,
+                row,
+                click,
             });
         }
         // A second click edits the cell.

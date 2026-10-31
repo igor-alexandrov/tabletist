@@ -31,6 +31,20 @@ pub fn header_height(look: &crate::theme::Look) -> f32 {
 }
 /// The terminal look's gutter, where the selected row's cursor sits.
 const GUTTER: f32 = 22.0;
+/// The rows' numbers, before the first column (after the terminal look's
+/// gutter): 44 wide on macOS, 50 in the terminal, as the design has them.
+fn numbers_width(look: &Look) -> f32 {
+    if look.terminal { 50.0 } else { 44.0 }
+}
+/// The space a number keeps from the column after it.
+const NUMBER_PAD: f32 = 8.0;
+
+/// What stands before the first column: the terminal look's marks, then
+/// the rows' numbers.
+pub fn gutter(look: &Look) -> f32 {
+    let signs = if look.terminal { GUTTER } else { 0.0 };
+    signs + numbers_width(look)
+}
 const MIN_WIDTH: f32 = 48.0;
 const MAX_INITIAL_WIDTH: f32 = 331.0;
 /// A numeric key column's width, as the design's grids fix it: 64 on
@@ -86,6 +100,17 @@ pub struct Row {
     /// The row is one of several selected rows: it is drawn as the
     /// selected row of its kind is, and told as selected.
     pub ranged: bool,
+}
+
+/// What is selected besides the cursor's cell, as the grid draws and says
+/// it. Whole rows are each [`Row::ranged`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Picked<'a> {
+    /// A rectangle of cells, as places of the grid.
+    pub block: Option<crate::selection::Block>,
+    /// What a screen reader is told of the range: "4 rows by 2 columns
+    /// selected".
+    pub said: Option<&'a str>,
 }
 
 /// How a cell draws its text.
@@ -169,7 +194,12 @@ pub type Editor<'a> = &'a mut dyn FnMut(&mut Ui, Rect);
 #[derive(Debug, Default, PartialEq)]
 pub struct GridOutput {
     pub clicked: Option<CellPos>,
-    /// Shift was held at the click: it extends the selection to its row.
+    /// A row's number was clicked: its place, and with what held.
+    pub row_clicked: Option<(usize, crate::selection::RowClick)>,
+    /// The cell a drag that began on a cell is over now, where that changed
+    /// this frame: the range runs from the pressed cell to it.
+    pub dragged: Option<CellPos>,
+    /// Shift was held at the click: it extends the selection to its cell.
     pub shift: bool,
     /// The cell a second click landed on, soon after the first.
     pub double_clicked: Option<CellPos>,
@@ -425,6 +455,39 @@ pub fn row_fill(
     }
 }
 
+/// The outline of a range of cells, drawn on its cell at `(place, col)`: on
+/// macOS a line on each side the range ends at, in the terminal a line
+/// round its anchor.
+fn block_edges(
+    painter: &egui::Painter,
+    rect: Rect,
+    block: crate::selection::Block,
+    (place, col): (usize, usize),
+    look: &Look,
+    palette: &Palette,
+) {
+    let stroke = Stroke::new(1.0, palette.accent);
+    if look.terminal {
+        if block.anchor == (CellPos { row: place, col }) {
+            painter.rect_stroke(rect, CornerRadius::ZERO, stroke, StrokeKind::Inside);
+        }
+        return;
+    }
+    let inner = rect.shrink(0.5);
+    if place == block.rows.0 {
+        painter.hline(inner.x_range(), inner.top(), stroke);
+    }
+    if place == block.rows.1 {
+        painter.hline(inner.x_range(), inner.bottom(), stroke);
+    }
+    if col == block.cols.0 {
+        painter.vline(inner.left(), inner.y_range(), stroke);
+    }
+    if col == block.cols.1 {
+        painter.vline(inner.right(), inner.y_range(), stroke);
+    }
+}
+
 /// `palette` with every colour a cell writes in set to `color`.
 fn written_in(palette: &Palette, color: egui::Color32) -> Palette {
     Palette {
@@ -649,6 +712,7 @@ pub fn show<'a>(
     columns: &[Column<'_>],
     row_count: usize,
     selection: Option<CellPos>,
+    picked: Picked<'_>,
     // Whether the arrow keys move in this grid.
     keys: bool,
     palette: &Palette,
@@ -664,7 +728,7 @@ pub fn show<'a>(
     let row_height = look.row();
     let header_height = header_height(look);
     let pad = cell_pad(look);
-    let gutter = if look.terminal { GUTTER } else { 0.0 };
+    let gutter = gutter(look);
     let widths_id = id.with(("widths", columns.len()));
     let last_id = id.with("last-selection");
     let kept: Option<Vec<f32>> = ui
@@ -729,6 +793,9 @@ pub fn show<'a>(
     stop.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, "Rows"));
     ui.ctx().accesskit_node_builder(stop.id, |node| {
         node.set_role(egui::accesskit::Role::Group);
+        if let Some(said) = picked.said {
+            node.set_description(said);
+        }
     });
     focus::pane(ui, &stop);
     // The selected cell shows where the keyboard is; with none selected
@@ -797,9 +864,27 @@ pub fn show<'a>(
             ui.scroll_to_rect(rect, None);
         }
 
+        // The cell under `pointer`, as places: what a drag is over.
+        let under = |pointer: egui::Pos2| {
+            let y = pointer.y - origin.y - header_height;
+            let place = (y / row_height).floor().max(0.0) as usize;
+            let x = pointer.x - origin.x - gutter;
+            let col = if pinned && x - shift < widths[0] {
+                0
+            } else {
+                column_at(&widths, x)
+            };
+            CellPos {
+                row: place.min(row_count.saturating_sub(1)),
+                col,
+            }
+        };
+        let drag_id = id.with("drag-over");
         virtual_rows(ui, row_count, row_height, |ui, row| {
-            // A row takes a click, not the Tab key: the grid is the stop.
-            let (rect, response) = ui.allocate_exact_size(vec2(full, row_height), Sense::CLICK);
+            // A row takes a click and a drag, not the Tab key: the grid is
+            // the stop.
+            let (rect, response) =
+                ui.allocate_exact_size(vec2(full, row_height), Sense::click_and_drag());
             let Row {
                 mark,
                 number,
@@ -817,9 +902,23 @@ pub fn show<'a>(
                     node.set_selected(true);
                 });
             }
-            if response.clicked() || response.double_clicked() {
-                let col = response
-                    .interact_pointer_pos()
+            // On the row's number, which stands with the pinned column.
+            let on_number = |pointer: egui::Pos2| pointer.x - rect.left() - shift < gutter;
+            let pressed = response.interact_pointer_pos();
+            if (response.clicked() || response.double_clicked()) && pressed.is_some_and(on_number) {
+                let held = ui.input(|input| input.modifiers);
+                let click = if held.shift {
+                    crate::selection::RowClick::Extend
+                } else if held.command {
+                    crate::selection::RowClick::Toggle
+                } else {
+                    crate::selection::RowClick::Only
+                };
+                if response.clicked() {
+                    output.row_clicked = Some((row, click));
+                }
+            } else if response.clicked() || response.double_clicked() {
+                let col = pressed
                     .map(|pointer| {
                         let x = pointer.x - rect.left() - gutter;
                         // Over the pinned column, whatever is under it.
@@ -839,6 +938,31 @@ pub fn show<'a>(
                     output.double_clicked = cell;
                 }
             }
+            // A drag from a cell: the press is its click, and the cell the
+            // pointer is over the other end of the range.
+            let origin_press = ui.input(|input| input.pointer.press_origin());
+            if response.drag_started()
+                && let Some(press) = origin_press.filter(|press| !on_number(*press))
+            {
+                let from = CellPos {
+                    row,
+                    col: under(press).col,
+                };
+                output.clicked = Some(from);
+                output.shift = ui.input(|input| input.modifiers.shift);
+                ui.data_mut(|data| data.insert_temp(drag_id, from));
+            }
+            if response.dragged()
+                && origin_press.is_some_and(|press| !on_number(press))
+                && let Some(pointer) = response.interact_pointer_pos()
+            {
+                let over = under(pointer);
+                let before = ui.data(|data| data.get_temp::<CellPos>(drag_id));
+                if before != Some(over) {
+                    output.dragged = Some(over);
+                    ui.data_mut(|data| data.insert_temp(drag_id, over));
+                }
+            }
             let painter = ui.painter().clone();
             // A row with pending cells is marked in their tone.
             let row_tone = match mark {
@@ -852,9 +976,10 @@ pub fn show<'a>(
             // having no number among the table's. Its mark is not
             // steady enough, a cell to fix in it makes it `Trouble`.
             let held_back = new || number.is_none();
-            // The cursor's row, and with it the rows selected with it.
+            // The cursor's row, and with it the rows selected with it. A
+            // rectangle of cells is drawn on its cells alone.
             let cursor_row = selection.is_some_and(|cell| cell.row == row);
-            let selected_row = cursor_row || ranged;
+            let selected_row = (cursor_row && picked.block.is_none()) || ranged;
             // With the keyboard in the grid the cell takes the
             // selection's colour and its row a lighter tint of it.
             let lit_row = selected_row && lit && !look.terminal;
@@ -919,6 +1044,19 @@ pub fn show<'a>(
                             Stroke::new(hairline, palette.outline),
                         );
                     }
+                    if let Some(number) = number {
+                        // The row's number, at the right of its room.
+                        let color = if look.terminal {
+                            palette.dim
+                        } else {
+                            palette.faint
+                        };
+                        let role = TextRole::pick(look, TextRole::ColumnType, TextRole::OBody);
+                        let right = lead.left() + gutter - NUMBER_PAD;
+                        Text::one(look, role, &number.to_string(), color)
+                            .layout(ui.ctx())
+                            .paint_right(&painter, right, rect.center().y);
+                    }
                     if look.terminal {
                         if new {
                             // The terminal's bar: 2 wide, and as far
@@ -972,6 +1110,15 @@ pub fn show<'a>(
                 }
                 let content = cell(row, col);
                 let here = selection == Some(CellPos { row, col });
+                let block = picked.block.filter(|block| block.covers(row, col));
+                let in_block = block.is_some();
+                // A range of cells: the accent's faint tint on macOS, the
+                // active surface in the terminal.
+                let block_fill = if look.terminal {
+                    palette.surface_active
+                } else {
+                    palette.accent_faint
+                };
                 if content.hint.is_some() || content.note.is_some() {
                     // Where the cell shows: not the part of it that
                     // scrolled under the pinned column.
@@ -1047,6 +1194,8 @@ pub fn show<'a>(
                     painter.rect_filled(cell_rect, CornerRadius::ZERO, tint);
                 } else if here && lit {
                     painter.rect_filled(cell_rect, CornerRadius::ZERO, palette.selection);
+                } else if in_block {
+                    painter.rect_filled(cell_rect, CornerRadius::ZERO, block_fill);
                 } else if locked {
                     painter.rect_filled(cell_rect, CornerRadius::ZERO, palette.surface);
                 }
@@ -1096,7 +1245,9 @@ pub fn show<'a>(
                         None => (selected_row && !lit_row).then_some(palette.accent),
                     };
                     if let Some(color) = color {
-                        let bar = Rect::from_min_size(cell_rect.min, vec2(3.0, height));
+                        // At the row's start, before its number.
+                        let at = pos2(cell_rect.left() - gutter, cell_rect.top());
+                        let bar = Rect::from_min_size(at, vec2(3.0, height));
                         painter.rect_filled(bar, CornerRadius::ZERO, color);
                     }
                 }
@@ -1155,6 +1306,9 @@ pub fn show<'a>(
                     look,
                     &written,
                 );
+                if let Some(block) = block {
+                    block_edges(&painter, cell_rect, block, (row, col), look, palette);
+                }
                 // A cell edited in an editor of its own keeps its
                 // value and the cursor's line, lit or not: the line
                 // says which cell the editor is for.
@@ -1182,11 +1336,9 @@ pub fn show<'a>(
                     // marked too, for the keys that act on one cell.
                     // A new row's first is as well: the row keeps its
                     // own fill and bar, and nothing else would say it
-                    // is selected. The line stands clear of that bar.
-                    let clear = if col == 0 { 3.0 } else { 0.0 };
-                    let marked = cell_rect.with_min_x(cell_rect.left() + clear);
+                    // is selected.
                     painter.rect_stroke(
-                        marked.shrink(1.0),
+                        cell_rect.shrink(1.0),
                         CornerRadius::same(look.radius.min(3)),
                         Stroke::new(1.5, palette.accent),
                         StrokeKind::Inside,
@@ -2117,6 +2269,7 @@ mod tests {
                     columns,
                     rows,
                     None,
+                    Picked::default(),
                     false,
                     &palette,
                     &crate::theme::Look::standard(),
@@ -2172,6 +2325,7 @@ mod tests {
                 &columns(),
                 3,
                 Some(CellPos { row: 1, col: 1 }),
+                Picked::default(),
                 keys,
                 palette,
                 look,
@@ -2305,6 +2459,7 @@ mod tests {
                 &columns(),
                 3,
                 selection,
+                Picked::default(),
                 true,
                 palette,
                 look,
@@ -2698,6 +2853,7 @@ mod tests {
                     &columns(),
                     3,
                     None,
+                    Picked::default(),
                     false,
                     &palette,
                     &look,
@@ -2762,6 +2918,7 @@ mod tests {
                     &columns(),
                     3,
                     None,
+                    Picked::default(),
                     false,
                     &palette,
                     &look,
@@ -3001,7 +3158,8 @@ mod tests {
         let widths: Vec<f32> = ctx
             .data(|data| data.get_temp(egui::Id::new("grid").with(("widths", 2_usize))))
             .expect("the widths");
-        let pos = egui::pos2(widths[0] + 5.0, header_height(&look) + look.grid_row * 1.5);
+        let x = gutter(&look) + widths[0] + 5.0;
+        let pos = egui::pos2(x, header_height(&look) + look.grid_row * 1.5);
         let press = |pressed| egui::Event::PointerButton {
             pos,
             button: egui::PointerButton::Primary,
@@ -3060,6 +3218,7 @@ mod tests {
                     &columns,
                     3,
                     None,
+                    Picked::default(),
                     false,
                     &Palette::light(),
                     &Look::standard(),
@@ -3131,7 +3290,7 @@ mod tests {
         assert!(scrolled.partial(), "{scrolled:?}");
         // The key is where it was; the column after it went under it.
         assert_eq!(at(&texts, "r0c0"), Some(before));
-        assert!(at(&texts, "r0c1").is_none_or(|x| x < before));
+        assert!(at(&texts, "r0c1").is_none_or(|x| f64::from(x) < header(0).x1));
         // A click over the key picks the key's cell, not one under it.
         let over_key = egui::pos2(before + 4.0, 45.0 + 26.0 * 1.5);
         let press = |pressed| egui::Event::PointerButton {
@@ -3186,6 +3345,7 @@ mod tests {
                         &columns,
                         3,
                         None,
+                        Picked::default(),
                         false,
                         &palette,
                         &look,
@@ -3515,7 +3675,7 @@ mod tests {
         };
         let before = widths(&ctx)[0];
         // A point right of the first column's edge, inside its handle.
-        let pos = egui::pos2(before + 1.0, header_height(&look) / 2.0);
+        let pos = egui::pos2(gutter(&look) + before + 1.0, header_height(&look) / 2.0);
         let press = |pos, pressed| egui::Event::PointerButton {
             pos,
             button: egui::PointerButton::Primary,
@@ -3565,7 +3725,8 @@ mod tests {
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
-                        egui::vec2(160.0, 300.0),
+                        // As wide as the gutter more than the key and half the email.
+                        egui::vec2(160.0 + gutter(&look), 300.0),
                     )),
                     events,
                     ..Default::default()
@@ -3577,6 +3738,7 @@ mod tests {
                         &columns,
                         3,
                         None,
+                        Picked::default(),
                         false,
                         &Palette::light(),
                         &look,
@@ -3620,12 +3782,14 @@ mod tests {
         let (_, tree) = frame(vec![]);
         let key = crate::testing::bounds(&tree, "id", Role::Button).expect("the key's header");
         let email = crate::testing::bounds(&tree, "email", Role::Button).expect("its header");
-        assert_eq!(key.left(), 0.0);
-        assert_eq!(key.right(), widths[0]);
+        // After the rows' numbers.
+        let gutter = gutter(&look);
+        assert_eq!(key.left(), gutter);
+        assert_eq!(key.right(), gutter + widths[0]);
         // The email header begins where the key's ends, and ends where
         // its column does.
         assert_eq!(email.left(), key.right());
-        assert_eq!(email.right(), widths[0] + widths[1] - half);
+        assert_eq!(email.right(), gutter + widths[0] + widths[1] - half);
         // Over the email header's hidden half, clear of the key's handle,
         // the pointer is the key header's, and so is a click.
         let hovered = |col: usize| {
@@ -3635,7 +3799,10 @@ mod tests {
         };
         let y = header_height(&look) / 2.0;
         let covered = egui::pos2(key.right() - HANDLE_WIDTH, y);
-        assert!(covered.x > widths[0] - half, "over the email header");
+        assert!(
+            covered.x > gutter + widths[0] - half,
+            "over the email header"
+        );
         frame(vec![egui::Event::PointerMoved(covered)]);
         frame(vec![]);
         assert!(hovered(0) && !hovered(1));
