@@ -2,6 +2,7 @@
 //! `docker compose up -d clickhouse` and set TABLETIST_TEST_CLICKHOUSE_URL
 //! (see compose.yaml). Without it every test prints "skipped" and passes.
 
+// `allow-unwrap-in-tests` does not cover helpers in an integration-test crate.
 #![allow(clippy::unwrap_used)]
 
 use std::time::Duration;
@@ -116,6 +117,37 @@ async fn a_running_query_is_cancelled() {
     .await
     .expect("the query was not cancelled");
     assert_eq!(outcome.unwrap_err(), Error::Cancelled);
+}
+
+#[tokio::test]
+async fn a_session_runs_one_statement_at_a_time_so_cancel_finds_it() {
+    let Some(http) = http() else { return };
+    let canceller = http.canceller();
+    let slow = http.clone();
+    let running = tokio::spawn(async move {
+        slow.select_page("SELECT sum(number) FROM numbers(100000000000)".into(), 1)
+            .await
+    });
+    // Run beside the slow one, a quick statement must not leave the
+    // canceller with nothing to stop once it is done.
+    let quick = http.select_page("SELECT 1".into(), 1);
+    let cancelling = async {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                canceller.cancel().await.unwrap();
+                if running.is_finished() {
+                    return running.await.unwrap();
+                }
+            }
+        })
+        .await
+        .expect("the query was not cancelled")
+    };
+    let (quick, slow) = tokio::join!(quick, cancelling);
+    assert_eq!(slow.unwrap_err(), Error::Cancelled);
+    // Cancelled too if it ran first, while the canceller kept cancelling.
+    assert!(matches!(quick, Ok(_) | Err(Error::Cancelled)), "{quick:?}");
 }
 
 #[tokio::test]

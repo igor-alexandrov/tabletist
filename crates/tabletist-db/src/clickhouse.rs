@@ -33,9 +33,11 @@ pub struct Server {
 pub struct Http {
     agent: ureq::Agent,
     server: Arc<Server>,
+    /// Held while a statement runs: a session runs one at a time, as on
+    /// the other engines, so `running` names the one there is.
+    one_at_a_time: Arc<Mutex<()>>,
     /// The `query_id` of the statement running now, which [`Canceller`]
-    /// kills. One slot for every clone: of two statements run at once,
-    /// only the later is cancelled. An engine gives each its own.
+    /// kills.
     running: Arc<Mutex<Option<String>>>,
 }
 
@@ -57,6 +59,7 @@ impl Http {
         Ok(Self {
             agent: config.into(),
             server: Arc::new(server),
+            one_at_a_time: Arc::default(),
             running: Arc::default(),
         })
     }
@@ -84,14 +87,12 @@ impl Http {
     }
 
     fn select_page_blocking(&self, sql: &str, limit: u32) -> Result<RowPage> {
+        let _turn = self.one_at_a_time.lock().unwrap_or_else(|e| e.into_inner());
         let started = Instant::now();
         let id = query_id();
         *self.running.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.clone());
         let read = self.read_rows(sql, limit, &id);
-        self.running
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take_if(|running| *running == id);
+        *self.running.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let (columns, mut rows) = read?;
         let has_more = rows.len() > limit as usize;
         rows.truncate(limit as usize);
@@ -306,14 +307,16 @@ fn read_tsv(
     while (rows.len() as u64) < wanted {
         match next(&mut line)? {
             Line::Row => {
-                let row: Vec<Value> = fields(&line)
-                    .zip(&columns)
-                    .map(|(field, column)| value(&column.type_name, field))
-                    .collect();
-                if row.len() != columns.len() {
+                // Counted first: a zip would drop the fields of a long row.
+                if fields(&line).count() != columns.len() {
                     return Err(Error::query("ClickHouse sent a row of another width"));
                 }
-                rows.push(row);
+                rows.push(
+                    fields(&line)
+                        .zip(&columns)
+                        .map(|(field, column)| value(&column.type_name, field))
+                        .collect(),
+                );
             }
             Line::Exception(rest) => return Err(exception(&rest, tag)),
             Line::End => break,
@@ -480,6 +483,18 @@ mod tests {
         let body = "n\nUInt8\n1\n2\n3\n4\n";
         let (_, rows) = read(body, 2, None).unwrap();
         assert_eq!(rows, [vec![Value::Int(1)], vec![Value::Int(2)]]);
+    }
+
+    #[test]
+    fn a_row_of_another_width_is_an_error() {
+        for body in ["a\tb\nUInt8\tUInt8\n1\n", "a\tb\nUInt8\tUInt8\n1\t2\t3\n"] {
+            let error = read(body, 10, None).unwrap_err();
+            assert_eq!(
+                error,
+                Error::query("ClickHouse sent a row of another width"),
+                "{body:?}"
+            );
+        }
     }
 
     #[test]
