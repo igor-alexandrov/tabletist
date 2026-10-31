@@ -589,6 +589,7 @@ fn yy_with_a_range_standing_copies_the_cursors_row_alone() {
     // A new row under the cursor is no row of the page.
     harness.copied = None;
     let new = new_row(add(&mut harness, tab, id));
+    set(&mut harness, tab, id, (new, 2), "audio");
     select(&mut harness, tab, id, (0, 2));
     harness.app.apply(Action::ExtendTo {
         tab,
@@ -597,8 +598,12 @@ fn yy_with_a_range_standing_copies_the_cursors_row_alone() {
     });
     assert!(harness.app.copy_text(true).is_some());
     yy(&mut harness);
-    assert!(yanked(&harness, tab, id));
     assert_eq!(harness.copied, None);
+    // The new row is what was yanked, not the first row of before.
+    type_key(&mut harness, Key::P, "p");
+    let copy = newest(&harness, tab, id);
+    assert_ne!(copy, new);
+    assert_eq!(value(&harness, tab, id, (copy, 2)), text("audio"));
 }
 
 /// Spec 2: a new row is yanked like any other, and the clipboard is left
