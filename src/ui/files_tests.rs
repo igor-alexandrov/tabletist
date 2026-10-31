@@ -427,6 +427,19 @@ fn a_test_of_another_source_is_not_said_of_this_one() {
         sqlite.test_spec = Some(ConnectSpec::sqlite("/data/bookshop.db"));
         harness.app.apply(Action::SetDriver(Driver::Files));
         assert_eq!(form(&harness).test, TestState::Idle, "{}", look.name);
+        // Nor is a Files Test still running when the type changes.
+        pick_folder(&mut harness, "/data/bookshop-exports");
+        harness.app.apply(Action::TestConnection);
+        let TestState::Running(request) = form(&harness).test else {
+            panic!("no test: {:?}", form(&harness).test);
+        };
+        harness.app.apply(Action::SetDriver(Driver::Sqlite));
+        harness.app.apply(Action::Backend(Event::FilesTested {
+            request,
+            result: Ok(FilesRead { files: 3, bytes: 1 }),
+        }));
+        assert_eq!(form(&harness).test, TestState::Idle, "{}", look.name);
+        assert!(form(&harness).files_tested.is_none(), "{}", look.name);
     }
 }
 

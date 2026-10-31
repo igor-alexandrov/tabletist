@@ -2910,6 +2910,11 @@ impl App {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
                     // A port left at the old driver's default follows the driver.
                     let old_default = form.driver.default_port().to_string();
+                    // A Test of the old type, done or still running, says
+                    // nothing of this one.
+                    if form.driver != driver {
+                        form.forget_test();
+                    }
                     form.driver = driver;
                     // A type changed again is asked about again.
                     form.retype_asked = false;
