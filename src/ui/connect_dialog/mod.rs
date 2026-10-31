@@ -1247,7 +1247,13 @@ fn status(form: &ConnectionForm, skin: &Skin) -> Option<Status> {
                 .test_spec
                 .as_ref()
                 .map_or(form.driver, |spec| spec.driver);
-            let mut text = match &form.files_tested {
+            // Only a Files Test read files: what one read stays in the
+            // form when the type changes.
+            let read = match driver {
+                Driver::Files => form.files_tested.as_ref(),
+                Driver::Postgres | Driver::MySql | Driver::Sqlite => None,
+            };
+            let mut text = match read {
                 // What a Files connection's Test read: "Read 3 files ·
                 // 2.4 GB".
                 Some(read) => format!(

@@ -717,12 +717,14 @@ fn chip_card(ui: &mut egui::Ui, chip: &Chip, hint: Option<&str>, look: &Look, pa
     }
 }
 
-/// Where a connection points, in a word: its database, or the file's name
-/// for SQLite.
+/// Where a connection points, in a word: its database, the file's name
+/// for SQLite, or the folder's or the files' for Files.
 pub fn target(workspace: &crate::model::Workspace) -> String {
-    match &workspace.spec.sqlite_path {
-        Some(path) => crate::model::file_name(&path.display().to_string()),
-        None => workspace.spec.database.clone(),
+    let spec = &workspace.spec;
+    match (&spec.sqlite_path, &spec.files) {
+        (Some(path), _) => crate::model::file_name(&path.display().to_string()),
+        (None, Some(source)) => source.title(),
+        (None, None) => spec.database.clone(),
     }
 }
 

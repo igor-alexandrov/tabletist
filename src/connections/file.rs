@@ -575,7 +575,12 @@ pub(super) fn write(connections: &[SavedConnection]) -> std::io::Result<String> 
 }
 
 /// `path` with the home folder written `~`, as the file keeps a source.
+/// A path that is not UTF-8 stays as it is, for the writer to refuse:
+/// written as shown, it would name another file.
 fn home_tilde(path: &Path) -> PathBuf {
+    if path.to_str().is_none() {
+        return path.to_owned();
+    }
     let shown = tabletist_db::files::shown(path);
     match shown.starts_with('~') {
         true => PathBuf::from(shown),
@@ -1308,6 +1313,32 @@ masked       = ["orders.email", "\"odd.schema\".orders.phone"]
                 .ends_with("is not valid UTF-8, so it cannot be saved"),
             "{error}"
         );
+    }
+
+    /// Under the home folder too: written with `~`, as shown, the path
+    /// would name another file.
+    #[cfg(unix)]
+    #[test]
+    fn a_files_path_that_is_no_text_is_not_written() {
+        use std::os::unix::ffi::OsStringExt;
+        let Some(home) = std::env::home_dir() else {
+            return;
+        };
+        let mut bytes = home.into_os_string().into_vec();
+        bytes.extend_from_slice(b"/caf\xC3\x28.csv");
+        let file = PathBuf::from(std::ffi::OsString::from_vec(bytes));
+        for source in [
+            tabletist_db::files::Source::Files(vec![file.clone()]),
+            tabletist_db::files::Source::Folder(file.clone()),
+        ] {
+            let error = write(&[saved("a", "A", ConnectSpec::files(source))]).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .ends_with("is not valid UTF-8, so it cannot be saved"),
+                "{error}"
+            );
+        }
     }
 
     /// A Files connection by its folder, and one by its files, as the file

@@ -183,12 +183,17 @@ fn duckdb(name: &str) -> ColumnClass {
         "smallint" | "int2" | "short" => signed(2),
         "integer" | "int4" | "int" | "signed" => signed(4),
         "bigint" | "int8" | "long" => signed(8),
-        "hugeint" => signed(16),
+        // Sixteen bytes are the whole of an i128: `signed` would overflow.
+        "hugeint" => ColumnClass::Integer {
+            min: i128::MIN,
+            max: i128::MAX,
+        },
         "utinyint" => unsigned(1),
         "usmallint" => unsigned(2),
         "uinteger" => unsigned(4),
         "ubigint" => unsigned(8),
-        "uhugeint" => unsigned(16),
+        // Past what an i128 range can say: DuckDB's to judge.
+        "uhugeint" => ColumnClass::Other,
         "decimal" | "numeric" => decimal(name),
         "float" | "real" | "float4" | "double" | "float8" => ColumnClass::Float,
         "boolean" | "bool" | "logical" => ColumnClass::Boolean,
@@ -336,6 +341,8 @@ mod tests {
             ("BIGINT", int(i128::from(i64::MIN), i128::from(i64::MAX))),
             ("UTINYINT", int(0, 255)),
             ("TINYINT", int(-128, 127)),
+            ("HUGEINT", int(i128::MIN, i128::MAX)),
+            ("UHUGEINT", Other),
             (
                 "DECIMAL(18,3)",
                 Decimal {

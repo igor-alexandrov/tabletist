@@ -341,6 +341,45 @@ fn a_test_reads_every_file_and_says_how_much() {
 }
 
 #[test]
+fn what_a_files_test_read_is_not_said_of_another_type() {
+    for look in looks() {
+        let mut harness = new_files(look);
+        pick_folder(&mut harness, "/data/bookshop-exports");
+        source_read(&mut harness, Ok(exports("/data/bookshop-exports")));
+        harness.app.apply(Action::TestConnection);
+        let TestState::Running(request) = form(&harness).test else {
+            panic!("no test: {:?}", form(&harness).test);
+        };
+        harness.app.apply(Action::Backend(Event::FilesTested {
+            request,
+            result: Ok(FilesRead {
+                files: 3,
+                bytes: 2_400_000_000,
+            }),
+        }));
+        // A SQLite Test passed after it, the Files one's read still held.
+        let form = form_mut(&mut harness);
+        form.driver = Driver::Sqlite;
+        form.test_spec = Some(ConnectSpec::sqlite("/data/bookshop.db"));
+        assert!(form.files_tested.is_some());
+        let tree = harness.settle();
+        let labels = crate::testing::labels(&tree);
+        let read = look.label("Read 3 files");
+        let connected = look.label("Connected · SQLite");
+        assert!(
+            !labels.iter().any(|label| label.starts_with(&read)),
+            "{}: {labels:?}",
+            look.name
+        );
+        assert!(
+            labels.iter().any(|label| label.starts_with(&connected)),
+            "{}: {labels:?}",
+            look.name
+        );
+    }
+}
+
+#[test]
 fn files_open_read_only_and_the_box_cannot_be_turned_off() {
     for look in looks() {
         let mut harness = new_files(look);

@@ -714,8 +714,11 @@ access_max = "off"
 A rule matches a connection by what it reaches. Each key in `match` must
 match, and `*` in it stands for any run of characters. `host` is compared
 without regard to case, and through an SSH tunnel it is the database's
-host. `path` is a SQLite file's, or a Files connection's folder (its first
-file's for a list of files), with `~` read as your home folder. `driver`
+host. `path` is a SQLite file's. On a Files connection it matches any
+path the connection reads: its folder, or a file the pattern names
+directly in it, such as `/srv/exports/*.csv`; for a list of files, any
+one of them, or the folder it is in. In `path`, `~` is your home folder.
+`driver`
 is `postgres`, `mysql`, `sqlite` or `files`. A key the connection has no
 use for, such as `path` on PostgreSQL, does not match. Every rule that
 matches a connection applies. A Files connection can hide no table and

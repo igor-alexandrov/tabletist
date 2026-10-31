@@ -98,7 +98,9 @@ impl Match {
     /// without regard to case, the rest as written. Through an SSH tunnel
     /// the host is the database's, as the tunnel reaches it. `path` is the
     /// SQLite file's, with `~` read as `home` and made absolute; links are
-    /// not followed. A key the driver has no use for does not match.
+    /// not followed. On a Files connection it matches what the connection
+    /// can read: a folder, or a file a pattern could name in it; a listed
+    /// file, or its folder. A key the driver has no use for does not match.
     pub fn matches(&self, spec: &ConnectSpec, home: Option<&Path>) -> bool {
         let server = match spec.driver {
             Driver::Postgres | Driver::MySql => true,
@@ -129,19 +131,19 @@ impl Match {
             return false;
         }
         if let Some(path) = &self.path {
-            // A Files connection's path is its folder's.
-            let named = match spec.driver {
-                Driver::Sqlite => spec.sqlite_path.as_deref(),
+            let reached = match spec.driver {
+                Driver::Sqlite => spec
+                    .sqlite_path
+                    .as_deref()
+                    .and_then(|file| absolute(file, home))
+                    .is_some_and(|file| glob(path, &file.to_string_lossy())),
                 Driver::Files => spec
                     .files
                     .as_ref()
-                    .and_then(tabletist_db::files::Source::folder),
-                Driver::Postgres | Driver::MySql => None,
+                    .is_some_and(|source| reaches(path, source, home)),
+                Driver::Postgres | Driver::MySql => false,
             };
-            let Some(file) = named.and_then(|file| absolute(file, home)) else {
-                return false;
-            };
-            if !glob(path, &file.to_string_lossy()) {
+            if !reached {
                 return false;
             }
         }
@@ -153,7 +155,82 @@ impl Match {
     }
 }
 
-/// The driver's word in the file, as in `connections.toml`.
+/// Whether `pattern` names a path a Files connection over `source` can
+/// read, so that no file of it slips past a rule: its folder, or a file a
+/// pattern could name directly in it (the files come and go); a listed
+/// file, or the folder it is in.
+fn reaches(pattern: &str, source: &tabletist_db::files::Source, home: Option<&Path>) -> bool {
+    use tabletist_db::files::Source;
+    match source {
+        Source::Folder(folder) => absolute(folder, home).is_some_and(|folder| {
+            let folder = folder.to_string_lossy();
+            glob(pattern, &folder) || names_a_file_in(pattern, &folder)
+        }),
+        Source::Files(files) => files
+            .iter()
+            .filter_map(|file| absolute(file, home))
+            .any(|file| {
+                glob(pattern, &file.to_string_lossy())
+                    || file
+                        .parent()
+                        .is_some_and(|folder| glob(pattern, &folder.to_string_lossy()))
+            }),
+    }
+}
+
+/// Whether [`glob`] of `pattern` matches some `<folder>/<name>`, a name
+/// being any text without a slash: the pattern is run over `<folder>/`,
+/// and what is left of it, from any place it can have got to, must be able
+/// to match a name.
+fn names_a_file_in(pattern: &str, folder: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let separator = std::path::MAIN_SEPARATOR;
+    // The places in the pattern reached so far, a star also standing for
+    // nothing.
+    let close = |at: &mut Vec<usize>| {
+        let mut i = 0;
+        while i < at.len() {
+            let p = at[i];
+            if p < pattern.len() && pattern[p] == '*' && !at.contains(&(p + 1)) {
+                at.push(p + 1);
+            }
+            i += 1;
+        }
+    };
+    let mut at = vec![0];
+    close(&mut at);
+    for c in folder
+        .trim_end_matches(separator)
+        .chars()
+        .chain([separator])
+    {
+        let mut next = Vec::new();
+        for &p in &at {
+            if p < pattern.len() && pattern[p] == '*' && !next.contains(&p) {
+                next.push(p);
+            } else if p < pattern.len() && pattern[p] == c && !next.contains(&(p + 1)) {
+                next.push(p + 1);
+            }
+        }
+        close(&mut next);
+        at = next;
+    }
+    at.into_iter().any(|p| {
+        let rest = &pattern[p.min(pattern.len())..];
+        !rest.is_empty() && !rest.contains(&separator)
+    })
+}
+
+/// Every driver, for the words a rule's `driver` may say.
+const DRIVERS: [Driver; 4] = [
+    Driver::Postgres,
+    Driver::MySql,
+    Driver::Sqlite,
+    Driver::Files,
+];
+
+/// The driver's word in the file, as in `connections.toml`. A new driver
+/// goes in [`DRIVERS`] too.
 fn driver_key(driver: Driver) -> &'static str {
     match driver {
         Driver::Postgres => "postgres",
@@ -407,12 +484,10 @@ impl MatchTable {
         }
         if let Some(driver) = &matches.driver
             && !driver.contains('*')
-            && ![Driver::Postgres, Driver::MySql, Driver::Sqlite]
-                .into_iter()
-                .any(|known| driver_key(known) == driver)
+            && !DRIVERS.into_iter().any(|known| driver_key(known) == driver)
         {
             return Err(
-                "its driver is none that Tabletist knows: postgres, mysql or sqlite".into(),
+                "its driver is none that Tabletist knows: postgres, mysql, sqlite or files".into(),
             );
         }
         Ok(matches)
@@ -872,6 +947,63 @@ access_max = "off"
         assert!(!path.matches(&ConnectSpec::sqlite("~/books.db"), None));
         assert!(path.matches(&ConnectSpec::sqlite("/home/ada/books.db"), None));
         assert!(!path.matches(&ConnectSpec::sqlite("/srv/books.db"), Some(home)));
+    }
+
+    #[test]
+    fn a_path_rule_matches_every_file_a_files_connection_reads() {
+        use tabletist_db::files::Source;
+        let secret = std::path::absolute("/srv/secret").unwrap();
+        let rule = |pattern: PathBuf| Match {
+            path: Some(pattern.to_string_lossy().into_owned()),
+            ..Match::default()
+        };
+        let folder = |dir: &Path| ConnectSpec::files(Source::Folder(dir.to_owned()));
+        let list = |files: &[PathBuf]| ConnectSpec::files(Source::Files(files.to_vec()));
+        let scratch = std::path::absolute("/home/ada/scratch/a.csv").unwrap();
+        let payroll = secret.join("payroll.csv");
+        let elsewhere = std::path::absolute("/srv/other").unwrap();
+        // A list is matched by each of its files, not only the first.
+        for pattern in [secret.join("*"), secret.clone(), payroll.clone()] {
+            let rule = rule(pattern.clone());
+            assert!(
+                rule.matches(&list(&[scratch.clone(), payroll.clone()]), None),
+                "{pattern:?}"
+            );
+            assert!(
+                rule.matches(&folder(&secret), None),
+                "{pattern:?} on the folder"
+            );
+            assert!(
+                !rule.matches(&list(std::slice::from_ref(&scratch)), None),
+                "{pattern:?}"
+            );
+            assert!(!rule.matches(&folder(&elsewhere), None), "{pattern:?}");
+        }
+        // A folder is read without its subfolders.
+        let deeper = rule(secret.join("*").join("payroll.csv"));
+        assert!(!deeper.matches(&folder(&secret), None));
+        // `~` is the person's home.
+        let home = Path::new("/home/ada");
+        let data = rule(
+            std::path::absolute(home)
+                .unwrap()
+                .join("Data")
+                .join("*.csv"),
+        );
+        assert!(data.matches(&folder(Path::new("~/Data")), Some(home)));
+        assert!(!data.matches(&folder(Path::new("~/Data")), None));
+    }
+
+    #[test]
+    fn a_rule_may_name_the_files_driver() {
+        let table = MatchTable {
+            driver: Some("files".into()),
+            host: None,
+            port: None,
+            database: None,
+            path: None,
+        };
+        assert!(table.matches().is_ok());
     }
 
     #[cfg(unix)]
