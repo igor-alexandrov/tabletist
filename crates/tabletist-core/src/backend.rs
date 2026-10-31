@@ -432,6 +432,23 @@ pub enum Event {
         job: export::ExportId,
         state: export::ExportState,
     },
+    /// Files chosen in a dialog that takes several; none when it was
+    /// closed without a choice.
+    FilesPicked {
+        request: RequestId,
+        paths: Vec<PathBuf>,
+    },
+    /// What a Files connection's Source holds, for the dialog's found
+    /// line, or why it cannot be read.
+    SourceRead {
+        request: RequestId,
+        result: Result<tabletist_db::files::Scan, String>,
+    },
+    /// A Files connection's Test: what it read of every file.
+    FilesTested {
+        request: RequestId,
+        result: Result<tabletist_db::FilesRead, Error>,
+    },
     /// The Host aliases in ~/.ssh/config, for the connection dialog.
     SshHosts {
         request: RequestId,
@@ -569,6 +586,9 @@ pub struct Backend {
     /// the path suggested.
     #[cfg(any(test, feature = "testing"))]
     pub export_asks: Vec<(export::ExportId, PathBuf)>,
+    /// The Files connections' Sources a test asked to read.
+    #[cfg(any(test, feature = "testing"))]
+    pub sources_read: Vec<tabletist_db::files::Source>,
     #[cfg(test)]
     watched: Watched,
 }
@@ -643,6 +663,8 @@ impl Backend {
             exports: Vec::new(),
             #[cfg(any(test, feature = "testing"))]
             export_asks: Vec::new(),
+            #[cfg(any(test, feature = "testing"))]
+            sources_read: Vec::new(),
             #[cfg(test)]
             watched,
         }
@@ -668,6 +690,8 @@ impl Backend {
             exports: Vec::new(),
             #[cfg(any(test, feature = "testing"))]
             export_asks: Vec::new(),
+            #[cfg(any(test, feature = "testing"))]
+            sources_read: Vec::new(),
             #[cfg(test)]
             watched: Watched::default(),
         }
@@ -757,6 +781,64 @@ impl Backend {
                 None => false,
             };
             outbox.emit(Event::ExportPath { job, path, replace });
+        });
+    }
+
+    /// Asks for a Files connection's folder.
+    pub fn pick_folder(&mut self, request: RequestId) {
+        let Some(runtime) = &self.runtime else {
+            return;
+        };
+        let dialog = rfd::AsyncFileDialog::new()
+            .set_title("Choose a folder of data files")
+            .pick_folder();
+        let outbox = self.outbox.clone();
+        runtime.spawn(async move {
+            let path = dialog.await.map(|folder| folder.path().to_path_buf());
+            outbox.emit(Event::FilePicked { request, path });
+        });
+    }
+
+    /// Asks for files to add to a Files connection, several at once.
+    pub fn pick_data_files(&mut self, request: RequestId) {
+        let Some(runtime) = &self.runtime else {
+            return;
+        };
+        let dialog = rfd::AsyncFileDialog::new()
+            .set_title("Add data files")
+            .add_filter(
+                "Data files",
+                &[
+                    "csv", "tsv", "parquet", "json", "ndjson", "jsonl", "xlsx", "duckdb",
+                ],
+            )
+            .pick_files();
+        let outbox = self.outbox.clone();
+        runtime.spawn(async move {
+            let paths = dialog
+                .await
+                .unwrap_or_default()
+                .iter()
+                .map(|file| file.path().to_path_buf())
+                .collect();
+            outbox.emit(Event::FilesPicked { request, paths });
+        });
+    }
+
+    /// Reads what a Files connection's Source holds, off the UI thread.
+    pub fn read_source(&mut self, request: RequestId, source: tabletist_db::files::Source) {
+        #[cfg(any(test, feature = "testing"))]
+        self.sources_read.push(source.clone());
+        let Some(runtime) = &self.runtime else {
+            return;
+        };
+        let outbox = self.outbox.clone();
+        runtime.spawn_blocking(move || {
+            let result = tabletist_db::files::scan(&source).map_err(|error| match error {
+                Error::Connect(message) | Error::InvalidSpec(message) => message,
+                other => other.to_string(),
+            });
+            outbox.emit(Event::SourceRead { request, result });
         });
     }
 
@@ -2047,18 +2129,36 @@ impl Worker {
             } => {
                 let outbox = self.outbox.clone();
                 tokio::spawn(async move {
-                    let result = match Connection::connect_with(
-                        &spec,
-                        &secrets,
-                        &host_keys,
-                        Access::ReadOnly,
-                    )
-                    .await
-                    {
-                        Ok(connection) => connection.close().await,
-                        Err(error) => Err(error),
-                    };
-                    outbox.emit(Event::Tested { request, result });
+                    let connected =
+                        Connection::connect_with(&spec, &secrets, &host_keys, Access::ReadOnly)
+                            .await;
+                    match spec.driver {
+                        // A Files connection's Test reads the start of every
+                        // file too, and says how much it read.
+                        tabletist_db::Driver::Files => {
+                            let result = match connected {
+                                Ok(connection) => {
+                                    let read = connection.read_files().await.unwrap_or(Err(
+                                        Error::Unsupported("only a Files connection reads files"),
+                                    ));
+                                    let closed = connection.close().await;
+                                    read.and_then(|read| closed.map(|()| read))
+                                }
+                                Err(error) => Err(error),
+                            };
+                            outbox.emit(Event::FilesTested { request, result });
+                        }
+                        tabletist_db::Driver::Postgres
+                        | tabletist_db::Driver::MySql
+                        | tabletist_db::Driver::Sqlite
+                        | tabletist_db::Driver::BigQuery => {
+                            let result = match connected {
+                                Ok(connection) => connection.close().await,
+                                Err(error) => Err(error),
+                            };
+                            outbox.emit(Event::Tested { request, result });
+                        }
+                    }
                 });
             }
             Command::Close { session } => {
