@@ -3152,7 +3152,7 @@ fn letters(
             // is the page's.
             (Some(Command::YankRow), Some(id)) if rows_show && !tree && selection.is_some() => {
                 actions.push(Action::YankRow { tab, id });
-                if let Some(text) = app.copy_text(true) {
+                if let Some(text) = app.yank_text() {
                     ctx.copy_text(text);
                 }
                 let said = crate::i18n::gettext(app.locale, "Row yanked");

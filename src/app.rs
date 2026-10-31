@@ -7778,10 +7778,23 @@ impl App {
     /// column of the rows the selection covers. What is pending reads as
     /// its new value, and a new row's cell nothing is set in as empty.
     pub fn copy_text(&self, whole_row: bool) -> Option<String> {
+        self.copy_of(whole_row, false)
+    }
+
+    /// The cursor's row alone, whole, as `yy` yanks it: a range that
+    /// stands is not what it puts.
+    pub fn yank_text(&self) -> Option<String> {
+        self.copy_of(true, true)
+    }
+
+    fn copy_of(&self, whole_row: bool, cursor_alone: bool) -> Option<String> {
         use tabletist_db::Value;
         let workspace = self.workspace(self.active_tab_id())?;
         if let Some(object) = workspace.active_object_tab() {
-            let selected = object.selected()?;
+            let mut selected = object.selected()?;
+            if cursor_alone {
+                selected.range = None;
+            }
             let page = object.page()?;
             // The cursor's cell or row alone is copied from the page's
             // rows: a new row is none of them.
@@ -7795,7 +7808,10 @@ impl App {
             return copied(&selected, page.columns.len(), whole_row, value);
         }
         let sql = workspace.active_sql_tab()?;
-        let selected = sql.selected()?;
+        let mut selected = sql.selected()?;
+        if cursor_alone {
+            selected.range = None;
+        }
         let (columns, rows, _) = sql.shown_rows()?;
         let value = |row: usize, col: usize| -> Option<Value> { rows.get(row)?.get(col).cloned() };
         copied(&selected, columns.len(), whole_row, value)
