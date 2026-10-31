@@ -89,8 +89,9 @@ In the Omarchy look, `y` on the Agents pane copies Claude Code's command.
 
 ## Allow a connection
 
-Every connection starts with agents **Off**: they do not see it at all.
-**Read** lets them read it. Set it in any of these places:
+Every connection starts with agents **Off**: they do not see it at all,
+but a new Files connection, which starts with **Read** (**Off** on
+production). **Read** lets them read it. Set it in any of these places:
 
 - In Connections: a row's "…" menu, or `a` on a row in the Omarchy
   look.
