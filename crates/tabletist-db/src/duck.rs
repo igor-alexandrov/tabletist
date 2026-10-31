@@ -130,6 +130,20 @@ fn path_text(path: &Path) -> Result<String> {
     })
 }
 
+/// A path as a reader is given it: the readers take `*`, `?` and `[` as a
+/// pattern, so each is written as a class of itself, and the path names
+/// that one file. Without it `report[1].csv` reads `report1.csv`.
+fn reader_path(path: &Path) -> Result<String> {
+    let mut text = String::new();
+    for char in path_text(path)?.chars() {
+        match char {
+            '*' | '?' | '[' => text.extend(['[', char, ']']),
+            char => text.push(char),
+        }
+    }
+    Ok(text)
+}
+
 /// The reader's options for a file of `format`, as its call writes them
 /// after the path.
 fn reader_options(format: Format) -> &'static str {
@@ -158,11 +172,14 @@ fn reader(format: Format) -> &'static str {
 /// The statement that makes `file` a table or a schema of the session,
 /// its name bare where that is safe: the DDL view shows it as it is.
 fn make(file: &Found) -> Result<String> {
-    let path = literal(&path_text(&file.path)?);
     let name = Dialect::DuckDb.ident(&file.name);
     Ok(match file.format {
-        Format::DuckDb => format!("ATTACH {path} AS {name} (READ_ONLY)"),
+        Format::DuckDb => format!(
+            "ATTACH {} AS {name} (READ_ONLY)",
+            literal(&path_text(&file.path)?)
+        ),
         format => {
+            let path = literal(&reader_path(&file.path)?);
             let options = reader_options(format);
             let call = match options {
                 "" => format!("{}({path})", reader(format)),
@@ -246,7 +263,7 @@ fn opened(files: &[Found]) -> Result<(duckdb::Connection, Vec<Opened>, String)> 
                 .query_row(
                     &format!(
                         "SELECT sum(num_rows)::BIGINT FROM parquet_file_metadata({})",
-                        literal(&path_text(&file.path)?)
+                        literal(&reader_path(&file.path)?)
                     ),
                     [],
                     |row| row.get::<_, Option<i64>>(0),
@@ -268,10 +285,15 @@ fn opened(files: &[Found]) -> Result<(duckdb::Connection, Vec<Opened>, String)> 
         });
     }
     // The fence: these files and no other, then no setting changed again.
-    let allowed: Vec<String> = files
-        .iter()
-        .map(|file| path_text(&file.path).map(|path| literal(&path)))
-        .collect::<Result<_>>()?;
+    // A reader asks by its own spelling of a file, which names only it.
+    let mut allowed = Vec::with_capacity(files.len());
+    for file in files {
+        let (path, read) = (path_text(&file.path)?, reader_path(&file.path)?);
+        if read != path {
+            allowed.push(literal(&read));
+        }
+        allowed.push(literal(&path));
+    }
     run(&format!("SET allowed_paths = [{}]", allowed.join(", ")))?;
     run("SET enable_external_access = false")?;
     run("SET lock_configuration = true")?;
