@@ -163,7 +163,8 @@ pub(super) fn show(
     let (pane, row) = (dialog.pane, dialog.row);
     let settings = super::shown(app);
     let launches = super::launch_choices(&app.connections.connections);
-    let checked = super::updates::checked_text(app, true);
+    let checked =
+        super::updates::checked_text(super::update_status(app), &app.look, app.locale, true);
     let skin = Skin {
         look: &app.look,
         palette: &app.palette,
@@ -202,7 +203,7 @@ pub(super) fn show(
             let (body, _) =
                 ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
             let (side, place) = body.split_left_right_at_x((body.left() + NAV).min(body.right()));
-            let offered = super::updates::offered(app);
+            let offered = super::updates::offered(super::update_status(app));
             nav(ui, (side, offered), pane, &skin, actions);
             // The rows scroll when the window is short, so the header and
             // the footer stay on screen. They start past the nav's rule.
@@ -229,22 +230,41 @@ pub(super) fn show(
                     SettingsPane::Appearance => appearance_rows(ui, &settings, row, &skin, actions),
                     SettingsPane::Editor => editor_rows(ui, &settings, row, &skin, actions),
                     SettingsPane::Keyboard => {
-                        super::keyboard_terminal::rows(ui, app, &dialog.keyboard, &skin, actions);
+                        super::keyboard_terminal::rows(
+                            ui,
+                            &app.keymap,
+                            &dialog.keyboard,
+                            &skin,
+                            actions,
+                        );
                     }
                     SettingsPane::Agents => agent_rows(ui, app, &settings, row, &skin, actions),
                     SettingsPane::Updates => {
-                        super::updates_terminal::rows(ui, app, &settings, row, &skin, actions);
+                        super::updates_terminal::rows(
+                            ui,
+                            super::update_status(app),
+                            || app.work_in_progress(),
+                            &settings,
+                            row,
+                            &skin,
+                            actions,
+                        );
                     }
                 });
             if let Some(beside) = beside {
                 let shown = match pane {
                     SettingsPane::Keyboard => {
-                        let row = super::keyboard_terminal::cursor(app, &dialog.keyboard);
+                        let (keymap, layout) = (&app.keymap, app.layout());
+                        let page = &dialog.keyboard;
+                        let row =
+                            super::keyboard_terminal::cursor(keymap, layout, app.locale, page);
                         file_pane::Shown::Keys(row)
                     }
                     _ => file_pane::Shown::Option(option),
                 };
-                file_pane::show(ui, beside, app, shown, &skin);
+                let path = super::path_shown(app);
+                let binds = &app.settings.keys.binds;
+                file_pane::show(ui, beside, &app.settings_file, &path, binds, shown, &skin);
             }
             let opens = cursor.and_then(|cursor| opened(app, cursor).map(|opens| (cursor, opens)));
             let question = match &app.dialog {
@@ -1944,7 +1964,7 @@ fn keyboard_footer(
         .rect_filled(rect, CornerRadius::ZERO, palette.panel);
     widgets::hline(ui, rect.x_range(), rect.top() + 0.5, palette.outline);
     let y = rect.top() + 1.0 + FOOTER / 2.0;
-    let cursor = super::keyboard_terminal::cursor(app, page);
+    let cursor = super::keyboard_terminal::cursor(&app.keymap, app.layout(), app.locale, page);
     // `$EDITOR` is a name: the look does not lower-case it.
     let in_editor = skin
         .say("open file in {editor}")

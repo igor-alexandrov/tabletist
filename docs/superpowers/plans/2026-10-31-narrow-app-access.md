@@ -116,6 +116,14 @@ Set by run 3, for runs 5 to 7:
 - An answer too costly to give every frame, needed only when a button is pressed, comes as a closure the pane calls then (`review::show`'s `whole`).
 - A panel that passes over an egui id while it is not drawn gives that its own `pass(ui)`, and says with `shows(&ObjectTab)` whether it is drawn, so its caller asks the answers only then (`pending_bar`).
 
+### The slice of a settings pane
+
+Set by run 4, for the routers' plan:
+
+- A pane of the settings window keeps its window's `Skin` (`sheet::Skin`, `terminal::Skin`), which is that window's Paint, and keeps pushing into the window's `actions: &mut Vec<Action>`: a local of `settings::show`, lent beside the shared borrows of `App` the panes read through, so the reason a view returns its actions does not hold there.
+- The slice is the field the pane reads (`&Keymap`, `&SettingsFile`, `&[Bind]`); the layout comes from the Skin's look where the pane draws, as an argument where a router asks a query.
+- The settings as the window shows them come as `&Settings` (`settings::shown(app)`); several answers that join a field with the rest of `App` go in a struct of the pane's own built in `settings/mod.rs` (`updates::Status` by `update_status`, `agents::Server` by `server`), which the pane's queries take too; a list asked in one state only comes as a closure (`interrupted`).
+
 ### Tests
 
 The headless tests drive the whole `App` through `src/testing.rs`, so they hold behaviour across a run without change. A test changes only where it calls a function whose signature moved. No run changes behaviour, so no run adds a behaviour test; each run states which existing tests draw the views it moved.
@@ -127,7 +135,7 @@ Each run is one PR, from `main`, passing `cargo fmt --all --check`, `cargo clipp
 1. **`Paint`, the password prompt and the filter bar** (this plan, below). One dialog that edits its prompt's field, one pane that edits an object tab's filter: both shapes of the pattern.
 2. **The other small dialogs:** `host_key_prompt`, `every_row_prompt` (its caller passes whether the SQL tab is still open), `about`, `help` (adds `Paint::layout`, takes `&Keymap`), `toast` (reads only; returns nothing). Done: `2026-10-31-narrow-app-access-2-small-dialogs.md`.
 3. **Object-tab panes:** `row_form` (`take_editor`/`put_editor` take `&mut ObjectTab`), `pending_bar` (its caller passes `lacking`, `save_blocked` and the doubts), `structure` (passes `structure_label`), `ddl`, `review` (its caller passes `review_whole` as a closure, called when Copy is clicked). Done: `2026-10-31-narrow-app-access-3-object-tab-panes.md`, which sets the borrow an object-tab pane takes ("The slice of an object-tab pane", above).
-4. **Settings panes that read `&App`:** `settings/file_pane`, `settings/updates`, `settings/updates_terminal`, `settings/keyboard`, `keyboard_sheet`, `keyboard_terminal`, `settings/agents`.
+4. **Settings panes that read `&App`:** `settings/file_pane`, `settings/updates`, `settings/updates_terminal`, `settings/keyboard`, `keyboard_sheet`, `keyboard_terminal`, `settings/agents`. Done: `2026-10-31-narrow-app-access-4-settings-panes.md`, which sets the slice a settings pane takes ("The slice of a settings pane", below).
 5. **Dialogs over a workspace:** `conflict_prompt`, `write_prompts`, `agent_access`, `connect_dialog`.
 6. **Workspace and SQL panes:** `object_tabs`, `sql_text`, `sql_editor`, `sql_results`, `history`.
 7. **The grid's view:** `data_view`, then `row_panel`, each its own PR if either is large (they are 2.9k and 3.3k lines, and take `settings`, `keymap`, `dialog` and the calendar).
