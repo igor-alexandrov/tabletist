@@ -5855,7 +5855,8 @@ dependencies = [
  "tokio",
  "tokio-postgres",
  "tokio-postgres-rustls",
- "ureq",
+ "tokio-rustls",
+ "ureq-proto",
  "url",
 ]
 
