@@ -34,7 +34,8 @@ pub struct Http {
     agent: ureq::Agent,
     server: Arc<Server>,
     /// The `query_id` of the statement running now, which [`Canceller`]
-    /// kills.
+    /// kills. One slot for every clone: of two statements run at once,
+    /// only the later is cancelled. An engine gives each its own.
     running: Arc<Mutex<Option<String>>>,
 }
 

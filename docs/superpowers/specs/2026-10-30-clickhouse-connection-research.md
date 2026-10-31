@@ -274,6 +274,11 @@ crate is no longer needed as a fallback: nothing the spike did needed it.
 Not tried: a user whose profile is `readonly=1` (every setting in the
 URL is refused), HTTPS, ClickHouse Cloud.
 
+Left for the engine: the spike's clones of one `Http` share one
+"running" `query_id`, so of two statements run at once its `Canceller`
+stops only the later. The engine keeps one per statement (browsing and
+a script run side by side, each over its own request).
+
 ## Open questions
 
 - Is the first release read-only for everything, or does the editor write
