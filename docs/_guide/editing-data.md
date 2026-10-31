@@ -429,7 +429,7 @@ calls it unknown. The row panel, as the copy's form, says at its top
 which columns were copied (the first of them where there are many), which
 were cleared and why, and which were not copied and why.
 
-One row is copied at a time.
+In the Omarchy look, `yy` and `p` copy one row at a time.
 
 ## Delete a row
 
