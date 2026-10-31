@@ -417,6 +417,16 @@ fn a_test_of_another_source_is_not_said_of_this_one() {
         }));
         assert_eq!(form(&harness).test, TestState::Idle, "{}", look.name);
         assert!(form(&harness).files_tested.is_none(), "{}", look.name);
+        // A Test of another type is not one of a Source not chosen yet.
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        harness.app.apply(Action::NewConnection);
+        let sqlite = form_mut(&mut harness);
+        sqlite.driver = Driver::Sqlite;
+        sqlite.test = TestState::Passed;
+        sqlite.test_spec = Some(ConnectSpec::sqlite("/data/bookshop.db"));
+        harness.app.apply(Action::SetDriver(Driver::Files));
+        assert_eq!(form(&harness).test, TestState::Idle, "{}", look.name);
     }
 }
 

@@ -5023,12 +5023,18 @@ impl App {
             Driver::Files => form.files_source(),
             Driver::Postgres | Driver::MySql | Driver::Sqlite => None,
         };
-        // A Test of another Source, done or still running, says nothing of
-        // this one.
+        // A Test of another Source, or of another type, done or still
+        // running, says nothing of this one.
         match form.driver {
             Driver::Files => {
-                let tested = form.test_spec.as_ref().and_then(|spec| spec.files.as_ref());
-                if tested != source.as_ref() {
+                let same = form
+                    .test_spec
+                    .as_ref()
+                    .is_some_and(|spec| match spec.driver {
+                        Driver::Files => spec.files.as_ref() == source.as_ref(),
+                        Driver::Postgres | Driver::MySql | Driver::Sqlite => false,
+                    });
+                if !same {
                     form.forget_test();
                 }
             }
