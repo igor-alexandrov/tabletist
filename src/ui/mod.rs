@@ -96,6 +96,8 @@ mod quick_open_tests;
 pub mod review;
 pub mod row_form;
 pub mod row_panel;
+#[cfg(test)]
+mod selection_tests;
 pub mod settings;
 #[cfg(test)]
 mod settings_access_tests;

@@ -1732,7 +1732,7 @@ impl App {
                     // that drew the cell.
                     let (height, width) = sql.dims();
                     if cell.row < height && cell.col < width {
-                        sql.selection = Some(cell);
+                        sql.set_cursor(Some(cell), Reach::End);
                     }
                 }
                 if let Some(workspace) = self.workspace_mut(tab) {
@@ -2051,14 +2051,8 @@ impl App {
                     object.focus_field = None;
                 }
                 if let Some(sql) = self.sql_tab_mut(tab, id) {
-                    let (height, width) = sql.dims();
-                    sql.selection = (height > 0 && width > 0).then(|| match sql.selection {
-                        None => CellPos { row: 0, col: 0 },
-                        Some(cell) => CellPos {
-                            row: step(cell.row, rows, height),
-                            col: step(cell.col, cols, width),
-                        },
-                    });
+                    let moved = sql_moved(sql, rows, cols);
+                    sql.set_cursor(moved, Reach::Move);
                 } else if let Some(object) = self.object_tab_mut(tab, id) {
                     let moved = moved(object, rows, cols);
                     object.pinned |= moved.is_some();
@@ -2073,29 +2067,86 @@ impl App {
                     object.focus_field = None;
                     object.set_cursor(Some(cell), Reach::Extend);
                     object.pinned = true;
+                } else if let Some(sql) = self.sql_tab_mut(tab, id) {
+                    let (height, width) = sql.dims();
+                    if cell.row < height && cell.col < width {
+                        sql.set_cursor(Some(cell), Reach::Extend);
+                    }
                 }
                 if let Some(workspace) = self.workspace_mut(tab) {
                     workspace.pane = Pane::Grid;
                 }
             }
-            Action::ExtendBy { tab, id, rows } => {
+            Action::ExtendBy {
+                tab,
+                id,
+                rows,
+                cols,
+            } => {
                 self.close_editor(tab, id, true);
                 if let Some(object) = self.object_tab_mut(tab, id) {
                     object.edits.why = None;
                     object.focus_field = None;
-                    let moved = moved(object, rows, 0);
+                    let moved = moved(object, rows, cols);
                     object.pinned |= moved.is_some();
                     object.set_cursor(moved, Reach::Extend);
+                } else if let Some(sql) = self.sql_tab_mut(tab, id) {
+                    let moved = sql_moved(sql, rows, cols);
+                    sql.set_cursor(moved, Reach::Extend);
                 }
             }
-            Action::SelectRows { tab, id } => {
+            Action::SelectRows { tab, id, mode } => {
                 // As a move does: an editor's text is kept, and the keys
                 // are the rows'.
                 self.close_editor(tab, id, true);
                 if let Some(object) = self.object_tab_mut(tab, id) {
                     object.edits.why = None;
                     object.focus_field = None;
-                    object.toggle_visual();
+                    object.toggle_visual(mode);
+                } else if let Some(sql) = self.sql_tab_mut(tab, id) {
+                    sql.toggle_visual(mode);
+                }
+            }
+            Action::SelectRowsOfCursor { tab, id } => {
+                self.close_editor(tab, id, true);
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.select_rows_of_cursor();
+                } else if let Some(sql) = self.sql_tab_mut(tab, id) {
+                    sql.select_rows_of_cursor();
+                }
+            }
+            Action::SelectAllRows { tab, id } => {
+                self.close_editor(tab, id, true);
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.edits.why = None;
+                    object.focus_field = None;
+                    object.select_all_rows();
+                } else if let Some(sql) = self.sql_tab_mut(tab, id) {
+                    sql.select_all_rows();
+                }
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.pane = Pane::Grid;
+                }
+            }
+            Action::RowNumberClicked {
+                tab,
+                id,
+                row,
+                click,
+            } => {
+                self.close_editor(tab, id, true);
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.edits.why = None;
+                    object.focus_field = None;
+                    object.row_number_clicked(row, click);
+                    object.pinned = true;
+                } else if let Some(sql) = self.sql_tab_mut(tab, id)
+                    && row < sql.dims().0
+                {
+                    sql.row_number_clicked(row, click);
+                }
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.pane = Pane::Grid;
                 }
             }
             Action::LeaveVisual { tab, id } => {
@@ -2103,6 +2154,10 @@ impl App {
                     && object.visual()
                 {
                     object.range = None;
+                } else if let Some(sql) = self.sql_tab_mut(tab, id)
+                    && sql.visual_mode().is_some()
+                {
+                    sql.range = None;
                 }
             }
             Action::ToggleRowPanel(tab) => {
@@ -4825,7 +4880,7 @@ impl App {
                 });
                 let messages = opens_messages(&result, cancel);
                 if sql.finish_run(request, result, cancel) {
-                    sql.selection = None;
+                    sql.set_cursor(None, Reach::End);
                     sql.pane = if messages {
                         ResultPane::Messages
                     } else {
@@ -7716,29 +7771,34 @@ impl App {
         }
     }
 
-    /// Text for the clipboard: the selected cell, or its whole row as TSV.
-    /// What the grid shows: a pending cell gives its new value, as the row
-    /// panel's copy does.
+    /// What a copy takes of the active tab's grid, a table's or a SQL
+    /// result's: with a range, the cells it covers as TSV, a line for each
+    /// row; with none, or one cell held by `v`, the cursor's cell's text as
+    /// it is. `whole_row` takes every
+    /// column of the rows the selection covers. What is pending reads as
+    /// its new value, and a new row's cell nothing is set in as empty.
     pub fn copy_text(&self, whole_row: bool) -> Option<String> {
         use tabletist_db::Value;
-        let (tab, id) = self.active_object()?;
-        let object = self.workspace(tab)?.object_tab(id)?;
-        let cell = object.selection?;
-        let row = object.page()?.rows.get(cell.row)?;
-        let shown = |col: usize, loaded: &Value| match object.edits.cells.get(&(cell.row, col)) {
-            Some(pending) => crate::edit::shown_value(&pending.new),
-            None => loaded.clone(),
-        };
-        Some(if whole_row {
-            let row: Vec<Value> = row
-                .iter()
-                .enumerate()
-                .map(|(col, loaded)| shown(col, loaded))
-                .collect();
-            crate::ui::format::tsv_row(&row)
-        } else {
-            crate::ui::format::plain_text(&shown(cell.col, row.get(cell.col)?))
-        })
+        let workspace = self.workspace(self.active_tab_id())?;
+        if let Some(object) = workspace.active_object_tab() {
+            let selected = object.selected()?;
+            let page = object.page()?;
+            // The cursor's cell or row alone is copied from the page's
+            // rows: a new row is none of them.
+            if selected.range.is_none() && crate::edit::new_id(selected.cursor.row).is_some() {
+                return None;
+            }
+            let value = |row: usize, col: usize| match object.edits.cells.get(&(row, col)) {
+                Some(pending) => Some(crate::edit::shown_value(&pending.new)),
+                None => page.rows.get(row)?.get(col).cloned(),
+            };
+            return copied(&selected, page.columns.len(), whole_row, value);
+        }
+        let sql = workspace.active_sql_tab()?;
+        let selected = sql.selected()?;
+        let (columns, rows, _) = sql.shown_rows()?;
+        let value = |row: usize, col: usize| -> Option<Value> { rows.get(row)?.get(col).cloned() };
+        copied(&selected, columns.len(), whole_row, value)
     }
 
     /// The palette and the look, applied to egui's style, with the caret
@@ -8415,6 +8475,50 @@ fn opens_messages(
 fn step(index: usize, delta: isize, len: usize) -> usize {
     let moved = (index as i128 + delta as i128).clamp(0, len as i128 - 1);
     moved as usize
+}
+
+/// What [`App::copy_text`] copies of `selected`, in a grid `width` wide
+/// whose cells `value` reads.
+fn copied(
+    selected: &crate::selection::Selection<'_>,
+    width: usize,
+    whole_row: bool,
+    value: impl Fn(usize, usize) -> Option<tabletist_db::Value>,
+) -> Option<String> {
+    let cursor = selected.cursor;
+    // One cell, alone or held by `v`: its text as it is, tabs and lines in
+    // it kept.
+    if !whole_row && selected.size(width).is_none_or(|size| size == (1, 1)) {
+        let value = value(cursor.row, cursor.col)?;
+        return Some(crate::ui::format::plain_text(&value));
+    }
+    let (first, last) = if whole_row {
+        (0, width.checked_sub(1)?)
+    } else {
+        selected.cols(width)?
+    };
+    let lines: Vec<String> = selected
+        .rows()
+        .into_iter()
+        .map(|row| {
+            let cells = (first..=last).map(|col| value(row, col));
+            crate::ui::format::tsv_cells(cells)
+        })
+        .collect();
+    Some(lines.join("\n"))
+}
+
+/// Where a move by `rows` and `cols` puts the cursor of a SQL result's
+/// grid. With no cursor, the first cell. `None` where it has no cell.
+fn sql_moved(sql: &SqlTab, rows: isize, cols: isize) -> Option<CellPos> {
+    let (height, width) = sql.dims();
+    (height > 0 && width > 0).then(|| match sql.selection {
+        None => CellPos { row: 0, col: 0 },
+        Some(cell) => CellPos {
+            row: step(cell.row, rows, height),
+            col: step(cell.col, cols, width),
+        },
+    })
 }
 
 /// Where a move by `rows` and `cols` puts the cursor of `object`, through

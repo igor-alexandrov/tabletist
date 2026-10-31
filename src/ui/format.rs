@@ -971,8 +971,17 @@ pub fn refuses_writes(error: &tabletist_db::Error, driver: tabletist_db::Driver)
 
 /// A row as tab-separated values on one line.
 pub fn tsv_row(row: &[Value]) -> String {
-    row.iter()
-        .map(|value| plain_text(value).replace(['\t', '\n', '\r'], " "))
+    tsv_cells(row.iter().cloned().map(Some))
+}
+
+/// Cells as one line of TSV, as [`tsv_row`] writes them: a cell with no
+/// value (a new row's that nothing is set in) is empty.
+pub fn tsv_cells(cells: impl Iterator<Item = Option<Value>>) -> String {
+    cells
+        .map(|value| {
+            let text = value.map_or_else(String::new, |value| plain_text(&value));
+            text.replace(['\t', '\n', '\r'], " ")
+        })
         .collect::<Vec<_>>()
         .join("\t")
 }

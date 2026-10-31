@@ -302,27 +302,49 @@ pub enum Action {
         id: TabId,
         cell: CellPos,
     },
-    /// Select the rows from the cursor's row, or from the range's anchor,
-    /// to `cell`'s row, and put the cursor on `cell`: Shift with a click.
-    /// With no cursor it selects the cell.
+    /// Select the cells from the cursor's, or from the range's anchor, to
+    /// `cell`, and put the cursor on `cell`: Shift with a click, a drag.
+    /// A range of rows runs to `cell`'s row. With no cursor it selects the
+    /// cell.
     ExtendTo {
         tab: ConnTabId,
         id: TabId,
         cell: CellPos,
     },
-    /// The same by rows from the cursor: Shift with an arrow.
+    /// The same by rows and columns from the cursor: Shift with an arrow.
     ExtendBy {
         tab: ConnTabId,
         id: TabId,
         rows: isize,
+        cols: isize,
     },
-    /// Start a visual selection of rows on the cursor's row, or leave the
-    /// one that is on: the terminal look's `V`.
+    /// Start a visual selection on the cursor, or leave the one that is
+    /// on: the terminal look's `v` (cells), `ctrl+v` (a block) and `V`
+    /// (rows).
     SelectRows {
         tab: ConnTabId,
         id: TabId,
+        mode: Visual,
     },
-    /// Leave a visual selection of rows. The cursor stays.
+    /// Select the rows the selection covers, whole: `⇧Space`.
+    SelectRowsOfCursor {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Select every row the grid shows: `⌘A`.
+    SelectAllRows {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// A click on a row's number: that row, with Shift the rows to it, with
+    /// Command that row in or out.
+    RowNumberClicked {
+        tab: ConnTabId,
+        id: TabId,
+        row: usize,
+        click: RowClick,
+    },
+    /// Leave a visual selection. The cursor stays.
     LeaveVisual {
         tab: ConnTabId,
         id: TabId,
@@ -3781,33 +3803,7 @@ pub enum SaveBlock {
     Unsendable,
 }
 
-/// The rows selected with the cursor's: from `anchor` to the cursor's row,
-/// in the order the grid shows them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RowRange {
-    /// A row as [`CellPos::row`] names it: of the page, or a new row.
-    pub anchor: usize,
-    /// Moves keep the range until it is left: the terminal look's visual
-    /// selection.
-    pub held: bool,
-}
-
-/// What becomes of the range when the cursor is set
-/// ([`ObjectTab::set_cursor`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reach {
-    /// Shift with a click or an arrow: the range runs from its anchor, or
-    /// from the row the cursor was on, to the new row.
-    Extend,
-    /// A move by key: a held range follows, another ends.
-    Move,
-    /// Anything else ends it: a click, an editor that opens, a new row, a
-    /// page that goes.
-    End,
-    /// The rows under the cursor changed, not what is selected: a new row
-    /// was dropped.
-    Keep,
-}
+pub use crate::selection::{Range, Reach, RowClick, Visual};
 
 /// One open table or view.
 #[derive(Debug)]
@@ -3839,9 +3835,9 @@ pub struct ObjectTab {
     /// it is on: it runs from there to the cursor's line.
     pub ddl_visual: Option<usize>,
     pub selection: Option<CellPos>,
-    /// The rows selected with the cursor's, where there are several.
-    /// Written with the cursor, by [`ObjectTab::set_cursor`].
-    pub range: Option<RowRange>,
+    /// What is selected with the cursor's cell: a rectangle of cells, or
+    /// whole rows. Written with the cursor, by [`ObjectTab::set_cursor`].
+    pub range: Option<Range>,
     pub estimated_rows: Option<u64>,
     /// The exact row count for the current filters, when asked for.
     pub count: Fetch<u64>,
@@ -3988,68 +3984,97 @@ impl ObjectTab {
     pub fn set_cursor(&mut self, cell: Option<CellPos>, reach: Reach) {
         let was = self.selection;
         self.selection = cell;
-        let Some(cell) = cell else {
-            self.range = None;
-            return;
-        };
-        let range = match reach {
-            Reach::Extend => self.range.or_else(|| {
-                was.map(|was| RowRange {
-                    anchor: was.row,
-                    held: false,
-                })
-            }),
-            Reach::Move => self.range.filter(|range| range.held),
-            Reach::End => None,
-            Reach::Keep => self.range,
-        };
-        // One row that is not held is no range.
-        self.range = range.filter(|range| range.held || range.anchor != cell.row);
+        let range = self.range.take();
+        self.range = cell.and_then(|cell| crate::selection::moved(range, was, cell, reach));
     }
 
-    /// The places of the grid the range covers, the first and the last,
-    /// where a range stands.
-    pub fn selected_span(&self) -> Option<(usize, usize)> {
-        let (cell, range) = (self.selection?, self.range?);
+    /// The grid's order of its rows: the page's, and the new ones among
+    /// them.
+    pub fn order(&self) -> crate::edit::Order<'_> {
         let height = self.page().map_or(0, |page| page.rows.len());
-        let order = crate::edit::Order::of(&self.edits.added, height);
-        let (from, to) = (order.place(range.anchor)?, order.place(cell.row)?);
-        Some((from.min(to), from.max(to)))
+        crate::edit::Order::of(&self.edits.added, height)
+    }
+
+    /// The selection, read, where there is a cursor.
+    pub fn selected(&self) -> Option<crate::selection::Selection<'_>> {
+        Some(crate::selection::Selection {
+            cursor: self.selection?,
+            range: self.range.as_ref(),
+            order: self.order(),
+        })
     }
 
     /// The selected rows, in the grid's order: the cursor's, and with a
-    /// range every row from its anchor to the cursor's.
+    /// range the rows it covers.
     pub fn selected_rows(&self) -> Vec<usize> {
-        let Some(cell) = self.selection else {
-            return Vec::new();
-        };
-        let Some((first, last)) = self.selected_span() else {
-            return vec![cell.row];
-        };
-        let height = self.page().map_or(0, |page| page.rows.len());
-        let order = crate::edit::Order::of(&self.edits.added, height);
-        (first..=last)
-            .filter_map(|place| order.row(place))
-            .collect()
+        self.selected()
+            .map_or_else(Vec::new, |selected| selected.rows())
     }
 
-    /// Whether a visual selection of rows is on: a range that moves keep.
+    /// The first and the last column the selection covers.
+    pub fn selected_cols(&self) -> Option<(usize, usize)> {
+        let width = self.page()?.columns.len();
+        self.selected()?.cols(width)
+    }
+
+    /// How many rows and columns a range covers, where one stands.
+    pub fn selection_size(&self) -> Option<(usize, usize)> {
+        let width = self.page()?.columns.len();
+        self.selected()?.size(width)
+    }
+
+    /// Whether a visual selection is on: a range that moves keep.
     pub fn visual(&self) -> bool {
-        self.range.is_some_and(|range| range.held)
+        self.visual_mode().is_some()
     }
 
-    /// Starts a visual selection of rows on the cursor's row, or leaves
-    /// the one that is on. A range that stands becomes it, from its
-    /// anchor. With no cursor there is none to start.
-    pub fn toggle_visual(&mut self) {
-        if self.visual() {
-            self.range = None;
-            return;
-        }
+    /// The terminal look's visual mode, while one is on.
+    pub fn visual_mode(&self) -> Option<Visual> {
+        self.range.as_ref().and_then(Range::visual)
+    }
+
+    /// Starts the visual selection `mode` on the cursor, or leaves the one
+    /// that is on: `v`, `ctrl+v`, `V`. A range that stands becomes it,
+    /// from its anchor. With no cursor there is none to start.
+    pub fn toggle_visual(&mut self, mode: Visual) {
         if let Some(cell) = self.selection {
-            let anchor = self.range.map_or(cell.row, |range| range.anchor);
-            self.range = Some(RowRange { anchor, held: true });
+            self.range = crate::selection::toggled(self.range.take(), cell, mode);
+        } else {
+            self.range = None;
         }
+    }
+
+    /// Selects the rows the selection covers, whole: `⇧Space`.
+    pub fn select_rows_of_cursor(&mut self) {
+        if let Some(cell) = self.selection {
+            let range = crate::selection::as_rows(self.range.take(), cell, false);
+            self.range = Some(range);
+        }
+    }
+
+    /// Selects every row the grid shows: `⌘A`. The cursor goes to the
+    /// first where there is none.
+    pub fn select_all_rows(&mut self) {
+        let order = self.order();
+        let range = crate::selection::all(order);
+        let first = order.row(0);
+        if range.is_some() && self.selection.is_none() {
+            self.selection = first.map(|row| CellPos { row, col: 0 });
+        }
+        self.range = range.filter(|_| self.selection.is_some());
+    }
+
+    /// A click on the number of `row`.
+    pub fn row_number_clicked(&mut self, row: usize, click: RowClick) {
+        let (cell, range) = crate::selection::row_clicked(
+            self.range.take(),
+            self.selection,
+            row,
+            click,
+            self.order(),
+        );
+        self.selection = Some(cell);
+        self.range = range;
     }
 
     /// The cursor's row and the rows after it in the grid's order, `count`
@@ -4174,14 +4199,12 @@ impl ObjectTab {
         {
             self.set_cursor(None, Reach::End);
         }
-        // A range that began on a new row, the cursor on a row of the
-        // page: the set that held its anchor was dropped.
-        if self
+        // The new rows of a range: the set that held them was dropped.
+        let new = |row: usize| crate::edit::new_id(row).is_some();
+        self.range = self
             .range
-            .is_some_and(|range| crate::edit::new_id(range.anchor).is_some())
-        {
-            self.range = None;
-        }
+            .take()
+            .and_then(|range| range.without(new, |_| None));
     }
 
     /// The row panel's text for the selected row, if it is up to date.
@@ -5120,6 +5143,8 @@ pub struct SqlTab {
     /// to 1. Change it through `set_split`.
     pub split: f32,
     pub selection: Option<CellPos>,
+    /// What is selected with the cursor's cell, as in a table's grid.
+    pub range: Option<Range>,
     /// The row panel's text for the selected row (see `App::format_rows`).
     pub fields: Option<RowFields>,
     /// Focus the editor on the next frame.
@@ -5189,6 +5214,7 @@ impl SqlTab {
             pane: ResultPane::default(),
             split: Self::DEFAULT_SPLIT,
             selection: None,
+            range: None,
             fields: None,
             focus_editor: true,
             go_to: None,
@@ -5404,6 +5430,80 @@ impl SqlTab {
     pub fn dims(&self) -> (usize, usize) {
         self.shown_rows()
             .map_or((0, 0), |(columns, rows, _)| (rows.len(), columns.len()))
+    }
+
+    /// Puts the cursor on `cell`, or takes it away, as a table's tab does
+    /// ([`ObjectTab::set_cursor`]).
+    pub fn set_cursor(&mut self, cell: Option<CellPos>, reach: Reach) {
+        let was = self.selection;
+        self.selection = cell;
+        let range = self.range.take();
+        self.range = cell.and_then(|cell| crate::selection::moved(range, was, cell, reach));
+    }
+
+    /// The result's order of its rows: as they came.
+    pub fn order(&self) -> crate::edit::Order<'static> {
+        crate::edit::Order::of(&[], self.dims().0)
+    }
+
+    /// The selection, read, where there is a cursor in the result's
+    /// rows.
+    pub fn selected(&self) -> Option<crate::selection::Selection<'_>> {
+        let cursor = self.selection.filter(|cell| cell.row < self.dims().0)?;
+        Some(crate::selection::Selection {
+            cursor,
+            range: self.range.as_ref(),
+            order: self.order(),
+        })
+    }
+
+    /// The terminal look's visual mode, while one is on.
+    pub fn visual_mode(&self) -> Option<Visual> {
+        self.range.as_ref().and_then(Range::visual)
+    }
+
+    /// How many rows and columns a range covers, where one stands.
+    pub fn selection_size(&self) -> Option<(usize, usize)> {
+        self.selected()?.size(self.dims().1)
+    }
+
+    /// As [`ObjectTab::toggle_visual`].
+    pub fn toggle_visual(&mut self, mode: Visual) {
+        if let Some(cell) = self.selection {
+            self.range = crate::selection::toggled(self.range.take(), cell, mode);
+        } else {
+            self.range = None;
+        }
+    }
+
+    /// As [`ObjectTab::select_rows_of_cursor`].
+    pub fn select_rows_of_cursor(&mut self) {
+        if let Some(cell) = self.selection {
+            let range = crate::selection::as_rows(self.range.take(), cell, false);
+            self.range = Some(range);
+        }
+    }
+
+    /// As [`ObjectTab::select_all_rows`].
+    pub fn select_all_rows(&mut self) {
+        let range = crate::selection::all(self.order());
+        if range.is_some() && self.selection.is_none() {
+            self.selection = Some(CellPos { row: 0, col: 0 });
+        }
+        self.range = range.filter(|_| self.selection.is_some());
+    }
+
+    /// As [`ObjectTab::row_number_clicked`].
+    pub fn row_number_clicked(&mut self, row: usize, click: RowClick) {
+        let (cell, range) = crate::selection::row_clicked(
+            self.range.take(),
+            self.selection,
+            row,
+            click,
+            self.order(),
+        );
+        self.selection = Some(cell);
+        self.range = range;
     }
 
     /// The selected row of the result, while the Results pane shows it:
@@ -6259,25 +6359,30 @@ mod tests {
     }
 
     #[test]
-    fn an_extend_selects_the_rows_from_the_anchor_to_the_cursor() {
+    fn an_extend_selects_the_cells_from_the_anchor_to_the_cursor() {
         let mut tab = covers(5);
         tab.set_cursor(at(1), Reach::End);
         assert_eq!(tab.selected_rows(), [1]);
         tab.set_cursor(at(3), Reach::Extend);
         assert_eq!(tab.selected_rows(), [1, 2, 3]);
+        assert_eq!(tab.selected_cols(), Some((1, 1)));
+        assert_eq!(tab.selection_size(), Some((3, 1)));
+        tab.set_cursor(Some(CellPos { row: 3, col: 3 }), Reach::Extend);
+        assert_eq!(tab.selected_cols(), Some((1, 3)));
+        tab.set_cursor(at(3), Reach::Extend);
         // The anchor stays where the range began.
         tab.set_cursor(at(0), Reach::Extend);
         assert_eq!(tab.selected_rows(), [0, 1]);
         // Back on the anchor one row is selected, and no range stands.
         tab.set_cursor(at(1), Reach::Extend);
-        assert_eq!((tab.selected_rows(), tab.range), (vec![1], None));
+        assert_eq!((tab.selected_rows(), tab.range.clone()), (vec![1], None));
     }
 
     #[test]
     fn with_no_cursor_an_extend_selects_one_row() {
         let mut tab = covers(5);
         tab.set_cursor(at(2), Reach::Extend);
-        assert_eq!((tab.selected_rows(), tab.range), (vec![2], None));
+        assert_eq!((tab.selected_rows(), tab.range.clone()), (vec![2], None));
     }
 
     #[test]
@@ -6286,10 +6391,11 @@ mod tests {
         tab.set_cursor(at(1), Reach::End);
         tab.set_cursor(at(2), Reach::Extend);
         tab.set_cursor(at(3), Reach::Move);
-        assert_eq!((tab.selected_rows(), tab.range), (vec![3], None));
+        assert_eq!((tab.selected_rows(), tab.range.clone()), (vec![3], None));
         // A held range follows the cursor, along the row too.
-        tab.range = Some(RowRange {
-            anchor: 3,
+        tab.range = Some(Range::Rows {
+            anchor: Some(3),
+            picked: Default::default(),
             held: true,
         });
         tab.set_cursor(at(1), Reach::Move);
@@ -6301,10 +6407,10 @@ mod tests {
         assert!(tab.range.is_some());
         // Anything else ends it, and so does a cursor that goes.
         tab.set_cursor(at(2), Reach::End);
-        assert_eq!(tab.range, None);
+        assert_eq!(tab.range.clone(), None);
         tab.set_cursor(at(1), Reach::Extend);
         tab.set_cursor(None, Reach::Keep);
-        assert_eq!((tab.selected_rows(), tab.range), (Vec::new(), None));
+        assert_eq!((tab.selected_rows(), tab.range.clone()), (Vec::new(), None));
     }
 
     #[test]
@@ -6314,7 +6420,10 @@ mod tests {
         tab.set_cursor(at(0), Reach::End);
         tab.set_cursor(at(1), Reach::Extend);
         assert_eq!(tab.selected_rows(), [0, crate::edit::new_row(new), 1]);
-        assert_eq!(tab.selected_span(), Some((0, 2)));
+        assert_eq!(
+            tab.selected().map(|selected| selected.places()),
+            Some(vec![0, 1, 2])
+        );
     }
 
     #[test]
@@ -6326,17 +6435,17 @@ mod tests {
         assert_eq!(tab.selected_rows(), [new, 1, 2]);
         tab.edits = crate::edit::Edits::default();
         tab.off_new_rows();
-        assert_eq!((tab.selected_rows(), tab.range), (vec![2], None));
+        assert_eq!((tab.selected_rows(), tab.range.clone()), (vec![2], None));
     }
 
     #[test]
     fn a_visual_selection_is_started_and_left_on_the_cursors_row() {
         let mut tab = covers(5);
         // With no cursor there is none to start.
-        tab.toggle_visual();
+        tab.toggle_visual(Visual::Rows);
         assert!(!tab.visual());
         tab.set_cursor(at(2), Reach::End);
-        tab.toggle_visual();
+        tab.toggle_visual(Visual::Rows);
         assert!(tab.visual());
         assert_eq!(tab.selected_rows(), [2]);
         // Moves extend it, up and down.
@@ -6344,11 +6453,11 @@ mod tests {
         assert_eq!(tab.selected_rows(), [2, 3, 4]);
         tab.set_cursor(at(0), Reach::Move);
         assert_eq!(tab.selected_rows(), [0, 1, 2]);
-        tab.toggle_visual();
+        tab.toggle_visual(Visual::Rows);
         assert_eq!((tab.visual(), tab.selected_rows()), (false, vec![0]));
         // A range made with Shift becomes the visual one, from its anchor.
         tab.set_cursor(at(1), Reach::Extend);
-        tab.toggle_visual();
+        tab.toggle_visual(Visual::Rows);
         assert!(tab.visual());
         tab.set_cursor(at(3), Reach::Move);
         assert_eq!(tab.selected_rows(), [0, 1, 2, 3]);

@@ -68,6 +68,9 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
             | Action::ExtendTo { .. }
             | Action::ExtendBy { .. }
             | Action::SelectRows { .. }
+            | Action::SelectRowsOfCursor { .. }
+            | Action::SelectAllRows { .. }
+            | Action::RowNumberClicked { .. }
             | Action::MoveSelection { .. }
             // Closing the row panel closes the editor it draws, and the
             // text of that editor joins the set.
@@ -111,14 +114,11 @@ fn drop_named(object: &mut ObjectTab, named: &[usize], new: &[usize]) -> usize {
         let near = left.iter().min_by_key(|(place, _)| place.abs_diff(at));
         near.map(|(_, row)| *row)
     };
-    if let Some(anchor) = object.range.map(|range| range.anchor)
-        && new.contains(&anchor)
-    {
-        match (nearest(anchor), object.range.as_mut()) {
-            (Some(row), Some(range)) => range.anchor = row,
-            _ => object.range = None,
-        }
-    }
+    let gone = |row: usize| new.contains(&row) && new_id(row).is_some();
+    object.range = object
+        .range
+        .take()
+        .and_then(|range| range.without(gone, nearest));
     if let Some(cell) = object.selection.filter(|cell| new.contains(&cell.row)) {
         let row = nearest(cell.row).or_else(|| {
             let order = Order::of(&object.edits.added, height);
@@ -1122,17 +1122,27 @@ impl App {
         self.settle_new_row(tab, id, cell, required.is_some());
     }
 
-    /// Adds a copy of the selected row as a new row at the top.
+    /// Adds a copy of each selected row as a new row at the top.
     pub(super) fn duplicate_row(&mut self, tab: ConnTabId, id: TabId) {
         // Before the row is read: an open editor's text is part of what
         // the row shows, and closed it is pending.
         self.close_editor(tab, id, true);
-        let copy = self.table(tab, id, |table, object| {
-            let yank = table.yank(object.selection?.row, &object.edits.cells)?;
-            Some(table.duplicate(&yank))
+        // Each selected row, in the grid's order: the copies stand at the
+        // top in that order, and the first is settled as one copy is.
+        let copies = self.table(tab, id, |table, object| {
+            let rows = object.selected_rows();
+            let yanks = rows
+                .iter()
+                .filter_map(|row| table.yank(*row, &object.edits.cells));
+            yanks.map(|yank| table.duplicate(&yank)).collect::<Vec<_>>()
         });
-        if let Some(Some(copy)) = copy {
-            self.put_copy(tab, id, copy, Place::Top);
+        let mut first = None;
+        for copy in copies.unwrap_or_default() {
+            let added = self.add_copy(tab, id, copy, Place::Top);
+            first = first.or(added);
+        }
+        if let Some((cell, open)) = first {
+            self.settle_new_row(tab, id, cell, open);
         }
     }
 
@@ -1172,22 +1182,28 @@ impl App {
             (Some(cell), true) => Place::Above(cell.row),
             (None, _) => Place::Top,
         };
-        self.put_copy(tab, id, copy, place);
+        if let Some((cell, open)) = self.add_copy(tab, id, copy, place) {
+            self.settle_new_row(tab, id, cell, open);
+        }
     }
 
     /// Adds `copy` as a new row at `place`, where the table takes one, and
-    /// settles it. The editor opens on the first cell a save needs a value
-    /// in and that takes one. With none the selection goes to the copy, in
-    /// the column the cursor was in. Both are the copy's own rules: an
-    /// added row opens on its first required cell whatever it is, and
+    /// says where to settle it: the cell the editor opens on, the first a
+    /// save needs a value in and that takes one, or with none the copy's
+    /// cell in the column the cursor was in. Both are the copy's own rules:
+    /// an added row opens on its first required cell whatever it is, and
     /// otherwise selects the first cell that takes a value.
-    fn put_copy(&mut self, tab: ConnTabId, id: TabId, copy: Duplicate, place: Place) {
+    fn add_copy(
+        &mut self,
+        tab: ConnTabId,
+        id: TabId,
+        copy: Duplicate,
+        place: Place,
+    ) -> Option<(CellPos, bool)> {
         if !self.takes_rows(tab, id) {
-            return;
+            return None;
         }
-        let Some(object) = self.object_tab_mut(tab, id) else {
-            return;
-        };
+        let object = self.object_tab_mut(tab, id)?;
         let stood = object.selection.map_or(0, |cell| cell.col);
         let height = object.page().map_or(0, |page| page.rows.len());
         let new = object.edits.add_copy(place, height, copy);
@@ -1200,7 +1216,7 @@ impl App {
             row,
             col: open.unwrap_or(stood),
         };
-        self.settle_new_row(tab, id, cell, open.is_some());
+        Some((cell, open.is_some()))
     }
 
     /// Drops the selected row where it is a new one. The selection stays
@@ -1232,9 +1248,11 @@ impl App {
             .map(|row| CellPos { row, col: cell.col });
         // The rows selected with it stay selected, unless they began on
         // the row that went.
-        if object.range.is_some_and(|range| range.anchor == cell.row) {
-            object.range = None;
-        }
+        let gone = |row: usize| row == cell.row;
+        object.range = object
+            .range
+            .take()
+            .and_then(|range| range.without(gone, |_| None));
         object.set_cursor(stays, Reach::Keep);
     }
 
