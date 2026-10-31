@@ -94,13 +94,16 @@ are experimental and MergeTree-only). Today every read path, and every
 script, leans on one:
 
 - Browsing reads in a read-only transaction. ClickHouse: send `readonly=2`
-  on every browsing and agent request (blocks writes and DDL, still lets
-  us pass settings). `readonly=1` would also refuse our own
-  `max_result_rows` and the like.
+  on every browsing and agent request (blocks DDL and most writes, still
+  lets the editor use `SET` and `SETTINGS`).
 - A read-only script always rolls back. ClickHouse: `readonly=2` per
-  statement. Note that level 2 permits `CREATE TEMPORARY TABLE` and
-  `RESTORE`; `sql::refusal` or `check_read` would refuse `RESTORE`, as the
-  agent path refuses other effects.
+  statement.
+- Correction (2026-10-31, probed on 25.8): `readonly=2` is not a fence on
+  its own. It runs `INSERT INTO FUNCTION file(…)` and `url(…)`, `BACKUP`
+  and `KILL QUERY`; `readonly=1` stops the first but not the other two.
+  Settings in the URL are accepted at both levels. The design
+  (`2026-10-31-clickhouse-read-only-engine-design.md`) puts an allowlist
+  of our own in front of `readonly=2`.
 - A write script commits or rolls back as a whole (`ScriptEnd`). On
   ClickHouse each statement stands on its own. The closest honest outcome
   is MySQL's implicit-commit case: `ScriptEnd::Partly` with what applied.

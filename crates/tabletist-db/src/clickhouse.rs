@@ -76,9 +76,10 @@ impl Http {
         }
     }
 
-    /// Runs `sql`, which must not name a `FORMAT`, read-only (the
-    /// server's `readonly = 2`: no writes, no DDL, settings allowed), and
-    /// keeps its first `limit` rows.
+    /// Runs `sql`, which must not name a `FORMAT`, under the server's
+    /// `readonly = 2` (no DDL, settings allowed), and keeps its first
+    /// `limit` rows. That is no fence on its own: `INSERT INTO FUNCTION`,
+    /// `BACKUP` and `KILL` still run, so `sql` must be a read.
     pub async fn select_page(&self, sql: String, limit: u32) -> Result<RowPage> {
         let http = self.clone();
         tokio::task::spawn_blocking(move || http.select_page_blocking(&sql, limit))
