@@ -24,7 +24,7 @@ Asked and answered on 2026-10-30 (the prompt asked for one pull request):
    with four options, kept values and the change-type question; Source
    (Folder or Files, the pickers, the found line); the safety box, on and
    fixed; Test success and the missing folder; the list rows (Files and
-   SQLite); Paste URL taking a path; `connections.toml`.
+   SQLite); a path in the URL field; `connections.toml`.
 2. **Run 2: reading CSV.** Reading CSV with its options and per-file
    overrides, the background check, the partial banner with its three
    fixes in the dialog and on the table view, the macOS "not allowed"
@@ -133,8 +133,9 @@ read-only whatever access it is asked for, a `.duckdb` file attached
   objects (each file a table, with Parquet's row count from its metadata
   and an estimate from the sample for the others, shown with "≈"),
   describe (DuckDB's columns and types, no keys, and the file's path,
-  size and format), DDL (`CREATE VIEW orders AS SELECT * FROM
-  read_csv(…)` as DuckDB keeps it), rows, counts, lookups, scripts
+  size and format), DDL (the `CREATE VIEW orders AS SELECT * FROM
+  read_csv(…)` statement the app made, since DuckDB keeps it
+  rewritten), rows, counts, lookups, scripts
   (read-only; a write is `Error::ReadOnly`), agents' reads, and writes
   (refused).
 - Test reads each file's schema and its first rows, never a whole file:
@@ -172,9 +173,10 @@ read-only whatever access it is asked for, a `.duckdb` file attached
 - **Safety:** the box as for the other types, checked and fixed, with
   "Files open read-only."; Omarchy `[x] files open read-only`.
 - Header: the URL tab disabled with the tooltip "Files connections have
-  no URL. Paste a folder or file path into Source."; Omarchy `no url for
-  files`. **Paste URL** in the connections list takes a folder or file
-  path and opens a new Files connection with it.
+  no URL. Choose a folder or files under Source." (the macOS Source box
+  takes no paste); Omarchy `no url for files`. A folder or file path
+  typed into a new connection's URL field makes it a Files connection
+  with it.
 - Omarchy footer for Files: `tab next · enter choose · ctrl+o pick ·
   ctrl+t test · ctrl+s save · esc cancel`.
 
@@ -201,5 +203,5 @@ read-only whatever access it is asked for, a `.duckdb` file attached
 Fixtures are written into a temporary folder by the tests themselves:
 `orders.csv`, `customers.parquet`, `events.ndjson`, `returns.csv`, a
 TSV, a JSON array, a `.duckdb` file, a hidden file, a subfolder and a
-`.txt` file. The `.xlsx` test runs only where DuckDB's Excel reader can
-be installed, and says "skipped" otherwise.
+`.txt` file. No test reads an Excel file: its reader is downloaded at
+run time.
