@@ -176,6 +176,7 @@ fn row_id(dialect: crate::Dialect, word: &str) -> bool {
     let names: &[&str] = match dialect {
         crate::Dialect::Sqlite => &["rowid", "_rowid_", "oid"],
         crate::Dialect::MySql => &["_rowid"],
+        crate::Dialect::DuckDb => &["rowid"],
         crate::Dialect::Postgres => &[],
     };
     names.iter().any(|name| name.eq_ignore_ascii_case(word))
@@ -538,10 +539,10 @@ pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
 }
 
 /// Whether the dialect reads a string as a name where only a name can
-/// stand: SQLite's does.
+/// stand: SQLite's does, and DuckDB reads `FROM 'orders.csv'` as a file.
 fn strings_are_names(dialect: crate::Dialect) -> bool {
     match dialect {
-        crate::Dialect::Sqlite => true,
+        crate::Dialect::Sqlite | crate::Dialect::DuckDb => true,
         crate::Dialect::Postgres | crate::Dialect::MySql => false,
     }
 }

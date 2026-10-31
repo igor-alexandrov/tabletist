@@ -144,6 +144,11 @@ pub struct App {
     pub actions: Vec<Action>,
     pub backend: Backend,
     pub connections: SavedConnections,
+    /// What the saved connections' files are on disk, for the list's rows,
+    /// as the backend last read them.
+    pub sources: HashMap<crate::connections::ConnectionId, crate::model::SourceFacts>,
+    /// The read of `sources` in flight: an older one's answer is dropped.
+    pub sources_request: Option<RequestId>,
     /// The label columns chosen for the tables foreign keys point at, from
     /// labels.json. Read through `App::label_of` only.
     pub labels: crate::labels::Labels,
@@ -399,6 +404,8 @@ impl App {
             actions: Vec::new(),
             backend,
             connections,
+            sources: HashMap::new(),
+            sources_request: None,
             labels,
             table_lists,
             table_lists_unread,
@@ -480,6 +487,7 @@ impl App {
         // What the files let agents do against what was last shown: the
         // connections are read now alone, the settings at every edit too.
         app.check_agents();
+        app.read_sources();
         if adopted {
             app.save_labels();
         }
@@ -2902,9 +2910,25 @@ impl App {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
                     // A port left at the old driver's default follows the driver.
                     let old_default = form.driver.default_port().to_string();
+                    // A Test of the old type, done or still running, says
+                    // nothing of this one.
+                    if form.driver != driver {
+                        form.forget_test();
+                    }
                     form.driver = driver;
+                    // A type changed again is asked about again.
+                    form.retype_asked = false;
+                    // A new Files connection lets agents read, until the
+                    // person chooses.
+                    form.follow_agents_default();
+                    // A Files connection has no URL to show.
+                    match driver {
+                        Driver::Files => form.url_mode = false,
+                        Driver::Postgres | Driver::MySql | Driver::Sqlite => {}
+                    }
                     match driver {
                         Driver::Sqlite => {}
+                        Driver::Files => self.read_form_source(),
                         Driver::Postgres | Driver::MySql => {
                             if form.port.trim().is_empty() || form.port.trim() == old_default {
                                 form.port = driver.default_port().to_string();
@@ -3018,6 +3042,7 @@ impl App {
                     form.agents_masked_opened = form.agents_masked.clone();
                     self.dialog = Some(Dialog::Connection(Box::new(form)));
                     self.list_ssh_hosts();
+                    self.read_form_source();
                 }
             }
             Action::LoadAgentColumns { conn, objects } => self.load_agent_columns(&conn, &objects),
@@ -3151,6 +3176,42 @@ impl App {
                     self.backend.pick_ca_file(request);
                 }
             }
+            Action::PickFolder => {
+                let request = RequestId(self.next_id());
+                if let Some(Dialog::Connection(form)) = &mut self.dialog {
+                    form.pick_request = Some(request);
+                    form.pick_target = PickTarget::Folder;
+                    self.backend.pick_folder(request);
+                }
+            }
+            Action::PickDataFiles => {
+                let request = RequestId(self.next_id());
+                if let Some(Dialog::Connection(form)) = &mut self.dialog {
+                    form.pick_request = Some(request);
+                    form.pick_target = PickTarget::Files;
+                    self.backend.pick_data_files(request);
+                }
+            }
+            Action::RemoveFile(at) => {
+                if let Some(Dialog::Connection(form)) = &mut self.dialog
+                    && at < form.files_list.len()
+                {
+                    // Off the list only: the file stays on the disk.
+                    form.files_list.remove(at);
+                    form.files_cursor = match form.files_list.len() {
+                        0 => None,
+                        rows => Some(at.min(rows - 1)),
+                    };
+                    self.read_form_source();
+                }
+            }
+            Action::SetFilesKind(kind) => {
+                if let Some(Dialog::Connection(form)) = &mut self.dialog {
+                    form.files_kind = kind;
+                    self.read_form_source();
+                }
+            }
+            Action::ReadSource => self.read_form_source(),
             Action::PickSshHost(alias) => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
                     form.pick_ssh_host(&alias);
@@ -3162,6 +3223,7 @@ impl App {
                 {
                     form.message = Some(message);
                 }
+                self.read_form_source();
             }
             Action::TrustHostKey => {
                 if let Some(Dialog::HostKey(prompt)) = self.dialog.take() {
@@ -4226,6 +4288,12 @@ impl App {
                     form.ssh_hosts = hosts;
                 }
             }
+            Event::SourcesRead { request, facts } => {
+                if self.sources_request == Some(request) {
+                    self.sources_request = None;
+                    self.sources = facts.into_iter().collect();
+                }
+            }
             Event::FilePicked { request, path } => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog
                     && form.pick_request == Some(request)
@@ -4244,8 +4312,69 @@ impl App {
                                 form.name = crate::model::file_name(&form.sqlite_path);
                             }
                         }
-                        (None, _) => {}
+                        (Some(path), PickTarget::Folder) => {
+                            form.files_folder = tabletist_db::files::shown(&path);
+                            if form.name.trim().is_empty() {
+                                form.name = crate::model::file_name(&form.files_folder);
+                            }
+                            self.read_form_source();
+                        }
+                        // The dialog that adds files answers with
+                        // `FilesPicked`.
+                        (Some(_), PickTarget::Files) | (None, _) => {}
                     }
+                }
+            }
+            Event::FilesPicked { request, paths } => {
+                if let Some(Dialog::Connection(form)) = &mut self.dialog
+                    && form.pick_request == Some(request)
+                {
+                    form.pick_request = None;
+                    if paths.is_empty() {
+                        return;
+                    }
+                    // Each once, after the files already listed.
+                    for path in &paths {
+                        let shown = tabletist_db::files::shown(path);
+                        if !form.files_list.contains(&shown) {
+                            form.files_list.push(shown);
+                        }
+                    }
+                    form.files_cursor = Some(form.files_list.len() - 1);
+                    self.read_form_source();
+                }
+            }
+            Event::SourceRead { request, result } => {
+                if let Some(Dialog::Connection(form)) = &mut self.dialog
+                    && form.files_found == crate::model::FilesFound::Reading(request)
+                {
+                    form.files_found = match result {
+                        Ok(scan) => crate::model::FilesFound::Read(scan),
+                        Err(why) => crate::model::FilesFound::Failed(why),
+                    };
+                }
+            }
+            Event::FilesTested { request, result } => {
+                if let Some(Dialog::Connection(form)) = &mut self.dialog
+                    && form.test == TestState::Running(request)
+                {
+                    let elapsed = form.test_started.take().map(|started| started.elapsed());
+                    form.test_took = if result.is_ok() { elapsed } else { None };
+                    form.test = match result {
+                        Ok(read) => {
+                            form.files_tested = Some(read);
+                            TestState::Passed
+                        }
+                        // A file's or a folder's own words, which name it.
+                        Err(Error::Connect(message)) => {
+                            form.files_tested = None;
+                            TestState::Failed(message)
+                        }
+                        Err(error) => {
+                            form.files_tested = None;
+                            TestState::Failed(error.to_string())
+                        }
+                    };
                 }
             }
             Event::Schemas {
@@ -4888,6 +5017,43 @@ impl App {
         })
     }
 
+    /// Has the backend read what the open dialog's Files Source holds, for
+    /// its found line. A Source not chosen yet is not read.
+    fn read_form_source(&mut self) {
+        let request = RequestId(self.next_id());
+        let Some(Dialog::Connection(form)) = &mut self.dialog else {
+            return;
+        };
+        let source = match form.driver {
+            Driver::Files => form.files_source(),
+            Driver::Postgres | Driver::MySql | Driver::Sqlite => None,
+        };
+        // A Test of another Source, or of another type, done or still
+        // running, says nothing of this one.
+        match form.driver {
+            Driver::Files => {
+                let same = form
+                    .test_spec
+                    .as_ref()
+                    .is_some_and(|spec| match spec.driver {
+                        Driver::Files => spec.files.as_ref() == source.as_ref(),
+                        Driver::Postgres | Driver::MySql | Driver::Sqlite => false,
+                    });
+                if !same {
+                    form.forget_test();
+                }
+            }
+            Driver::Postgres | Driver::MySql | Driver::Sqlite => form.files_tested = None,
+        }
+        match source {
+            Some(source) => {
+                form.files_found = crate::model::FilesFound::Reading(request);
+                self.backend.read_source(request, source);
+            }
+            None => form.files_found = crate::model::FilesFound::Unread,
+        }
+    }
+
     /// Asks the backend for ~/.ssh/config's Host aliases for the open
     /// connection dialog.
     fn list_ssh_hosts(&mut self) {
@@ -5136,10 +5302,33 @@ impl App {
             path: self.dirs.connections_file(),
             file: StateFile::Connections(self.connections.clone()),
         });
+        // The list's rows say what a connection's files are.
+        self.read_sources();
         // Every change to a connection is saved: what agents may use
         // changes with it. One deleted is held no more.
         self.check_agents();
         self.send_agents_policy();
+    }
+
+    /// Has the backend read what every saved connection's files are on
+    /// disk, for the connections list.
+    fn read_sources(&mut self) {
+        let specs: Vec<_> = self
+            .connections
+            .connections
+            .iter()
+            .filter(|saved| match saved.spec.driver {
+                Driver::Files | Driver::Sqlite => true,
+                Driver::Postgres | Driver::MySql => false,
+            })
+            .map(|saved| (saved.id.clone(), saved.spec.clone()))
+            .collect();
+        if specs.is_empty() {
+            return;
+        }
+        let request = RequestId(self.next_id());
+        self.sources_request = Some(request);
+        self.backend.read_sources(request, specs);
     }
 
     /// Takes the agent server on: tells the backend what agents may use,
@@ -5758,6 +5947,18 @@ impl App {
             form.message = Some("This connection was deleted.".into());
             return;
         }
+        // A connection that has been used, saved as another type, loses
+        // what its old type kept: asked once, and the next Save changes it.
+        if let (Some(id), Some(from)) = (&form.editing, form.retyped_from())
+            && self.connections.last_used(id).is_some()
+            && !form.retype_asked
+        {
+            form.retype_asked = true;
+            let rules =
+                form.agents_tables.tables().hides_anything() || !form.agents_masked.is_empty();
+            form.message = Some(retype_question(form.name.trim(), from, form.driver, rules));
+            return;
+        }
         let mut saved = match form.to_saved() {
             Ok(saved) => saved,
             Err(message) => {
@@ -5902,7 +6103,7 @@ impl App {
         };
         let asks = match workspace.driver {
             Driver::MySql => workspace.session_zone.needs_load(),
-            Driver::Postgres | Driver::Sqlite => false,
+            Driver::Postgres | Driver::Sqlite | Driver::Files => false,
         };
         if asks {
             let session = workspace.session;
@@ -5929,7 +6130,7 @@ impl App {
                     self.backend
                         .send(Command::ListDatabases { session, request });
                 }
-                Driver::MySql | Driver::Sqlite => {}
+                Driver::MySql | Driver::Sqlite | Driver::Files => {}
             }
         }
         self.ask_server_version(tab);
@@ -7137,9 +7338,9 @@ impl App {
                             (named.name.clone(), true)
                         }
                         tabletist_db::Dialect::Postgres => (named.name.to_lowercase(), true),
-                        tabletist_db::Dialect::MySql | tabletist_db::Dialect::Sqlite => {
-                            (named.name.clone(), false)
-                        }
+                        tabletist_db::Dialect::MySql
+                        | tabletist_db::Dialect::Sqlite
+                        | tabletist_db::Dialect::DuckDb => (named.name.clone(), false),
                     };
                     let object = crate::completion::resolve(schema, &name, &catalog)
                         .filter(|object| !exact || object.name == name)?;
@@ -8286,6 +8487,43 @@ fn use_typed_url(form: &mut ConnectionForm) -> bool {
 /// Fills the form from its URL field and leaves the URL mode, or says why
 /// the URL cannot be used: then the form is as it was, the URL too.
 fn apply_url(form: &mut ConnectionForm) -> Result<(), String> {
+    // A folder or a file's path: a Files connection over it.
+    if let Some(source) = files_path(&form.url) {
+        let name = match &source {
+            tabletist_db::files::Source::Folder(folder) => folder.clone(),
+            tabletist_db::files::Source::Files(files) => files
+                .first()
+                .and_then(|file| file.parent())
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_default(),
+        };
+        if form.name.trim().is_empty() {
+            form.name = crate::model::file_name(&name.display().to_string());
+        }
+        form.driver = Driver::Files;
+        match source {
+            tabletist_db::files::Source::Folder(folder) => {
+                form.files_kind = crate::model::FilesKind::Folder;
+                form.files_folder = tabletist_db::files::shown(&folder);
+            }
+            tabletist_db::files::Source::Files(files) => {
+                form.files_kind = crate::model::FilesKind::Files;
+                form.files_list = files
+                    .iter()
+                    .map(|file| tabletist_db::files::shown(file))
+                    .collect();
+            }
+        }
+        form.follow_agents_default();
+        form.url.clear();
+        form.message = None;
+        form.url_mode = false;
+        return Ok(());
+    }
+    // A SQLite database's path, as its URL would name it.
+    if let Some(path) = pasted_path(&form.url).filter(|path| sqlite_file(path)) {
+        form.url = format!("sqlite:{}", path.display());
+    }
     let tabletist_db::ParsedUrl {
         spec,
         secrets,
@@ -8306,6 +8544,8 @@ fn apply_url(form: &mut ConnectionForm) -> Result<(), String> {
             form.driver = Driver::Sqlite;
             form.sqlite_path = path;
         }
+        // No URL names a Files connection.
+        Driver::Files => {}
         Driver::Postgres | Driver::MySql => {
             if form.name.trim().is_empty() {
                 form.name = spec.summary();
@@ -8341,6 +8581,60 @@ fn apply_url(form: &mut ConnectionForm) -> Result<(), String> {
     form.message = None;
     form.url_mode = false;
     Ok(())
+}
+
+/// What Save asks before a used connection becomes another type: what it
+/// loses, and that Save again changes it.
+fn retype_question(name: &str, from: Driver, to: Driver, rules: bool) -> String {
+    let loses = match from {
+        Driver::Postgres | Driver::MySql => "Its server settings will be removed.",
+        Driver::Sqlite => "Its database file will be removed from it.",
+        Driver::Files => "Its folder or files will be removed from it.",
+    };
+    // A Files connection keeps no hidden tables and no masked columns.
+    let agents = match (to, rules) {
+        (Driver::Files, true) => " What agents may not read or get masked is taken off too.",
+        (Driver::Files, false) | (Driver::Postgres | Driver::MySql | Driver::Sqlite, _) => "",
+    };
+    format!(
+        "Change {name} from {} to {}? {loses}{agents} Save again to change it.",
+        from.label(),
+        to.label()
+    )
+}
+
+/// The path `text` is, where it is one (`/…`, `~…`, `C:\…`), with `~`
+/// read as the home folder: a URL or a word is none.
+fn pasted_path(text: &str) -> Option<std::path::PathBuf> {
+    let text = text.trim();
+    let windows_drive =
+        text.len() > 2 && text.as_bytes()[0].is_ascii_alphabetic() && text[1..].starts_with(":\\");
+    (text.starts_with('/') || text.starts_with('~') || windows_drive)
+        .then(|| tabletist_db::files::expanded(std::path::Path::new(text)))
+}
+
+/// Whether `path` names a SQLite database by its extension, as the SQLite
+/// picker's filter does.
+fn sqlite_file(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            ["db", "sqlite", "sqlite3", "db3"]
+                .iter()
+                .any(|known| extension.eq_ignore_ascii_case(known))
+        })
+}
+
+/// What a pasted path opens as a Files connection: a data file's path is
+/// a list of that file, any other path a folder, but a SQLite database's,
+/// which opens as SQLite. `None` for text that is no path (a URL, a
+/// word). Read from the text alone: the disk is the backend's.
+fn files_path(text: &str) -> Option<tabletist_db::files::Source> {
+    let path = pasted_path(text).filter(|path| !sqlite_file(path))?;
+    Some(match tabletist_db::files::Format::of(&path) {
+        Some(_) => tabletist_db::files::Source::Files(vec![path]),
+        None => tabletist_db::files::Source::Folder(path),
+    })
 }
 
 /// `text` with every byte outside `range` blanked, but its line breaks: the
@@ -8515,7 +8809,7 @@ fn logged_statement(driver: Driver, sql: &str, params: Option<&str>) -> String {
                 let named = match driver {
                     Driver::Postgres => format!("${place}"),
                     Driver::Sqlite => format!("?{place}"),
-                    Driver::MySql => format!("? #{place}"),
+                    Driver::MySql | Driver::Files => format!("? #{place}"),
                 };
                 text.push_str(&format!("-- {named} = {value}\n"));
             }

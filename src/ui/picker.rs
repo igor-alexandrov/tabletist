@@ -105,7 +105,7 @@ fn is_local(connection: &SavedConnection) -> bool {
     use tabletist_db::Driver;
     let spec = &connection.spec;
     match spec.driver {
-        Driver::Sqlite => true,
+        Driver::Sqlite | Driver::Files => true,
         Driver::Postgres | Driver::MySql => {
             spec.ssh.is_none() && crate::model::is_local_host(&spec.host)
         }
@@ -443,7 +443,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             "{} {keyring}",
             gettext(
                 locale,
-                "Add a PostgreSQL, MySQL or SQLite database to start browsing."
+                "Add a PostgreSQL, MySQL or SQLite database, or a folder of data files, to \
+                 start browsing."
             )
         );
         let (title, text) = (
@@ -504,7 +505,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                             terminal_row(
                                 ui,
                                 connection,
-                                &app.connections,
+                                (&app.connections, app.sources.get(&connection.id)),
                                 selected.as_ref(),
                                 Opening {
                                     tab,
@@ -536,7 +537,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                                 card.shrink(1.0),
                                 index,
                                 connection,
-                                &app.connections,
+                                (&app.connections, app.sources.get(&connection.id)),
                                 selected.as_ref(),
                                 Opening {
                                     tab,
@@ -680,11 +681,112 @@ pub(crate) fn target(connection: &SavedConnection) -> (String, String) {
     let spec = &connection.spec;
     match spec.driver {
         Driver::Sqlite => (spec.summary(), String::new()),
+        Driver::Files => (spec.summary(), String::new()),
         Driver::Postgres | Driver::MySql => (
             format!("{}:{}", spec.host, spec.port),
             format!("/{}", spec.database),
         ),
     }
+}
+
+/// What a macOS row says of a connection that keeps files, where a
+/// server's says its user, host and security: the line under the name,
+/// the middle column's two lines, and for a Files connection what goes
+/// where TLS and SSH go.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FileRowText {
+    pub second: String,
+    pub middle: (String, String),
+    pub right: Option<(&'static str, &'static str)>,
+}
+
+/// [`FileRowText`] of `connection`, with what a scan of its files found
+/// (`facts`, which may be on its way). `None` for a server's.
+pub(crate) fn file_row_text(
+    connection: &SavedConnection,
+    facts: Option<&crate::model::SourceFacts>,
+) -> Option<FileRowText> {
+    use crate::model::SourceFacts;
+    use tabletist_db::Driver;
+    use tabletist_db::files::{Source, shown, size_text};
+    let spec = &connection.spec;
+    match spec.driver {
+        Driver::Postgres | Driver::MySql => None,
+        Driver::Sqlite => {
+            let path = spec.sqlite_path.as_deref()?;
+            let second = match facts {
+                Some(SourceFacts::File { size }) => format!("SQLite · {}", size_text(*size)),
+                Some(SourceFacts::Files(_)) | None => "SQLite".to_owned(),
+            };
+            let folder = path
+                .parent()
+                .map(|folder| format!("{}{}", shown(folder), std::path::MAIN_SEPARATOR))
+                .unwrap_or_default();
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            Some(FileRowText {
+                second,
+                middle: (folder, name),
+                right: None,
+            })
+        }
+        Driver::Files => {
+            let source = spec.files.as_ref()?;
+            let scan = match facts {
+                Some(SourceFacts::Files(scan)) => Some(scan),
+                Some(SourceFacts::File { .. }) | None => None,
+            };
+            let second = match scan {
+                Some(scan) => format!(
+                    "Files · {} · {}",
+                    match scan.files.len() {
+                        1 => "1 file".to_owned(),
+                        count => format!("{count} files"),
+                    },
+                    size_text(scan.total_size())
+                ),
+                None => "Files".to_owned(),
+            };
+            let names = scan.map(|scan| scan.names().join(", ")).unwrap_or_default();
+            let middle = match source {
+                Source::Folder(folder) => (shown(folder), names),
+                Source::Files(_) => (
+                    source.summary(),
+                    source.folder().map(shown).unwrap_or_default(),
+                ),
+            };
+            Some(FileRowText {
+                second,
+                middle,
+                // Editing files is not built: every one reads only.
+                right: Some(("Read-only", "No joins")),
+            })
+        }
+    }
+}
+
+/// The terminal look's line under a Files connection's name: `files ·
+/// ~/Data/bookshop-exports · 4 files · 2.5 gb`. `None` for any other.
+pub(crate) fn terminal_files_line(
+    connection: &SavedConnection,
+    facts: Option<&crate::model::SourceFacts>,
+) -> Option<String> {
+    use tabletist_db::Driver;
+    match connection.spec.driver {
+        Driver::Files => {}
+        Driver::Postgres | Driver::MySql | Driver::Sqlite => return None,
+    }
+    let text = file_row_text(connection, facts)?;
+    let source = match &connection.spec.files {
+        Some(tabletist_db::files::Source::Folder(folder)) => tabletist_db::files::shown(folder),
+        Some(source) => source.summary(),
+        None => String::new(),
+    };
+    let counted = text.second.strip_prefix("Files").unwrap_or_default();
+    // The look's case for its words, and the path as it is.
+    Some(format!("files · {source}{}", counted.to_lowercase()))
 }
 
 /// The row's own response, answering a click by selecting and a double
@@ -966,7 +1068,10 @@ fn mac_row(
     card: Rect,
     index: usize,
     connection: &SavedConnection,
-    store: &crate::connections::SavedConnections,
+    (store, facts): (
+        &crate::connections::SavedConnections,
+        Option<&crate::model::SourceFacts>,
+    ),
     selected: Option<&ConnectionId>,
     opening: Opening,
     skin: RowSkin<'_>,
@@ -1088,11 +1193,12 @@ fn mac_row(
         laid.paint_left(ui.painter(), tag.left() + 7.0, top);
         widgets::announce(ui, tag, &text);
     }
+    let files = file_row_text(connection, facts);
     let user = &connection.spec.user;
-    let second = if user.is_empty() {
-        connection.spec.driver.label().to_owned()
-    } else {
-        format!("{} · {user}", connection.spec.driver.label())
+    let second = match &files {
+        Some(files) => files.second.clone(),
+        None if user.is_empty() => connection.spec.driver.label().to_owned(),
+        None => format!("{} · {user}", connection.spec.driver.label()),
     };
     let small = TextRole::Secondary;
     widgets::paint_label(
@@ -1101,7 +1207,10 @@ fn mac_row(
         bottom,
         Text::one(look, small, &second, palette.dim),
     );
-    let (host, database) = target(connection);
+    let (host, database) = match &files {
+        Some(files) => files.middle.clone(),
+        None => target(connection),
+    };
     let host_role = TextRole::GridCell;
     let shown = crate::ui::grid::ellipsize(&host, host_width - 24.0, false, |text| {
         host_role.width(ui.ctx(), look.faces, text)
@@ -1124,28 +1233,47 @@ fn mac_row(
             Text::one(look, database_role, &shown, palette.dim),
         );
     }
-    let (tls, verified) = tls_label(connection);
-    let tls_color = match verified {
-        Some(true) => palette.success,
-        Some(false) => palette.warning,
-        None => palette.dim,
-    };
-    Icon::Lock.image(tls_color, 11.0).paint_at(
-        ui,
-        Rect::from_center_size(pos2(security_x + 5.5, top), vec2(11.0, 11.0)),
-    );
-    widgets::paint_label(
-        ui,
-        security_x + 16.0,
-        top,
-        Text::one(look, small, &tls, tls_color),
-    );
-    widgets::paint_label(
-        ui,
-        security_x,
-        bottom,
-        Text::one(look, small, &ssh_label(connection), palette.dim),
-    );
+    // A Files connection says whether it writes and what it joins where a
+    // server says its TLS and its tunnel.
+    if let Some((writes, joins)) = files.as_ref().and_then(|files| files.right) {
+        let writes = gettext(locale, writes);
+        widgets::paint_label(
+            ui,
+            security_x,
+            top,
+            Text::one(look, small, &writes, palette.secondary),
+        );
+        let joins = gettext(locale, joins);
+        widgets::paint_label(
+            ui,
+            security_x,
+            bottom,
+            Text::one(look, small, &joins, palette.dim),
+        );
+    } else {
+        let (tls, verified) = tls_label(connection);
+        let tls_color = match verified {
+            Some(true) => palette.success,
+            Some(false) => palette.warning,
+            None => palette.dim,
+        };
+        Icon::Lock.image(tls_color, 11.0).paint_at(
+            ui,
+            Rect::from_center_size(pos2(security_x + 5.5, top), vec2(11.0, 11.0)),
+        );
+        widgets::paint_label(
+            ui,
+            security_x + 16.0,
+            top,
+            Text::one(look, small, &tls, tls_color),
+        );
+        widgets::paint_label(
+            ui,
+            security_x,
+            bottom,
+            Text::one(look, small, &ssh_label(connection), palette.dim),
+        );
+    }
     // What agents may do: the word over the level, dimmed when Off.
     if let Some(access) = opening.agents.filter(|_| agents_width > 0.0) {
         let level = agents_level(access, locale);
@@ -1269,7 +1397,10 @@ fn mac_row(
 fn terminal_row(
     ui: &mut egui::Ui,
     connection: &SavedConnection,
-    store: &crate::connections::SavedConnections,
+    (store, facts): (
+        &crate::connections::SavedConnections,
+        Option<&crate::model::SourceFacts>,
+    ),
     selected: Option<&ConnectionId>,
     opening: Opening,
     skin: RowSkin<'_>,
@@ -1372,18 +1503,17 @@ fn terminal_row(
     };
     // "dev@localhost:5433/bookshop_development · tls verify-full · no ssh",
     // the separators kept with their neighbours as the design writes them.
-    widgets::paint_label(
-        ui,
-        text_x,
-        bottom,
-        Text::new(look)
+    // A Files connection's line is its own: what it opens, and how much.
+    let said = match terminal_files_line(connection, facts) {
+        Some(files) => Text::new(look).add(small, &files, palette.dim),
+        None => Text::new(look)
             .add(small, &format!("{line} ·"), palette.dim)
             .space(small, " ")
             .add(small, &tls, tls_color)
             .space(small, " ")
-            .add(small, &format!("· {ssh}"), palette.dim)
-            .add(small, &agents, agents_color),
-    );
+            .add(small, &format!("· {ssh}"), palette.dim),
+    };
+    widgets::paint_label(ui, text_x, bottom, said.add(small, &agents, agents_color));
     let when = crate::connections::when(store.last_used(&connection.id), now).to_lowercase();
     widgets::paint_text_right(
         ui,
@@ -1447,5 +1577,119 @@ mod tests {
             Action::ActivateConnTab(tab) if tab == open
         ));
         assert!(connects(opened.connect(&connection)));
+    }
+
+    fn saved(spec: tabletist_db::ConnectSpec) -> SavedConnection {
+        SavedConnection {
+            id: ConnectionId::new(),
+            name: "Bookshop exports".into(),
+            environment: crate::env::Environment::Local,
+            read_only: Some(true),
+            password: crate::connections::PasswordMode::None,
+            ssh_secret: crate::connections::PasswordMode::None,
+            spec,
+            agents: Default::default(),
+        }
+    }
+
+    fn scan(folder: &str, names: &[&str]) -> crate::model::SourceFacts {
+        use tabletist_db::files::{Format, Found, Scan};
+        crate::model::SourceFacts::Files(Scan {
+            files: names
+                .iter()
+                .map(|name| Found {
+                    path: format!("{folder}/{name}").into(),
+                    format: Format::of(std::path::Path::new(name)).unwrap(),
+                    size: 625_000_000,
+                    name: name.split('.').next().unwrap_or_default().to_owned(),
+                })
+                .collect(),
+            missing: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn a_files_rows_say_how_many_files_and_what_they_become() {
+        use tabletist_db::files::Source;
+        let folder = saved(tabletist_db::ConnectSpec::files(Source::Folder(
+            "/data/bookshop-exports".into(),
+        )));
+        let facts = scan(
+            "/data/bookshop-exports",
+            &[
+                "orders.csv",
+                "customers.parquet",
+                "events.ndjson",
+                "returns.csv",
+            ],
+        );
+        let text = file_row_text(&folder, Some(&facts)).unwrap();
+        assert_eq!(text.second, "Files · 4 files · 2.5 GB");
+        assert_eq!(
+            text.middle,
+            (
+                "/data/bookshop-exports".to_owned(),
+                "orders, customers, events, returns".to_owned()
+            )
+        );
+        assert_eq!(text.right, Some(("Read-only", "No joins")));
+        assert_eq!(
+            terminal_files_line(&folder, Some(&facts)).as_deref(),
+            Some("files · /data/bookshop-exports · 4 files · 2.5 gb")
+        );
+        // The path keeps its case in the terminal look's line.
+        let cased = saved(tabletist_db::ConnectSpec::files(Source::Folder(
+            "/srv/Data/Bookshop-Exports".into(),
+        )));
+        assert_eq!(
+            terminal_files_line(&cased, None).as_deref(),
+            Some("files · /srv/Data/Bookshop-Exports")
+        );
+        // Before the files are read: the type alone.
+        assert_eq!(file_row_text(&folder, None).unwrap().second, "Files");
+        // A list: its first files, then their folder.
+        let list = saved(tabletist_db::ConnectSpec::files(Source::Files(vec![
+            "/data/bookshop-exports/orders.csv".into(),
+            "/data/bookshop-exports/customers.parquet".into(),
+        ])));
+        let facts = scan(
+            "/data/bookshop-exports",
+            &["orders.csv", "customers.parquet"],
+        );
+        let text = file_row_text(&list, Some(&facts)).unwrap();
+        assert_eq!(text.second, "Files · 2 files · 1.2 GB");
+        assert_eq!(
+            text.middle,
+            (
+                "orders.csv, customers.parquet".to_owned(),
+                "/data/bookshop-exports".to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn a_sqlite_row_says_its_size_and_its_folder_over_its_file() {
+        let sqlite = saved(tabletist_db::ConnectSpec::sqlite(
+            "/code/bookshop/storage/development.sqlite3",
+        ));
+        let text = file_row_text(
+            &sqlite,
+            Some(&crate::model::SourceFacts::File { size: 12_400_000 }),
+        )
+        .unwrap();
+        assert_eq!(text.second, "SQLite · 12.4 MB");
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(
+            text.middle,
+            (
+                format!("/code/bookshop/storage{sep}"),
+                "development.sqlite3".to_owned()
+            )
+        );
+        assert_eq!(text.right, None);
+        assert_eq!(terminal_files_line(&sqlite, None), None);
+        // A server's row is its own.
+        let (server, _) = tabletist_db::ConnectSpec::from_url("postgres://me@db/app").unwrap();
+        assert_eq!(file_row_text(&saved(server), None), None);
     }
 }

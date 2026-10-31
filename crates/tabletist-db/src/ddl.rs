@@ -86,7 +86,8 @@ impl Ddl {
     pub fn source(&self) -> Source {
         match self.driver {
             Driver::Postgres => Source::Catalog,
-            Driver::MySql | Driver::Sqlite => Source::Stored,
+            // DuckDB keeps a view's statement as it was made.
+            Driver::MySql | Driver::Sqlite | Driver::Files => Source::Stored,
         }
     }
 
@@ -119,7 +120,7 @@ impl Ddl {
         }
         let sections = match self.driver {
             Driver::Postgres | Driver::MySql => true,
-            Driver::Sqlite => false,
+            Driver::Sqlite | Driver::Files => false,
         };
         let mut written = false;
         for part in &self.parts {

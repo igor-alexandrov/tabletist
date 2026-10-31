@@ -129,6 +129,18 @@ const KEYWORDS: &[&str] = &[
 const POSTGRES_KEYWORDS: &[&str] = &["ILIKE", "LATERAL", "RETURNING", "SIMILAR"];
 const MYSQL_KEYWORDS: &[&str] = &["DESCRIBE", "REGEXP", "STRAIGHT_JOIN"];
 const SQLITE_KEYWORDS: &[&str] = &["GLOB", "PRAGMA", "RETURNING"];
+const DUCKDB_KEYWORDS: &[&str] = &[
+    "DESCRIBE",
+    "EXCLUDE",
+    "ILIKE",
+    "LATERAL",
+    "PIVOT",
+    "QUALIFY",
+    "RETURNING",
+    "SIMILAR",
+    "SUMMARIZE",
+    "UNPIVOT",
+];
 
 /// The keywords `dialect` highlights, in upper case: the words the editor
 /// completes too. A keyword worth completing is worth colouring, so there
@@ -138,6 +150,7 @@ pub fn keywords(dialect: Dialect) -> impl Iterator<Item = &'static str> {
         Dialect::Postgres => POSTGRES_KEYWORDS,
         Dialect::MySql => MYSQL_KEYWORDS,
         Dialect::Sqlite => SQLITE_KEYWORDS,
+        Dialect::DuckDb => DUCKDB_KEYWORDS,
     };
     KEYWORDS.iter().chain(own).copied()
 }
@@ -149,12 +162,13 @@ pub fn is_keyword(dialect: Dialect, word: &str) -> bool {
 
 /// How a dialect reads text. A guard in the tokenizer asks one of these
 /// rather than naming a dialect, so every rule answers for every dialect.
+/// DuckDB's scanner is PostgreSQL's, and answers as it does.
 impl Dialect {
     /// A byte-order mark where a token starts reads as a space.
     fn bom_is_space(self) -> bool {
         match self {
             Self::Sqlite => true,
-            Self::Postgres | Self::MySql => false,
+            Self::Postgres | Self::MySql | Self::DuckDb => false,
         }
     }
 
@@ -162,7 +176,7 @@ impl Dialect {
     fn hash_comments(self) -> bool {
         match self {
             Self::MySql => true,
-            Self::Postgres | Self::Sqlite => false,
+            Self::Postgres | Self::Sqlite | Self::DuckDb => false,
         }
     }
 
@@ -170,14 +184,14 @@ impl Dialect {
     fn runs_comments(self) -> bool {
         match self {
             Self::MySql => true,
-            Self::Postgres | Self::Sqlite => false,
+            Self::Postgres | Self::Sqlite | Self::DuckDb => false,
         }
     }
 
     /// A block comment inside a block comment has an end of its own.
     fn nests_comments(self) -> bool {
         match self {
-            Self::Postgres => true,
+            Self::Postgres | Self::DuckDb => true,
             Self::MySql | Self::Sqlite => false,
         }
     }
@@ -186,14 +200,14 @@ impl Dialect {
     fn backslash_escapes(self) -> bool {
         match self {
             Self::MySql => true,
-            Self::Postgres | Self::Sqlite => false,
+            Self::Postgres | Self::Sqlite | Self::DuckDb => false,
         }
     }
 
     /// `E'...'` is a string with backslash escapes.
     fn escape_strings(self) -> bool {
         match self {
-            Self::Postgres => true,
+            Self::Postgres | Self::DuckDb => true,
             Self::MySql | Self::Sqlite => false,
         }
     }
@@ -202,7 +216,7 @@ impl Dialect {
     pub fn backtick_names(self) -> bool {
         match self {
             Self::MySql | Self::Sqlite => true,
-            Self::Postgres => false,
+            Self::Postgres | Self::DuckDb => false,
         }
     }
 
@@ -210,14 +224,14 @@ impl Dialect {
     fn bracket_names(self) -> bool {
         match self {
             Self::Sqlite => true,
-            Self::Postgres | Self::MySql => false,
+            Self::Postgres | Self::MySql | Self::DuckDb => false,
         }
     }
 
     /// `$tag$ ... $tag$` is a string and `$1` a parameter.
     fn dollar_quotes(self) -> bool {
         match self {
-            Self::Postgres => true,
+            Self::Postgres | Self::DuckDb => true,
             Self::MySql | Self::Sqlite => false,
         }
     }
@@ -225,7 +239,7 @@ impl Dialect {
     /// `$` can stand inside a word.
     fn dollar_in_words(self) -> bool {
         match self {
-            Self::Postgres | Self::MySql => true,
+            Self::Postgres | Self::MySql | Self::DuckDb => true,
             Self::Sqlite => false,
         }
     }
@@ -288,7 +302,7 @@ fn next(dialect: Dialect, text: &str, start: usize) -> (TokenKind, usize) {
         }
         b'"' => match dialect {
             Dialect::MySql => (TokenKind::String, quoted_end(bytes, start, b'"', true)),
-            Dialect::Postgres | Dialect::Sqlite => (
+            Dialect::Postgres | Dialect::Sqlite | Dialect::DuckDb => (
                 TokenKind::QuotedIdentifier,
                 quoted_end(bytes, start, b'"', false),
             ),
@@ -345,7 +359,7 @@ fn next(dialect: Dialect, text: &str, start: usize) -> (TokenKind, usize) {
 fn dash_comment(dialect: Dialect, after: Option<u8>) -> bool {
     match dialect {
         Dialect::MySql => after.is_none_or(|b| is_space(b) || b.is_ascii_control()),
-        Dialect::Postgres | Dialect::Sqlite => true,
+        Dialect::Postgres | Dialect::Sqlite | Dialect::DuckDb => true,
     }
 }
 
@@ -378,7 +392,7 @@ fn is_space(byte: u8) -> bool {
 /// it at a carriage return too; MySQL and SQLite only at a line feed.
 fn line_end(dialect: Dialect, bytes: &[u8], from: usize) -> usize {
     let cr_ends = match dialect {
-        Dialect::Postgres => true,
+        Dialect::Postgres | Dialect::DuckDb => true,
         Dialect::MySql | Dialect::Sqlite => false,
     };
     scan(bytes, from, |b| b != b'\n' && !(cr_ends && b == b'\r'))
@@ -690,7 +704,9 @@ pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
             .any(|token| token.kind == TokenKind::ExecutableComment)
             .then(|| "a /*! */ comment".to_owned()),
         // A U&"..." name can spell any name in escapes, set_config included.
-        Dialect::Postgres => unicode_name(statement, &tokens).then(|| "a U& name".to_owned()),
+        Dialect::Postgres | Dialect::DuckDb => {
+            unicode_name(statement, &tokens).then(|| "a U& name".to_owned())
+        }
         Dialect::Sqlite => refused_pragma(statement, &tokens).map(|name| format!("PRAGMA {name}")),
     };
     if hidden.is_some() {
@@ -708,9 +724,30 @@ pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
                 words.drain(1..3);
             }
         }
-        Dialect::Postgres | Dialect::Sqlite => {}
+        Dialect::Postgres | Dialect::Sqlite | Dialect::DuckDb => {}
     }
     let word = |index: usize| words.get(index).map(String::as_str).unwrap_or_default();
+    match dialect {
+        // What outlives the rollback in DuckDB, or reaches past the
+        // connection's files: a setting or a pragma (the fence locks the
+        // database's, not the session's), the default catalog, a
+        // database attached or detached, an extension, a file written.
+        // An `EXPLAIN ANALYZE` runs the statement it explains: one that
+        // names any of them anywhere is refused as that one, whatever the
+        // options between.
+        Dialect::DuckDb => {
+            let refused = |word: &str| DUCKDB_REFUSED.iter().find(|refused| **refused == word);
+            if let Some(first) = refused(word(0)) {
+                return Some((*first).to_owned());
+            }
+            if word(0) == "EXPLAIN"
+                && let Some(named) = words.iter().skip(1).find_map(|word| refused(word))
+            {
+                return Some(format!("EXPLAIN {named}"));
+            }
+        }
+        Dialect::Postgres | Dialect::MySql | Dialect::Sqlite => {}
+    }
     let guarded_name = || words.iter().skip(1).find(|name| is_guarded_setting(name));
     match word(0) {
         first @ ("BEGIN" | "START" | "COMMIT" | "END" | "ROLLBACK" | "ABORT" | "SAVEPOINT"
@@ -721,7 +758,9 @@ pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
             Dialect::Postgres if first == "PREPARE" && word(1) == "TRANSACTION" => {
                 return Some("PREPARE TRANSACTION".into());
             }
-            Dialect::Postgres | Dialect::MySql => return Some(first.to_owned()),
+            Dialect::Postgres | Dialect::MySql | Dialect::DuckDb => {
+                return Some(first.to_owned());
+            }
             Dialect::Sqlite => {}
         },
         "SET" => {
@@ -736,6 +775,8 @@ pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
                     second => format!("RESET {second}"),
                 });
             }
+            // Refused above, whatever it resets.
+            Dialect::DuckDb => return Some("RESET".into()),
             Dialect::Postgres | Dialect::Sqlite => {
                 if word(1) == "ALL" {
                     return Some("RESET ALL".into());
@@ -747,7 +788,7 @@ pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
         },
         "DISCARD" if word(1) == "ALL" => return Some("DISCARD ALL".into()),
         "COPY" => match dialect {
-            Dialect::Postgres => return Some("COPY".into()),
+            Dialect::Postgres | Dialect::DuckDb => return Some("COPY".into()),
             Dialect::MySql | Dialect::Sqlite => {}
         },
         _ => {}
@@ -760,7 +801,7 @@ pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
                 .any(|word| word == "SET_CONFIG")
                 .then(|| "set_config".to_owned());
         }
-        Dialect::Sqlite => return None,
+        Dialect::Sqlite | Dialect::DuckDb => return None,
         // The rest is MySQL's.
         Dialect::MySql => {}
     }
@@ -828,6 +869,26 @@ fn is_guarded_setting(name: &str) -> bool {
 /// table to writes; SQLite ignores it in defensive mode, which every
 /// session is opened in, so refusing it is belt and braces.
 const GUARDED_PRAGMAS: [&str; 2] = ["QUERY_ONLY", "WRITABLE_SCHEMA"];
+
+/// The statements a DuckDB script may not run, by their first word (see
+/// `refusal`). `FORCE` is `FORCE INSTALL`.
+const DUCKDB_REFUSED: [&str; 15] = [
+    "SET",
+    "RESET",
+    "PRAGMA",
+    "USE",
+    "ATTACH",
+    "DETACH",
+    "INSTALL",
+    "FORCE",
+    "LOAD",
+    "UPDATE_EXTENSIONS",
+    "COPY",
+    "EXPORT",
+    "IMPORT",
+    "CHECKPOINT",
+    "VACUUM",
+];
 
 /// The SQLite pragmas a script may not name in any form, since the bare
 /// form acts too. `wal_checkpoint` rewrites a file in WAL mode, and neither
@@ -920,7 +981,7 @@ fn set_refusal(
                 return Some("SET STATEMENT".into());
             }
         }
-        Dialect::Postgres | Dialect::Sqlite => {}
+        Dialect::Postgres | Dialect::Sqlite | Dialect::DuckDb => {}
     }
     let has = |wanted: &str| words.iter().skip(1).any(|word| word == wanted);
     if has("CHARACTERISTICS") {
@@ -958,6 +1019,8 @@ fn set_refusal(
             .skip(1)
             .find(|word| matches!(word.as_str(), "GLOBAL" | "PERSIST" | "PERSIST_ONLY"))
             .map(|scope| format!("SET {scope}")),
+        // Every DuckDB SET is refused before this is asked.
+        Dialect::DuckDb => Some("SET".into()),
         Dialect::Postgres | Dialect::Sqlite => None,
     }
 }
@@ -1099,6 +1162,14 @@ pub fn kind(dialect: Dialect, statement: &str) -> StatementKind {
             READS.contains(&word)
                 || match dialect {
                     Dialect::Sqlite => word == "PRAGMA",
+                    // DuckDB reads a table from its FROM alone, and says
+                    // what one holds by DESCRIBE and SUMMARIZE.
+                    Dialect::DuckDb => {
+                        matches!(
+                            word,
+                            "FROM" | "DESCRIBE" | "SUMMARIZE" | "PIVOT" | "UNPIVOT"
+                        )
+                    }
                     Dialect::Postgres | Dialect::MySql => false,
                 }
         }
@@ -1261,7 +1332,7 @@ fn unbounded_at(dialect: Dialect, statement: &str, tokens: &[Token]) -> Option<(
 fn joins_target(dialect: Dialect, verb: &Word, words: &[&Word]) -> bool {
     match dialect {
         Dialect::MySql => {}
-        Dialect::Postgres | Dialect::Sqlite => return false,
+        Dialect::Postgres | Dialect::Sqlite | Dialect::DuckDb => return false,
     }
     words.iter().enumerate().any(|(at, word)| {
         if word.text != "ON" {
@@ -1355,7 +1426,7 @@ fn code_of(tokens: &[Token]) -> Vec<&Token> {
 /// the dialect has the statement.
 fn truncate_at(dialect: Dialect, statement: &str, tokens: &[Token]) -> Option<usize> {
     let truncates = match dialect {
-        Dialect::Postgres | Dialect::MySql => true,
+        Dialect::Postgres | Dialect::MySql | Dialect::DuckDb => true,
         Dialect::Sqlite => false,
     };
     let (at, first) = tokens
@@ -3141,5 +3212,85 @@ mod tests {
                 let _ = every_row(dialect, text);
             }
         }
+    }
+
+    #[test]
+    fn duckdb_refuses_what_outlives_the_rollback_or_reaches_past_the_files() {
+        for (statement, what) in [
+            ("SET threads = 1", "SET"),
+            ("RESET search_path", "RESET"),
+            ("PRAGMA enable_profiling", "PRAGMA"),
+            ("USE bookshop", "USE"),
+            ("ATTACH 'x.duckdb' AS x", "ATTACH"),
+            ("DETACH bookshop", "DETACH"),
+            ("INSTALL excel", "INSTALL"),
+            ("FORCE INSTALL excel", "FORCE"),
+            ("LOAD excel", "LOAD"),
+            ("COPY orders TO 'orders.csv'", "COPY"),
+            ("EXPORT DATABASE 'out'", "EXPORT"),
+            ("CHECKPOINT", "CHECKPOINT"),
+            ("PREPARE q AS SELECT 1", "PREPARE"),
+            ("BEGIN", "BEGIN"),
+            // What an EXPLAIN ANALYZE runs.
+            (
+                "EXPLAIN ANALYZE COPY (SELECT 1) TO 'orders.csv' (USE_TMP_FILE false)",
+                "EXPLAIN COPY",
+            ),
+            (
+                "EXPLAIN (ANALYZE, FORMAT json) COPY orders TO 'x.csv'",
+                "EXPLAIN COPY",
+            ),
+            ("explain analyze export database 'out'", "EXPLAIN EXPORT"),
+        ] {
+            assert_eq!(
+                refusal(Dialect::DuckDb, statement).as_deref(),
+                Some(what),
+                "{statement}"
+            );
+        }
+        for statement in [
+            "SELECT 'SET' AS word FROM orders",
+            "FROM orders SELECT count(*)",
+            "DESCRIBE orders",
+            "SUMMARIZE orders",
+            "WITH o AS (SELECT 1) SELECT * FROM o",
+            "EXPLAIN ANALYZE SELECT count(*) FROM orders",
+        ] {
+            assert_eq!(refusal(Dialect::DuckDb, statement), None, "{statement}");
+        }
+    }
+
+    #[test]
+    fn duckdb_reads_a_from_first_query_and_its_descriptions_as_reads() {
+        for statement in [
+            "FROM orders",
+            "FROM orders SELECT id",
+            "DESCRIBE orders",
+            "SUMMARIZE orders",
+            "SELECT * FROM orders",
+        ] {
+            assert_eq!(
+                kind(Dialect::DuckDb, statement),
+                StatementKind::Read,
+                "{statement}"
+            );
+        }
+        for statement in ["INSERT INTO t VALUES (1)", "CREATE TABLE t (a INT)"] {
+            assert_eq!(
+                kind(Dialect::DuckDb, statement),
+                StatementKind::Write,
+                "{statement}"
+            );
+        }
+        // Its strings, names and comments read as PostgreSQL's.
+        let tokens = tokenize(
+            Dialect::DuckDb,
+            "SELECT $$a;b$$, E'c\\';', \"d;\" /* /* e; */ */",
+        );
+        assert!(
+            !tokens
+                .iter()
+                .any(|token| token.kind == TokenKind::Semicolon)
+        );
     }
 }

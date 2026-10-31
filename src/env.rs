@@ -44,7 +44,7 @@ impl Environment {
     /// [`Environment::for_spec`] from the parts the dialog holds.
     pub fn for_target(driver: Driver, host: &str, tunnelled: bool) -> Self {
         let local = match driver {
-            Driver::Sqlite => true,
+            Driver::Sqlite | Driver::Files => true,
             Driver::Postgres | Driver::MySql => !tunnelled && crate::model::is_local_host(host),
         };
         if local { Self::Local } else { Self::None }

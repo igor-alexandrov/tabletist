@@ -546,7 +546,8 @@ const SQLITE: &[&str] = &[
 /// editor highlights as a keyword there.
 pub fn is_reserved(dialect: Dialect, name: &str) -> bool {
     let words = match dialect {
-        Dialect::Postgres => POSTGRES,
+        // DuckDB's parser is PostgreSQL's, and reserves its words.
+        Dialect::Postgres | Dialect::DuckDb => POSTGRES,
         Dialect::MySql => MYSQL,
         Dialect::Sqlite => SQLITE,
     };

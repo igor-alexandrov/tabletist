@@ -90,6 +90,16 @@ pub fn kind(dialect: Dialect, type_name: &str) -> Option<Kind> {
             "time" => Some(Kind::Time { offset: false }),
             _ => None,
         },
+        // DuckDB's names, `TIMESTAMP_MS` and the other units among them.
+        Dialect::DuckDb => match name.as_str() {
+            "date" => Some(Kind::Date),
+            "timestamp" | "datetime" | "timestamp_us" | "timestamp_ms" | "timestamp_s"
+            | "timestamp_ns" => Some(Kind::Timestamp),
+            "timestamptz" | "timestamp with time zone" => Some(Kind::Zoned),
+            "time" => Some(Kind::Time { offset: false }),
+            "timetz" | "time with time zone" => Some(Kind::Time { offset: true }),
+            _ => None,
+        },
         // SQLite has no such types: the declared name says what the
         // column is meant to keep.
         Dialect::Sqlite => {
@@ -122,7 +132,8 @@ fn kept_digits(dialect: Dialect, type_name: &str) -> u8 {
     let stated = stated_digits(type_name);
     match (dialect, stated) {
         (Dialect::Postgres | Dialect::MySql, Some(digits)) => digits.min(6),
-        (Dialect::Postgres, None) => 6,
+        (Dialect::Postgres | Dialect::DuckDb, None) => 6,
+        (Dialect::DuckDb, Some(digits)) => digits.min(6),
         (Dialect::MySql, None) => 0,
         (Dialect::Sqlite, _) => 9,
     }
@@ -264,7 +275,7 @@ impl Column {
         let kind = kind(dialect, type_name)?;
         let stored = match dialect {
             Dialect::Sqlite => Stored::of(values),
-            Dialect::Postgres | Dialect::MySql => Stored::Fresh,
+            Dialect::Postgres | Dialect::MySql | Dialect::DuckDb => Stored::Fresh,
         };
         // A number such as `20260115` is a day's, and no time's.
         let stored = match (stored, kind) {
@@ -554,11 +565,12 @@ fn written_time(time: Time, digits: u8) -> String {
 }
 
 /// Whether the engine writes a year before 1 AD with its era (`0044 BC`):
-/// PostgreSQL alone. SQLite's year 0 is `0000`, and MySQL holds none.
+/// PostgreSQL alone. SQLite's year 0 is `0000`, MySQL holds none, and
+/// DuckDB writes its own `(BC)`, which a typed value never needs.
 fn eras(dialect: Dialect) -> bool {
     match dialect {
         Dialect::Postgres => true,
-        Dialect::MySql | Dialect::Sqlite => false,
+        Dialect::MySql | Dialect::Sqlite | Dialect::DuckDb => false,
     }
 }
 
@@ -638,10 +650,12 @@ fn reading(typed: &str, column: &Column, clock: &Clock) -> Result<Reading, Refus
 /// The words a value that is no day is typed as, and SQLite's seconds.
 fn special(text: &str, column: &Column) -> Result<Option<Moment>, Refusal> {
     match column.dialect {
-        Dialect::Postgres if column.kind.has_time() && !column.kind.has_date() => {
+        Dialect::Postgres | Dialect::DuckDb
+            if column.kind.has_time() && !column.kind.has_date() =>
+        {
             Ok(end_of_day(text, column))
         }
-        Dialect::Postgres => Ok(match text {
+        Dialect::Postgres | Dialect::DuckDb => Ok(match text {
             "infinity" | "+infinity" => Some(Moment::Infinity),
             "-infinity" => Some(Moment::MinusInfinity),
             _ => None,
@@ -1305,7 +1319,9 @@ fn within(column: &Column, at: DateTime, instant: Option<Timestamp>) -> Result<(
             (instant < first || instant > last).then_some(Range::MySqlTimestamp)
         }
         // SQLite's dates run from 0000 to 9999, and the years read do.
-        (Dialect::Sqlite, _) | (Dialect::Postgres | Dialect::MySql, Kind::Time { .. }) => None,
+        // DuckDB's run millions of years either way.
+        (Dialect::Sqlite | Dialect::DuckDb, _)
+        | (Dialect::Postgres | Dialect::MySql, Kind::Time { .. }) => None,
     };
     refused.map_or(Ok(()), |range| Err(Refusal::Range(range)))
 }
@@ -1369,8 +1385,9 @@ fn resolve(parts: Parts, column: &Column, clock: &Clock) -> Result<Reading, Refu
             if parts.offset.is_some() && !keeps {
                 return Err(Refusal::NoZone);
             }
+            // DuckDB keeps PostgreSQL's limit on an offset too.
             let postgres = match column.dialect {
-                Dialect::Postgres => true,
+                Dialect::Postgres | Dialect::DuckDb => true,
                 Dialect::MySql | Dialect::Sqlite => false,
             };
             if let Some(offset) = parts.offset
@@ -1387,11 +1404,11 @@ fn resolve(parts: Parts, column: &Column, clock: &Clock) -> Result<Reading, Refu
                 // MySQL keeps as a span of a day.
                 reading.moment = match column.dialect {
                     Dialect::MySql => Moment::Span("24:00:00".to_owned()),
-                    Dialect::Postgres | Dialect::Sqlite => Moment::EndOfDay,
+                    Dialect::Postgres | Dialect::Sqlite | Dialect::DuckDb => Moment::EndOfDay,
                 };
                 reading.literal = match column.dialect {
                     Dialect::MySql => "24:00:00".to_owned(),
-                    Dialect::Postgres | Dialect::Sqlite => day_end(column.stored),
+                    Dialect::Postgres | Dialect::Sqlite | Dialect::DuckDb => day_end(column.stored),
                 };
             } else {
                 let time = at.time();
@@ -1420,7 +1437,7 @@ fn resolve(parts: Parts, column: &Column, clock: &Clock) -> Result<Reading, Refu
             // SQLite keeps the text it is given, an offset too.
             let keeps_any = match column.dialect {
                 Dialect::Sqlite => true,
-                Dialect::Postgres | Dialect::MySql => false,
+                Dialect::Postgres | Dialect::MySql | Dialect::DuckDb => false,
             };
             if parts.offset.is_some() && !keeps_any {
                 return Err(Refusal::NoZone);
@@ -1598,7 +1615,7 @@ fn zoned(
     // A MySQL literal has no offset to choose one of the two moments by:
     // the server takes the one it takes, and nothing is offered.
     reading.fold = match column.dialect {
-        Dialect::Postgres | Dialect::Sqlite => fold(zone, at),
+        Dialect::Postgres | Dialect::Sqlite | Dialect::DuckDb => fold(zone, at),
         Dialect::MySql => None,
     };
     let (day, bc) = written_date(at.date(), column.dialect);
@@ -1607,7 +1624,7 @@ fn zoned(
         // The server reads a MySQL value in the session's zone, which is
         // this one: it is sent as that zone's clock writes it.
         Dialect::MySql => format!("{day} {time}"),
-        Dialect::Postgres | Dialect::Sqlite => {
+        Dialect::Postgres | Dialect::Sqlite | Dialect::DuckDb => {
             era((format!("{day} {time}{}", written_offset(offset)), bc))
         }
     };
@@ -1789,7 +1806,7 @@ fn folded(at: DateTime, offset: Option<Offset>, column: &Column) -> Option<Offse
     let offset = offset?;
     let two = column.zone.as_ref().and_then(|zone| fold(zone, at))?;
     let sent = match column.dialect {
-        Dialect::Postgres | Dialect::Sqlite => true,
+        Dialect::Postgres | Dialect::Sqlite | Dialect::DuckDb => true,
         Dialect::MySql => false,
     };
     (sent && (two.earlier.0 == offset || two.later.0 == offset)).then_some(offset)

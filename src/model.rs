@@ -1,8 +1,10 @@
 //! Application state types and the actions that change them.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tabletist_db::files::Source;
 use tabletist_db::ssh_config::{AgentSocket, ConfigHost, Proxy};
 use tabletist_db::{ConnectSpec, Driver, Filter, FilterOp, SshAuth, SshSpec, TlsMode};
 
@@ -102,6 +104,19 @@ pub enum Action {
     PickKeyFile,
     /// Open the native file dialog for the CA certificate.
     PickCaFile,
+    /// Open the native folder dialog for a Files connection's folder.
+    PickFolder,
+    /// Open the native file dialog to add files to a Files connection's
+    /// list, several at once.
+    PickDataFiles,
+    /// Take the file at this place off a Files connection's list. The
+    /// file itself stays where it is.
+    RemoveFile(usize),
+    /// Read a Files connection's folder or files from a list instead.
+    SetFilesKind(FilesKind),
+    /// Read what a Files connection's Source holds again, for the found
+    /// line: after its folder is typed.
+    ReadSource,
     /// Put this ~/.ssh/config Host alias in the SSH host field.
     PickSshHost(String),
     /// Ask an open window of the saved connection for the columns of these
@@ -1990,6 +2005,25 @@ pub struct ConnectionForm {
     pub ssh_hosts: Vec<ConfigHost>,
     /// The request whose answer fills `ssh_hosts`.
     pub ssh_hosts_request: Option<RequestId>,
+    /// Files: whether the Source is a folder or a list of files.
+    pub files_kind: FilesKind,
+    /// Files: the folder, as chosen or typed (`~` for the home folder).
+    pub files_folder: String,
+    /// Files: the list's files, in order, as they are shown.
+    pub files_list: Vec<String>,
+    /// Files: the row of the list the keyboard is on, by its place.
+    pub files_cursor: Option<usize>,
+    /// Files: what the Source holds, as the backend last read it, for the
+    /// found line and the list's rows.
+    pub files_found: FilesFound,
+    /// Files: what the last Test that passed read.
+    pub files_tested: Option<tabletist_db::FilesRead>,
+    /// Saving a used connection under another type was asked once: the
+    /// next Save changes it.
+    pub retype_asked: bool,
+    /// The person chose what agents may do: a type's default no longer
+    /// moves it.
+    pub agents_chosen: bool,
     /// What a running Test connects to, fixed when it started.
     pub test_spec: Option<ConnectSpec>,
     /// The secrets a running Test uses, filled as saved ones load.
@@ -2005,6 +2039,43 @@ pub enum PickTarget {
     Sqlite,
     KeyFile,
     CaFile,
+    /// A Files connection's folder.
+    Folder,
+    /// Files added to a Files connection's list.
+    Files,
+}
+
+/// Where a Files connection's files come from, as the Source choice says
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FilesKind {
+    #[default]
+    Folder,
+    Files,
+}
+
+impl FilesKind {
+    pub const ALL: [Self; 2] = [Self::Folder, Self::Files];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Folder => "Folder",
+            Self::Files => "Files",
+        }
+    }
+}
+
+/// What the backend last read of a Files connection's Source.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum FilesFound {
+    /// Nothing chosen yet, or not read since the Source changed.
+    #[default]
+    Unread,
+    /// Asked for, by this request.
+    Reading(RequestId),
+    Read(tabletist_db::files::Scan),
+    /// Why the Source cannot be read: the folder is gone, say.
+    Failed(String),
 }
 
 /// How the SSH tunnel logs in, as the dialog offers it.
@@ -2100,11 +2171,27 @@ impl Default for ConnectionForm {
             saved_ssh_auth: None,
             ssh_hosts: Vec::new(),
             ssh_hosts_request: None,
+            files_kind: FilesKind::Folder,
+            files_folder: String::new(),
+            files_list: Vec::new(),
+            files_cursor: None,
+            files_found: FilesFound::Unread,
+            files_tested: None,
+            retype_asked: false,
+            agents_chosen: false,
             test_spec: None,
             test_secrets: tabletist_db::Secrets::default(),
             test_waiting: 0,
         }
     }
+}
+
+/// What a connection's files are on disk, for the connections list: a
+/// Files connection's files, or a SQLite file's size.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceFacts {
+    Files(tabletist_db::files::Scan),
+    File { size: u64 },
 }
 
 impl ConnectionForm {
@@ -2122,6 +2209,18 @@ impl ConnectionForm {
         }
         self.pick_request = None;
         self.ssh_hosts_request = None;
+    }
+
+    /// Drops the Test, whether done or running, and what it read: neither
+    /// speaks for a Source it never read.
+    pub fn forget_test(&mut self) {
+        self.test = TestState::Idle;
+        self.test_started = None;
+        self.test_took = None;
+        self.test_spec = None;
+        self.test_secrets = tabletist_db::Secrets::default();
+        self.test_waiting = 0;
+        self.files_tested = None;
     }
 
     /// The config's Host whose alias is the typed SSH host, compared as
@@ -2185,7 +2284,7 @@ impl ConnectionForm {
     /// `require` with a CA file does, like libpq).
     pub fn password_can_be_intercepted(&self) -> bool {
         let unchecked = match self.driver {
-            Driver::Sqlite => false,
+            Driver::Sqlite | Driver::Files => false,
             Driver::Postgres => match self.tls {
                 TlsMode::Disable | TlsMode::Prefer => true,
                 TlsMode::Require => self.ca_file.trim().is_empty(),
@@ -2211,6 +2310,11 @@ impl ConnectionForm {
     /// environment's default, which for production is
     /// [`Self::production_read_only`].
     pub fn read_only(&self) -> bool {
+        // Editing files is not built: a Files connection opens read-only.
+        match self.driver {
+            Driver::Files => return true,
+            Driver::Postgres | Driver::MySql | Driver::Sqlite => {}
+        }
         self.read_only.unwrap_or_else(|| {
             // Production is the one environment read-only by default.
             self.environment().read_only_by_default() && self.production_read_only
@@ -2222,6 +2326,11 @@ impl ConnectionForm {
     /// settings said when it was made; else not set, and the environment's
     /// rule applies.
     fn saved_read_only(&self) -> Option<bool> {
+        // A Files connection is saved read-only, as its box shows.
+        match self.driver {
+            Driver::Files => return Some(true),
+            Driver::Postgres | Driver::MySql | Driver::Sqlite => {}
+        }
         let new_production = self.editing.is_none() && self.environment().read_only_by_default();
         self.read_only
             .or_else(|| new_production.then(|| self.read_only()))
@@ -2319,8 +2428,79 @@ impl ConnectionForm {
                 SshAuth::KeyFile { .. } => SshAuthKind::KeyFile,
                 SshAuth::Agent => SshAuthKind::Agent,
             }),
+            files_kind: match &spec.files {
+                Some(Source::Files(_)) => FilesKind::Files,
+                Some(Source::Folder(_)) | None => FilesKind::Folder,
+            },
+            files_folder: match &spec.files {
+                Some(Source::Folder(folder)) => tabletist_db::files::shown(folder),
+                Some(Source::Files(_)) | None => String::new(),
+            },
+            files_list: match &spec.files {
+                Some(Source::Files(files)) => files
+                    .iter()
+                    .map(|file| tabletist_db::files::shown(file))
+                    .collect(),
+                Some(Source::Folder(_)) | None => Vec::new(),
+            },
+            // A saved connection's agents are what the file says.
+            agents_chosen: true,
             ..Self::default()
         }
+    }
+
+    /// What a Files connection's Source names, as the backend reads it:
+    /// `None` until a folder or a file is chosen.
+    pub fn files_source(&self) -> Option<Source> {
+        match self.files_kind {
+            FilesKind::Folder => {
+                let folder = self.files_folder.trim();
+                (!folder.is_empty())
+                    .then(|| Source::Folder(tabletist_db::files::expanded(Path::new(folder))))
+            }
+            FilesKind::Files => (!self.files_list.is_empty()).then(|| {
+                Source::Files(
+                    self.files_list
+                        .iter()
+                        .map(|file| tabletist_db::files::expanded(Path::new(file.trim())))
+                        .collect(),
+                )
+            }),
+        }
+    }
+
+    /// Agents' access as a new connection starts it, until the person
+    /// chooses one: Read on a Files connection that is not production's,
+    /// Off everywhere else.
+    pub fn follow_agents_default(&mut self) {
+        if self.agents_chosen || self.editing.is_some() {
+            return;
+        }
+        let read = match self.driver {
+            Driver::Files => self.environment() != crate::env::Environment::Production,
+            Driver::Postgres | Driver::MySql | Driver::Sqlite => false,
+        };
+        self.agents.access = match read {
+            true => crate::connections::AgentAccess::Read,
+            false => crate::connections::AgentAccess::Off,
+        };
+    }
+
+    /// The type the connection was saved with, where the form now has
+    /// another that drops what it kept: a server's settings for a file's,
+    /// a file for a server or a folder. PostgreSQL and MySQL keep each
+    /// other's host, port and user.
+    pub fn retyped_from(&self) -> Option<Driver> {
+        let saved = self.saved_spec.as_ref()?.driver;
+        let drops = match (saved, self.driver) {
+            (Driver::Postgres | Driver::MySql, Driver::Postgres | Driver::MySql)
+            | (Driver::Sqlite, Driver::Sqlite)
+            | (Driver::Files, Driver::Files) => false,
+            (Driver::Postgres | Driver::MySql, Driver::Sqlite | Driver::Files)
+            | (Driver::Sqlite, Driver::Postgres | Driver::MySql | Driver::Files)
+            | (Driver::Files, Driver::Postgres | Driver::MySql | Driver::Sqlite) => true,
+        };
+        drops.then_some(saved)
     }
 
     /// What to connect to, or why the fields do not describe a connection.
@@ -2333,6 +2513,13 @@ impl ConnectionForm {
                 }
                 Ok(ConnectSpec::sqlite(path))
             }
+            Driver::Files => match self.files_source() {
+                Some(source) => Ok(ConnectSpec::files(source)),
+                None => Err(match self.files_kind {
+                    FilesKind::Folder => "Choose a folder.".into(),
+                    FilesKind::Files => "Add a file.".into(),
+                }),
+            },
             Driver::Postgres | Driver::MySql => {
                 let host = self.host.trim();
                 if host.is_empty() {
@@ -2392,6 +2579,7 @@ impl ConnectionForm {
                     tls: self.tls,
                     ca_file: (!ca_file.is_empty()).then(|| ca_file.into()),
                     ssh,
+                    files: None,
                 })
             }
         }
@@ -2474,7 +2662,7 @@ impl ConnectionForm {
         }
         let spec = self.to_spec()?;
         let password = match spec.driver {
-            Driver::Sqlite => PasswordMode::None,
+            Driver::Sqlite | Driver::Files => PasswordMode::None,
             // Nothing typed and nothing saved (or the saved one forgotten):
             // a server that needs no password (trust or peer
             // authentication).
@@ -2626,8 +2814,17 @@ impl ConnectionForm {
             access: self.agents.access,
             rows,
             timeout_secs,
-            tables: self.agents_tables.tables(),
-            masked: self.agents_masked.clone(),
+            // A Files connection keeps no hidden tables and no masked
+            // columns: a connection made another type loses its own,
+            // which nothing there could take off again.
+            tables: match self.driver {
+                Driver::Files => tabletist_db::agent::Tables::All,
+                Driver::Postgres | Driver::MySql | Driver::Sqlite => self.agents_tables.tables(),
+            },
+            masked: match self.driver {
+                Driver::Files => Vec::new(),
+                Driver::Postgres | Driver::MySql | Driver::Sqlite => self.agents_masked.clone(),
+            },
         })
     }
 }
@@ -3536,7 +3733,8 @@ pub fn is_system_schema(driver: Driver, name: &str) -> bool {
             name,
             "mysql" | "sys" | "performance_schema" | "information_schema"
         ),
-        Driver::Sqlite => false,
+        // A `.duckdb` file's schema is the person's.
+        Driver::Sqlite | Driver::Files => false,
     }
 }
 
@@ -5860,7 +6058,7 @@ impl Workspace {
         let name = match self.driver {
             Driver::Postgres => "public",
             Driver::MySql => self.spec.database.as_str(),
-            Driver::Sqlite => "main",
+            Driver::Sqlite | Driver::Files => "main",
         };
         let schemas = self.tree.schemas.value.as_ref()?;
         let found = schemas.iter().find(|schema| *schema == name);

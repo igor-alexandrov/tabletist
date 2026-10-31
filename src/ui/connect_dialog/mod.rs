@@ -5,6 +5,7 @@
 
 mod agents;
 mod choice;
+mod files;
 mod sheet;
 mod terminal;
 
@@ -19,7 +20,7 @@ use crate::connections::PasswordMode;
 use crate::env::{EnvColors, Environment, Platform, env_colors};
 use crate::i18n::{Locale, gettext};
 use crate::keymap::{Command, Scope};
-use crate::model::{Action, ConnectionForm, Dialog, SshAuthKind, SshHints, TestState};
+use crate::model::{Action, ConnectionForm, Dialog, FilesKind, SshAuthKind, SshHints, TestState};
 use crate::theme::{self, Icon, Look, Palette, Typeface};
 use crate::typography::{Text, TextRole};
 use crate::ui::menu;
@@ -36,6 +37,37 @@ const TLS_MODES: [(TlsMode, &str); 5] = [
     (TlsMode::VerifyCa, "verify-ca"),
     (TlsMode::VerifyFull, "verify-full"),
 ];
+
+/// What the Type row says beside its choices: what a choice changes, and
+/// what the file types are.
+fn type_hint(driver: Driver) -> &'static str {
+    match driver {
+        Driver::Sqlite => "One database file on this computer",
+        Driver::Files => "Opens CSV, Parquet, JSON, Excel and .duckdb files as tables",
+        Driver::Postgres | Driver::MySql => "Changes the fields below",
+    }
+}
+
+/// Whether the form is a Files connection's: no URL, a Source, keys of
+/// its own.
+fn is_files(form: &ConnectionForm) -> bool {
+    match form.driver {
+        Driver::Files => true,
+        Driver::Postgres | Driver::MySql | Driver::Sqlite => false,
+    }
+}
+
+/// Whether the read-only box is on and cannot be turned off: a Files
+/// connection's, until editing files is built.
+fn read_only_fixed(form: &ConnectionForm) -> bool {
+    is_files(form)
+}
+
+/// What a Files connection's read-only box says.
+const FILES_READ_ONLY_NOTE: &str = "Files open read-only.";
+
+/// Why a Files connection's URL tab is off, as its tooltip says it.
+const NO_URL: &str = "Files connections have no URL. Choose a folder or files under Source.";
 
 const INTERCEPT_WARNING: &str = "The password can be intercepted on the network. \
                                  To prevent it, verify the certificate and host, \
@@ -68,7 +100,7 @@ struct Placement {
 /// without a tunnel or a message, rounded up. The sheet's is the macOS
 /// look's, the taller of its two.
 fn reserve(look: &Look) -> f32 {
-    if look.terminal { 615.0 } else { 815.0 }
+    if look.terminal { 615.0 } else { 885.0 }
 }
 
 /// Where the top edge of a dialog `height` tall goes on a screen
@@ -312,6 +344,13 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             if on(input, Command::FormTest).fresh && !testing {
                 actions.push(Action::TestConnection);
             }
+            // A Files connection's file chooser.
+            if is_files(form) && on(input, Command::FormPick).fresh {
+                actions.push(match form.files_kind {
+                    FilesKind::Folder => Action::PickFolder,
+                    FilesKind::Files => Action::PickDataFiles,
+                });
+            }
         });
     }
     let skin = Skin::new(&look, &palette, locale, form.environment());
@@ -403,7 +442,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             // one, when it is not a letter being typed.
             let mut toggled = false;
             if !typing {
-                let form = crate::keymap::When::ConnectionForm;
+                let when = crate::keymap::When::ConnectionForm;
                 input.events.retain(|event| {
                     let egui::Event::Key {
                         key,
@@ -418,12 +457,42 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         .filter(|_| !(modifiers.command || modifiers.ctrl || modifiers.alt));
                     let command = letter.and_then(|letter| {
                         let typed = letter.to_string();
-                        crate::ui::keys::prompt_letter(&keymap, layout, form, &typed)
+                        crate::ui::keys::prompt_letter(&keymap, layout, when, &typed)
                     });
-                    let pastes = command == Some(Command::FormPasteUrl);
-                    toggled |= pastes;
-                    !pastes
+                    // A Files connection has no URL; its list has letters
+                    // of its own.
+                    let files = is_files(form);
+                    let listed = files && form.files_kind == FilesKind::Files;
+                    match command {
+                        Some(Command::FormPasteUrl) if !files => {
+                            toggled = true;
+                            false
+                        }
+                        Some(Command::FormAddFiles) if listed => {
+                            actions.push(Action::PickDataFiles);
+                            false
+                        }
+                        Some(Command::FormRemoveFile) if listed => {
+                            if let Some(at) = form
+                                .files_cursor
+                                .or((!form.files_list.is_empty()).then_some(0))
+                            {
+                                actions.push(Action::RemoveFile(at));
+                            }
+                            false
+                        }
+                        _ => true,
+                    }
                 });
+                // The arrows move through the list of files.
+                if is_files(form) && form.files_kind == FilesKind::Files {
+                    let rows = form.files_list.len();
+                    let step = moves(input, &keymap, layout);
+                    if rows > 0 && step != 0 {
+                        let at = form.files_cursor.unwrap_or(0) as isize + step;
+                        form.files_cursor = Some(at.clamp(0, rows as isize - 1) as usize);
+                    }
+                }
             }
             toggled
         });
@@ -434,6 +503,23 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         }
     }
     app.actions.extend(actions);
+}
+
+/// How far the form's list was asked to move this frame, by the keys the
+/// keymap gives it: up by one, down by one, or not.
+fn moves(
+    input: &mut egui::InputState,
+    keymap: &crate::keymap::Keymap,
+    layout: crate::keymap::Layout,
+) -> isize {
+    let mut step = 0;
+    for keys in keymap.chords_now(layout, Command::FormTableMove, Scope::Prompt, true) {
+        let way = if keys == "up" { -1 } else { 1 };
+        if crate::ui::keys::presses(input, layout, keys).count > 0 {
+            step += way;
+        }
+    }
+    step
 }
 
 /// Shows or hides the URL field; shown, it takes the keyboard.
@@ -959,6 +1045,7 @@ fn url_field(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) -> Response {
         Driver::Sqlite => "sqlite:///path/to/file.db",
         Driver::MySql => "mysql://user@host/db",
         Driver::Postgres => "postgres://user@host/db",
+        Driver::Files => "~/Data/exports",
     };
     let hint = hint(ui, example, role, skin);
     let field = ui.add(input(ui, &mut form.url, role, skin.field_height(), skin).hint_text(hint));
@@ -1160,7 +1247,26 @@ fn status(form: &ConnectionForm, skin: &Skin) -> Option<Status> {
                 .test_spec
                 .as_ref()
                 .map_or(form.driver, |spec| spec.driver);
-            let mut text = format!("{} · {}", gettext(skin.locale, "Connected"), driver.label());
+            // Only a Files Test read files: what one read stays in the
+            // form when the type changes.
+            let read = match driver {
+                Driver::Files => form.files_tested.as_ref(),
+                Driver::Postgres | Driver::MySql | Driver::Sqlite => None,
+            };
+            let mut text = match read {
+                // What a Files connection's Test read: "Read 3 files ·
+                // 2.4 GB".
+                Some(read) => format!(
+                    "{} {} · {}",
+                    gettext(skin.locale, "Read"),
+                    match read.files {
+                        1 => gettext(skin.locale, "1 file").into_owned(),
+                        files => format!("{files} {}", gettext(skin.locale, "files")),
+                    },
+                    tabletist_db::files::size_text(read.bytes)
+                ),
+                None => format!("{} · {}", gettext(skin.locale, "Connected"), driver.label()),
+            };
             if let Some(took) = form.test_took {
                 text = format!("{text} · {}", crate::ui::format::elapsed(took));
             }

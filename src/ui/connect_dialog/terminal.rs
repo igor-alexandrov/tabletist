@@ -26,10 +26,22 @@ pub(super) fn terminal_header(ui: &mut Ui, form: &mut ConnectionForm, skin: &Ski
     let Skin { look, palette, .. } = *skin;
     let rect = terminal_dialog::head(ui, skin.inner_radius(), skin.env.bar_bg(), palette);
     let y = terminal_dialog::head_line(rect);
+    // A Files connection has no URL: the hint says so, and is no key.
+    let files = super::is_files(form);
     let label = skin.say("Paste URL");
     let key = crate::ui::keys::written(ui.ctx(), look, Command::FormPasteUrl);
     let hint = [(&key, label.as_str(), true)];
-    let width = widgets::key_hints_width(ui, &hint, 0.0, look, palette);
+    let none = Text::one(
+        look,
+        TextRole::OSecondary,
+        &skin.say("No URL for files"),
+        palette.dim,
+    )
+    .layout(ui.ctx());
+    let width = match files {
+        true => none.width(),
+        false => widgets::key_hints_width(ui, &hint, 0.0, look, palette),
+    };
     let place = Rect::from_min_size(
         pos2(rect.right() - 14.0 - width, rect.top()),
         vec2(width, 40.0),
@@ -56,12 +68,21 @@ pub(super) fn terminal_header(ui: &mut Ui, form: &mut ConnectionForm, skin: &Ski
         room,
         skin,
     );
+    if files {
+        none.paint_left(ui.painter(), place.left(), y);
+        widgets::announce(ui, place, none.galley.text());
+        return;
+    }
     widgets::key_hints(ui, (place.left(), y), &hint, 0.0, look, palette);
     let name = gettext(skin.locale, "Paste URL");
     if ButtonSpec::new(&name).hidden_at(ui, place).clicked() {
         show_url(ui.ctx(), form, !form.url_mode);
     }
 }
+
+/// A key of the footer: its command, what it does, and the button it
+/// stands for with what that does.
+type FooterKey<'a> = (Command, &'a str, Option<(&'a str, Action)>);
 
 /// The terminal look: the Test's status at the left, the keys at the
 /// right. Each key's hint is its button too. The status comes first: the
@@ -80,29 +101,44 @@ pub(super) fn terminal_footer(
     // The command whose key it is, what it does, the button it stands
     // for, and what that does.
     let key = |command| crate::ui::keys::written(ui.ctx(), look, command);
-    let keys = [
-        (Command::FormNextField, "next", None),
-        (
-            Command::FormTest,
-            "test",
-            Some(("Test", Action::TestConnection)),
-        ),
-        (
-            Command::FormSave,
-            "save",
-            Some(("Save", Action::SaveConnection { connect: false })),
-        ),
-        (
-            Command::FormSaveAndConnect,
-            "connect",
-            Some(("Save & Connect", Action::SaveConnection { connect: true })),
-        ),
-        (
-            Command::FormCancel,
-            "cancel",
-            Some(("Cancel", Action::CloseDialog)),
-        ),
-    ];
+    let test = (
+        Command::FormTest,
+        "test",
+        Some(("Test", Action::TestConnection)),
+    );
+    let save = (
+        Command::FormSave,
+        "save",
+        Some(("Save", Action::SaveConnection { connect: false })),
+    );
+    let cancel = (
+        Command::FormCancel,
+        "cancel",
+        Some(("Cancel", Action::CloseDialog)),
+    );
+    // A Files connection's: Enter chooses among its choices, and its
+    // files are picked.
+    let keys: Vec<FooterKey<'_>> = match super::is_files(form) {
+        true => vec![
+            (Command::FormNextField, "next", None),
+            (Command::FormChoose, "choose", None),
+            (Command::FormPick, "pick", None),
+            test,
+            save,
+            cancel,
+        ],
+        false => vec![
+            (Command::FormNextField, "next", None),
+            test,
+            save,
+            (
+                Command::FormSaveAndConnect,
+                "connect",
+                Some(("Save & Connect", Action::SaveConnection { connect: true })),
+            ),
+            cancel,
+        ],
+    };
     let written: Vec<_> = keys.iter().map(|(command, ..)| key(*command)).collect();
     let names: Vec<_> = keys
         .iter()
@@ -223,7 +259,8 @@ fn terminal_check(
     }
     let laid = laid.layout(ui.ctx());
     let (rect, mut response) = ui.allocate_exact_size(laid.size(), Sense::click());
-    response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, true, on, name));
+    let enabled = ui.is_enabled();
+    response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, enabled, on, name));
     laid.paint(ui.painter(), rect.min);
     if response.clicked() {
         *checked = !*checked;
@@ -281,6 +318,11 @@ pub(super) fn terminal_body(
                     }
                 });
             }
+            // The type first: it changes every row after the name.
+            let heading = skin.say("Type");
+            terminal_row_of(ui, &heading, Group::Words.height(), skin, |ui, _| {
+                driver_choice(ui, form, &heading, skin, actions);
+            });
             terminal_row(ui, &skin.say("Name"), skin, |ui, label| {
                 let name = ui
                     .add(input(ui, &mut form.name, role, height, skin))
@@ -288,10 +330,6 @@ pub(super) fn terminal_body(
                 if focus_name {
                     name.request_focus();
                 }
-            });
-            let heading = skin.say("Type");
-            terminal_row_of(ui, &heading, Group::Words.height(), skin, |ui, _| {
-                driver_choice(ui, form, &heading, skin, actions);
             });
             let heading = skin.say("Environment");
             terminal_row_of(ui, &heading, Group::Buttons.height(), skin, |ui, _| {
@@ -302,6 +340,7 @@ pub(super) fn terminal_body(
                     terminal_section(ui, &skin.say("Database"), skin);
                     file_field(ui, form, skin, actions);
                 }
+                Driver::Files => super::files::terminal(ui, form, skin, actions),
                 Driver::Postgres | Driver::MySql => {
                     terminal_section(ui, &skin.say("Server"), skin);
                     terminal_server(ui, form, skin, actions);
@@ -314,8 +353,14 @@ pub(super) fn terminal_body(
             let line = role.row_height(ui.ctx(), look.faces);
             terminal_row_of(ui, &skin.say("Read-only"), line, skin, |ui, _| {
                 let name = gettext(skin.locale, "Open read-only");
-                let promise = skin.say("Block every write from this app");
-                let note = format!("· {}", skin.say("Default for production"));
+                let fixed = super::read_only_fixed(form);
+                let (promise, note) = match fixed {
+                    true => (skin.say("Files open read-only"), String::new()),
+                    false => (
+                        skin.say("Block every write from this app"),
+                        format!("· {}", skin.say("Default for production")),
+                    ),
+                };
                 // The note goes under the promise where one line has no
                 // room for both: no row may widen the dialog.
                 let width = |text: &str| role.width(ui.ctx(), look.faces, text);
@@ -325,7 +370,12 @@ pub(super) fn terminal_body(
                     // The environment's colour, as text can take it.
                     let mark = skin.env_ink(&skin.env);
                     let mut on = form.read_only();
-                    if terminal_check(ui, &mut on, &promise, &name, mark, skin).changed() {
+                    let changed = ui
+                        .add_enabled_ui(!fixed, |ui| {
+                            terminal_check(ui, &mut on, &promise, &name, mark, skin).changed()
+                        })
+                        .inner;
+                    if changed {
                         form.read_only = Some(on);
                     }
                     widgets::label(ui, role, &note, palette.dim, look);
