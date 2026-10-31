@@ -94,7 +94,11 @@ numbered; once you type, it lists what matches. Its commands stay on `:`.
 | Ctrl+S | Save |
 | Ctrl+Enter | Save and connect |
 | Backspace, Delete | In the empty password field: forget the saved password |
-| Up, Down | In add table…'s or add column…'s list: move. Enter adds the one chosen, or in add column…'s puts a table chosen in the field for its columns, and Esc closes the field |
+| Up, Down | In add table…'s or add column…'s list: move. Enter adds the one chosen, or in add column…'s puts a table chosen in the field for its columns, and Esc closes the field. In a Files connection's list of files: move |
+| Enter, Space | Choose the choice the cursor is on: a type, an environment, folder or files |
+| Ctrl+O | A Files connection: pick its folder, or add files to its list, in the file chooser |
+| `a` | A Files connection's list: add files |
+| `x` | A Files connection's list: take the file under the cursor off the list. The file stays on disk |
 | Esc | Cancel |
 
 {% include shot.html file="omarchy-connection-edit" alt="The connection form in the Omarchy look, for a production database behind an SSH tunnel" width="2200" height="2032" %}

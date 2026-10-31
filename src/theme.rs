@@ -961,6 +961,8 @@ fastframe_icons::icons! {
         Code => "code",
         Database => "database",
         Download => "download",
+        File => "file",
+        Folder => "folder",
         Funnel => "funnel",
         Image => "image",
         KeyRound => "key-round",

@@ -53,6 +53,9 @@ mod env_tests;
 pub mod every_row_prompt;
 #[cfg(test)]
 mod every_row_tests;
+pub mod file_list;
+#[cfg(test)]
+mod files_tests;
 pub mod filter_bar;
 pub mod focus;
 pub mod format;
@@ -10712,7 +10715,9 @@ value_tags   = true
     #[test]
     fn the_dialog_warns_when_a_remote_password_is_not_protected() {
         use tabletist_db::TlsMode;
-        let mut harness = Harness::new();
+        // Tall enough for the warning under the Security group to be
+        // painted in sight: the Type row has a line of its own.
+        let mut harness = Harness::with_size(egui::vec2(1280.0, 900.0));
         new_connection(&mut harness);
         harness.click("PostgreSQL");
         let set = |harness: &mut Harness, host: &str, tls: TlsMode, ssh: bool| {

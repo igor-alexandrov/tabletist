@@ -2,7 +2,8 @@
 //! connection (Off or Read), the tables they may not read, the columns
 //! whose values they get masked, how many rows an answer holds, and how
 //! long a statement may run. The boards' rows but the third level, which
-//! comes with writes.
+//! comes with writes. A Files connection keeps no hidden tables and no
+//! masked columns: its part has the access, the rows and the timeout.
 
 use egui::{
     Align, CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, WidgetInfo, WidgetType, vec2,
@@ -10,6 +11,8 @@ use egui::{
 
 use super::choice::{Choice, Group, choose};
 use super::{Skin, input};
+use tabletist_db::Driver;
+
 use crate::connections::AgentAccess;
 use crate::model::{ConnectionForm, TableFocus, TablesMode};
 use crate::typography::{Text, TextRole};
@@ -58,8 +61,29 @@ fn tables_hint(form: &ConnectionForm) -> Option<&'static str> {
 }
 
 /// What the part says under its rows, from the board.
-const NOTE: &str =
-    "When Open read-only is on, agents get Read at most. Every connection starts with agents Off.";
+const NOTE: &str = "When Open read-only is on, agents get Read at most. A new connection starts with agents Off, \
+     a Files one with Read.";
+
+/// What a Files connection's part says under its rows: agents read, and
+/// the files are never theirs to change.
+const FILES_NOTE: &str = "Agents can query the files, never change them.";
+
+/// Whether the connection keeps the Tables and Masked columns controls:
+/// a Files connection has no catalog that would hold them to a statement.
+fn guards_tables(form: &ConnectionForm) -> bool {
+    match form.driver {
+        Driver::Postgres | Driver::MySql | Driver::Sqlite => true,
+        Driver::Files => false,
+    }
+}
+
+/// The note under the part's rows.
+fn note(form: &ConnectionForm) -> &'static str {
+    match guards_tables(form) {
+        true => NOTE,
+        false => FILES_NOTE,
+    }
+}
 
 /// The access switch, as a group of choices headed `heading`.
 fn access(ui: &mut Ui, form: &mut ConnectionForm, heading: &str, group: Group, skin: &Skin) {
@@ -80,6 +104,8 @@ fn access(ui: &mut Ui, form: &mut ConnectionForm, heading: &str, group: Group, s
         skin,
     ) {
         form.agents.access = level;
+        // The person's choice: a type's default no longer moves it.
+        form.agents_chosen = true;
     }
 }
 
@@ -885,7 +911,9 @@ pub(super) fn sheet(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
         ui.add_space(12.0);
         // Tables and Masked columns side by side, as the board has them.
         let columns = [super::Column::Fr(1.0), super::Column::Fr(1.0)];
+        let guards = guards_tables(form);
         super::row(ui, 12.0, &columns, |ui, column| match column {
+            _ if !guards => {}
             0 => {
                 let tables = skin.say("Tables");
                 widgets::label(ui, small, &tables, palette.secondary, look);
@@ -913,7 +941,9 @@ pub(super) fn sheet(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
                 sentence(ui, small, &skin.say(MASKED_HINT), skin);
             }
         });
-        ui.add_space(12.0);
+        if guards {
+            ui.add_space(12.0);
+        }
         let (role, height) = (skin.value_role(), skin.field_height());
         super::row(ui, 12.0, &columns, |ui, column| {
             let (label, text) = match column {
@@ -929,7 +959,7 @@ pub(super) fn sheet(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
                 .labelled_by(label.id);
         });
         ui.add_space(8.0);
-        sentence(ui, small, &skin.say(NOTE), skin);
+        sentence(ui, small, &skin.say(note(form)), skin);
     });
     shown(ui, form, top);
 }
@@ -944,6 +974,29 @@ pub(super) fn terminal(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
     super::terminal::terminal_row_of(ui, &heading, line, skin, |ui, _| {
         access(ui, form, &heading, Group::Words, skin);
     });
+    if guards_tables(form) {
+        terminal_guards(ui, form, line, skin);
+    }
+    let (role, height) = (TextRole::OBody, skin.field_height());
+    super::terminal::terminal_row(ui, &skin.say("Rows per answer"), skin, |ui, label| {
+        ui.add(input(ui, &mut form.agents_rows, role, height, skin))
+            .labelled_by(label);
+    });
+    super::terminal::terminal_row(ui, &skin.say("Timeout, seconds"), skin, |ui, label| {
+        ui.add(input(ui, &mut form.agents_timeout, role, height, skin))
+            .labelled_by(label);
+    });
+    let mut said = skin.say(note(form));
+    if let Some(runs_as) = runs_as(skin) {
+        said = format!("{runs_as} {said}");
+    }
+    ui.add_space(4.0);
+    sentence(ui, TextRole::OSecondary, &said, skin);
+    shown(ui, form, top);
+}
+
+/// The terminal look's Tables and Masked rows.
+fn terminal_guards(ui: &mut Ui, form: &mut ConnectionForm, line: f32, skin: &Skin) {
     let tables = skin.say("Tables");
     super::terminal::terminal_row_of(ui, &tables, line, skin, |ui, _| {
         tables_mode(ui, form, &tables, Group::Words, skin);
@@ -967,20 +1020,4 @@ pub(super) fn terminal(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
     column_missing(ui, form, skin);
     sentence(ui, TextRole::OSecondary, &skin.say(MASKED_HINT), skin);
     ui.add_space(4.0);
-    let (role, height) = (TextRole::OBody, skin.field_height());
-    super::terminal::terminal_row(ui, &skin.say("Rows per answer"), skin, |ui, label| {
-        ui.add(input(ui, &mut form.agents_rows, role, height, skin))
-            .labelled_by(label);
-    });
-    super::terminal::terminal_row(ui, &skin.say("Timeout, seconds"), skin, |ui, label| {
-        ui.add(input(ui, &mut form.agents_timeout, role, height, skin))
-            .labelled_by(label);
-    });
-    let mut said = skin.say(NOTE);
-    if let Some(runs_as) = runs_as(skin) {
-        said = format!("{runs_as} {said}");
-    }
-    ui.add_space(4.0);
-    sentence(ui, TextRole::OSecondary, &said, skin);
-    shown(ui, form, top);
 }
