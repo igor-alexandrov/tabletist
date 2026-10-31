@@ -111,7 +111,7 @@ impl Match {
                 }
                 true
             }
-            Driver::Sqlite => false,
+            Driver::Sqlite | Driver::Files => false,
         };
         if let Some(driver) = &self.driver
             && !glob(driver, driver_key(spec.driver))
@@ -138,11 +138,16 @@ impl Match {
             return false;
         }
         if let Some(path) = &self.path {
-            let Some(file) = spec
-                .sqlite_path
-                .as_deref()
-                .and_then(|file| absolute(file, home))
-            else {
+            // A Files connection's path is its folder's.
+            let named = match spec.driver {
+                Driver::Sqlite => spec.sqlite_path.as_deref(),
+                Driver::Files => spec
+                    .files
+                    .as_ref()
+                    .and_then(tabletist_db::files::Source::folder),
+                Driver::Postgres | Driver::MySql | Driver::BigQuery => None,
+            };
+            let Some(file) = named.and_then(|file| absolute(file, home)) else {
                 return false;
             };
             if !glob(path, &file.to_string_lossy()) {
@@ -164,6 +169,7 @@ fn driver_key(driver: Driver) -> &'static str {
         Driver::MySql => "mysql",
         Driver::Sqlite => "sqlite",
         Driver::BigQuery => "bigquery",
+        Driver::Files => "files",
     }
 }
 

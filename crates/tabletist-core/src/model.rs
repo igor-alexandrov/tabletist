@@ -1532,7 +1532,7 @@ pub fn first_schema(schemas: &[String], database: &str) -> Option<String> {
 /// The schema [`first_schema`] will most likely pick, guessed before the
 /// schemas are listed, so that its tables can be asked for with them: the
 /// database on MySQL (its databases are its schemas), `public` on
-/// PostgreSQL, `main` on SQLite. None where there is no good guess: a
+/// PostgreSQL, `main` on SQLite and Files. None where there is no good guess: a
 /// MySQL connection named no database, and BigQuery, whose datasets go by
 /// no default name.
 pub fn guessed_schema(driver: Driver, database: &str) -> Option<String> {
@@ -1540,7 +1540,7 @@ pub fn guessed_schema(driver: Driver, database: &str) -> Option<String> {
         Driver::MySql if database.is_empty() => None,
         Driver::MySql => Some(database.to_owned()),
         Driver::Postgres => Some("public".to_owned()),
-        Driver::Sqlite => Some("main".to_owned()),
+        Driver::Sqlite | Driver::Files => Some("main".to_owned()),
         Driver::BigQuery => None,
     }
 }
@@ -2321,7 +2321,7 @@ impl ConnectionForm {
     pub fn password_can_be_intercepted(&self) -> bool {
         let unchecked = match self.driver {
             // No password crosses: the API is HTTPS to Google.
-            Driver::Sqlite | Driver::BigQuery => false,
+            Driver::Sqlite | Driver::BigQuery | Driver::Files => false,
             Driver::Postgres => match self.tls {
                 TlsMode::Disable | TlsMode::Prefer => true,
                 TlsMode::Require => self.ca_file.trim().is_empty(),
@@ -2485,6 +2485,7 @@ impl ConnectionForm {
                 }
                 Ok(ConnectSpec::sqlite(path))
             }
+            Driver::Files => Err("Choose a folder.".into()),
             Driver::Postgres | Driver::MySql => {
                 let host = self.host.trim();
                 if host.is_empty() {
@@ -2545,6 +2546,7 @@ impl ConnectionForm {
                     tls: self.tls,
                     ca_file: (!ca_file.is_empty()).then(|| ca_file.into()),
                     ssh,
+                    files: None,
                 })
             }
         }
@@ -2627,7 +2629,7 @@ impl ConnectionForm {
         }
         let spec = self.to_spec()?;
         let password = match spec.driver {
-            Driver::Sqlite | Driver::BigQuery => PasswordMode::None,
+            Driver::Sqlite | Driver::BigQuery | Driver::Files => PasswordMode::None,
             // Nothing typed and nothing saved (or the saved one forgotten):
             // a server that needs no password (trust or peer
             // authentication).
@@ -4055,6 +4057,8 @@ pub fn is_system_schema(driver: Driver, name: &str) -> bool {
         // BigQuery lists dataset IDs here; a dataset's INFORMATION_SCHEMA
         // is views inside it, never a dataset of its own.
         Driver::BigQuery => false,
+        // A `.duckdb` file's schema is the person's.
+        Driver::Files => false,
     }
 }
 
@@ -6481,7 +6485,7 @@ impl Workspace {
         let name = match self.driver {
             Driver::Postgres => "public",
             Driver::MySql => self.spec.database.as_str(),
-            Driver::Sqlite => "main",
+            Driver::Sqlite | Driver::Files => "main",
             // BigQuery names resolve dataset-less in no dataset.
             Driver::BigQuery => return None,
         };

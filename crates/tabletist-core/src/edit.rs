@@ -207,7 +207,9 @@ impl Table<'_> {
         let zone = match self.dialect {
             // A BigQuery TIMESTAMP comes with its moment (an epoch), as a
             // timestamptz comes with its offset.
-            Dialect::Postgres | Dialect::BigQuery => Some(self.zone.unwrap_or(&UTC)),
+            Dialect::Postgres | Dialect::BigQuery | Dialect::DuckDb => {
+                Some(self.zone.unwrap_or(&UTC))
+            }
             Dialect::MySql => self.session_zone,
             Dialect::Sqlite => None,
         };
@@ -266,7 +268,7 @@ impl Table<'_> {
             Dialect::Sqlite => key.iter().any(
                 |col| matches!(held(col), Some(Value::Text(text)) if text.contains('\u{FFFD}')),
             ),
-            Dialect::Postgres | Dialect::MySql | Dialect::BigQuery => false,
+            Dialect::Postgres | Dialect::MySql | Dialect::BigQuery | Dialect::DuckDb => false,
         };
         if inexact {
             return Some(Lock::KeyInexact);
@@ -669,7 +671,7 @@ impl Table<'_> {
                     .to_ascii_lowercase();
                 matches!(word.as_str(), "timestamp" | "bit" | "float")
             }),
-            Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => false,
+            Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery | Dialect::DuckDb => false,
         }
     }
 }
@@ -756,12 +758,13 @@ pub fn check(dialect: Dialect, column: &ColumnInfo, text: &str) -> Option<Proble
         ColumnClass::Decimal { precision, scale } => {
             decimal(typed, precision, scale).or_else(|| match dialect {
                 Dialect::Sqlite => inexact(typed),
-                Dialect::Postgres | Dialect::MySql | Dialect::BigQuery => None,
+                Dialect::Postgres | Dialect::MySql | Dialect::BigQuery | Dialect::DuckDb => None,
             })
         }
         ColumnClass::Float => {
             let word = match dialect {
-                Dialect::Postgres => float_word(typed),
+                // DuckDB reads PostgreSQL's words for the infinities too.
+                Dialect::Postgres | Dialect::DuckDb => float_word(typed),
                 Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery => false,
             };
             let number = typed.parse::<f64>().is_ok_and(f64::is_finite);
@@ -814,7 +817,7 @@ fn boolean(dialect: Dialect, typed: &str) -> Option<Problem> {
             Ok(_) => None,
             Err(_) => Some(Problem::Boolean),
         },
-        Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => {
+        Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery | Dialect::DuckDb => {
             (!matches!(typed, "1" | "0")).then_some(Problem::Boolean)
         }
     }
@@ -1040,6 +1043,8 @@ pub fn shows_in_zone(dialect: Dialect) -> bool {
         Dialect::Postgres => true,
         // A BigQuery TIMESTAMP is a moment with an offset, shown zoned.
         Dialect::BigQuery => true,
+        // DuckDB's are written in UTC with their offset, as PostgreSQL's.
+        Dialect::DuckDb => true,
         Dialect::MySql | Dialect::Sqlite => false,
     }
 }
@@ -1393,7 +1398,7 @@ pub fn default_shown(dialect: Dialect, default: &str) -> Option<String> {
         // PostgreSQL writes a NULL with its type.
         let bare = match dialect {
             Dialect::Postgres => text.split("::").next().unwrap_or(text),
-            Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery => text,
+            Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery | Dialect::DuckDb => text,
         };
         return (!bare.eq_ignore_ascii_case("null")).then(|| text.to_owned());
     };
@@ -1424,7 +1429,7 @@ pub fn default_shown(dialect: Dialect, default: &str) -> Option<String> {
                     .chars()
                     .all(|letter| letter.is_ascii_alphanumeric() || " _.\"(),[]".contains(letter))
         }),
-        Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery => false,
+        Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery | Dialect::DuckDb => false,
     };
     Some(if after.is_empty() || cast {
         value
@@ -1450,7 +1455,7 @@ pub fn default_is_expression(dialect: Dialect, default: &str) -> bool {
     };
     match dialect {
         // Shown as it is written: no string was read out of it.
-        Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => {
+        Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery | Dialect::DuckDb => {
             default_shown(dialect, text).is_some_and(|shown| shown == text) && !value(text)
         }
         Dialect::MySql => text.contains('(') || text.to_ascii_uppercase().starts_with("CURRENT_"),
@@ -1783,7 +1788,7 @@ pub fn names_table(dialect: Dialect, schema: &str, table: &str, object: &ObjectR
         // pointing at the other, on a server that tells them apart.
         Dialect::MySql => a.eq_ignore_ascii_case(b),
         // A name is matched without regard to ASCII case.
-        Dialect::Sqlite => a.eq_ignore_ascii_case(b),
+        Dialect::Sqlite | Dialect::DuckDb => a.eq_ignore_ascii_case(b),
         // BigQuery's dataset and table names are matched as spelled.
         Dialect::BigQuery => a == b,
     };
@@ -1904,6 +1909,8 @@ pub fn is_held(dialect: Dialect, error: &Error) -> bool {
             code == Some("787")
                 || (code == Some("1811") && message == "FOREIGN KEY constraint failed")
         }
+        // DuckDB gives no code: its own words, which no setting changes.
+        Dialect::DuckDb => message.contains("Violates foreign key constraint"),
     }
 }
 

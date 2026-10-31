@@ -274,6 +274,7 @@ pub(super) fn body(
                             bigquery(ui, form, skin);
                         });
                     }
+                    Driver::Files => {}
                     Driver::Postgres | Driver::MySql => {
                         fieldset(ui, &skin.say("Server"), skin, |ui| {
                             server(ui, form, skin, actions);

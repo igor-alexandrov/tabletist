@@ -362,7 +362,7 @@ pub fn database_key(driver: Driver, database: &str) -> String {
     match driver {
         // A project too: a tab's tables are of one.
         Driver::Postgres | Driver::BigQuery => database.to_owned(),
-        Driver::MySql | Driver::Sqlite => String::new(),
+        Driver::MySql | Driver::Sqlite | Driver::Files => String::new(),
     }
 }
 

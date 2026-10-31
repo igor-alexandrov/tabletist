@@ -59,6 +59,8 @@ fn entry(listed: &Listed) -> Json {
         Dialect::MySql => ("MySQL", "?"),
         Dialect::Sqlite => ("SQLite", "?"),
         Dialect::BigQuery => ("BigQuery", "?"),
+        // A Files connection: its files are DuckDB's tables.
+        Dialect::DuckDb => ("DuckDB", "?"),
     };
     let mut entry = Map::new();
     entry.insert("name".into(), json!(listed.name));

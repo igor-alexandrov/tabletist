@@ -75,7 +75,7 @@ pub(crate) const MYSQL_OWN_SCHEMAS: [&str; 4] =
 fn servers_own(dialect: Dialect, view: &View) -> bool {
     let own: &[&str] = match dialect {
         Dialect::MySql => &MYSQL_OWN_SCHEMAS,
-        Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => &[],
+        Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery | Dialect::DuckDb => &[],
     };
     own.contains(&view.schema.as_str())
 }
@@ -87,7 +87,7 @@ fn servers_own(dialect: Dialect, view: &View) -> bool {
 fn cuts_names_at(dialect: Dialect) -> Option<usize> {
     match dialect {
         Dialect::Postgres => Some(63),
-        Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery => None,
+        Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery | Dialect::DuckDb => None,
     }
 }
 

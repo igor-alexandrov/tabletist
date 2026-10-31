@@ -537,7 +537,7 @@ fn connecting(
     let say = |text: &'static str| look.label(&gettext(locale, text));
     let spec = &workspace.spec;
     let (reach, target) = match spec.driver {
-        Driver::Sqlite => ("Open", spec.summary()),
+        Driver::Sqlite | Driver::Files => ("Open", spec.summary()),
         // The project is the whole target.
         Driver::BigQuery => ("Connect to", spec.summary()),
         Driver::Postgres | Driver::MySql => {
@@ -640,7 +640,7 @@ fn failure_title(
             format!("{} {}", say("Password rejected for"), spec.user),
         ),
         Error::Connect(_) | Error::Timeout => match spec.driver {
-            Driver::Sqlite => (
+            Driver::Sqlite | Driver::Files => (
                 Icon::CircleAlert,
                 format!("{} {}", say("Can't open"), spec.summary()),
             ),
@@ -856,7 +856,7 @@ struct Chip {
 fn is_remote(workspace: &crate::model::Workspace) -> bool {
     use tabletist_db::Driver;
     match workspace.driver {
-        Driver::Sqlite => false,
+        Driver::Sqlite | Driver::Files => false,
         Driver::Postgres | Driver::MySql => !crate::model::is_local_host(&workspace.spec.host),
         Driver::BigQuery => true,
     }
@@ -874,7 +874,7 @@ pub(super) fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
         let (text, warn) = match workspace.driver {
             // HTTPS to Google's API, verified against the system roots.
             Driver::BigQuery => ("HTTPS", false),
-            Driver::Postgres | Driver::MySql | Driver::Sqlite => {
+            Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::Files => {
                 tls_status(spec.effective_tls(), encrypted)
             }
         };
@@ -884,7 +884,7 @@ pub(super) fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
         env: workspace.environment,
         read_only: workspace.access == tabletist_db::Access::ReadOnly,
         database: match workspace.driver {
-            Driver::Sqlite => String::new(),
+            Driver::Sqlite | Driver::Files => String::new(),
             // The project.
             Driver::Postgres | Driver::MySql | Driver::BigQuery => spec.database.clone(),
         },
@@ -959,6 +959,15 @@ fn card_rows(
                 rows.push((say("Key file"), key.display().to_string()));
             }
         }
+        Driver::Files => match &spec.files {
+            Some(tabletist_db::files::Source::Folder(folder)) => {
+                rows.push((say("Folder"), tabletist_db::files::shown(folder)));
+            }
+            Some(source @ tabletist_db::files::Source::Files(_)) => {
+                rows.push((say("Files"), source.summary()));
+            }
+            None => {}
+        },
         Driver::Postgres | Driver::MySql => {
             rows.push((say("Host"), format!("{}:{}", spec.host, spec.port)));
             if !spec.database.is_empty() {
@@ -980,7 +989,7 @@ fn card_rows(
         let encrypted = connected.then_some(workspace.encrypted);
         say(match workspace.driver {
             Driver::BigQuery => "HTTPS",
-            Driver::Postgres | Driver::MySql | Driver::Sqlite => {
+            Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::Files => {
                 tls_status(spec.effective_tls(), encrypted).0
             }
         })

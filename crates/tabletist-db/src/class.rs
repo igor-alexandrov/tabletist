@@ -72,6 +72,7 @@ pub fn column_class(dialect: Dialect, type_name: &str) -> ColumnClass {
         Dialect::Postgres => postgres(&name),
         Dialect::MySql => mysql(&name),
         Dialect::BigQuery => bigquery(&name),
+        Dialect::DuckDb => duckdb(&name),
     }
 }
 
@@ -184,6 +185,35 @@ fn postgres(name: &str) -> ColumnClass {
         // The catalog names it with its schema where the extension's
         // schema is not on the search path.
         other if other.ends_with(".citext") => ColumnClass::Text { max_chars: None },
+        _ => ColumnClass::Other,
+    }
+}
+
+/// DuckDB's names, as `DESCRIBE` gives them (`INTEGER`, `DECIMAL(18,3)`,
+/// `VARCHAR`, `TIMESTAMP WITH TIME ZONE`), and their aliases.
+fn duckdb(name: &str) -> ColumnClass {
+    // A list or an array of anything is DuckDB's to judge, as a struct, a
+    // map or a union is below.
+    if name.ends_with(']') {
+        return ColumnClass::Other;
+    }
+    match base(name) {
+        "tinyint" | "int1" => signed(1),
+        "smallint" | "int2" | "short" => signed(2),
+        "integer" | "int4" | "int" | "signed" => signed(4),
+        "bigint" | "int8" | "long" => signed(8),
+        "hugeint" => signed(16),
+        "utinyint" => unsigned(1),
+        "usmallint" => unsigned(2),
+        "uinteger" => unsigned(4),
+        "ubigint" => unsigned(8),
+        "uhugeint" => unsigned(16),
+        "decimal" | "numeric" => decimal(name),
+        "float" | "real" | "float4" | "double" | "float8" => ColumnClass::Float,
+        "boolean" | "bool" | "logical" => ColumnClass::Boolean,
+        "json" => ColumnClass::Json,
+        "varchar" | "text" | "string" | "char" | "bpchar" => ColumnClass::Text { max_chars: None },
+        "blob" | "bytea" | "binary" | "varbinary" => ColumnClass::Binary,
         _ => ColumnClass::Other,
     }
 }
@@ -364,6 +394,42 @@ mod tests {
         );
         assert_eq!(crate::temporal("TIME"), Some(crate::Temporal::Time));
         assert_eq!(crate::temporal("DATE"), Some(crate::Temporal::Date));
+    }
+
+    #[test]
+    fn duckdb_types_have_classes() {
+        for (name, class) in [
+            ("INTEGER", int(i128::from(i32::MIN), i128::from(i32::MAX))),
+            ("BIGINT", int(i128::from(i64::MIN), i128::from(i64::MAX))),
+            ("UTINYINT", int(0, 255)),
+            ("TINYINT", int(-128, 127)),
+            (
+                "DECIMAL(18,3)",
+                Decimal {
+                    precision: Some(18),
+                    scale: Some(3),
+                },
+            ),
+            ("DOUBLE", Float),
+            ("BOOLEAN", Boolean),
+            ("JSON", Json),
+            ("VARCHAR", Text { max_chars: None }),
+            ("BLOB", Binary),
+            ("DATE", Other),
+            ("TIMESTAMP WITH TIME ZONE", Other),
+            ("INTEGER[]", Other),
+            ("STRUCT(id INTEGER)", Other),
+            ("MAP(VARCHAR, INTEGER)", Other),
+        ] {
+            assert_eq!(column_class(Dialect::DuckDb, name), class, "{name}");
+        }
+        assert_eq!(
+            temporal("TIMESTAMP WITH TIME ZONE"),
+            Some(Temporal::Timestamp)
+        );
+        assert_eq!(temporal("TIMESTAMP_NS"), Some(Temporal::Timestamp));
+        assert_eq!(temporal("TIME"), Some(Temporal::Time));
+        assert_eq!(temporal("DATE[]"), None);
     }
 
     #[test]
