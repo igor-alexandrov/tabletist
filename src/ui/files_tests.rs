@@ -680,3 +680,71 @@ fn saved_exports(harness: &mut Harness, source: Source) -> ConnectionId {
     harness.app.connections.upsert(saved);
     id
 }
+
+#[test]
+fn the_list_says_what_a_files_connection_opens() {
+    for look in looks() {
+        // Wide enough that the folder is not cut short.
+        let mut harness = Harness::with_size(egui::vec2(1600.0, 900.0));
+        harness.set_look(look);
+        let id = saved_exports(
+            &mut harness,
+            Source::Folder("/data/bookshop-exports".into()),
+        );
+        harness.app.sources.insert(
+            id,
+            crate::model::SourceFacts::Files(exports("/data/bookshop-exports")),
+        );
+        match look.terminal {
+            true => {
+                let tree = harness.settle();
+                let line = "files · /data/bookshop-exports · 4 files · 2.5 gb";
+                assert!(
+                    crate::testing::labels(&tree)
+                        .iter()
+                        .any(|label| label.starts_with(line)),
+                    "{:?}",
+                    crate::testing::labels(&tree)
+                );
+            }
+            false => {
+                assert!(harness.has("Files · 4 files · 2.5 GB"));
+                assert!(harness.has("/data/bookshop-exports"));
+                assert!(harness.has("orders, customers, events, returns"));
+                assert!(harness.has("Read-only"));
+                assert!(harness.has("No joins"));
+            }
+        }
+    }
+    // A list's first files, then their folder; and a SQLite file's size,
+    // its folder over its name.
+    let mut harness = Harness::with_size(egui::vec2(1600.0, 900.0));
+    harness.set_look(Look::macos());
+    saved_exports(
+        &mut harness,
+        Source::Files(vec![
+            "/data/bookshop-exports/orders.csv".into(),
+            "/data/bookshop-exports/customers.parquet".into(),
+        ]),
+    );
+    let sqlite = SavedConnection {
+        id: ConnectionId::new(),
+        name: "Bookshop on disk".into(),
+        environment: Environment::Local,
+        read_only: None,
+        password: PasswordMode::None,
+        ssh_secret: PasswordMode::None,
+        spec: ConnectSpec::sqlite("/code/bookshop/storage/development.sqlite3"),
+        agents: Default::default(),
+    };
+    let id = sqlite.id.clone();
+    harness.app.connections.upsert(sqlite);
+    harness
+        .app
+        .sources
+        .insert(id, crate::model::SourceFacts::File { size: 12_400_000 });
+    assert!(harness.has("orders.csv, customers.parquet"));
+    assert!(harness.has("/data/bookshop-exports"));
+    assert!(harness.has("SQLite · 12.4 MB"));
+    assert!(harness.has("development.sqlite3"));
+}
