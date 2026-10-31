@@ -254,6 +254,11 @@ fn server_error(code: Option<&str>, message: &str) -> Error {
 /// Newer servers (26.10) put `__exception__` lines and the
 /// `X-ClickHouse-Exception-Tag` around it; older ones (25.8) write
 /// `__exception__` and the message and close the connection.
+///
+/// An error after the rows wanted is not read. The server sends a block's
+/// rows only once the whole block is computed, so such an error is of
+/// rows past the page, which the next page meets, as a `LIMIT` on the
+/// other engines never computes them.
 fn read_tsv(
     mut body: impl BufRead,
     wanted: u64,
