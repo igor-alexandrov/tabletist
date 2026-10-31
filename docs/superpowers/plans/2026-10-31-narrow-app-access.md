@@ -102,7 +102,7 @@ if let Some(object) = app
 }
 ```
 
-`Paint::of(app)` is taken before the slice is borrowed. The caller extends `app.actions` where the view used to, so the order of actions in a frame is unchanged. A view whose slice is missing is not called; it used to return early, with nothing asked.
+`Paint::of(app)` is taken before the slice is borrowed. The caller extends `app.actions` where the view used to, so the order of actions in a frame is unchanged. A view whose slice is missing is not called; it used to return early, with nothing asked. A view that did something in the frames it was not shown (About folds its fonts' notices) gives that its own function, which the caller calls instead of the view (`about::fold`).
 
 A query a view makes of its own state (`filter_bar::is_open`) takes the slice too, and the caller or test finds the slice first.
 
@@ -115,7 +115,7 @@ The headless tests drive the whole `App` through `src/testing.rs`, so they hold 
 Each run is one PR, from `main`, passing `cargo fmt --all --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings` and `cargo test --locked --workspace --all-targets`. Each later run gets its own detailed plan beside this one when it starts, as `2026-…-narrow-app-access-N-<name>.md`, re-surveying its views first: `main` moves.
 
 1. **`Paint`, the password prompt and the filter bar** (this plan, below). One dialog that edits its prompt's field, one pane that edits an object tab's filter: both shapes of the pattern.
-2. **The other small dialogs:** `host_key_prompt`, `every_row_prompt`, `about`, `help` (adds `Paint::layout`, takes `&Keymap`), `toast` (reads only; returns nothing).
+2. **The other small dialogs:** `host_key_prompt`, `every_row_prompt` (its caller passes whether the SQL tab is still open), `about`, `help` (adds `Paint::layout`, takes `&Keymap`), `toast` (reads only; returns nothing). Done: `2026-10-31-narrow-app-access-2-small-dialogs.md`.
 3. **Object-tab panes:** `row_form` (`take_editor`/`put_editor` take `&mut ObjectTab`), `pending_bar` (its caller passes `lacking`, or `lacking` moves onto `ObjectTab`'s side), `structure` (passes `structure_label`), `ddl`, `review` (`review_whole` is asked only when Copy is clicked: the view returns an action for it, or its caller passes the review; decide in the run's plan, keeping the clipboard's text the same).
 4. **Settings panes that read `&App`:** `settings/file_pane`, `settings/updates`, `settings/updates_terminal`, `settings/keyboard`, `keyboard_sheet`, `keyboard_terminal`, `settings/agents`.
 5. **Dialogs over a workspace:** `conflict_prompt`, `write_prompts`, `agent_access`, `connect_dialog`.

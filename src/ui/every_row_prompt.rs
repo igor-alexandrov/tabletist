@@ -7,16 +7,15 @@
 
 use egui::{Align2, Frame, Id, Key, Margin, Modifiers, Rect, Stroke, pos2};
 
-use crate::app::App;
 use crate::i18n::{gettext, ngettext};
 use crate::keymap::{Command, Layout, When};
-use crate::model::{Action, Dialog, EveryRowPrompt, WideStatement};
+use crate::model::{Action, EveryRowPrompt, WideStatement};
 use crate::typography::{Text, TextRole};
-use crate::ui::format;
 use crate::ui::keys::{prompt_letter, take_enter};
 use crate::ui::widgets::{self, ButtonSpec};
 use crate::ui::workspace::STATUS_LINE;
 use crate::ui::write_prompts::{Skin, button_row, fitted, keyboard_on};
+use crate::ui::{Paint, format};
 use tabletist_db::sql::Verb;
 
 /// Where the terminal look's status line of `tab` was last drawn: the
@@ -25,15 +24,24 @@ pub(crate) fn status_line_id(tab: crate::model::ConnTabId) -> Id {
     Id::new(("status-line-rect", tab.0))
 }
 
-pub fn show(app: &mut App, ctx: &egui::Context) {
-    let (look, palette, locale) = (app.look, app.palette, app.locale);
+/// Asks `prompt` over the window, and returns the answer once there is
+/// one. `editor_open` is whether the SQL tab it was asked from is still
+/// open.
+pub fn show(
+    ctx: &egui::Context,
+    paint: Paint,
+    prompt: &EveryRowPrompt,
+    editor_open: bool,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let skin = Skin {
         look: &look,
         palette: &palette,
         locale,
-    };
-    let Some(Dialog::ConfirmEveryRow(prompt)) = &app.dialog else {
-        return;
     };
     // Whether the editor had the keyboard when the question came: it
     // still has it in the frame the question opens in, being drawn before
@@ -48,10 +56,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         });
     ctx.data_mut(|data| data.insert_temp(kept, refocus));
     let mut answer = None;
-    let editor = app
-        .workspace(prompt.tab)
-        .and_then(|workspace| workspace.sql_tab(prompt.id));
-    if editor.is_none() {
+    if !editor_open {
         // Its editor closed meanwhile: nothing to send, and nothing would
         // answer a question left on screen.
         answer = Some(false);
@@ -69,13 +74,15 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             answer = answer.or(Some(false));
         }
     }
+    let mut actions = Vec::new();
     if let Some(run) = answer {
         ctx.data_mut(|data| data.remove::<bool>(kept));
-        app.actions.push(match run {
+        actions.push(match run {
             true => Action::RunEveryRow { refocus },
             false => Action::CancelEveryRow { refocus },
         });
     }
+    actions
 }
 
 /// "book_covers", "books and covers", "authors, books and covers".
