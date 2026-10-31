@@ -250,8 +250,11 @@ pub enum When {
     NewRow,
     /// The list of a foreign key cell's picker is open under its field.
     KeyPicker,
-    /// A visual selection of rows is on, in the terminal look.
+    /// A visual selection is on, in the terminal look: of cells, a block
+    /// or rows.
     Visual,
+    /// The visual selection of rows (`V`) is on.
+    VisualRows,
     /// The chooser of a table's label column is open: beside a picker's
     /// list, which gives it the keys.
     LabelChooser,
@@ -524,6 +527,8 @@ commands! {
     MovePage = "move_page",
     ExtendUp = "extend_up",
     ExtendDown = "extend_down",
+    ExtendLeft = "extend_left",
+    ExtendRight = "extend_right",
     OpenInspector = "open_inspector",
     ToggleInspector = "toggle_inspector",
     CloseInspector = "close_inspector",
@@ -555,6 +560,7 @@ commands! {
     UndoCell = "undo_cell",
     RedoCell = "redo_cell",
     CopyCells = "copy_cells",
+    CopySelection = "copy_selection",
     CopyRow = "copy_row",
     PasteCells = "paste_cells",
     PasteNewRows = "paste_new_rows",
@@ -567,6 +573,10 @@ commands! {
     PutRowAbove = "put_row_above",
     DeleteRow = "delete_row",
     SelectRows = "select_rows",
+    SelectCells = "select_cells",
+    SelectBlock = "select_block",
+    SelectRowsOfCursor = "select_rows_of_cursor",
+    SelectAllRows = "select_all_rows",
     DeleteSelection = "delete_selection",
     LeaveVisual = "leave_visual",
     OpenReferencedRow = "open_referenced_row",
@@ -889,6 +899,8 @@ impl Command {
             C::MovePage => info("Move by page", "", Editing),
             C::ExtendUp => info("Extend the selection up", "", Editing),
             C::ExtendDown => info("Extend the selection down", "", Editing),
+            C::ExtendLeft => info("Extend the selection left", "", Editing),
+            C::ExtendRight => info("Extend the selection right", "", Editing),
             C::OpenInspector => info(
                 "Open inspector / focus fields",
                 "Open inspector / focus fields",
@@ -930,6 +942,7 @@ impl Command {
             C::UndoCell => info("Undo one cell", UNDO, Editing),
             C::RedoCell => info("Redo one cell", UNDO, Editing).reserved(),
             C::CopyCells => info("Copy cell values", COPY, Editing),
+            C::CopySelection => info("Copy the selection", COPY, Editing),
             C::CopyRow => info("Copy row", "", Editing),
             C::PasteCells => info("Paste cell values", COPY, Editing).reserved(),
             C::PasteNewRows => info("Paste as new rows", "Paste as new rows", Editing).reserved(),
@@ -950,8 +963,12 @@ impl Command {
             ),
             C::DeleteRow => info("Delete row", "Delete row", Editing),
             C::SelectRows => info("Select rows", "", Editing),
+            C::SelectCells => info("Select cells", "", Editing),
+            C::SelectBlock => info("Select a block of cells", "", Editing),
+            C::SelectRowsOfCursor => info("Select the rows of the selection", "", Editing),
+            C::SelectAllRows => info("Select all loaded rows", "", Editing),
             C::DeleteSelection => info("Delete the selected rows", "", Editing),
-            C::LeaveVisual => info("Leave the selection of rows", "", Editing),
+            C::LeaveVisual => info("Leave the selection", "", Editing),
             C::OpenReferencedRow => info("Open referenced row", "Open referenced row", Editing),
             C::ShowSavedRow => info(
                 "Show saved row in sorted position",
@@ -1612,9 +1629,11 @@ pub const BINDINGS: &[Binding] = {
             ]),
             keys(&[k("pgup"), k("pgdn"), k("home"), k("end")]),
         ),
-        // A table's rows only: a result has one selected row.
-        bind(C::ExtendUp, GRID, keys(&[k("shift+up")]), NONE),
-        bind(C::ExtendDown, GRID, keys(&[k("shift+down")]), NONE),
+        // A rectangle of cells, in a table's rows and a result's.
+        bind(C::ExtendUp, ROWS, keys(&[k("shift+up")]), NONE),
+        bind(C::ExtendDown, ROWS, keys(&[k("shift+down")]), NONE),
+        bind(C::ExtendLeft, ROWS, keys(&[k("shift+left")]), NONE),
+        bind(C::ExtendRight, ROWS, keys(&[k("shift+right")]), NONE),
         bind(
             C::OpenInspector,
             GRID,
@@ -1794,9 +1813,25 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("cmd+shift+z")]),
             keys(&[k("ctrl+r")]).normal(),
         ),
-        bind(C::CopyCells, GRID, keys(&[k("cmd+c")]), keys(&[k("v y")])),
-        bind(C::CopyRow, GRID, keys(&[k("cmd+shift+c")]), NONE),
-        bind(C::PasteCells, GRID, keys(&[k("cmd+v")]), keys(&[k("v p")])),
+        // The terminal look copies and pastes from a visual selection: `v`
+        // starts one on the cursor's cell, and `y` copies it, so `v y`
+        // copies that cell as it always did.
+        bind(
+            C::CopyCells,
+            GRID,
+            keys(&[k("cmd+c")]),
+            keys(&[via("v"), via("y")]).shown("v y"),
+        ),
+        bind(
+            C::CopyCells,
+            RESULTS,
+            keys(&[k("cmd+c")]),
+            keys(&[via("v"), via("y")]).shown("v y"),
+        ),
+        bind(C::CopySelection, ROWS, NONE, keys(&[k("y")])).when(When::Visual),
+        bind(C::CopyRow, ROWS, keys(&[k("cmd+shift+c")]), NONE),
+        bind(C::PasteCells, GRID, keys(&[k("cmd+v")]), NONE),
+        bind(C::PasteCells, GRID, NONE, keys(&[k("p")]).shown("v p")).when(When::Visual),
         bind(
             C::PasteNewRows,
             GRID,
@@ -1834,11 +1869,17 @@ pub const BINDINGS: &[Binding] = {
         // other looks have a button there.
         bind(C::DeleteRow, INSPECTOR, NONE, keys(&[k("dd")])).when(When::NewRow),
         bind(C::AddRow, INSPECTOR, NONE, keys(&[k("o")])).when(When::NewRow),
-        // The terminal look's visual selection of rows: `V` starts and
-        // leaves it, and while it is on `d` alone deletes its rows.
-        bind(C::SelectRows, GRID, NONE, keys(&[k("V")])),
-        bind(C::DeleteSelection, GRID, NONE, keys(&[k("d")])).when(When::Visual),
-        bind(C::LeaveVisual, GRID, NONE, keys(&[k("esc")])).when(When::Visual),
+        // The terminal look's visual selections: `v` of cells, `ctrl+v` of
+        // a block, `V` of rows. Each key starts its own and leaves it, and
+        // while the rows' is on `d` alone deletes them.
+        bind(C::SelectRows, ROWS, NONE, keys(&[k("V")])),
+        bind(C::SelectCells, ROWS, NONE, keys(&[k("v")])),
+        bind(C::SelectBlock, ROWS, NONE, keys(&[k("ctrl+v")])),
+        bind(C::DeleteSelection, GRID, NONE, keys(&[k("d")])).when(When::VisualRows),
+        bind(C::LeaveVisual, ROWS, NONE, keys(&[k("esc")])).when(When::Visual),
+        // The rows of what is selected, and every row loaded.
+        bind(C::SelectRowsOfCursor, ROWS, keys(&[k("shift+space")]), NONE),
+        bind(C::SelectAllRows, ROWS, keys(&[k("cmd+a")]), NONE),
         bind(C::OpenReferencedRow, GRID, NONE, keys(&[k("gd")])),
         bind(C::ShowSavedRow, GRID, NONE, keys(&[k("gs")])),
         // The Structure view of a table, which is the grid's tab with its
@@ -4776,8 +4817,9 @@ mod tests {
             command(Command::OpenReferencedRow)
         );
         assert_eq!(omarchy(Scope::Grid, "gs"), Claimed);
-        assert_eq!(omarchy(Scope::Grid, "vy"), command(Command::CopyCells));
-        assert_eq!(omarchy(Scope::Grid, "vp"), Claimed);
+        // `v` starts a selection of cells, which `y` copies.
+        assert_eq!(omarchy(Scope::Grid, "v"), command(Command::SelectCells));
+        assert_eq!(omarchy(Scope::Grid, "y"), Waiting);
         assert_eq!(omarchy(Scope::Grid, "\"+p"), Claimed);
         assert_eq!(omarchy(Scope::Grid, "D"), command(Command::SetDefault));
         assert_eq!(omarchy(Scope::Grid, "R"), command(Command::Reload));
@@ -4838,19 +4880,48 @@ mod tests {
     #[test]
     fn a_visual_selection_has_its_own_keys() {
         let keymap = Keymap::default();
-        let visual = |when: When| when == When::Visual;
+        let rows = |when: When| when == When::Visual || when == When::VisualRows;
+        let cells = |when: When| when == When::Visual;
         let nothing = |_: When| false;
         let grid = |holds: &dyn Fn(When) -> bool, typed: &str| {
             keymap.typed(Layout::Omarchy, Scope::Grid, holds, typed)
         };
         assert_eq!(grid(&nothing, "V"), Typed::Command(Command::SelectRows));
-        // `d` alone is the whole key while a selection is on, and the
-        // first of two without one.
-        assert_eq!(grid(&visual, "d"), Typed::Command(Command::DeleteSelection));
+        assert_eq!(grid(&nothing, "v"), Typed::Command(Command::SelectCells));
+        // `d` alone is the whole key while a selection of rows is on, and
+        // the first of two without one. A selection of cells has none.
+        assert_eq!(grid(&rows, "d"), Typed::Command(Command::DeleteSelection));
+        assert_eq!(grid(&cells, "d"), Typed::Waiting);
         assert_eq!(grid(&nothing, "d"), Typed::Waiting);
         assert_eq!(grid(&nothing, "dd"), Typed::Command(Command::DeleteRow));
+        // `y` alone copies a selection, and is the first of `yy` without.
+        for holds in [&rows as &dyn Fn(When) -> bool, &cells] {
+            assert_eq!(grid(holds, "y"), Typed::Command(Command::CopySelection));
+            // Pasting is not built: the key is claimed.
+            assert_eq!(grid(holds, "p"), Typed::Claimed);
+        }
+        assert_eq!(grid(&nothing, "y"), Typed::Waiting);
+        assert_eq!(grid(&nothing, "yy"), Typed::Command(Command::YankRow));
+        assert_eq!(grid(&nothing, "p"), Typed::Command(Command::PutRow));
+        // A result's rows have the same selections, and copy them.
+        let results = |typed: &str| keymap.typed(Layout::Omarchy, Scope::Results, &cells, typed);
+        assert_eq!(results("v"), Typed::Command(Command::SelectCells));
+        assert_eq!(results("V"), Typed::Command(Command::SelectRows));
+        assert_eq!(results("y"), Typed::Command(Command::CopySelection));
         assert_eq!(keymap.label(Layout::Omarchy, Command::LeaveVisual), "esc");
+        assert_eq!(
+            keymap.label(Layout::Omarchy, Command::SelectBlock),
+            "ctrl+v"
+        );
+        assert_eq!(keymap.label(Layout::Omarchy, Command::CopyCells), "v y");
+        assert_eq!(keymap.label(Layout::Omarchy, Command::CopySelection), "y");
         assert_eq!(keymap.label(Layout::Mac, Command::SelectRows), "");
+        assert_eq!(
+            keymap.label(Layout::Mac, Command::SelectRowsOfCursor),
+            "⇧Space"
+        );
+        assert_eq!(keymap.label(Layout::Mac, Command::SelectAllRows), "⌘A");
+        assert_eq!(keymap.label(Layout::Mac, Command::ExtendRight), "⇧→");
     }
 
     #[test]

@@ -54,13 +54,20 @@ fn state_note(selected: Option<String>, read_only: bool, locale: crate::i18n::Lo
 }
 
 /// What the footer says of the tab's selection: that a row is selected,
-/// or, on a new row, that it is one and how many values it still needs.
+/// how many rows or rows and columns a range covers, or, on a new row,
+/// that it is one and how many values it still needs.
 fn selection_note(
     workspace: &crate::model::Workspace,
     object: &ObjectTab,
     locale: crate::i18n::Locale,
 ) -> Option<String> {
     let cell = object.selection?;
+    // A rectangle of cells: how many rows and columns.
+    let cells = object.range.as_ref().is_some_and(|range| !range.rows());
+    if let Some(size) = object.selection_size().filter(|_| cells) {
+        let size = crate::selection::size_words(locale, size, false);
+        return Some(format!("{size} {}", gettext(locale, "selected")));
+    }
     // Several rows: how many, whatever kind each is.
     let rows = object.selected_rows().len();
     if rows > 1 {
@@ -1610,11 +1617,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         )),
         (None, _) => None,
     };
-    // A visual selection of rows, and how many it holds: said when it
-    // starts and each time it grows or shrinks.
-    let visual = (look.terminal && object.visual()).then(|| {
-        let rows = object.selected_rows().len();
-        let held = super::pending_bar::counted(locale, rows, "row selected", "rows selected");
+    // A visual selection, and what it holds: said when it starts and each
+    // time it grows or shrinks.
+    let visual = object.visual_mode().filter(|_| look.terminal).map(|mode| {
+        let whole_rows = mode == crate::selection::Visual::Rows;
+        let size = object.selection_size().unwrap_or((1, 1));
+        let held = crate::selection::said(locale, size, whole_rows);
         format!("{} {held}.", gettext(locale, "Visual."))
     });
     // The tab itself from here on: the field on a cell edits the text its
@@ -1733,11 +1741,24 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         // among them. A place is the grid's; a row is the set's and the
         // page's, and the reducer's.
         let order = crate::edit::Order::of(&object.edits.added, page.rows.len());
-        // The rows selected with the cursor's, as places of the grid. Read
-        // here, before the tab is taken for its editor's text.
-        let span = object.selected_span();
-        let ranged =
-            |place: usize| span.is_some_and(|(first, last)| (first..=last).contains(&place));
+        // What is selected with the cursor's cell, as places of the grid:
+        // whole rows, or a rectangle of cells. Read here, before the tab is
+        // taken for its editor's text.
+        let width = page.columns.len();
+        let selected = object.selected();
+        let whole = selected
+            .map(|selected| selected.ranged())
+            .unwrap_or_default();
+        let block = selected.and_then(|selected| selected.block(width));
+        let said = selected.and_then(|selected| {
+            let whole_rows = object
+                .range
+                .as_ref()
+                .is_some_and(crate::selection::Range::rows);
+            let size = selected.size(width)?;
+            Some(crate::selection::said(locale, size, whole_rows))
+        });
+        let ranged = |place: usize| whole.contains(&place);
         let placed = |cell: CellPos| {
             let row = order.place(cell.row)?;
             Some(CellPos { row, col: cell.col })
@@ -1790,6 +1811,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             &columns,
             order.len(),
             object.selection.and_then(placed),
+            grid::Picked {
+                block,
+                said: said.as_deref(),
+            },
             keys,
             &palette,
             &grid_look,
@@ -1950,12 +1975,26 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             });
         }
         if let Some(cell) = output.clicked.and_then(held) {
-            // With Shift held the click takes the rows up to its own into
+            // With Shift held the click takes the cells up to its own into
             // the selection.
             actions.push(if output.shift {
                 Action::ExtendTo { tab, id, cell }
             } else {
                 Action::SelectCell { tab, id, cell }
+            });
+        }
+        // A drag over the cells: the range runs to the one under it.
+        if let Some(cell) = output.dragged.and_then(held) {
+            actions.push(Action::ExtendTo { tab, id, cell });
+        }
+        if let Some((place, click)) = output.row_clicked
+            && let Some(row) = order.row(place)
+        {
+            actions.push(Action::RowNumberClicked {
+                tab,
+                id,
+                row,
+                click,
             });
         }
         // A second click edits the cell.
