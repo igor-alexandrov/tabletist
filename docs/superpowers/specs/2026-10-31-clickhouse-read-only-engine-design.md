@@ -29,7 +29,7 @@ probe's files and backups were removed after.
 | Statement | `readonly=1` | `readonly=2` |
 | --- | --- | --- |
 | `INSERT INTO FUNCTION file(…)`, `url(…)` | refused | runs (wrote a file) |
-| `EXPLAIN PIPELINE INSERT INTO FUNCTION file(…) …` | not probed | runs (created the file) |
+| `EXPLAIN PIPELINE INSERT INTO FUNCTION file(…) …` | refused | runs (created the file) |
 | `EXPLAIN SYNTAX INSERT INTO FUNCTION file(…) …` | not probed | no file |
 | `BACKUP DATABASE … TO File(…)` | runs | runs |
 | `KILL QUERY …` | runs | runs |
@@ -39,6 +39,7 @@ probe's files and backups were removed after.
 | `SET readonly = 0`, `SETTINGS readonly = 0` | refused | refused |
 | `SELECT … FROM url(…)`, `file(…)`, `fileCluster(…)` | refused | runs |
 | `numbers()`, `generateRandom()`, `system.*`, `sleep()` | runs | runs |
+| `SELECT file('…')`, the scalar function (a file in `user_files`) | runs | runs |
 | `OPTIMIZE`, `SYSTEM …`, `CREATE TABLE` | refused | refused |
 | `SELECT … INTO OUTFILE` (over HTTP) | refused | refused |
 | Settings in the URL (`max_result_rows`, `query_id`, `param_*`) | accepted | accepted |
@@ -92,14 +93,16 @@ script, `param_*` for bound values, and for the editor and agents
 `max_result_rows` with `result_overflow_mode=break` and
 `max_execution_time`. Rows come back as `TabSeparatedWithNamesAndTypes`.
 
-A user whose own profile is `readonly=1` is refused every setting but
-`readonly=1` itself is already in force. `connect` asks
+A user whose own profile is `readonly=1` already has `readonly=1` in
+force, and is refused every setting. `connect` asks
 `SELECT getSetting('readonly')`; for such a user the URL carries only
 `query_id`, `param_*` and the format. Browsing is unchanged (its limits
 are `LIMIT` in the SQL). The editor and agents get the row cap from the
 reader (it stops at the cap and drops the connection) and the timeout
 from the client (it cancels with `KILL QUERY`), and a script's `SET`
-fails with the server's own error.
+fails with the server's own error. The editor's reader stops at the cap
+and drops the connection for every user anyway: under `readonly=2` a
+top-level `SETTINGS` lifts `max_result_rows`.
 
 ## The engine in `tabletist-db`
 
@@ -164,8 +167,8 @@ Databases are schemas, as on MySQL.
   `{p1:String}` sent as `param_p1`, cast to the column's type in the SQL
   where the operator needs it.
 - With no sort chosen, rows are ordered by the sorting key's expression
-  as `system.tables.sorting_key` gives it (the server's own text, read in
-  the same session; none for `tuple()`), so the server reads in order
+  as `system.tables.sorting_key` gives it (the server's own text; none
+  for `tuple()`), so the server reads in order
   and pages mostly keep their rows. `ordered_by_key` stays false: the
   key allows duplicates, so `OFFSET` over ties is not stable, and the
   grid keeps its unordered notice.
@@ -173,7 +176,8 @@ Databases are schemas, as on MySQL.
   request runs under `readonly=1`. Before it is sent, the ClickHouse
   lexer refuses in it a `;`, a `FORMAT`, `SETTINGS` or `INTO OUTFILE`
   word outside strings and comments, a parenthesis it closes that it did
-  not open, and text ending inside a string or a comment.
+  not open, and text ending inside a string or a comment. The sentence
+  says a column of that name is written in backticks.
 - `lookup` answers an empty page: there are no foreign keys to look up.
 
 ### Types
@@ -214,7 +218,9 @@ As probed on 25.8:
 - Names: backticks (a backtick doubled) and double quotes. `$` may be
   part of a word.
 - `{name:Type}` is one token, a placeholder: its `:` is not a named
-  parameter's.
+  parameter's. The token is a name, a colon and a type (names,
+  parentheses, commas, numbers and quoted strings) and nothing else; any
+  other text in braces is not a placeholder.
 
 ### The allowlist (`sql::refusal`)
 
@@ -252,21 +258,27 @@ probe table, so a server that changes one fails a test.
 - An agent's read runs under `readonly=1` (no `SET`, no top-level
   `SETTINGS`, no `url()` or `file()`), with the agent's limits as
   `max_result_rows` and `max_execution_time`: a `SETTINGS` in a subquery
-  does not lift them (probed). `check_read` also refuses `SETTINGS` at
-  any depth (`words_read` reads every level).
+  does not lift them (probed). `check_read` also refuses a `SETTINGS`
+  clause at any depth, read from sqlparser's tree (a query's `settings`),
+  not from words, so `system.settings` stays readable.
 - `check_read` takes the allowlist above without `SET` and `USE`, then
   parses with sqlparser's `ClickHouseDialect`; what it cannot parse is
   refused, as on the other engines.
 - `effects` refuses, as a second fence behind `readonly=1`, every table
   function but those that only make rows (`numbers`, `numbers_mt`,
   `zeros`, `zeros_mt`, `values`, `generateRandom`, `null`): an allowlist,
-  since ClickHouse adds table functions each release. It also refuses
-  `sleep` and `sleepEachRow`, as PostgreSQL's and MySQL's lists refuse
-  theirs.
+  since ClickHouse adds table functions each release. A table function
+  is found by its place in sqlparser's tree (a table with arguments, at
+  any depth, under sqlparser's recursion limit), not by its name: `file`,
+  `null` and `values` are scalar functions too. Of scalar functions it
+  refuses `file` (it reads a file in `user_files` under `readonly=1`,
+  probed), `sleep` and `sleepEachRow`, as PostgreSQL's and MySQL's lists
+  refuse theirs.
 - Placeholders are ClickHouse's own: the agent writes `{p1:Type}`,
   `{p2:Type}`, …, where the n-th value it sends is `p<n>` and is sent as
-  `param_p<n>`. A name may repeat; any other name, or a `pN` past the
-  values sent, is refused. The server binds them. For sqlparser, which
+  `param_p<n>`. A name may repeat; any other name, a `pN` past the
+  values sent, or braces holding anything but a placeholder token, is
+  refused. The server binds them. For sqlparser, which
   reads `{p:String}` as a dictionary, each placeholder is handed over as
   `NULL` at the same place; what is sent is the text as written. The MCP
   connection listing names the style.
