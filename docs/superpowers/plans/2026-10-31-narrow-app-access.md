@@ -82,7 +82,7 @@ pub fn show(ui: &mut egui::Ui, paint: Paint, tab: ConnTabId, object: &mut Object
 - `ctx: &egui::Context` or `ui: &mut egui::Ui` first, as now.
 - `paint: Paint` by value: it is `Copy`, and the views copied its three fields into locals already. The view's first line takes it apart, `let Paint { locale, palette, look } = paint;`, so the body below reads as it did.
 - The ids the view names in its actions or egui ids (`tab: ConnTabId`, a `TabId` where the slice does not carry its own).
-- The slice: `&T` for what the view only reads, `&mut T` where it edits text a field holds or the cursor a field reports (the two edits `AGENTS.md` allows a view). The slice is the smallest struct that holds what the view reads: a dialog's prompt (`&mut PasswordPrompt`), an `ObjectTab`, a `Workspace`, never `Option<Dialog>` or `ConnTab`.
+- The slice: `&T` for what the view only reads, `&mut T` where a control edits a value in place (a field's text, a checkbox, a dropdown's choice) or a field reports its cursor (the edits `AGENTS.md` allows a view). The slice is the smallest struct that holds what the view reads: a dialog's prompt (`&mut PasswordPrompt`), an `ObjectTab`, a `Workspace`, never `Option<Dialog>` or `ConnTab`.
 - Anything else the view reads (the keymap, a setting, a query's answer) comes as its own argument, `&Keymap`, `&Settings` or the answer itself. When that makes more than seven arguments, the view takes a struct of its own named for what it shows (`FooView<'a>`), built by its caller.
 
 ### How a view asks for a change
