@@ -275,7 +275,8 @@ fn reading_words(reading: &Reading, column: &Column, locale: Locale) -> String {
         tabletist_db::Dialect::Sqlite => column.kind.has_date(),
         tabletist_db::Dialect::Postgres
         | tabletist_db::Dialect::MySql
-        | tabletist_db::Dialect::BigQuery => false,
+        | tabletist_db::Dialect::BigQuery
+        | tabletist_db::Dialect::DuckDb => false,
     };
     if sqlite {
         parts.push(match column.stored {

@@ -511,6 +511,7 @@ impl Adapter for Conn {
             foreign_keys,
             referenced_by,
             comment,
+            file: None,
         })
     }
 

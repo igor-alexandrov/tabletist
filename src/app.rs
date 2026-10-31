@@ -3087,7 +3087,7 @@ impl App {
                     form.driver = driver;
                     match driver {
                         // No port or password of its own to default.
-                        Driver::Sqlite | Driver::BigQuery => {}
+                        Driver::Sqlite | Driver::BigQuery | Driver::Files => {}
                         Driver::Postgres | Driver::MySql => {
                             if form.port.trim().is_empty() || form.port.trim() == old_default {
                                 form.port = driver.default_port().to_string();
@@ -6102,7 +6102,7 @@ impl App {
         };
         let asks = match workspace.driver {
             Driver::MySql => workspace.session_zone.needs_load(),
-            Driver::Postgres | Driver::Sqlite | Driver::BigQuery => false,
+            Driver::Postgres | Driver::Sqlite | Driver::BigQuery | Driver::Files => false,
         };
         if asks {
             let session = workspace.session;
@@ -6129,7 +6129,7 @@ impl App {
                     self.backend
                         .send(Command::ListDatabases { session, request });
                 }
-                Driver::MySql | Driver::Sqlite | Driver::BigQuery => {}
+                Driver::MySql | Driver::Sqlite | Driver::BigQuery | Driver::Files => {}
             }
         }
         self.ask_server_version(tab);
@@ -7339,7 +7339,8 @@ impl App {
                         tabletist_db::Dialect::Postgres => (named.name.to_lowercase(), true),
                         tabletist_db::Dialect::MySql
                         | tabletist_db::Dialect::Sqlite
-                        | tabletist_db::Dialect::BigQuery => (named.name.clone(), false),
+                        | tabletist_db::Dialect::BigQuery
+                        | tabletist_db::Dialect::DuckDb => (named.name.clone(), false),
                     };
                     let object = crate::completion::resolve(schema, &name, &catalog)
                         .filter(|object| !exact || object.name == name)?;
@@ -8601,6 +8602,8 @@ fn apply_url(form: &mut ConnectionForm) -> Result<(), String> {
                 .map(|path| path.display().to_string())
                 .unwrap_or_default();
         }
+        // No URL names a Files connection.
+        Driver::Files => {}
         Driver::Postgres | Driver::MySql => {
             if form.name.trim().is_empty() {
                 form.name = spec.summary();
@@ -8978,7 +8981,7 @@ fn logged_statement(driver: Driver, sql: &str, params: Option<&str>) -> String {
                 let named = match driver {
                     Driver::Postgres => format!("${place}"),
                     Driver::Sqlite | Driver::BigQuery => format!("?{place}"),
-                    Driver::MySql => format!("? #{place}"),
+                    Driver::MySql | Driver::Files => format!("? #{place}"),
                 };
                 text.push_str(&format!("-- {named} = {value}\n"));
             }

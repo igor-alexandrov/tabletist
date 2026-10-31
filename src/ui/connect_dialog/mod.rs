@@ -969,6 +969,7 @@ fn url_field(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) -> Response {
         Driver::MySql => "mysql://user@host/db",
         Driver::Postgres => "postgres://user@host/db",
         Driver::BigQuery => "bigquery:project-id?credentials=/path/key.json",
+        Driver::Files => "~/Data/exports",
     };
     let hint = hint(ui, example, role, skin);
     let field = ui.add(input(ui, &mut form.url, role, skin.field_height(), skin).hint_text(hint));
