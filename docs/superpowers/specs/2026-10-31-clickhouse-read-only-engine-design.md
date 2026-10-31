@@ -355,9 +355,12 @@ Each phase leaves `main` working and its checks passing.
 
 1. **Transport.** `clickhouse/http.rs` with TLS, the `prefer` probe, the
    pool, `KILL QUERY`; the reader moved; the ureq spike removed; the
-   compose TLS port and certificate. Its tests are in-crate (`http.rs`'s
-   own, gated by the URL variable, as `ssh::tests` are) and open their
-   tunnel with `ssh::Tunnel::open` themselves. Nothing names a
+   compose TLS port and certificate. Its server tests use the hidden
+   `clickhouse` module's `Session` from `tests/clickhouse.rs`; the tunnel
+   test is in-crate, gated by the SSH URL variable as `ssh::tests` are,
+   and opens its tunnel with `ssh::Tunnel::open` itself. A kept
+   connection the server closed while idle is replaced once, not a lost
+   session. Nothing names a
    `Driver` yet.
 2. **Engine.** `Driver::ClickHouse` and `Dialect::ClickHouse`, URLs,
    `tls_port` and `writes`, the adapter (catalog, rows, count, DDL,
