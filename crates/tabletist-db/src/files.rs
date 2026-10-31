@@ -274,8 +274,17 @@ pub fn table_name(stem: &str) -> String {
 }
 
 /// The names DuckDB keeps for its own databases, which a `.duckdb` file
-/// cannot be attached under.
-const RESERVED: [&str; 4] = ["main", "memory", "system", "temp"];
+/// cannot be attached under, and the schemas every catalog has: a file
+/// attached as `information_schema` makes `information_schema.columns`
+/// ambiguous, and Structure fails for every table.
+const RESERVED: [&str; 6] = [
+    "information_schema",
+    "main",
+    "memory",
+    "pg_catalog",
+    "system",
+    "temp",
+];
 
 /// Each file's name, in order: its stem's [`table_name`], and where two
 /// files would share one, each of them that name with `_` and its
@@ -545,6 +554,8 @@ mod tests {
             "memory.duckdb",
             "system.duckdb",
             "temp.duckdb",
+            "information_schema.duckdb",
+            "pg_catalog.duckdb",
             "main.csv",
         ] {
             touch(dir.path(), name, 1);
@@ -553,9 +564,11 @@ mod tests {
         assert_eq!(
             scan.names(),
             [
+                "information_schema_duckdb",
                 "main_csv",
                 "main_duckdb",
                 "memory_duckdb",
+                "pg_catalog_duckdb",
                 "system_duckdb",
                 "temp_duckdb"
             ]
