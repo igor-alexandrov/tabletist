@@ -51,6 +51,8 @@ pub struct Palette {
     pub border: Color32,
     /// The selected row or item.
     pub selection: Color32,
+    /// The cells of a selected range, a step quieter than the selected row.
+    pub accent_faint: Color32,
     /// Verified TLS, JSON strings, the dev environment.
     pub success: Color32,
     /// The terminal's second value tag.
@@ -113,6 +115,7 @@ impl Palette {
             faint: Color32::from_rgb(0x8a, 0x88, 0x82),
             border: Color32::from_rgb(0x44, 0x43, 0x3f),
             selection: Color32::from_rgb(0x2b, 0x35, 0x50),
+            accent_faint: Color32::from_rgb(0x2a, 0x32, 0x48),
             success: Color32::from_rgb(0x8f, 0xd1, 0x9e),
             info: Color32::from_rgb(0x9f, 0xbd, 0xf0),
             orange: Color32::from_rgb(0xf0, 0xa8, 0x68),
@@ -169,6 +172,7 @@ impl Palette {
             faint: Color32::from_rgb(0x8a, 0x89, 0x84),
             border: Color32::from_rgb(0xdc, 0xda, 0xd4),
             selection: Color32::from_rgb(0xe4, 0xeb, 0xfb),
+            accent_faint: Color32::from_rgb(0xee, 0xf2, 0xfc),
             success: Color32::from_rgb(0x14, 0x6b, 0x3a),
             info: Color32::from_rgb(0x1e, 0x4f, 0x8a),
             orange: Color32::from_rgb(0x9a, 0x4a, 0x0b),
@@ -227,6 +231,7 @@ impl fastframe_theme::Palette for Palette {
             "faint" => self.faint = color,
             "border" => self.border = color,
             "selection" => self.selection = color,
+            "accent_faint" => self.accent_faint = color,
             "success" => self.success = color,
             "info" => self.info = color,
             "orange" => self.orange = color,
@@ -255,6 +260,9 @@ impl fastframe_theme::Palette for Palette {
         }
         if given.contains("accent") && !given.contains("selection") {
             self.selection = self.window.lerp_to_gamma(self.accent, 0.2);
+        }
+        if given.contains("accent") && !given.contains("accent_faint") {
+            self.accent_faint = self.window.lerp_to_gamma(self.accent, 0.1);
         }
         // Value tags follow a file's own colours: its accent as the blue,
         // and its red and green where it names no rose or olive (which

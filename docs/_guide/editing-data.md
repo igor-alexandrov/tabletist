@@ -399,6 +399,9 @@ The yanked row stays for the next `p`, through a reload too. `yy` also
 puts the row on the clipboard, unless it is a new row that is not saved
 yet.
 
+With several rows selected, Cmd/Ctrl+D copies each of them: the copies
+stand at the top in the grid's order, and the first is the one to edit.
+
 A new row is copied the same way, by the keys: its form has no
 **Duplicate** button.
 
@@ -443,9 +446,10 @@ it is.
 A new row that is not saved yet is dropped by the same key, and leaves
 nothing to save.
 
-To delete several rows at once, select them first: hold Shift and click
-another row, or hold Shift and press the Up or Down arrow. The footer says
-how many rows are selected. Backspace then marks them all. Pressed again
+To delete several rows at once, select them first: click a row's number
+and Shift-click or Cmd/Ctrl-click others, or select cells across the rows
+(hold Shift and press the Up or Down arrow). The footer says how many are
+selected. Backspace then marks every row the selection covers. Pressed again
 it restores them all, and where only some of them were marked it marks the
 rest. New rows among them are dropped. One press takes up to 1,000 rows:
 for more, delete with a statement in the SQL editor.

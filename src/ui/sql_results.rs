@@ -1974,6 +1974,21 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         .iter()
         .map(|column| Tags::of(column, None).when(fit.value_tags))
         .collect();
+    // What is selected with the cursor's cell: whole rows, or a rectangle
+    // of cells. A result's places are its rows.
+    let selected = sql.selected();
+    let whole = selected
+        .map(|selected| selected.ranged())
+        .unwrap_or_default();
+    let block = selected.and_then(|selected| selected.block(columns.len()));
+    let said = selected.and_then(|selected| {
+        let whole_rows = sql
+            .range
+            .as_ref()
+            .is_some_and(crate::selection::Range::rows);
+        let size = selected.size(columns.len())?;
+        Some(crate::selection::said(locale, size, whole_rows))
+    });
     // The grid asks for the cells in view only.
     let output = grid::show(
         &mut child,
@@ -1981,6 +1996,10 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         &grid_columns,
         rows.len(),
         sql.selection,
+        grid::Picked {
+            block,
+            said: said.as_deref(),
+        },
         keys,
         palette,
         &grid_look,
@@ -1990,7 +2009,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
             mark: crate::edit::RowMark::None,
             number: Some(row as u64 + 1),
             deleted: false,
-            ranged: false,
+            ranged: whole.contains(&row),
         },
         None,
         None,
@@ -2011,10 +2030,27 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         },
     );
     if let Some(cell) = output.clicked {
-        actions.push(Action::SelectCell {
+        let id = sql.id;
+        // With Shift held the click takes the cells up to its own into
+        // the selection.
+        actions.push(if output.shift {
+            Action::ExtendTo { tab, id, cell }
+        } else {
+            Action::SelectCell { tab, id, cell }
+        });
+    }
+    // A drag over the cells: the range runs to the one under it.
+    if let Some(cell) = output.dragged {
+        let id = sql.id;
+        actions.push(Action::ExtendTo { tab, id, cell });
+    }
+    if let Some((row, click)) = output.row_clicked {
+        let id = sql.id;
+        actions.push(Action::RowNumberClicked {
             tab,
-            id: sql.id,
-            cell,
+            id,
+            row,
+            click,
         });
     }
     // The Tab key came to the grid: the arrows are its own now.

@@ -6,6 +6,7 @@
 //! result; the colours only as the palette names them. No picture of the
 //! design is compared.
 
+use egui::accesskit::{Role, TreeUpdate};
 use egui::{Key, Modifiers};
 use tabletist_db::Value;
 
@@ -402,4 +403,278 @@ fn a_results_visual_selection_is_said_with_its_keys() {
     });
     harness.settle();
     assert!(!painted(&harness, "-- VISUAL --"), "{:?}", harness.painted);
+}
+
+// The grid: its rows' numbers, the pointer, and what it draws and says.
+
+/// Where the row labelled `label` is.
+fn row_rect(tree: &TreeUpdate, label: &str) -> egui::Rect {
+    crate::testing::bounds(tree, label, Role::Button)
+        .unwrap_or_else(|| panic!("no row labelled {label:?}"))
+}
+
+/// A click of the pointer at `pos`, with `modifiers` held, as a window
+/// tells it: the modifiers first, then the pointer.
+fn click_with(harness: &mut Harness, pos: egui::Pos2, modifiers: Modifiers) {
+    let button = |pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers,
+    };
+    harness.frame(vec![
+        egui::Event::ModifiersChanged(modifiers),
+        egui::Event::PointerMoved(pos),
+    ]);
+    harness.frame(vec![button(true)]);
+    harness.frame(vec![button(false)]);
+    harness.frame(vec![egui::Event::ModifiersChanged(Modifiers::NONE)]);
+    harness.settle();
+}
+
+/// A click on the number of the row labelled `label`.
+fn click_number(harness: &mut Harness, label: &str, modifiers: Modifiers) {
+    let tree = harness.settle();
+    let row = row_rect(&tree, label);
+    click_with(
+        harness,
+        row.left_center() + egui::vec2(20.0, 0.0),
+        modifiers,
+    );
+}
+
+/// Where the cell of the row labelled `label` that writes `text` is.
+fn cell_at(harness: &mut Harness, label: &str, text: &str) -> egui::Pos2 {
+    let tree = harness.settle();
+    let row = row_rect(&tree, label);
+    harness
+        .text_rects
+        .iter()
+        .find(|(piece, rect)| {
+            piece == text
+                && row.y_range().contains(rect.center().y)
+                && !harness.is_row_number(*rect)
+        })
+        .map(|(_, rect)| rect.center())
+        .unwrap_or_else(|| panic!("no {text:?} in {label:?}"))
+}
+
+/// A drag of the pointer from `from` to `to`, over a few frames.
+fn drag(harness: &mut Harness, from: egui::Pos2, to: egui::Pos2) {
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    harness.frame(vec![egui::Event::PointerMoved(from)]);
+    harness.frame(vec![button(from, true)]);
+    for step in 1..=4 {
+        let pos = from + (to - from) * (step as f32 / 4.0);
+        harness.frame(vec![egui::Event::PointerMoved(pos)]);
+    }
+    harness.frame(vec![button(to, false)]);
+    harness.settle();
+}
+
+/// What a screen reader is told of the grid's range.
+fn told(harness: &mut Harness) -> Option<String> {
+    let tree = harness.settle();
+    let mut nodes = tree.nodes.iter();
+    let grid = nodes.find(|(_, node)| node.label() == Some("Rows") && node.role() == Role::Group);
+    grid.and_then(|(_, node)| node.description().map(str::to_owned))
+}
+
+/// Test 2: a screen reader is told the range's size on the grid, and
+/// nothing with no range.
+#[test]
+fn the_range_is_told_to_a_screen_reader() {
+    for look in desktop() {
+        let (mut harness, tab, id) = covers_in(look);
+        select(&mut harness, tab, id, (0, 1));
+        assert_eq!(told(&mut harness), None, "{}", look.name);
+        harness.press(Key::ArrowDown, Modifiers::SHIFT);
+        harness.press(Key::ArrowDown, Modifiers::SHIFT);
+        harness.press(Key::ArrowRight, Modifiers::SHIFT);
+        assert_eq!(
+            told(&mut harness).as_deref(),
+            Some("3 rows by 2 columns selected")
+        );
+        harness.press(Key::Space, Modifiers::SHIFT);
+        assert_eq!(told(&mut harness).as_deref(), Some("3 rows selected"));
+        harness.press(Key::ArrowUp, Modifiers::NONE);
+        assert_eq!(told(&mut harness), None);
+    }
+}
+
+/// Test 2: a click with Shift runs a rectangle from the cursor's cell, and
+/// a drag from the cell it began on.
+#[test]
+fn shift_with_a_click_and_a_drag_select_cells() {
+    for look in desktop() {
+        let (mut harness, tab, id) = covers_in(look);
+        select(&mut harness, tab, id, (0, 2));
+        let at = cell_at(&mut harness, "Row 3", "2026-01-12 09:14:03");
+        click_with(&mut harness, at, Modifiers::SHIFT);
+        assert_eq!(rows(&harness, tab, id), [0, 1, 2], "{}", look.name);
+        assert_eq!(cols(&harness, tab, id), Some((2, 4)), "{}", look.name);
+        // A drag from the second row's kind to the first row's publisher.
+        let from = cell_at(&mut harness, "Row 2", "ebook");
+        let to = cell_at(&mut harness, "Row 1", "9100000000000000001");
+        drag(&mut harness, from, to);
+        assert_eq!(rows(&harness, tab, id), [0, 1], "{}", look.name);
+        assert_eq!(cols(&harness, tab, id), Some((1, 2)), "{}", look.name);
+        let workspace = harness.app.workspace(tab).unwrap();
+        let cursor = workspace.object_tab(id).unwrap().selection;
+        assert_eq!(cursor, Some(CellPos { row: 0, col: 1 }), "{}", look.name);
+    }
+}
+
+/// Test 2: a row's number selects the row, Shift runs to another, and
+/// Command takes one out or puts one in. Each row is told as selected,
+/// and a copy takes the rows whole.
+#[test]
+fn a_row_number_selects_extends_and_toggles_rows() {
+    for look in desktop() {
+        let (mut harness, tab, id) = covers_in(look);
+        click_number(&mut harness, "Row 1", Modifiers::NONE);
+        assert_eq!(rows(&harness, tab, id), [0], "{}", look.name);
+        assert!(whole_rows(&harness, tab, id), "{}", look.name);
+        assert_eq!(told(&mut harness).as_deref(), Some("1 row selected"));
+        click_number(&mut harness, "Row 3", Modifiers::SHIFT);
+        assert_eq!(rows(&harness, tab, id), [0, 1, 2], "{}", look.name);
+        assert!(painted(&harness, "3 rows selected"), "{}", look.name);
+        click_number(&mut harness, "Row 2", Modifiers::COMMAND);
+        assert_eq!(rows(&harness, tab, id), [0, 2], "{}", look.name);
+        let tree = harness.settle();
+        let selected = |label: &str| {
+            let mut nodes = tree.nodes.iter();
+            let node = nodes.find(|(_, node)| node.label() == Some(label));
+            node.and_then(|(_, node)| node.is_selected())
+        };
+        assert_eq!(selected("Row 1"), Some(true));
+        assert_eq!(selected("Row 2"), None);
+        assert_eq!(selected("Row 3"), Some(true));
+        // Whole rows, every column, with Shift's copy and the plain one.
+        let rows_copied = copied(&mut harness, true).unwrap();
+        assert_eq!(rows_copied.lines().count(), 2, "{rows_copied}");
+        assert!(rows_copied.starts_with("1\t9100000000000000001\tprint\t"));
+        assert!(rows_copied.contains("\n3\t9100000000000000003\tprint\t"));
+        assert_eq!(copied(&mut harness, false), Some(rows_copied));
+    }
+}
+
+/// Test 2 and 3: a SQL result's rows take the same selection, copy it, and
+/// say its mode in the terminal look.
+#[test]
+fn a_results_rows_take_the_same_selection() {
+    for look in [Look::macos(), Look::omarchy()] {
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        let tab = harness.connect_fake();
+        let id = super::tests::with_sql_result(&mut harness, tab, 3);
+        // The pointer on the first row's first cell, past its number.
+        let tree = harness.settle();
+        let row = row_rect(&tree, "Row 1");
+        let past = crate::ui::grid::gutter(&look) + 10.0;
+        click_with(
+            &mut harness,
+            row.left_center() + egui::vec2(past, 0.0),
+            Modifiers::NONE,
+        );
+        let sql = |harness: &Harness| {
+            let workspace = harness.app.workspace(tab).unwrap();
+            let sql = workspace.sql_tab(id).unwrap();
+            let selected = sql.selected().unwrap();
+            (selected.rows(), selected.cols(3))
+        };
+        if look.terminal {
+            type_key(&mut harness, Key::V, "v");
+            type_key(&mut harness, Key::J, "j");
+            type_key(&mut harness, Key::L, "l");
+            assert!(painted(&harness, "-- VISUAL --"), "{:?}", harness.painted);
+            assert!(painted(&harness, "2 rows × 2 columns"));
+            assert_eq!(sql(&harness), (vec![0, 1], Some((0, 1))));
+            harness.copied = None;
+            type_key(&mut harness, Key::Y, "y");
+        } else {
+            harness.press(Key::ArrowDown, Modifiers::SHIFT);
+            harness.press(Key::ArrowRight, Modifiers::SHIFT);
+            assert_eq!(sql(&harness), (vec![0, 1], Some((0, 1))));
+            assert_eq!(
+                told(&mut harness).as_deref(),
+                Some("2 rows by 2 columns selected")
+            );
+            harness.copied = None;
+            harness.copy(false);
+            // Its rows: a number, Shift+Space and Mod+A, and their copy.
+            let before = harness.copied.clone();
+            click_number(&mut harness, "Row 2", Modifiers::NONE);
+            assert_eq!(sql(&harness).0, [1]);
+            harness.press(Key::Space, Modifiers::SHIFT);
+            harness.press(Key::A, Modifiers::COMMAND);
+            assert_eq!(sql(&harness), (vec![0, 1, 2], Some((0, 2))));
+            let rows = copied(&mut harness, true).expect("the rows");
+            assert_eq!(rows.lines().count(), 3, "{rows}");
+            harness.copied = before;
+        }
+        let copied = harness.copied.clone().expect("a copy");
+        let lines: Vec<&str> = copied.lines().collect();
+        assert_eq!(lines.len(), 2, "{}: {copied}", look.name);
+        assert!(lines.iter().all(|line| line.split('\t').count() == 2));
+        assert!(lines[0].starts_with("1\t"), "{copied}");
+    }
+}
+
+/// Test 6: a range of cells is filled as the palette names it, in each
+/// look, and the rows' numbers are written in theirs.
+#[test]
+fn a_range_and_the_row_numbers_are_painted_in_their_colours() {
+    for look in [Look::macos(), Look::omarchy()] {
+        let (mut harness, tab, id) = covers_in(look);
+        let palette = harness.app.palette;
+        let (fill, number) = if look.terminal {
+            (palette.surface_active, palette.dim)
+        } else {
+            (palette.accent_faint, palette.faint)
+        };
+        harness.settle();
+        let numbered =
+            harness
+                .text_rects
+                .iter()
+                .zip(&harness.painted)
+                .any(|((text, rect), (_, color))| {
+                    text == "3" && *color == number && harness.is_row_number(*rect)
+                });
+        assert!(numbered, "{}: the third row's number", look.name);
+        let filled = |harness: &Harness| {
+            let cell = look.row();
+            let cells = harness.fills.iter();
+            cells
+                .filter(|(rect, color)| *color == fill && rect.height() == cell)
+                .count()
+        };
+        let before = filled(&harness);
+        select(&mut harness, tab, id, (0, 1));
+        if look.terminal {
+            type_key(&mut harness, Key::V, "v");
+            type_key(&mut harness, Key::J, "j");
+            type_key(&mut harness, Key::L, "l");
+        } else {
+            harness.press(Key::ArrowDown, Modifiers::SHIFT);
+            harness.press(Key::ArrowRight, Modifiers::SHIFT);
+        }
+        harness.settle();
+        // Four cells, the cursor's among them in its own colour.
+        assert_eq!(filled(&harness) - before, 3, "{}", look.name);
+        // The terminal outlines the range's anchor in the accent.
+        if look.terminal {
+            let accent = palette.accent;
+            let outlined = harness.outlines.iter().any(|(rect, stroke)| {
+                stroke.color == accent && stroke.width == 1.0 && rect.height() == look.row()
+            });
+            assert!(outlined, "the anchor's outline");
+        }
+    }
 }

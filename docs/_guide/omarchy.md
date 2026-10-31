@@ -159,7 +159,7 @@ With the search open, the matches replace the start lists:
 | `r`, `s`, `S` | Show the rows, the structure or the DDL, from any of them |
 | `:ddl` | The DDL view of the table under the sidebar's cursor (with the keyboard in the sidebar), or else of the table in front |
 
-Copying a whole row has no key.
+`V` then `y` copies whole rows, with tabs between the values.
 
 ### The Agents tab
 
@@ -248,9 +248,11 @@ cursor is on.
 | `p`, `P` | Put a copy of the yanked row below the cursor's row, or above it |
 | `dd` | Delete the row: mark it for deletion, or restore a marked row. A new row that is not saved yet is dropped |
 | `3dd` | The same for the cursor's row and the two after it. Any count works, up to 1,000 rows. The cursor moves to the row after them |
-| `V` | Start a selection of rows on the cursor's row. `j`, `k` and the other moves extend it. The status line reads `-- VISUAL --` and counts its rows |
+| `v`, Ctrl+V | Start a selection of cells, or a block, on the cursor's cell. The moves stretch it. The status line reads `-- VISUAL --` or `-- VISUAL BLOCK --` and its size |
+| `V` | Start a selection of rows on the cursor's row. `j`, `k` and the other moves extend it. The status line reads `-- VISUAL LINE --` and counts its rows |
+| `y` | In a selection: copy it, with tabs between the values, and leave it |
 | `d` | In a selection of rows: delete its rows, or restore them where all are marked. New rows among them are dropped |
-| Esc, `V` | Leave the selection of rows |
+| Esc, or the key that started it | Leave the selection |
 | Enter, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Esc | Leave the editor and keep the edit |
 | Ctrl+C | Drop the edit |
@@ -325,6 +327,7 @@ On a result, with the keyboard out of the editor:
 | Keys | Do |
 | --- | --- |
 | `j` `k`, `h` `l` | Move in the result |
+| `v`, Ctrl+V, `V` | Select cells, a block, or whole rows, as in a table. `y` copies the selection and Esc leaves it |
 | Enter | Show the selected row in the row panel |
 | Ctrl+Shift+R | Show or hide the row panel |
 | `[` `]` | Previous and next row, while the panel shows |
