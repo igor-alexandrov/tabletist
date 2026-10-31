@@ -1,5 +1,7 @@
-//! The interface. Views read `App` and push `Action`s; they never change
-//! state directly.
+//! The interface. Views read the state they show and return the `Action`s
+//! they ask for; they never change state directly. Some still take `App`
+//! and push onto `app.actions`, until they are narrowed to `Paint` and
+//! their own state (`password_prompt`, `filter_bar`).
 
 pub mod about;
 pub mod agent_access;
@@ -131,7 +133,27 @@ mod zone_tests;
 use egui::Frame;
 
 use crate::app::App;
-use crate::model::{Action, ConnTabContent};
+use crate::model::{Action, ConnTabContent, Dialog};
+
+/// What every view draws with: the language of its words, the colours and
+/// the platform's look. A view takes it, and the state it shows, instead
+/// of the whole `App`.
+#[derive(Clone, Copy)]
+pub struct Paint {
+    pub locale: crate::i18n::Locale,
+    pub palette: crate::theme::Palette,
+    pub look: crate::theme::Look,
+}
+
+impl Paint {
+    pub fn of(app: &App) -> Self {
+        Self {
+            locale: app.locale,
+            palette: app.palette,
+            look: app.look,
+        }
+    }
+}
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let fill = app.palette.window;
@@ -146,7 +168,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             }
         });
     connect_dialog::show(app, &ui.ctx().clone());
-    password_prompt::show(app, &ui.ctx().clone());
+    let paint = Paint::of(app);
+    if let Some(Dialog::Password(prompt)) = &mut app.dialog {
+        let asked = password_prompt::show(&ui.ctx().clone(), paint, prompt);
+        app.actions.extend(asked);
+    }
     host_key_prompt::show(app, &ui.ctx().clone());
     quick_open::show(app, &ui.ctx().clone());
     help::show(app, &ui.ctx().clone());
@@ -15274,7 +15300,13 @@ value_tags   = true
             // With the keyboard in the filter's field.
             let (mut harness, tab, id) = pending();
             harness.press(Key::F, Modifiers::COMMAND);
-            assert!(crate::ui::filter_bar::is_open(&harness.app, tab, id));
+            assert!(
+                harness
+                    .app
+                    .workspace(tab)
+                    .and_then(|workspace| workspace.object_tab(id))
+                    .is_some_and(crate::ui::filter_bar::is_open)
+            );
             assert!(harness.ctx.text_edit_focused(), "{}", look.name);
             harness.press(Key::S, Modifiers::COMMAND);
             assert_eq!(writes(&harness), 1, "{}: the filter", look.name);
@@ -17988,7 +18020,13 @@ value_tags   = true
             type_text(&mut harness, "x");
             // The filter bar opens and takes the keyboard.
             harness.press(Key::F, Modifiers::COMMAND);
-            assert!(crate::ui::filter_bar::is_open(&harness.app, tab, id));
+            assert!(
+                harness
+                    .app
+                    .workspace(tab)
+                    .and_then(|workspace| workspace.object_tab(id))
+                    .is_some_and(crate::ui::filter_bar::is_open)
+            );
             assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
             assert_eq!(
                 pending_text(&harness, tab, id, (1, 1)).as_deref(),
@@ -21280,7 +21318,13 @@ value_tags   = true
             let (mut harness, tab, id) = editable_in(look);
             make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
             harness.press(Key::F, Modifiers::COMMAND);
-            assert!(crate::ui::filter_bar::is_open(&harness.app, tab, id));
+            assert!(
+                harness
+                    .app
+                    .workspace(tab)
+                    .and_then(|workspace| workspace.object_tab(id))
+                    .is_some_and(crate::ui::filter_bar::is_open)
+            );
             assert!(harness.ctx.text_edit_focused(), "{}", look.name);
             let typed = |harness: &Harness| {
                 let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
