@@ -267,6 +267,7 @@ pub(super) fn body(
                             file_field(ui, form, skin, actions);
                         });
                     }
+                    Driver::Files => {}
                     Driver::Postgres | Driver::MySql => {
                         fieldset(ui, &skin.say("Server"), skin, |ui| {
                             server(ui, form, skin, actions);

@@ -147,6 +147,8 @@ pub fn database_of(spec: &tabletist_db::ConnectSpec) -> String {
             .as_ref()
             .map(|path| path.display().to_string())
             .unwrap_or_default(),
+        // Its folder, or its files: what it opens is what names it.
+        tabletist_db::Driver::Files => spec.summary(),
         tabletist_db::Driver::Postgres | tabletist_db::Driver::MySql => spec.database.clone(),
     }
 }

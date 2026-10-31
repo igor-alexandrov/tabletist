@@ -197,7 +197,7 @@ fn connecting(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let say = |text: &'static str| look.label(&gettext(locale, text));
     let spec = &workspace.spec;
     let (reach, target) = match spec.driver {
-        Driver::Sqlite => ("Open", spec.summary()),
+        Driver::Sqlite | Driver::Files => ("Open", spec.summary()),
         Driver::Postgres | Driver::MySql => {
             let target = format!("{}:{}", spec.host, spec.port);
             let target = match &spec.ssh {
@@ -296,7 +296,7 @@ fn failure_title(
             format!("{} {}", say("Password rejected for"), spec.user),
         ),
         Error::Connect(_) | Error::Timeout => match spec.driver {
-            Driver::Sqlite => (
+            Driver::Sqlite | Driver::Files => (
                 Icon::CircleAlert,
                 format!("{} {}", say("Can't open"), spec.summary()),
             ),
@@ -500,7 +500,7 @@ struct Chip {
 fn is_remote(workspace: &crate::model::Workspace) -> bool {
     use tabletist_db::Driver;
     match workspace.driver {
-        Driver::Sqlite => false,
+        Driver::Sqlite | Driver::Files => false,
         Driver::Postgres | Driver::MySql => !crate::model::is_local_host(&workspace.spec.host),
     }
 }
@@ -521,7 +521,7 @@ pub(super) fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
         env: workspace.environment,
         read_only: workspace.access == tabletist_db::Access::ReadOnly,
         database: match workspace.driver {
-            Driver::Sqlite => String::new(),
+            Driver::Sqlite | Driver::Files => String::new(),
             Driver::Postgres | Driver::MySql => spec.database.clone(),
         },
         databases: workspace.databases.value.clone().unwrap_or_default(),
@@ -589,6 +589,15 @@ fn card_rows(
                 .unwrap_or_default();
             rows.push((say("File"), path));
         }
+        Driver::Files => match &spec.files {
+            Some(tabletist_db::files::Source::Folder(folder)) => {
+                rows.push((say("Folder"), tabletist_db::files::shown(folder)));
+            }
+            Some(source @ tabletist_db::files::Source::Files(_)) => {
+                rows.push((say("Files"), source.summary()));
+            }
+            None => {}
+        },
         Driver::Postgres | Driver::MySql => {
             rows.push((say("Host"), format!("{}:{}", spec.host, spec.port)));
             if !spec.database.is_empty() {

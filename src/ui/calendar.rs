@@ -204,7 +204,8 @@ pub fn model(
         Kind::Time { offset: false } | Kind::Date => None,
     };
     let postgres = match column.dialect {
-        tabletist_db::Dialect::Postgres => true,
+        // DuckDB keeps PostgreSQL's infinities.
+        tabletist_db::Dialect::Postgres | tabletist_db::Dialect::DuckDb => true,
         tabletist_db::Dialect::MySql | tabletist_db::Dialect::Sqlite => false,
     };
     Model {

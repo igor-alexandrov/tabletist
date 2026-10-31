@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use tabletist_db::agent::{ColumnName, TableName, Tables};
+use tabletist_db::files::Source;
 use tabletist_db::{ConnectSpec, Driver, SshAuth, SshSpec, TlsMode};
 
 use super::{
@@ -23,12 +24,16 @@ use crate::util::toml_string;
 
 /// The file's format. 3 is the first that is TOML: 1 and 2 were
 /// `connections.json`. 4 has a connection's settings for agents, 5 the
-/// tables they may not read, and 6 the columns they get masked. A file is
+/// tables they may not read, 6 the columns they get masked, and 7 Files
+/// connections, with their `source`. A file is
 /// written as the oldest that holds what it has: a Tabletist that does not
 /// know a key refuses only a file it would lose it from, and one that
 /// would read agents' tables as all of them, or a masked column's values
 /// as they are, never reads the file.
-pub(super) const VERSION: u32 = 6;
+pub(super) const VERSION: u32 = 7;
+
+/// The version that has masked columns and no Files connection.
+const MASKED_VERSION: u32 = 6;
 
 /// The version that has agents' tables and not their masked columns.
 const TABLES_VERSION: u32 = 5;
@@ -113,6 +118,36 @@ struct Entry {
     ca_file: Option<PathBuf>,
     ssh: Option<Tunnel>,
     agents: Option<AgentsTable>,
+    source: Option<SourceTable>,
+}
+
+/// What a Files connection opens, as the file has it: a folder or a list
+/// of files, either written with `~` for the home folder.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceTable {
+    folder: Option<PathBuf>,
+    files: Option<Vec<PathBuf>>,
+}
+
+impl SourceTable {
+    fn source(self, connection: &str) -> Result<Source, String> {
+        match (self.folder, self.files) {
+            (Some(folder), None) => Ok(Source::Folder(tabletist_db::files::expanded(&folder))),
+            (None, Some(files)) if !files.is_empty() => Ok(Source::Files(
+                files
+                    .iter()
+                    .map(|file| tabletist_db::files::expanded(file))
+                    .collect(),
+            )),
+            (None, Some(_)) => Err(format!(
+                "connection {connection:?}: its source's `files` names no file"
+            )),
+            (Some(_), Some(_)) | (None, None) => Err(format!(
+                "connection {connection:?}: its source has a `folder` or `files`, one of them"
+            )),
+        }
+    }
 }
 
 /// What agents may do on a connection, as the file has it. A key left out
@@ -236,6 +271,32 @@ impl Entry {
             Some(table) => table.agents(&self.name)?,
             None => Agents::default(),
         };
+        // A Files connection keeps neither: nothing could hold a statement
+        // to them, and the dialog has no control to take them off.
+        let guards = agents.tables.hides_anything() || !agents.masked.is_empty();
+        let files = match (self.driver, self.source) {
+            (Driver::Files, Some(_)) if guards => {
+                return Err(format!(
+                    "connection {:?}: a Files connection cannot hide tables from agents or \
+                     mask columns",
+                    self.name
+                ));
+            }
+            (Driver::Files, Some(source)) => Some(source.source(&self.name)?),
+            (Driver::Files, None) => {
+                return Err(format!(
+                    "connection {:?}: a Files connection needs a [connections.source] table",
+                    self.name
+                ));
+            }
+            (Driver::Postgres | Driver::MySql | Driver::Sqlite, Some(_)) => {
+                return Err(format!(
+                    "connection {:?}: only a Files connection has a source",
+                    self.name
+                ));
+            }
+            (Driver::Postgres | Driver::MySql | Driver::Sqlite, None) => None,
+        };
         Ok(SavedConnection {
             id,
             name: self.name,
@@ -253,6 +314,7 @@ impl Entry {
                 tls: self.tls,
                 ca_file: self.ca_file,
                 ssh,
+                files,
             },
             agents,
         })
@@ -388,6 +450,7 @@ fn driver(driver: Driver) -> &'static str {
         Driver::Postgres => "postgres",
         Driver::MySql => "mysql",
         Driver::Sqlite => "sqlite",
+        Driver::Files => "files",
     }
 }
 
@@ -413,18 +476,20 @@ pub(super) fn write(connections: &[SavedConnection]) -> std::io::Result<String> 
         .iter()
         .any(|saved| saved.agents.tables.hides_anything());
     let agents = connections.iter().any(|saved| !saved.agents.is_default());
-    let version = match (masks, hides, agents) {
-        (true, _, _) => VERSION,
-        (false, true, _) => TABLES_VERSION,
-        (false, false, true) => AGENTS_VERSION,
-        (false, false, false) => FIRST_VERSION,
+    let files = connections.iter().any(|saved| saved.spec.files.is_some());
+    let version = match (files, masks, hides, agents) {
+        (true, _, _, _) => VERSION,
+        (false, true, _, _) => MASKED_VERSION,
+        (false, false, true, _) => TABLES_VERSION,
+        (false, false, false, true) => AGENTS_VERSION,
+        (false, false, false, false) => FIRST_VERSION,
     };
     let mut out = format!("{HEADER}version = {version}\n");
     for connection in connections {
         let spec = &connection.spec;
         let server = match spec.driver {
             Driver::Postgres | Driver::MySql => true,
-            Driver::Sqlite => false,
+            Driver::Sqlite | Driver::Files => false,
         };
         let mut lines = Lines::default();
         lines.text("id", &connection.id.0);
@@ -466,6 +531,28 @@ pub(super) fn write(connections: &[SavedConnection]) -> std::io::Result<String> 
         if let Some(ssh) = &spec.ssh {
             tunnel(ssh, &mut out)?;
         }
+        if let Some(source) = &spec.files {
+            let mut lines = Lines::default();
+            match source {
+                Source::Folder(folder) => lines.path("folder", &home_tilde(folder))?,
+                Source::Files(files) => {
+                    let mut written = Vec::with_capacity(files.len());
+                    for file in files {
+                        let tilde = home_tilde(file);
+                        let Some(text) = tilde.to_str() else {
+                            return Err(std::io::Error::other(format!(
+                                "{} is not valid UTF-8, so it cannot be saved",
+                                file.display()
+                            )));
+                        };
+                        written.push(toml_string(text));
+                    }
+                    lines.bare("files", format!("[{}]", written.join(", ")));
+                }
+            }
+            out.push_str("\n[connections.source]\n");
+            lines.write(&mut out);
+        }
         if !connection.agents.is_default() {
             let mut lines = Lines::default();
             lines.text("access", connection.agents.access.key());
@@ -485,6 +572,15 @@ pub(super) fn write(connections: &[SavedConnection]) -> std::io::Result<String> 
         }
     }
     Ok(out)
+}
+
+/// `path` with the home folder written `~`, as the file keeps a source.
+fn home_tilde(path: &Path) -> PathBuf {
+    let shown = tabletist_db::files::shown(path);
+    match shown.starts_with('~') {
+        true => PathBuf::from(shown),
+        false => path.to_owned(),
+    }
 }
 
 /// Tables or columns as a list of TOML strings, each written as the person
@@ -927,8 +1023,8 @@ auth = "key-file"
         let said = |text: &str| read(text).unwrap_err().to_string();
         assert!(said("").contains("missing field `version`"), "{}", said(""));
         assert_eq!(
-            said("version = 7\n"),
-            "it is version 7 of the file, written by a newer Tabletist; this one reads version 6"
+            said("version = 8\n"),
+            "it is version 8 of the file, written by a newer Tabletist; this one reads version 7"
         );
         assert_eq!(
             said("version = 2\n"),
@@ -1211,6 +1307,114 @@ masked       = ["orders.email", "\"odd.schema\".orders.phone"]
                 .to_string()
                 .ends_with("is not valid UTF-8, so it cannot be saved"),
             "{error}"
+        );
+    }
+
+    /// A Files connection by its folder, and one by its files, as the file
+    /// writes them: version 7, the home folder as `~`.
+    #[test]
+    fn a_files_connection_is_written_with_its_source_in_version_seven() {
+        let Some(home) = std::env::home_dir() else {
+            return;
+        };
+        let exports = home.join("Data").join("bookshop-exports");
+        let folder = SavedConnection {
+            environment: Environment::Local,
+            read_only: Some(true),
+            ..saved(
+                "exports",
+                "Bookshop exports",
+                ConnectSpec::files(Source::Folder(exports.clone())),
+            )
+        };
+        let list = saved(
+            "orders",
+            "Bookshop orders",
+            ConnectSpec::files(Source::Files(vec![
+                exports.join("orders.csv"),
+                PathBuf::from("/srv/exports/customers.parquet"),
+            ])),
+        );
+        let text = write(&[folder.clone(), list.clone()]).unwrap();
+        let sep = std::path::MAIN_SEPARATOR;
+        assert!(text.contains("\nversion = 7\n"), "{text}");
+        let expected = format!(
+            "\n[[connections]]\n\
+             id          = \"exports\"\n\
+             name        = \"Bookshop exports\"\n\
+             environment = \"local\"\n\
+             read_only   = true\n\
+             driver      = \"files\"\n\
+             \n[connections.source]\n\
+             folder = \"~{sep}Data{sep}bookshop-exports\"\n"
+        );
+        assert!(text.contains(&expected.replace('\\', "\\\\")), "{text}");
+        assert!(
+            text.contains(
+                &format!(
+                    "files = [\"~{sep}Data{sep}bookshop-exports{sep}orders.csv\", \
+                 \"/srv/exports/customers.parquet\"]"
+                )
+                .replace('\\', "\\\\")
+            ),
+            "{text}"
+        );
+        let read = read(&text).unwrap();
+        assert_eq!(read.connections, [folder, list]);
+        // Without one, the file is as it was.
+        let others = write(&bookshop()).unwrap();
+        assert!(!others.contains("version = 7"), "{others}");
+    }
+
+    #[test]
+    fn a_source_is_a_folder_or_files_and_only_a_files_connections() {
+        let entry = |driver: &str, source: &str| {
+            format!(
+                "version = 7\n[[connections]]\nid = \"a\"\nname = \"A\"\n\
+                 driver = \"{driver}\"\n{source}"
+            )
+        };
+        for (text, says) in [
+            (entry("files", ""), "needs a [connections.source] table"),
+            (
+                entry("files", "[connections.source]\n"),
+                "has a `folder` or `files`, one of them",
+            ),
+            (
+                entry(
+                    "files",
+                    "[connections.source]\nfolder = \"/a\"\nfiles = [\"/b.csv\"]\n",
+                ),
+                "has a `folder` or `files`, one of them",
+            ),
+            (
+                entry("files", "[connections.source]\nfiles = []\n"),
+                "names no file",
+            ),
+            (
+                entry("sqlite", "[connections.source]\nfolder = \"/a\"\n"),
+                "only a Files connection has a source",
+            ),
+            (
+                entry(
+                    "files",
+                    "[connections.source]\nfolder = \"/a\"\n[connections.agents]\n\
+                     access = \"read\"\nhidden = [\"customers\"]\n",
+                ),
+                "cannot hide tables from agents or mask columns",
+            ),
+        ] {
+            let problem = read(&text).unwrap_err();
+            assert!(problem.what.contains(says), "{text}\n{problem}");
+        }
+        let read = read(&entry(
+            "files",
+            "[connections.source]\nfolder = \"/data/exports\"\n",
+        ))
+        .unwrap();
+        assert_eq!(
+            read.connections[0].spec.files,
+            Some(Source::Folder("/data/exports".into()))
         );
     }
 }

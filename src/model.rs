@@ -2185,7 +2185,7 @@ impl ConnectionForm {
     /// `require` with a CA file does, like libpq).
     pub fn password_can_be_intercepted(&self) -> bool {
         let unchecked = match self.driver {
-            Driver::Sqlite => false,
+            Driver::Sqlite | Driver::Files => false,
             Driver::Postgres => match self.tls {
                 TlsMode::Disable | TlsMode::Prefer => true,
                 TlsMode::Require => self.ca_file.trim().is_empty(),
@@ -2333,6 +2333,7 @@ impl ConnectionForm {
                 }
                 Ok(ConnectSpec::sqlite(path))
             }
+            Driver::Files => Err("Choose a folder.".into()),
             Driver::Postgres | Driver::MySql => {
                 let host = self.host.trim();
                 if host.is_empty() {
@@ -2392,6 +2393,7 @@ impl ConnectionForm {
                     tls: self.tls,
                     ca_file: (!ca_file.is_empty()).then(|| ca_file.into()),
                     ssh,
+                    files: None,
                 })
             }
         }
@@ -2474,7 +2476,7 @@ impl ConnectionForm {
         }
         let spec = self.to_spec()?;
         let password = match spec.driver {
-            Driver::Sqlite => PasswordMode::None,
+            Driver::Sqlite | Driver::Files => PasswordMode::None,
             // Nothing typed and nothing saved (or the saved one forgotten):
             // a server that needs no password (trust or peer
             // authentication).
@@ -3536,7 +3538,8 @@ pub fn is_system_schema(driver: Driver, name: &str) -> bool {
             name,
             "mysql" | "sys" | "performance_schema" | "information_schema"
         ),
-        Driver::Sqlite => false,
+        // A `.duckdb` file's schema is the person's.
+        Driver::Sqlite | Driver::Files => false,
     }
 }
 
@@ -5860,7 +5863,7 @@ impl Workspace {
         let name = match self.driver {
             Driver::Postgres => "public",
             Driver::MySql => self.spec.database.as_str(),
-            Driver::Sqlite => "main",
+            Driver::Sqlite | Driver::Files => "main",
         };
         let schemas = self.tree.schemas.value.as_ref()?;
         let found = schemas.iter().find(|schema| *schema == name);

@@ -302,6 +302,7 @@ pub(super) fn terminal_body(
                     terminal_section(ui, &skin.say("Database"), skin);
                     file_field(ui, form, skin, actions);
                 }
+                Driver::Files => {}
                 Driver::Postgres | Driver::MySql => {
                     terminal_section(ui, &skin.say("Server"), skin);
                     terminal_server(ui, form, skin, actions);

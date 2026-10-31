@@ -105,7 +105,7 @@ fn is_local(connection: &SavedConnection) -> bool {
     use tabletist_db::Driver;
     let spec = &connection.spec;
     match spec.driver {
-        Driver::Sqlite => true,
+        Driver::Sqlite | Driver::Files => true,
         Driver::Postgres | Driver::MySql => {
             spec.ssh.is_none() && crate::model::is_local_host(&spec.host)
         }
@@ -680,6 +680,7 @@ pub(crate) fn target(connection: &SavedConnection) -> (String, String) {
     let spec = &connection.spec;
     match spec.driver {
         Driver::Sqlite => (spec.summary(), String::new()),
+        Driver::Files => (spec.summary(), String::new()),
         Driver::Postgres | Driver::MySql => (
             format!("{}:{}", spec.host, spec.port),
             format!("/{}", spec.database),

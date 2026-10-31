@@ -959,11 +959,11 @@ pub fn capped(text: &str) -> Cow<'_, str> {
 pub fn refuses_writes(error: &tabletist_db::Error, driver: tabletist_db::Driver) -> bool {
     use tabletist_db::{Driver, Error};
     match error {
-        Error::Query {
-            code: Some(code), ..
-        } => match driver {
-            Driver::Sqlite => code == "8",
-            Driver::Postgres | Driver::MySql => code == "25006",
+        Error::Query { code, message, .. } => match driver {
+            Driver::Sqlite => code.as_deref() == Some("8"),
+            Driver::Postgres | Driver::MySql => code.as_deref() == Some("25006"),
+            // DuckDB gives no code: its own words, which no setting changes.
+            Driver::Files => message.contains("transaction is launched in read-only mode"),
         },
         _ => false,
     }

@@ -1,4 +1,5 @@
-//! Access to PostgreSQL, MySQL and SQLite for Tabletist.
+//! Access to PostgreSQL, MySQL, SQLite and data files (through DuckDB)
+//! for Tabletist.
 //!
 //! The crate writes to a connected database in two places:
 //! [`Connection::write`], which saves edited rows, and
@@ -17,7 +18,9 @@ mod class;
 pub mod complete;
 pub mod ddl;
 mod dialect;
+mod duck;
 mod error;
+pub mod files;
 pub mod fixtures;
 mod lookup;
 mod mysql;
@@ -48,6 +51,7 @@ pub use dialect::{
     DeleteParts, Dialect, InsertParts, InsertStatement, RowDeletion, RowUpdate, Sql, UpdateParts,
     escape_like, quote_literal,
 };
+pub use duck::{FileFacts, FilesRead, set_extension_directory};
 pub use error::{Error, Named, Result, SshStage};
 pub use lookup::{Lookup, LookupPage, LookupPart, LookupRow, Matched};
 pub use query::{Filter, FilterOp, RowPage, RowQuery, Sort, SortDir};
@@ -88,6 +92,7 @@ enum Inner {
     // Boxed: a PostgreSQL client is much larger than a SQLite handle.
     Postgres(Box<pg::Conn>),
     MySql(Box<mysql::Conn>),
+    Files(Box<duck::Conn>),
 }
 
 impl Inner {
@@ -111,6 +116,13 @@ impl Inner {
             Driver::MySql => Ok(Self::MySql(Box::new(
                 mysql::Conn::connect(spec, secrets, via, access).await?,
             ))),
+            Driver::Files => {
+                let source = spec
+                    .files
+                    .as_ref()
+                    .ok_or_else(|| Error::InvalidSpec("choose a folder or files".into()))?;
+                Ok(Self::Files(Box::new(duck::Conn::open(source).await?)))
+            }
         }
     }
 }
@@ -130,9 +142,15 @@ impl Connection {
         host_keys: &HostKeys,
         access: Access,
     ) -> Result<Self> {
+        // Editing files is not built: a Files session reads, whatever
+        // access it is asked for, and says so.
+        let access = match spec.driver {
+            Driver::Files => Access::ReadOnly,
+            Driver::Postgres | Driver::MySql | Driver::Sqlite => access,
+        };
         // A file is opened here, whatever tunnel its spec still names.
         let ssh = match spec.driver {
-            Driver::Sqlite => None,
+            Driver::Sqlite | Driver::Files => None,
             Driver::Postgres | Driver::MySql => spec.ssh.as_ref(),
         };
         let Some(ssh) = ssh else {
@@ -168,6 +186,7 @@ impl Connection {
             Inner::Sqlite(_) => Driver::Sqlite,
             Inner::Postgres(_) => Driver::Postgres,
             Inner::MySql(_) => Driver::MySql,
+            Inner::Files(_) => Driver::Files,
         }
     }
 
@@ -179,6 +198,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.is_encrypted(),
             Inner::Postgres(conn) => conn.is_encrypted(),
             Inner::MySql(conn) => conn.is_encrypted(),
+            Inner::Files(conn) => conn.is_encrypted(),
         }
     }
 
@@ -226,6 +246,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.run_script(texts, limit, mode, stop).await,
             Inner::Postgres(conn) => conn.run_script(texts, limit, mode, stop).await,
             Inner::MySql(conn) => conn.run_script(texts, limit, mode, stop).await,
+            Inner::Files(conn) => conn.run_script(texts, limit, mode, stop).await,
         }
     }
 
@@ -281,6 +302,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.run_read(read, limits, sources, stop).await,
             Inner::Postgres(conn) => conn.run_read(read, limits, sources, stop).await,
             Inner::MySql(conn) => conn.run_read(read, limits, sources, stop).await,
+            Inner::Files(conn) => conn.run_read(read, limits, sources, stop).await,
         }?;
         agent::answer(outcome, stop).map(|answer| agent::masked(answer, masked))
     }
@@ -297,6 +319,7 @@ impl Connection {
                     Inner::Sqlite(conn) => conn.agents_catalog(&masked).await?,
                     Inner::Postgres(conn) => conn.agents_catalog(&masked).await?,
                     Inner::MySql(conn) => conn.agents_catalog(&masked).await?,
+                    Inner::Files(conn) => conn.agents_catalog(&masked).await?,
                 }
             }
             false => agent::Catalog::default(),
@@ -311,6 +334,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.server_version().await,
             Inner::Postgres(conn) => conn.server_version().await,
             Inner::MySql(conn) => conn.server_version().await,
+            Inner::Files(conn) => conn.server_version().await,
         }
     }
 
@@ -323,6 +347,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.session_zone().await,
             Inner::Postgres(conn) => conn.session_zone().await,
             Inner::MySql(conn) => conn.session_zone().await,
+            Inner::Files(conn) => conn.session_zone().await,
         }
     }
 
@@ -333,6 +358,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.list_databases().await,
             Inner::Postgres(conn) => conn.list_databases().await,
             Inner::MySql(conn) => conn.list_databases().await,
+            Inner::Files(conn) => conn.list_databases().await,
         }
     }
 
@@ -342,6 +368,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.list_schemas().await,
             Inner::Postgres(conn) => conn.list_schemas().await,
             Inner::MySql(conn) => conn.list_schemas().await,
+            Inner::Files(conn) => conn.list_schemas().await,
         }
     }
 
@@ -351,6 +378,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.list_objects(schema).await,
             Inner::Postgres(conn) => conn.list_objects(schema).await,
             Inner::MySql(conn) => conn.list_objects(schema).await,
+            Inner::Files(conn) => conn.list_objects(schema).await,
         }
     }
 
@@ -359,6 +387,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.describe(object).await,
             Inner::Postgres(conn) => conn.describe(object).await,
             Inner::MySql(conn) => conn.describe(object).await,
+            Inner::Files(conn) => conn.describe(object).await,
         }
     }
 
@@ -373,6 +402,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.ddl(object).await,
             Inner::Postgres(conn) => conn.ddl(object).await,
             Inner::MySql(conn) => conn.ddl(object).await,
+            Inner::Files(conn) => conn.ddl(object).await,
         }
     }
 
@@ -385,6 +415,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.fetch_rows(query).await,
             Inner::Postgres(conn) => conn.fetch_rows(query).await,
             Inner::MySql(conn) => conn.fetch_rows(query).await,
+            Inner::Files(conn) => conn.fetch_rows(query).await,
         }
     }
 
@@ -393,6 +424,17 @@ impl Connection {
             Inner::Sqlite(conn) => conn.count_rows(query).await,
             Inner::Postgres(conn) => conn.count_rows(query).await,
             Inner::MySql(conn) => conn.count_rows(query).await,
+            Inner::Files(conn) => conn.count_rows(query).await,
+        }
+    }
+
+    /// A Files connection's Test: the first rows of every file, with the
+    /// readers browsing uses, never a whole file. `None` for any other
+    /// driver, whose Test is the connection itself.
+    pub async fn read_files(&self) -> Option<Result<FilesRead>> {
+        match &self.inner {
+            Inner::Files(conn) => Some(conn.read_files().await),
+            Inner::Sqlite(_) | Inner::Postgres(_) | Inner::MySql(_) => None,
         }
     }
 
@@ -406,6 +448,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.lookup(lookup).await,
             Inner::Postgres(conn) => conn.lookup(lookup).await,
             Inner::MySql(conn) => conn.lookup(lookup).await,
+            Inner::Files(conn) => conn.lookup(lookup).await,
         }
     }
 
@@ -452,6 +495,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.write(changes, stop).await,
             Inner::Postgres(conn) => conn.write(changes, stop).await,
             Inner::MySql(conn) => conn.write(changes, stop).await,
+            Inner::Files(conn) => conn.write(changes, stop).await,
         }
     }
 
@@ -461,6 +505,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.cancel_handle(),
             Inner::Postgres(conn) => conn.cancel_handle(),
             Inner::MySql(conn) => conn.cancel_handle(),
+            Inner::Files(conn) => conn.cancel_handle(),
         }
     }
 
@@ -479,6 +524,10 @@ impl Connection {
                 drop(conn);
                 Ok(())
             }
+            Inner::Files(conn) => {
+                drop(conn);
+                Ok(())
+            }
         };
         // The driver has closed; now its tunnel.
         drop(tunnel);
@@ -494,6 +543,7 @@ pub struct CancelHandle(CancelInner);
 #[derive(Clone)]
 enum CancelInner {
     Sqlite(Arc<rusqlite::InterruptHandle>),
+    Files(Arc<duckdb::InterruptHandle>),
     Postgres {
         token: tokio_postgres::CancelToken,
         tls: tokio_postgres_rustls::MakeRustlsConnect,
@@ -510,6 +560,10 @@ impl CancelHandle {
     pub async fn cancel(&self) -> Result<()> {
         match &self.0 {
             CancelInner::Sqlite(handle) => {
+                handle.interrupt();
+                Ok(())
+            }
+            CancelInner::Files(handle) => {
                 handle.interrupt();
                 Ok(())
             }

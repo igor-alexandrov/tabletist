@@ -140,7 +140,8 @@ const COMMENT_WIDTH: f32 = 320.0;
 fn keeps_comments(driver: Driver) -> bool {
     match driver {
         Driver::Postgres | Driver::MySql => true,
-        Driver::Sqlite => false,
+        // A file keeps none.
+        Driver::Sqlite | Driver::Files => false,
     }
 }
 

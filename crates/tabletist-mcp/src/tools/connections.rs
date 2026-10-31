@@ -58,6 +58,8 @@ fn entry(listed: &Listed) -> Json {
         Dialect::Postgres => ("PostgreSQL", "$1, $2"),
         Dialect::MySql => ("MySQL", "?"),
         Dialect::Sqlite => ("SQLite", "?"),
+        // A Files connection: its files are DuckDB's tables.
+        Dialect::DuckDb => ("DuckDB", "?"),
     };
     let mut entry = Map::new();
     entry.insert("name".into(), json!(listed.name));
