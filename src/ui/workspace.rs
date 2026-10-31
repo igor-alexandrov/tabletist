@@ -130,7 +130,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                             }
                             Some(ObjectView::Ddl) => super::ddl::show(app, ui, tab, object_tab),
                             _ => {
-                                if super::filter_bar::is_open(app, tab, object_tab) {
+                                let open = app
+                                    .workspace(tab)
+                                    .and_then(|workspace| workspace.object_tab(object_tab))
+                                    .is_some_and(super::filter_bar::is_open);
+                                if open {
                                     let palette = app.palette;
                                     egui::Panel::top(egui::Id::new((
                                         "filter-bar",
@@ -145,7 +149,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                             .inner_margin(Margin::symmetric(12, 8)),
                                     )
                                     .show(ui, |ui| {
-                                        super::filter_bar::show(app, ui, tab, object_tab);
+                                        let paint = super::Paint::of(app);
+                                        if let Some(object) =
+                                            app.workspace_mut(tab).and_then(|workspace| {
+                                                workspace.object_tab_mut(object_tab)
+                                            })
+                                        {
+                                            let asked =
+                                                super::filter_bar::show(ui, paint, tab, object);
+                                            app.actions.extend(asked);
+                                        }
                                         let rect = ui.max_rect().expand2(vec2(12.0, 8.0));
                                         widgets::hline(
                                             ui,
