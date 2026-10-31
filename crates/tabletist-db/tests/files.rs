@@ -634,3 +634,39 @@ async fn a_file_whose_name_looks_like_a_pattern_reads_only_itself() {
     let error = refused(&list, &format!("SELECT * FROM read_csv('{other}')")).await;
     assert!(error.contains("report1.csv"), "{error}");
 }
+
+#[tokio::test]
+async fn a_duckdb_file_named_as_a_catalog_schema_leaves_the_others_readable() {
+    let dir = tempfile::tempdir().unwrap();
+    tabletist_db::fixtures::write_bookshop_files(dir.path()).unwrap();
+    let shop = dir.path().join("bookshop.duckdb");
+    for name in ["information_schema.duckdb", "pg_catalog.duckdb"] {
+        std::fs::copy(&shop, dir.path().join(name)).unwrap();
+    }
+    let connection = open(Source::Folder(dir.path().to_owned())).await.unwrap();
+    let names: Vec<String> = connection
+        .list_objects("main")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|o| o.name)
+        .collect();
+    assert!(names.contains(&"orders".to_owned()), "{names:?}");
+    // Structure, pages and counts of every table still read.
+    let orders = ObjectRef::new("main", "orders");
+    assert!(
+        !connection
+            .describe(&orders)
+            .await
+            .unwrap()
+            .columns
+            .is_empty()
+    );
+    let page = connection.fetch_rows(&table("orders", 10)).await.unwrap();
+    assert!(!page.rows.is_empty());
+    assert!(connection.count_rows(&table("orders", 10)).await.unwrap() > 0);
+    let schemas = connection.list_schemas().await.unwrap();
+    for schema in ["information_schema_duckdb", "pg_catalog_duckdb"] {
+        assert!(schemas.iter().any(|s| s == schema), "{schemas:?}");
+    }
+}
