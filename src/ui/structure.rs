@@ -9,16 +9,15 @@ use egui::accesskit::Role;
 use egui::{CornerRadius, Frame, Rect, Sense, Stroke, WidgetInfo, WidgetType, vec2};
 use tabletist_db::Driver;
 
-use crate::app::App;
 use crate::i18n::{Locale, gettext};
-use crate::keymap::{Command, Scope};
+use crate::keymap::{Command, Keymap, Scope};
 use crate::labels::{self, Refused, Resolved, Source};
-use crate::model::{Action, ConnTabId, Pane, TabId};
+use crate::model::{Action, ConnTabId, ObjectTab, Pane, Workspace};
 use crate::theme::{self, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::format::{NAME_MAX_CHARS, display_safe, for_display, one_line};
 use crate::ui::grid::ellipsize;
-use crate::ui::{focus, label_chooser, menu, states, widgets};
+use crate::ui::{Paint, focus, label_chooser, menu, states, widgets};
 
 /// One cell of a structure table: body text, or code.
 fn cell(
@@ -431,23 +430,29 @@ fn table_comment(ui: &mut egui::Ui, comment: &str, look: &Look, palette: &Palett
     ui.add_space(16.0);
 }
 
-pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
-    let Some(object) = workspace.object_tab(object_tab) else {
-        return;
-    };
+/// The Structure view of `object`, a tab of `workspace` (whose id is
+/// `tab`), and what it asks for. `label` is what labels the table's rows
+/// for the foreign keys that point at it (`App::structure_label`): none
+/// for a view, and none before the structure is known.
+pub fn show(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    workspace: &Workspace,
+    object: &ObjectTab,
+    label: Option<Resolved>,
+    keymap: &Keymap,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let object_tab = object.id;
     let mut actions = Vec::new();
     let area = ui.max_rect();
     let id = object_tab;
     let skin = (&look, &palette, locale);
-    // What labels the table's rows for the foreign keys that point at
-    // it: none for a view, and none before the structure is known.
-    let label = app.structure_label(tab, id);
     // Why a column named for it was not taken. The terminal look says it
     // in its status line.
     let refused = workspace
@@ -835,7 +840,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             let (text, name, keys) = (
                 look.label(&gettext(locale, "Loading structure…")),
                 look.label(&gettext(locale, "Cancel")),
-                super::data_view::cancel_keys(&app.keymap, &look),
+                super::data_view::cancel_keys(keymap, &look),
             );
             let cancel = super::states::key_button(&name, &keys, &look).label("Cancel query");
             if super::states::running(ui, area, &text, waited, Some(cancel), &look, &palette) {
@@ -847,7 +852,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 .request_repaint_after(super::states::DELAY - waited);
         }
     }
-    app.actions.extend(actions);
+    actions
 }
 
 fn heading(ui: &mut egui::Ui, text: &str, look: &Look, palette: &Palette) {

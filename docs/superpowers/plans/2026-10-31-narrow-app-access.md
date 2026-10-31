@@ -106,6 +106,16 @@ if let Some(object) = app
 
 A query a view makes of its own state (`filter_bar::is_open`) takes the slice too, and the caller or test finds the slice first.
 
+### The slice of an object-tab pane
+
+Set by run 3, for runs 5 to 7:
+
+- The slice is the `ObjectTab` the pane shows, `&mut` where a control edits it in place, `&` otherwise. The pane names `object.id` instead of an id it is given beside it.
+- One or two values of the workspace around it come as their own arguments (`ddl`: the `Driver`; `review`: whether the connection is read-only). A pane that reads more of the workspace takes `&Workspace` beside the `&ObjectTab` (`structure`).
+- A question that joins the tab with the rest of `App` (`structure_label`, `save_blocked`, `lacking`) is answered by the caller; several answers go in a struct of the pane's own (`pending_bar::Asked`).
+- An answer too costly to give every frame, needed only when a button is pressed, comes as a closure the pane calls then (`review::show`'s `whole`).
+- A panel that passes over an egui id while it is not drawn gives that its own `pass(ui)`, and says with `shows(&ObjectTab)` whether it is drawn, so its caller asks the answers only then (`pending_bar`).
+
 ### Tests
 
 The headless tests drive the whole `App` through `src/testing.rs`, so they hold behaviour across a run without change. A test changes only where it calls a function whose signature moved. No run changes behaviour, so no run adds a behaviour test; each run states which existing tests draw the views it moved.
@@ -116,7 +126,7 @@ Each run is one PR, from `main`, passing `cargo fmt --all --check`, `cargo clipp
 
 1. **`Paint`, the password prompt and the filter bar** (this plan, below). One dialog that edits its prompt's field, one pane that edits an object tab's filter: both shapes of the pattern.
 2. **The other small dialogs:** `host_key_prompt`, `every_row_prompt` (its caller passes whether the SQL tab is still open), `about`, `help` (adds `Paint::layout`, takes `&Keymap`), `toast` (reads only; returns nothing). Done: `2026-10-31-narrow-app-access-2-small-dialogs.md`.
-3. **Object-tab panes:** `row_form` (`take_editor`/`put_editor` take `&mut ObjectTab`), `pending_bar` (its caller passes `lacking`, or `lacking` moves onto `ObjectTab`'s side), `structure` (passes `structure_label`), `ddl`, `review` (`review_whole` is asked only when Copy is clicked: the view returns an action for it, or its caller passes the review; decide in the run's plan, keeping the clipboard's text the same).
+3. **Object-tab panes:** `row_form` (`take_editor`/`put_editor` take `&mut ObjectTab`), `pending_bar` (its caller passes `lacking`, `save_blocked` and the doubts), `structure` (passes `structure_label`), `ddl`, `review` (its caller passes `review_whole` as a closure, called when Copy is clicked). Done: `2026-10-31-narrow-app-access-3-object-tab-panes.md`, which sets the borrow an object-tab pane takes ("The slice of an object-tab pane", above).
 4. **Settings panes that read `&App`:** `settings/file_pane`, `settings/updates`, `settings/updates_terminal`, `settings/keyboard`, `keyboard_sheet`, `keyboard_terminal`, `settings/agents`.
 5. **Dialogs over a workspace:** `conflict_prompt`, `write_prompts`, `agent_access`, `connect_dialog`.
 6. **Workspace and SQL panes:** `object_tabs`, `sql_text`, `sql_editor`, `sql_results`, `history`.

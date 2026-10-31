@@ -581,7 +581,13 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
             }
         });
     if copy_ddl {
-        super::ddl::copy(app, ui.ctx(), tab, object_tab);
+        let paint = super::Paint::of(app);
+        if let Some(object) = app
+            .workspace(tab)
+            .and_then(|workspace| workspace.object_tab(object_tab))
+        {
+            super::ddl::copy(ui.ctx(), paint, tab, object);
+        }
     }
     app.actions.extend(actions);
 }
