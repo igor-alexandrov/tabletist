@@ -14,6 +14,9 @@ pub mod agent;
 mod catalog;
 mod check;
 mod class;
+// A spike, not an engine: no `Driver` names it yet.
+#[doc(hidden)]
+pub mod clickhouse;
 pub mod complete;
 pub mod ddl;
 mod dialect;

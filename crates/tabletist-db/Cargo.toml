@@ -63,6 +63,12 @@ mysql_async = { version = "0.37", default-features = false, features = ["default
 # run. Moves with mysql_async; mysql.rs fails to compile if the two drift apart.
 mysql_common = { version = "0.37", default-features = false }
 
+# ClickHouse's HTTP interface (the `clickhouse` spike), blocking on
+# spawn_blocking as SQLite is. Already in the tree through the app's check
+# for updates, with the same features; the official `clickhouse` crate
+# would add hyper.
+ureq = { version = "3.4", default-features = false, features = ["rustls"] }
+
 # The plans PostgreSQL and MySQL give in JSON, read for the tables an
 # agent's statement would scan (`agent`'s hidden tables). Already in the
 # tree through the app and mysql_async.
