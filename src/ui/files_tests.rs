@@ -380,6 +380,47 @@ fn what_a_files_test_read_is_not_said_of_another_type() {
 }
 
 #[test]
+fn a_test_of_another_source_is_not_said_of_this_one() {
+    for look in looks() {
+        let mut harness = new_files(look);
+        pick_folder(&mut harness, "/data/bookshop-exports");
+        let read = Ok(FilesRead {
+            files: 3,
+            bytes: 2_400_000_000,
+        });
+        harness.app.apply(Action::TestConnection);
+        let TestState::Running(request) = form(&harness).test else {
+            panic!("no test: {:?}", form(&harness).test);
+        };
+        harness.app.apply(Action::Backend(Event::FilesTested {
+            request,
+            result: read.clone(),
+        }));
+        assert_eq!(form(&harness).test, TestState::Passed, "{}", look.name);
+        // Read again unchanged, the Source keeps its Test.
+        harness.app.apply(Action::ReadSource);
+        assert_eq!(form(&harness).test, TestState::Passed, "{}", look.name);
+        assert!(form(&harness).files_tested.is_some(), "{}", look.name);
+        // Another folder has not been tested.
+        pick_folder(&mut harness, "/data/other-exports");
+        assert_eq!(form(&harness).test, TestState::Idle, "{}", look.name);
+        assert!(form(&harness).files_tested.is_none(), "{}", look.name);
+        // Nor has one that changed while its Test ran.
+        harness.app.apply(Action::TestConnection);
+        let TestState::Running(request) = form(&harness).test else {
+            panic!("no test: {:?}", form(&harness).test);
+        };
+        pick_folder(&mut harness, "/data/bookshop-exports");
+        harness.app.apply(Action::Backend(Event::FilesTested {
+            request,
+            result: read,
+        }));
+        assert_eq!(form(&harness).test, TestState::Idle, "{}", look.name);
+        assert!(form(&harness).files_tested.is_none(), "{}", look.name);
+    }
+}
+
+#[test]
 fn files_open_read_only_and_the_box_cannot_be_turned_off() {
     for look in looks() {
         let mut harness = new_files(look);

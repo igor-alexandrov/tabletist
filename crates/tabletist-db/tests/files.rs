@@ -582,3 +582,55 @@ async fn a_call_given_up_on_stops_no_other_calls_statement() {
         "the script stopped after {took:?}"
     );
 }
+
+/// The names of `connection`'s tables, each with the ids it reads.
+async fn ids(connection: &Connection) -> Vec<(String, Vec<Vec<Value>>)> {
+    let mut read = Vec::new();
+    for object in connection.list_objects("main").await.unwrap() {
+        let ids = rows(connection, &format!("SELECT id FROM \"{}\"", object.name)).await;
+        read.push((object.name, ids));
+    }
+    read
+}
+
+#[tokio::test]
+async fn a_file_whose_name_looks_like_a_pattern_reads_only_itself() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut files = vec![("report[1].csv", 10), ("report1.csv", 20)];
+    // Windows keeps no `*` or `?` in a name.
+    if cfg!(unix) {
+        files.extend([
+            ("report*.csv", 30),
+            ("report?.csv", 50),
+            ("report2.csv", 40),
+        ]);
+    }
+    for (name, id) in &files {
+        std::fs::write(dir.path().join(name), format!("id\n{id}\n")).unwrap();
+    }
+    // Each file of the folder is a table of its own rows.
+    let folder = open(Source::Folder(dir.path().to_owned())).await.unwrap();
+    let read = ids(&folder).await;
+    let mut each: Vec<Vec<Vec<Value>>> = read.into_iter().map(|(_, ids)| ids).collect();
+    each.sort_by_key(|ids| format!("{ids:?}"));
+    let mut expected: Vec<Vec<Vec<Value>>> = files
+        .iter()
+        .map(|(_, id)| vec![vec![Value::Int(*id)]])
+        .collect();
+    expected.sort_by_key(|ids| format!("{ids:?}"));
+    assert_eq!(each, expected);
+    // A list of one reads that one, and the fence lets nothing else in.
+    let list = open(Source::Files(vec![dir.path().join("report[1].csv")]))
+        .await
+        .unwrap();
+    let read = ids(&list).await;
+    assert_eq!(read.len(), 1, "{read:?}");
+    assert_eq!(read[0].1, [[Value::Int(10)]], "{read:?}");
+    let other = dir
+        .path()
+        .join("report1.csv")
+        .to_string_lossy()
+        .replace('\'', "''");
+    let error = refused(&list, &format!("SELECT * FROM read_csv('{other}')")).await;
+    assert!(error.contains("report1.csv"), "{error}");
+}
