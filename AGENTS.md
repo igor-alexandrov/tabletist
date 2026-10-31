@@ -61,6 +61,12 @@ SSH agent tests also need `TABLETIST_TEST_SSH_AGENT=1` and the test key in a run
 `chmod 600 crates/tabletist-db/tests/ssh/id_ed25519 && ssh-add crates/tabletist-db/tests/ssh/id_ed25519`
 (then `cargo test -p tabletist-db --lib ssh::tests::the_agent_lists_its_keys -- --ignored`).
 Without the variables those tests print "skipped" and pass; CI runs all three suites on Linux.
+ClickHouse is not an engine yet and not in CI: `docker compose up -d --build --wait clickhouse ssh`, then
+the three variables `TABLETIST_TEST_CLICKHOUSE_URL=http://tabletist:tabletist@localhost:58123/tabletist`,
+`TABLETIST_TEST_CLICKHOUSE_HTTPS_URL=https://tabletist:tabletist@localhost:58443/tabletist` and
+`TABLETIST_TEST_SSH_URL=ssh://tabletist:tabletist@localhost:52222` set for both
+`cargo test -p tabletist-db --lib clickhouse` and `cargo test -p tabletist-db --test clickhouse`
+(cargo's filter matches test names, so one run does not cover both).
 The native keyring test is `#[ignore]`d; run it by hand on a desktop session.
 
 Views draw text only through `TextRole`s (`src/typography.rs`); a view never
