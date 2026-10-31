@@ -1174,7 +1174,13 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         }
     });
     if let Some((tab, id)) = copy_ddl {
-        crate::ui::ddl::copy(app, ctx, tab, id);
+        let paint = crate::ui::Paint::of(app);
+        if let Some(object) = app
+            .workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+        {
+            crate::ui::ddl::copy(ctx, paint, tab, object);
+        }
     }
     // The menu opens as a click on the chip opens it: a server with one
     // database has none, and the key does nothing.
@@ -3233,7 +3239,10 @@ fn letters(
                 actions.push(Action::ToggleDdlVisual { tab, id });
             }
             (Some(Command::CopyDdl), Some(id)) => {
-                crate::ui::ddl::copy(app, ctx, tab, id);
+                let paint = crate::ui::Paint::of(app);
+                if let Some(object) = workspace.object_tab(id) {
+                    crate::ui::ddl::copy(ctx, paint, tab, object);
+                }
                 actions.push(Action::LeaveDdlVisual { tab, id });
             }
             (Some(Command::OpenDdlInEditor), Some(id)) => {
@@ -3249,8 +3258,8 @@ fn letters(
             // The whole statements, never the lines as the panel shows
             // them. The copy shows nowhere, so the status line says it.
             (Some(Command::CopyReviewSql), Some(id)) => {
-                if let Some(text) = crate::ui::review::copy_text(app, tab, id) {
-                    ctx.copy_text(text);
+                if let Some(review) = app.review_whole(tab, id) {
+                    ctx.copy_text(crate::ui::review::text(&review, app.locale));
                     let said = crate::i18n::gettext(app.locale, crate::ui::review::COPIED_SQL);
                     crate::ui::toast::say(ctx, &said);
                 }

@@ -371,7 +371,10 @@ fn source(workspace: &Workspace, id: TabId, locale: crate::i18n::Locale) -> Opti
 pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     // The editor the panel draws is out of its tab while the panel is
     // drawn: the field edits its text, and everything else is read.
-    let mut editor = row_form::take_editor(app, tab, id);
+    let mut editor = app
+        .workspace_mut(tab)
+        .and_then(|workspace| workspace.object_tab_mut(id))
+        .and_then(row_form::take_editor);
     // The field an edit ended in is owed the keyboard. The request is
     // the reducer's: the panel reads it, and says when it is met.
     let focus = app
@@ -379,7 +382,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
         .and_then(|workspace| workspace.object_tab(id))
         .and_then(|object| object.focus_field);
     draw(app, ui, (tab, id), editor.as_mut(), focus);
-    row_form::put_editor(app, tab, id, editor);
+    if let Some(object) = app
+        .workspace_mut(tab)
+        .and_then(|workspace| workspace.object_tab_mut(id))
+    {
+        row_form::put_editor(object, editor);
+    }
 }
 
 /// The panel itself. `editor` is the tab's editor where the panel draws
