@@ -5023,8 +5023,17 @@ impl App {
             Driver::Files => form.files_source(),
             Driver::Postgres | Driver::MySql | Driver::Sqlite => None,
         };
-        // What a Test read was of the Source before it changed.
-        form.files_tested = None;
+        // A Test of another Source, done or still running, says nothing of
+        // this one.
+        match form.driver {
+            Driver::Files => {
+                let tested = form.test_spec.as_ref().and_then(|spec| spec.files.as_ref());
+                if tested != source.as_ref() {
+                    form.forget_test();
+                }
+            }
+            Driver::Postgres | Driver::MySql | Driver::Sqlite => form.files_tested = None,
+        }
         match source {
             Some(source) => {
                 form.files_found = crate::model::FilesFound::Reading(request);

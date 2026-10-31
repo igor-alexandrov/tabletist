@@ -2211,6 +2211,18 @@ impl ConnectionForm {
         self.ssh_hosts_request = None;
     }
 
+    /// Drops the Test, whether done or running, and what it read: neither
+    /// speaks for a Source it never read.
+    pub fn forget_test(&mut self) {
+        self.test = TestState::Idle;
+        self.test_started = None;
+        self.test_took = None;
+        self.test_spec = None;
+        self.test_secrets = tabletist_db::Secrets::default();
+        self.test_waiting = 0;
+        self.files_tested = None;
+    }
+
     /// The config's Host whose alias is the typed SSH host, compared as
     /// OpenSSH compares Host names (ignoring case).
     pub fn ssh_config_host(&self) -> Option<&ConfigHost> {
