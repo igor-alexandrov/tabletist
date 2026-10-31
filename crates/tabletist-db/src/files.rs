@@ -34,6 +34,18 @@ impl Source {
         }
     }
 
+    /// What the source is called in a word: the folder's name, or the
+    /// files' names.
+    pub fn title(&self) -> String {
+        match self {
+            Self::Folder(folder) => folder
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| shown(folder)),
+            Self::Files(_) => self.summary(),
+        }
+    }
+
     /// The folder the files are in: the folder itself, or the first
     /// file's.
     pub fn folder(&self) -> Option<&Path> {
@@ -171,10 +183,13 @@ pub fn scan(source: &Source) -> Result<Scan> {
                 let Some(format) = Format::of(&path).filter(|_| !hidden) else {
                     continue;
                 };
-                // A link to a file counts as the file; a folder never.
+                // A link to a file counts as the file; a folder never, nor
+                // a broken link. A file that cannot be looked at is said.
                 match std::fs::metadata(&path) {
                     Ok(meta) if meta.is_file() => entries.push((path, format, meta.len())),
-                    Ok(_) | Err(_) => {}
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(file_error(&path, &error)),
                 }
             }
             // By name, in any case, as a person reads the folder.
@@ -193,7 +208,11 @@ pub fn scan(source: &Source) -> Result<Scan> {
                 };
                 match std::fs::metadata(path) {
                     Ok(meta) if meta.is_file() => entries.push((path.clone(), format, meta.len())),
-                    Ok(_) | Err(_) => missing.push(path.clone()),
+                    Ok(_) => missing.push(path.clone()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        missing.push(path.clone());
+                    }
+                    Err(error) => return Err(file_error(path, &error)),
                 }
             }
         }
@@ -225,6 +244,16 @@ fn folder_error(folder: &Path, error: &std::io::Error) -> Error {
         _ => error.to_string(),
     };
     Error::Connect(format!("Can't open {}: {why}", shown(folder)))
+}
+
+/// Why a file of the source cannot be looked at, other than its being
+/// gone.
+fn file_error(file: &Path, error: &std::io::Error) -> Error {
+    let why = match error.kind() {
+        std::io::ErrorKind::PermissionDenied => "not allowed to read it".to_owned(),
+        _ => error.to_string(),
+    };
+    Error::Connect(format!("Can't open {}: {why}", shown(file)))
 }
 
 /// The name a file's stem becomes: lowercased, with anything outside
@@ -464,18 +493,48 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_file_that_cannot_be_looked_at_is_said_not_missing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let shut = dir.path().join("shut");
+        std::fs::create_dir(&shut).unwrap();
+        touch(&shut, "orders.csv", 1);
+        // Read without search: the names are listed, the files not.
+        std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let looked = std::fs::metadata(shut.join("orders.csv"));
+        let folder = scan(&Source::Folder(shut.clone()));
+        let list = scan(&Source::Files(vec![shut.join("orders.csv")]));
+        std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o700)).unwrap();
+        if looked.is_ok() {
+            // Run as root, which may look at anything.
+            return;
+        }
+        for scanned in [folder, list] {
+            match scanned {
+                Err(Error::Connect(why)) => {
+                    assert!(why.ends_with("orders.csv: not allowed to read it"), "{why}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
     #[test]
     fn a_number_never_gives_a_name_another_file_has() {
         let dir = tempfile::tempdir().unwrap();
-        touch(dir.path(), "orders.csv", 1);
-        touch(dir.path(), "orders.CSV", 1);
-        touch(dir.path(), "orders_csv_2.csv", 1);
+        // Two names that differ by more than case: macOS's file system
+        // keeps `orders.csv` and `orders.CSV` as one file.
+        touch(dir.path(), "order lines.csv", 1);
+        touch(dir.path(), "order-lines.csv", 1);
+        touch(dir.path(), "order_lines_csv_2.csv", 1);
         let scan = scan(&Source::Folder(dir.path().to_owned())).unwrap();
         let mut names = scan.names();
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), 3, "{:?}", scan.names());
-        assert!(scan.names().contains(&"orders_csv_2"));
+        assert!(scan.names().contains(&"order_lines_csv_2"));
     }
 
     #[test]
@@ -585,5 +644,8 @@ mod tests {
         let list = Source::Files(vec!["/d/orders.csv".into(), "/d/customers.parquet".into()]);
         assert_eq!(list.summary(), "orders.csv, customers.parquet");
         assert_eq!(list.folder(), Some(Path::new("/d")));
+        assert_eq!(list.title(), "orders.csv, customers.parquet");
+        let folder = Source::Folder("/data/bookshop-exports".into());
+        assert_eq!(folder.title(), "bookshop-exports");
     }
 }

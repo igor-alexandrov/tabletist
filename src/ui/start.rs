@@ -112,18 +112,12 @@ fn shown(
             .and_then(|path| path.file_name())
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default(),
-        // A Files connection is on a folder, or on its first file.
+        // A Files connection is on a folder, or on its files.
         Driver::Files => workspace
             .spec
             .files
             .as_ref()
-            .map(|source| match source {
-                tabletist_db::files::Source::Folder(folder) => folder
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| tabletist_db::files::shown(folder)),
-                tabletist_db::files::Source::Files(_) => source.summary(),
-            })
+            .map(tabletist_db::files::Source::title)
             .unwrap_or_default(),
         Driver::Postgres | Driver::MySql | Driver::BigQuery => info.database.clone(),
     };
