@@ -13,7 +13,7 @@
 //! and columns, which the agent checks enforce beside the person's own
 //! ([`Managed::sources`]).
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
 use serde::de::IgnoredAny;
@@ -241,14 +241,33 @@ fn driver_key(driver: Driver) -> &'static str {
 }
 
 /// `file`, with a leading `~` read as `home`, made absolute without asking
-/// the disk.
+/// the disk, and with `.` and `..` taken out, so a path that climbs out of
+/// a folder matches where it lands. A link is not followed.
 fn absolute(file: &Path, home: Option<&Path>) -> Option<PathBuf> {
     let file = match (file.strip_prefix("~"), home) {
         (Ok(rest), Some(home)) => home.join(rest),
         (Ok(_), None) => return None,
         (Err(_), _) => file.to_path_buf(),
     };
-    std::path::absolute(file).ok()
+    let mut collapsed = PathBuf::new();
+    for part in std::path::absolute(file).ok()?.components() {
+        match part {
+            Component::CurDir => {}
+            // `..` at the root stays at the root.
+            Component::ParentDir => {
+                if matches!(
+                    collapsed.components().next_back(),
+                    Some(Component::Normal(_))
+                ) {
+                    collapsed.pop();
+                }
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                collapsed.push(part)
+            }
+        }
+    }
+    Some(collapsed)
 }
 
 /// Whether `text` matches `pattern`, in which `*` stands for any run of
@@ -992,6 +1011,21 @@ access_max = "off"
         );
         assert!(data.matches(&folder(Path::new("~/Data")), Some(home)));
         assert!(!data.matches(&folder(Path::new("~/Data")), None));
+        // A path that climbs out with `..` is matched where it lands, the
+        // SQLite rule's too.
+        let around = std::path::absolute("/home/ada/scratch")
+            .unwrap()
+            .join(".")
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("srv")
+            .join("secret");
+        let inside = rule(secret.join("*"));
+        assert!(inside.matches(&list(&[scratch.clone(), around.join("payroll.csv")]), None));
+        assert!(inside.matches(&folder(&around), None));
+        assert!(inside.matches(&ConnectSpec::sqlite(around.join("books.db")), None));
+        assert!(!inside.matches(&folder(&around.join("..").join("other")), None));
     }
 
     #[test]

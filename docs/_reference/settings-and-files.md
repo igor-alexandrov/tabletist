@@ -718,9 +718,11 @@ host. `path` is a SQLite file's. On a Files connection it matches any
 path the connection reads: its folder, or a file the pattern names
 directly in it, such as `/srv/exports/*.csv`; for a list of files, any
 one of them, or the folder it is in. In `path`, `~` is your home folder.
-`driver`
-is `postgres`, `mysql`, `sqlite` or `files`. A key the connection has no
-use for, such as `path` on PostgreSQL, does not match. Every rule that
+A connection's path is compared after its `.` and `..` are taken out,
+so `/home/ada/../../srv/exports` counts as `/srv/exports`; a link is not
+followed. `driver` is `postgres`, `mysql`, `sqlite` or `files`. A key
+the connection has no use for, such as `path` on PostgreSQL, does not
+match. Every rule that
 matches a connection applies. A Files connection can hide no table and
 mask no column: while a rule that matches one has `hidden`,
 `visible_only` or `masked`, agents may not use it at all.
