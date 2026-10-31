@@ -92,7 +92,7 @@ fn text(text: &str) -> Value {
 /// `$1`, `$2` and so on for PostgreSQL.
 fn placed(connection: &Connection, sql: &str) -> String {
     match connection.dialect() {
-        Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery => sql.to_owned(),
+        Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery | Dialect::DuckDb => sql.to_owned(),
         Dialect::Postgres => {
             let mut number = 0;
             sql.chars()
@@ -277,6 +277,7 @@ async fn a_read_checked_for_another_database_is_not_run(connection: &Connection,
         Dialect::Postgres => Dialect::MySql,
         Dialect::MySql => Dialect::Sqlite,
         Dialect::Sqlite | Dialect::BigQuery => Dialect::Postgres,
+        Dialect::DuckDb => Dialect::Sqlite,
     };
     let read = agent::check_read(other, "SELECT title FROM books", &[]).unwrap();
     let error = connection
@@ -339,7 +340,7 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
     // table expression, and through a view.
     let quoted = match connection.dialect() {
         Dialect::MySql | Dialect::BigQuery => "SELECT * FROM `CUSTOMERS`",
-        Dialect::Postgres | Dialect::Sqlite => "SELECT * FROM \"CUSTOMERS\"",
+        Dialect::Postgres | Dialect::Sqlite | Dialect::DuckDb => "SELECT * FROM \"CUSTOMERS\"",
     };
     for sql in [
         "SELECT * FROM customers",
@@ -371,7 +372,9 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
     // hidden, open where none is.
     let catalog = match connection.dialect() {
         Dialect::Sqlite => "SELECT count(*) FROM sqlite_master",
-        Dialect::Postgres | Dialect::MySql => "SELECT count(*) FROM information_schema.tables",
+        Dialect::Postgres | Dialect::MySql | Dialect::DuckDb => {
+            "SELECT count(*) FROM information_schema.tables"
+        }
         Dialect::BigQuery => "SELECT count(*) FROM bookshop.INFORMATION_SCHEMA.TABLES",
     };
     let error = hiding(connection, &customers, catalog).await.unwrap_err();
@@ -464,12 +467,12 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
             let error = hiding(connection, &customers, hinted).await.unwrap_err();
             assert_eq!(error, hidden_refusal("customers", None), "{on}");
         }
-        Dialect::Sqlite | Dialect::BigQuery => {}
+        Dialect::Sqlite | Dialect::BigQuery | Dialect::DuckDb => {}
     }
     // What is hidden, asked outside a statement, as the server asks it to
     // leave hidden tables out of what it says of the schema.
     let home = match connection.dialect() {
-        Dialect::Sqlite => "main",
+        Dialect::Sqlite | Dialect::DuckDb => "main",
         Dialect::Postgres => "public",
         Dialect::MySql | Dialect::BigQuery => "bookshop",
     };
@@ -588,6 +591,7 @@ async fn a_masked_column_is_used_only_as_it_is(connection: &Connection, on: &str
         Dialect::MySql => "SELECT count(*) FROM information_schema.TABLES",
         Dialect::Sqlite => "SELECT count(*) FROM sqlite_master",
         Dialect::BigQuery => "SELECT count(*) FROM bookshop.INFORMATION_SCHEMA.TABLES",
+        Dialect::DuckDb => "SELECT count(*) FROM duckdb_tables()",
     };
     assert_eq!(
         masking(connection, &email, catalog).await.unwrap_err(),

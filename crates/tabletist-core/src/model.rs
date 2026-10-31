@@ -2293,7 +2293,7 @@ impl ConnectionForm {
     pub fn password_can_be_intercepted(&self) -> bool {
         let unchecked = match self.driver {
             // No password crosses: the API is HTTPS to Google.
-            Driver::Sqlite | Driver::BigQuery => false,
+            Driver::Sqlite | Driver::BigQuery | Driver::Files => false,
             Driver::Postgres => match self.tls {
                 TlsMode::Disable | TlsMode::Prefer => true,
                 TlsMode::Require => self.ca_file.trim().is_empty(),
@@ -2457,6 +2457,7 @@ impl ConnectionForm {
                 }
                 Ok(ConnectSpec::sqlite(path))
             }
+            Driver::Files => Err("Choose a folder.".into()),
             Driver::Postgres | Driver::MySql => {
                 let host = self.host.trim();
                 if host.is_empty() {
@@ -2517,6 +2518,7 @@ impl ConnectionForm {
                     tls: self.tls,
                     ca_file: (!ca_file.is_empty()).then(|| ca_file.into()),
                     ssh,
+                    files: None,
                 })
             }
         }
@@ -2599,7 +2601,7 @@ impl ConnectionForm {
         }
         let spec = self.to_spec()?;
         let password = match spec.driver {
-            Driver::Sqlite | Driver::BigQuery => PasswordMode::None,
+            Driver::Sqlite | Driver::BigQuery | Driver::Files => PasswordMode::None,
             // Nothing typed and nothing saved (or the saved one forgotten):
             // a server that needs no password (trust or peer
             // authentication).
@@ -4000,6 +4002,8 @@ pub fn is_system_schema(driver: Driver, name: &str) -> bool {
         // BigQuery lists dataset IDs here; a dataset's INFORMATION_SCHEMA
         // is views inside it, never a dataset of its own.
         Driver::BigQuery => false,
+        // A `.duckdb` file's schema is the person's.
+        Driver::Files => false,
     }
 }
 
@@ -6411,7 +6415,7 @@ impl Workspace {
         let name = match self.driver {
             Driver::Postgres => "public",
             Driver::MySql => self.spec.database.as_str(),
-            Driver::Sqlite => "main",
+            Driver::Sqlite | Driver::Files => "main",
             // BigQuery names resolve dataset-less in no dataset.
             Driver::BigQuery => return None,
         };

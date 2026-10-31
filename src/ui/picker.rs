@@ -108,7 +108,7 @@ fn is_local(connection: &SavedConnection) -> bool {
     use tabletist_db::Driver;
     let spec = &connection.spec;
     match spec.driver {
-        Driver::Sqlite => true,
+        Driver::Sqlite | Driver::Files => true,
         Driver::Postgres | Driver::MySql => {
             spec.ssh.is_none() && crate::model::is_local_host(&spec.host)
         }
@@ -136,7 +136,7 @@ fn tls_label(connection: &SavedConnection) -> (String, Option<bool>) {
         // HTTPS to Google's API, verified against the system roots: the
         // database TLS modes are not its to set.
         Driver::BigQuery => ("HTTPS".into(), Some(true)),
-        Driver::Postgres | Driver::MySql | Driver::Sqlite => {
+        Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::Files => {
             let text = match connection.spec.tls {
                 TlsMode::Disable => "no TLS",
                 TlsMode::Prefer => "prefer",
@@ -823,6 +823,7 @@ pub(crate) fn target(connection: &SavedConnection) -> (String, String) {
     match spec.driver {
         // A BigQuery summary is the project alone.
         Driver::Sqlite | Driver::BigQuery => (spec.summary(), String::new()),
+        Driver::Files => (spec.summary(), String::new()),
         Driver::Postgres | Driver::MySql => (
             format!("{}:{}", spec.host, spec.port),
             format!("/{}", spec.database),

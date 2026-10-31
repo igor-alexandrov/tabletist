@@ -17,6 +17,8 @@ pub enum Driver {
     MySql,
     Sqlite,
     BigQuery,
+    /// Data files read as tables, through DuckDB in the app's process.
+    Files,
 }
 
 impl Driver {
@@ -24,7 +26,7 @@ impl Driver {
         match self {
             Self::Postgres => 5432,
             Self::MySql => 3306,
-            Self::Sqlite | Self::BigQuery => 0,
+            Self::Sqlite | Self::BigQuery | Self::Files => 0,
         }
     }
 
@@ -34,6 +36,7 @@ impl Driver {
             Self::MySql => "MySQL",
             Self::Sqlite => "SQLite",
             Self::BigQuery => "BigQuery",
+            Self::Files => "Files",
         }
     }
 
@@ -44,6 +47,7 @@ impl Driver {
             Self::MySql => crate::Dialect::MySql,
             Self::Sqlite => crate::Dialect::Sqlite,
             Self::BigQuery => crate::Dialect::BigQuery,
+            Self::Files => crate::Dialect::DuckDb,
         }
     }
 }
@@ -116,6 +120,8 @@ pub struct ConnectSpec {
     pub tls: TlsMode,
     pub ca_file: Option<PathBuf>,
     pub ssh: Option<SshSpec>,
+    /// The files a Files connection opens; `None` for every other driver.
+    pub files: Option<crate::files::Source>,
 }
 
 impl Default for ConnectSpec {
@@ -131,6 +137,7 @@ impl Default for ConnectSpec {
             tls: TlsMode::Prefer,
             ca_file: None,
             ssh: None,
+            files: None,
         }
     }
 }
@@ -297,6 +304,17 @@ impl ConnectSpec {
         }
     }
 
+    /// A Files connection that opens `source`.
+    pub fn files(source: crate::files::Source) -> Self {
+        Self {
+            driver: Driver::Files,
+            host: String::new(),
+            port: 0,
+            files: Some(source),
+            ..Self::default()
+        }
+    }
+
     /// Parses `postgres://`, `postgresql://`, `mysql://`, `mariadb://` and
     /// `sqlite:` URLs. The password, if any, comes back in `Secrets`.
     pub fn from_url(url: &str) -> Result<(Self, Secrets)> {
@@ -309,12 +327,20 @@ impl ConnectSpec {
     pub fn effective_tls(&self) -> TlsMode {
         match (self.driver, self.tls, &self.ca_file) {
             (Driver::Postgres, TlsMode::Require, Some(_)) => TlsMode::VerifyCa,
-            (Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery, tls, _) => tls,
+            (
+                Driver::Postgres
+                | Driver::MySql
+                | Driver::Sqlite
+                | Driver::BigQuery
+                | Driver::Files,
+                tls,
+                _,
+            ) => tls,
         }
     }
 
-    /// A one-line description without secrets: `user@host:port/db`, or the
-    /// file name for SQLite.
+    /// A one-line description without secrets: `user@host:port/db`, the
+    /// file name for SQLite, or a Files connection's folder or files.
     pub fn summary(&self) -> String {
         match self.driver {
             Driver::Sqlite => {
@@ -327,6 +353,13 @@ impl ConnectSpec {
             }
             // The project alone: there is no host, port or user.
             Driver::BigQuery => return self.database.clone(),
+            Driver::Files => {
+                return self
+                    .files
+                    .as_ref()
+                    .map(crate::files::Source::summary)
+                    .unwrap_or_default();
+            }
             Driver::Postgres | Driver::MySql => {}
         }
         let mut text = String::new();
@@ -360,6 +393,16 @@ mod tests {
         assert_eq!(Driver::Postgres.dialect(), crate::Dialect::Postgres);
         assert_eq!(Driver::MySql.dialect(), crate::Dialect::MySql);
         assert_eq!(Driver::Sqlite.dialect(), crate::Dialect::Sqlite);
+        assert_eq!(Driver::Files.dialect(), crate::Dialect::DuckDb);
+    }
+
+    #[test]
+    fn a_files_spec_says_its_source() {
+        let spec = ConnectSpec::files(crate::files::Source::Folder("/data/bookshop".into()));
+        assert_eq!(spec.driver, Driver::Files);
+        assert_eq!(spec.summary(), "/data/bookshop");
+        assert_eq!(spec.driver.label(), "Files");
+        assert_eq!(spec.driver.default_port(), 0);
     }
 
     #[test]

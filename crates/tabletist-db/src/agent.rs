@@ -21,7 +21,9 @@
 use std::fmt;
 
 use sqlparser::ast::{Query, SetExpr, Statement, UtilityOption};
-use sqlparser::dialect::{BigQueryDialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect};
+use sqlparser::dialect::{
+    BigQueryDialect, DuckDbDialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect,
+};
 use sqlparser::parser::Parser;
 use sqlparser::tokenizer::{Token, Tokenizer, Whitespace};
 
@@ -172,6 +174,11 @@ pub enum Refusal {
     /// connection until the policy is fixed. Nothing the file says is
     /// told: the entry names nothing on this database.
     PolicyNeedsFixing,
+    /// The connection's settings or the administrator's policy hide a
+    /// table or mask a column of a Files connection, which keeps neither:
+    /// a file has no catalog to say what a statement reads. Agents may not
+    /// use the connection until the rule is taken off.
+    NotKeptOnFiles,
 }
 
 /// How a statement reads a masked column otherwise than selecting it as it
@@ -259,7 +266,9 @@ impl Refusal {
             Self::TableHidden { .. } => "table_hidden",
             Self::SystemCatalog => "system_catalog",
             Self::MaskedColumnUsed { .. } => "masked_column_used",
-            Self::SettingsNeedALook { .. } | Self::PolicyNeedsFixing => "connection_unavailable",
+            Self::SettingsNeedALook { .. } | Self::PolicyNeedsFixing | Self::NotKeptOnFiles => {
+                "connection_unavailable"
+            }
         }
     }
 }
@@ -312,7 +321,7 @@ impl fmt::Display for Refusal {
             Self::InvalidParams(ParamFault::Placeholder { written, dialect }) => {
                 let own = match dialect {
                     Dialect::Postgres => "$1, $2 and so on",
-                    Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery => "?",
+                    Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery | Dialect::DuckDb => "?",
                 };
                 write!(
                     f,
@@ -363,6 +372,10 @@ impl fmt::Display for Refusal {
             }
             Self::PolicyNeedsFixing => f.write_str(
                 "Agents may not use this connection until your administrator's policy is fixed.",
+            ),
+            Self::NotKeptOnFiles => f.write_str(
+                "A Files connection cannot hide tables or mask columns, so agents may not use \
+                 it while a rule does.",
             ),
             Self::MaskedColumnUsed { column, how, by } => masked_sentence(f, column, how, *by),
             Self::SystemCatalog => f.write_str(
@@ -518,6 +531,7 @@ fn read_parsed(dialect: Dialect, text: &str, params: &[Param]) -> Result<bool, R
         Dialect::MySql => &MySqlDialect {},
         Dialect::Sqlite => &SQLiteDialect {},
         Dialect::BigQuery => &BigQueryDialect {},
+        Dialect::DuckDb => &DuckDbDialect {},
     };
     let unread = || unread(dialect, text);
     let tokens = Tokenizer::new(parser, text)
@@ -580,7 +594,7 @@ fn read_parsed(dialect: Dialect, text: &str, params: &[Param]) -> Result<bool, R
 fn hints_read(dialect: Dialect, tokens: &[Token], text: &str) -> Result<(), Refusal> {
     match dialect {
         Dialect::MySql => {}
-        Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => return Ok(()),
+        Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery | Dialect::DuckDb => return Ok(()),
     }
     let parsed = tokens.iter().any(|token| match token {
         Token::Whitespace(Whitespace::MultiLineComment(body)) => body.starts_with('+'),
@@ -807,7 +821,9 @@ fn words_read(dialect: Dialect, pieces: &[Piece]) -> Result<(), Refusal> {
                 Dialect::MySql => {
                     return Err(Refusal::NotAllowed("An assignment to a variable".into()));
                 }
-                Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => continue,
+                Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery | Dialect::DuckDb => {
+                    continue;
+                }
             },
             Piece::Open | Piece::Other => continue,
         };
@@ -870,7 +886,7 @@ fn pragma_table(dialect: Dialect, name: &str) -> bool {
         Dialect::Sqlite => name
             .get(..7)
             .is_some_and(|start| start.eq_ignore_ascii_case("pragma_")),
-        Dialect::Postgres | Dialect::MySql | Dialect::BigQuery => false,
+        Dialect::Postgres | Dialect::MySql | Dialect::BigQuery | Dialect::DuckDb => false,
     }
 }
 
@@ -990,6 +1006,20 @@ fn effects(dialect: Dialect) -> (&'static [&'static str], &'static [&'static str
         // GoogleSQL's functions are pure: it has nothing with an effect
         // outside its result (no files, no settings, no sessions).
         Dialect::BigQuery => (&[], &[]),
+        // The fence keeps every file but the connection's out of reach,
+        // and the session's settings locked: what is left runs SQL held in
+        // a string, or changes what the session answers next.
+        Dialect::DuckDb => (
+            &[
+                "query",
+                "query_table",
+                "setseed",
+                "nextval",
+                "currval",
+                "getvariable",
+            ],
+            &[],
+        ),
     }
 }
 
@@ -1003,7 +1033,14 @@ fn named_placeholder(dialect: Dialect, sign: char, next: Option<&Token>) -> Opti
     };
     let named = match (dialect, sign) {
         (Dialect::MySql | Dialect::Sqlite, ':') | (Dialect::Sqlite, '@') => true,
-        (Dialect::Postgres | Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery, _) => false,
+        (
+            Dialect::Postgres
+            | Dialect::MySql
+            | Dialect::Sqlite
+            | Dialect::BigQuery
+            | Dialect::DuckDb,
+            _,
+        ) => false,
     };
     named.then(|| format!("{sign}{}", name.value))
 }
@@ -1022,7 +1059,7 @@ fn params_match(
                 .strip_prefix('$')
                 .and_then(|number| number.parse::<usize>().ok())
                 .filter(|number| *number > 0),
-            Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery => {
+            Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery | Dialect::DuckDb => {
                 (written == "?").then_some(expected + 1)
             }
         };

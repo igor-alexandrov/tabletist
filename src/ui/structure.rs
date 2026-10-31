@@ -140,7 +140,8 @@ fn keeps_comments(driver: Driver) -> bool {
     match driver {
         // BigQuery's column descriptions are its comments.
         Driver::Postgres | Driver::MySql | Driver::BigQuery => true,
-        Driver::Sqlite => false,
+        // A file keeps none.
+        Driver::Sqlite | Driver::Files => false,
     }
 }
 

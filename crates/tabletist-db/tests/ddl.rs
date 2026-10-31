@@ -819,8 +819,31 @@ mod mysql {
 /// TABLE` first: named by `Driver`, so a new engine is named here too.
 #[tokio::test]
 async fn every_engine_reads_book_covers() {
-    for driver in [Driver::Sqlite, Driver::Postgres, Driver::MySql] {
+    let exports = tempfile::tempdir().unwrap();
+    tabletist_db::fixtures::write_bookshop_files(exports.path()).unwrap();
+    for driver in [
+        Driver::Sqlite,
+        Driver::Postgres,
+        Driver::MySql,
+        Driver::Files,
+    ] {
         let ddl = match driver {
+            // The Bookshop's exports keep `book_covers` in a `.duckdb`
+            // file, a schema of the connection.
+            Driver::Files => {
+                let spec = ConnectSpec::files(tabletist_db::files::Source::Folder(
+                    exports.path().to_owned(),
+                ));
+                let connection = Connection::connect(&spec, &Secrets::default())
+                    .await
+                    .unwrap();
+                Some(
+                    connection
+                        .ddl(&ObjectRef::new("bookshop", "book_covers"))
+                        .await
+                        .unwrap(),
+                )
+            }
             Driver::Sqlite => Some(sqlite::ddl("book_covers").await),
             Driver::Postgres => match postgres::bookshop().await {
                 Some(connection) => Some(
