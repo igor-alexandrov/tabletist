@@ -61,8 +61,10 @@ const ABOVE: [&str; 10] = [
 ];
 
 /// The Rust files of the module `name`, by their path from the repository
-/// root, with their text: `src/name.rs` and whatever is under `src/name/`.
-fn module(name: &str) -> Vec<(String, String)> {
+/// root, with their text and how many `super::` reach the crate's root
+/// from them: `src/name.rs` (or `src/name/mod.rs`) and whatever is under
+/// `src/name/`.
+fn module(name: &str) -> Vec<(String, String, usize)> {
     fn walk(dir: &Path, into: &mut Vec<std::path::PathBuf>) {
         for entry in std::fs::read_dir(dir).expect("read a source directory") {
             let path = entry.expect("read a directory entry").path();
@@ -74,10 +76,17 @@ fn module(name: &str) -> Vec<(String, String)> {
         }
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let file = root.join("src").join(format!("{name}.rs"));
-    assert!(file.is_file(), "no module src/{name}.rs");
-    let mut paths = vec![file];
-    let dir = root.join("src").join(name);
+    let src = root.join("src");
+    let file = src.join(format!("{name}.rs"));
+    let dir = src.join(name);
+    assert!(
+        file.is_file() || dir.join("mod.rs").is_file(),
+        "no module src/{name}.rs or src/{name}/mod.rs"
+    );
+    let mut paths = Vec::new();
+    if file.is_file() {
+        paths.push(file);
+    }
     if dir.is_dir() {
         walk(&dir, &mut paths);
     }
@@ -85,12 +94,18 @@ fn module(name: &str) -> Vec<(String, String)> {
     paths
         .into_iter()
         .map(|path| {
+            // `src/a/b.rs` is `crate::a::b`, and `src/a/mod.rs` is
+            // `crate::a`.
+            let inside = path.strip_prefix(&src).expect("a path under src");
+            let mod_rs = inside.file_name().is_some_and(|file| file == "mod.rs");
+            let depth = inside.components().count() - usize::from(mod_rs);
             let name = path.strip_prefix(root).expect("a path under the root");
             // Windows checks the sources out with CRLF line ends.
             let text = std::fs::read_to_string(&path).expect("read a source file");
             (
                 name.display().to_string().replace('\\', "/"),
                 text.replace("\r\n", "\n"),
+                depth,
             )
         })
         .collect()
@@ -140,17 +155,23 @@ fn upward(path: &str) -> bool {
     })
 }
 
-/// What `code` takes from `crate::ui` or `crate::app`: each path, with a
-/// little of what follows it. A group (`crate::{app::App, model::Tab}`)
-/// is read item by item.
-fn upward_paths(code: &str) -> Vec<String> {
+/// What `code`, in a file `depth` modules below the crate's root, takes
+/// from `ui` or `app`: each path, with a little of what follows it. The
+/// path starts at `crate::` or at as many `super::` as reach the root. A
+/// group (`crate::{app::App, model::Tab}`) is read item by item.
+fn upward_paths(code: &str, depth: usize) -> Vec<String> {
     let mut found = Vec::new();
-    for (at, _) in code.match_indices("crate::") {
-        // The end of a longer name is another path's: `tabletist_crate::`.
-        if code[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_') {
+    let supers = "super::".repeat(depth);
+    let roots = code
+        .match_indices("crate::")
+        .chain(code.match_indices(supers.as_str()));
+    for (at, root) in roots {
+        // The end of a longer name or path is another path's:
+        // `tabletist_crate::`, a `super::` further up.
+        if code[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == ':') {
             continue;
         }
-        let after = &code[at + "crate::".len()..];
+        let after = &code[at + root.len()..];
         let shown = |text: &str| text.chars().take(40).collect::<String>();
         if upward(after) {
             found.push(shown(&code[at..]));
@@ -161,7 +182,7 @@ fn upward_paths(code: &str) -> Vec<String> {
             let mut starts = true;
             for (index, char) in group.char_indices() {
                 if starts && upward(&group[index..]) {
-                    found.push(format!("crate::{{…{}", shown(&group[index..])));
+                    found.push(format!("{root}{{…{}", shown(&group[index..])));
                 }
                 if char.is_whitespace() {
                     continue;
@@ -190,9 +211,13 @@ fn the_search_finds_a_path_up() {
         "use crate::ui as shown;",
         "use crate::{\n    model::Tab,\n    app::{App, TitleBar},\n};",
         "use crate::{model::{Tab, TabId}, ui};",
+        "use super::ui::focus;",
+        "use super::{app::App, model::Tab};",
     ] {
-        assert!(!upward_paths(&code(line)).is_empty(), "{line}");
+        assert!(!upward_paths(&code(line), 1).is_empty(), "{line}");
     }
+    // Two modules down, `super::super` is the root.
+    assert!(!upward_paths("use super::super::ui::focus;", 2).is_empty());
     for line in [
         "use crate::model::{Tab, apply};",
         "use crate::{model::Tab, uiza::Thing};",
@@ -200,8 +225,12 @@ fn the_search_finds_a_path_up() {
         "let url = \"crate::apple\";",
         "use crate::{application, model::{ui_row, Tab}};",
     ] {
-        assert!(upward_paths(&code(line)).is_empty(), "{line}");
+        assert!(upward_paths(&code(line), 1).is_empty(), "{line}");
     }
+    // A module of the lower one's own that is named `ui` is not the
+    // interface.
+    assert!(upward_paths("use super::ui::Row;", 2).is_empty());
+    assert!(upward_paths("use super::super::super::ui::Row;", 2).is_empty());
 }
 
 #[test]
@@ -213,7 +242,9 @@ fn every_module_is_below_or_above() {
         let Some(name) = path.file_stem().and_then(|stem| stem.to_str()) else {
             continue;
         };
-        if path.extension().is_some_and(|ext| ext == "rs")
+        // A module is a file, or a directory with or without a file of
+        // the same name beside it (`src/ui/mod.rs`).
+        if (path.is_dir() || path.extension().is_some_and(|ext| ext == "rs"))
             && !LOWER.contains(&name)
             && !ABOVE.contains(&name)
         {
@@ -221,6 +252,7 @@ fn every_module_is_below_or_above() {
         }
     }
     unplaced.sort();
+    unplaced.dedup();
     assert!(
         unplaced.is_empty(),
         "modules in neither list of tests/layers.rs: {}",
@@ -232,8 +264,8 @@ fn every_module_is_below_or_above() {
 fn the_lower_layer_names_neither_the_interface_nor_the_app() {
     let mut found = Vec::new();
     for name in LOWER {
-        for (file, text) in module(name) {
-            for path in upward_paths(&code(&text)) {
+        for (file, text, depth) in module(name) {
+            for path in upward_paths(&code(&text), depth) {
                 found.push(format!("{file}: {path}"));
             }
         }
