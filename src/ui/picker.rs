@@ -198,7 +198,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         pos2(full.left(), header.bottom()),
         full.max,
     )));
-    let below = header.bottom() + super::notices(app, &mut under);
+    let (height, asked) = super::notices(
+        &mut under,
+        super::Paint::of(app),
+        app.notice.as_deref(),
+        &app.agents_held,
+        &app.connections.connections,
+    );
+    app.actions.extend(asked);
+    let below = header.bottom() + height;
     let y = header.top() + header_line(&look);
     let mut x = header.left() + side.max(inset + 12.0);
     let title = if look.terminal {
