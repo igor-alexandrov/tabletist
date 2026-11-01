@@ -218,10 +218,12 @@ fn upward_paths(code: &str, depth: usize) -> Vec<String> {
         .chain(code.match_indices("super::"));
     for (at, root) in roots {
         // Only where a path starts: not the end of a longer name
-        // (`tabletist_crate::`), nor a `super::` that a path or a group
-        // already climbs.
+        // (`tabletist_crate::`), nor a `super::` that a path already
+        // climbs. One in a group (`super::{super::ui}`) is read again on
+        // its own, from fewer modules up than it stands, so it finds no
+        // more than the group does.
         let name = code[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_');
-        let path = code[..at].trim_end().ends_with([':', '{', ',']);
+        let path = code[..at].trim_end().ends_with("::");
         if name || path {
             continue;
         }
@@ -246,6 +248,11 @@ fn the_search_finds_a_path_up() {
         "use crate::{model::{Tab, TabId}, ui};",
         "use super::ui::focus;",
         "use super::{app::App, model::Tab};",
+        "pub picked: crate::app::QuickItem,",
+        "fn show(link: crate::ui::Link) {}",
+        "shown(1, crate::ui::focus::hint());",
+        "{ crate::ui::focus::hint() }",
+        "let shown = f(1, super::ui::Row);",
     ] {
         assert!(!upward_paths(&code(line), 1).is_empty(), "{line}");
     }
