@@ -111,35 +111,46 @@ fn module(name: &str) -> Vec<(String, String, usize)> {
         .collect()
 }
 
-/// Where a file's `tests` module starts: `#[cfg(test)]` at the margin, then
-/// `mod tests {`, with nothing between them but other attributes. A test
-/// may drive the interface to see what the module does there.
-fn tests_start(text: &str) -> Option<usize> {
+/// Where a file's `tests` module stands: from `#[cfg(test)]` at the
+/// margin, then `mod tests {` with nothing between them but other
+/// attributes, to its `}` at the margin. A test may drive the interface to
+/// see what the module does there; what follows the module is code again.
+fn tests_module(text: &str) -> Option<std::ops::Range<usize>> {
     let mut at = 0;
     let mut marked = None;
+    let mut start = None;
     for line in text.split_inclusive('\n') {
         let code = line.trim_end();
-        if code == "#[cfg(test)]" {
+        if let Some(start) = start {
+            if code == "}" {
+                return Some(start..at + line.len());
+            }
+        } else if code == "#[cfg(test)]" {
             marked = Some(at);
-        } else if let Some(start) = marked {
+        } else if let Some(from) = marked {
             let module = code.strip_suffix("mod tests {");
             if module.is_some_and(|before| before.is_empty() || before.starts_with("pub")) {
-                return Some(start);
-            }
-            if !code.starts_with("#[") {
+                start = Some(from);
+            } else if !code.starts_with("#[") {
                 marked = None;
             }
         }
         at += line.len();
     }
-    None
+    // A module left open runs to the end.
+    start.map(|start| start..text.len())
 }
 
-/// The code of a file on one line: no comment lines, and nothing from its
-/// `tests` module on. A `use crate::{…}` over many lines reads as one.
+/// The code of a file on one line: no comment lines, and nothing of its
+/// `tests` module. A `use crate::{…}` over many lines reads as one.
 fn code(text: &str) -> String {
-    let text = tests_start(text).map_or(text, |at| &text[..at]);
-    text.lines()
+    let (before, after) = match tests_module(text) {
+        Some(tests) => (&text[..tests.start], &text[tests.end..]),
+        None => (text, ""),
+    };
+    before
+        .lines()
+        .chain(after.lines())
         .map(str::trim)
         .filter(|line| !line.starts_with("//"))
         .collect::<Vec<_>>()
@@ -155,47 +166,69 @@ fn upward(path: &str) -> bool {
     })
 }
 
+/// The items of the group that `group` opens after its `{`: each up to
+/// its comma at the group's own depth, or the group's `}`.
+fn items(group: &str) -> Vec<&str> {
+    let mut found = Vec::new();
+    let mut depth = 0;
+    let mut start = 0;
+    for (index, char) in group.char_indices() {
+        match char {
+            '{' => depth += 1,
+            '}' if depth == 0 => {
+                found.push(&group[start..index]);
+                return found;
+            }
+            '}' => depth -= 1,
+            ',' if depth == 0 => {
+                found.push(&group[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    found.push(&group[start..]);
+    found
+}
+
+/// Whether `path`, read `up` modules below the crate's root, leads to `ui`
+/// or `app`: each `super::` goes one up, and a group's items go on from
+/// where the group stands (`super::{super::ui::focus}`).
+fn leads_up(path: &str, up: usize) -> bool {
+    let path = path.trim_start();
+    if let Some(group) = path.strip_prefix('{') {
+        return items(group).into_iter().any(|item| leads_up(item, up));
+    }
+    match (up, path.strip_prefix("super::")) {
+        (0, _) => upward(path),
+        (_, Some(rest)) => leads_up(rest, up - 1),
+        // A module of this one's own, whatever its name.
+        (_, None) => false,
+    }
+}
+
 /// What `code`, in a file `depth` modules below the crate's root, takes
-/// from `ui` or `app`: each path, with a little of what follows it. The
-/// path starts at `crate::` or at as many `super::` as reach the root. A
-/// group (`crate::{app::App, model::Tab}`) is read item by item.
+/// from `ui` or `app`: each path, with a little of what follows it. A path
+/// starts at `crate::`, or at `super::` and climbs from the file; a group
+/// (`crate::{app::App, model::Tab}`) is read item by item.
 fn upward_paths(code: &str, depth: usize) -> Vec<String> {
     let mut found = Vec::new();
-    let supers = "super::".repeat(depth);
     let roots = code
         .match_indices("crate::")
-        .chain(code.match_indices(supers.as_str()));
+        .chain(code.match_indices("super::"));
     for (at, root) in roots {
-        // The end of a longer name or path is another path's:
-        // `tabletist_crate::`, a `super::` further up.
-        if code[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == ':') {
+        // Only where a path starts: not the end of a longer name
+        // (`tabletist_crate::`), nor a `super::` that a path or a group
+        // already climbs.
+        let name = code[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_');
+        let path = code[..at].trim_end().ends_with([':', '{', ',']);
+        if name || path {
             continue;
         }
         let after = &code[at + root.len()..];
-        let shown = |text: &str| text.chars().take(40).collect::<String>();
-        if upward(after) {
-            found.push(shown(&code[at..]));
-        } else if let Some(group) = after.strip_prefix('{') {
-            // The items of the group: its first, and each after a comma at
-            // the group's own depth.
-            let mut depth = 0;
-            let mut starts = true;
-            for (index, char) in group.char_indices() {
-                if starts && upward(&group[index..]) {
-                    found.push(format!("{root}{{…{}", shown(&group[index..])));
-                }
-                if char.is_whitespace() {
-                    continue;
-                }
-                starts = false;
-                match char {
-                    '{' => depth += 1,
-                    '}' if depth == 0 => break,
-                    '}' => depth -= 1,
-                    ',' => starts = depth == 0,
-                    _ => {}
-                }
-            }
+        let up = if root == "crate::" { 0 } else { depth - 1 };
+        if leads_up(after, up) {
+            found.push(code[at..].chars().take(40).collect());
         }
     }
     found
@@ -216,8 +249,14 @@ fn the_search_finds_a_path_up() {
     ] {
         assert!(!upward_paths(&code(line), 1).is_empty(), "{line}");
     }
-    // Two modules down, `super::super` is the root.
-    assert!(!upward_paths("use super::super::ui::focus;", 2).is_empty());
+    // Two modules down, `super::super` is the root, also through a group.
+    for line in [
+        "use super::super::ui::focus;",
+        "use super::{super::ui::focus, Row};",
+        "use super::{Row, super::{app::App}};",
+    ] {
+        assert!(!upward_paths(line, 2).is_empty(), "{line}");
+    }
     for line in [
         "use crate::model::{Tab, apply};",
         "use crate::{model::Tab, uiza::Thing};",
@@ -231,6 +270,15 @@ fn the_search_finds_a_path_up() {
     // interface.
     assert!(upward_paths("use super::ui::Row;", 2).is_empty());
     assert!(upward_paths("use super::super::super::ui::Row;", 2).is_empty());
+    assert!(upward_paths("use super::{ui::Row, super::model::Tab};", 2).is_empty());
+}
+
+#[test]
+fn the_code_after_a_tests_module_is_read() {
+    let text = "use crate::model::Tab;\n#[cfg(test)]\nmod tests {\n    use crate::ui::focus;\n}\nuse crate::app::App;\n";
+    let code = code(text);
+    assert!(!code.contains("crate::ui"), "{code}");
+    assert_eq!(upward_paths(&code, 1).len(), 1, "{code}");
 }
 
 #[test]
