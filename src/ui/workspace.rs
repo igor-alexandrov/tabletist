@@ -53,7 +53,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     };
     let opened = workspace.opened();
     if look.terminal && opened {
-        super::object_tabs::show(app, ui, tab);
+        object_tabs(app, ui, tab);
         status_line(app, ui, tab);
     }
     if !opened {
@@ -87,7 +87,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 ui.multiply_opacity(states::STALE);
             }
             if !look.terminal {
-                super::object_tabs::show(app, ui, tab);
+                object_tabs(app, ui, tab);
                 if let Some(shown) = row_panel {
                     super::row_panel::show(app, ui, tab, shown);
                 }
@@ -102,9 +102,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 .workspace(tab)
                 .is_some_and(crate::model::Workspace::history_in_front);
             match active {
-                Some(sql_tab) if sql => super::sql_editor::show(app, ui, tab, sql_tab),
+                Some(sql_tab) if sql => sql_editor(app, ui, tab, sql_tab),
                 Some(_) if agents => super::agents::show(app, ui, tab),
-                Some(_) if history => super::history::show(app, ui, tab),
+                Some(_) if history => history_tab(app, ui, tab),
                 Some(object_tab) => {
                     super::data_view::header(app, ui, tab, object_tab);
                     if view == Some(ObjectView::Data) {
@@ -173,6 +173,44 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 None => super::start::show(app, ui, tab),
             }
         });
+}
+
+/// The strip of tabs, handed its workspace and the keymap.
+fn object_tabs(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    let paint = super::Paint::of(app);
+    if let Some(workspace) = app.workspace(tab) {
+        let asked = super::object_tabs::show(ui, paint, tab, workspace, &app.keymap);
+        app.actions.extend(asked);
+    }
+}
+
+/// A SQL editor tab, handed its workspace, the settings and the keymap:
+/// the editor edits its tab's text in place.
+fn sql_editor(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, sql_tab: TabId) {
+    let paint = super::Paint::of(app);
+    if let Some(workspace) = crate::app::workspace_in_mut(&mut app.tabs, tab) {
+        let asked = super::sql_editor::show(
+            ui,
+            paint,
+            tab,
+            sql_tab,
+            workspace,
+            &app.settings,
+            &app.keymap,
+        );
+        app.actions.extend(asked);
+    }
+}
+
+/// The History tab, handed its workspace and the name it shows.
+fn history_tab(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    let paint = super::Paint::of(app);
+    let name = app.history_name(tab);
+    let keep = app.settings.history_keep;
+    if let Some(workspace) = app.workspace(tab) {
+        let asked = super::history::show(ui, paint, tab, workspace, &app.keymap, &name, keep);
+        app.actions.extend(asked);
+    }
 }
 
 /// The DDL view's footer, handed its tab.
@@ -2250,11 +2288,11 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         return;
     }
     let read_only = workspace.access == tabletist_db::Access::ReadOnly;
-    let editor = super::sql_editor::status_summary(app, tab);
+    let editor = super::sql_editor::status_summary(workspace, app.locale);
     let on_editor = editor.is_some();
     // Vim's mode, where the editor has the keyboard: the line starts with
     // it, as vim's does, and out of normal mode Esc goes to normal mode.
-    let vim_mode = super::sql_editor::vim_mode(app, ui.ctx(), tab);
+    let vim_mode = super::sql_editor::vim_mode(ui.ctx(), &app.look, tab, workspace, &app.settings);
     let to_normal = vim_mode.is_some_and(|mode| mode != crate::vim::Mode::Normal);
     // The Structure view of the table in front shows: the line names
     // that view's keys in the rows' place. The keys that choose what
@@ -2337,7 +2375,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             // The columns in view first, while some are out of it.
             let columns = (object.view == ObjectView::Data)
                 .then(|| {
-                    let fit = super::data_view::Fit::of(workspace, app);
+                    let fit = super::data_view::Fit::of(workspace, &app.settings, app.layout());
                     super::data_view::columns_note(ui.ctx(), tab, object, fit, &look, locale)
                 })
                 .flatten();

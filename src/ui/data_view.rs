@@ -1039,12 +1039,16 @@ pub struct Fit {
 }
 
 impl Fit {
-    pub fn of(workspace: &crate::model::Workspace, app: &crate::app::App) -> Self {
+    pub fn of(
+        workspace: &crate::model::Workspace,
+        settings: &crate::settings::Settings,
+        layout: crate::keymap::Layout,
+    ) -> Self {
         Self {
             full_precision: workspace.full_precision,
-            grouped: app.settings.grouped(app.layout()),
-            value_tags: app.settings.value_tags,
-            column_types: app.settings.column_types,
+            grouped: settings.grouped(layout),
+            value_tags: settings.value_tags,
+            column_types: settings.column_types,
             zone: workspace
                 .zone_shown()
                 .and_then(|zone| zone.iana_name())
@@ -1168,7 +1172,7 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
         .workspace(tab)
         .filter(|_| view == ObjectView::Data)
         .and_then(|workspace| {
-            let fit = Fit::of(workspace, app);
+            let fit = Fit::of(workspace, &app.settings, app.layout());
             columns_note(ui.ctx(), tab, object, fit, &look, locale)
         });
     let mut actions = Vec::new();
@@ -1532,7 +1536,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
-    let fit = Fit::of(workspace, app);
+    let fit = Fit::of(workspace, &app.settings, app.layout());
     // Kept apart from the workspace, which the editor's text is taken from.
     let zone = workspace.zone_shown().cloned();
     // The arrows are the grid's once the user worked in it.

@@ -333,6 +333,16 @@ pub fn workspace_in(tabs: &[ConnTab], tab: ConnTabId) -> Option<&Workspace> {
     }
 }
 
+/// The workspace of `tab` among `tabs`, `&mut`, as [`App::workspace_mut`]
+/// finds it, for a caller that lends another of `App`'s fields beside it:
+/// the settings and the keymap a SQL editor reads while it edits its text.
+pub fn workspace_in_mut(tabs: &mut [ConnTab], tab: ConnTabId) -> Option<&mut Workspace> {
+    match &mut tabs.iter_mut().find(|t| t.id == tab)?.content {
+        ConnTabContent::Workspace(workspace) => Some(workspace),
+        ConnTabContent::Picker(_) => None,
+    }
+}
+
 impl App {
     pub fn new(dirs: AppDirs, loaded: Loaded, backend: Backend) -> Self {
         Self::opened(dirs, loaded, backend, false)
@@ -533,10 +543,7 @@ impl App {
     }
 
     pub fn workspace_mut(&mut self, tab: ConnTabId) -> Option<&mut Workspace> {
-        match &mut self.tabs.iter_mut().find(|t| t.id == tab)?.content {
-            ConnTabContent::Workspace(workspace) => Some(workspace),
-            ConnTabContent::Picker(_) => None,
-        }
+        workspace_in_mut(&mut self.tabs, tab)
     }
 
     /// The open connections with their tabs, in the order the header shows
