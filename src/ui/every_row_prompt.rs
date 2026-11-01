@@ -7,15 +7,16 @@
 
 use egui::{Align2, Frame, Id, Key, Margin, Modifiers, Rect, Stroke, pos2};
 
+use crate::format;
 use crate::i18n::{gettext, ngettext};
 use crate::keymap::{Command, Layout, When};
 use crate::model::{Action, EveryRowPrompt, WideStatement};
 use crate::typography::{Text, TextRole};
+use crate::ui::Paint;
 use crate::ui::keys::{prompt_letter, take_enter};
 use crate::ui::widgets::{self, ButtonSpec};
 use crate::ui::workspace::STATUS_LINE;
 use crate::ui::write_prompts::{Skin, button_row, fitted, keyboard_on};
-use crate::ui::{Paint, format};
 use tabletist_db::sql::Verb;
 
 /// Where the terminal look's status line of `tab` was last drawn: the

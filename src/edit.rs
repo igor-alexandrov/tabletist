@@ -619,7 +619,7 @@ impl Table<'_> {
                 // is the text it loaded as: an editor lays it out, and what
                 // is written here is the document as it was.
                 Some(Kept::Loaded(value)) => Some(NewValue::Text(match class {
-                    ColumnClass::Json => crate::ui::format::plain_text(value),
+                    ColumnClass::Json => crate::format::plain_text(value),
                     _ => start_text(value, class),
                 })),
             };
@@ -977,21 +977,21 @@ pub fn start_text(value: &Value, class: ColumnClass) -> String {
         (Value::Null, _) => String::new(),
         (Value::Int(1), ColumnClass::Boolean) => "true".to_owned(),
         (Value::Int(0), ColumnClass::Boolean) => "false".to_owned(),
-        (value, ColumnClass::Json) => laid_out(crate::ui::format::plain_text(value)),
-        (value, _) => crate::ui::format::plain_text(value),
+        (value, ColumnClass::Json) => laid_out(crate::format::plain_text(value)),
+        (value, _) => crate::format::plain_text(value),
     }
 }
 
 /// A JSON column's text laid out to be read and edited, a member to a
 /// line. Only the white space between its pieces changes
-/// (`ui::json_text::pretty` reads no value). None where it stays as it
+/// (`json::pretty` reads no value). None where it stays as it
 /// is: a text that is no document (SQLite keeps any text in such a
 /// column), and a document that would not fit an editor laid out. Its
 /// white space can more than double it, and an editor cuts what is over
 /// its limit: the document's end would be lost.
 pub fn laid_out_json(text: &str) -> Option<String> {
     serde_json::from_str::<serde::de::IgnoredAny>(text).ok()?;
-    let laid = crate::ui::json_text::pretty(text);
+    let laid = crate::json::pretty(text);
     (laid.len() <= MAX_EDIT_BYTES).then_some(laid)
 }
 
@@ -1025,7 +1025,7 @@ pub fn is_change(loaded: &Value, new: &NewValue, class: ColumnClass) -> bool {
 /// the caller asks of those alone, as a text column's text is its own.
 pub fn same_moment_typed(loaded: &Value, new: &NewValue) -> bool {
     match (loaded, new) {
-        (Value::Text(was), NewValue::Text(text)) => crate::ui::format::same_moment(was, text),
+        (Value::Text(was), NewValue::Text(text)) => crate::format::same_moment(was, text),
         _ => false,
     }
 }
@@ -1142,7 +1142,7 @@ pub fn shown_value(new: &NewValue) -> Value {
 pub fn opens_large(text: &str, class: ColumnClass) -> bool {
     class == ColumnClass::Json
         || text.contains('\n')
-        || text.chars().count() > crate::ui::format::CELL_MAX_CHARS
+        || text.chars().count() > crate::format::CELL_MAX_CHARS
 }
 
 /// The first row that is no row of a page. A new row has no place in the
@@ -1801,7 +1801,7 @@ pub fn taken_by(object: &ObjectRef, table: &Table<'_>) -> Vec<(Effect, Vec<RowQu
     let Some(structure) = table.structure.filter(|_| !rows.is_empty()) else {
         return Vec::new();
     };
-    let shown = |name: &String| crate::ui::format::display_safe(name).into_owned();
+    let shown = |name: &String| crate::format::display_safe(name).into_owned();
     structure
         .referenced_by
         .iter()
@@ -1973,7 +1973,7 @@ fn pointing_at(table: &Table<'_>, key: &ReferencingKey, rows: &[usize]) -> Optio
             places
                 .iter()
                 .map(|&col| held.get(col).filter(|value| !value.is_null()))
-                .map(|value| value.map(crate::ui::format::plain_text))
+                .map(|value| value.map(crate::format::plain_text))
                 .collect::<Option<Vec<String>>>()
         })
         .collect();
@@ -2726,7 +2726,7 @@ pub const LEAD: usize = 12;
 /// What a cell makes of `text`: one line, a cell's worth of it. Two texts
 /// with the same answer read the same in the question.
 fn read(text: &str) -> String {
-    use crate::ui::format::{Marks, blank_text, cell_line};
+    use crate::format::{Marks, blank_text, cell_line};
     blank_text(text, Marks::PLAIN).unwrap_or_else(|| cell_line(text, Marks::PLAIN).into_owned())
 }
 
@@ -2739,7 +2739,7 @@ fn read(text: &str) -> String {
 /// before their own first difference. What a cell has the room to paint of
 /// each is for the view to say (see `ui::conflict_prompt`).
 fn shown(values: &[Option<&str>]) -> Vec<Shown> {
-    let piece = crate::ui::format::CELL_MAX_CHARS + 1;
+    let piece = crate::format::CELL_MAX_CHARS + 1;
     let part =
         |text: &str, from: usize| -> String { text.chars().skip(from).take(piece).collect() };
     // How many characters of each value stand before what is shown of it.
@@ -2814,7 +2814,7 @@ pub fn shown_lines(
         match value {
             Value::Null => None,
             Value::Text(text) => Some(std::borrow::Cow::Borrowed(text)),
-            other => Some(crate::ui::format::cell_text(other)),
+            other => Some(crate::format::cell_text(other)),
         }
     }
     conflict_lines(page, cells, conflict)
@@ -5704,7 +5704,7 @@ mod tests {
         // a line: over what an editor holds.
         let compact = format!("[{}0]", "0,".repeat(99_999));
         assert!(compact.len() <= MAX_EDIT_BYTES);
-        assert!(crate::ui::json_text::pretty(&compact).len() > MAX_EDIT_BYTES);
+        assert!(crate::json::pretty(&compact).len() > MAX_EDIT_BYTES);
         assert_eq!(laid_out_json(&compact), None);
         let loaded = text(&compact);
         // Its editor starts from all of it, as it was loaded.

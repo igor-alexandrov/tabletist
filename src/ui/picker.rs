@@ -4,7 +4,7 @@
 use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, WidgetInfo, WidgetType, pos2, vec2};
 
 use crate::app::App;
-use crate::connections::{ConnectionId, SavedConnection};
+use crate::connections::{ConnectionId, SavedConnection, SavedConnections};
 use crate::i18n::gettext;
 use crate::keymap::Command;
 use crate::model::{Action, ConnTabContent};
@@ -114,8 +114,8 @@ fn is_local(connection: &SavedConnection) -> bool {
 
 /// The connections the picker lists, in its order: grouped and filtered by
 /// the search. Keys move through this list.
-pub fn visible(app: &App, search: &str) -> Vec<ConnectionId> {
-    let found = app.connections.search(search);
+pub fn visible(connections: &SavedConnections, search: &str) -> Vec<ConnectionId> {
+    let found = connections.search(search);
     groups(&found)
         .into_iter()
         .flat_map(|group| group.connections.into_iter().map(|c| c.id.clone()))

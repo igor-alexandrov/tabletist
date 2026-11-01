@@ -17,7 +17,7 @@ use crate::edit::EditorPlace;
 use crate::i18n::{Locale, gettext};
 use crate::model::{Action, ConnTab, ConnTabContent, ConnTabId, PickerState};
 use crate::model::{
-    Advance, CellPos, Completion, ConnectionForm, Dialog, Fetch, FilterBar, FilterRow, Held,
+    Advance, CellPos, Completion, ConnectionForm, Dialog, Fetch, FilterBar, FilterRow, Found, Held,
     HostKeyPrompt, LeavePrompt, ObjectTab, ObjectView, Pane, PasswordPrompt, PickTarget, Reach,
     ResultPane, RunMode, SecretKind, SessionStatus, SqlTab, StartRecent, Tab, TabId, TestState,
     TextPrint, Tree, TreeKey, TreeNode, Wanted, Workspace,
@@ -41,13 +41,10 @@ mod quick_open;
 mod startup_tests;
 mod updates;
 
-pub use commands::{About, RUNNABLE, Runnable, TabName};
+pub use commands::RUNNABLE;
 pub use keyboard::{CHEAT_SHEET, cheat_sheet, keys_list};
 pub use menu::ItemState;
-pub use quick_open::{
-    Found, GROUP_SHOWN, QuickCommand, QuickHeading, QuickItem, QuickList, QuickRow, StartRow,
-    setting_path,
-};
+pub use quick_open::{GROUP_SHOWN, QuickHeading, QuickList, QuickRow, setting_path};
 pub use updates::{Pending, Work};
 
 /// What a keyring read is for; each names the exact request it serves, so
@@ -338,6 +335,16 @@ pub fn workspace_in(tabs: &[ConnTab], tab: ConnTabId) -> Option<&Workspace> {
     }
 }
 
+/// The workspace of `tab` among `tabs`, `&mut`, as [`App::workspace_mut`]
+/// finds it, for a caller that lends another of `App`'s fields beside it:
+/// the settings and the keymap a SQL editor reads while it edits its text.
+pub fn workspace_in_mut(tabs: &mut [ConnTab], tab: ConnTabId) -> Option<&mut Workspace> {
+    match &mut tabs.iter_mut().find(|t| t.id == tab)?.content {
+        ConnTabContent::Workspace(workspace) => Some(workspace),
+        ConnTabContent::Picker(_) => None,
+    }
+}
+
 impl App {
     pub fn new(dirs: AppDirs, loaded: Loaded, backend: Backend) -> Self {
         Self::opened(dirs, loaded, backend, false)
@@ -541,10 +548,7 @@ impl App {
     }
 
     pub fn workspace_mut(&mut self, tab: ConnTabId) -> Option<&mut Workspace> {
-        match &mut self.tabs.iter_mut().find(|t| t.id == tab)?.content {
-            ConnTabContent::Workspace(workspace) => Some(workspace),
-            ConnTabContent::Picker(_) => None,
-        }
+        workspace_in_mut(&mut self.tabs, tab)
     }
 
     /// The open connections with their tabs, in the order the header shows
@@ -1107,7 +1111,7 @@ impl App {
                     .picker_mut(tab)
                     .map(|picker| picker.search.clone())
                     .unwrap_or_default();
-                let shown = crate::ui::picker::visible(self, &search).contains(&conn);
+                let shown = crate::ui::picker::visible(&self.connections, &search).contains(&conn);
                 let search = if shown { search } else { String::new() };
                 let found = self.connections.search(&search);
                 let group = crate::ui::picker::groups(&found)
@@ -1143,7 +1147,7 @@ impl App {
                 let Some(search) = search else {
                     return;
                 };
-                let order = crate::ui::picker::visible(self, &search);
+                let order = crate::ui::picker::visible(&self.connections, &search);
                 if let Some(picker) = self.picker_mut(tab)
                     && !order.is_empty()
                 {
@@ -1300,7 +1304,7 @@ impl App {
                                 .get(cell.row)
                                 .and_then(|row| row.get(cell.col))
                                 .filter(|value| !value.is_null())
-                                .map(crate::ui::format::plain_text),
+                                .map(crate::format::plain_text),
                         }?;
                         Some((
                             ObjectRef::new(foreign.ref_schema.clone(), foreign.ref_table.clone()),
@@ -1616,7 +1620,7 @@ impl App {
                     let tabletist_db::Value::Bytes(bytes) = rows.get(row)?.get(col)? else {
                         return None;
                     };
-                    let name = crate::ui::format::save_name(table, &columns.get(col)?.name, bytes);
+                    let name = crate::format::save_name(table, &columns.get(col)?.name, bytes);
                     Some((name, bytes.to_vec()))
                 });
                 if let Some((name, bytes)) = found {
@@ -7943,9 +7947,9 @@ impl App {
                 .enumerate()
                 .map(|(col, loaded)| shown(col, loaded))
                 .collect();
-            crate::ui::format::tsv_row(&row)
+            crate::format::tsv_row(&row)
         } else {
-            crate::ui::format::plain_text(&shown(cell.col, row.get(cell.col)?))
+            crate::format::plain_text(&shown(cell.col, row.get(cell.col)?))
         })
     }
 
@@ -8755,7 +8759,7 @@ fn row_fields(
     zone: Option<&jiff::tz::TimeZone>,
     cells: &std::collections::BTreeMap<(usize, usize), crate::edit::Pending>,
 ) -> crate::model::RowFields {
-    use crate::ui::format::{cell_text, field_text};
+    use crate::format::{cell_text, field_text};
     let pending: Vec<Option<crate::model::PendingField>> = values
         .iter()
         .enumerate()
@@ -8778,7 +8782,7 @@ fn row_fields(
             let temporal = kinds.get(col) == Some(&tabletist_db::ValueKind::Temporal);
             match (value, zone) {
                 (tabletist_db::Value::Text(text), Some(zone)) if temporal => {
-                    match crate::ui::format::in_zone(text, zone) {
+                    match crate::format::in_zone(text, zone) {
                         Some(moved) => field_text(&tabletist_db::Value::Text(moved.into())),
                         None => field_text(value),
                     }
@@ -9545,7 +9549,7 @@ mod tests {
         assert_eq!(drawn, hack);
         let kept = harness
             .ctx
-            .data(|data| data.get_temp::<crate::ui::format::Marks>(marks));
+            .data(|data| data.get_temp::<crate::format::Marks>(marks));
         assert!(kept.is_none());
     }
 

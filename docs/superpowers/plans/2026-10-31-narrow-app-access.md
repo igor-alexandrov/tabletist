@@ -63,7 +63,7 @@ The views fall into four slices:
 1. **Paint and a dialog's own struct.** `toast`, `host_key_prompt`, `password_prompt`, `every_row_prompt`, `about`, `help` (plus the keymap). The cheapest: nothing else is read.
 2. **Paint and one object tab, workspace or SQL tab.** `filter_bar`, `row_form`, `pending_bar`, `structure`, `ddl`, `review`, `object_tabs`, `sql_text`, `sql_editor`, `sql_results`, `history`, then the large ones, `data_view`, `row_panel`, `sidebar`. Most only call `app.workspace(tab)` to find their slice.
 3. **The settings window's panes**, which take `&App` and read many settings and states but change nothing.
-4. **The routers**: `mod.rs`, `workspace.rs`, `keys.rs`, `settings/mod.rs`, `picker.rs`, `quick_open.rs`, `start.rs`, `agents.rs`. They need many slices at once and dispatch to the others.
+4. **The routers**: `mod.rs`, `workspace.rs`, `keys.rs`, `settings/mod.rs`, `picker.rs`, `quick_open.rs`, `start.rs`, `agents.rs`. They need many slices at once and dispatch to the others. (Run 8 found that `quick_open`, `start` and `agents` are views that join several slices, and narrowed them; `picker` is a router.)
 
 ### The glue methods views call
 
@@ -133,6 +133,33 @@ Set by run 5, for runs 7 and 8 and the routers:
 - The prompt sits in `app.dialog` and the workspace in `app.tabs`, so the caller borrows the two fields apart, the workspace through `crate::app::workspace_in(&app.tabs, tab)` (what `App::workspace` calls). A field such as `app.keymap` is lent beside the prompt the same way.
 - A question joining more of `App` (`loaded_tables`, `agents_access`) is answered before the prompt is borrowed `&mut`; whether the view needs a costly one is a question of its own slice (`connect_dialog::lists_names`). Work on frames the dialog is not open is its `fold(ctx)`.
 
+### The slice of a SQL editor
+
+Set by run 6, for runs 7 and 8 and the routers:
+
+- A SQL tab is a slice as an object tab is: `&mut SqlTab` where its field edits the text in place (`sql_text`), `&SqlTab` otherwise, named by `sql.id`; one or two workspace values come as arguments (`sql_text`: the `Dialect`), more as `&Workspace` beside it (`sql_results`).
+- A view that draws others (`sql_editor`) takes what they take, calls them in the order it did and returns their actions in that order. Where one edits in place it takes `&mut Workspace`, lent beside `app.settings` and `app.keymap` through `crate::app::workspace_in_mut(&mut app.tabs, tab)` (what `App::workspace_mut` calls).
+- A query a router asks of the view's state (`status_summary`, `vim_mode`, `card_key`, `link_keys`) takes the workspace; the router finds it. A helper two views share that read `App` (`data_view::Fit::of`) takes the fields it read.
+
+### The slice of the grid
+
+Set by run 7, for run 8 and the routers:
+
+- A view that edits one object tab in place and reads the workspace around it (the grid's cell field, the terminal's WHERE line, the row panel's field) takes `&mut Workspace` and the tab's id, as `sql_editor` does. It reads `&` first, then takes `object_tab_mut` for the field: a `&mut ObjectTab` cannot be lent beside the `&Workspace` that holds it.
+- A one-time request the workspace holds for a view (`focus_where`, `fold_documents`) is taken by the view that meets it, where it meets it.
+- Two views that draw the same editor take one struct (`data_view::Around`). Each caller builds it from `app.dialog.is_none()` and `app.calendar()` before it borrows the workspace through `workspace_in_mut`, and lends `&app.settings` and `&app.keymap` beside the workspace.
+- A router function whose view's name is taken by a local is named for what it draws (`ui::workspace::inspector`, `data_grid`).
+
+### The slice of a pane beside the routers
+
+Set by run 8, for the routers' plan:
+
+- A pane that joins several of `App`'s parts takes one struct of answers, `Asked`, built from `&App` by a private function of its router beside the call (`ui::workspace::start_asked`, `agents_asked`; `ui::quick_open_asked`), before the slice is lent `&mut` through `workspace_in_mut` or the prompt through `&mut app.dialog`.
+- What the pane reads of its own slice stays in the pane: `Asked` holds only what needs `App` (`start::Asked` carries the shown schema, and the start screen counts its objects in the tree itself).
+- A field of `App` the pane looks up more than one thing in (`connections`) is lent as its own borrow (`&SavedConnections`), and a helper that read only that field takes it (`agents::Elsewhere::of`, `picker::visible`).
+- A pane whose window is gone and that answered that itself (quick open closes) takes `Option<Asked>`, none where the workspace is gone.
+- A pane that draws a router function between its own parts is a router (`picker::show` draws `ui::notices`): it is left for the routers' plan instead of being split.
+
 ### Tests
 
 The headless tests drive the whole `App` through `src/testing.rs`, so they hold behaviour across a run without change. A test changes only where it calls a function whose signature moved. No run changes behaviour, so no run adds a behaviour test; each run states which existing tests draw the views it moved.
@@ -146,11 +173,25 @@ Each run is one PR, from `main`, passing `cargo fmt --all --check`, `cargo clipp
 3. **Object-tab panes:** `row_form` (`take_editor`/`put_editor` take `&mut ObjectTab`), `pending_bar` (its caller passes `lacking`, `save_blocked` and the doubts), `structure` (passes `structure_label`), `ddl`, `review` (its caller passes `review_whole` as a closure, called when Copy is clicked). Done: `2026-10-31-narrow-app-access-3-object-tab-panes.md`, which sets the borrow an object-tab pane takes ("The slice of an object-tab pane", above).
 4. **Settings panes that read `&App`:** `settings/file_pane`, `settings/updates`, `settings/updates_terminal`, `settings/keyboard`, `keyboard_sheet`, `keyboard_terminal`, `settings/agents`. Done: `2026-10-31-narrow-app-access-4-settings-panes.md`, which sets the slice a settings pane takes ("The slice of a settings pane", below).
 5. **Dialogs over a workspace:** `conflict_prompt`, `write_prompts` (Leave and the production confirmation, each its own function), `agent_access` (its caller passes `agents_access`), `connect_dialog` (passes `loaded_tables` and the keymap; `fold` for the frames it is not open). Done: `2026-10-31-narrow-app-access-5-workspace-dialogs.md`, which sets the slice a dialog over a workspace takes ("The slice of a dialog over a workspace", below).
-6. **Workspace and SQL panes:** `object_tabs`, `sql_text`, `sql_editor`, `sql_results`, `history`.
-7. **The grid's view:** `data_view`, then `row_panel`, each its own PR if either is large (they are 2.9k and 3.3k lines, and take `settings`, `keymap`, `dialog` and the calendar).
-8. **Panes beside the routers:** `sidebar`, `agents`, `start`, `picker`, `quick_open`.
+6. **Workspace and SQL panes:** `object_tabs`, `sql_text`, `sql_editor` (draws the other two, so takes `&mut Workspace` beside the settings and keymap through `workspace_in_mut`), `sql_results`, `history` (its caller passes `history_name`). Done: `2026-10-31-narrow-app-access-6-workspace-sql-panes.md`, which sets the slice a SQL editor takes ("The slice of a SQL editor", below).
+7. **The grid's view:** `data_view` (header, toolbar, footer, grid) and `row_panel`, in one PR: only their heads and tails read `App`. The grid and the panel take `&mut Workspace` and the tab's id, as `sql_editor` does, with `data_view::Around` (the settings, keymap, whether a dialog is up, the calendar). `row_panel` does not take the `SqlTab`: it finds the object tab or SQL editor by its id and writes the workspace around both. Done: `2026-10-31-narrow-app-access-7-grid-view.md`, which sets the slice the grid takes ("The slice of the grid", above).
+8. **Panes beside the routers:** `sidebar` (takes `&mut Workspace` beside the keymap; its caller passes `show_system_schemas` and `agents_here`), `agents`, `start` and `quick_open` (each takes a struct of answers, `Asked`, built by its caller), `picker::visible` (takes the saved connections). `picker::show` is a router and is left for the routers' plan. Done: `2026-10-31-narrow-app-access-8-panes-beside-routers.md`, which sets the slice these panes take ("The slice of a pane beside the routers", above).
 
-Then a plan of its own for the routers (`workspace.rs`, `keys.rs`, `settings/mod.rs`, `settings/sheet.rs`, `settings/terminal.rs`, `mod.rs`), written once the views under them are narrow: what they still need of `App` decides whether they stay its methods, take a context struct, or move into `app`.
+Then a plan of its own for the routers (`workspace.rs`, `keys.rs`, `settings/mod.rs`, `settings/sheet.rs`, `settings/terminal.rs`, `mod.rs`, `picker.rs`), written once the views under them are narrow: what they still need of `App` decides whether they stay its methods, take a context struct, or move into `app`.
+
+## What still takes `App`
+
+Every view run is done (runs 1 to 8). This is where the routers' plan starts: the UI code that still takes `&App` or `&mut App` on run 8's branch, the inline tests and the headless tests through `src/testing.rs` left out.
+
+- **`ui/mod.rs`:** `show` (the root: the picker or a workspace, then the dialogs, each lent its prompt), `Paint::of`, `notices` with `notice`, `notice_line`, `agents_held` and `agents_held_said` (the notice and the held-agents bar, which `workspace::show` and `picker::show` both draw), `window_buttons_line`, and `quick_open_asked` (quick open's answers).
+- **`ui/workspace.rs`:** `show` (a workspace's router) and its private functions. Some draw parts of their own: `top_bar`, `banner`, `opening`, `connecting`, `failure`, `editing_status`, `command_line`, `status_line`, with `bar_info`, `chips`, `top_bar_height`, `bar_line`. One per narrowed view finds its slice and calls it: `sidebar`, `start`, `agents_tab`, `object_tabs`, `sql_editor`, `history_tab`, `header`, `toolbar`, `footer`, `data_grid`, `inspector`, `ddl_footer`, `pending_bar`, `review`, `structure`, `ddl`. And two build answers: `start_asked`, `agents_asked`.
+- **`ui/keys.rs`:** `handle` and its helpers (`switchable`, `text_size`, `delete_row`, `selection_row`, `on_last_row`, `agents_shows`, `agents_lists`, `history_shown`, `agents_log`, `agents_view`, `agents_here`, `window_letter`).
+- **`ui/settings/mod.rs`:** `show`, and what it builds for its panes: `shown`, `set_shown`, `path_shown`, `update_status`, `server`, `opened`.
+- **`ui/settings/sheet.rs`:** `show`, `footer`, `keyboard_footer`.
+- **`ui/settings/terminal.rs`:** `show`, `notice`, `agent_rows`, and two `of(&App)` constructors of its skins.
+- **`ui/picker.rs`:** `show`, a picker tab's root. It draws `ui::notices(app, …)` between its header and its list, edits its tab's search in `app.tabs[app.active]`, asks `tab_showing` across every tab and `agents_access` for each row, and reads `connections`, `titlebar.inset` and the keymap. Its narrow parts would be the header, the footer and the list, with the notices and the per-row answers (`Opening`) settled by whatever the routers' plan makes of `notices`.
+
+No view under `src/ui/` takes `App` any more: what is listed above dispatches to views, draws a router's own chrome, or builds what a view is handed.
 
 ---
 

@@ -60,7 +60,6 @@ pub mod file_list;
 mod files_tests;
 pub mod filter_bar;
 pub mod focus;
-pub mod format;
 #[cfg(test)]
 mod format_settings_tests;
 pub mod grid;
@@ -199,7 +198,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let asked = host_key_prompt::show(&ui.ctx().clone(), paint, prompt);
         app.actions.extend(asked);
     }
-    quick_open::show(app, &ui.ctx().clone());
+    let asked = match &app.dialog {
+        Some(Dialog::QuickOpen(open)) => Some(quick_open_asked(app, open)),
+        _ => None,
+    };
+    if let (Some(Dialog::QuickOpen(open)), Some(asked)) = (&mut app.dialog, asked) {
+        let asked = quick_open::show(&ui.ctx().clone(), paint, open, &app.keymap, asked);
+        app.actions.extend(asked);
+    }
     if matches!(app.dialog, Some(Dialog::Help)) {
         let asked = help::show(&ui.ctx().clone(), paint, &app.keymap);
         app.actions.extend(asked);
@@ -243,6 +249,37 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     // Last: it says what was done, whatever is on screen by now.
     toast::show(ui.ctx(), paint);
+}
+
+/// What quick open over `open.tab` asks of the app: none where that
+/// window is gone.
+fn quick_open_asked(app: &App, open: &crate::model::QuickOpen) -> Option<quick_open::Asked> {
+    let here = open.tab;
+    app.workspace(here)?;
+    let list = app.quick_open_list(open);
+    let picked = app.quick_open_picked(open, &list);
+    let windows = app
+        .open_connections()
+        .map(|(tab, workspace)| {
+            let database = workspace::bar_info(app, tab)
+                .map(|info| info.database)
+                .unwrap_or_default();
+            let window = quick_open::Window {
+                name: workspace.name.clone(),
+                env: workspace.environment,
+                database,
+            };
+            (tab, window)
+        })
+        .collect();
+    Some(quick_open::Asked {
+        list,
+        picked,
+        windows,
+        agents: app.agents_here(here),
+        grouped: app.settings.grouped(app.layout()),
+        commands_query: app.quick_open_commands_query(open).map(str::to_owned),
+    })
 }
 
 /// What the screen draws under the bar that leads the window, which on
@@ -4681,7 +4718,7 @@ value_tags   = true
             }
             // What a frame lays out and names: no piece longer than a
             // message may be, with its label before it.
-            let most = super::format::MESSAGE_MAX_CHARS + 64;
+            let most = crate::format::MESSAGE_MAX_CHARS + 64;
             let named = crate::testing::labels(&tree);
             let painted = harness.painted.iter().map(|(piece, _)| piece);
             for piece in named.iter().chain(painted) {
@@ -6821,7 +6858,7 @@ value_tags   = true
 
     #[test]
     fn a_result_rows_text_is_formatted_once_not_every_frame() {
-        use crate::ui::format::FULL_TEXTS;
+        use crate::format::FULL_TEXTS;
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
         let mut page = crate::testing::page(2, false);
@@ -8452,7 +8489,7 @@ value_tags   = true
 
     #[test]
     fn the_row_panel_formats_a_row_once_not_every_frame() {
-        use crate::ui::format::FULL_TEXTS;
+        use crate::format::FULL_TEXTS;
         let mut harness = Harness::new();
         harness.connect_fake();
         harness.click("users");
@@ -12231,7 +12268,7 @@ value_tags   = true
                 "The SSH server could not reach the database",
             ),
         ] {
-            let described = crate::ui::format::describe_error(crate::i18n::Locale::English, &error);
+            let described = crate::format::describe_error(crate::i18n::Locale::English, &error);
             assert!(described.starts_with(words), "{error:?}: {described}");
         }
     }
@@ -12908,7 +12945,7 @@ value_tags   = true
             named: Box::default(),
         };
         assert_eq!(
-            crate::ui::format::describe_error(crate::i18n::Locale::English, &error),
+            crate::format::describe_error(crate::i18n::Locale::English, &error),
             "database \"nosuchdb\" does not exist"
         );
     }

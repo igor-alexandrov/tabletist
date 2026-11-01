@@ -3,11 +3,11 @@
 
 use tabletist_db::FilterOp;
 
+use crate::format::display_safe;
 use crate::i18n::gettext;
 use crate::model::{Action, ConnTabId, ObjectTab};
 use crate::theme::Icon;
 use crate::ui::Paint;
-use crate::ui::format::display_safe;
 use crate::ui::menu;
 use crate::ui::widgets::{self, icon_button};
 

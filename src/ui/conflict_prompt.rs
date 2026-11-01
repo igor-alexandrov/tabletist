@@ -11,13 +11,13 @@ use egui::{
 };
 
 use crate::edit::{Answer, LEAD, Shown, ShownLine};
+use crate::format::{self, Marks};
 use crate::i18n::{Locale, gettext};
 use crate::keymap::{Command, Keymap, Layout};
 use crate::model::{Action, ConflictPrompt, ObjectTab, Workspace};
 use crate::theme::Look;
 use crate::typography::{Text, TextRole};
 use crate::ui::Paint;
-use crate::ui::format::{self, Marks};
 use crate::ui::grid;
 use crate::ui::keys::{consume_press, drop_repeats, take_enter};
 use crate::ui::states::Tone;

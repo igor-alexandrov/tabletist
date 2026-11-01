@@ -184,8 +184,8 @@ fn every_way_in_shows_the_one_tab_and_none_opens_it_by_itself() {
     let index = harness.app.quick_open_list(open).items().position(|item| {
         matches!(
             item,
-            crate::app::QuickItem::Command {
-                command: crate::app::QuickCommand::Run(runnable),
+            crate::model::QuickItem::Command {
+                command: crate::model::QuickCommand::Run(runnable),
                 spans,
             } if runnable.command == crate::keymap::Command::ShowAgents
                 && spans.iter().eq(std::iter::once(&(0..3)))

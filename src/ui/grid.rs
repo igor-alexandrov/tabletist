@@ -10,11 +10,11 @@ use egui::{
 use tabletist_db::SortDir;
 
 use crate::edit::RowMark;
+use crate::format::{Marks, array_items, display_safe, for_display};
 use crate::model::CellPos;
 use crate::theme::{DataFont, Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus;
-use crate::ui::format::{Marks, array_items, display_safe, for_display};
 use crate::ui::states::Tone;
 use crate::ui::widgets::virtual_rows;
 
@@ -439,6 +439,15 @@ fn written_in(palette: &Palette, color: egui::Color32) -> Palette {
 /// A grid swatch's side, and the space after it.
 const SWATCH: f32 = 12.0;
 const SWATCH_GAP: f32 = 6.0;
+
+/// The colour a text value names, for a swatch beside it.
+pub fn swatch_color(value: &tabletist_db::Value) -> Option<egui::Color32> {
+    match value {
+        tabletist_db::Value::Text(text) => crate::format::hex_color(text)
+            .map(|[r, g, b, a]| egui::Color32::from_rgba_unmultiplied(r, g, b, a)),
+        _ => None,
+    }
+}
 
 /// A square of `color`, `side` points wide, centred on `center`. A
 /// translucent colour sits on a checkerboard that shows through it; a
@@ -1936,15 +1945,15 @@ fn draw_cell(
                 // The first string keeps both ends in 70% of the room;
                 // what follows fills the rest from its start.
                 Some((first, rest)) => {
-                    let first = crate::ui::format::ellipsize_middle(first, room * 0.7, |text| {
+                    let first = crate::format::ellipsize_middle(first, room * 0.7, |text| {
                         width(text, role)
                     });
                     let joined = format!("{first} · {rest}");
                     ellipsize(&joined, room, false, |text| width(text, role)).into_owned()
                 }
-                None => crate::ui::format::ellipsize_middle(&content.text, room, |text| {
-                    width(text, role)
-                }),
+                None => {
+                    crate::format::ellipsize_middle(&content.text, room, |text| width(text, role))
+                }
             };
             let color = if look.terminal {
                 palette.dim
