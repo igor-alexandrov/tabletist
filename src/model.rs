@@ -1216,6 +1216,8 @@ pub enum Action {
     OpenDdl(ConnTabId),
     /// The connection dialog's driver switch.
     SetDriver(Driver),
+    /// The connection dialog's environment choice.
+    SetEnvironment(crate::env::Environment),
     /// Drop the connection dialog's saved database password: saved with
     /// nothing typed, the connection then needs no password.
     ForgetSavedPassword,

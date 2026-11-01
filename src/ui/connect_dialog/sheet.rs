@@ -334,7 +334,7 @@ fn identity(
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 12.0;
-        environment_choice(ui, form, &heading, skin);
+        environment_choice(ui, &heading, skin, actions);
         widgets::label(
             ui,
             TextRole::Secondary,

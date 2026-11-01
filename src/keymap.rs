@@ -2375,7 +2375,10 @@ pub const BINDINGS: &[Binding] = {
         // file chooser, and the list's own letters. The macOS sheet keeps
         // its buttons, and no key of its own.
         // A choice among several is a Tab stop each, chosen as a button
-        // is pressed: the footer says so.
+        // is pressed: the footer says so. egui's focused button answers
+        // Enter and Space itself, as Esc leaves the editor, so nothing asks
+        // the keymap; held only in the dialog, the row cannot be given a
+        // key of the person's own that nothing would answer.
         bind(C::FormChoose, PROMPT, NONE, keys(&[k("enter"), k("space")]))
             .when(When::ConnectionForm),
         bind(C::FormPick, PROMPT, NONE, keys(&[k("ctrl+o")])).when(When::ConnectionForm),

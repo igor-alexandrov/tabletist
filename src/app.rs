@@ -2917,6 +2917,14 @@ impl App {
             }
             Action::OpenDdlInEditor { tab, id } => self.open_ddl_in_editor(tab, id),
             Action::OpenDdl(tab) => self.open_ddl(tab),
+            Action::SetEnvironment(environment) => {
+                if let Some(Dialog::Connection(form)) = &mut self.dialog {
+                    form.environment = Some(environment);
+                    // A new Files connection's agents follow it: Off on
+                    // production.
+                    form.follow_agents_default();
+                }
+            }
             Action::SetDriver(driver) => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
                     // A port left at the old driver's default follows the driver.
