@@ -14,7 +14,12 @@ use crate::ui::widgets;
 
 use super::Skin;
 
-const DRIVERS: [Driver; 3] = [Driver::Sqlite, Driver::Postgres, Driver::MySql];
+const DRIVERS: [Driver; 4] = [
+    Driver::Sqlite,
+    Driver::Postgres,
+    Driver::MySql,
+    Driver::Files,
+];
 
 /// One choice of a [`radio_group`], as it is drawn.
 #[derive(Clone, Copy)]
@@ -22,11 +27,27 @@ pub(super) struct Choice<'a> {
     label: &'a str,
     /// An environment's colours, when the choice is one.
     tint: Option<EnvColors>,
+    /// Why the choice cannot be made, where it cannot: it is still a Tab
+    /// stop, which says why to the pointer, the keyboard and a screen
+    /// reader.
+    off: Option<&'a str>,
 }
 
 impl<'a> Choice<'a> {
     pub(super) fn plain(label: &'a str) -> Self {
-        Self { label, tint: None }
+        Self {
+            label,
+            tint: None,
+            off: None,
+        }
+    }
+
+    /// A choice that cannot be made, for `why`.
+    pub(super) fn off(label: &'a str, why: &'a str) -> Self {
+        Self {
+            off: Some(why),
+            ..Self::plain(label)
+        }
     }
 }
 
@@ -154,14 +175,28 @@ fn radio_group(
         let cell = Rect::from_min_size(pos2(left, rect.top() + inset), vec2(widths[index], height));
         left += widths[index] + gap;
         let active = index == chosen;
-        let response = ui.interact(cell, ui.id().with((salt, index)), Sense::click());
+        let sense = match choice.off {
+            Some(_) => Sense::focusable_noninteractive() | Sense::hover(),
+            None => Sense::click(),
+        };
+        let mut response = ui.interact(cell, ui.id().with((salt, index)), sense);
+        let can = enabled && choice.off.is_none();
         response.widget_info(|| {
-            WidgetInfo::selected(WidgetType::RadioButton, enabled, active, choice.label)
+            WidgetInfo::selected(WidgetType::RadioButton, can, active, choice.label)
         });
-        if response.clicked() {
+        if let Some(why) = choice.off {
+            ui.ctx().accesskit_node_builder(response.id, |node| {
+                node.set_description(why);
+            });
+            if crate::ui::focus::shown(&response) {
+                response.show_tooltip_text(why);
+            }
+            response = response.on_hover_text(why);
+        }
+        if response.clicked() && choice.off.is_none() {
             clicked = Some(index);
         }
-        let hovered = response.hovered() && enabled;
+        let hovered = response.hovered() && can;
         let tint = choice.tint.as_ref();
         let color = match group {
             Group::Track(_) => {
@@ -179,6 +214,8 @@ fn radio_group(
                     tint.map_or(palette.text, |colors| skin.env_ink(colors))
                 } else if hovered {
                     palette.text
+                } else if choice.off.is_some() {
+                    palette.dim
                 } else {
                     palette.secondary
                 }
@@ -248,7 +285,7 @@ fn radio_group(
     clicked
 }
 
-/// The driver choice: SQLite, PostgreSQL or MySQL, under `heading`.
+/// The driver choice: SQLite, PostgreSQL, MySQL or Files, under `heading`.
 pub(super) fn driver_choice(
     ui: &mut Ui,
     form: &ConnectionForm,
@@ -297,9 +334,9 @@ const ENVIRONMENT_NAMES: [&str; Environment::ALL.len()] =
 /// follows where the connection points until one is clicked.
 pub(super) fn environment_choice(
     ui: &mut Ui,
-    form: &mut ConnectionForm,
     heading: &str,
     skin: &Skin,
+    actions: &mut Vec<Action>,
 ) {
     let labels = ENVIRONMENT_NAMES.map(|name| skin.say(name));
     let options: Vec<(Environment, Choice<'_>)> = Environment::ALL
@@ -309,6 +346,7 @@ pub(super) fn environment_choice(
             let choice = Choice {
                 label,
                 tint: Some(skin.colors(*environment)),
+                off: None,
             };
             (*environment, choice)
         })
@@ -328,6 +366,6 @@ pub(super) fn environment_choice(
         skin,
     );
     if let Some(environment) = clicked {
-        form.environment = Some(environment);
+        actions.push(Action::SetEnvironment(environment));
     }
 }

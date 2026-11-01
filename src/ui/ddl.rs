@@ -225,6 +225,7 @@ fn engine(driver: Driver) -> &'static str {
         Driver::Postgres => "PostgreSQL",
         Driver::MySql => "MySQL",
         Driver::Sqlite => "SQLite",
+        Driver::Files => "DuckDB",
     }
 }
 
@@ -236,7 +237,7 @@ fn left_out(driver: Driver, locale: Locale) -> Option<Cow<'static, str>> {
             locale,
             "Not included: owner, grants, sequences owned by the table, row-level policies",
         )),
-        Driver::MySql | Driver::Sqlite => None,
+        Driver::MySql | Driver::Sqlite | Driver::Files => None,
     }
 }
 
@@ -900,7 +901,7 @@ fn left_out_lines(driver: Driver, locale: Locale) -> Option<[String; 2]> {
             gettext(locale, "owner · grants · owned sequences").into_owned(),
             gettext(locale, "row-level policies").into_owned(),
         ]),
-        Driver::MySql | Driver::Sqlite => None,
+        Driver::MySql | Driver::Sqlite | Driver::Files => None,
     }
 }
 
@@ -1002,7 +1003,8 @@ impl Failed<'_> {
         match self.driver {
             Driver::MySql => matches!(named.number, Some(1044 | 1142 | 1143 | 1227)),
             Driver::Postgres => code.as_deref() == Some("42501"),
-            Driver::Sqlite => false,
+            // A file the session may not read never opens.
+            Driver::Sqlite | Driver::Files => false,
         }
     }
 
@@ -1020,7 +1022,7 @@ impl Failed<'_> {
             (Driver::MySql, ObjectKind::Table | ObjectKind::MaterializedView) => {
                 "The connection's user can't run SHOW CREATE TABLE here. Rows and Structure still work."
             }
-            (Driver::Postgres | Driver::Sqlite, _) => {
+            (Driver::Postgres | Driver::Sqlite | Driver::Files, _) => {
                 "The connection's user can't read this part of the catalog. Rows and Structure still work."
             }
         };

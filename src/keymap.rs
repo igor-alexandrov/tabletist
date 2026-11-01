@@ -672,6 +672,10 @@ commands! {
     FormForgetPassword = "form_forget_password",
     FormCancel = "form_cancel",
     FormTableMove = "form_table_move",
+    FormChoose = "form_choose",
+    FormPick = "form_pick",
+    FormAddFiles = "form_add_files",
+    FormRemoveFile = "form_remove_file",
     SettingsMove = "settings_move",
     SettingsChange = "settings_change",
     SettingsToggle = "settings_toggle",
@@ -1069,7 +1073,19 @@ impl Command {
             C::FormSaveAndConnect => info("Save and connect", "", Prompts),
             C::FormForgetPassword => info("Forget the saved password", "", Prompts),
             C::FormCancel => info("Cancel", "", Prompts),
-            C::FormTableMove => info("Move in Add table…'s or Add column…'s list", "", Prompts),
+            C::FormTableMove => info(
+                "Move in Add table…'s or Add column…'s list, or a Files connection's files",
+                "",
+                Prompts,
+            ),
+            C::FormChoose => info("Choose the choice under the cursor", "", Prompts),
+            C::FormPick => info("Pick a Files connection's folder or files", "", Prompts),
+            C::FormAddFiles => info("Add files to a Files connection", "", Prompts),
+            C::FormRemoveFile => info(
+                "Take the file under the cursor off a Files connection",
+                "",
+                Prompts,
+            ),
             C::SettingsMove => info("Move in the settings", "", Prompts),
             C::SettingsChange => info("Change the option", "", Prompts),
             C::SettingsToggle => info("Toggle the option", "", Prompts),
@@ -2346,7 +2362,8 @@ pub const BINDINGS: &[Binding] = {
         bind(C::FormCancel, PROMPT, keys(&[k("esc")]), keys(&[k("esc")]))
             .when(When::ConnectionForm),
         // In Add table…'s field, while its list of the window's tables
-        // shows: up moves up it, and down down.
+        // shows: up moves up it, and down down. And through a Files
+        // connection's list of files, in the terminal look.
         bind(
             C::FormTableMove,
             PROMPT,
@@ -2354,6 +2371,19 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("up"), k("down")]),
         )
         .when(When::ConnectionForm),
+        // A Files connection's Source, in the terminal look: the portal's
+        // file chooser, and the list's own letters. The macOS sheet keeps
+        // its buttons, and no key of its own.
+        // A choice among several is a Tab stop each, chosen as a button
+        // is pressed: the footer says so. egui's focused button answers
+        // Enter and Space itself, as Esc leaves the editor, so nothing asks
+        // the keymap; held only in the dialog, the row cannot be given a
+        // key of the person's own that nothing would answer.
+        bind(C::FormChoose, PROMPT, NONE, keys(&[k("enter"), k("space")]))
+            .when(When::ConnectionForm),
+        bind(C::FormPick, PROMPT, NONE, keys(&[k("ctrl+o")])).when(When::ConnectionForm),
+        bind(C::FormAddFiles, PROMPT, NONE, keys(&[k("a")])).when(When::ConnectionForm),
+        bind(C::FormRemoveFile, PROMPT, NONE, keys(&[k("x")])).when(When::ConnectionForm),
         bind(
             C::SettingsMove,
             PROMPT,

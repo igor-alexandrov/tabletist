@@ -219,6 +219,12 @@ impl AppDirs {
         self.state.join("agents_shown.json")
     }
 
+    /// Where DuckDB keeps the readers it installs for Files connections
+    /// (Excel's): the app's, not DuckDB's own `~/.duckdb`.
+    pub fn duckdb_extensions_dir(&self) -> PathBuf {
+        self.state.join("duckdb-extensions")
+    }
+
     pub fn log_file(&self) -> PathBuf {
         self.state.join("tabletist.log")
     }

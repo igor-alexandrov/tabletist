@@ -87,10 +87,13 @@ pub(super) fn header(
     );
     let parameters = gettext(skin.locale, "Parameters");
     let url = gettext(skin.locale, "URL");
-    let tabs = [
-        (false, Choice::plain(&parameters)),
-        (true, Choice::plain(&url)),
-    ];
+    // A Files connection has no URL: its tab says why, and is not chosen.
+    let no_url = skin.say(super::NO_URL);
+    let url_choice = match super::is_files(form) {
+        true => Choice::off(&url, &no_url),
+        false => Choice::plain(&url),
+    };
+    let tabs = [(false, Choice::plain(&parameters)), (true, url_choice)];
     let clicked = choose(
         &mut tabs_ui,
         "input",
@@ -268,6 +271,11 @@ pub(super) fn body(
                             file_field(ui, form, skin, actions);
                         });
                     }
+                    Driver::Files => {
+                        fieldset(ui, &skin.say("Source"), skin, |ui| {
+                            super::files::sheet(ui, form, skin, actions);
+                        });
+                    }
                     Driver::Postgres | Driver::MySql => {
                         fieldset(ui, &skin.say("Server"), skin, |ui| {
                             server(ui, form, skin, actions);
@@ -289,7 +297,8 @@ pub(super) fn body(
         });
 }
 
-/// The name beside the kind of database, then the environment.
+/// The kind of database on a line of its own (four do not fit beside the
+/// name), with what it changes; then the name, then the environment.
 fn identity(
     ui: &mut Ui,
     form: &mut ConnectionForm,
@@ -298,33 +307,34 @@ fn identity(
     actions: &mut Vec<Action>,
 ) {
     let Skin { look, palette, .. } = *skin;
-    row(
-        ui,
-        12.0,
-        &[Column::Fr(1.4), Column::Fr(1.0)],
-        |ui, column| {
-            if column == 0 {
-                let name = labelled(ui, &skin.say("Name"), TextRole::FormLabel, skin, |ui| {
-                    ui.add(input(ui, &mut form.name, TextRole::UiBody, 34.0, skin))
-                });
-                if focus_name {
-                    name.request_focus();
-                }
-            } else {
-                let heading = skin.say("Type");
-                widgets::label(ui, TextRole::FormLabel, &heading, palette.secondary, look);
-                ui.add_space(5.0);
-                driver_choice(ui, form, &heading, skin, actions);
-            }
-        },
-    );
+    let heading = skin.say("Type");
+    widgets::label(ui, TextRole::FormLabel, &heading, palette.secondary, look);
+    ui.add_space(5.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 12.0;
+        driver_choice(ui, form, &heading, skin, actions);
+        widgets::label(
+            ui,
+            TextRole::Secondary,
+            &skin.say(super::type_hint(form.driver)),
+            palette.dim,
+            look,
+        );
+    });
+    ui.add_space(18.0);
+    let name = labelled(ui, &skin.say("Name"), TextRole::FormLabel, skin, |ui| {
+        ui.add(input(ui, &mut form.name, TextRole::UiBody, 34.0, skin))
+    });
+    if focus_name {
+        name.request_focus();
+    }
     ui.add_space(18.0);
     let heading = skin.say("Environment");
     widgets::label(ui, TextRole::FormLabel, &heading, palette.secondary, look);
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 12.0;
-        environment_choice(ui, form, &heading, skin);
+        environment_choice(ui, &heading, skin, actions);
         widgets::label(
             ui,
             TextRole::Secondary,
@@ -576,7 +586,8 @@ fn ssh_fields(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut
 fn env_check(ui: &mut Ui, on: bool, name: &str, skin: &Skin) -> Response {
     // Three below the line's top, as the design sets the box.
     let (rect, response) = ui.allocate_exact_size(vec2(14.0, 17.0), Sense::click());
-    response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, true, on, name));
+    let enabled = ui.is_enabled();
+    response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, enabled, on, name));
     let mark = Rect::from_min_size(rect.min + vec2(0.0, 3.0), vec2(14.0, 14.0));
     let radius = skin.look.radius.min(4);
     // The ring goes round the box, not round the line it sits in.
@@ -621,6 +632,12 @@ const READ_ONLY_NOTE: &str =
 fn safety(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
     let Skin { look, palette, .. } = *skin;
     let title = skin.say("Open read-only");
+    // Editing files is not built: their box is on, and stays so.
+    let fixed = super::read_only_fixed(form);
+    let note = match fixed {
+        true => super::FILES_READ_ONLY_NOTE,
+        false => READ_ONLY_NOTE,
+    };
     egui::Frame::new()
         .fill(skin.env.bar_bg())
         .corner_radius(CornerRadius::same(10))
@@ -630,7 +647,9 @@ fn safety(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
                 let on = form.read_only();
-                let mut toggled = env_check(ui, on, &title, skin).clicked();
+                let mut toggled = ui
+                    .add_enabled_ui(!fixed, |ui| env_check(ui, on, &title, skin).clicked())
+                    .inner;
                 ui.vertical(|ui| {
                     // The title toggles the box under the pointer, as a
                     // check box's own label does. It takes clicks alone:
@@ -638,20 +657,14 @@ fn safety(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
                     let label = Text::one(look, TextRole::UiBodyStrong, &title, palette.text)
                         .layout(ui.ctx())
                         .label_sense(ui, Sense::CLICK);
-                    toggled |= label.clicked();
+                    toggled |= label.clicked() && !fixed;
                     ui.add_space(2.0);
                     // The secondary colour, warmed by the environment's
                     // text colour: 0.4 is the share at which production's
                     // red on the light palette comes out in the design's
                     // tone.
                     let tone = theme::mix(palette.secondary, skin.env_ink(&skin.env), 0.4);
-                    widgets::label(
-                        ui,
-                        TextRole::Secondary,
-                        &skin.say(READ_ONLY_NOTE),
-                        tone,
-                        look,
-                    );
+                    widgets::label(ui, TextRole::Secondary, &skin.say(note), tone, look);
                 });
                 if toggled {
                     form.read_only = Some(!on);

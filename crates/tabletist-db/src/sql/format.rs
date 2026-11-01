@@ -728,7 +728,7 @@ impl<'a> Layout<'a> {
     fn structure(&self, index: usize) -> bool {
         match self.dialect {
             Dialect::MySql => false,
-            Dialect::Postgres | Dialect::Sqlite => self.word(index, STRUCTURE),
+            Dialect::Postgres | Dialect::Sqlite | Dialect::DuckDb => self.word(index, STRUCTURE),
         }
     }
 
@@ -820,7 +820,7 @@ impl<'a> Layout<'a> {
                     && self.items[index - 1].space.is_empty()
                     && minus(index - 2)
             }
-            Dialect::Postgres | Dialect::Sqlite => false,
+            Dialect::Postgres | Dialect::Sqlite | Dialect::DuckDb => false,
         }
     }
 

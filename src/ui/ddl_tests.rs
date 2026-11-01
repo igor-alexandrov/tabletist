@@ -76,6 +76,16 @@ pub(super) fn book_covers(driver: Driver) -> Ddl {
                 ),
             ],
         },
+        // The Bookshop's exports keep `book_covers` in a `.duckdb` file.
+        Driver::Files => Ddl {
+            driver,
+            server: "DuckDB 2.0.0".into(),
+            heading: None,
+            parts: vec![part(
+                PartKind::Object,
+                &["CREATE TABLE book_covers(id BIGINT, book_id BIGINT, kind VARCHAR)"],
+            )],
+        },
     }
 }
 

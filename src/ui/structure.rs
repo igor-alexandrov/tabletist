@@ -139,7 +139,8 @@ const COMMENT_WIDTH: f32 = 320.0;
 fn keeps_comments(driver: Driver) -> bool {
     match driver {
         Driver::Postgres | Driver::MySql => true,
-        Driver::Sqlite => false,
+        // A file keeps none.
+        Driver::Sqlite | Driver::Files => false,
     }
 }
 
@@ -414,6 +415,39 @@ fn quiet(ui: &mut egui::Ui, text: &str, look: &Look, palette: &Palette) {
     widgets::label(ui, widgets::body(look), text, palette.secondary, look);
 }
 
+/// What a Files connection's table is read from, over its columns: the
+/// file's path, its size, its format, and how its reader is told to read
+/// it.
+fn file_part(
+    ui: &mut egui::Ui,
+    file: &tabletist_db::FileFacts,
+    look: &Look,
+    palette: &Palette,
+    locale: crate::i18n::Locale,
+) {
+    heading(ui, &gettext(locale, "File"), look, palette);
+    let mono = crate::ui::grid::data_role(look);
+    let rows = [
+        ("Path", tabletist_db::files::shown(&file.path)),
+        ("Size", tabletist_db::files::size_text(file.size)),
+        ("Format", file.format.label().to_owned()),
+        ("Read with", file.options.clone()),
+    ];
+    egui::Grid::new("structure-file")
+        .spacing([16.0, 6.0])
+        .show(ui, |ui| {
+            for (name, value) in rows {
+                if value.is_empty() {
+                    continue;
+                }
+                quiet(ui, &gettext(locale, name), look, palette);
+                widgets::label(ui, mono, &value, palette.text, look);
+                ui.end_row();
+            }
+        });
+    ui.add_space(16.0);
+}
+
 /// The table's own comment, over everything else of the view: its
 /// author's words, wrapped at `HELP` or the view's width.
 fn table_comment(ui: &mut egui::Ui, comment: &str, look: &Look, palette: &Palette) {
@@ -491,6 +525,9 @@ pub fn show(
                         let comment = structure.comment.as_deref().map(str::trim);
                         if let Some(comment) = comment.filter(|comment| !comment.is_empty()) {
                             table_comment(ui, comment, &look, &palette);
+                        }
+                        if let Some(file) = &structure.file {
+                            file_part(ui, file, &look, &palette, locale);
                         }
                         if let Some(label) = &label {
                             let table = (object.object.name.as_str(), refused.as_deref());

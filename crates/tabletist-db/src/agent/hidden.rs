@@ -817,8 +817,9 @@ impl Hidden {
         // On PostgreSQL a function is called as a column of a row, `b.f`
         // as `f(b)`, by every lookup that would find `f(b)`: a name after a
         // dot that is a function the users wrote is taken for one.
+        // DuckDB calls one so too: `name.upper()` is `upper(name)`.
         match self.dialect {
-            Dialect::Postgres => {
+            Dialect::Postgres | Dialect::DuckDb => {
                 for name in &names.after_dot {
                     self.check_function(name)?;
                 }
@@ -1164,6 +1165,14 @@ fn system_catalog(dialect: Dialect, schema: Option<&str>, name: &str) -> bool {
         // SQLite's own tables are `sqlite_` ones, in any schema, and
         // `dbstat` describes every table's pages.
         Dialect::Sqlite => fold(name).starts_with("sqlite_") || same(name, "dbstat"),
+        // DuckDB's catalog is its `duckdb_` functions and views, and the
+        // two schemas it keeps for PostgreSQL's and the standard's names.
+        Dialect::DuckDb => {
+            in_schema(&["information_schema", "pg_catalog"])
+                || fold(name).starts_with("duckdb_")
+                || fold(name).starts_with("pragma_")
+                || same(name, "sqlite_master")
+        }
     }
 }
 
