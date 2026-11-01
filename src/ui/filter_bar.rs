@@ -3,11 +3,11 @@
 
 use tabletist_db::FilterOp;
 
-use crate::app::App;
+use crate::format::display_safe;
 use crate::i18n::gettext;
-use crate::model::{Action, ConnTabId, TabId};
+use crate::model::{Action, ConnTabId, ObjectTab};
 use crate::theme::Icon;
-use crate::ui::format::display_safe;
+use crate::ui::Paint;
 use crate::ui::menu;
 use crate::ui::widgets::{self, icon_button};
 
@@ -41,25 +41,27 @@ pub fn op_label(op: FilterOp) -> &'static str {
     }
 }
 
-/// Whether the active object tab's filter bar is open.
-pub fn is_open(app: &App, tab: ConnTabId, object_tab: TabId) -> bool {
-    app.workspace(tab)
-        .and_then(|workspace| workspace.object_tab(object_tab))
-        .is_some_and(|object| object.filter.open)
+/// Whether the object tab's filter bar is open.
+pub fn is_open(object: &ObjectTab) -> bool {
+    object.filter.open
 }
 
-pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
-    let Some(object) = app
-        .workspace_mut(tab)
-        .and_then(|workspace| workspace.object_tab_mut(object_tab))
-    else {
-        return;
-    };
+/// Draws the open filter bar of `object`, in the workspace `tab`, and
+/// returns what it asks for.
+pub fn show(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    object: &mut ObjectTab,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let object_tab = object.id;
     if !object.filter.open {
-        return;
+        return Vec::new();
     }
     // Columns from the page, else the structure, else the last ones seen.
     let columns: Vec<String> = object
@@ -217,5 +219,5 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     if apply {
         actions.push(Action::ApplyFilters { tab, object_tab });
     }
-    app.actions.extend(actions);
+    actions
 }

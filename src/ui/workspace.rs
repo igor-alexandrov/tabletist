@@ -2,16 +2,16 @@
 //! of a lost connection, the sidebar, the object tabs and the open object.
 
 use egui::{CornerRadius, Frame, Margin, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
-use tabletist_db::TlsMode;
+use tabletist_db::{Access, TlsMode};
 
 use crate::app::App;
+use crate::format::display_safe;
 use crate::i18n::gettext;
 use crate::keymap::Command;
-use crate::model::{Action, ConnTabId, ObjectView, SessionStatus};
+use crate::model::{Action, ConnTabId, ObjectView, SessionStatus, TabId};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Region};
-use crate::ui::format::display_safe;
 use crate::ui::menu;
 use crate::ui::states;
 use crate::ui::widgets::{self, ButtonSpec};
@@ -53,7 +53,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     };
     let opened = workspace.opened();
     if look.terminal && opened {
-        super::object_tabs::show(app, ui, tab);
+        object_tabs(app, ui, tab);
         status_line(app, ui, tab);
     }
     if !opened {
@@ -74,11 +74,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     // The tab the row panel shows a row of: a table's Data view, or a SQL
     // editor with a row of its result selected.
     let row_panel = workspace.row_panel_tab();
-    super::sidebar::show(app, ui, tab);
+    sidebar(app, ui, tab);
     if look.terminal
         && let Some(shown) = row_panel
     {
-        super::row_panel::show(app, ui, tab, shown);
+        inspector(app, ui, tab, shown);
     }
     egui::CentralPanel::default()
         .frame(Frame::new().fill(app.palette.window))
@@ -87,9 +87,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 ui.multiply_opacity(states::STALE);
             }
             if !look.terminal {
-                super::object_tabs::show(app, ui, tab);
+                object_tabs(app, ui, tab);
                 if let Some(shown) = row_panel {
-                    super::row_panel::show(app, ui, tab, shown);
+                    inspector(app, ui, tab, shown);
                 }
             }
             let sql = app
@@ -102,35 +102,37 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 .workspace(tab)
                 .is_some_and(crate::model::Workspace::history_in_front);
             match active {
-                Some(sql_tab) if sql => super::sql_editor::show(app, ui, tab, sql_tab),
-                Some(_) if agents => super::agents::show(app, ui, tab),
-                Some(_) if history => super::history::show(app, ui, tab),
+                Some(sql_tab) if sql => sql_editor(app, ui, tab, sql_tab),
+                Some(_) if agents => agents_tab(app, ui, tab),
+                Some(_) if history => history_tab(app, ui, tab),
                 Some(object_tab) => {
-                    super::data_view::header(app, ui, tab, object_tab);
+                    header(app, ui, tab, object_tab);
                     if view == Some(ObjectView::Data) {
-                        super::data_view::toolbar(app, ui, tab, object_tab);
+                        toolbar(app, ui, tab, object_tab);
                     }
                     if !look.terminal {
                         match view {
-                            Some(ObjectView::Ddl) => super::ddl::footer(app, ui, tab, object_tab),
-                            _ => super::data_view::footer(app, ui, tab, object_tab),
+                            Some(ObjectView::Ddl) => ddl_footer(app, ui, tab, object_tab),
+                            _ => footer(app, ui, tab, object_tab),
                         }
                         // Bottom panels stack upwards: the bar of pending
                         // changes stands on the footer.
-                        super::pending_bar::show(app, ui, tab, object_tab);
+                        pending_bar(app, ui, tab, object_tab);
                     }
                     // And what a save would run stands on the bar: in the
                     // terminal look, on the status line.
-                    super::review::show(app, ui, tab, object_tab);
+                    review(app, ui, tab, object_tab);
                     egui::CentralPanel::default()
                         .frame(Frame::new().fill(app.palette.window))
                         .show(ui, |ui| match view {
-                            Some(ObjectView::Structure) => {
-                                super::structure::show(app, ui, tab, object_tab)
-                            }
-                            Some(ObjectView::Ddl) => super::ddl::show(app, ui, tab, object_tab),
+                            Some(ObjectView::Structure) => structure(app, ui, tab, object_tab),
+                            Some(ObjectView::Ddl) => ddl(app, ui, tab, object_tab),
                             _ => {
-                                if super::filter_bar::is_open(app, tab, object_tab) {
+                                let open = app
+                                    .workspace(tab)
+                                    .and_then(|workspace| workspace.object_tab(object_tab))
+                                    .is_some_and(super::filter_bar::is_open);
+                                if open {
                                     let palette = app.palette;
                                     egui::Panel::top(egui::Id::new((
                                         "filter-bar",
@@ -145,7 +147,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                             .inner_margin(Margin::symmetric(12, 8)),
                                     )
                                     .show(ui, |ui| {
-                                        super::filter_bar::show(app, ui, tab, object_tab);
+                                        let paint = super::Paint::of(app);
+                                        if let Some(object) =
+                                            app.workspace_mut(tab).and_then(|workspace| {
+                                                workspace.object_tab_mut(object_tab)
+                                            })
+                                        {
+                                            let asked =
+                                                super::filter_bar::show(ui, paint, tab, object);
+                                            app.actions.extend(asked);
+                                        }
                                         let rect = ui.max_rect().expand2(vec2(12.0, 8.0));
                                         widgets::hline(
                                             ui,
@@ -155,13 +166,314 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                         );
                                     });
                                 }
-                                super::data_view::show(app, ui, tab, object_tab)
+                                data_grid(app, ui, tab, object_tab)
                             }
                         });
                 }
-                None => super::start::show(app, ui, tab),
+                None => start(app, ui, tab),
             }
         });
+}
+
+/// The sidebar, handed its workspace, the keymap, whether the system's
+/// schemas are listed and what its Agents entry says: its terminal filter
+/// line edits the tree's filter in place.
+fn sidebar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    let paint = super::Paint::of(app);
+    let show_system = app.settings.show_system_schemas;
+    let agents = app.agents_here(tab);
+    if let Some(workspace) = crate::app::workspace_in_mut(&mut app.tabs, tab) {
+        let asked =
+            super::sidebar::show(ui, paint, tab, workspace, &app.keymap, show_system, agents);
+        app.actions.extend(asked);
+    }
+}
+
+/// The start screen, handed its workspace, what it asks of the app and the
+/// keymap: its search field edits the workspace's search in place.
+fn start(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    let paint = super::Paint::of(app);
+    let Some(asked) = start_asked(app, tab) else {
+        return;
+    };
+    if let Some(workspace) = crate::app::workspace_in_mut(&mut app.tabs, tab) {
+        let asked = super::start::show(ui, paint, tab, workspace, asked, &app.keymap);
+        app.actions.extend(asked);
+    }
+}
+
+/// What the start screen of `tab` asks of the app: none where the
+/// workspace is gone.
+fn start_asked(app: &App, tab: ConnTabId) -> Option<super::start::Asked> {
+    let workspace = app.workspace(tab)?;
+    let recents = app.start_recents(tab);
+    let largest = if recents.is_empty() {
+        app.start_largest(tab)
+    } else {
+        Vec::new()
+    };
+    let ready = match &app.updates.install {
+        crate::update::Install::Ready { version, .. } => Some(version.clone()),
+        _ => None,
+    };
+    Some(super::start::Asked {
+        info: bar_info(app, tab)?,
+        schema: app.start_schema(tab),
+        recents,
+        largest,
+        agents: app.agents_here(tab),
+        saved: app.connections.get(&workspace.conn_id).is_some(),
+        matches: app.start_matches(tab),
+        ready,
+        grouped: app.settings.grouped(app.layout()),
+    })
+}
+
+/// The Agents tab, handed its workspace, the saved connections, the keymap
+/// and what it asks of the app.
+fn agents_tab(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    let paint = super::Paint::of(app);
+    let Some(asked) = agents_asked(app, tab) else {
+        return;
+    };
+    if let Some(workspace) = app.workspace(tab) {
+        let asked = super::agents::show(
+            ui,
+            paint,
+            tab,
+            workspace,
+            &app.connections,
+            &app.keymap,
+            asked,
+        );
+        app.actions.extend(asked);
+    }
+}
+
+/// What the Agents tab of `tab` asks of the app: none where the workspace
+/// is gone.
+fn agents_asked(app: &App, tab: ConnTabId) -> Option<super::agents::Asked> {
+    let here = app.agents_here(tab)?;
+    let conn = &app.workspace(tab)?.conn_id;
+    let saved = &app.connections.connections;
+    Some(super::agents::Asked {
+        here,
+        connection: app.agents_name(tab).unwrap_or_default(),
+        allowed: app
+            .connections
+            .get(conn)
+            .map(|saved| app.agents_access(saved)),
+        sessions: app.agents.here(conn).into_iter().cloned().collect(),
+        elsewhere: app
+            .agents
+            .elsewhere(conn)
+            .into_iter()
+            .map(|session| super::agents::Elsewhere::of(saved, session))
+            .collect(),
+        calls: app.agents.calls_on(conn).cloned().collect(),
+        selected: app.agents_selected(tab).map(|session| session.id.clone()),
+        log_days: app.settings.mcp_log_days,
+    })
+}
+
+/// The strip of tabs, handed its workspace and the keymap.
+fn object_tabs(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    let paint = super::Paint::of(app);
+    if let Some(workspace) = app.workspace(tab) {
+        let asked = super::object_tabs::show(ui, paint, tab, workspace, &app.keymap);
+        app.actions.extend(asked);
+    }
+}
+
+/// A SQL editor tab, handed its workspace, the settings and the keymap:
+/// the editor edits its tab's text in place.
+fn sql_editor(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, sql_tab: TabId) {
+    let paint = super::Paint::of(app);
+    if let Some(workspace) = crate::app::workspace_in_mut(&mut app.tabs, tab) {
+        let asked = super::sql_editor::show(
+            ui,
+            paint,
+            tab,
+            sql_tab,
+            workspace,
+            &app.settings,
+            &app.keymap,
+        );
+        app.actions.extend(asked);
+    }
+}
+
+/// The History tab, handed its workspace and the name it shows.
+fn history_tab(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    let paint = super::Paint::of(app);
+    let name = app.history_name(tab);
+    let keep = app.settings.history_keep;
+    if let Some(workspace) = app.workspace(tab) {
+        let asked = super::history::show(ui, paint, tab, workspace, &app.keymap, &name, keep);
+        app.actions.extend(asked);
+    }
+}
+
+/// The open object's header, handed its tab and workspace.
+fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let Some(workspace) = app.workspace(tab) else {
+        return;
+    };
+    if let Some(object) = workspace.object_tab(object_tab) {
+        let asked = super::data_view::header(ui, paint, tab, workspace, object);
+        app.actions.extend(asked);
+    }
+}
+
+/// The Data view's toolbar, handed its workspace: the terminal's WHERE
+/// line edits the tab's clause in place.
+fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    if let Some(workspace) = app.workspace_mut(tab) {
+        let asked = super::data_view::toolbar(ui, paint, tab, object_tab, workspace);
+        app.actions.extend(asked);
+    }
+}
+
+/// The open object's footer, handed its tab, the settings and the keymap.
+fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let Some(workspace) = app.workspace(tab) else {
+        return;
+    };
+    if let Some(object) = workspace.object_tab(object_tab) {
+        let asked = super::data_view::footer(
+            ui,
+            paint,
+            tab,
+            workspace,
+            object,
+            &app.settings,
+            &app.keymap,
+        );
+        app.actions.extend(asked);
+    }
+}
+
+/// The table's grid, handed its workspace and what its editor reads of
+/// the rest: the field on a cell edits its editor's text in place.
+fn data_grid(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let hold = app.dialog.is_none();
+    let calendar = app.calendar();
+    if let Some(workspace) = crate::app::workspace_in_mut(&mut app.tabs, tab) {
+        let around = super::data_view::Around {
+            settings: &app.settings,
+            keymap: &app.keymap,
+            hold,
+            calendar,
+        };
+        let asked = super::data_view::show(ui, paint, tab, object_tab, workspace, around);
+        app.actions.extend(asked);
+    }
+}
+
+/// The row panel, of the tab `shown`, handed its workspace and what its
+/// editor reads of the rest: its field edits the editor's text in place.
+fn inspector(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, shown: TabId) {
+    let paint = super::Paint::of(app);
+    let hold = app.dialog.is_none();
+    let calendar = app.calendar();
+    if let Some(workspace) = crate::app::workspace_in_mut(&mut app.tabs, tab) {
+        let around = super::data_view::Around {
+            settings: &app.settings,
+            keymap: &app.keymap,
+            hold,
+            calendar,
+        };
+        let asked = super::row_panel::show(ui, paint, tab, shown, workspace, around);
+        app.actions.extend(asked);
+    }
+}
+
+/// The DDL view's footer, handed its tab.
+fn ddl_footer(app: &App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let Some(workspace) = app.workspace(tab) else {
+        return;
+    };
+    if let Some(object) = workspace.object_tab(object_tab) {
+        super::ddl::footer(ui, paint, tab, object, workspace.driver);
+    }
+}
+
+/// The bar of pending changes, handed its tab and what it asks of the rest.
+fn pending_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let shown = app.workspace(tab).and_then(|workspace| {
+        let object = workspace
+            .object_tab(object_tab)
+            .filter(|object| super::pending_bar::shows(object))?;
+        Some((workspace, object))
+    });
+    let asked = match shown {
+        Some((workspace, object)) => {
+            let asked = super::pending_bar::Asked {
+                doubts: super::key_picker::unmatched(workspace, object).len(),
+                blocked: app.save_blocked(tab, object_tab),
+                lacking: app.lacking(tab, object_tab),
+            };
+            super::pending_bar::show(ui, paint, tab, object, asked)
+        }
+        None => {
+            super::pending_bar::pass(ui);
+            Vec::new()
+        }
+    };
+    app.actions.extend(asked);
+}
+
+/// The Review SQL panel, handed its tab.
+fn review(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let shown = app
+        .workspace(tab)
+        .and_then(|workspace| Some((workspace, workspace.object_tab(object_tab)?)));
+    let asked = match shown {
+        Some((workspace, object)) => {
+            let read_only = workspace.access == Access::ReadOnly;
+            let whole = || app.review_whole(tab, object_tab);
+            super::review::show(ui, paint, tab, object, read_only, whole)
+        }
+        None => {
+            super::review::pass(ui);
+            Vec::new()
+        }
+    };
+    app.actions.extend(asked);
+}
+
+/// The Structure view, handed its tab and the label the app resolves.
+fn structure(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let shown = app
+        .workspace(tab)
+        .and_then(|workspace| Some((workspace, workspace.object_tab(object_tab)?)));
+    let Some((workspace, object)) = shown else {
+        return;
+    };
+    let label = app.structure_label(tab, object_tab);
+    let asked = super::structure::show(ui, paint, tab, workspace, object, label, &app.keymap);
+    app.actions.extend(asked);
+}
+
+/// The DDL view, handed its tab.
+fn ddl(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let Some(workspace) = app.workspace(tab) else {
+        return;
+    };
+    let Some(object) = workspace.object_tab(object_tab) else {
+        return;
+    };
+    let asked = super::ddl::show(ui, paint, tab, object, workspace.driver);
+    app.actions.extend(asked);
 }
 
 /// A tab that has not shown its content yet: how connecting goes, or why
@@ -341,7 +653,7 @@ fn failure(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     };
     let (icon, title) = failure_title(error, &workspace.spec, say);
     let sentence = error
-        .map(|error| crate::ui::format::describe_error(locale, error))
+        .map(|error| crate::format::describe_error(locale, error))
         .unwrap_or_default();
     let raw = error.map(ToString::to_string).unwrap_or_default();
     // The settings are what is wrong: changing them comes first.
@@ -1712,7 +2024,7 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
     let insert = edits.editor.as_ref().filter(|_| data).and_then(|editor| {
         let column = object.page()?.columns.get(editor.cell.col)?;
         // The type as the grid's header names it.
-        let kind = crate::ui::format::type_label(&column.type_name, column.kind);
+        let kind = crate::format::type_label(&column.type_name, column.kind);
         Some(format!(
             "{} · {}",
             display_safe(&column.name),
@@ -1782,7 +2094,7 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
         });
     let said = if let Some(line) = &workspace.command_error {
         // What the `:` prompt was given, until the next key.
-        let line = crate::ui::format::capped(line);
+        let line = crate::format::capped(line);
         Some(Said {
             mark: None,
             text: format!("{} {}", say("not a command:"), display_safe(&line)),
@@ -2168,15 +2480,15 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     }
     // No tab: the start screen's keys, and that no table is open.
     if workspace.active_tab.is_none() {
-        super::start::status_line(app, ui, tab);
+        super::start::status_line(ui, super::Paint::of(app), tab, &app.keymap);
         return;
     }
     let read_only = workspace.access == tabletist_db::Access::ReadOnly;
-    let editor = super::sql_editor::status_summary(app, tab);
+    let editor = super::sql_editor::status_summary(workspace, app.locale);
     let on_editor = editor.is_some();
     // Vim's mode, where the editor has the keyboard: the line starts with
     // it, as vim's does, and out of normal mode Esc goes to normal mode.
-    let vim_mode = super::sql_editor::vim_mode(app, ui.ctx(), tab);
+    let vim_mode = super::sql_editor::vim_mode(ui.ctx(), &app.look, tab, workspace, &app.settings);
     let to_normal = vim_mode.is_some_and(|mode| mode != crate::vim::Mode::Normal);
     // The Structure view of the table in front shows: the line names
     // that view's keys in the rows' place. The keys that choose what
@@ -2254,12 +2566,12 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 .unwrap_or_else(|| "?".into());
             let rows = format!(
                 "{first}–{last}/{total} · {}",
-                crate::ui::format::elapsed(page.elapsed)
+                crate::format::elapsed(page.elapsed)
             );
             // The columns in view first, while some are out of it.
             let columns = (object.view == ObjectView::Data)
                 .then(|| {
-                    let fit = super::data_view::Fit::of(workspace, app);
+                    let fit = super::data_view::Fit::of(workspace, &app.settings, app.layout());
                     super::data_view::columns_note(ui.ctx(), tab, object, fit, &look, locale)
                 })
                 .flatten();
@@ -3077,7 +3389,7 @@ fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             let sentence = if matches!(error, tabletist_db::Error::ConnectionLost(_)) {
                 String::new()
             } else {
-                crate::ui::format::describe_error(locale, error)
+                crate::format::describe_error(locale, error)
             };
             (
                 format!("{} {name}{env} {}", say("Connection to"), say("lost.")),

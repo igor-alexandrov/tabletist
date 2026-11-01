@@ -37,7 +37,7 @@ use std::sync::Arc;
 
 use egui::text::LayoutJob;
 use egui::{
-    Color32, FontFamily, FontId, Galley, Painter, Pos2, Response, Sense, TextFormat, Ui, Vec2,
+    Color32, FontFamily, FontId, Galley, Painter, Pos2, Rect, Response, Sense, TextFormat, Ui, Vec2,
 };
 
 use crate::theme::{DataFace, Faces, Look, Typeface};
@@ -706,27 +706,21 @@ impl Laid {
 
     /// Adds the text as a label widget in `ui`'s layout.
     pub fn label(self, ui: &mut Ui) -> Response {
-        self.label_sense(ui, Sense::hover())
+        self.allocate(ui, Sense::hover()).1
     }
 
-    /// [`Self::label`] that answers `sense`.
-    pub fn label_sense(self, ui: &mut Ui, sense: Sense) -> Response {
+    /// [`Self::label`] that answers `sense`, with where the text stands,
+    /// which may be narrower than the response. Text that can be clicked
+    /// is a link, which wants a ring round its words when it has the
+    /// keyboard: `ui::focus::Link` adds the text with one.
+    pub fn allocate(self, ui: &mut Ui, sense: Sense) -> (Rect, Response) {
         let (rect, response) = ui.allocate_exact_size(self.size(), sense);
         let text = self.galley.text().to_owned();
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &text));
-        // Text that can be clicked is a link: a tight ring round its words.
-        if sense.senses_click() {
-            crate::ui::focus::hint(
-                ui,
-                &response,
-                rect,
-                crate::ui::focus::Ring::Outer { radius: 3 },
-            );
-        }
         if ui.is_rect_visible(rect) {
             self.paint(ui.painter(), rect.min);
         }
-        response
+        (rect, response)
     }
 }
 

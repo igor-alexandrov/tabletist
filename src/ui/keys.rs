@@ -1199,7 +1199,13 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         }
     });
     if let Some((tab, id)) = copy_ddl {
-        crate::ui::ddl::copy(app, ctx, tab, id);
+        let paint = crate::ui::Paint::of(app);
+        if let Some(object) = app
+            .workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+        {
+            crate::ui::ddl::copy(ctx, paint, tab, object);
+        }
     }
     // The menu opens as a click on the chip opens it: a server with one
     // database has none, and the key does nothing.
@@ -1997,7 +2003,7 @@ fn delete_row(app: &App, tab: ConnTabId, id: TabId, actions: &mut Vec<Action>) -
         let object = workspace.object_tab(id)?;
         let row = object.selection?.row;
         let lock = crate::edit::Table::of(workspace, object)?.no_delete(row)?;
-        let table = crate::ui::format::display_safe(&object.object.name);
+        let table = crate::format::display_safe(&object.object.name);
         Some(crate::ui::cell_editor::delete_said(
             lock, &table, &app.look, app.locale,
         ))
@@ -2024,7 +2030,7 @@ fn delete_selected(
             return None;
         }
         let sweep = crate::edit::Table::of(workspace, object)?.sweep(&rows);
-        let table = crate::ui::format::display_safe(&object.object.name);
+        let table = crate::format::display_safe(&object.object.name);
         let said = crate::ui::cell_editor::sweep_said(&sweep, &table, &app.look, app.locale);
         Some((sweep, said))
     });
@@ -2056,7 +2062,7 @@ fn delete_count(
             return None;
         }
         let sweep = crate::edit::Table::of(workspace, object)?.sweep(&rows);
-        let table = crate::ui::format::display_safe(&object.object.name);
+        let table = crate::format::display_safe(&object.object.name);
         let said = crate::ui::cell_editor::sweep_said(&sweep, &table, &app.look, app.locale);
         Some((sweep, said))
     })?;
@@ -2724,10 +2730,15 @@ fn letters(
     };
     // The card of a refused write, while a SQL editor's Messages show it:
     // the command its button stands for, and what the button does.
-    let mut card = crate::ui::sql_results::card_key(app, tab);
+    let mut card = app
+        .workspace(tab)
+        .and_then(|workspace| crate::ui::sql_results::card_key(&app.look, tab, workspace));
     let has_card = card.is_some();
     // The results' links on screen: the commands their letters stand for.
-    let mut links = crate::ui::sql_results::link_keys(app, tab);
+    let mut links = app
+        .workspace(tab)
+        .map(|workspace| crate::ui::sql_results::link_keys(&app.look, tab, workspace))
+        .unwrap_or_default();
     let offers = |command: Command| links.iter().any(|(offered, _)| *offered == command);
     let (cut, timed_out) = (
         offers(Command::ShowAllRows),
@@ -2862,7 +2873,9 @@ fn letters(
             app.workspace(tab)
                 .is_some_and(|workspace| !session.connections.contains(&workspace.conn_id.0))
         })
-        .and_then(|session| crate::ui::agents::Elsewhere::of(app, session).on);
+        .and_then(|session| {
+            crate::ui::agents::Elsewhere::of(&app.connections.connections, session).on
+        });
     if agents_lists(app, tab)
         && !crate::ui::focus::on_control(ctx)
         && let Some((conn, _)) = elsewhere
@@ -3278,7 +3291,10 @@ fn letters(
                 actions.push(Action::ToggleDdlVisual { tab, id });
             }
             (Some(Command::CopyDdl), Some(id)) => {
-                crate::ui::ddl::copy(app, ctx, tab, id);
+                let paint = crate::ui::Paint::of(app);
+                if let Some(object) = workspace.object_tab(id) {
+                    crate::ui::ddl::copy(ctx, paint, tab, object);
+                }
                 actions.push(Action::LeaveDdlVisual { tab, id });
             }
             (Some(Command::OpenDdlInEditor), Some(id)) => {
@@ -3299,8 +3315,8 @@ fn letters(
             // The whole statements, never the lines as the panel shows
             // them. The copy shows nowhere, so the status line says it.
             (Some(Command::CopyReviewSql), Some(id)) => {
-                if let Some(text) = crate::ui::review::copy_text(app, tab, id) {
-                    ctx.copy_text(text);
+                if let Some(review) = app.review_whole(tab, id) {
+                    ctx.copy_text(crate::ui::review::text(&review, app.locale));
                     let said = crate::i18n::gettext(app.locale, crate::ui::review::COPIED_SQL);
                     crate::ui::toast::say(ctx, &said);
                 }

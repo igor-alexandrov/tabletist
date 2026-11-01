@@ -12,6 +12,7 @@ use crate::i18n::gettext;
 use crate::model::{Action, ConnectionForm, SshAuthKind};
 use crate::theme::{self, Icon};
 use crate::typography::{Text, TextRole};
+use crate::ui::focus::Link;
 use crate::ui::menu;
 use crate::ui::widgets::{self, ButtonSpec};
 

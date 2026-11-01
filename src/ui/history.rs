@@ -7,13 +7,13 @@
 
 use egui::{Frame, Id, Rect, pos2, vec2};
 
-use crate::app::App;
 use crate::history::{Entry, Outcome, Source};
 use crate::i18n::{Locale, gettext, ngettext};
-use crate::model::{Action, ConnTabId, HistoryFilterSet, HistoryRow, HistoryTab};
+use crate::keymap::Keymap;
+use crate::model::{Action, ConnTabId, HistoryFilterSet, HistoryRow, HistoryTab, Workspace};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
-use crate::ui::{menu, states, widgets};
+use crate::ui::{Paint, menu, states, widgets};
 
 /// The macOS look's header and its row of filters; the terminal look's
 /// line at the top.
@@ -63,12 +63,26 @@ fn ask(action: Action) -> Ask {
     Ask::Do(Box::new(action))
 }
 
-pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
-    let (look, palette, locale) = (app.look, app.palette, app.locale);
-    let layout = app.layout();
+/// Draws the History tab of `workspace`, the connection tab `tab`, and
+/// returns what it asks for. `name` is the window's connection as the tab
+/// names it (`App::history_name`), `keep` the entries kept per connection.
+pub fn show(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    workspace: &Workspace,
+    keymap: &Keymap,
+    name: &str,
+    keep: u32,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let layout = paint.layout();
     let key = |command: crate::keymap::Command| {
-        app.keymap
-            .key_in(layout, command, crate::keymap::Scope::History)
+        keymap.key_in(layout, command, crate::keymap::Scope::History)
     };
     use crate::keymap::Command;
     let keys = Keys {
@@ -77,7 +91,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         // On macOS the Agents tab's own chord, which shows the call.
         call: match look.terminal {
             true => key(Command::ShowHistoryCall),
-            false => app.keymap.key(layout, Command::ShowAgents),
+            false => keymap.key(layout, Command::ShowAgents),
         },
         reapply: key(Command::ReapplyHistoryFilter),
         copy: key(Command::CopyHistorySql),
@@ -86,13 +100,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         yes: key(Command::ConfirmClearHistory),
         no: key(Command::KeepHistory),
     };
-    let name = app.history_name(tab);
-    let keep = app.settings.history_keep;
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
     let Some(history) = workspace.history_tab() else {
-        return;
+        return Vec::new();
     };
     let dialect = workspace.driver.dialect();
     let production = workspace.environment.is_production();
@@ -108,7 +117,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 look: &look,
                 palette: &palette,
                 locale,
-                name: &name,
+                name,
                 keep,
                 dialect,
                 production,
@@ -117,15 +126,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             };
             view.draw(ui, rect, &mut asks);
         });
+    let mut actions = Vec::new();
     for ask in asks {
         match ask {
-            Ask::Do(action) => app.actions.push(*action),
+            Ask::Do(action) => actions.push(*action),
             Ask::Copy(sql) => {
                 ui.ctx().copy_text(sql);
                 crate::ui::toast::say(ui.ctx(), &gettext(locale, COPIED));
             }
         }
     }
+    actions
 }
 
 /// What the tab is drawn from.
@@ -277,11 +288,9 @@ impl View<'_> {
                 n,
             ),
         }
-        .replace("{n}", &crate::ui::format::group_digits(shown as u64));
-        let keeps = gettext(self.locale, "keeps the last {n}").replace(
-            "{n}",
-            &crate::ui::format::group_digits(u64::from(self.keep)),
-        );
+        .replace("{n}", &crate::format::group_digits(shown as u64));
+        let keeps = gettext(self.locale, "keeps the last {n}")
+            .replace("{n}", &crate::format::group_digits(u64::from(self.keep)));
         self.look.label(&format!(
             "{statements} · {keeps} · {}",
             gettext(self.locale, "on this computer")
@@ -830,11 +839,11 @@ impl View<'_> {
         x += widths[2];
         let rows = entry
             .rows
-            .map(crate::ui::format::group_digits)
+            .map(crate::format::group_digits)
             .unwrap_or_default();
         let took = entry
             .took_ms
-            .map(crate::ui::format::group_digits)
+            .map(crate::format::group_digits)
             .unwrap_or_default();
         for (number, width) in [(&rows, widths[3]), (&took, widths[4])] {
             widgets::paint_text_right(
@@ -1178,11 +1187,11 @@ impl View<'_> {
                             "{n} rows",
                             u32::try_from(rows).unwrap_or(u32::MAX),
                         )
-                        .replace("{n}", &crate::ui::format::group_digits(rows)),
+                        .replace("{n}", &crate::format::group_digits(rows)),
                     );
                 }
                 if let Some(took) = entry.took_ms {
-                    said.push(format!("{} ms", crate::ui::format::group_digits(took)));
+                    said.push(format!("{} ms", crate::format::group_digits(took)));
                 }
                 said.push(result);
                 said.join(" · ")
@@ -1197,7 +1206,7 @@ impl View<'_> {
         let say = |text: &'static str| self.say(text);
         let mut facts = Vec::new();
         let rows = |rows: Option<u64>| match rows {
-            Some(rows) => crate::ui::format::group_digits(rows),
+            Some(rows) => crate::format::group_digits(rows),
             None => say("none"),
         };
         match entry.source {
@@ -1209,7 +1218,7 @@ impl View<'_> {
         if let Some(took) = entry.took_ms {
             facts.push((
                 say("Took"),
-                format!("{} ms", crate::ui::format::group_digits(took)),
+                format!("{} ms", crate::format::group_digits(took)),
             ));
         }
         if entry.source == Source::Sql || entry.outcome != Outcome::Ok {

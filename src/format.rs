@@ -389,16 +389,6 @@ pub fn hex_color(text: &str) -> Option<[u8; 4]> {
     Some([channel(0)?, channel(1)?, channel(2)?, channel(3)?])
 }
 
-/// The colour a text value names, for a swatch beside it.
-pub fn color(value: &Value) -> Option<egui::Color32> {
-    match value {
-        Value::Text(text) => {
-            hex_color(text).map(|[r, g, b, a]| egui::Color32::from_rgba_unmultiplied(r, g, b, a))
-        }
-        _ => None,
-    }
-}
-
 /// A timestamp or time shown to the second: `2026-01-12 09:14:03.482915`
 /// becomes `2026-01-12 09:14:03`, keeping any zone after the fraction.
 pub fn to_the_second(text: &str) -> Cow<'_, str> {

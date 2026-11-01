@@ -9,19 +9,29 @@ use std::time::{Duration, SystemTime};
 use egui::accesskit::{Live, Role};
 use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 
-use crate::app::{App, Pending, Work};
+use crate::app::{Pending, Work};
 use crate::clock::Day;
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::model::Action;
-use crate::settings::OptionId;
-use crate::theme::Icon;
+use crate::settings::{OptionId, Settings};
+use crate::theme::{Icon, Look};
 use crate::typography::{Laid, Text, TextRole};
 use crate::ui::widgets::{self, ButtonSpec};
 use crate::update::{
-    Downloading, Failed, Failure, Install, Installed, Managed, Offer, Phase, download, release,
+    Downloading, Failed, Failure, Install, Installed, Managed, Offer, Phase, Updates, download,
+    release,
 };
 
 use super::sheet::Skin;
+
+/// What the pane reads of the app: where updates stand, the version the
+/// settings skip, and the time now, which the card's times are told from.
+#[derive(Clone, Copy)]
+pub(super) struct Status<'a> {
+    pub(super) updates: &'a Updates,
+    pub(super) skip: Option<&'a str>,
+    pub(super) now: u64,
+}
 
 /// Where updates stand, one state at a time, as the status card shows it.
 #[derive(Clone, Copy, Debug)]
@@ -62,8 +72,8 @@ pub(super) enum Card<'a> {
 }
 
 impl<'a> Card<'a> {
-    pub(super) fn of(app: &'a App) -> Self {
-        let updates = &app.updates;
+    pub(super) fn of(status: Status<'a>) -> Self {
+        let updates = status.updates;
         match &updates.install {
             Install::Downloading(downloading) => return Self::Downloading(downloading),
             Install::Ready { version, .. } => return Self::Ready(version),
@@ -89,7 +99,7 @@ impl<'a> Card<'a> {
         {
             return Self::Failed { failed, last };
         }
-        if let Some(offer) = updates.offer(app.settings.update_skip.as_deref()) {
+        if let Some(offer) = updates.offer(status.skip) {
             return match &updates.installed {
                 Some(Installed::Elsewhere(managed)) => Self::Elsewhere(offer, managed),
                 _ if offer.download.is_none() => Self::NoBuild(offer),
@@ -139,37 +149,31 @@ impl<'a> Card<'a> {
 
 /// Whether a newer version is offered, whatever the card says while a
 /// check runs or after one failed: the dot on Updates in the nav.
-pub(super) fn offered(app: &App) -> bool {
+pub(super) fn offered(status: Status) -> bool {
     let ready = matches!(
-        app.updates.install,
+        status.updates.install,
         Install::Ready { .. } | Install::Held { .. }
     );
-    ready
-        || app
-            .updates
-            .offer(app.settings.update_skip.as_deref())
-            .is_some()
+    ready || status.updates.offer(status.skip).is_some()
 }
 
 /// Whether the version offered is one this copy downloads and installs
 /// itself: Download and install, and `U`.
-pub(super) fn installs(app: &App) -> bool {
-    app.updates
-        .installable(app.settings.update_skip.as_deref())
-        .is_some()
+pub(super) fn installs(status: Status) -> bool {
+    status.updates.installable(status.skip).is_some()
 }
 
 /// Whether the card offers to skip the version: `S`.
-pub(super) fn skips(app: &App) -> bool {
-    matches!(Card::of(app), Card::Available(_) | Card::NoBuild(_))
+pub(super) fn skips(status: Status) -> bool {
+    matches!(Card::of(status), Card::Available(_) | Card::NoBuild(_))
 }
 
 /// What `U` does on the pane, by the card: download the version offered,
 /// restart into the one ready, restart once the work listed is done or
 /// not, download again.
-pub(super) fn install_action(app: &App) -> Option<Action> {
-    match Card::of(app) {
-        Card::Available(_) if installs(app) => Some(Action::DownloadUpdate),
+pub(super) fn install_action(status: Status) -> Option<Action> {
+    match Card::of(status) {
+        Card::Available(_) if installs(status) => Some(Action::DownloadUpdate),
         Card::Ready(_) => Some(Action::RestartToUpdate),
         Card::Held {
             when_done: false, ..
@@ -222,8 +226,8 @@ pub(super) fn failure_said(failure: &Failure, locale: Locale) -> String {
 
 /// What the line under Ready's title says: where the helper waits for
 /// the quit already, that a quit installs it.
-pub(super) fn ready_said(app: &App) -> &'static str {
-    match app.updates.install.handed() {
+pub(super) fn ready_said(updates: &Updates) -> &'static str {
+    match updates.install.handed() {
         Some(_) => "Signature checked · quitting Tabletist now installs it",
         None => "Signature checked · restart to finish",
     }
@@ -338,19 +342,24 @@ fn time_of(secs: u64) -> SystemTime {
 /// When the last check that worked ran, as the row under the card says
 /// it: `Last checked today at 09:12`, or in the terminal look `last
 /// checked 09:12`. None before any has.
-pub(crate) fn checked_text(app: &App, terminal: bool) -> Option<String> {
-    let at = app.updates.seen.last_checked?;
-    let now = app.now_secs();
+pub(crate) fn checked_text(
+    status: Status,
+    look: &Look,
+    locale: Locale,
+    terminal: bool,
+) -> Option<String> {
+    let at = status.updates.seen.last_checked?;
+    let now = status.now;
     if terminal {
         let at = time_of(at);
         let time = match crate::clock::day_of(at, time_of(now)) {
             Day::Today => crate::clock::hour(at),
             Day::Yesterday | Day::On(_) => crate::clock::day(at),
         };
-        let said = gettext(app.locale, "last checked {time}").replace("{time}", &time);
-        return Some(app.look.label(&said));
+        let said = gettext(locale, "last checked {time}").replace("{time}", &time);
+        return Some(look.label(&said));
     }
-    Some(gettext(app.locale, "Last checked {when}").replace("{when}", &when(app.locale, at, now)))
+    Some(gettext(locale, "Last checked {when}").replace("{when}", &when(locale, at, now)))
 }
 
 /// What the pane says under its title: on Windows no release is
@@ -379,8 +388,18 @@ const LINE_GAP: f32 = 6.0;
 /// The download's bar.
 const BAR: f32 = 6.0;
 
-/// The pane, from the top of `ui` down.
-pub(super) fn content(ui: &mut Ui, app: &App, limit: f32, skin: &Skin, actions: &mut Vec<Action>) {
+/// The pane, from the top of `ui` down, with `settings` as the window shows
+/// them. `interrupted` lists what Restart now would interrupt, asked only
+/// while the card says so.
+pub(super) fn content(
+    ui: &mut Ui,
+    status: Status,
+    settings: &Settings,
+    interrupted: impl FnOnce() -> Vec<Work>,
+    limit: f32,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
     let Skin { look, palette, .. } = *skin;
     let width = ui.available_width();
     widgets::label(
@@ -402,13 +421,13 @@ pub(super) fn content(ui: &mut Ui, app: &App, limit: f32, skin: &Skin, actions: 
         .max_height(room)
         .auto_shrink([false, true])
         .show(ui, |ui| {
-            card(ui, app, skin, actions);
+            card(ui, status, interrupted, skin, actions);
             ui.add_space(14.0);
             widgets::section_label(&skin.say("Automatic"), look, palette)
                 .layout(ui.ctx())
                 .label(ui);
             ui.add_space(2.0);
-            check_row(ui, app, skin, actions);
+            check_row(ui, status, settings, skin, actions);
             ui.add_space(18.0);
             tip(ui, skin);
         });
@@ -417,15 +436,21 @@ pub(super) fn content(ui: &mut Ui, app: &App, limit: f32, skin: &Skin, actions: 
 /// The status card: an icon, the title, what it says under it, and its
 /// actions. A region named Update status, whose title a screen reader is
 /// told of as it changes, and an error at once.
-fn card(ui: &mut Ui, app: &App, skin: &Skin, actions: &mut Vec<Action>) {
+fn card(
+    ui: &mut Ui,
+    status: Status,
+    interrupted: impl FnOnce() -> Vec<Work>,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
     let Skin {
         look,
         palette,
         locale,
         ..
     } = *skin;
-    let shown = Card::of(app);
-    let now = app.now_secs();
+    let shown = Card::of(status);
+    let now = status.now;
     let width = ui.available_width();
     let words = (width - 2.0 * PAD - TILE - TILE_GAP).max(0.0);
     let title = shown.title(locale);
@@ -455,7 +480,7 @@ fn card(ui: &mut Ui, app: &App, skin: &Skin, actions: &mut Vec<Action>) {
             None => skin.say("No check has worked yet"),
         },
         Card::Downloading(downloading) => downloading_said(downloading, locale),
-        Card::Ready(_) => skin.say(ready_said(app)),
+        Card::Ready(_) => skin.say(ready_said(status.updates)),
         Card::Held {
             when_done: false, ..
         } => skin.say("Restart now would interrupt:"),
@@ -506,8 +531,7 @@ fn card(ui: &mut Ui, app: &App, skin: &Skin, actions: &mut Vec<Action>) {
     // What Restart now would interrupt, a line each, in a box under the
     // line.
     let work: Vec<Laid> = match shown {
-        Card::Held { .. } => app
-            .work_in_progress()
+        Card::Held { .. } => interrupted()
             .iter()
             .map(|work| work_line(work, words - 20.0, skin).layout(ui.ctx()))
             .collect(),
@@ -699,7 +723,7 @@ fn card(ui: &mut Ui, app: &App, skin: &Skin, actions: &mut Vec<Action>) {
             .max_rect(place);
         let mut row = ui.new_child(builder.layout(centred));
         row.spacing_mut().item_spacing.x = 8.0;
-        card_actions(&mut row, (shown, installs(app)), skin, actions);
+        card_actions(&mut row, (shown, installs(status)), skin, actions);
     }
 }
 
@@ -991,8 +1015,8 @@ pub(super) fn copy_command(ctx: &egui::Context, command: &str, locale: Locale) {
 }
 
 /// The command another tool updates this copy with, where it has one.
-pub(super) fn managed_command(app: &App) -> Option<&'static str> {
-    match Card::of(app) {
+pub(super) fn managed_command(status: Status) -> Option<&'static str> {
+    match Card::of(status) {
         Card::Elsewhere(_, managed) => managed.command,
         _ => None,
     }
@@ -1000,14 +1024,20 @@ pub(super) fn managed_command(app: &App) -> Option<&'static str> {
 
 /// The row of how often a check runs: its label over when the last check
 /// ran, with Check now; the menu; and the other choices.
-fn check_row(ui: &mut Ui, app: &App, skin: &Skin, actions: &mut Vec<Action>) {
-    let settings = super::shown(app);
+fn check_row(
+    ui: &mut Ui,
+    status: Status,
+    settings: &Settings,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
     let column = super::sheet::label_column(ui, &OptionId::UPDATES, skin);
-    let print = checked_text(app, false).unwrap_or_else(|| skin.say("Not checked yet"));
+    let print = checked_text(status, skin.look, skin.locale, false)
+        .unwrap_or_else(|| skin.say("Not checked yet"));
     super::sheet::row_with(
         ui,
         (OptionId::UpdatesCheck, false, column),
-        &settings,
+        settings,
         skin,
         actions,
         super::sheet::Print {

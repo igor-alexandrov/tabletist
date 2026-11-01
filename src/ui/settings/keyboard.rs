@@ -6,10 +6,12 @@
 
 use egui::{Event, Key, Modifiers};
 
-use crate::app::App;
-use crate::i18n::gettext;
-use crate::keymap::{Group, Layout, Mods, Never, Row, Spelled, Why, intern, same, spell, spelling};
+use crate::i18n::{Locale, gettext};
+use crate::keymap::{
+    Group, Keymap, Layout, Mods, Never, Row, Spelled, Why, intern, same, spell, spelling,
+};
 use crate::model::{Action, KeyboardPage, Recorded, Recording};
+use crate::theme::Look;
 
 /// A group of the pane, with the rows it lists now.
 pub(super) struct Listed {
@@ -20,9 +22,12 @@ pub(super) struct Listed {
 /// The rows the pane lists now, by group: those the search's words name
 /// (by the command's name or its group's), those a key looked for is a
 /// key of (in every scope), the changed ones alone where the switch says.
-pub(super) fn listed(app: &App, page: &KeyboardPage) -> Vec<Listed> {
-    let layout = app.layout();
-    let keymap = &app.keymap;
+pub(super) fn listed(
+    keymap: &Keymap,
+    layout: Layout,
+    locale: Locale,
+    page: &KeyboardPage,
+) -> Vec<Listed> {
     let words = page.search.trim().to_lowercase();
     let found = page.found.and_then(|keys| spell(keys).ok());
     let mut listed: Vec<Listed> = Vec::new();
@@ -32,8 +37,8 @@ pub(super) fn listed(app: &App, page: &KeyboardPage) -> Vec<Listed> {
         }
         let group = row.command.info().group;
         if !words.is_empty() {
-            let name = gettext(app.locale, row.command.info().name).to_lowercase();
-            let heading = gettext(app.locale, group.name(layout)).to_lowercase();
+            let name = gettext(locale, row.command.info().name).to_lowercase();
+            let heading = gettext(locale, group.name(layout)).to_lowercase();
             if !name.contains(&words) && !heading.contains(&words) {
                 continue;
             }
@@ -65,58 +70,60 @@ pub(super) fn listed(app: &App, page: &KeyboardPage) -> Vec<Listed> {
 }
 
 /// How many rows differ from their defaults.
-pub(super) fn changed_count(app: &App) -> usize {
-    let layout = app.layout();
-    app.keymap
+pub(super) fn changed_count(keymap: &Keymap, layout: Layout) -> usize {
+    keymap
         .rows(layout)
         .into_iter()
-        .filter(|row| app.keymap.changed(layout, *row))
+        .filter(|row| keymap.changed(layout, *row))
         .count()
 }
 
 /// A row's keys as a screen reader says them: "Shift Command F", several
 /// with "or" between them, or "not set".
-pub(super) fn spoken_keys(app: &App, row: Row) -> String {
-    let layout = app.layout();
-    let keys: Vec<String> = app
-        .keymap
+pub(super) fn spoken_keys(keymap: &Keymap, layout: Layout, locale: Locale, row: Row) -> String {
+    let keys: Vec<String> = keymap
         .keys_of(layout, row)
         .into_iter()
         .map(|keys| crate::keymap::spoken(layout, keys))
         .collect();
     if keys.is_empty() {
-        gettext(app.locale, "not set").into_owned()
+        gettext(locale, "not set").into_owned()
     } else {
-        keys.join(&format!(" {} ", gettext(app.locale, "or")))
+        keys.join(&format!(" {} ", gettext(locale, "or")))
     }
 }
 
 /// A row's defaults, as a screen reader says them.
-pub(super) fn spoken_defaults(app: &App, row: Row) -> String {
-    let layout = app.layout();
+pub(super) fn spoken_defaults(layout: Layout, locale: Locale, row: Row) -> String {
     let keys: Vec<String> = crate::keymap::defaults(layout, row)
         .into_iter()
         .map(|keys| crate::keymap::spoken(layout, keys))
         .collect();
     if keys.is_empty() {
-        gettext(app.locale, "not set").into_owned()
+        gettext(locale, "not set").into_owned()
     } else {
-        keys.join(&format!(" {} ", gettext(app.locale, "or")))
+        keys.join(&format!(" {} ", gettext(locale, "or")))
     }
 }
 
 /// A command's name as the look writes it, translated.
-pub(super) fn name(app: &App, command: crate::keymap::Command) -> String {
-    app.look.label(&gettext(app.locale, command.info().name))
+pub(super) fn name(look: &Look, locale: Locale, command: crate::keymap::Command) -> String {
+    look.label(&gettext(locale, command.info().name))
 }
 
 /// What a screen reader says of a row: its name, scope and keys as the
 /// look has them, then whether it is changed and whether nothing answers
 /// its command yet.
-pub(super) fn said(app: &App, row: Row, [name, scope, keys]: [&str; 3]) -> String {
-    let say = |text| app.look.label(&gettext(app.locale, text));
+pub(super) fn said(
+    keymap: &Keymap,
+    look: &Look,
+    locale: Locale,
+    row: Row,
+    [name, scope, keys]: [&str; 3],
+) -> String {
+    let say = |text| look.label(&gettext(locale, text));
     let mut said = format!("{name}, {scope}, {keys}");
-    if app.keymap.changed(app.layout(), row) {
+    if keymap.changed(Layout::of(look), row) {
         said.push_str(&format!(", {}", say("changed")));
     }
     if !row.command.info().built {
@@ -127,8 +134,14 @@ pub(super) fn said(app: &App, row: Row, [name, scope, keys]: [&str; 3]) -> Strin
 
 /// What a refusal of `keys` for `row` says, translated: the key as the look
 /// writes it, the name of the command it is about, and the scope.
-pub(super) fn refusal(app: &App, row: Row, keys: &'static str, why: &Why) -> String {
-    let layout = app.layout();
+pub(super) fn refusal(
+    look: &Look,
+    locale: Locale,
+    row: Row,
+    keys: &'static str,
+    why: &Why,
+) -> String {
+    let layout = Layout::of(look);
     let about = match why {
         Why::Taken(other) => other.command,
         Why::Tabletist(command) => *command,
@@ -139,10 +152,10 @@ pub(super) fn refusal(app: &App, row: Row, keys: &'static str, why: &Why) -> Str
     } else {
         crate::keymap::key_written(layout, keys).as_str().to_owned()
     };
-    let scope = app.look.label(&gettext(app.locale, row.scope.name(layout)));
-    gettext(app.locale, why.text(layout))
+    let scope = look.label(&gettext(locale, row.scope.name(layout)));
+    gettext(locale, why.text(layout))
         .replace("{keys}", &written)
-        .replace("{name}", &name(app, about))
+        .replace("{name}", &name(look, locale, about))
         .replace("{scope}", &scope)
 }
 
@@ -241,11 +254,11 @@ fn presses_a_button(event: &Event) -> bool {
 /// time ends a key of several on Omarchy.
 pub(super) fn record(
     ctx: &egui::Context,
-    app: &App,
+    keymap: &Keymap,
+    layout: Layout,
     (recording, on_buttons): (&Recording, bool),
     actions: &mut Vec<Action>,
 ) {
-    let layout = app.layout();
     let now = ctx.input(|input| input.time);
     let events: Vec<Event> = ctx.input_mut(|input| {
         let (taken, left): (Vec<Event>, Vec<Event>) = std::mem::take(&mut input.events)
@@ -283,7 +296,7 @@ pub(super) fn record(
                     };
                     typed.is_some_and(|typed| {
                         crate::ui::keys::prompt_letter(
-                            &app.keymap,
+                            keymap,
                             Layout::Omarchy,
                             crate::keymap::When::SettingsScreen,
                             &typed,

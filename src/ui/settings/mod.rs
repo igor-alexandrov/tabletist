@@ -383,6 +383,24 @@ pub(super) fn path_shown(app: &App) -> String {
     file_pane::shown_path(&app.dirs.settings_file(), app.dirs.home.as_deref())
 }
 
+/// Where updates stand, as the Updates pane reads it.
+fn update_status(app: &App) -> updates::Status<'_> {
+    updates::Status {
+        updates: &app.updates,
+        skip: app.settings.update_skip.as_deref(),
+        now: app.now_secs(),
+    }
+}
+
+/// The server, as the Agents pane says it.
+fn server(app: &App) -> agents::Server {
+    agents::Server {
+        on: app.agents_on(),
+        connected: app.agents.sessions.len(),
+        window: app.agents_window().is_some(),
+    }
+}
+
 /// What a choice is called.
 #[derive(Clone, Copy)]
 pub(super) enum Said {
@@ -866,7 +884,7 @@ fn keys(
                     SettingsPane::Agents => copy |= !repeat,
                     // The command that updates a copy something else
                     // installed, where it has one.
-                    SettingsPane::Updates => match updates::managed_command(app) {
+                    SettingsPane::Updates => match updates::managed_command(update_status(app)) {
                         Some(command) => {
                             if !repeat {
                                 update_command = Some(command);
@@ -890,7 +908,7 @@ fn keys(
                 // Only where the block offers it: a version that downloads
                 // or waits to install is not skipped, and the key is left.
                 Asked::Skip => {
-                    if !updates::skips(app) {
+                    if !updates::skips(update_status(app)) {
                         return true;
                     }
                     if !repeat {
@@ -899,7 +917,7 @@ fn keys(
                 }
                 // What the card offers: a press with nothing to do is
                 // left.
-                Asked::Install => match updates::install_action(app) {
+                Asked::Install => match updates::install_action(update_status(app)) {
                     Some(action) => {
                         if !repeat {
                             actions.push(action);
@@ -995,7 +1013,13 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let keyboard = dialog.pane == SettingsPane::Keyboard;
     if keyboard && let Some(recording) = &dialog.keyboard.recording {
         let on_buttons = keyboard_sheet::on_refusal(ctx);
-        keyboard::record(ctx, app, (recording, on_buttons), &mut actions);
+        keyboard::record(
+            ctx,
+            &app.keymap,
+            app.layout(),
+            (recording, on_buttons),
+            &mut actions,
+        );
     }
     if app.look.terminal {
         // The screen's keys act on its cursor. The sheet has none: its
@@ -1006,7 +1030,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         let in_preview = ctx.memory(|memory| memory.has_focus(editor_preview::field_id()));
         if keyboard {
             if dialog.keyboard.recording.is_none() && !dialog.keyboard.filtering {
-                keyboard_terminal::keys(app, ctx, dialog, &mut actions);
+                let (keymap, layout) = (&app.keymap, app.layout());
+                keyboard_terminal::keys(ctx, keymap, layout, app.locale, dialog, &mut actions);
             }
         } else {
             keys(app, ctx, dialog, in_preview, &mut actions);

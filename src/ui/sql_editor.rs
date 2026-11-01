@@ -7,15 +7,15 @@ use egui::{
     pos2, vec2,
 };
 
-use crate::app::App;
+use crate::format;
 use crate::i18n::{Locale, gettext};
-use crate::keymap::{Command, Scope, Written};
-use crate::model::{Action, ConnTabId, NoWrites, RunMode, SqlTab, TabId};
+use crate::keymap::{Command, Keymap, Scope, Written};
+use crate::model::{Action, ConnTabId, NoWrites, RunMode, SqlTab, TabId, Workspace};
 use crate::settings::Settings;
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::Paint;
 use crate::ui::focus;
-use crate::ui::format;
 use crate::ui::menu;
 use crate::ui::widgets::{self, ButtonSpec};
 
@@ -55,18 +55,29 @@ fn split_at(height: f32, room: f32) -> Option<f32> {
     (room > 0.0).then(|| height.clamp(least, room - least) / room)
 }
 
-pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
-    let (look, palette, locale) = (app.look, app.palette, app.locale);
-    toolbar(app, ui, tab, id);
+/// Draws the SQL editor tab `id` of `workspace`, the connection tab
+/// `tab`, and returns what it asks for, in the order its toolbar, editor,
+/// results and splitter ask. The editor edits the tab's text in place.
+pub fn show(
+    ui: &mut Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    id: TabId,
+    workspace: &mut Workspace,
+    settings: &Settings,
+    keymap: &Keymap,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let mut actions = toolbar(ui, paint, tab, id, workspace, settings);
     if !look.terminal {
-        footer(app, ui, tab, id);
+        footer(ui, paint, tab, id, workspace, settings);
     }
-    let Some(split) = app
-        .workspace(tab)
-        .and_then(|workspace| workspace.sql_tab(id))
-        .map(|sql| sql.split)
-    else {
-        return;
+    let Some(split) = workspace.sql_tab(id).map(|sql| sql.split) else {
+        return actions;
     };
     // What the toolbar and the footer leave: the editor takes its share,
     // the band follows it, and the results take the rest.
@@ -76,17 +87,36 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     let editor = Rect::from_min_size(room.min, vec2(room.width(), editor_height(split, shared)));
     let divider = Rect::from_min_size(editor.left_bottom(), vec2(room.width(), band));
     let results = Rect::from_min_max(divider.left_bottom(), room.max);
-    let mut pane = |rect: Rect, salt: &str, add: fn(&mut App, &mut Ui, ConnTabId, TabId)| {
+    let mut pane = |rect: Rect, salt: &str| {
         // An id of its own: one counted from the parent's widgets would
         // change when the row panel appears beside the panes, and the
         // widgets in them would lose the keyboard focus with it.
         let pane_id = Id::new(("sql-pane", salt, tab.0, id.0));
         let mut child = ui.new_child(egui::UiBuilder::new().id(pane_id).max_rect(rect));
         child.set_clip_rect(rect.intersect(ui.clip_rect()));
-        add(app, &mut child, tab, id);
+        child
     };
-    pane(editor, "sql-text", super::sql_text::show);
-    pane(results, "sql-results", super::sql_results::show);
+    let dialect = workspace.driver.dialect();
+    let tree_has_arrows = workspace.pane == crate::model::Pane::Tree;
+    if let Some(sql) = workspace.sql_tab_mut(id) {
+        let mut child = pane(editor, "sql-text");
+        let asked = super::sql_text::show(
+            &mut child,
+            paint,
+            tab,
+            sql,
+            settings,
+            dialect,
+            tree_has_arrows,
+        );
+        actions.extend(asked);
+    }
+    if let Some(sql) = workspace.sql_tab(id) {
+        let mut child = pane(results, "sql-results");
+        let asked =
+            super::sql_results::show(&mut child, paint, tab, workspace, sql, settings, keymap);
+        actions.extend(asked);
+    }
     // After the panes, so the band takes the pointer where they meet it.
     let place = Splitter {
         band: divider,
@@ -94,12 +124,13 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         shared,
     };
     if let Some(split) = splitter(ui, &place, id, locale, &look, &palette) {
-        app.actions.push(Action::SetSqlSplit {
+        actions.push(Action::SetSqlSplit {
             tab,
             sql_tab: id,
             split,
         });
     }
+    actions
 }
 
 /// Where the divider under the editor sits.
@@ -312,13 +343,21 @@ struct Bar<'a> {
 
 /// Run and Run all, the transaction the editor's runs are in, and the
 /// limit and timeout they run with.
-fn toolbar(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
-    let (look, palette, locale) = (app.look, app.palette, app.locale);
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
+fn toolbar(
+    ui: &mut Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    id: TabId,
+    workspace: &Workspace,
+    settings: &Settings,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let Some(sql) = workspace.sql_tab(id) else {
-        return;
+        return Vec::new();
     };
     let (mode, writes) = (workspace.run_mode(sql), workspace.sql_writes());
     let title = look.label(&format!("{} {}", gettext(locale, "Query"), sql.number));
@@ -350,7 +389,7 @@ fn toolbar(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         runs: if sql.selected.is_some() {
             Runs::Selection
         } else {
-            match app.settings.run_scope {
+            match settings.run_scope {
                 crate::settings::RunScope::Statement => Runs::Statement,
                 crate::settings::RunScope::All => Runs::All,
             }
@@ -383,7 +422,7 @@ fn toolbar(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
                 mac_toolbar(ui, rect, &bar, &mut actions);
             }
         });
-    app.actions.extend(actions);
+    actions
 }
 
 /// How the two menus draw: their labels short or in full, and (macOS)
@@ -1189,11 +1228,19 @@ fn end_note(sql: &SqlTab, locale: Locale) -> Option<String> {
 
 /// The macOS and standard footer: the result's rows and time and what
 /// became of the transaction; at the right the cursor and the server.
-fn footer(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
-    let (look, palette, locale) = (app.look, app.palette, app.locale);
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
+fn footer(
+    ui: &mut Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    id: TabId,
+    workspace: &Workspace,
+    settings: &Settings,
+) {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let Some(sql) = workspace.sql_tab(id) else {
         return;
     };
@@ -1207,7 +1254,7 @@ fn footer(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     let note = end_note(sql, locale);
     let version = workspace.server_version.value.clone();
     // Vim's mode leads, where the editor has the keyboard.
-    let mode = vim_mode(app, ui.ctx(), tab)
+    let mode = vim_mode(ui.ctx(), &look, tab, workspace, settings)
         .and_then(crate::vim::Mode::label)
         .map(|label| gettext(locale, label).into_owned());
     egui::Panel::bottom(Id::new(("sql-footer", tab.0, id.0)))
@@ -1272,21 +1319,27 @@ fn footer(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         });
 }
 
-/// Vim's mode in the SQL editor in front, while it has the keyboard and
-/// the keybindings are vim's.
-pub fn vim_mode(app: &App, ctx: &egui::Context, tab: ConnTabId) -> Option<crate::vim::Mode> {
-    let vim = app.settings.editor_keys_in(app.look.terminal) == crate::settings::EditorKeys::Vim;
-    let sql = app.workspace(tab)?.active_sql_tab()?;
+/// Vim's mode in the SQL editor in front of `workspace`, the connection
+/// tab `tab`, while it has the keyboard and the keybindings are vim's.
+pub fn vim_mode(
+    ctx: &egui::Context,
+    look: &Look,
+    tab: ConnTabId,
+    workspace: &Workspace,
+    settings: &Settings,
+) -> Option<crate::vim::Mode> {
+    let vim = settings.editor_keys_in(look.terminal) == crate::settings::EditorKeys::Vim;
+    let sql = workspace.active_sql_tab()?;
     let editor = super::sql_text::editor_id(tab, sql.id);
     (vim && ctx.memory(|memory| memory.has_focus(editor))).then_some(sql.vim.mode)
 }
 
 /// The right end of the terminal's status line on an editor: "ln 12:21 ·
 /// 5 rows · 14 ms · rolled back", or after a run sent to write "ln 3:1 ·
-/// 12 rows affected · 14 ms · committed".
-pub fn status_summary(app: &App, tab: ConnTabId) -> Option<String> {
-    let locale = app.locale;
-    let sql = app.workspace(tab)?.active_sql_tab()?;
+/// 12 rows affected · 14 ms · committed". `None` where no editor is in
+/// front of `workspace`.
+pub fn status_summary(workspace: &Workspace, locale: Locale) -> Option<String> {
+    let sql = workspace.active_sql_tab()?;
     let (line, column) = sql.line_col();
     let mut parts = vec![format!("{} {line}:{column}", gettext(locale, "ln"))];
     parts.extend(run_summary(sql, locale));
@@ -1723,7 +1776,9 @@ mod tests {
                 let context = format!("{words} in {}", look.name);
                 if look.terminal {
                     // The terminal's status line, which has no footer.
-                    let status = status_summary(&harness.app, tab).expect("an editor shows");
+                    let workspace = harness.app.workspace(tab).unwrap();
+                    let status =
+                        status_summary(workspace, harness.app.locale).expect("an editor shows");
                     let (_, said) = status.split_once(" · ").expect("after the cursor");
                     assert_eq!(
                         said,

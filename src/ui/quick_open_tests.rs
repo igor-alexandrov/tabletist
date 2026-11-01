@@ -8,13 +8,14 @@ use egui::accesskit::Role;
 use egui::{Key, Modifiers};
 use tabletist_db::{ObjectInfo, ObjectKind, ObjectRef};
 
-use crate::app::{
-    About, GROUP_SHOWN, QuickCommand, QuickHeading, QuickItem, QuickRow, Runnable, StartRow,
-};
+use crate::app::{GROUP_SHOWN, QuickHeading, QuickRow};
 use crate::backend::Command;
 use crate::connections::SavedConnection;
 use crate::env::Environment;
-use crate::model::{Action, ConnTabId, Dialog, QuickGroup, QuickOpen};
+use crate::model::{
+    About, Action, ConnTabId, Dialog, QuickCommand, QuickGroup, QuickItem, QuickOpen, Runnable,
+    StartRow,
+};
 use crate::search::Tier;
 use crate::testing::{Harness, bookshop_objects, fixture_connection};
 use crate::theme::Look;

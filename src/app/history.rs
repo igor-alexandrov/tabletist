@@ -275,7 +275,7 @@ impl App {
         let Some(workspace) = self.workspace(tab) else {
             return String::new();
         };
-        let name = crate::ui::format::display_safe(&workspace.name);
+        let name = crate::format::display_safe(&workspace.name);
         match workspace
             .environment
             .named(crate::env::Platform::of(&self.look))

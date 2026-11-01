@@ -426,23 +426,23 @@ pub fn size_words(
     (rows, cols): (usize, usize),
     whole_rows: bool,
 ) -> String {
-    let rows = crate::ui::pending_bar::counted(locale, rows, "row", "rows");
+    let rows = crate::i18n::counted(locale, rows, "row", "rows");
     if whole_rows {
         return rows;
     }
-    let cols = crate::ui::pending_bar::counted(locale, cols, "column", "columns");
+    let cols = crate::i18n::counted(locale, cols, "column", "columns");
     format!("{rows} × {cols}")
 }
 
 /// What a screen reader is told of a range: "4 rows by 2 columns
 /// selected", or "3 rows selected" for whole rows.
 pub fn said(locale: crate::i18n::Locale, (rows, cols): (usize, usize), whole_rows: bool) -> String {
-    let rows = crate::ui::pending_bar::counted(locale, rows, "row", "rows");
+    let rows = crate::i18n::counted(locale, rows, "row", "rows");
     let selected = crate::i18n::gettext(locale, "selected");
     if whole_rows {
         return format!("{rows} {selected}");
     }
-    let cols = crate::ui::pending_bar::counted(locale, cols, "column", "columns");
+    let cols = crate::i18n::counted(locale, cols, "column", "columns");
     let by = crate::i18n::gettext(locale, "by");
     format!("{rows} {by} {cols} {selected}")
 }

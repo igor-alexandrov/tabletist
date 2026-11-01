@@ -8,8 +8,7 @@
 
 use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, WidgetInfo, WidgetType, pos2, vec2};
 
-use crate::app::App;
-use crate::keymap::{Group, Row, Why, Written, fixed};
+use crate::keymap::{Group, Keymap, Layout, Row, Why, Written, fixed};
 use crate::model::{Action, KeyboardPage, Recorded, Recording};
 use crate::theme::{Icon, mix};
 use crate::typography::{Text, TextRole};
@@ -69,7 +68,7 @@ pub(super) fn on_refusal(ctx: &egui::Context) -> bool {
 /// `limit` at the latest.
 pub(super) fn content(
     ui: &mut Ui,
-    app: &App,
+    keymap: &Keymap,
     page: &KeyboardPage,
     limit: f32,
     skin: &Skin,
@@ -78,7 +77,8 @@ pub(super) fn content(
     let Skin { look, palette, .. } = *skin;
     let width = ui.available_width();
     let corner = ui.cursor().min;
-    let changed = keyboard::changed_count(app);
+    let layout = Layout::of(look);
+    let changed = keyboard::changed_count(keymap, layout);
 
     // Reset all…, at the right of the title.
     let reset = skin.say("Reset all…");
@@ -124,10 +124,10 @@ pub(super) fn content(
     ui.advance_cursor_after_rect(Rect::from_min_max(corner, pos2(corner.x + width, bottom)));
     ui.add_space(12.0);
 
-    search_row(ui, app, page, changed, skin, actions);
+    search_row(ui, page, changed, skin, actions);
     if let Some(found) = page.found {
         ui.add_space(6.0);
-        found_line(ui, app, found, skin, actions);
+        found_line(ui, found, skin, actions);
     }
     ui.add_space(8.0);
 
@@ -158,7 +158,7 @@ pub(super) fn content(
     widgets::hline(ui, heads.x_range(), heads.bottom() - 0.5, palette.border);
     ui.advance_cursor_after_rect(heads);
 
-    let listed = keyboard::listed(app, page);
+    let listed = keyboard::listed(keymap, layout, skin.locale, page);
     let room = (limit - ui.cursor().top()).max(ROWS_MIN);
     egui::ScrollArea::vertical()
         .id_salt("keyboard-rows")
@@ -184,7 +184,7 @@ pub(super) fn content(
                     node.set_label(label.as_str());
                 });
                 for Listed { group, rows } in &listed {
-                    group_rows(ui, app, page, *group, rows, skin, actions);
+                    group_rows(ui, keymap, page, *group, rows, skin, actions);
                 }
             });
         });
@@ -201,7 +201,6 @@ fn columns(rect: Rect) -> (f32, f32, f32) {
 /// The search field and the All / Changed switch.
 fn search_row(
     ui: &mut Ui,
-    app: &App,
     page: &KeyboardPage,
     changed: usize,
     skin: &Skin,
@@ -215,7 +214,7 @@ fn search_row(
     // A chord pressed in the field finds the rows it is a key of, in place
     // of being typed: read before the field reads the frame's keys.
     if ui.memory(|memory| memory.has_focus(search_id()))
-        && let Some(keys) = keyboard::find_chord(ui.ctx(), app.layout())
+        && let Some(keys) = keyboard::find_chord(ui.ctx(), Layout::of(look))
     {
         actions.push(Action::KeyboardFind(Some(keys)));
     }
@@ -281,13 +280,13 @@ fn search_row(
 
 /// What the list is cut to while a key is looked for, and the link that
 /// lists every row again.
-fn found_line(ui: &mut Ui, app: &App, found: &'static str, skin: &Skin, actions: &mut Vec<Action>) {
+fn found_line(ui: &mut Ui, found: &'static str, skin: &Skin, actions: &mut Vec<Action>) {
     let Skin { look, palette, .. } = *skin;
     let top = ui.cursor().min;
     let role = TextRole::Secondary;
     let height = 20.0;
     let middle = top.y + height / 2.0;
-    let key = crate::keymap::key_written(app.layout(), found);
+    let key = crate::keymap::key_written(Layout::of(look), found);
     let said = skin
         .say("Commands bound to {keys}")
         .replace("{keys}", key.as_str());
@@ -319,7 +318,7 @@ fn found_line(ui: &mut Ui, app: &App, found: &'static str, skin: &Skin, actions:
 /// reader, named by the heading.
 fn group_rows(
     ui: &mut Ui,
-    app: &App,
+    keymap: &Keymap,
     page: &KeyboardPage,
     group: Group,
     rows: &[Row],
@@ -327,9 +326,10 @@ fn group_rows(
     actions: &mut Vec<Action>,
 ) {
     let Skin { look, palette, .. } = *skin;
-    let builder = egui::UiBuilder::new().id_salt(("keyboard-group", group.name(app.layout())));
+    let layout = Layout::of(look);
+    let builder = egui::UiBuilder::new().id_salt(("keyboard-group", group.name(layout)));
     ui.scope_builder(builder, |ui| {
-        let heading = skin.say(group.name(app.layout()));
+        let heading = skin.say(group.name(layout));
         ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
             node.set_role(egui::accesskit::Role::RowGroup);
             node.set_label(heading.as_str());
@@ -342,10 +342,10 @@ fn group_rows(
                 .recording
                 .as_ref()
                 .filter(|recording| recording.of == Recorded::Row(*row));
-            key_row(ui, app, *row, recording, skin, actions);
+            key_row(ui, keymap, *row, recording, skin, actions);
             if let Some((keys, why)) = recording.and_then(|recording| recording.refused.as_ref()) {
                 let swaps = recording.is_some_and(|recording| recording.swaps);
-                refusal_line(ui, app, (*row, keys, why, swaps), skin, actions);
+                refusal_line(ui, (*row, keys, why, swaps), skin, actions);
             }
         }
     });
@@ -391,28 +391,28 @@ fn caps(ui: &Ui, right: f32, middle: f32, keys: &[Written], skin: &Skin) -> f32 
 /// row; "Press keys…" while it records.
 fn key_row(
     ui: &mut Ui,
-    app: &App,
+    keymap: &Keymap,
     row: Row,
     recording: Option<&Recording>,
     skin: &Skin,
     actions: &mut Vec<Action>,
 ) {
     let Skin { look, palette, .. } = *skin;
-    let layout = app.layout();
+    let layout = Layout::of(look);
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
     let middle = rect.center().y;
     let (name_x, scope_x, keys_right) = columns(rect);
-    let name = keyboard::name(app, row.command);
+    let name = keyboard::name(look, skin.locale, row.command);
     let scope = skin.say(row.scope.name(layout));
     let fixed = fixed(layout, row);
-    let changed = app.keymap.changed(layout, row);
+    let changed = keymap.changed(layout, row);
     let built = row.command.info().built;
-    let spoken = keyboard::spoken_keys(app, row);
+    let spoken = keyboard::spoken_keys(keymap, layout, skin.locale, row);
     let id = ui.id().with(("keyboard-row", row));
     // The row, for the pointer's hover and its context menu, and what a
     // screen reader says of it.
     let line = ui.interact(rect, id, Sense::click());
-    let said = keyboard::said(app, row, [&name, &scope, &spoken]);
+    let said = keyboard::said(keymap, look, skin.locale, row, [&name, &scope, &spoken]);
     line.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, &said));
     ui.ctx().accesskit_node_builder(line.id, |node| {
         node.set_role(egui::accesskit::Role::Row);
@@ -488,7 +488,10 @@ fn key_row(
         let named = skin
             .say("Reset {name} to {keys}")
             .replace("{name}", &name)
-            .replace("{keys}", &keyboard::spoken_defaults(app, row));
+            .replace(
+                "{keys}",
+                &keyboard::spoken_defaults(layout, skin.locale, row),
+            );
         let place =
             Rect::from_center_size(pos2(keys_right - RESET / 2.0, middle), vec2(RESET, RESET));
         let reset = ui.interact(place, reset_id, Sense::click());
@@ -522,7 +525,7 @@ fn key_row(
         .filter(|keys| !keys.is_empty());
     let keys = match refused {
         Some(keys) => vec![crate::keymap::key_written(layout, keys)],
-        None => app.keymap.row_keys(layout, row),
+        None => keymap.row_keys(layout, row),
     };
     let left = if keys.is_empty() {
         let role = TextRole::Secondary;
@@ -623,7 +626,6 @@ fn key_row(
 /// first button once, as it appears.
 fn refusal_line(
     ui: &mut Ui,
-    app: &App,
     (row, keys, why, swaps): (Row, &'static str, &Why, bool),
     skin: &Skin,
     actions: &mut Vec<Action>,
@@ -639,12 +641,12 @@ fn refusal_line(
     Icon::CircleAlert
         .image(palette.warning, 13.0)
         .paint_at(ui, icon);
-    let said = keyboard::refusal(app, row, keys, why);
+    let said = keyboard::refusal(look, skin.locale, row, keys, why);
     let role = TextRole::Secondary;
     let swap = skin.say("Swap");
     // The key that gives up, as the keymap writes it: the screen's close.
     let close = crate::ui::keys::published(ui.ctx()).key_in(
-        app.layout(),
+        Layout::of(look),
         crate::keymap::Command::SettingsClose,
         crate::keymap::Scope::Prompt,
     );
