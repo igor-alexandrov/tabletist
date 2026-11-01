@@ -333,7 +333,7 @@ pub(super) fn terminal_body(
             });
             let heading = skin.say("Environment");
             terminal_row_of(ui, &heading, Group::Buttons.height(), skin, |ui, _| {
-                environment_choice(ui, form, &heading, skin);
+                environment_choice(ui, &heading, skin, actions);
             });
             match form.driver {
                 Driver::Sqlite => {
