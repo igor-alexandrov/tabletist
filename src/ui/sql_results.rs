@@ -9,16 +9,18 @@ use std::time::Duration;
 use egui::{CornerRadius, Id, Rect, Sense, Ui, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::{Driver, Error, ScriptEnd, ScriptMode, StatementOutcome, ValueKind};
 
-use crate::app::App;
 use crate::backend::{CancelReason, RequestId};
+use crate::format;
 use crate::i18n::{Locale, gettext};
+use crate::keymap::Keymap;
 use crate::model::{
     Action, ConnTabId, NoWrites, ResultPane, RunMode, SqlRun, SqlTab, TabId, Workspace,
 };
+use crate::settings::Settings;
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Laid, Text, TextRole};
+use crate::ui::Paint;
 use crate::ui::data_view;
-use crate::ui::format;
 use crate::ui::grid::{self, Column};
 use crate::ui::states;
 use crate::ui::value_tags::Tags;
@@ -173,10 +175,36 @@ pub fn forget(ctx: &egui::Context, tab: ConnTabId, id: TabId) {
     });
 }
 
-pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
+/// Draws the results of `sql`, a SQL editor of `workspace` in the
+/// connection tab `tab`, and returns what they ask for.
+pub fn show(
+    ui: &mut Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    workspace: &Workspace,
+    sql: &SqlTab,
+    settings: &Settings,
+    keymap: &Keymap,
+) -> Vec<Action> {
     let mut actions = Vec::new();
-    draw(app, ui, tab, id, &mut actions);
-    app.actions.extend(actions);
+    let results = Results {
+        workspace,
+        sql,
+        settings,
+        keymap,
+    };
+    draw(ui, paint, tab, &results, &mut actions);
+    actions
+}
+
+/// What the results are drawn from besides the Paint: the editor's tab,
+/// its workspace, and the settings and keymap they read.
+#[derive(Clone, Copy)]
+struct Results<'a> {
+    workspace: &'a Workspace,
+    sql: &'a SqlTab,
+    settings: &'a Settings,
+    keymap: &'a Keymap,
 }
 
 /// The editor a pane is drawn for.
@@ -202,30 +230,34 @@ struct Place<'a> {
     grid: Look,
 }
 
-fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Action>) {
-    let (look, palette) = (app.look, app.palette);
+fn draw(ui: &mut Ui, paint: Paint, tab: ConnTabId, from: &Results<'_>, actions: &mut Vec<Action>) {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let Results {
+        workspace,
+        sql,
+        settings,
+        keymap,
+    } = *from;
     let env = Env {
         look: &look,
         palette: &palette,
-        locale: app.locale,
-        keymap: &app.keymap,
-    };
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
-    let Some(sql) = workspace.sql_tab(id) else {
-        return;
+        locale,
+        keymap,
     };
     let place = Place {
         tab,
         sql,
-        fit: data_view::Fit::of(workspace, app),
+        fit: data_view::Fit::of(workspace, settings, paint.layout()),
         zone: workspace.zone_shown(),
         driver: workspace.driver,
         blocked: blocked(workspace, sql),
         links: Links::of(workspace, sql),
         keys: workspace.pane == crate::model::Pane::Grid,
-        grid: look.with_grid(&app.settings),
+        grid: look.with_grid(settings),
     };
     let state = state(sql);
     let pane = ui.max_rect();
@@ -1555,12 +1587,15 @@ impl Blocked<'_> {
 /// button names the letter: in the others none presses it, whoever asks.
 /// And only while the Messages show the card: not under the opening
 /// screen a switch of database puts over the editor, which keeps the tab
-/// and its last run.
-pub(crate) fn card_key(app: &App, tab: ConnTabId) -> Option<(crate::keymap::Command, Action)> {
-    if !app.look.terminal {
+/// and its last run. `workspace` is the connection tab `tab`'s.
+pub(crate) fn card_key(
+    look: &Look,
+    tab: ConnTabId,
+    workspace: &Workspace,
+) -> Option<(crate::keymap::Command, Action)> {
+    if !look.terminal {
         return None;
     }
-    let workspace = app.workspace(tab)?;
     let sql = workspace.active_sql_tab()?;
     if !workspace.opened() || sql.pane != ResultPane::Messages || sql.run.error.is_some() {
         return None;
@@ -1710,13 +1745,14 @@ const BEFORE_LINK: &str = " · ";
 /// The links on screen in the SQL editor in front, with the command whose
 /// letter takes each and what it does. Only in the terminal look, whose
 /// links name their letters, as [`card_key`].
-pub(crate) fn link_keys(app: &App, tab: ConnTabId) -> Vec<(crate::keymap::Command, Action)> {
-    if !app.look.terminal {
+pub(crate) fn link_keys(
+    look: &Look,
+    tab: ConnTabId,
+    workspace: &Workspace,
+) -> Vec<(crate::keymap::Command, Action)> {
+    if !look.terminal {
         return Vec::new();
     }
-    let Some(workspace) = app.workspace(tab) else {
-        return Vec::new();
-    };
     let Some(sql) = workspace.active_sql_tab() else {
         return Vec::new();
     };
@@ -3173,7 +3209,12 @@ mod tests {
         for look in [Look::standard(), Look::macos()] {
             let (mut harness, tab) = refused_in_a_read_only_tab(look);
             assert!(harness.has("Allow writes in this tab"), "{}", look.name);
-            assert!(card_key(&harness.app, tab).is_none(), "{}", look.name);
+            let workspace = harness.app.workspace(tab).unwrap();
+            assert!(
+                card_key(&harness.app.look, tab, workspace).is_none(),
+                "{}",
+                look.name
+            );
             harness.press(Key::Escape, Modifiers::NONE);
             harness.press(Key::W, Modifiers::NONE);
             assert_eq!(sql(&harness, tab).mode, RunMode::ReadOnly, "{}", look.name);
@@ -3200,8 +3241,9 @@ mod tests {
         }
         // The terminal look, whose button names the letter, takes it.
         let (harness, tab) = refused_in_a_read_only_tab(Look::omarchy());
+        let workspace = harness.app.workspace(tab).unwrap();
         assert!(matches!(
-            card_key(&harness.app, tab),
+            card_key(&harness.app.look, tab, workspace),
             Some((
                 crate::keymap::Command::AllowRefusedWrite,
                 Action::SetSqlMode { .. }
@@ -4463,7 +4505,11 @@ mod tests {
         run(&mut harness);
         harness.answer_sql(Ok(script_outcome(vec![result_with("email")])), None);
         let narrow = width(&mut harness, "email");
-        let fit = data_view::Fit::of(harness.app.workspace(tab).unwrap(), &harness.app);
+        let fit = data_view::Fit::of(
+            harness.app.workspace(tab).unwrap(),
+            &harness.app.settings,
+            harness.app.layout(),
+        );
         let first = sql(&harness, tab).run.loaded;
         let first = grid_id(tab, sql(&harness, tab).id, first, fit);
         assert!(crate::ui::grid::remembered(&harness.ctx, first));

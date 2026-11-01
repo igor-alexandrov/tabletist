@@ -13,8 +13,7 @@ switches to another look.
 ## Install
 
 Tabletist needs macOS 11 or later. One download runs on both Apple
-Silicon and Intel. The steps, and what to do when macOS blocks the first
-launch, are on the
+Silicon and Intel. The steps are on the
 [Download page]({% link _guide/download.md %}#macos).
 
 ## The window
@@ -49,7 +48,10 @@ launch, are on the
   link to the source code and the licenses of the fonts it bundles, and
   **Tabletist → Settings…** opens Settings. **Tabletist → Check for
   Updates…** opens Settings › Updates and asks GitHub for a newer
-  version. **View → History** shows the
+  version. **Download and install** there downloads and checks it; once
+  it is ready, the start screen says so too, and **Restart now** installs
+  it, or, with work open, **Restart when done** does once that work is
+  done. **View → History** shows the
   window's [History tab]({% link _guide/sql-editor.md %}#history), and
   **View → Quick Open** opens quick open. A menu greys the commands that
   do not apply now, while it is open. Its keys do what they do where you

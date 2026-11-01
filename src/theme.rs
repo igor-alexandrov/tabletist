@@ -972,6 +972,7 @@ fastframe_icons::icons! {
         ShieldAlert => "shield-alert",
         SquareTerminal => "square-terminal",
         Table => "table-2",
+        TriangleAlert => "triangle-alert",
         WifiOff => "wifi-off",
     }
 }

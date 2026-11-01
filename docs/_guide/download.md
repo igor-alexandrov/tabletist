@@ -15,18 +15,12 @@ its signature by the Tabletist release key.
 ## macOS
 
 Download `tabletist-v<version>-macos-universal.dmg`. It is one file for both
-Apple Silicon and Intel. Open it and drag **Tabletist** to **Applications**.
+Apple Silicon and Intel, and needs macOS 11 or later. Open it and drag
+**Tabletist** to **Applications**.
 
-### First open on macOS
-
-Releases are signed with a Developer ID and notarized by Apple, so macOS
-opens them like any other app. Older releases were not, and macOS blocks
-them on first launch. For one of those: try to open it once, then click
-**Open Anyway** in **System Settings → Privacy & Security**, or run:
-
-```sh
-xattr -dr com.apple.quarantine /Applications/Tabletist.app
-```
+To update, choose **Tabletist → Check for Updates…**, then **Download and
+install**: the new version goes in when you restart. Tabletist updates
+itself only when it runs from **Applications**, not from the disk image.
 
 ## Windows
 
@@ -36,6 +30,10 @@ rights.
 
 To run Tabletist without an installer, download the `.zip` for your PC,
 extract it and open `tabletist.exe`.
+
+**Settings › Updates** says when there is a newer version, with a link to
+its release on GitHub. To update, run the new setup program, or extract
+the new `.zip` in place of the old folder.
 
 ## Linux
 
@@ -91,7 +89,11 @@ sudo install -Dm755 tabletist /usr/local/bin/tabletist
 To update, install the new binary the same way: **Settings › Updates**
 (`:update` in the Omarchy look) checks GitHub for a newer version, every
 day unless you choose every week or only when you ask, and says when
-there is one. To remove Tabletist, delete the three files.
+there is one. An AppImage, or `tabletist` run from the unpacked archive's
+folder (beside the archive's `tabletist-portable.txt`), installs it
+itself with **Download and install** (`U`) once you choose to restart; a
+binary copied elsewhere, as above, is installed again the same way. To
+remove Tabletist, delete the three files.
 
 The Linux binaries are built on Ubuntu 24.04 and need glibc 2.39 or newer
 (Ubuntu 24.04, Debian 13, Fedora 40 or later). On an older system,

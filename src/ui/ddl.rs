@@ -15,13 +15,13 @@ use egui::{
 use tabletist_db::ddl::{PartKind, Source};
 use tabletist_db::{Ddl, Driver, ObjectKind};
 
-use crate::app::App;
+use crate::format;
 use crate::i18n::{Locale, gettext};
 use crate::keymap::Command;
 use crate::model::{Action, ConnTabId, ObjectTab, TabId};
 use crate::theme::{self, Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
-use crate::ui::{focus, format, sql_text, states, widgets};
+use crate::ui::{Paint, focus, sql_text, states, widgets};
 
 /// The text's role, and its line numbers': the SQL editor's.
 fn role(look: &Look) -> TextRole {
@@ -74,20 +74,16 @@ fn part_at(placed: &[(PartKind, std::ops::Range<usize>)], line: usize) -> Option
 /// Copies the text of the DDL view of the tab `id`: what is selected in
 /// it (the field's selection, or the terminal look's lines), or else all
 /// of it, and says so. Nothing before the text is read.
-pub fn copy(app: &App, ctx: &egui::Context, tab: ConnTabId, id: TabId) {
-    let Some(object) = app
-        .workspace(tab)
-        .and_then(|workspace| workspace.object_tab(id))
-    else {
-        return;
-    };
+pub fn copy(ctx: &egui::Context, paint: Paint, tab: ConnTabId, object: &ObjectTab) {
+    let Paint { locale, look, .. } = paint;
+    let id = object.id;
     // Only the text on screen: not one a failed Reload keeps under its
     // error.
     let Some(ddl) = object.ddl_shown() else {
         return;
     };
     let text = ddl.text();
-    let part = match app.look.terminal {
+    let part = match look.terminal {
         true => object.ddl_selected().map(|lines| {
             text.lines()
                 .skip(lines.start)
@@ -97,7 +93,6 @@ pub fn copy(app: &App, ctx: &egui::Context, tab: ConnTabId, id: TabId) {
         }),
         false => selected_text(ctx, text_id(tab, id), &text),
     };
-    let locale = app.locale;
     let said = match &part {
         Some(part) => {
             let lines = part.lines().count().max(1);
@@ -108,7 +103,7 @@ pub fn copy(app: &App, ctx: &egui::Context, tab: ConnTabId, id: TabId) {
         None => gettext(locale, "Copied DDL").into_owned(),
     };
     ctx.copy_text(part.unwrap_or(text));
-    crate::ui::toast::say(ctx, &app.look.label(&said));
+    crate::ui::toast::say(ctx, &look.label(&said));
 }
 
 /// What the field `id` has selected of `text`, where it has anything.
@@ -331,16 +326,23 @@ pub fn header_wait(
 /// The look, the palette and the locale, as the view's parts take them.
 pub type Skin<'a> = (&'a Look, &'a Palette, Locale);
 
-pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
-    let (look, palette, locale) = (app.look, app.palette, app.locale);
+/// The DDL view of `object`, a tab of the workspace `tab` on `driver`'s
+/// engine, and what it asks for.
+pub fn show(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    object: &ObjectTab,
+    driver: Driver,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let skin = (&look, &palette, locale);
     let reload = crate::ui::keys::written(ui.ctx(), &look, Command::Reload);
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
-    let Some(object) = workspace.object_tab(object_tab) else {
-        return;
-    };
+    let object_tab = object.id;
     let mut actions = Vec::new();
     let area = ui.max_rect();
     focus::region(ui, focus::Region::Grid, area);
@@ -354,7 +356,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         let failed = Failed {
             error,
             name: &object.object.name,
-            driver: workspace.driver,
+            driver,
             kind: object.kind,
         };
         Frame::new()
@@ -415,8 +417,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             if lines_gained_keys(ui, id) {
                 actions.push(Action::GridKeys(tab));
             }
-            app.actions.extend(actions);
-            return;
+            return actions;
         }
         // The line over the text: where it comes from, and how long ago it
         // was read, with the key that reads it again; the links to its parts
@@ -482,7 +483,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             grey_lines(ui, lines, &palette);
         }
     }
-    app.actions.extend(actions);
+    actions
 }
 
 /// Lines of grey bars where the text will be: a gutter's number and the
@@ -905,15 +906,13 @@ fn left_out_lines(driver: Driver, locale: Locale) -> Option<[String; 2]> {
 
 /// The macOS footer of the DDL view: how many lines and whose, what the
 /// text leaves out, and how to copy part of it.
-pub fn footer(app: &App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
-    let (look, palette, locale) = (app.look, app.palette, app.locale);
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
-    let Some(object) = workspace.object_tab(object_tab) else {
-        return;
-    };
-    let driver = workspace.driver;
+pub fn footer(ui: &mut egui::Ui, paint: Paint, tab: ConnTabId, object: &ObjectTab, driver: Driver) {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let object_tab = object.id;
     let lines = object
         .ddl
         .value

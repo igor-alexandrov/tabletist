@@ -163,7 +163,8 @@ pub(super) fn show(
     let (pane, row) = (dialog.pane, dialog.row);
     let settings = super::shown(app);
     let launches = super::launch_choices(&app.connections.connections);
-    let checked = super::updates::checked_text(app, true);
+    let checked =
+        super::updates::checked_text(super::update_status(app), &app.look, app.locale, true);
     let skin = Skin {
         look: &app.look,
         palette: &app.palette,
@@ -196,13 +197,13 @@ pub(super) fn show(
             ui.set_height(screen.height());
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
             header(ui, pane, &skin);
-            let notice = notice(ui, app, actions);
+            let notice = notice(ui, &skin, app.notice.as_deref(), actions);
             // What the header, a notice, the footer and their rules leave.
             let height = (screen.height() - HEADER - notice - FOOTER - 2.0).max(0.0);
             let (body, _) =
                 ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
             let (side, place) = body.split_left_right_at_x((body.left() + NAV).min(body.right()));
-            let offered = super::updates::offered(app);
+            let offered = super::updates::offered(super::update_status(app));
             nav(ui, (side, offered), pane, &skin, actions);
             // The rows scroll when the window is short, so the header and
             // the footer stay on screen. They start past the nav's rule.
@@ -229,34 +230,60 @@ pub(super) fn show(
                     SettingsPane::Appearance => appearance_rows(ui, &settings, row, &skin, actions),
                     SettingsPane::Editor => editor_rows(ui, &settings, row, &skin, actions),
                     SettingsPane::Keyboard => {
-                        super::keyboard_terminal::rows(ui, app, &dialog.keyboard, &skin, actions);
+                        super::keyboard_terminal::rows(
+                            ui,
+                            &app.keymap,
+                            &dialog.keyboard,
+                            &skin,
+                            actions,
+                        );
                     }
                     SettingsPane::Agents => agent_rows(ui, app, &settings, row, &skin, actions),
                     SettingsPane::Updates => {
-                        super::updates_terminal::rows(ui, app, &settings, row, &skin, actions);
+                        super::updates_terminal::rows(
+                            ui,
+                            super::update_status(app),
+                            || app.work_in_progress(),
+                            &settings,
+                            row,
+                            &skin,
+                            actions,
+                        );
                     }
                 });
             if let Some(beside) = beside {
                 let shown = match pane {
                     SettingsPane::Keyboard => {
-                        let row = super::keyboard_terminal::cursor(app, &dialog.keyboard);
+                        let (keymap, layout) = (&app.keymap, app.layout());
+                        let page = &dialog.keyboard;
+                        let row =
+                            super::keyboard_terminal::cursor(keymap, layout, app.locale, page);
                         file_pane::Shown::Keys(row)
                     }
                     _ => file_pane::Shown::Option(option),
                 };
-                file_pane::show(ui, beside, app, shown, &skin);
+                let path = super::path_shown(app);
+                let binds = &app.settings.keys.binds;
+                file_pane::show(ui, beside, &app.settings_file, &path, binds, shown, &skin);
             }
             let opens = cursor.and_then(|cursor| opened(app, cursor).map(|opens| (cursor, opens)));
             let question = match &app.dialog {
                 Some(crate::model::Dialog::Settings(dialog)) => dialog.history_question,
                 _ => None,
             };
-            match question {
-                Some(question) => history_question(ui, question, &skin, actions),
-                None if pane == SettingsPane::Keyboard => {
+            let update = match &app.dialog {
+                Some(crate::model::Dialog::Settings(dialog)) if pane == SettingsPane::Updates => {
+                    dialog.update_question.clone()
+                }
+                _ => None,
+            };
+            match (question, update) {
+                (Some(question), _) => history_question(ui, question, &skin, actions),
+                (None, Some(version)) => update_question(ui, &version, &skin, actions),
+                (None, None) if pane == SettingsPane::Keyboard => {
                     keyboard_footer(ui, app, &dialog.keyboard, &skin, actions);
                 }
-                None => footer(ui, pane, option, opens, &settings, &skin, actions),
+                (None, None) => footer(ui, pane, option, opens, &settings, &skin, actions),
             }
         });
 }
@@ -309,6 +336,60 @@ fn history_question(
     }
 }
 
+/// The footer while `:update` asks whether to install `version` and
+/// restart, as the components' confirm row has it: the question on the
+/// sunken ground under a red rule, then `[y] yes  [N] no`. Each hint is
+/// its button too.
+fn update_question(ui: &mut Ui, version: &str, skin: &Skin, actions: &mut Vec<Action>) {
+    let Skin {
+        look,
+        palette,
+        locale,
+        ..
+    } = *skin;
+    let (rect, _) =
+        ui.allocate_exact_size(vec2(ui.available_width(), FOOTER + 1.0), Sense::hover());
+    ui.painter()
+        .rect_filled(rect, CornerRadius::ZERO, palette.panel);
+    widgets::hline(ui, rect.x_range(), rect.top() + 0.5, palette.danger);
+    let y = rect.top() + 1.0 + FOOTER / 2.0;
+    let role = TextRole::OSecondary;
+    let asks = skin
+        .say("install {version} and restart?")
+        .replace("{version}", version);
+    let mut left = rect.left() + 12.0;
+    left += widgets::paint_label(ui, left, y, Text::one(look, role, &asks, palette.text)) + 18.0;
+    for (command, word, name, yes) in [
+        (
+            Command::SettingsInstallYes,
+            "yes",
+            "Install and restart",
+            true,
+        ),
+        (Command::SettingsInstallNo, "no", "Cancel", false),
+    ] {
+        let written = key(ui, look, command).bracketed();
+        let word = skin.say(word);
+        let hint = Text::new(look)
+            .add(role, &written, palette.accent)
+            .space(role, " ")
+            .add(role, &word, palette.secondary);
+        let width = widgets::paint_text(ui, left, y, hint);
+        let place = Rect::from_min_max(
+            pos2(left, rect.top() + 5.0),
+            pos2(left + width, rect.bottom() - 4.0),
+        );
+        widgets::announce(ui, place, &format!("{} {word}", written.as_str()));
+        left += width + 16.0;
+        if ButtonSpec::new(&gettext(locale, name))
+            .hidden_at(ui, place)
+            .clicked()
+        {
+            actions.push(Action::AnswerUpdateQuestion(yes));
+        }
+    }
+}
+
 /// One tinted line: the title and the pane it shows, and at the right
 /// what a change does and the key that opens the screen.
 fn header(ui: &mut Ui, pane: SettingsPane, skin: &Skin) {
@@ -356,15 +437,20 @@ fn header(ui: &mut Ui, pane: SettingsPane, skin: &Skin) {
 /// under the screen, and a save that fails here would go unseen until the
 /// screen closes. Returns the band's height with its rule, nothing when
 /// there is no notice.
-fn notice(ui: &mut Ui, app: &App, actions: &mut Vec<Action>) -> f32 {
-    let Some(message) = &app.notice else {
+fn notice(ui: &mut Ui, skin: &Skin, notice: Option<&str>, actions: &mut Vec<Action>) -> f32 {
+    let Some(message) = notice else {
         return 0.0;
     };
     let (rect, _) =
         ui.allocate_exact_size(vec2(ui.available_width(), NOTICE + 1.0), Sense::hover());
-    let fill = crate::ui::notice_fill(&app.palette);
+    let fill = crate::ui::notice_fill(skin.palette);
     ui.painter().rect_filled(rect, CornerRadius::ZERO, fill);
-    widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, app.palette.outline);
+    widgets::hline(
+        ui,
+        rect.x_range(),
+        rect.bottom() - 0.5,
+        skin.palette.outline,
+    );
     let left = rect.left() + NOTICE_SIDE;
     let right = (rect.right() - NOTICE_SIDE).max(left);
     let line = Rect::from_min_max(pos2(left, rect.top()), pos2(right, rect.bottom() - 1.0));
@@ -372,7 +458,12 @@ fn notice(ui: &mut Ui, app: &App, actions: &mut Vec<Action>) -> f32 {
     let centred = egui::Layout::left_to_right(egui::Align::Center);
     let builder = egui::UiBuilder::new().id_salt("notice").max_rect(line);
     let mut line = ui.new_child(builder.layout(centred));
-    crate::ui::notice_line(app, &mut line, message, actions);
+    let paint = crate::ui::Paint {
+        locale: skin.locale,
+        palette: *skin.palette,
+        look: *skin.look,
+    };
+    crate::ui::notice_line(&mut line, paint, message, actions);
     rect.height()
 }
 
@@ -1883,7 +1974,7 @@ fn keyboard_footer(
         .rect_filled(rect, CornerRadius::ZERO, palette.panel);
     widgets::hline(ui, rect.x_range(), rect.top() + 0.5, palette.outline);
     let y = rect.top() + 1.0 + FOOTER / 2.0;
-    let cursor = super::keyboard_terminal::cursor(app, page);
+    let cursor = super::keyboard_terminal::cursor(&app.keymap, app.layout(), app.locale, page);
     // `$EDITOR` is a name: the look does not lower-case it.
     let in_editor = skin
         .say("open file in {editor}")

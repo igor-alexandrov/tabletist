@@ -1,26 +1,33 @@
 //! Updates from Tabletist's GitHub releases: the check Settings › Updates
 //! shows (`check`, `release`), what it found as the state folder keeps it
 //! (`seen`), how this copy was installed (`installed`), and the updater
-//! that installs one, fastframe-update.
+//! that installs one, fastframe-update, over a client of our own
+//! (`transport`), with what the card makes of its download (`download`).
 //!
 //! What a later release's helper relies on from this build, which must not
 //! change: `tabletist --version` prints `tabletist <version>`;
 //! `--update-receipt <job>` and `--update-error <message>` are taken out
 //! before clap reads the command line ([`fastframe_update::intercept`] in
-//! `entrypoint::run`); and the receipt is confirmed once the window is up.
+//! `entrypoint::run`); the receipt is confirmed once the window is up; and
+//! `--relaunch`, which the helper adds to the old copy's arguments, is
+//! read.
 //! The release side of the contract (asset names, markers, the signed
 //! checksums) is in `release.yml` and `tests/update_release.rs`.
 
 pub mod check;
+pub mod download;
 pub mod installed;
+pub mod relaunch;
 pub mod release;
 pub mod seen;
+pub mod transport;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use fastframe_update::{MacConfig, Request, Response, Transport, UpdateConfig, Updater};
+use fastframe_update::{MacConfig, UpdateConfig, Updater};
 
 pub use check::Failed;
+pub use download::Failure;
 pub use installed::{Installed, Managed};
 pub use release::{Found, Offer};
 pub use seen::Seen;
@@ -55,59 +62,22 @@ pub const CONFIG: UpdateConfig = UpdateConfig {
 /// An updater, on an HTTP client of its own. Its calls block: run them on
 /// a thread of their own, never on the interface thread.
 pub fn updater() -> Updater {
-    Updater::new(CONFIG, UreqTransport::new())
+    Updater::new(CONFIG, transport::UreqTransport::new())
 }
 
 /// The release page of the version that runs: What's new in it.
 pub fn this_release() -> String {
-    format!("https://github.com/igor-alexandrov/tabletist/releases/tag/v{CURRENT}")
+    release_page(CURRENT)
 }
 
-/// The updater's HTTP client: one GET at a time, redirects handed back
-/// rather than followed (the updater follows them, to GitHub's hosts
-/// only), any status returned as an answer, 15 seconds to connect and 15
-/// minutes for a whole download, as fastframe-update asks of a transport.
-/// It says what the check says of this copy, and nothing else.
-struct UreqTransport {
-    agent: ureq::Agent,
-    user_agent: String,
+/// The release page of `version`.
+pub fn release_page(version: &str) -> String {
+    format!("https://github.com/igor-alexandrov/tabletist/releases/tag/v{version}")
 }
 
-impl UreqTransport {
-    fn new() -> Self {
-        let config = ureq::Agent::config_builder()
-            .max_redirects(0)
-            .http_status_as_error(false)
-            .timeout_connect(Some(Duration::from_secs(15)))
-            .timeout_global(Some(Duration::from_secs(15 * 60)))
-            .build();
-        Self {
-            agent: config.into(),
-            user_agent: check::user_agent(CURRENT, check::macos_version().as_deref()),
-        }
-    }
-}
-
-impl Transport for UreqTransport {
-    fn get(&self, request: &Request<'_>) -> anyhow::Result<Response> {
-        let response = self
-            .agent
-            .get(request.url)
-            .header("Accept", request.accept)
-            .header("User-Agent", &self.user_agent)
-            .call()?;
-        let location = response
-            .headers()
-            .get("location")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        Ok(Response {
-            status: response.status().as_u16(),
-            location,
-            body: Box::new(response.into_body().into_reader()),
-        })
-    }
-}
+/// Whether this build downloads updates: not on Windows, whose copies
+/// get the release page.
+pub const DOWNLOADS: bool = !cfg!(windows);
 
 /// How long `check` waits between scheduled checks; None where checks
 /// are only asked for.
@@ -152,6 +122,136 @@ pub enum Phase {
     Failed { failed: Failed, asked_for: bool },
 }
 
+/// Where a download, and then its install, stands while the app runs.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Install {
+    /// No download asked for, or the last was cancelled.
+    #[default]
+    Idle,
+    /// Downloading, then verifying once the last byte came.
+    Downloading(Downloading),
+    /// Downloaded and verified: the backend holds it for Restart now.
+    /// Later keeps it so; a quit drops it. Or, `handed`, given to the
+    /// helper already, which then installs it at the next quit within
+    /// [`HELPER_WAITS`] of that time.
+    Ready {
+        version: String,
+        handed: Option<Instant>,
+    },
+    /// Restart now found work open, which the card lists. `when_done`:
+    /// Restart when done was chosen, and the restart goes ahead once
+    /// nothing is listed. `handed` as for `Ready`.
+    Held {
+        version: String,
+        when_done: bool,
+        handed: Option<Instant>,
+    },
+    /// Handed to the helper: the app quits once it stands ready.
+    Restarting { version: String },
+    /// The download gave nothing to install.
+    Failed { version: String, failure: Failure },
+}
+
+/// A download under way.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Downloading {
+    /// Answers to any other ask are dropped.
+    pub asked: u64,
+    pub version: String,
+    pub received: u64,
+    /// The file's size, as its release says.
+    pub total: u64,
+    /// It waits for the network to come back.
+    pub waiting: bool,
+    /// Its progress lately, for the time left: the time since it started,
+    /// and the bytes it had then.
+    pub samples: Vec<(Duration, u64)>,
+    /// Restart once it is ready: `:update`'s yes.
+    pub then_restart: bool,
+}
+
+impl Downloading {
+    pub fn new(asked: u64, version: String, total: u64) -> Self {
+        Self {
+            asked,
+            version,
+            received: 0,
+            total,
+            waiting: false,
+            samples: vec![(Duration::ZERO, 0)],
+            then_restart: false,
+        }
+    }
+
+    /// The last byte came: fastframe-update checks the file now.
+    pub fn verifying(&self) -> bool {
+        self.total > 0 && self.received >= self.total
+    }
+
+    /// How long it has left, where that can be told.
+    pub fn time_left(&self) -> Option<Duration> {
+        download::time_left(&self.samples, self.total)
+    }
+
+    /// Notes `received` of `total`, `after` this long.
+    pub fn progressed(&mut self, received: u64, total: u64, after: Duration) {
+        self.received = received;
+        self.total = total;
+        self.samples.push((after, received));
+        download::keep_window(&mut self.samples);
+    }
+}
+
+/// How long fastframe-update's helper waits for the app to quit once it
+/// stands ready, a little short of its minute: after that it has given up,
+/// and nothing installs.
+pub const HELPER_WAITS: Duration = Duration::from_secs(55);
+
+/// How late a quit may still begin after the helper said it stands
+/// ready: the app takes a few seconds to go.
+pub const QUIT_IN_TIME: Duration = Duration::from_secs(50);
+
+/// How long the helper waits for the quit once it stands ready, as
+/// fastframe-update has it: until then a quit installs, whatever the card
+/// says.
+pub const HELPER_GIVES_UP: Duration = Duration::from_secs(60);
+
+impl Install {
+    /// When the helper said it stands ready, where it waits for the quit.
+    pub fn handed(&self) -> Option<Instant> {
+        match self {
+            Self::Ready { handed, .. } | Self::Held { handed, .. } => *handed,
+            Self::Idle | Self::Downloading(_) | Self::Restarting { .. } | Self::Failed { .. } => {
+                None
+            }
+        }
+    }
+
+    /// The version it is about, but while idle.
+    pub fn version(&self) -> Option<&str> {
+        match self {
+            Self::Idle => None,
+            Self::Downloading(downloading) => Some(&downloading.version),
+            Self::Ready { version, .. }
+            | Self::Held { version, .. }
+            | Self::Restarting { version }
+            | Self::Failed { version, .. } => Some(version),
+        }
+    }
+
+    /// Whether a download runs, or one is ready: no check runs meanwhile,
+    /// and no other download starts.
+    pub fn busy(&self) -> bool {
+        match self {
+            Self::Downloading(_)
+            | Self::Ready { .. }
+            | Self::Held { .. }
+            | Self::Restarting { .. } => true,
+            Self::Idle | Self::Failed { .. } => false,
+        }
+    }
+}
+
 /// What Settings › Updates and the signals elsewhere know.
 #[derive(Clone, Debug, Default)]
 pub struct Updates {
@@ -166,9 +266,17 @@ pub struct Updates {
     /// A version found by a check the person asked for, though they had
     /// said to skip it: offered until the next check.
     pub asked_offer: Option<Offer>,
+    /// When a helper last said it stands ready. Kept past Couldn't
+    /// install: a quit within [`HELPER_GIVES_UP`] of it still installs.
+    pub handoff_ready: Option<Instant>,
     /// A check's answer that came before the detection did: taken in once
     /// it does, so the offer keeps this copy's kind's download.
     pub held: Option<(u64, Result<release::Latest, Failed>)>,
+    /// Where the download of the version offered stands.
+    pub install: Install,
+    /// `:update` waits for its check, to ask whether to install what it
+    /// finds.
+    pub ask_after_check: bool,
 }
 
 impl Updates {
@@ -188,6 +296,15 @@ impl Updates {
 
     pub fn checking(&self) -> bool {
         matches!(self.phase, Phase::Checking { .. })
+    }
+
+    /// The version offered, where this copy can download and install it:
+    /// it replaces itself, the release has its build, and this is no
+    /// Windows build.
+    pub fn installable(&self, skip: Option<&str>) -> Option<&Offer> {
+        let itself = matches!(self.installed, Some(Installed::Itself(_)));
+        self.offer(skip)
+            .filter(|offer| DOWNLOADS && itself && offer.download.is_some())
     }
 }
 

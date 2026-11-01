@@ -270,6 +270,10 @@ pub enum StateFile {
     Recents(crate::recents::Recents),
     /// What the checks for updates found.
     Updates(crate::update::Seen),
+    /// The SQL editors, for the copy an update's helper starts; `None`
+    /// deletes the file, for no such copy comes. Queued as the other
+    /// files are, a write and a delete land in the order they were asked.
+    Relaunch(Option<crate::update::relaunch::Relaunch>),
 }
 
 impl StateFile {
@@ -288,6 +292,11 @@ impl StateFile {
             Self::Session(session) => session.save(path),
             Self::Recents(recents) => recents.save(path),
             Self::Updates(seen) => crate::util::save_json(path, seen),
+            Self::Relaunch(Some(relaunch)) => crate::util::save_json(path, relaunch),
+            Self::Relaunch(None) => match std::fs::remove_file(path) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+                _ => Ok(()),
+            },
         }
     }
 }
@@ -1760,6 +1769,8 @@ struct Worker {
     /// The MCP server, its gateway and what agents may use.
     agents: agents::Agents,
     history: history::History,
+    /// The download under way, and the one that verified.
+    updates: updates::Updates,
     #[cfg(test)]
     watched: Watched,
 }
@@ -1779,6 +1790,7 @@ impl Worker {
             waiting: HashMap::new(),
             settings_watch: None,
             history: history::History::default(),
+            updates: updates::Updates::default(),
             #[cfg(test)]
             watched: Watched::default(),
         };
@@ -2112,7 +2124,7 @@ impl Worker {
             }
             Command::Agents(command) => self.agents.handle(command, &self.outbox),
             Command::History(command) => self.history.handle(command, &self.outbox),
-            Command::Updates(command) => updates::handle(command, &self.outbox),
+            Command::Updates(command) => self.updates.handle(command, &self.saves, &self.outbox),
             query => {
                 let session = session_of(&query);
                 match self.sessions.get(&session) {

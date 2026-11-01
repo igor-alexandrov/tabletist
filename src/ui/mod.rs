@@ -1,5 +1,7 @@
-//! The interface. Views read `App` and push `Action`s; they never change
-//! state directly.
+//! The interface. Views read the state they show and return the `Action`s
+//! they ask for; they never change state directly. Some still take `App`
+//! and push onto `app.actions`, until they are narrowed to `Paint` and
+//! their own state (`password_prompt`, `filter_bar`).
 
 pub mod about;
 pub mod agent_access;
@@ -55,7 +57,6 @@ pub mod every_row_prompt;
 mod every_row_tests;
 pub mod filter_bar;
 pub mod focus;
-pub mod format;
 #[cfg(test)]
 mod format_settings_tests;
 pub mod grid;
@@ -131,7 +132,32 @@ mod zone_tests;
 use egui::Frame;
 
 use crate::app::App;
-use crate::model::{Action, ConnTabContent};
+use crate::model::{Action, ConnTabContent, Dialog};
+
+/// What every view draws with: the language of its words, the colours and
+/// the platform's look. A view takes it, and the state it shows, instead
+/// of the whole `App`.
+#[derive(Clone, Copy)]
+pub struct Paint {
+    pub locale: crate::i18n::Locale,
+    pub palette: crate::theme::Palette,
+    pub look: crate::theme::Look,
+}
+
+impl Paint {
+    pub fn of(app: &App) -> Self {
+        Self {
+            locale: app.locale,
+            palette: app.palette,
+            look: app.look,
+        }
+    }
+
+    /// The keyboard layout the look writes keys in, as `App::layout` has it.
+    pub fn layout(&self) -> crate::keymap::Layout {
+        crate::keymap::Layout::of(&self.look)
+    }
+}
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let fill = app.palette.window;
@@ -145,47 +171,148 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 workspace::show(app, ui, tab);
             }
         });
-    connect_dialog::show(app, &ui.ctx().clone());
-    password_prompt::show(app, &ui.ctx().clone());
-    host_key_prompt::show(app, &ui.ctx().clone());
-    quick_open::show(app, &ui.ctx().clone());
-    help::show(app, &ui.ctx().clone());
-    about::show(app, &ui.ctx().clone());
+    let paint = Paint::of(app);
+    // What an open window of the connection has loaded, asked only for a
+    // form that lists names: what it costs is spent on them.
+    let loaded = match &app.dialog {
+        Some(Dialog::Connection(form)) if connect_dialog::lists_names(form) => form
+            .editing
+            .as_ref()
+            .and_then(|conn| app.loaded_tables(conn)),
+        _ => None,
+    };
+    if let Some(Dialog::Connection(form)) = &mut app.dialog {
+        let asked = connect_dialog::show(&ui.ctx().clone(), paint, form, &app.keymap, loaded);
+        app.actions.extend(asked);
+    } else {
+        connect_dialog::fold(ui.ctx());
+    }
+    if let Some(Dialog::Password(prompt)) = &mut app.dialog {
+        let asked = password_prompt::show(&ui.ctx().clone(), paint, prompt);
+        app.actions.extend(asked);
+    }
+    if let Some(Dialog::HostKey(prompt)) = &app.dialog {
+        let asked = host_key_prompt::show(&ui.ctx().clone(), paint, prompt);
+        app.actions.extend(asked);
+    }
+    let asked = match &app.dialog {
+        Some(Dialog::QuickOpen(open)) => Some(quick_open_asked(app, open)),
+        _ => None,
+    };
+    if let (Some(Dialog::QuickOpen(open)), Some(asked)) = (&mut app.dialog, asked) {
+        let asked = quick_open::show(&ui.ctx().clone(), paint, open, &app.keymap, asked);
+        app.actions.extend(asked);
+    }
+    if matches!(app.dialog, Some(Dialog::Help)) {
+        let asked = help::show(&ui.ctx().clone(), paint, &app.keymap);
+        app.actions.extend(asked);
+    }
+    if matches!(app.dialog, Some(Dialog::About)) {
+        let asked = about::show(&ui.ctx().clone(), paint);
+        app.actions.extend(asked);
+    } else {
+        about::fold(ui.ctx());
+    }
     settings::show(app, &ui.ctx().clone());
-    write_prompts::show(app, &ui.ctx().clone());
-    every_row_prompt::show(app, &ui.ctx().clone());
-    conflict_prompt::show(app, &ui.ctx().clone());
-    agent_access::show(app, &ui.ctx().clone());
+    if let Some(Dialog::Leave(prompt)) = &app.dialog {
+        let asked = write_prompts::leave(&ui.ctx().clone(), paint, prompt);
+        app.actions.extend(asked);
+    }
+    if let Some(Dialog::ConfirmWrite(prompt)) = &mut app.dialog {
+        let workspace = crate::app::workspace_in(&app.tabs, prompt.tab);
+        let asked = write_prompts::confirm_write(&ui.ctx().clone(), paint, prompt, workspace);
+        app.actions.extend(asked);
+    }
+    if let Some(Dialog::ConfirmEveryRow(prompt)) = &app.dialog {
+        let editor_open = app
+            .workspace(prompt.tab)
+            .and_then(|workspace| workspace.sql_tab(prompt.id))
+            .is_some();
+        let asked = every_row_prompt::show(&ui.ctx().clone(), paint, prompt, editor_open);
+        app.actions.extend(asked);
+    }
+    if let Some(Dialog::Conflict(prompt)) = &mut app.dialog {
+        let workspace = crate::app::workspace_in(&app.tabs, prompt.tab);
+        let asked = conflict_prompt::show(&ui.ctx().clone(), paint, prompt, workspace);
+        app.actions.extend(asked);
+    }
+    if let Some(Dialog::AgentAccess(prompt)) = &app.dialog {
+        let current = app
+            .connections
+            .get(&prompt.conn)
+            .map(|saved| app.agents_access(saved));
+        let asked = agent_access::show(&ui.ctx().clone(), paint, prompt, current);
+        app.actions.extend(asked);
+    }
     // Last: it says what was done, whatever is on screen by now.
-    toast::show(app, ui.ctx());
+    toast::show(ui.ctx(), paint);
+}
+
+/// What quick open over `open.tab` asks of the app: none where that
+/// window is gone.
+fn quick_open_asked(app: &App, open: &crate::model::QuickOpen) -> Option<quick_open::Asked> {
+    let here = open.tab;
+    app.workspace(here)?;
+    let list = app.quick_open_list(open);
+    let picked = app.quick_open_picked(open, &list);
+    let windows = app
+        .open_connections()
+        .map(|(tab, workspace)| {
+            let database = workspace::bar_info(app, tab)
+                .map(|info| info.database)
+                .unwrap_or_default();
+            let window = quick_open::Window {
+                name: workspace.name.clone(),
+                env: workspace.environment,
+                database,
+            };
+            (tab, window)
+        })
+        .collect();
+    Some(quick_open::Asked {
+        list,
+        picked,
+        windows,
+        agents: app.agents_here(here),
+        grouped: app.settings.grouped(app.layout()),
+        commands_query: app.quick_open_commands_query(open).map(str::to_owned),
+    })
 }
 
 /// What the screen draws under the bar that leads the window, which on
 /// macOS is the title bar, so that the window's own buttons keep their
-/// line: what was changed outside the app and is held, then the notice.
-/// Returns their height.
-pub(crate) fn notices(app: &mut App, ui: &mut egui::Ui) -> f32 {
-    agents_held(app, ui) + notice(app, ui)
+/// line: what was changed outside the app and is held (`held`, named by
+/// the saved connections), then the app's notice. Returns their height and
+/// what they ask for.
+pub(crate) fn notices(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    notice: Option<&str>,
+    held: &[crate::agents_shown::Raised],
+    saved: &[crate::connections::SavedConnection],
+) -> (f32, Vec<Action>) {
+    let mut actions = Vec::new();
+    let height = agents_held(ui, paint, held, saved, &mut actions)
+        + self::notice(ui, paint, notice, &mut actions);
+    (height, actions)
 }
 
 /// A problem worth the user's attention that belongs to no one tab (a
 /// keyring write that failed), until dismissed. Returns its height,
 /// nothing when there is no notice.
-fn notice(app: &mut App, ui: &mut egui::Ui) -> f32 {
-    let Some(message) = app.notice.clone() else {
+fn notice(ui: &mut egui::Ui, paint: Paint, notice: Option<&str>, actions: &mut Vec<Action>) -> f32 {
+    let Some(message) = notice else {
         return 0.0;
     };
-    let mut actions = Vec::new();
     let shown = egui::Panel::top(egui::Id::new("notice"))
         .resizable(false)
         .show_separator_line(false)
         .frame(
             Frame::new()
-                .fill(notice_fill(&app.palette))
+                .fill(notice_fill(&paint.palette))
                 .inner_margin(egui::Margin::symmetric(12, 8)),
         )
-        .show(ui, |ui| notice_line(app, ui, &message, &mut actions));
-    app.actions.extend(actions);
+        .show(ui, |ui| notice_line(ui, paint, message, actions));
     shown.response.rect.height()
 }
 
@@ -193,14 +320,23 @@ fn notice(app: &mut App, ui: &mut egui::Ui) -> f32 {
 /// the person keeps it or puts it back: a bar of its own, in both looks,
 /// which no dismissal takes away. Returns its height, nothing when nothing
 /// is held.
-fn agents_held(app: &mut App, ui: &mut egui::Ui) -> f32 {
-    let Some(said) = agents_held_said(app) else {
+fn agents_held(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    held: &[crate::agents_shown::Raised],
+    saved: &[crate::connections::SavedConnection],
+    actions: &mut Vec<Action>,
+) -> f32 {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let Some(said) = agents_held_said(locale, held, saved) else {
         return 0.0;
     };
-    let (look, palette, locale) = (app.look, app.palette, app.locale);
     // The buttons answer what the bar says, not what a later change holds.
-    let held = app.agents_held.clone();
-    let mut actions = Vec::new();
+    let held = held.to_vec();
     let shown = egui::Panel::top(egui::Id::new("agents-held"))
         .resizable(false)
         .show_separator_line(false)
@@ -235,19 +371,21 @@ fn agents_held(app: &mut App, ui: &mut egui::Ui) -> f32 {
                 });
             });
         });
-    app.actions.extend(actions);
     shown.response.rect.height()
 }
 
-/// What the held bar says: what was changed outside the app, and the
-/// question. `None` with nothing held.
-pub fn agents_held_said(app: &App) -> Option<String> {
+/// What the held bar says of `held`: what was changed outside the app,
+/// with the saved connections' names, and the question. `None` with
+/// nothing held.
+pub fn agents_held_said(
+    locale: crate::i18n::Locale,
+    held: &[crate::agents_shown::Raised],
+    saved: &[crate::connections::SavedConnection],
+) -> Option<String> {
     use crate::agents_shown::Raised;
-    if app.agents_held.is_empty() {
+    if held.is_empty() {
         return None;
     }
-    let locale = app.locale;
-    let saved = &app.connections.connections;
     let names = crate::backend::agent_names(saved);
     let called = |id: &crate::connections::ConnectionId| {
         saved
@@ -256,8 +394,7 @@ pub fn agents_held_said(app: &App) -> Option<String> {
             .find(|(saved, _)| saved.id == *id)
             .map_or(id.0.clone(), |(_, name)| name.clone())
     };
-    let parts: Vec<String> = app
-        .agents_held
+    let parts: Vec<String> = held
         .iter()
         .map(|raise| match raise {
             Raised::Server => {
@@ -308,14 +445,14 @@ fn notice_fill(palette: &crate::theme::Palette) -> egui::Color32 {
 
 /// A notice on one line: what it says, and at the right the button that
 /// dismisses it. The bar has it, and so has a screen that covers the bar.
-fn notice_line(app: &App, ui: &mut egui::Ui, message: &str, actions: &mut Vec<Action>) {
-    let look = &app.look;
+fn notice_line(ui: &mut egui::Ui, paint: Paint, message: &str, actions: &mut Vec<Action>) {
+    let look = &paint.look;
     ui.horizontal(|ui| {
-        crate::typography::Text::one(look, widgets::body(look), message, app.palette.text)
+        crate::typography::Text::one(look, widgets::body(look), message, paint.palette.text)
             .layout(ui.ctx())
             .label(ui);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let dismiss = crate::i18n::gettext(app.locale, "Dismiss");
+            let dismiss = crate::i18n::gettext(paint.locale, "Dismiss");
             if widgets::button(ui, &dismiss, look).clicked() {
                 actions.push(Action::DismissNotice);
             }
@@ -4596,7 +4733,7 @@ value_tags   = true
             }
             // What a frame lays out and names: no piece longer than a
             // message may be, with its label before it.
-            let most = super::format::MESSAGE_MAX_CHARS + 64;
+            let most = crate::format::MESSAGE_MAX_CHARS + 64;
             let named = crate::testing::labels(&tree);
             let painted = harness.painted.iter().map(|(piece, _)| piece);
             for piece in named.iter().chain(painted) {
@@ -6736,7 +6873,7 @@ value_tags   = true
 
     #[test]
     fn a_result_rows_text_is_formatted_once_not_every_frame() {
-        use crate::ui::format::FULL_TEXTS;
+        use crate::format::FULL_TEXTS;
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
         let mut page = crate::testing::page(2, false);
@@ -8367,7 +8504,7 @@ value_tags   = true
 
     #[test]
     fn the_row_panel_formats_a_row_once_not_every_frame() {
-        use crate::ui::format::FULL_TEXTS;
+        use crate::format::FULL_TEXTS;
         let mut harness = Harness::new();
         harness.connect_fake();
         harness.click("users");
@@ -12203,7 +12340,7 @@ value_tags   = true
                 "The SSH server could not reach the database",
             ),
         ] {
-            let described = crate::ui::format::describe_error(crate::i18n::Locale::English, &error);
+            let described = crate::format::describe_error(crate::i18n::Locale::English, &error);
             assert!(described.starts_with(words), "{error:?}: {described}");
         }
     }
@@ -12879,7 +13016,7 @@ value_tags   = true
             named: Box::default(),
         };
         assert_eq!(
-            crate::ui::format::describe_error(crate::i18n::Locale::English, &error),
+            crate::format::describe_error(crate::i18n::Locale::English, &error),
             "database \"nosuchdb\" does not exist"
         );
     }
@@ -15334,7 +15471,13 @@ value_tags   = true
             // With the keyboard in the filter's field.
             let (mut harness, tab, id) = pending();
             harness.press(Key::F, Modifiers::COMMAND);
-            assert!(crate::ui::filter_bar::is_open(&harness.app, tab, id));
+            assert!(
+                harness
+                    .app
+                    .workspace(tab)
+                    .and_then(|workspace| workspace.object_tab(id))
+                    .is_some_and(crate::ui::filter_bar::is_open)
+            );
             assert!(harness.ctx.text_edit_focused(), "{}", look.name);
             harness.press(Key::S, Modifiers::COMMAND);
             assert_eq!(writes(&harness), 1, "{}: the filter", look.name);
@@ -18048,7 +18191,13 @@ value_tags   = true
             type_text(&mut harness, "x");
             // The filter bar opens and takes the keyboard.
             harness.press(Key::F, Modifiers::COMMAND);
-            assert!(crate::ui::filter_bar::is_open(&harness.app, tab, id));
+            assert!(
+                harness
+                    .app
+                    .workspace(tab)
+                    .and_then(|workspace| workspace.object_tab(id))
+                    .is_some_and(crate::ui::filter_bar::is_open)
+            );
             assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
             assert_eq!(
                 pending_text(&harness, tab, id, (1, 1)).as_deref(),
@@ -21340,7 +21489,13 @@ value_tags   = true
             let (mut harness, tab, id) = editable_in(look);
             make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
             harness.press(Key::F, Modifiers::COMMAND);
-            assert!(crate::ui::filter_bar::is_open(&harness.app, tab, id));
+            assert!(
+                harness
+                    .app
+                    .workspace(tab)
+                    .and_then(|workspace| workspace.object_tab(id))
+                    .is_some_and(crate::ui::filter_bar::is_open)
+            );
             assert!(harness.ctx.text_edit_focused(), "{}", look.name);
             let typed = |harness: &Harness| {
                 let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();

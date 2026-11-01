@@ -1,12 +1,11 @@
 //! The keyboard shortcuts dialog (`?`): the keymap, as the look in use
 //! has it.
 
-use crate::app::App;
 use crate::i18n::gettext;
 use crate::keymap::{Command, Group, Keymap, Layout, Written};
-use crate::model::{Action, Dialog};
+use crate::model::Action;
 use crate::typography::{Text, TextRole};
-use crate::ui::widgets;
+use crate::ui::{Paint, widgets};
 
 /// The groups the list is in, in its order, as the Keyboard page of the
 /// design names them.
@@ -39,14 +38,15 @@ pub(crate) fn rows(keymap: &Keymap, layout: Layout) -> Vec<(Group, Command, Writ
 /// Space between the keys and what they do.
 const GAP: f32 = 16.0;
 
-pub fn show(app: &mut App, ctx: &egui::Context) {
-    if !matches!(app.dialog, Some(Dialog::Help)) {
-        return;
-    }
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
-    let rows = rows(&app.keymap, app.layout());
+/// Draws the dialog over the window, the keys `keymap` has, and returns
+/// what it asks for.
+pub fn show(ctx: &egui::Context, paint: Paint, keymap: &Keymap) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let rows = rows(keymap, paint.layout());
     let heading = TextRole::pick(&look, TextRole::UiBodySemibold, TextRole::OGroup);
     let mut actions = Vec::new();
     let modal = crate::ui::widgets::modal(egui::Id::new("help"), &look, &palette).show(ctx, |ui| {
@@ -135,5 +135,5 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     {
         actions.push(Action::CloseDialog);
     }
-    app.actions.extend(actions);
+    actions
 }

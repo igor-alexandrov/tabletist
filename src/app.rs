@@ -17,7 +17,7 @@ use crate::edit::EditorPlace;
 use crate::i18n::{Locale, gettext};
 use crate::model::{Action, ConnTab, ConnTabContent, ConnTabId, PickerState};
 use crate::model::{
-    Advance, CellPos, Completion, ConnectionForm, Dialog, Fetch, FilterBar, FilterRow, Held,
+    Advance, CellPos, Completion, ConnectionForm, Dialog, Fetch, FilterBar, FilterRow, Found, Held,
     HostKeyPrompt, LeavePrompt, ObjectTab, ObjectView, Pane, PasswordPrompt, PickTarget, Reach,
     ResultPane, RunMode, SecretKind, SessionStatus, SqlTab, StartRecent, Tab, TabId, TestState,
     TextPrint, Tree, TreeKey, TreeNode, Wanted, Workspace,
@@ -41,13 +41,11 @@ mod quick_open;
 mod startup_tests;
 mod updates;
 
-pub use commands::{About, RUNNABLE, Runnable, TabName};
+pub use commands::RUNNABLE;
 pub use keyboard::{CHEAT_SHEET, cheat_sheet, keys_list};
 pub use menu::ItemState;
-pub use quick_open::{
-    Found, GROUP_SHOWN, QuickCommand, QuickHeading, QuickItem, QuickList, QuickRow, StartRow,
-    setting_path,
-};
+pub use quick_open::{GROUP_SHOWN, QuickHeading, QuickList, QuickRow, setting_path};
+pub use updates::{Pending, Work};
 
 /// What a keyring read is for; each names the exact request it serves, so
 /// a late answer for an earlier attempt is dropped.
@@ -281,6 +279,15 @@ pub struct App {
     /// A page the next frame opens in the browser: a release's, where its
     /// notes could not be shown in a terminal.
     pub url_to_open: Option<String>,
+    /// The command line this copy was started with, without the program's
+    /// name: an update's helper starts the new version with it.
+    pub launch_arguments: Vec<String>,
+    /// What a restart to update kept, while the relaunched windows open:
+    /// each window's own, by its tab.
+    relaunch_windows: HashMap<ConnTabId, crate::update::relaunch::Window>,
+    /// The SQL editors a restart to update kept, while the relaunched
+    /// windows open: each takes its own.
+    relaunch: Option<crate::update::relaunch::Relaunch>,
     next_id: u64,
 }
 
@@ -313,8 +320,40 @@ fn load_table_lists(path: &std::path::Path) -> (TableLists, Unread) {
     (lists, unread)
 }
 
+/// The workspace of `tab` among `tabs`, as [`App::workspace`] finds it, for
+/// a caller that holds another of `App`'s fields beside it: a dialog's
+/// prompt, `&mut`, over the workspace it asks about.
+pub fn workspace_in(tabs: &[ConnTab], tab: ConnTabId) -> Option<&Workspace> {
+    match &tabs.iter().find(|t| t.id == tab)?.content {
+        ConnTabContent::Workspace(workspace) => Some(workspace),
+        ConnTabContent::Picker(_) => None,
+    }
+}
+
+/// The workspace of `tab` among `tabs`, `&mut`, as [`App::workspace_mut`]
+/// finds it, for a caller that lends another of `App`'s fields beside it:
+/// the settings and the keymap a SQL editor reads while it edits its text.
+pub fn workspace_in_mut(tabs: &mut [ConnTab], tab: ConnTabId) -> Option<&mut Workspace> {
+    match &mut tabs.iter_mut().find(|t| t.id == tab)?.content {
+        ConnTabContent::Workspace(workspace) => Some(workspace),
+        ConnTabContent::Picker(_) => None,
+    }
+}
+
 impl App {
     pub fn new(dirs: AppDirs, loaded: Loaded, backend: Backend) -> Self {
+        Self::opened(dirs, loaded, backend, false)
+    }
+
+    /// [`App::new`], for the copy an update's helper started after a
+    /// restart to install it (`--relaunch`): the windows open at the quit
+    /// come back whatever the launch setting says, with their tables and
+    /// the SQL editors `relaunch.json` kept.
+    pub fn relaunched(dirs: AppDirs, loaded: Loaded, backend: Backend) -> Self {
+        Self::opened(dirs, loaded, backend, true)
+    }
+
+    fn opened(dirs: AppDirs, loaded: Loaded, backend: Backend, relaunched: bool) -> Self {
         let source = loaded.source;
         let (settings, settings_file) = loaded.into_parts();
         let loaded_connections = SavedConnections::load(&dirs);
@@ -431,10 +470,13 @@ impl App {
             updates_url: crate::update::check::LATEST.to_owned(),
             update_announcement: None,
             url_to_open: None,
+            launch_arguments: Vec::new(),
+            relaunch: None,
+            relaunch_windows: HashMap::new(),
             next_id: 1,
         };
         app.refresh_keymap();
-        app.launch();
+        app.launch(relaunched);
         // What an older version kept in connections.json is written as
         // this one keeps it, once, off the UI thread. So is a file in
         // which a connection had no id yet.
@@ -487,10 +529,7 @@ impl App {
     }
 
     pub fn workspace(&self, tab: ConnTabId) -> Option<&Workspace> {
-        match &self.tabs.iter().find(|t| t.id == tab)?.content {
-            ConnTabContent::Workspace(workspace) => Some(workspace),
-            ConnTabContent::Picker(_) => None,
-        }
+        workspace_in(&self.tabs, tab)
     }
 
     pub fn picker_mut(&mut self, tab: ConnTabId) -> Option<&mut PickerState> {
@@ -501,10 +540,7 @@ impl App {
     }
 
     pub fn workspace_mut(&mut self, tab: ConnTabId) -> Option<&mut Workspace> {
-        match &mut self.tabs.iter_mut().find(|t| t.id == tab)?.content {
-            ConnTabContent::Workspace(workspace) => Some(workspace),
-            ConnTabContent::Picker(_) => None,
-        }
+        workspace_in_mut(&mut self.tabs, tab)
     }
 
     /// The open connections with their tabs, in the order the header shows
@@ -867,6 +903,8 @@ impl App {
         self.read_reopened();
         self.format_rows();
         self.make_reviews();
+        // Restart when done goes ahead in the frame the work ended in.
+        self.tick_restart();
     }
 
     /// Formats the row each open row panel shows, once per selection or
@@ -1065,7 +1103,7 @@ impl App {
                     .picker_mut(tab)
                     .map(|picker| picker.search.clone())
                     .unwrap_or_default();
-                let shown = crate::ui::picker::visible(self, &search).contains(&conn);
+                let shown = crate::ui::picker::visible(&self.connections, &search).contains(&conn);
                 let search = if shown { search } else { String::new() };
                 let found = self.connections.search(&search);
                 let group = crate::ui::picker::groups(&found)
@@ -1101,7 +1139,7 @@ impl App {
                 let Some(search) = search else {
                     return;
                 };
-                let order = crate::ui::picker::visible(self, &search);
+                let order = crate::ui::picker::visible(&self.connections, &search);
                 if let Some(picker) = self.picker_mut(tab)
                     && !order.is_empty()
                 {
@@ -1258,7 +1296,7 @@ impl App {
                                 .get(cell.row)
                                 .and_then(|row| row.get(cell.col))
                                 .filter(|value| !value.is_null())
-                                .map(crate::ui::format::plain_text),
+                                .map(crate::format::plain_text),
                         }?;
                         Some((
                             ObjectRef::new(foreign.ref_schema.clone(), foreign.ref_table.clone()),
@@ -1574,7 +1612,7 @@ impl App {
                     let tabletist_db::Value::Bytes(bytes) = rows.get(row)?.get(col)? else {
                         return None;
                     };
-                    let name = crate::ui::format::save_name(table, &columns.get(col)?.name, bytes);
+                    let name = crate::format::save_name(table, &columns.get(col)?.name, bytes);
                     Some((name, bytes.to_vec()))
                 });
                 if let Some((name, bytes)) = found {
@@ -2555,7 +2593,17 @@ impl App {
             Action::CheckForUpdates
             | Action::CancelUpdateCheck
             | Action::SkipUpdate
-            | Action::ShowReleaseNotes => self.update_action(action),
+            | Action::ShowReleaseNotes
+            | Action::DownloadUpdate
+            | Action::CancelDownload
+            | Action::RestartToUpdate
+            | Action::RestartWhenDone
+            | Action::DontRestart
+            | Action::UpdateLater
+            | Action::ShowWork
+            | Action::ReportUpdateFailure
+            | Action::UpdateNow
+            | Action::AnswerUpdateQuestion(_) => self.update_action(action),
             Action::ChooseAgentSetup(agent) => {
                 if let Some(Dialog::Settings(dialog)) = &mut self.dialog {
                     dialog.agent = agent;
@@ -3297,9 +3345,21 @@ impl App {
     /// picker, so that the next launch does what the menu says; with
     /// connections that could not be read, nothing is known to be
     /// deleted, and the option stays. Whatever opens nothing opens the
-    /// picker.
-    fn launch(&mut self) {
-        match self.settings.on_launch.clone() {
+    /// picker. A relaunch after an update opens the last windows,
+    /// whatever the settings say, as [`App::relaunched`] says.
+    fn launch(&mut self, relaunched: bool) {
+        if relaunched {
+            let path = self.dirs.relaunch_file();
+            self.relaunch = Some(crate::update::relaunch::Relaunch::take(&path));
+            self.open_last_session();
+            self.relaunch = None;
+            self.relaunch_windows.clear();
+        }
+        let on_launch = match relaunched {
+            true => crate::settings::Launch::Connections,
+            false => self.settings.on_launch.clone(),
+        };
+        match on_launch {
             crate::settings::Launch::Restore => self.open_last_session(),
             crate::settings::Launch::Connections => {}
             crate::settings::Launch::Connection { id, .. } => {
@@ -3359,6 +3419,13 @@ impl App {
                 }
             };
             let tab = self.picker_tab();
+            // What a restart to update kept of this window: windows of
+            // one connection take theirs in the bar's order.
+            if let (Some(relaunch), Some(saved)) = (&mut self.relaunch, &saved)
+                && let Some(window) = relaunch.window_of(&saved.id.0)
+            {
+                self.relaunch_windows.insert(tab.id, window);
+            }
             windows.push((tab.id, saved));
             self.tabs.push(tab);
             if index <= self.session.active {
@@ -3520,9 +3587,11 @@ impl App {
         // are of the database it opens on.
         let kept = self.session.connections.get(&saved.id.0).cloned();
         let row_panel = kept.as_ref().is_none_or(|kept| kept.row_panel);
-        let tables = kept.filter(|kept| {
-            self.settings.restore_tabs && kept.database == crate::session::database_of(&saved.spec)
-        });
+        // A relaunch after an update puts back what the restart took away,
+        // whatever the settings reopen.
+        let restore = self.settings.restore_tabs || self.relaunch.is_some();
+        let tables = kept
+            .filter(|kept| restore && kept.database == crate::session::database_of(&saved.spec));
         let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) else {
             return;
         };
@@ -3534,6 +3603,9 @@ impl App {
         entry.content = ConnTabContent::Workspace(Box::new(workspace));
         if let Some(kept) = tables {
             self.reopen_tabs(tab, &kept);
+        }
+        if let Some(window) = self.relaunch_windows.remove(&tab) {
+            self.reopen_editors(tab, window);
         }
         if replaced {
             self.save_session();
@@ -3569,6 +3641,45 @@ impl App {
                 .map(|object| Tab::Object(Box::new(object))),
         );
         workspace.active_tab = active;
+    }
+
+    /// Puts the SQL editors a restart to update kept in `tab`'s window,
+    /// each in its place among the tables, with its number, its text and
+    /// its mode, and the tab that was in front in front again. The new
+    /// ones count on from the last.
+    fn reopen_editors(&mut self, tab: ConnTabId, window: crate::update::relaunch::Window) {
+        let (limit, timeout) = (self.settings.sql_limit, self.settings.sql_timeout());
+        let mut editors = window.editors;
+        editors.sort_by_key(|editor| editor.at);
+        let ids: Vec<TabId> = editors.iter().map(|_| TabId(self.next_id())).collect();
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        for (editor, id) in editors.into_iter().zip(ids) {
+            let sql = workspace.push_sql_tab(id, limit, timeout);
+            sql.mode = match editor.writes {
+                true => RunMode::ReadWrite,
+                false => RunMode::ReadOnly,
+            };
+            sql.number = editor.number;
+            sql.text = editor.text;
+            workspace.next_query = workspace.next_query.max(editor.number.saturating_add(1));
+            // Pushed at the end: moved to its place.
+            if let Some(pushed) = workspace.tabs.pop() {
+                let at = editor.at.min(workspace.tabs.len());
+                workspace.tabs.insert(at, pushed);
+            }
+        }
+        let front = window
+            .front
+            .and_then(|at| workspace.tabs.get(at))
+            .map(Tab::id);
+        if let Some(front) = front {
+            workspace.active_tab = Some(front);
+        }
+        if workspace.active_tab.is_none() {
+            workspace.active_tab = workspace.tabs.first().map(Tab::id);
+        }
     }
 
     /// Reads the table in front of each window that was reopened and not
@@ -7635,9 +7746,9 @@ impl App {
                 .enumerate()
                 .map(|(col, loaded)| shown(col, loaded))
                 .collect();
-            crate::ui::format::tsv_row(&row)
+            crate::format::tsv_row(&row)
         } else {
-            crate::ui::format::plain_text(&shown(cell.col, row.get(cell.col)?))
+            crate::format::plain_text(&shown(cell.col, row.get(cell.col)?))
         })
     }
 
@@ -7925,6 +8036,12 @@ impl App {
         // The window comes back when the next session is due.
         if let Some(wait) = self.close_idle(std::time::Instant::now()) {
             ctx.request_repaint_after(wait);
+        }
+        // The helper's answer, and the quit it asks for, while the
+        // window is hidden too: the helper waits a minute at most.
+        self.take_handoff();
+        if self.closing {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if let Some(wait) = self.tick_updates() {
             ctx.request_repaint_after(wait);
@@ -8348,7 +8465,7 @@ fn row_fields(
     zone: Option<&jiff::tz::TimeZone>,
     cells: &std::collections::BTreeMap<(usize, usize), crate::edit::Pending>,
 ) -> crate::model::RowFields {
-    use crate::ui::format::{cell_text, field_text};
+    use crate::format::{cell_text, field_text};
     let pending: Vec<Option<crate::model::PendingField>> = values
         .iter()
         .enumerate()
@@ -8371,7 +8488,7 @@ fn row_fields(
             let temporal = kinds.get(col) == Some(&tabletist_db::ValueKind::Temporal);
             match (value, zone) {
                 (tabletist_db::Value::Text(text), Some(zone)) if temporal => {
-                    match crate::ui::format::in_zone(text, zone) {
+                    match crate::format::in_zone(text, zone) {
                         Some(moved) => field_text(&tabletist_db::Value::Text(moved.into())),
                         None => field_text(value),
                     }
@@ -9138,7 +9255,7 @@ mod tests {
         assert_eq!(drawn, hack);
         let kept = harness
             .ctx
-            .data(|data| data.get_temp::<crate::ui::format::Marks>(marks));
+            .data(|data| data.get_temp::<crate::format::Marks>(marks));
         assert!(kept.is_none());
     }
 
@@ -9849,7 +9966,8 @@ mod tests {
             [AgentsCommand::Policy { connections, .. }] if connections.is_empty()
         ));
         assert_eq!(
-            crate::ui::agents_held_said(&app).as_deref(),
+            crate::ui::agents_held_said(app.locale, &app.agents_held, &app.connections.connections)
+                .as_deref(),
             Some(
                 "Agent access was changed outside Tabletist: the agent server was turned on, \
                  and agents may read Shop · dev. Until you answer, agents may not. Keep it, or \
@@ -9895,7 +10013,8 @@ mod tests {
         app.connections.upsert(other);
         app.check_agents();
         assert_eq!(
-            crate::ui::agents_held_said(&app).as_deref(),
+            crate::ui::agents_held_said(app.locale, &app.agents_held, &app.connections.connections)
+                .as_deref(),
             Some(
                 "Agent access was changed outside Tabletist: the agent server was turned on, \
                  agents may read Shop · dev, and agents may read Ledger · dev. Until you \
@@ -11050,7 +11169,9 @@ masked = ["orders.email"]
             [Raised::Tables { .. }]
         ));
         assert_eq!(sent(&app), customers);
-        let said = crate::ui::agents_held_said(&app).unwrap();
+        let said =
+            crate::ui::agents_held_said(app.locale, &app.agents_held, &app.connections.connections)
+                .unwrap();
         assert!(
             said.contains("agents may read more of Local · dev"),
             "{said}"
@@ -11123,7 +11244,9 @@ masked = ["orders.email"]
             [Raised::Masked { .. }]
         ));
         assert_eq!(sent(&app), columns(&["orders.phone", "orders.email"]));
-        let said = crate::ui::agents_held_said(&app).unwrap();
+        let said =
+            crate::ui::agents_held_said(app.locale, &app.agents_held, &app.connections.connections)
+                .unwrap();
         assert!(
             said.contains("agents may read more of Local · dev"),
             "{said}"
@@ -11193,7 +11316,9 @@ masked = ["orders.email"]
         );
         file_says(&mut app, Tables::All, &[]);
         assert_eq!(app.agents_held.len(), 2);
-        let said = crate::ui::agents_held_said(&app).unwrap();
+        let said =
+            crate::ui::agents_held_said(app.locale, &app.agents_held, &app.connections.connections)
+                .unwrap();
         assert_eq!(said.matches("Local · dev").count(), 1, "{said}");
     }
 

@@ -486,7 +486,7 @@ impl App {
                     .label
                     .as_ref()
                     .filter(|label| !label.is_null())
-                    .map(crate::ui::format::plain_text);
+                    .map(crate::format::plain_text);
                 // As if its key had been typed: the same check, the same
                 // pending cell.
                 *text = start_text(&option.key, class);

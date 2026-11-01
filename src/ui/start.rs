@@ -9,17 +9,17 @@ use egui::{CornerRadius, Frame, Margin, Rect, Sense, Stroke, StrokeKind, WidgetI
 use egui::{pos2, vec2};
 use tabletist_db::{Driver, ObjectKind, ObjectRef};
 
-use crate::app::{App, Found};
 use crate::env::{Platform, env_colors};
+use crate::format::display_safe;
 use crate::i18n::{Locale, gettext};
-use crate::keymap::{Command, Scope, Written};
-use crate::model::{Action, ConnTabId, Pane, StartRecent};
+use crate::keymap::{Command, Keymap, Layout, Scope, Written};
+use crate::model::{Action, ConnTabId, Found, Pane, StartRecent, Workspace};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::Paint;
 use crate::ui::focus::{self, Region};
-use crate::ui::format::display_safe;
 use crate::ui::widgets::{self, ButtonSpec};
-use crate::ui::workspace::{Badge, BarInfo, bar_info, database_menu, database_menu_id, env_badge};
+use crate::ui::workspace::{Badge, BarInfo, database_menu, database_menu_id, env_badge};
 
 /// The column's width, and the room above it.
 fn column(look: &Look) -> (f32, f32) {
@@ -72,9 +72,36 @@ struct Shown {
     has_keys: bool,
 }
 
-fn shown(app: &App, ctx: &egui::Context, tab: ConnTabId) -> Option<Shown> {
-    let workspace = app.workspace(tab)?;
-    let info = bar_info(app, tab)?;
+/// What the start screen asks of the app, answered by its caller before
+/// the workspace is lent.
+pub struct Asked {
+    /// What the connection bar says of the window.
+    pub(super) info: BarInfo,
+    /// The schema the sidebar shows, whose tables and views the
+    /// connection line counts.
+    pub(super) schema: Option<String>,
+    pub(super) recents: Vec<StartRecent>,
+    /// On a first visit (no recents), the shown schema's largest tables.
+    pub(super) largest: Vec<(ObjectRef, Option<u64>)>,
+    pub(super) agents: Option<crate::model::AgentsHere>,
+    /// Whether the connection is still saved.
+    pub(super) saved: bool,
+    /// The matches of what is typed in the search, grouped.
+    pub(super) matches: Vec<Found>,
+    /// The version of an update downloaded and verified.
+    pub(super) ready: Option<String>,
+    /// Whether numbers are written in threes.
+    pub(super) grouped: bool,
+}
+
+fn shown(
+    workspace: &Workspace,
+    ctx: &egui::Context,
+    info: BarInfo,
+    schema: Option<String>,
+    (recents, largest): (Vec<StartRecent>, Vec<(ObjectRef, Option<u64>)>),
+    (agents, saved): (Option<crate::model::AgentsHere>, bool),
+) -> Shown {
     // A SQLite connection is on a file, which names it.
     let database = match workspace.driver {
         Driver::Sqlite => workspace
@@ -86,18 +113,11 @@ fn shown(app: &App, ctx: &egui::Context, tab: ConnTabId) -> Option<Shown> {
             .unwrap_or_default(),
         Driver::Postgres | Driver::MySql => info.database.clone(),
     };
-    let objects = app
-        .start_schema(tab)
+    let objects = schema
         .and_then(|schema| workspace.tree.nodes.get(&schema))
         .and_then(|node| node.objects.value.as_ref())
         .map(Vec::len);
-    let recents = app.start_recents(tab);
-    let largest = if recents.is_empty() {
-        app.start_largest(tab)
-    } else {
-        Vec::new()
-    };
-    Some(Shown {
+    Shown {
         conn: workspace.conn_id.clone(),
         database,
         info,
@@ -106,10 +126,10 @@ fn shown(app: &App, ctx: &egui::Context, tab: ConnTabId) -> Option<Shown> {
         objects,
         recents,
         largest,
-        agents: app.agents_here(tab),
-        saved: app.connections.get(&workspace.conn_id).is_some(),
+        agents,
+        saved,
         has_keys: workspace.pane == Pane::Grid && !focus::on_control(ctx),
-    })
+    }
 }
 
 /// The keys the screen names, as the keymap writes them for the look.
@@ -147,26 +167,23 @@ pub(crate) fn search_field_id(tab: ConnTabId) -> egui::Id {
     egui::Id::new(("start-search", tab.0))
 }
 
-fn keys(app: &App) -> Keys {
-    let layout = app.layout();
-    let here = |command: Command| app.keymap.key_in(layout, command, Scope::Start);
-    let key = |command: Command| app.keymap.key(layout, command);
+fn keys(keymap: &Keymap, layout: Layout) -> Keys {
+    let here = |command: Command| keymap.key_in(layout, command, Scope::Start);
+    let key = |command: Command| keymap.key(layout, command);
     Keys {
-        sql: app.keymap.key_in(layout, Command::NewSqlTab, Scope::Global),
+        sql: keymap.key_in(layout, Command::NewSqlTab, Scope::Global),
         sql_here: here(Command::NewSqlTab),
-        database: app
-            .keymap
-            .key_in(layout, Command::SwitchDatabase, Scope::Global),
+        database: keymap.key_in(layout, Command::SwitchDatabase, Scope::Global),
         database_here: here(Command::SwitchDatabase),
         edit_here: here(Command::EditConnection),
-        agents_rows: app.keymap.key_in(layout, Command::ShowAgents, Scope::Grid),
+        agents_rows: keymap.key_in(layout, Command::ShowAgents, Scope::Grid),
         agents_here: here(Command::ShowAgents),
         recent: here(Command::OpenRecent),
         sidebar: key(Command::ToggleSidebar),
         help: key(Command::Help),
         quick_open: key(Command::FindObject),
         search_focus: here(Command::StartSearchFocus),
-        search_move: app.keymap.label(layout, Command::StartSearchMove),
+        search_move: keymap.label(layout, Command::StartSearchMove),
         search_open: here(Command::StartSearchOpen),
         search_editor: here(Command::StartSearchOpenInEditor),
         search_clear: here(Command::StartSearchClear),
@@ -192,35 +209,55 @@ impl Skin<'_> {
     }
 }
 
-pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
-    let (look, palette, locale) = (app.look, app.palette, app.locale);
-    let Some(shown) = shown(app, ui.ctx(), tab) else {
-        return;
-    };
-    let keys = keys(app);
+/// Draws the start screen of the workspace `tab`, and returns what it asks
+/// for. The search field edits the workspace's search in place, and the
+/// screen takes the field's one-shot requests.
+pub fn show(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    workspace: &mut Workspace,
+    asked: Asked,
+    keymap: &Keymap,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let Asked {
+        info,
+        schema,
+        recents,
+        largest,
+        agents,
+        saved,
+        matches,
+        ready,
+        grouped,
+    } = asked;
+    let listed = (recents, largest);
+    let shown = shown(workspace, ui.ctx(), info, schema, listed, (agents, saved));
+    let keys = keys(keymap, paint.layout());
     // The matches of what is typed, grouped (tables, then views); empty
     // where nothing is typed. The window left the field two one-shot
     // flags, and holds what is typed and which match is picked.
-    let matches = app.start_matches(tab);
-    let (focus, blur, mut query, selected) = app
-        .workspace_mut(tab)
-        .map(|workspace| {
-            let focus = std::mem::take(&mut workspace.focus_start_search);
-            let blur = std::mem::take(&mut workspace.blur_start_search);
-            let selected = workspace
-                .start_selected
-                .min(matches.len().saturating_sub(1));
-            (focus, blur, workspace.start_search.clone(), selected)
-        })
-        .unwrap_or_default();
+    let focus = std::mem::take(&mut workspace.focus_start_search);
+    let blur = std::mem::take(&mut workspace.blur_start_search);
+    let selected = workspace
+        .start_selected
+        .min(matches.len().saturating_sub(1));
+    let mut query = workspace.start_search.clone();
     let searching = !query.trim().is_empty();
+    // An update downloaded and verified, on macOS: Restart installs it.
+    let ready = ready.filter(|_| !look.terminal);
     let skin = Skin {
         look: &look,
         palette: &palette,
         locale,
         tab,
         now: crate::util::now_secs(),
-        grouped: app.settings.grouped(app.layout()),
+        grouped,
     };
     let mut actions = Vec::new();
     if !look.terminal {
@@ -277,19 +314,48 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     search_footer(&mut ui, &keys, skin);
                 }
             } else {
+                if let Some(version) = &ready {
+                    ready_line(&mut ui, version, skin, &mut actions);
+                    ui.add_space(gap(&look));
+                }
                 lists(&mut ui, &shown, &keys, skin, &mut claimed, &mut actions);
                 ui.add_space(gap(&look));
                 starts(&mut ui, &shown, &keys, skin, &mut claimed, &mut actions);
             }
         });
     // What the field edited goes back; a change picks the first match anew.
-    if let Some(workspace) = app.workspace_mut(tab)
-        && workspace.start_search != query
-    {
+    if workspace.start_search != query {
         workspace.start_search = query;
         actions.push(Action::StartSearchChanged(tab));
     }
-    app.actions.extend(actions);
+    actions
+}
+
+/// What waits where the start screen tells of something waiting, between
+/// the search field and the recents: `0.2.0 is ready · Restart`, muted,
+/// with Restart a link that does what Restart now does.
+fn ready_line(ui: &mut egui::Ui, version: &str, skin: Skin<'_>, actions: &mut Vec<Action>) {
+    let (look, palette, locale) = (skin.look, skin.palette, skin.locale);
+    let height = look.control_height;
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    let said = gettext(locale, "{version} is ready").replace("{version}", version);
+    let role = widgets::secondary(look);
+    let y = rect.center().y;
+    let mut x = rect.left();
+    x += widgets::paint_label(
+        ui,
+        x,
+        y,
+        Text::one(look, role, &format!("{said} ·"), palette.dim),
+    );
+    x += 4.0;
+    let restart = gettext(locale, "Restart");
+    let button = ButtonSpec::new(&restart).link();
+    let width = button.width(ui, look);
+    let place = Rect::from_min_size(pos2(x, rect.top()), vec2(width, height));
+    if button.show_at(ui, place, look, palette).clicked() {
+        actions.push(Action::RestartToUpdate);
+    }
 }
 
 /// The words after the database's name: `Read-only` on a production
@@ -626,10 +692,10 @@ fn estimate_text(rows: u64, skin: Skin<'_>) -> String {
 /// (`grouped`: in threes): quick open's too.
 pub(crate) fn estimate_words(rows: u64, look: &Look, grouped: bool, locale: Locale) -> String {
     if look.terminal {
-        look.label(&format!("≈ {}", crate::ui::format::compact_count(rows)))
+        look.label(&format!("≈ {}", crate::format::compact_count(rows)))
     } else {
         let count = if grouped {
-            crate::ui::format::group_digits(rows)
+            crate::format::group_digits(rows)
         } else {
             rows.to_string()
         };
@@ -1312,9 +1378,13 @@ fn status_bar(ui: &mut egui::Ui, skin: Skin<'_>, searching: bool) {
 
 /// The terminal look's status line with no tab open: the mode, the
 /// screen's keys (those that fit), and that no table is open.
-pub fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
-    let (look, palette, locale) = (app.look, app.palette, app.locale);
-    let keys = keys(app);
+pub fn status_line(ui: &mut egui::Ui, paint: Paint, tab: ConnTabId, keymap: &Keymap) {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let keys = keys(keymap, paint.layout());
     // The search is on while its field has the keyboard, as `keys.rs` reads
     // it: the line then names the keys that move among the matches, open
     // one and go back, in step with those live keys.

@@ -2321,7 +2321,7 @@ pub(crate) mod mock {
                 harness.app.connections.mark_used(&id, used);
             }
         }
-        let first = crate::ui::picker::visible(&harness.app, "")
+        let first = crate::ui::picker::visible(&harness.app.connections, "")
             .first()
             .cloned();
         let tab = harness.app.active_tab_id();

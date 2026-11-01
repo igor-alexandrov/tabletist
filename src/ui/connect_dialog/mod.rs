@@ -14,16 +14,15 @@ use egui::{
 use tabletist_db::ssh_config::Proxy;
 use tabletist_db::{Driver, TlsMode};
 
-use crate::app::App;
 use crate::connections::PasswordMode;
 use crate::env::{EnvColors, Environment, Platform, env_colors};
 use crate::i18n::{Locale, gettext};
-use crate::keymap::{Command, Scope};
-use crate::model::{Action, ConnectionForm, Dialog, SshAuthKind, SshHints, TestState};
+use crate::keymap::{Command, Keymap, Scope};
+use crate::model::{Action, ConnectionForm, LoadedTables, SshAuthKind, SshHints, TestState};
 use crate::theme::{self, Icon, Look, Palette, Typeface};
 use crate::typography::{Text, TextRole};
-use crate::ui::menu;
 use crate::ui::widgets::{self, ButtonSpec};
+use crate::ui::{Paint, menu};
 
 use sheet::{body, footer, header};
 use terminal::{terminal_body, terminal_footer, terminal_header, terminal_row};
@@ -230,35 +229,42 @@ impl<'a> Skin<'a> {
     }
 }
 
-pub fn show(app: &mut App, ctx: &egui::Context) {
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
+/// Whether `form` lists names of its connection's tables, for its Tables
+/// and Masked columns controls: only then is what an open window of the
+/// connection has loaded asked for, as what it costs is spent on them.
+pub fn lists_names(form: &ConnectionForm) -> bool {
+    form.agents_tables.names().is_some()
+        || !form.agents_masked.is_empty()
+        || form.agents_column_typed.is_some()
+}
+
+/// Draws the dialog over the window, and returns what it asks for.
+/// `loaded` is what an open window of the connection the form edits has
+/// loaded, read again on each frame, as a sidebar loads: `None` where it
+/// lists no names ([`lists_names`]), is a new connection, or no window of
+/// it is open.
+pub fn show(
+    ctx: &egui::Context,
+    paint: Paint,
+    form: &mut ConnectionForm,
+    keymap: &Keymap,
+    loaded: Option<LoadedTables>,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     // The form's own keys, as the keymap has them for the look.
-    let (keymap, layout) = (app.keymap.clone(), app.layout());
+    let layout = paint.layout();
     let on = |input: &mut egui::InputState, command: Command| {
-        crate::ui::keys::asked(input, &keymap, layout, command, Scope::Prompt, true)
-    };
-    // What an open window of the connection has loaded, for the Tables
-    // and Masked columns controls: read again on each frame, as a sidebar
-    // loads. Only for a list of names: what it costs is spent on them.
-    let loaded = match &app.dialog {
-        Some(Dialog::Connection(form))
-            if form.agents_tables.names().is_some()
-                || !form.agents_masked.is_empty()
-                || form.agents_column_typed.is_some() =>
-        {
-            form.editing
-                .as_ref()
-                .and_then(|conn| app.loaded_tables(conn).map(|loaded| (conn.clone(), loaded)))
-        }
-        _ => None,
+        crate::ui::keys::asked(input, keymap, layout, command, Scope::Prompt, true)
     };
     // The columns of the tables the masked columns name, for their mark,
     // and of the one Add column…'s field names, for its list: asked for
     // once the frame is drawn.
-    let wanted = match (&app.dialog, &loaded) {
-        (Some(Dialog::Connection(form)), Some((conn, loaded))) => {
+    let wanted = match (&form.editing, &loaded) {
+        (Some(conn), Some(loaded)) => {
             let mut wanted: Vec<tabletist_db::ObjectRef> = form
                 .agents_masked
                 .iter()
@@ -280,11 +286,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         }
         _ => None,
     };
-    let Some(Dialog::Connection(form)) = &mut app.dialog else {
-        ctx.data_mut(|data| data.remove::<Placement>(placement_id()));
-        return;
-    };
-    form.agents_loaded = loaded.map(|(_, loaded)| loaded);
+    form.agents_loaded = loaded;
     let placement: Placement = ctx
         .data(|data| data.get_temp(placement_id()))
         .unwrap_or_default();
@@ -418,7 +420,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         .filter(|_| !(modifiers.command || modifiers.ctrl || modifiers.alt));
                     let command = letter.and_then(|letter| {
                         let typed = letter.to_string();
-                        crate::ui::keys::prompt_letter(&keymap, layout, form, &typed)
+                        crate::ui::keys::prompt_letter(keymap, layout, form, &typed)
                     });
                     let pastes = command == Some(Command::FormPasteUrl);
                     toggled |= pastes;
@@ -433,7 +435,13 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             show_url(ctx, form, !form.url_mode);
         }
     }
-    app.actions.extend(actions);
+    actions
+}
+
+/// What the dialog does on a frame it is not open: the next one opened
+/// settles its own top edge.
+pub fn fold(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.remove::<Placement>(placement_id()));
 }
 
 /// Shows or hides the URL field; shown, it takes the keyboard.
@@ -1162,7 +1170,7 @@ fn status(form: &ConnectionForm, skin: &Skin) -> Option<Status> {
                 .map_or(form.driver, |spec| spec.driver);
             let mut text = format!("{} · {}", gettext(skin.locale, "Connected"), driver.label());
             if let Some(took) = form.test_took {
-                text = format!("{text} · {}", crate::ui::format::elapsed(took));
+                text = format!("{text} · {}", crate::format::elapsed(took));
             }
             Some(Status::Passed(skin.look.label(&text)))
         }

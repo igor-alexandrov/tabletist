@@ -7,21 +7,19 @@
 use std::hash::{Hash, Hasher};
 
 use egui::{Color32, Frame, Id, Rect, Sense, WidgetInfo, WidgetType, pos2, vec2};
-use tabletist_db::Access;
 use tabletist_db::sql::TokenKind;
 
-use crate::app::App;
 use crate::edit::Effect;
 use crate::i18n::{Locale, gettext, ngettext};
-use crate::model::{Action, ConnTabId, TabId};
+use crate::model::{Action, ConnTabId, ObjectTab, TabId};
 use crate::review::{Ink, Line, Review};
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::pending_bar::counted;
-use crate::ui::sql_text;
 use crate::ui::states::Tone;
 use crate::ui::toast;
 use crate::ui::widgets::{self, ButtonSpec};
+use crate::ui::{Paint, sql_text};
 
 /// The most lines a place shows before it scrolls.
 pub const MAX_ROWS: usize = 12;
@@ -320,29 +318,34 @@ pub fn text(review: &Review, locale: Locale) -> String {
 /// confirmation of this tab's save to production, where that points at it,
 /// Page Up and Page Down scroll it (see [`turn`]): the pointer cannot reach
 /// it under a dialog.
-pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
-    let (locale, palette, look) = (app.locale, app.palette, app.look);
-    let workspace = app.workspace(tab);
-    let edits = workspace
-        .and_then(|workspace| workspace.object_tab(id))
-        .map(|object| &object.edits)
-        .filter(|edits| edits.reviewing);
-    let Some(review) = edits.and_then(|edits| edits.review.as_ref()) else {
-        // A panel takes one of its parent's ids. Passed over while there is
-        // no drawer, so what is drawn after it (the grid, the filter's bar)
-        // is the same widget with the drawer and without: a field that has
-        // the keyboard keeps it as the drawer opens and closes.
-        ui.skip_ahead_auto_ids(1);
-        return;
+///
+/// `read_only` says the connection cannot write. `whole` is the tab's
+/// review with every value whole (`App::review_whole`), asked only when
+/// Copy is pressed.
+pub fn show(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    object: &ObjectTab,
+    read_only: bool,
+    whole: impl FnOnce() -> Option<Review>,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let id = object.id;
+    let edits = &object.edits;
+    let Some(review) = edits.review.as_ref().filter(|_| edits.reviewing) else {
+        pass(ui);
+        return Vec::new();
     };
-    let read_only = workspace.is_some_and(|workspace| workspace.access == Access::ReadOnly);
     // An editor that was typed into holds what a save would send with the
     // rest, and the lines are of the pending set alone: the head says so.
     // Not the lines themselves: they are made when the set changes, never
     // for a keystroke.
-    let typing = edits
-        .and_then(|edits| edits.editor.as_ref())
-        .is_some_and(|editor| editor.touched);
+    let typing = edits.editor.as_ref().is_some_and(|editor| editor.touched);
     // Only what the confirmation that points at this panel asked for: with
     // no dialog up Page Up and Page Down are the grid's, and under any
     // other dialog, or one that lists its statements itself, they are not
@@ -425,9 +428,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     // The whole statements, never the lines as they are shown: those are
     // cut.
     if asked.copy
-        && let Some(text) = copy_text(app, tab, id)
+        && let Some(review) = whole()
     {
-        ui.ctx().copy_text(text);
+        ui.ctx().copy_text(text(&review, locale));
         toast::say(ui.ctx(), &gettext(locale, COPIED_SQL));
     }
     let placed = Placed {
@@ -440,10 +443,22 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     let now = ui.ctx().cumulative_frame_nr();
     ui.ctx()
         .data_mut(|data| data.insert_temp(placed_id(), (placed, now)));
+    let mut actions = Vec::new();
     if asked.hide {
         let show = false;
-        app.actions.push(Action::ReviewEdits { tab, id, show });
+        actions.push(Action::ReviewEdits { tab, id, show });
     }
+    actions
+}
+
+/// What the panel does in a frame it is not drawn, its tab not reviewing
+/// or gone.
+pub fn pass(ui: &mut egui::Ui) {
+    // A panel takes one of its parent's ids. Passed over while there is
+    // no drawer, so what is drawn after it (the grid, the filter's bar)
+    // is the same widget with the drawer and without: a field that has
+    // the keyboard keeps it as the drawer opens and closes.
+    ui.skip_ahead_auto_ids(1);
 }
 
 /// How the panel draws.
@@ -609,13 +624,6 @@ fn terminal_foot(
         hide: pressed[0],
         copy: pressed[1],
     }
-}
-
-/// What Copy SQL puts on the clipboard: the tab's review with every value
-/// whole. `None` when nothing is pending.
-pub fn copy_text(app: &App, tab: ConnTabId, id: TabId) -> Option<String> {
-    app.review_whole(tab, id)
-        .map(|review| text(&review, app.locale))
 }
 
 /// A panel that was drawn: whose it is, and where it stood.

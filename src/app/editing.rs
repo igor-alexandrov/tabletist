@@ -235,7 +235,7 @@ fn opened_text(table: &Table<'_>, cell: CellPos, class: ColumnClass) -> Option<S
         temporal
             .then_some(table.zone)
             .flatten()
-            .and_then(|zone| crate::ui::format::in_zone(&start, zone))
+            .and_then(|zone| crate::format::in_zone(&start, zone))
             .unwrap_or(start),
     )
 }
@@ -387,7 +387,7 @@ impl App {
     /// typed back to what it loaded is one fewer: closing the editor
     /// takes it out of the set. An open editor with nothing pending yet
     /// still counts as one: a tab that holds edits never counts as none.
-    fn unwritten(&self, tab: ConnTabId, id: TabId) -> usize {
+    pub(super) fn unwritten(&self, tab: ConnTabId, id: TabId) -> usize {
         let Some(edits) = self
             .workspace(tab)
             .and_then(|workspace| workspace.object_tab(id))
@@ -541,7 +541,7 @@ impl App {
             cols.dedup();
             cols.into_iter()
                 .filter_map(|col| table.page.columns.get(col))
-                .map(|column| crate::ui::format::display_safe(&column.name).into_owned())
+                .map(|column| crate::format::display_safe(&column.name).into_owned())
                 .collect()
         })
         .unwrap_or_default()
@@ -1642,7 +1642,7 @@ impl App {
     /// Lays the document in the tab's large editor out a member to a line,
     /// where the editor is on a JSON column and its text is a document: a
     /// text its column does not take stays as it was typed. Only the white
-    /// space between its pieces changes (`ui::json_text::pretty`).
+    /// space between its pieces changes (`json::pretty`).
     pub(super) fn format_editor(&mut self, tab: ConnTabId, id: TabId) {
         let laid = self.table(tab, id, |table, object| {
             let editor = object.edits.editor.as_ref().filter(|editor| editor.large)?;
@@ -1941,8 +1941,8 @@ impl App {
             // The keys in force: the full list in the editor, or a cheat
             // sheet where the person says. Neither touches the settings.
             (Typed::Command(Command::KeysDefault), _) => Action::KeysDefault,
-            // Settings › Updates, checking.
-            (Typed::Command(Command::CheckForUpdates), _) => Action::ShowUpdates,
+            // Settings › Updates, checking, then asking to install.
+            (Typed::Command(Command::CheckForUpdates), _) => Action::UpdateNow,
             (Typed::Command(Command::KeysCheatsheet), _) => Action::ExportCheatSheet,
             // The calendar under a date's editor, saved as its switch in
             // Settings saves it.

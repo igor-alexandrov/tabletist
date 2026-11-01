@@ -995,8 +995,15 @@ pub enum Action {
     /// skip is offered by a check asked for.
     CheckForUpdates,
     /// Show Settings › Updates and check there now: the menu's Check for
-    /// Updates…, quick open's, `:update`.
+    /// Updates…, quick open's.
     ShowUpdates,
+    /// `:update`: [`Action::ShowUpdates`], and in the terminal look, where
+    /// the check finds a version this copy can install, the footer asks
+    /// whether to install it and restart.
+    UpdateNow,
+    /// The answer to that question: download it, then restart once it is
+    /// ready, as Restart now does; or not.
+    AnswerUpdateQuestion(bool),
     /// Drop the check under way: what it brings is not read.
     CancelUpdateCheck,
     /// Stop offering the version offered: `updates.skip`.
@@ -1004,6 +1011,27 @@ pub enum Action {
     /// Show the notes of the version offered in `$PAGER`, in a terminal;
     /// where there is none to start, open its page.
     ShowReleaseNotes,
+    /// Download and verify the version offered, where this copy can
+    /// install it: Download and install, Download again, `U`.
+    DownloadUpdate,
+    /// Stop the download under way: Cancel, `ctrl+c`.
+    CancelDownload,
+    /// Install the download that verified and restart into it, once no
+    /// window has work open: Restart now, the start screen's Restart,
+    /// `U`. With work open the card lists it instead.
+    RestartToUpdate,
+    /// Restart as soon as the work listed is done.
+    RestartWhenDone,
+    /// Go back to Ready from waiting for the work: Don't restart.
+    DontRestart,
+    /// Keep the download for later, and close Settings.
+    UpdateLater,
+    /// Bring the first window with work forward, on the tab that holds
+    /// it: Show them.
+    ShowWork,
+    /// Open a new issue on GitHub about the download that failed, filled
+    /// in: Report on GitHub.
+    ReportUpdateFailure,
     /// Close Settings and show the Agents tab on this view: the window's in
     /// front, or with Connections in front the last window's.
     ShowAgentsFromSettings(AgentsView),
@@ -2876,7 +2904,7 @@ pub struct QuickOpen {
     /// The result the pick was put on (by a move, a scope, what was
     /// typed): what Enter opens, wherever the list, which can change by
     /// itself (a run that ends, a list that comes in), has moved it.
-    pub picked: Option<crate::app::QuickItem>,
+    pub picked: Option<QuickItem>,
 }
 
 /// Where quick open moves its field's caret.
@@ -2902,6 +2930,151 @@ pub enum QuickGroup {
     Commands,
 }
 
+/// A table or view that matches what is typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Found {
+    /// The index's own: a search that matches thousands copies no name.
+    pub object: std::rc::Rc<ObjectRef>,
+    pub kind: ObjectKind,
+    /// The catalog's estimate of its rows, where it has one.
+    pub estimate: Option<u64>,
+    pub tier: crate::search::Tier,
+    /// The runs of the name that matched, as byte ranges of
+    /// `object.name`.
+    pub spans: Vec<std::ops::Range<usize>>,
+}
+
+/// What a command's row says after its name: where it acts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum About {
+    Nothing,
+    /// New SQL query on production, where a new editor opens read-only.
+    OpensReadOnly,
+    /// The window's connection (`Bookshop · dev`).
+    Connection,
+    /// The window's connection, and who is connected to its Agents tab.
+    Agents,
+    /// The tab in front.
+    Tab(TabName),
+}
+
+/// A tab as a command's row names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TabName {
+    /// A table or view, by its name.
+    Object(String),
+    /// A SQL editor, by its number (`Query 2`).
+    Query(u32),
+    Agents,
+    History,
+}
+
+/// A command quick open offers: the keymap's command, the name it is
+/// listed by (English: the caller translates it), and what its row says
+/// after the name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Runnable {
+    pub command: crate::keymap::Command,
+    pub name: &'static str,
+    pub about: About,
+}
+
+/// A row of a window's start screen list, as quick open shows it with
+/// nothing typed: a recent, or on a first visit one of the largest tables.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StartRow {
+    Recent(StartRecent),
+    Largest(ObjectRef, Option<u64>),
+}
+
+/// One of the commands quick open offers in the macOS and Windows looks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuickCommand {
+    /// A command of the keymap's, run as its key runs it.
+    Run(Runnable),
+    /// A row of the Settings window: the window opens at it.
+    Setting(crate::settings::OptionId),
+}
+
+impl QuickCommand {
+    /// The keymap's command it is, whose key the row writes: a setting's
+    /// is the one that opens Settings.
+    pub fn command(&self) -> crate::keymap::Command {
+        match self {
+            Self::Run(runnable) => runnable.command,
+            Self::Setting(_) => crate::keymap::Command::Settings,
+        }
+    }
+}
+
+/// One of quick open's results: what can be picked.
+#[derive(Debug, Clone, PartialEq)]
+pub enum QuickItem {
+    /// A table or view of the window `tab`'s connection.
+    Object { tab: ConnTabId, found: Found },
+    /// The row of `tab`'s start screen list numbered `index` there.
+    Start {
+        tab: ConnTabId,
+        index: usize,
+        row: StartRow,
+    },
+    /// A command, and the runs of its name that matched.
+    Command {
+        command: QuickCommand,
+        spans: Vec<std::ops::Range<usize>>,
+    },
+    /// The row after a group's first results: the rest are `hidden`.
+    More { group: QuickGroup, hidden: usize },
+}
+
+impl QuickItem {
+    /// Whether `other` is this result, though it may be listed elsewhere
+    /// or say something else of itself now (an estimate read again, a
+    /// command's name): the same object of the same window, the same row
+    /// of a start screen, the same command or setting, the same group's
+    /// "more" row.
+    pub fn same(&self, other: &QuickItem) -> bool {
+        match (self, other) {
+            (
+                Self::Object { tab, found },
+                Self::Object {
+                    tab: at,
+                    found: other,
+                },
+            ) => tab == at && found.object == other.object && found.kind == other.kind,
+            (
+                Self::Start { tab, row, .. },
+                Self::Start {
+                    tab: at,
+                    row: other,
+                    ..
+                },
+            ) => {
+                // The largest tables by their table: an estimate read
+                // again is the same row.
+                let largest = |row: &StartRow| match row {
+                    StartRow::Largest(object, _) => Some(object.clone()),
+                    StartRow::Recent(_) => None,
+                };
+                tab == at
+                    && match (largest(row), largest(other)) {
+                        (Some(one), Some(two)) => one == two,
+                        _ => row == other,
+                    }
+            }
+            (Self::Command { command, .. }, Self::Command { command: other, .. }) => {
+                match (command, other) {
+                    (QuickCommand::Run(one), QuickCommand::Run(two)) => one.command == two.command,
+                    (QuickCommand::Setting(one), QuickCommand::Setting(two)) => one == two,
+                    _ => false,
+                }
+            }
+            (Self::More { group, .. }, Self::More { group: other, .. }) => group == other,
+            _ => false,
+        }
+    }
+}
+
 /// The Settings window while it is open. The settings themselves are the
 /// app's: every change applies at once, so the window holds nothing of
 /// them.
@@ -2918,6 +3091,9 @@ pub struct SettingsDialog {
     /// A question of the query history's waits for its answer, where the
     /// footer asks it as it asks Reset's.
     pub history_question: Option<HistoryQuestion>,
+    /// `:update` asks whether to install this version and restart: the
+    /// Updates pane's footer asks it, as it asks the history's.
+    pub update_question: Option<String>,
     /// The agent Settings › Agents says how to connect.
     pub agent: crate::endpoint::Agent,
     /// The option quick open opened the window at: the sheet draws its row
@@ -3857,7 +4033,7 @@ pub struct RowFields {
     pub request: Option<RequestId>,
     pub row: usize,
     /// One per column. A pending cell's is the text of its new value.
-    pub fields: Vec<crate::ui::format::FieldText>,
+    pub fields: Vec<crate::format::FieldText>,
     /// What is pending in a table's row, one per column. Empty where
     /// nothing is, and for a SQL editor's result.
     pub pending: Vec<Option<PendingField>>,

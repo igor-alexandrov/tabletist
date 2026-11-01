@@ -644,7 +644,8 @@ fn y_then_capital_y_with_the_review_open_yanks_nothing_and_the_capital_copies_th
     assert_eq!(harness.copied, None);
     assert!(!yanked(&harness, tab, id));
     type_key(&mut harness, Key::Y, "Y");
-    let sql = crate::ui::review::copy_text(&harness.app, tab, id).expect("the SQL");
+    let review = harness.app.review_whole(tab, id).expect("the SQL");
+    let sql = crate::ui::review::text(&review, harness.app.locale);
     assert!(sql.contains("UPDATE"), "{sql:?}");
     assert_eq!(harness.copied, Some(sql));
     let said = crate::ui::toast::said(&harness.ctx);

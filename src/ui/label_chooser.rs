@@ -8,12 +8,12 @@ use egui::accesskit::Role;
 use egui::{Id, Rect, Sense, Ui, UiBuilder, WidgetInfo, WidgetType, pos2, vec2};
 
 use crate::env::{Environment, Platform};
+use crate::format::display_safe;
 use crate::i18n::{Locale, gettext};
 use crate::keymap::{Command, Scope};
 use crate::labels::{Excluded, LabelChoice, Line};
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
-use crate::ui::format::display_safe;
 use crate::ui::{menu, states, widgets};
 
 /// What an open chooser draws.

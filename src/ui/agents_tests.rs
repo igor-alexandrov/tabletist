@@ -184,8 +184,8 @@ fn every_way_in_shows_the_one_tab_and_none_opens_it_by_itself() {
     let index = harness.app.quick_open_list(open).items().position(|item| {
         matches!(
             item,
-            crate::app::QuickItem::Command {
-                command: crate::app::QuickCommand::Run(runnable),
+            crate::model::QuickItem::Command {
+                command: crate::model::QuickCommand::Run(runnable),
                 spans,
             } if runnable.command == crate::keymap::Command::ShowAgents
                 && spans.iter().eq(std::iter::once(&(0..3)))
@@ -416,7 +416,12 @@ fn the_held_bar_says_what_changed_and_its_buttons_answer_it() {
         harness.settle();
         let bar = harness.painted_rect("Fixture").expect("the connection bar");
         changed_outside(&mut harness, tab);
-        let said = crate::ui::agents_held_said(&harness.app).unwrap();
+        let said = crate::ui::agents_held_said(
+            harness.app.locale,
+            &harness.app.agents_held,
+            &harness.app.connections.connections,
+        )
+        .unwrap();
         assert!(said.contains("agents may read Fixture · dev"), "{said}");
         assert!(harness.has(&said), "{}", look.name);
         // Under the connection bar, which stays at the window's top.

@@ -383,6 +383,24 @@ pub(super) fn path_shown(app: &App) -> String {
     file_pane::shown_path(&app.dirs.settings_file(), app.dirs.home.as_deref())
 }
 
+/// Where updates stand, as the Updates pane reads it.
+fn update_status(app: &App) -> updates::Status<'_> {
+    updates::Status {
+        updates: &app.updates,
+        skip: app.settings.update_skip.as_deref(),
+        now: app.now_secs(),
+    }
+}
+
+/// The server, as the Agents pane says it.
+fn server(app: &App) -> agents::Server {
+    agents::Server {
+        on: app.agents_on(),
+        connected: app.agents.sessions.len(),
+        window: app.agents_window().is_some(),
+    }
+}
+
 /// What a choice is called.
 #[derive(Clone, Copy)]
 pub(super) enum Said {
@@ -664,10 +682,15 @@ enum Asked {
     Copy,
     /// Answer the history's question: delete what it kept, or keep it.
     History(bool),
-    /// The Updates pane's: check now, the notes, skip the version offered.
+    /// The Updates pane's: check now, the notes, skip the version offered,
+    /// `U` (download, restart), and cancel the download.
     CheckNow,
     Notes,
     Skip,
+    Install,
+    CancelDownload,
+    /// Answer `:update`'s question: install and restart, or not.
+    Answer(bool),
 }
 
 /// What `event` asks of the screen, if it is a press of one of its keys,
@@ -681,19 +704,26 @@ fn asked(
     keymap: &Keymap,
     event: &egui::Event,
     held: egui::Modifiers,
-    (free, pane): (bool, SettingsPane),
+    (free, pane, question): (bool, SettingsPane, bool),
 ) -> Option<Asked> {
     // The screen is Omarchy's.
     let layout = Layout::Omarchy;
     // The Updates pane's own come first there, and are read nowhere else:
     // its `n` is the notes, which the history's question has elsewhere.
+    // While `:update` asks, its answers come before them: Esc and `n`
+    // say no.
     let updates = [
+        Command::SettingsInstallYes,
+        Command::SettingsInstallNo,
         Command::SettingsCheckNow,
         Command::SettingsReleaseNotes,
         Command::SettingsSkipVersion,
+        Command::SettingsInstallUpdate,
+        Command::SettingsCancelDownload,
     ];
-    let updates = match pane {
-        SettingsPane::Updates => &updates[..],
+    let updates = match (pane, question) {
+        (SettingsPane::Updates, true) => &updates[..],
+        (SettingsPane::Updates, false) => &updates[2..],
         _ => &[],
     };
     let commands = updates.iter().copied().chain([
@@ -760,6 +790,10 @@ fn asked(
                 Command::SettingsCheckNow => Asked::CheckNow,
                 Command::SettingsReleaseNotes => Asked::Notes,
                 Command::SettingsSkipVersion => Asked::Skip,
+                Command::SettingsInstallUpdate => Asked::Install,
+                Command::SettingsCancelDownload => Asked::CancelDownload,
+                Command::SettingsInstallYes => Asked::Answer(true),
+                Command::SettingsInstallNo => Asked::Answer(false),
                 _ => Asked::Flip,
             });
         }
@@ -798,7 +832,8 @@ fn keys(
     ctx.input_mut(|input| {
         let held = input.modifiers;
         input.events.retain(|event| {
-            let Some(asked) = asked(&keymap, event, held, (free, pane)) else {
+            let question = pane == SettingsPane::Updates && dialog.update_question.is_some();
+            let Some(asked) = asked(&keymap, event, held, (free, pane, question)) else {
                 return true;
             };
             if preview && !matches!(asked, Asked::Edit | Asked::Pane { .. }) {
@@ -849,7 +884,7 @@ fn keys(
                     SettingsPane::Agents => copy |= !repeat,
                     // The command that updates a copy something else
                     // installed, where it has one.
-                    SettingsPane::Updates => match updates::managed_command(app) {
+                    SettingsPane::Updates => match updates::managed_command(update_status(app)) {
                         Some(command) => {
                             if !repeat {
                                 update_command = Some(command);
@@ -870,9 +905,35 @@ fn keys(
                         actions.push(Action::ShowReleaseNotes);
                     }
                 }
+                // Only where the block offers it: a version that downloads
+                // or waits to install is not skipped, and the key is left.
                 Asked::Skip => {
+                    if !updates::skips(update_status(app)) {
+                        return true;
+                    }
                     if !repeat {
                         actions.push(Action::SkipUpdate);
+                    }
+                }
+                // What the card offers: a press with nothing to do is
+                // left.
+                Asked::Install => match updates::install_action(update_status(app)) {
+                    Some(action) => {
+                        if !repeat {
+                            actions.push(action);
+                        }
+                    }
+                    None => return true,
+                },
+                Asked::CancelDownload => {
+                    if !matches!(app.updates.install, crate::update::Install::Downloading(_)) {
+                        return true;
+                    }
+                    actions.push(Action::CancelDownload);
+                }
+                Asked::Answer(yes) => {
+                    if !repeat {
+                        actions.push(Action::AnswerUpdateQuestion(yes));
                     }
                 }
                 // Only while the question stands.
@@ -952,7 +1013,13 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let keyboard = dialog.pane == SettingsPane::Keyboard;
     if keyboard && let Some(recording) = &dialog.keyboard.recording {
         let on_buttons = keyboard_sheet::on_refusal(ctx);
-        keyboard::record(ctx, app, (recording, on_buttons), &mut actions);
+        keyboard::record(
+            ctx,
+            &app.keymap,
+            app.layout(),
+            (recording, on_buttons),
+            &mut actions,
+        );
     }
     if app.look.terminal {
         // The screen's keys act on its cursor. The sheet has none: its
@@ -963,7 +1030,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         let in_preview = ctx.memory(|memory| memory.has_focus(editor_preview::field_id()));
         if keyboard {
             if dialog.keyboard.recording.is_none() && !dialog.keyboard.filtering {
-                keyboard_terminal::keys(app, ctx, dialog, &mut actions);
+                let (keymap, layout) = (&app.keymap, app.layout());
+                keyboard_terminal::keys(ctx, keymap, layout, app.locale, dialog, &mut actions);
             }
         } else {
             keys(app, ctx, dialog, in_preview, &mut actions);

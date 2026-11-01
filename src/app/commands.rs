@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use tabletist_db::Dialect;
 
 use crate::keymap::Command;
-use crate::model::{Action, ConnTabId, RunMode, Tab};
+use crate::model::{About, Action, ConnTabId, RunMode, Runnable, Tab, TabName};
 
 use super::App;
 
@@ -112,31 +112,6 @@ pub const RUNNABLE: [Command; 30] = [
     Command::CancelQuery,
 ];
 
-/// What a command's row says after its name: where it acts.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum About {
-    Nothing,
-    /// New SQL query on production, where a new editor opens read-only.
-    OpensReadOnly,
-    /// The window's connection (`Bookshop · dev`).
-    Connection,
-    /// The window's connection, and who is connected to its Agents tab.
-    Agents,
-    /// The tab in front.
-    Tab(TabName),
-}
-
-/// A tab as a command's row names it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TabName {
-    /// A table or view, by its name.
-    Object(String),
-    /// A SQL editor, by its number (`Query 2`).
-    Query(u32),
-    Agents,
-    History,
-}
-
 impl TabName {
     fn of(tab: &Tab) -> Self {
         match tab {
@@ -146,16 +121,6 @@ impl TabName {
             Tab::History(_) => Self::History,
         }
     }
-}
-
-/// A command quick open offers: the keymap's command, the name it is
-/// listed by (English: the caller translates it), and what its row says
-/// after the name.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Runnable {
-    pub command: Command,
-    pub name: &'static str,
-    pub about: About,
 }
 
 impl App {
