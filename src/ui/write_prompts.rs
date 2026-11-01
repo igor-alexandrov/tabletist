@@ -12,21 +12,20 @@ use egui::{
     vec2,
 };
 
-use crate::app::App;
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::{Command, Layout};
-use crate::model::{Action, Dialog, Held, LeavePrompt};
+use crate::model::{Action, Held, LeavePrompt, Workspace, WritePrompt};
 use crate::review::{Line, Review, Values};
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Ring};
-use crate::ui::format;
 use crate::ui::keys::{drop_repeats, take_enter};
 use crate::ui::pending_bar::counted;
 use crate::ui::review;
 use crate::ui::states::Tone;
 use crate::ui::terminal_dialog;
 use crate::ui::widgets::{self, ButtonSpec};
+use crate::ui::{Paint, format};
 
 /// A row of buttons at a prompt's foot.
 pub(super) const ROW: f32 = 32.0;
@@ -56,11 +55,6 @@ const FEWEST_ROWS: f32 = 3.0;
 /// asked to close.
 const SAVING: &str = "A save is still running. It writes everything or nothing, \
                       and closing now means not seeing which.";
-
-pub fn show(app: &mut App, ctx: &egui::Context) {
-    leave(app, ctx);
-    confirm_write(app, ctx);
-}
 
 /// How a prompt draws.
 #[derive(Clone, Copy)]
@@ -182,16 +176,17 @@ pub(super) fn pressed_early(ctx: &egui::Context, id: Id, ripe: bool) -> bool {
 /// answers as the button that has the keyboard where that is Cancel or
 /// Save, saves where Save is offered and the keyboard is on no button, and
 /// answers nothing anywhere else. An Enter with a modifier answers nothing
-/// and presses nothing.
-fn leave(app: &mut App, ctx: &egui::Context) {
-    let (look, palette) = (app.look, app.palette);
+/// and presses nothing. Returns what is answered.
+pub fn leave(ctx: &egui::Context, paint: Paint, prompt: &LeavePrompt) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let skin = Skin {
         look: &look,
         palette: &palette,
-        locale: app.locale,
-    };
-    let Some(Dialog::Leave(prompt)) = &app.dialog else {
-        return;
+        locale,
     };
     // Taken before anything is drawn: a button that has the keyboard would
     // read Enter as a press of itself, and Discard is one of them. With a
@@ -208,7 +203,7 @@ fn leave(app: &mut App, ctx: &egui::Context) {
     if top && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
         actions.push(Action::LeaveStay);
     }
-    app.actions.extend(actions);
+    actions
 }
 
 /// macOS and Windows: what is asked, and Cancel, Discard and Save. `enter`
@@ -480,22 +475,29 @@ struct Facts {
     name: String,
 }
 
-/// Asks before a save to production, with every statement it would send.
-fn confirm_write(app: &mut App, ctx: &egui::Context) {
-    let (look, palette, locale) = (app.look, app.palette, app.locale);
+/// Asks before a save to production, with every statement it would send,
+/// and returns what is answered. `workspace` is the one the save goes
+/// from, `None` where it is closed.
+pub fn confirm_write(
+    ctx: &egui::Context,
+    paint: Paint,
+    prompt: &mut WritePrompt,
+    workspace: Option<&Workspace>,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let skin = Skin {
         look: &look,
         palette: &palette,
         locale,
     };
-    let Some(Dialog::ConfirmWrite(prompt)) = &app.dialog else {
-        return;
-    };
-    let Some(workspace) = app.workspace(prompt.tab) else {
+    let Some(workspace) = workspace else {
         // Nothing to draw, so nothing to answer it with: it closes, or it
         // would keep the keyboard for good.
-        app.actions.push(Action::CancelWrite);
-        return;
+        return vec![Action::CancelWrite];
     };
     // Brought up by the answer to another dialog, it takes no answer in
     // its first moment: the click or the key that gave that answer, given
@@ -598,9 +600,6 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
         pages = 0.0;
     }
     let mut actions = Vec::new();
-    let Some(Dialog::ConfirmWrite(prompt)) = &mut app.dialog else {
-        return;
-    };
     let mut copy = false;
     let top = if look.terminal {
         let asked = Asked { enter, pages };
@@ -633,9 +632,7 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
         ctx.copy_text(review::text(&whole, locale));
         crate::ui::toast::say(ctx, &gettext(locale, review::COPIED_SQL));
     }
-    if ripe && !early {
-        app.actions.extend(actions);
-    }
+    if ripe && !early { actions } else { Vec::new() }
 }
 
 /// The statements a save would send, as Review SQL draws them: its lines
@@ -823,7 +820,7 @@ fn confirm_sheet(
 /// unread; in the box the lines scroll both ways under the pointer.
 fn pointed_at(
     ctx: &egui::Context,
-    prompt: &crate::model::WritePrompt,
+    prompt: &WritePrompt,
     shown: Option<&Review>,
     skin: Skin<'_>,
 ) -> Option<Rect> {
@@ -875,7 +872,7 @@ fn one_row(ui: &mut egui::Ui, role: TextRole, text: &str, color: Color32, look: 
 /// top.
 fn confirm_box(
     ctx: &egui::Context,
-    prompt: &mut crate::model::WritePrompt,
+    prompt: &mut WritePrompt,
     panel: Option<Rect>,
     facts: &Facts,
     skin: Skin<'_>,

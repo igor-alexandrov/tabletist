@@ -10,13 +10,13 @@ use egui::{
     WidgetType, pos2, vec2,
 };
 
-use crate::app::App;
 use crate::edit::{Answer, LEAD, Shown, ShownLine};
 use crate::i18n::{Locale, gettext};
 use crate::keymap::{Command, Keymap, Layout};
-use crate::model::{Action, Dialog, ObjectTab, Workspace};
+use crate::model::{Action, ConflictPrompt, ObjectTab, Workspace};
 use crate::theme::Look;
 use crate::typography::{Text, TextRole};
+use crate::ui::Paint;
 use crate::ui::format::{self, Marks};
 use crate::ui::grid;
 use crate::ui::keys::{consume_press, drop_repeats, take_enter};
@@ -212,26 +212,33 @@ struct Asked<'a> {
     start: Option<usize>,
 }
 
-pub fn show(app: &mut App, ctx: &egui::Context) {
-    let (look, palette, locale) = (app.look, app.palette, app.locale);
+/// Asks `prompt` over the window, and returns the answers to it.
+/// `workspace` is the one the save was made in, `None` where it is closed.
+pub fn show(
+    ctx: &egui::Context,
+    paint: Paint,
+    prompt: &mut ConflictPrompt,
+    workspace: Option<&Workspace>,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let skin = Skin {
         look: &look,
         palette: &palette,
         locale,
     };
-    let Some(Dialog::Conflict(prompt)) = &app.dialog else {
-        return;
-    };
     let at = prompt.at;
-    let shown = app.workspace(prompt.tab).and_then(|workspace| {
+    let shown = workspace.and_then(|workspace| {
         let object = workspace.object_tab(prompt.id)?;
         Some((workspace, object, prompt.rows.get(at)?))
     });
     let Some((workspace, object, conflict)) = shown else {
         // Nothing to draw, so nothing to answer it with: it closes, or it
         // would keep the keyboard for good.
-        app.actions.push(Action::CloseDialog);
-        return;
+        return vec![Action::CloseDialog];
     };
     let gone = conflict.server.is_none();
     // A row that is gone has no line the server changed: it starts at its
@@ -280,9 +287,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     };
     // Placed once for each row: after that the lines are the user's to
     // move.
-    if let Some(Dialog::Conflict(prompt)) = &mut app.dialog {
-        prompt.fresh = false;
-    }
+    prompt.fresh = false;
     // Esc is Keep mine for the row shown: nothing of the user's is dropped
     // and nothing is written. Pressed, not held: what it repeats would
     // keep row after row.
@@ -294,8 +299,11 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         // Each names the row that was drawn: a click or a key a frame
         // behind is no answer to the row that comes after it.
         let answers = answers.into_iter();
-        app.actions
-            .extend(answers.map(|answer| Action::AnswerConflict { at, answer }));
+        answers
+            .map(|answer| Action::AnswerConflict { at, answer })
+            .collect()
+    } else {
+        Vec::new()
     }
 }
 

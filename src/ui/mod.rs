@@ -172,8 +172,22 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 workspace::show(app, ui, tab);
             }
         });
-    connect_dialog::show(app, &ui.ctx().clone());
     let paint = Paint::of(app);
+    // What an open window of the connection has loaded, asked only for a
+    // form that lists names: what it costs is spent on them.
+    let loaded = match &app.dialog {
+        Some(Dialog::Connection(form)) if connect_dialog::lists_names(form) => form
+            .editing
+            .as_ref()
+            .and_then(|conn| app.loaded_tables(conn)),
+        _ => None,
+    };
+    if let Some(Dialog::Connection(form)) = &mut app.dialog {
+        let asked = connect_dialog::show(&ui.ctx().clone(), paint, form, &app.keymap, loaded);
+        app.actions.extend(asked);
+    } else {
+        connect_dialog::fold(ui.ctx());
+    }
     if let Some(Dialog::Password(prompt)) = &mut app.dialog {
         let asked = password_prompt::show(&ui.ctx().clone(), paint, prompt);
         app.actions.extend(asked);
@@ -194,7 +208,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         about::fold(ui.ctx());
     }
     settings::show(app, &ui.ctx().clone());
-    write_prompts::show(app, &ui.ctx().clone());
+    if let Some(Dialog::Leave(prompt)) = &app.dialog {
+        let asked = write_prompts::leave(&ui.ctx().clone(), paint, prompt);
+        app.actions.extend(asked);
+    }
+    if let Some(Dialog::ConfirmWrite(prompt)) = &mut app.dialog {
+        let workspace = crate::app::workspace_in(&app.tabs, prompt.tab);
+        let asked = write_prompts::confirm_write(&ui.ctx().clone(), paint, prompt, workspace);
+        app.actions.extend(asked);
+    }
     if let Some(Dialog::ConfirmEveryRow(prompt)) = &app.dialog {
         let editor_open = app
             .workspace(prompt.tab)
@@ -203,8 +225,19 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let asked = every_row_prompt::show(&ui.ctx().clone(), paint, prompt, editor_open);
         app.actions.extend(asked);
     }
-    conflict_prompt::show(app, &ui.ctx().clone());
-    agent_access::show(app, &ui.ctx().clone());
+    if let Some(Dialog::Conflict(prompt)) = &mut app.dialog {
+        let workspace = crate::app::workspace_in(&app.tabs, prompt.tab);
+        let asked = conflict_prompt::show(&ui.ctx().clone(), paint, prompt, workspace);
+        app.actions.extend(asked);
+    }
+    if let Some(Dialog::AgentAccess(prompt)) = &app.dialog {
+        let current = app
+            .connections
+            .get(&prompt.conn)
+            .map(|saved| app.agents_access(saved));
+        let asked = agent_access::show(&ui.ctx().clone(), paint, prompt, current);
+        app.actions.extend(asked);
+    }
     // Last: it says what was done, whatever is on screen by now.
     toast::show(ui.ctx(), paint);
 }
