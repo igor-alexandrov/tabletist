@@ -124,6 +124,15 @@ Set by run 4, for the routers' plan:
 - The slice is the field the pane reads (`&Keymap`, `&SettingsFile`, `&[Bind]`); the layout comes from the Skin's look where the pane draws, as an argument where a router asks a query.
 - The settings as the window shows them come as `&Settings` (`settings::shown(app)`); several answers that join a field with the rest of `App` go in a struct of the pane's own built in `settings/mod.rs` (`updates::Status` by `update_status`, `agents::Server` by `server`), which the pane's queries take too; a list asked in one state only comes as a closure (`interrupted`).
 
+### The slice of a dialog over a workspace
+
+Set by run 5, for runs 7 and 8 and the routers:
+
+- The slice is the dialog's prompt, `&mut` where the view writes it, `&` otherwise; a module of two dialogs gives each its own function, and the caller matches each `Dialog` variant.
+- The workspace it asks about comes as `Option<&Workspace>`, `None` where it was closed; the view finds the object tab by the prompt's ids and answers one that is gone itself, as it did.
+- The prompt sits in `app.dialog` and the workspace in `app.tabs`, so the caller borrows the two fields apart, the workspace through `crate::app::workspace_in(&app.tabs, tab)` (what `App::workspace` calls). A field such as `app.keymap` is lent beside the prompt the same way.
+- A question joining more of `App` (`loaded_tables`, `agents_access`) is answered before the prompt is borrowed `&mut`; whether the view needs a costly one is a question of its own slice (`connect_dialog::lists_names`). Work on frames the dialog is not open is its `fold(ctx)`.
+
 ### Tests
 
 The headless tests drive the whole `App` through `src/testing.rs`, so they hold behaviour across a run without change. A test changes only where it calls a function whose signature moved. No run changes behaviour, so no run adds a behaviour test; each run states which existing tests draw the views it moved.
@@ -136,7 +145,7 @@ Each run is one PR, from `main`, passing `cargo fmt --all --check`, `cargo clipp
 2. **The other small dialogs:** `host_key_prompt`, `every_row_prompt` (its caller passes whether the SQL tab is still open), `about`, `help` (adds `Paint::layout`, takes `&Keymap`), `toast` (reads only; returns nothing). Done: `2026-10-31-narrow-app-access-2-small-dialogs.md`.
 3. **Object-tab panes:** `row_form` (`take_editor`/`put_editor` take `&mut ObjectTab`), `pending_bar` (its caller passes `lacking`, `save_blocked` and the doubts), `structure` (passes `structure_label`), `ddl`, `review` (its caller passes `review_whole` as a closure, called when Copy is clicked). Done: `2026-10-31-narrow-app-access-3-object-tab-panes.md`, which sets the borrow an object-tab pane takes ("The slice of an object-tab pane", above).
 4. **Settings panes that read `&App`:** `settings/file_pane`, `settings/updates`, `settings/updates_terminal`, `settings/keyboard`, `keyboard_sheet`, `keyboard_terminal`, `settings/agents`. Done: `2026-10-31-narrow-app-access-4-settings-panes.md`, which sets the slice a settings pane takes ("The slice of a settings pane", below).
-5. **Dialogs over a workspace:** `conflict_prompt`, `write_prompts`, `agent_access`, `connect_dialog`.
+5. **Dialogs over a workspace:** `conflict_prompt`, `write_prompts` (Leave and the production confirmation, each its own function), `agent_access` (its caller passes `agents_access`), `connect_dialog` (passes `loaded_tables` and the keymap; `fold` for the frames it is not open). Done: `2026-10-31-narrow-app-access-5-workspace-dialogs.md`, which sets the slice a dialog over a workspace takes ("The slice of a dialog over a workspace", below).
 6. **Workspace and SQL panes:** `object_tabs`, `sql_text`, `sql_editor`, `sql_results`, `history`.
 7. **The grid's view:** `data_view`, then `row_panel`, each its own PR if either is large (they are 2.9k and 3.3k lines, and take `settings`, `keymap`, `dialog` and the calendar).
 8. **Panes beside the routers:** `sidebar`, `agents`, `start`, `picker`, `quick_open`.

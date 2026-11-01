@@ -5,31 +5,34 @@
 
 use egui::{Id, Key, Margin, Modifiers, Rect, Sense, vec2};
 
-use crate::app::App;
 use crate::connections::AgentAccess;
 use crate::i18n::gettext;
 use crate::keymap::{Command, Layout, When};
-use crate::model::{Action, Dialog};
+use crate::model::{Action, AgentAccessBox};
 use crate::typography::{Text, TextRole};
-use crate::ui::{terminal_dialog, widgets};
+use crate::ui::{Paint, terminal_dialog, widgets};
 
 /// The levels, as the box lists them.
 const LEVELS: [(AgentAccess, &str); 2] = [(AgentAccess::Off, "off"), (AgentAccess::Read, "read")];
 
-pub fn show(app: &mut App, ctx: &egui::Context) {
-    let Some(Dialog::AgentAccess(asked)) = &app.dialog else {
-        return;
-    };
+/// Draws the box over the window, and returns what it asks for.
+/// `current` is the level in force on its connection, `None` where the
+/// connection is gone.
+pub fn show(
+    ctx: &egui::Context,
+    paint: Paint,
+    asked: &AgentAccessBox,
+    current: Option<AgentAccess>,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let (conn, name, chosen) = (asked.conn.clone(), asked.name.clone(), asked.chosen);
-    let (look, palette, locale) = (app.look, app.palette, app.locale);
-    let Some(current) = app
-        .connections
-        .get(&conn)
-        .map(|saved| app.agents_access(saved))
-    else {
+    let Some(current) = current else {
         // Deleted while it was open: nothing to set.
-        app.actions.push(Action::CloseDialog);
-        return;
+        return vec![Action::CloseDialog];
     };
     let mut actions = Vec::new();
     // The letters, as typed text: the box's own, by the keymap.
@@ -150,5 +153,5 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 Text::one(&look, widgets::secondary(&look), &words, palette.dim),
             );
         });
-    app.actions.extend(actions);
+    actions
 }

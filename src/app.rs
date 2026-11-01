@@ -323,6 +323,16 @@ fn load_table_lists(path: &std::path::Path) -> (TableLists, Unread) {
     (lists, unread)
 }
 
+/// The workspace of `tab` among `tabs`, as [`App::workspace`] finds it, for
+/// a caller that holds another of `App`'s fields beside it: a dialog's
+/// prompt, `&mut`, over the workspace it asks about.
+pub fn workspace_in(tabs: &[ConnTab], tab: ConnTabId) -> Option<&Workspace> {
+    match &tabs.iter().find(|t| t.id == tab)?.content {
+        ConnTabContent::Workspace(workspace) => Some(workspace),
+        ConnTabContent::Picker(_) => None,
+    }
+}
+
 impl App {
     pub fn new(dirs: AppDirs, loaded: Loaded, backend: Backend) -> Self {
         Self::opened(dirs, loaded, backend, false)
@@ -512,10 +522,7 @@ impl App {
     }
 
     pub fn workspace(&self, tab: ConnTabId) -> Option<&Workspace> {
-        match &self.tabs.iter().find(|t| t.id == tab)?.content {
-            ConnTabContent::Workspace(workspace) => Some(workspace),
-            ConnTabContent::Picker(_) => None,
-        }
+        workspace_in(&self.tabs, tab)
     }
 
     pub fn picker_mut(&mut self, tab: ConnTabId) -> Option<&mut PickerState> {
