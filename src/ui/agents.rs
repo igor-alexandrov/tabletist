@@ -6,12 +6,13 @@
 
 use egui::{Frame, Id, Margin, Rect, pos2, vec2};
 
-use crate::app::App;
+use crate::connections::{SavedConnection, SavedConnections};
 use crate::i18n::{gettext, ngettext};
-use crate::model::{Action, AgentsHere, AgentsView, ConnTabId};
+use crate::keymap::Keymap;
+use crate::model::{Action, AgentsHere, AgentsView, ConnTabId, Workspace};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
-use crate::ui::{states, widgets};
+use crate::ui::{Paint, states, widgets};
 
 /// What the app says once the command is on the clipboard.
 pub const COPIED_COMMAND: &str = "Copied the command";
@@ -40,112 +41,112 @@ const SEGMENT: f32 = 64.0;
 const HEADER: f32 = 40.0;
 const STATUS: f32 = 33.0;
 
-pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
-    let (look, palette, locale) = (app.look, app.palette, app.locale);
-    let Some(here) = app.agents_here(tab) else {
-        return;
-    };
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
-    // As an agent names it: "Bookshop · dev".
-    let connection = app.agents_name(tab).unwrap_or_default();
+/// What the Agents tab asks of the app, answered by its caller.
+pub struct Asked {
+    /// Which state the tab shows.
+    pub here: AgentsHere,
+    /// The connection as an agent names it: "Bookshop · dev".
+    pub connection: String,
+    /// What the connection allows, whether the server runs or not: what
+    /// is in force, where a change made outside the app is held. None for
+    /// a connection saved no more.
+    pub allowed: Option<crate::connections::AgentAccess>,
+    /// The sessions here, those that work elsewhere and the calls made
+    /// here.
+    pub sessions: Vec<tabletist_mcp::SessionInfo>,
+    pub elsewhere: Vec<Elsewhere>,
+    pub calls: Vec<tabletist_mcp::Call>,
+    /// The session the terminal look's list has selected.
+    pub selected: Option<String>,
+    /// How many days the log keeps.
+    pub log_days: u32,
+}
+
+/// Draws the Agents tab of the workspace `tab`, and returns what it asks
+/// for. `saved` are the saved connections, which say the environment an
+/// agent's session runs as and whether a logged call's statement opens.
+pub fn show(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    workspace: &Workspace,
+    saved: &SavedConnections,
+    keymap: &Keymap,
+    asked: Asked,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let Asked {
+        here,
+        connection,
+        allowed,
+        sessions,
+        elsewhere,
+        calls,
+        selected,
+        log_days,
+    } = asked;
     let conn = workspace.conn_id.clone();
     // As the saved connection is, which the agent's session is opened as:
     // the window keeps what it was opened with.
-    let environment = app
-        .connections
+    let environment = saved
         .get(&conn)
         .map_or(workspace.environment, |saved| saved.environment);
     let runs_as = environment.named(crate::env::Platform::Native);
-    // What the connection allows, whether the server runs or not: what is
-    // in force, where a change made outside the app is held.
-    let allowed = app
-        .connections
-        .get(&conn)
-        .map(|saved| app.agents_access(saved));
     let access = look.label(&match allowed {
         Some(crate::connections::AgentAccess::Read) => gettext(locale, "Read"),
         Some(crate::connections::AgentAccess::Off) | None => gettext(locale, "Off"),
     });
-    let sessions: Vec<tabletist_mcp::SessionInfo> =
-        app.agents.here(&conn).into_iter().cloned().collect();
-    let elsewhere: Vec<Elsewhere> = app
-        .agents
-        .elsewhere(&conn)
-        .into_iter()
-        .map(|session| Elsewhere::of(app, session))
-        .collect();
-    let calls: Vec<tabletist_mcp::Call> = app.agents.calls_on(&conn).cloned().collect();
-    let selected = app.agents_selected(tab).map(|session| session.id.clone());
     // Which view shows, and the log's page: borrowed, as it may be long.
-    let agents_tab = app.workspace(tab).and_then(|workspace| {
-        workspace.tabs.iter().find_map(|open| match open {
-            crate::model::Tab::Agents(agents) => Some(agents),
-            crate::model::Tab::Object(_)
-            | crate::model::Tab::Sql(_)
-            | crate::model::Tab::History(_) => None,
-        })
+    let agents_tab = workspace.tabs.iter().find_map(|open| match open {
+        crate::model::Tab::Agents(agents) => Some(agents),
+        crate::model::Tab::Object(_)
+        | crate::model::Tab::Sql(_)
+        | crate::model::Tab::History(_) => None,
     });
     let view = agents_tab.map_or_else(AgentsView::default, |agents| agents.view);
     let empty = crate::model::AgentsLog::default();
     let log = agents_tab.map_or(&empty, |agents| &agents.log);
-    let layout = app.layout();
+    let layout = paint.layout();
     // The tab's own `l`, not the prompt's `:agents log`.
-    let log_key = app.keymap.key_in(
+    let log_key = keymap.key_in(
         layout,
         crate::keymap::Command::ShowAgentsLog,
         crate::keymap::Scope::Agents,
     );
-    let allow_key = app.keymap.key(layout, crate::keymap::Command::AllowAgents);
-    let scope_key = app
-        .keymap
-        .key(layout, crate::keymap::Command::ToggleAgentsLogScope);
-    let filter_key = app
-        .keymap
-        .key(layout, crate::keymap::Command::FilterAgentsLog);
-    let close_key = app
-        .keymap
-        .key(layout, crate::keymap::Command::CloseAgentsLogPane);
-    let details_key = app
-        .keymap
-        .key(layout, crate::keymap::Command::ShowAgentsLogDetails);
-    let open_key = app
-        .keymap
-        .key(layout, crate::keymap::Command::OpenAgentsLogCall);
-    let export_key = app
-        .keymap
-        .key(layout, crate::keymap::Command::ExportAgentsLog);
+    let allow_key = keymap.key(layout, crate::keymap::Command::AllowAgents);
+    let scope_key = keymap.key(layout, crate::keymap::Command::ToggleAgentsLogScope);
+    let filter_key = keymap.key(layout, crate::keymap::Command::FilterAgentsLog);
+    let close_key = keymap.key(layout, crate::keymap::Command::CloseAgentsLogPane);
+    let details_key = keymap.key(layout, crate::keymap::Command::ShowAgentsLogDetails);
+    let open_key = keymap.key(layout, crate::keymap::Command::OpenAgentsLogCall);
+    let export_key = keymap.key(layout, crate::keymap::Command::ExportAgentsLog);
     // The selected call's connection, as it is saved now: whether its
     // statement opens, and the dialect it is read in.
     let call = log
         .selected
         .and_then(|id| log.calls.iter().find(|logged| logged.id == id))
         .map(|logged| {
-            let saved = logged.entry.connection_id.as_ref().and_then(|id| {
-                app.connections
-                    .get(&crate::connections::ConnectionId(id.clone()))
-            });
+            let saved = logged
+                .entry
+                .connection_id
+                .as_ref()
+                .and_then(|id| saved.get(&crate::connections::ConnectionId(id.clone())));
             LogCall {
                 open: logged.entry.sql.as_ref().map(|_| saved.is_some()),
                 dialect: saved.map(|saved| saved.spec.driver.dialect()),
             }
         })
         .unwrap_or_default();
-    let show_key = app.keymap.key(layout, crate::keymap::Command::ShowAgents);
-    let copy_key = app
-        .keymap
-        .key(layout, crate::keymap::Command::CopyAgentCommand);
-    let on_key = app.keymap.key(layout, crate::keymap::Command::TurnAgentsOn);
-    let settings_key = app
-        .keymap
-        .key(layout, crate::keymap::Command::ShowAgentSettings);
-    let stop_key = app
-        .keymap
-        .key(layout, crate::keymap::Command::StopAgentSession);
-    let show_elsewhere_key = app
-        .keymap
-        .key(layout, crate::keymap::Command::ShowAgentsElsewhere);
+    let show_key = keymap.key(layout, crate::keymap::Command::ShowAgents);
+    let copy_key = keymap.key(layout, crate::keymap::Command::CopyAgentCommand);
+    let on_key = keymap.key(layout, crate::keymap::Command::TurnAgentsOn);
+    let settings_key = keymap.key(layout, crate::keymap::Command::ShowAgentSettings);
+    let stop_key = keymap.key(layout, crate::keymap::Command::StopAgentSession);
+    let show_elsewhere_key = keymap.key(layout, crate::keymap::Command::ShowAgentsElsewhere);
     let mut actions = Vec::new();
     egui::Panel::top(Id::new(("agents-header", tab.0)))
         .exact_size(HEADER)
@@ -255,7 +256,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             // The log, whatever the state: past calls stay readable with
             // the server off and access Off.
             if view == AgentsView::Log {
-                let days = app.settings.mcp_log_days;
+                let days = log_days;
                 let keys = LogKeys {
                     scope: &scope_key,
                     filter: &filter_key,
@@ -329,8 +330,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                         (gettext(locale, "Show log"), gettext(locale, "Allow agents…"));
                     let mut buttons = vec![states::key_button(&log_label, &log_key, &look)];
                     // A connection saved no more has nothing to allow.
-                    let saved = app.connections.get(&conn).is_some();
-                    if saved {
+                    if saved.get(&conn).is_some() {
                         let allow = states::key_button(&allow_label, &allow_key, &look).primary();
                         buttons.push(allow);
                     }
@@ -351,7 +351,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     // agents here, and the way to connect one beside it.
                     let listed = (&sessions[..], &elsewhere[..], selected.as_deref());
                     terminal_nav(ui, tab, listed, &show_elsewhere_key, (&look, &palette, locale));
-                    let name = app.workspace(tab).map(|w| w.name.clone()).unwrap_or_default();
+                    let name = workspace.name.clone();
                     egui::CentralPanel::default()
                         .frame(Frame::new().fill(palette.window))
                         .show(ui, |ui| {
@@ -370,7 +370,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                         });
                 }
                 AgentsHere::NoneConnected => {
-                    let name = app.workspace(tab).map(|w| w.name.clone()).unwrap_or_default();
+                    let name = workspace.name.clone();
                     let keys = (&copy_key, &log_key, &settings_key);
                     let said = (&connection[..], &name[..], &access[..]);
                     match none_connected(ui, rect, said, keys, (&look, &palette, locale)) {
@@ -399,7 +399,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 }
             }
         });
-    app.actions.extend(actions);
+    actions
 }
 
 /// The macOS look's status bar: who is here, the server, and the key that
@@ -621,8 +621,7 @@ pub struct Elsewhere {
 }
 
 impl Elsewhere {
-    pub fn of(app: &App, session: &tabletist_mcp::SessionInfo) -> Self {
-        let saved = &app.connections.connections;
+    pub fn of(saved: &[SavedConnection], session: &tabletist_mcp::SessionInfo) -> Self {
         let names = crate::backend::agent_names(saved);
         let on = session.connections.iter().rev().find_map(|id| {
             saved
