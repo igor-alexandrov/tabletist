@@ -1,13 +1,15 @@
 //! The body of a picker tab: the saved connections, grouped, with search,
 //! New connection, and each connection's actions.
 
+use std::collections::HashMap;
+
 use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, WidgetInfo, WidgetType, pos2, vec2};
 
 use crate::app::App;
 use crate::connections::{ConnectionId, SavedConnection, SavedConnections};
 use crate::i18n::gettext;
 use crate::keymap::Command;
-use crate::model::{Action, ConnTabContent};
+use crate::model::{Action, ConnTabContent, PickerState};
 use crate::theme::{self, Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::menu;
@@ -155,28 +157,109 @@ fn ssh_label(connection: &SavedConnection) -> String {
 /// The terminal look's note at the footer's right.
 const TERMINAL_SECRETS: &str = "secrets: keyring";
 
-pub fn show(app: &mut App, ui: &mut egui::Ui) {
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
+/// What the picker's body asks of the app, answered by its router before
+/// the picker's tab is lent.
+struct Asked {
+    /// The picker's tab, which its actions name.
+    tab: crate::model::ConnTabId,
+    /// Where each saved connection opens, and what agents may do on it.
+    openings: HashMap<ConnectionId, Opening>,
+}
+
+impl Asked {
+    /// Where `connection`'s row opens: in the picker's tab, where no
+    /// answer was built for it.
+    fn opening(&self, connection: &SavedConnection) -> Opening {
+        self.openings
+            .get(&connection.id)
+            .copied()
+            .unwrap_or(Opening {
+                tab: self.tab,
+                open: None,
+                agents: None,
+            })
+    }
+}
+
+/// Builds the body's answers: each saved connection's tab, if one shows
+/// it, and what agents may do on it where they can reach the app.
+fn asked(app: &App) -> Asked {
     let tab = app.active_tab_id();
-    let index = app.active;
-    let total = app.connections.connections.len();
-    let mut actions = Vec::new();
+    let openings = app
+        .connections
+        .connections
+        .iter()
+        .map(|connection| {
+            let opening = Opening {
+                tab,
+                open: app.tab_showing(&connection.id),
+                agents: crate::endpoint::AVAILABLE.then(|| app.agents_access(connection)),
+            };
+            (connection.id.clone(), opening)
+        })
+        .collect();
+    Asked { tab, openings }
+}
+
+/// A picker tab's router: the backdrop and the header's frame, the
+/// notices under it, the header's title, count and New connection, then
+/// the body. The header's contents come after the notices, so New
+/// connection keeps its place after their buttons in the focus order.
+pub fn show(app: &mut App, ui: &mut egui::Ui) {
+    let paint = super::Paint::of(app);
     let full = ui.max_rect();
+    let header = frame(ui, &paint, full);
+    // The notices, under the header: the window's own buttons keep its line.
+    let mut under = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(
+        pos2(full.left(), header.bottom()),
+        full.max,
+    )));
+    let (height, noticed) = super::notices(
+        &mut under,
+        paint,
+        app.notice.as_deref(),
+        &app.agents_held,
+        &app.connections.connections,
+    );
+    app.actions.extend(noticed);
     // macOS: the header is the title bar, beside the window buttons.
-    let zoom = ui.ctx().zoom_factor();
-    let inset = app.titlebar.inset / zoom;
+    let inset = app.titlebar.inset / ui.ctx().zoom_factor();
+    let total = app.connections.connections.len();
+    let (line, headed) = self::header(ui, paint, header, inset, total, &app.keymap);
+    app.actions.extend(headed);
+    let asked = self::asked(app);
+    let index = app.active;
+    let ConnTabContent::Picker(picker) = &mut app.tabs[index].content else {
+        return;
+    };
+    let room = Room {
+        full,
+        below: header.bottom() + height,
+        line,
+    };
+    let bodied = body(
+        ui,
+        paint,
+        room,
+        picker,
+        &app.connections,
+        &app.keymap,
+        &asked,
+    );
+    app.actions.extend(bodied);
+}
+
+/// The picker's backdrop and its header's frame: the header's fill, its
+/// rule and the area that drags the window. Returns the header's rect.
+fn frame(ui: &mut egui::Ui, paint: &super::Paint, full: Rect) -> Rect {
+    let (palette, look) = (&paint.palette, &paint.look);
     let backdrop = if look.terminal {
         palette.window
     } else {
         palette.panel.lerp_to_gamma(palette.surface, 0.64)
     };
     ui.painter().rect_filled(full, CornerRadius::ZERO, backdrop);
-    let side = side(&look);
-
-    // Header.
-    let header = Rect::from_min_size(full.min, vec2(full.width(), header_height(&look)));
+    let header = Rect::from_min_size(full.min, vec2(full.width(), header_height(look)));
     let drag = ui.interact(
         header,
         ui.id().with("picker-drag"),
@@ -193,20 +276,38 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     ui.painter()
         .rect_filled(header, CornerRadius::ZERO, header_fill);
     widgets::hline(ui, header.x_range(), header.bottom() - 0.5, palette.outline);
-    // The notices, under the header: the window's own buttons keep its line.
-    let mut under = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(
-        pos2(full.left(), header.bottom()),
-        full.max,
-    )));
-    let (height, asked) = super::notices(
-        &mut under,
-        super::Paint::of(app),
-        app.notice.as_deref(),
-        &app.agents_held,
-        &app.connections.connections,
-    );
-    app.actions.extend(asked);
-    let below = header.bottom() + height;
+    header
+}
+
+/// Where the header's contents sit, which the macOS search shares.
+#[derive(Clone, Copy)]
+struct Line {
+    /// The line they centre on.
+    y: f32,
+    /// Where the count ends.
+    count_right: f32,
+    /// Where New connection begins.
+    new_left: f32,
+}
+
+/// The header's contents in `header`: the title, how many connections
+/// there are (`total`) and New connection, `inset` clear of the window's
+/// buttons. Returns where they sit and what they ask for.
+fn header(
+    ui: &mut egui::Ui,
+    paint: super::Paint,
+    header: Rect,
+    inset: f32,
+    total: usize,
+    keymap: &crate::keymap::Keymap,
+) -> (Line, Vec<Action>) {
+    let super::Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let mut actions = Vec::new();
+    let side = side(&look);
     let y = header.top() + header_line(&look);
     let mut x = header.left() + side.max(inset + 12.0);
     let title = if look.terminal {
@@ -237,23 +338,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     } else {
         gettext(locale, "New connection").into_owned()
     };
-    // The picker's keys, as the keymap writes them for the look.
-    let key = |command: Command| app.keymap.key(app.layout(), command);
-    let new_key = key(Command::NewConnection);
-    let (connect, edit) = (key(Command::Connect), key(Command::EditConnection));
-    let (duplicate, delete) = (
-        key(Command::DuplicateConnection),
-        key(Command::DeleteConnection),
-    );
-    let (moves, filter) = (
-        key(Command::MoveInConnections),
-        key(Command::FilterConnections),
-    );
-    let agent_access = key(Command::ChangeAgentAccess);
-    let answers = (
-        key(Command::ConfirmDeleteConnection),
-        key(Command::KeepConnection),
-    );
+    let new_key = keymap.key(paint.layout(), Command::NewConnection);
     let new = if look.terminal {
         ButtonSpec::new(&new_label)
             .primary()
@@ -280,67 +365,117 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if button.clicked() {
         actions.push(Action::NewConnection);
     }
-    // Search.
-    if let ConnTabContent::Picker(picker) = &mut app.tabs[index].content {
-        let focus = std::mem::take(&mut picker.focus_search);
-        let (field, style, hint) = if look.terminal {
-            // The terminal filters on its own line under the header.
-            let line =
-                Rect::from_min_size(pos2(full.left(), below), vec2(full.width(), FILTER_LINE));
-            widgets::hline(ui, line.x_range(), line.bottom() - 0.5, palette.outline);
-            (
-                Rect::from_min_max(
-                    pos2(line.left() + side - 8.0, line.top()),
-                    pos2(line.right() - side, line.bottom() - 1.0),
-                ),
-                widgets::FieldStyle {
-                    fill: None,
-                    boxed: false,
-                    role: TextRole::OBody,
-                },
-                gettext(locale, "filter connections"),
-            )
-        } else {
-            // 24 past the count (and the header's 12 gap).
-            let left = x + 12.0 + 24.0;
-            // The design's 320 is its content: with 10 of padding and a
-            // 1 pt border each side the box is 342 by 36.
-            let right = (left + 342.0).min(place.left() - 16.0);
-            (
-                Rect::from_min_max(pos2(left, y - 18.0), pos2(right.max(left), y + 18.0)),
-                widgets::FieldStyle {
-                    fill: Some(palette.panel.lerp_to_gamma(palette.surface, 0.36)),
-                    boxed: true,
-                    role: TextRole::UiBody,
-                },
-                gettext(locale, "Find connection…"),
-            )
-        };
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field));
-        let response = widgets::filter_field(
-            &mut child,
-            &mut picker.search,
-            &hint,
-            field.size(),
-            style,
-            &look,
-            &palette,
-        );
-        response
-            .widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, true, "Search connections"));
-        if focus {
-            response.request_focus();
-        }
-    }
-    let (search, selected, folded, deleting) = match &app.tabs[index].content {
-        ConnTabContent::Picker(picker) => (
-            picker.search.clone(),
-            picker.selected.clone(),
-            picker.folded.clone(),
-            picker.deleting.clone(),
-        ),
-        ConnTabContent::Workspace(_) => (String::new(), None, Vec::new(), None),
+    let line = Line {
+        y,
+        count_right: x,
+        new_left: place.left(),
     };
+    (line, actions)
+}
+
+/// Where the body goes: the picker's whole rect, how far down the header
+/// and the notices reach, and the header's line.
+#[derive(Clone, Copy)]
+struct Room {
+    full: Rect,
+    below: f32,
+    line: Line,
+}
+
+/// The picker's body in `room`: the search, which edits `picker`'s, the
+/// footer with its keys or the question before a delete, and the list of
+/// the `saved` connections. Returns what it asks for.
+fn body(
+    ui: &mut egui::Ui,
+    paint: super::Paint,
+    room: Room,
+    picker: &mut PickerState,
+    saved: &SavedConnections,
+    keymap: &crate::keymap::Keymap,
+    asked: &Asked,
+) -> Vec<Action> {
+    let super::Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let Room { full, below, line } = room;
+    let (y, x) = (line.y, line.count_right);
+    let tab = asked.tab;
+    let mut actions = Vec::new();
+    let side = side(&look);
+    // The picker's keys, as the keymap writes them for the look.
+    let key = |command: Command| keymap.key(paint.layout(), command);
+    let new_key = key(Command::NewConnection);
+    let (connect, edit) = (key(Command::Connect), key(Command::EditConnection));
+    let (duplicate, delete) = (
+        key(Command::DuplicateConnection),
+        key(Command::DeleteConnection),
+    );
+    let (moves, filter) = (
+        key(Command::MoveInConnections),
+        key(Command::FilterConnections),
+    );
+    let agent_access = key(Command::ChangeAgentAccess);
+    let answers = (
+        key(Command::ConfirmDeleteConnection),
+        key(Command::KeepConnection),
+    );
+    // Search.
+    let focus = std::mem::take(&mut picker.focus_search);
+    let (field, style, hint) = if look.terminal {
+        // The terminal filters on its own line under the header.
+        let line = Rect::from_min_size(pos2(full.left(), below), vec2(full.width(), FILTER_LINE));
+        widgets::hline(ui, line.x_range(), line.bottom() - 0.5, palette.outline);
+        (
+            Rect::from_min_max(
+                pos2(line.left() + side - 8.0, line.top()),
+                pos2(line.right() - side, line.bottom() - 1.0),
+            ),
+            widgets::FieldStyle {
+                fill: None,
+                boxed: false,
+                role: TextRole::OBody,
+            },
+            gettext(locale, "filter connections"),
+        )
+    } else {
+        // 24 past the count (and the header's 12 gap).
+        let left = x + 12.0 + 24.0;
+        // The design's 320 is its content: with 10 of padding and a
+        // 1 pt border each side the box is 342 by 36.
+        let right = (left + 342.0).min(line.new_left - 16.0);
+        (
+            Rect::from_min_max(pos2(left, y - 18.0), pos2(right.max(left), y + 18.0)),
+            widgets::FieldStyle {
+                fill: Some(palette.panel.lerp_to_gamma(palette.surface, 0.36)),
+                boxed: true,
+                role: TextRole::UiBody,
+            },
+            gettext(locale, "Find connection…"),
+        )
+    };
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field));
+    let response = widgets::filter_field(
+        &mut child,
+        &mut picker.search,
+        &hint,
+        field.size(),
+        style,
+        &look,
+        &palette,
+    );
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, true, "Search connections"));
+    if focus {
+        response.request_focus();
+    }
+    let PickerState {
+        search,
+        selected,
+        folded,
+        deleting,
+        ..
+    } = &*picker;
 
     // Footer. While the list asks whether to delete a connection, the
     // question stands in place of the keys, and the footer grows to hold
@@ -349,7 +484,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let skin = (&look, &palette, locale);
     let question = deleting
         .as_ref()
-        .and_then(|conn| app.connections.get(conn))
+        .and_then(|conn| saved.get(conn))
         .map(|connection| {
             let width = full.width() - 2.0 * footer_side;
             DeleteQuestion::lay(ui, connection, &answers, skin, width)
@@ -439,8 +574,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     };
     let body = Rect::from_min_max(pos2(full.left(), top), pos2(full.right(), footer.top()));
     let mut list = ui.new_child(egui::UiBuilder::new().max_rect(body));
-    let found = app.connections.search(&search);
-    if app.connections.connections.is_empty() {
+    let found = saved.search(search);
+    if saved.connections.is_empty() {
         // First launch: why the list is empty, and the one next step.
         let keyring = if look.faces.typeface == theme::Typeface::Plex {
             gettext(locale, "Tabletist stores passwords in the macOS Keychain.")
@@ -512,14 +647,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                             terminal_row(
                                 ui,
                                 connection,
-                                &app.connections,
+                                saved,
                                 selected.as_ref(),
-                                Opening {
-                                    tab,
-                                    open: app.tab_showing(&connection.id),
-                                    agents: crate::endpoint::AVAILABLE
-                                        .then(|| app.agents_access(connection)),
-                                },
+                                asked.opening(connection),
                                 skin,
                                 &mut actions,
                             );
@@ -544,14 +674,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                                 card.shrink(1.0),
                                 index,
                                 connection,
-                                &app.connections,
+                                saved,
                                 selected.as_ref(),
-                                Opening {
-                                    tab,
-                                    open: app.tab_showing(&connection.id),
-                                    agents: crate::endpoint::AVAILABLE
-                                        .then(|| app.agents_access(connection)),
-                                },
+                                asked.opening(connection),
                                 skin,
                                 &mut actions,
                             );
@@ -571,7 +696,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 ui.add_space(20.0);
             });
     }
-    app.actions.extend(actions);
+    actions
 }
 
 /// A group's heading: a chevron that folds it, its title and count.
