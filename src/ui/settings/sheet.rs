@@ -174,7 +174,7 @@ pub(super) fn show(
             // laid out after it: its fill waits here, under its words, for
             // that height.
             let fill = ui.painter().add(egui::Shape::Noop);
-            let offered = super::updates::offered(app);
+            let offered = super::updates::offered(super::update_status(app));
             nav(ui, (room.min, offered), dialog.pane, &skin, actions);
             // No bottom of its own: its rows end where `content` is told to
             // end them. The sheet's bottom is the one the frame before left
@@ -243,18 +243,30 @@ pub(super) fn show(
                 ),
                 SettingsPane::Keyboard => super::keyboard_sheet::content(
                     &mut pane,
-                    app,
+                    &app.keymap,
                     &dialog.keyboard,
                     limit,
                     &skin,
                     actions,
                 ),
-                SettingsPane::Agents => {
-                    super::agents::content(&mut pane, app, dialog.agent, limit, &skin, actions);
-                }
-                SettingsPane::Updates => {
-                    super::updates::content(&mut pane, app, limit, &skin, actions);
-                }
+                SettingsPane::Agents => super::agents::content(
+                    &mut pane,
+                    &super::shown(app),
+                    super::server(app),
+                    dialog.agent,
+                    limit,
+                    &skin,
+                    actions,
+                ),
+                SettingsPane::Updates => super::updates::content(
+                    &mut pane,
+                    super::update_status(app),
+                    &super::shown(app),
+                    || app.work_in_progress(),
+                    limit,
+                    &skin,
+                    actions,
+                ),
             }
             let rows = pane.min_rect().bottom();
             // Lower than the rows' end, unless a window too short for even
@@ -1991,7 +2003,7 @@ fn keyboard_footer(
         Some(crate::model::Dialog::Settings(dialog)) => dialog.keyboard.resetting,
         _ => false,
     };
-    let changed = super::keyboard::changed_count(app);
+    let changed = super::keyboard::changed_count(&app.keymap, app.layout());
     let parts: Vec<(String, Option<(egui::Color32, Action)>)> = if resetting {
         let lines = u32::try_from(changed).unwrap_or(u32::MAX);
         let asks = ngettext(

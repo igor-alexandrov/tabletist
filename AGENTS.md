@@ -9,8 +9,16 @@ MySQL, SQLite) on egui/eframe and fastframe. The design lives in
 
 - `src/ui/` draws views and pushes `Action`s onto `app.actions`. `App::apply`
   in `src/app.rs` applies them after drawing. Do not mutate application state
-  from inside a view, apart from text a field is editing and the cursor
-  position that field reports.
+  from inside a view, apart from the value a control is editing in place
+  (a field's text, a checkbox, a dropdown's choice, as egui's widgets
+  write them) and the cursor position a field reports.
+- A view takes `ui::Paint` (locale, palette, look), the ids it names and a
+  borrow of the state it shows (a dialog's prompt, an object tab, a
+  workspace), not `App`, and returns the `Action`s it asks for; its caller
+  finds that state and extends `app.actions` with them. Views that still
+  take `App` move to this one at a time
+  (`docs/superpowers/plans/2026-10-31-narrow-app-access.md`). A new view
+  follows it, and a view never gains an `App` argument.
 - Database, network, and disk work runs on the backend runtime
   (`src/backend.rs`), never on the UI thread.
 - `crates/tabletist-db` has no UI dependencies.

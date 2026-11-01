@@ -3,11 +3,10 @@
 
 use egui::{Sense, WidgetInfo, WidgetType, pos2, vec2};
 
-use crate::app::App;
 use crate::i18n::gettext;
-use crate::model::{Action, Dialog};
+use crate::model::Action;
 use crate::typography::Text;
-use crate::ui::widgets;
+use crate::ui::{Paint, widgets};
 
 /// The art every icon size is made from.
 const ICON: &[u8] = include_bytes!("../../assets/icon/tabletist.svg");
@@ -53,16 +52,19 @@ pub fn repository() -> &'static str {
     url.strip_prefix("https://").unwrap_or(url)
 }
 
-pub fn show(app: &mut App, ctx: &egui::Context) {
-    if !matches!(app.dialog, Some(Dialog::About)) {
-        // The next About starts with the notices folded, whatever took
-        // its place.
-        ctx.data_mut(|data| data.remove::<bool>(notices_id()));
-        return;
-    }
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
+/// Folds the fonts' notices while About is not open: the next About starts
+/// with them folded, whatever took its place.
+pub fn fold(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.remove::<bool>(notices_id()));
+}
+
+/// Draws the dialog over the window, and returns what it asks for.
+pub fn show(ctx: &egui::Context, paint: Paint) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let mut actions = Vec::new();
     let modal = widgets::modal(egui::Id::new("about"), &look, &palette).show(ctx, |ui| {
         ui.set_width(380.0);
@@ -128,7 +130,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     {
         actions.push(Action::CloseDialog);
     }
-    app.actions.extend(actions);
+    actions
 }
 
 /// The link that shows the bundled fonts' licences, and under it, once it
@@ -186,6 +188,7 @@ fn centered(ui: &mut egui::Ui, mut text: Text) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Dialog;
     use crate::testing::Harness;
     use egui::{Key, Modifiers};
 

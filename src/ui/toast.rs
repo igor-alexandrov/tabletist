@@ -6,8 +6,7 @@
 
 use egui::{Align2, Area, Frame, Id, Margin, Order, vec2};
 
-use crate::app::App;
-use crate::ui::widgets;
+use crate::ui::{Paint, widgets};
 
 /// How long a toast is said, in seconds.
 pub const SECONDS: f64 = 4.0;
@@ -62,14 +61,14 @@ pub fn said(ctx: &egui::Context) -> Option<String> {
 /// dialog too: the text colour filled, the window's colour written on it,
 /// as the primary button is. It takes neither the pointer nor the
 /// keyboard. The terminal look draws none: its status line says it.
-pub fn show(app: &App, ctx: &egui::Context) {
-    if app.look.terminal {
+pub fn show(ctx: &egui::Context, paint: Paint) {
+    if paint.look.terminal {
         return;
     }
     let Some(text) = said(ctx) else {
         return;
     };
-    let (look, palette) = (&app.look, &app.palette);
+    let (look, palette) = (&paint.look, &paint.palette);
     Area::new(id())
         .order(Order::Tooltip)
         .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -LIFT))

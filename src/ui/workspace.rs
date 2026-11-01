@@ -2,12 +2,12 @@
 //! of a lost connection, the sidebar, the object tabs and the open object.
 
 use egui::{CornerRadius, Frame, Margin, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
-use tabletist_db::TlsMode;
+use tabletist_db::{Access, TlsMode};
 
 use crate::app::App;
 use crate::i18n::gettext;
 use crate::keymap::Command;
-use crate::model::{Action, ConnTabId, ObjectView, SessionStatus};
+use crate::model::{Action, ConnTabId, ObjectView, SessionStatus, TabId};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Region};
@@ -112,25 +112,27 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     }
                     if !look.terminal {
                         match view {
-                            Some(ObjectView::Ddl) => super::ddl::footer(app, ui, tab, object_tab),
+                            Some(ObjectView::Ddl) => ddl_footer(app, ui, tab, object_tab),
                             _ => super::data_view::footer(app, ui, tab, object_tab),
                         }
                         // Bottom panels stack upwards: the bar of pending
                         // changes stands on the footer.
-                        super::pending_bar::show(app, ui, tab, object_tab);
+                        pending_bar(app, ui, tab, object_tab);
                     }
                     // And what a save would run stands on the bar: in the
                     // terminal look, on the status line.
-                    super::review::show(app, ui, tab, object_tab);
+                    review(app, ui, tab, object_tab);
                     egui::CentralPanel::default()
                         .frame(Frame::new().fill(app.palette.window))
                         .show(ui, |ui| match view {
-                            Some(ObjectView::Structure) => {
-                                super::structure::show(app, ui, tab, object_tab)
-                            }
-                            Some(ObjectView::Ddl) => super::ddl::show(app, ui, tab, object_tab),
+                            Some(ObjectView::Structure) => structure(app, ui, tab, object_tab),
+                            Some(ObjectView::Ddl) => ddl(app, ui, tab, object_tab),
                             _ => {
-                                if super::filter_bar::is_open(app, tab, object_tab) {
+                                let open = app
+                                    .workspace(tab)
+                                    .and_then(|workspace| workspace.object_tab(object_tab))
+                                    .is_some_and(super::filter_bar::is_open);
+                                if open {
                                     let palette = app.palette;
                                     egui::Panel::top(egui::Id::new((
                                         "filter-bar",
@@ -145,7 +147,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                             .inner_margin(Margin::symmetric(12, 8)),
                                     )
                                     .show(ui, |ui| {
-                                        super::filter_bar::show(app, ui, tab, object_tab);
+                                        let paint = super::Paint::of(app);
+                                        if let Some(object) =
+                                            app.workspace_mut(tab).and_then(|workspace| {
+                                                workspace.object_tab_mut(object_tab)
+                                            })
+                                        {
+                                            let asked =
+                                                super::filter_bar::show(ui, paint, tab, object);
+                                            app.actions.extend(asked);
+                                        }
                                         let rect = ui.max_rect().expand2(vec2(12.0, 8.0));
                                         widgets::hline(
                                             ui,
@@ -162,6 +173,90 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 None => super::start::show(app, ui, tab),
             }
         });
+}
+
+/// The DDL view's footer, handed its tab.
+fn ddl_footer(app: &App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let Some(workspace) = app.workspace(tab) else {
+        return;
+    };
+    if let Some(object) = workspace.object_tab(object_tab) {
+        super::ddl::footer(ui, paint, tab, object, workspace.driver);
+    }
+}
+
+/// The bar of pending changes, handed its tab and what it asks of the rest.
+fn pending_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let shown = app.workspace(tab).and_then(|workspace| {
+        let object = workspace
+            .object_tab(object_tab)
+            .filter(|object| super::pending_bar::shows(object))?;
+        Some((workspace, object))
+    });
+    let asked = match shown {
+        Some((workspace, object)) => {
+            let asked = super::pending_bar::Asked {
+                doubts: super::key_picker::unmatched(workspace, object).len(),
+                blocked: app.save_blocked(tab, object_tab),
+                lacking: app.lacking(tab, object_tab),
+            };
+            super::pending_bar::show(ui, paint, tab, object, asked)
+        }
+        None => {
+            super::pending_bar::pass(ui);
+            Vec::new()
+        }
+    };
+    app.actions.extend(asked);
+}
+
+/// The Review SQL panel, handed its tab.
+fn review(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let shown = app
+        .workspace(tab)
+        .and_then(|workspace| Some((workspace, workspace.object_tab(object_tab)?)));
+    let asked = match shown {
+        Some((workspace, object)) => {
+            let read_only = workspace.access == Access::ReadOnly;
+            let whole = || app.review_whole(tab, object_tab);
+            super::review::show(ui, paint, tab, object, read_only, whole)
+        }
+        None => {
+            super::review::pass(ui);
+            Vec::new()
+        }
+    };
+    app.actions.extend(asked);
+}
+
+/// The Structure view, handed its tab and the label the app resolves.
+fn structure(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let shown = app
+        .workspace(tab)
+        .and_then(|workspace| Some((workspace, workspace.object_tab(object_tab)?)));
+    let Some((workspace, object)) = shown else {
+        return;
+    };
+    let label = app.structure_label(tab, object_tab);
+    let asked = super::structure::show(ui, paint, tab, workspace, object, label, &app.keymap);
+    app.actions.extend(asked);
+}
+
+/// The DDL view, handed its tab.
+fn ddl(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let Some(workspace) = app.workspace(tab) else {
+        return;
+    };
+    let Some(object) = workspace.object_tab(object_tab) else {
+        return;
+    };
+    let asked = super::ddl::show(ui, paint, tab, object, workspace.driver);
+    app.actions.extend(asked);
 }
 
 /// A tab that has not shown its content yet: how connecting goes, or why

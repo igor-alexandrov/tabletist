@@ -6,16 +6,15 @@
 use egui::{Frame, Id, Rect, Sense, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::Error;
 
-use crate::app::App;
 use crate::edit::{Note, Saved};
 use crate::i18n::{Locale, gettext, ngettext};
-use crate::model::{Action, ConnTabId, ObjectTab, SaveBlock, TabId};
+use crate::model::{Action, ConnTabId, ObjectTab, SaveBlock};
 use crate::theme::Icon;
 use crate::typography::{Text, TextRole};
-use crate::ui::format;
 use crate::ui::menu;
 use crate::ui::states::{self, Tone};
 use crate::ui::widgets::{self, ButtonSpec};
+use crate::ui::{Paint, format};
 
 /// The bar's height.
 const HEIGHT: f32 = 48.0;
@@ -306,45 +305,56 @@ enum Buttons {
     Folded,
 }
 
-/// The bar of the table tab `id`, while it has something to say. A bottom
+/// What the bar says that its tab does not answer alone: its caller asks
+/// the workspace and the app.
+pub struct Asked {
+    /// How many of the tab's rows a save may not find by their key
+    /// (`key_picker::unmatched`).
+    pub doubts: usize,
+    /// Why a save cannot run now (`App::save_blocked`).
+    pub blocked: Option<SaveBlock>,
+    /// The columns the new rows still need a value in (`App::lacking`).
+    pub lacking: Vec<String>,
+}
+
+/// The bar of the table tab `object`, while it has something to say. A bottom
 /// panel: called after the footer, it stands above it.
 ///
 /// It is as wide as the grid, which a small window and the row panel leave
 /// little of. The keys of Save and Discard all go first, then what the
 /// bar says, and the buttons beside Save fold into a menu once they have
 /// no room themselves.
-pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
-    let (locale, palette, look) = (app.locale, app.palette, app.look);
-    let object = app
-        .workspace(tab)
-        .and_then(|workspace| workspace.object_tab(id))
-        .filter(|object| {
-            let edits = &object.edits;
-            edits.pending() || edits.saving.is_some() || edits.note.is_some()
-        });
-    let Some(object) = object else {
-        // A panel takes one of its parent's ids. Passed over while there is
-        // no bar, so what is drawn after it is the same widget with the bar
-        // and without: a field that has the keyboard when the first change
-        // is made keeps it.
-        ui.skip_ahead_auto_ids(1);
-        return;
-    };
+///
+/// Drawn only while [`shows`] says so, in the workspace `tab`; [`pass`]
+/// stands in for it in the other frames.
+pub fn show(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    object: &ObjectTab,
+    asked: Asked,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let Asked {
+        doubts,
+        blocked,
+        lacking,
+    } = asked;
+    let id = object.id;
     let edits = &object.edits;
     let saving = edits.saving.is_some();
     let pending = edits.pending();
     let reviewing = edits.reviewing;
     let counts = edits.counts();
-    let doubts = app.workspace(tab).map_or(0, |workspace| {
-        crate::ui::key_picker::unmatched(workspace, object).len()
-    });
     let note = edits
         .note
         .as_ref()
         .map(|note| note_text(note, object, locale));
-    let blocked = app
-        .save_blocked(tab, id)
-        .map(|block| block_text(block, counts.to_fix, locale));
+    let blocked = blocked.map(|block| block_text(block, counts.to_fix, locale));
     // The row the bar's line is of, where its delete was refused and the
     // rows that hold it were counted.
     let held = match &edits.note {
@@ -358,7 +368,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     };
     let open_rows = gettext(locale, "Open rows");
     // What the tab's new rows still need: the column, or how many.
-    let lacking = app.lacking(tab, id);
     let needs = match lacking.as_slice() {
         [] => None,
         [one] => Some(format!("{one} {}", gettext(locale, "is required"))),
@@ -679,7 +688,22 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                 said(ui, (x, y), note_room, note, &look, &palette);
             }
         });
-    app.actions.extend(actions);
+    actions
+}
+
+/// Whether the bar of `object` is drawn: while it has something to say.
+pub fn shows(object: &ObjectTab) -> bool {
+    let edits = &object.edits;
+    edits.pending() || edits.saving.is_some() || edits.note.is_some()
+}
+
+/// What the bar does in a frame it is not drawn.
+pub fn pass(ui: &mut egui::Ui) {
+    // A panel takes one of its parent's ids. Passed over while there is
+    // no bar, so what is drawn after it is the same widget with the bar
+    // and without: a field that has the keyboard when the first change
+    // is made keeps it.
+    ui.skip_ahead_auto_ids(1);
 }
 
 /// Takes `width` of the `left` room and the gap after it. Says whether

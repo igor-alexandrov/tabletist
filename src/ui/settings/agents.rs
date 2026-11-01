@@ -5,12 +5,11 @@
 
 use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 
-use crate::app::App;
 use crate::endpoint::Agent;
 use crate::i18n::{gettext, ngettext};
 use crate::keymap::Command;
 use crate::model::{Action, AgentsView};
-use crate::settings::OptionId;
+use crate::settings::{OptionId, Settings};
 use crate::theme::Icon;
 use crate::typography::{Laid, Text, TextRole};
 use crate::ui::widgets::{self, ButtonSpec, Segment};
@@ -34,17 +33,28 @@ const SWITCH_GAP: f32 = 16.0;
 /// What the toast says once an agent's setup is on the clipboard.
 const COPIED_ENTRY: &str = "Copied the entry for mcp.json";
 
-/// The pane, from the top of `ui` down. What is under its title scrolls
-/// when it is taller than `limit` leaves it.
+/// What the pane says of the server beside the settings: whether it runs,
+/// how many agents are connected to it, and whether a connection window
+/// is open, whose Agents tab and log the pane's buttons show.
+#[derive(Clone, Copy)]
+pub(super) struct Server {
+    pub(super) on: bool,
+    pub(super) connected: usize,
+    pub(super) window: bool,
+}
+
+/// The pane, from the top of `ui` down, with `settings` as the window
+/// shows them. What is under its title scrolls when it is taller than
+/// `limit` leaves it.
 pub(super) fn content(
     ui: &mut Ui,
-    app: &App,
+    settings: &Settings,
+    server: Server,
     agent: Agent,
     limit: f32,
     skin: &Skin,
     actions: &mut Vec<Action>,
 ) {
-    let settings = super::shown(app);
     title(ui, settings.mcp_enabled, skin, actions);
     ui.add_space(14.0);
     let room = (limit - ui.cursor().top()).max(ROWS_MIN);
@@ -53,7 +63,7 @@ pub(super) fn content(
         .max_height(room)
         .auto_shrink([false, true])
         .show(ui, |ui| {
-            status(ui, app, skin, actions);
+            status(ui, server, skin, actions);
             heading(ui, "Connect an agent", skin);
             connect(ui, agent, skin, actions);
             heading(ui, "Access", skin);
@@ -66,13 +76,13 @@ pub(super) fn content(
             let reason = gettext(skin.locale, super::NO_WINDOW);
             let after = After {
                 text: &show_log,
-                disabled: app.agents_window().is_none().then_some(&*reason),
+                disabled: (!server.window).then_some(&*reason),
                 action: Action::ShowAgentsFromSettings(AgentsView::Log),
             };
             let log = OptionId::LogDays;
-            row(ui, log, true, column, &settings, skin, actions, Some(after));
+            row(ui, log, true, column, settings, skin, actions, Some(after));
             let notify = OptionId::AgentsNotify;
-            row(ui, notify, false, column, &settings, skin, actions, None);
+            row(ui, notify, false, column, settings, skin, actions, None);
         });
 }
 
@@ -163,7 +173,7 @@ fn boxed(ui: &mut Ui, height: f32, filled: bool, skin: &Skin) -> Rect {
 /// Whether the server runs, how agents reach it and who is connected, with
 /// Show Agents tab: the window's in front, or with Connections in front the
 /// last window's, disabled with no window open.
-fn status(ui: &mut Ui, app: &App, skin: &Skin, actions: &mut Vec<Action>) {
+fn status(ui: &mut Ui, server: Server, skin: &Skin, actions: &mut Vec<Action>) {
     let Skin {
         look,
         palette,
@@ -171,7 +181,7 @@ fn status(ui: &mut Ui, app: &App, skin: &Skin, actions: &mut Vec<Action>) {
         ..
     } = *skin;
     let role = TextRole::UiBody;
-    let on = app.agents_on();
+    let on = server.on;
     let height = look.control_height + 2.0 * 10.0;
     let rect = boxed(ui, height, true, skin);
     let y = rect.center().y;
@@ -195,7 +205,7 @@ fn status(ui: &mut Ui, app: &App, skin: &Skin, actions: &mut Vec<Action>) {
     let label = gettext(locale, "Show Agents tab");
     let reason = gettext(locale, super::NO_WINDOW);
     let mut button = ButtonSpec::new(&label);
-    if app.agents_window().is_none() {
+    if !server.window {
         button = button.disabled(&reason);
     }
     let width = button.width(ui, look);
@@ -208,7 +218,7 @@ fn status(ui: &mut Ui, app: &App, skin: &Skin, actions: &mut Vec<Action>) {
     }
     let mut right = place.left() - 12.0;
     if on {
-        let count = app.agents.sessions.len();
+        let count = server.connected;
         let (said, color) = match count {
             0 => (
                 gettext(locale, "No agents connected").into_owned(),
