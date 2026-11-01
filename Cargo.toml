@@ -165,6 +165,10 @@ apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
 # read_quietly`), which the store has no call for. The version and the
 # features the store builds: nothing new is built.
 security-framework = "3.7"
+# A press on the bar that leads the window: the drag starts on the press,
+# as AppKit needs, and a double-click does what System Settings says. The
+# same tag as the other fastframe crates; move them together.
+fastframe-titlebar = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
 # The unified title bar the tabs share with the window buttons.
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSGeometry"] }

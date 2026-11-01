@@ -260,14 +260,7 @@ fn frame(ui: &mut egui::Ui, paint: &super::Paint, full: Rect) -> Rect {
     };
     ui.painter().rect_filled(full, CornerRadius::ZERO, backdrop);
     let header = Rect::from_min_size(full.min, vec2(full.width(), header_height(look)));
-    let drag = ui.interact(
-        header,
-        ui.id().with("picker-drag"),
-        Sense::CLICK | Sense::DRAG,
-    );
-    if drag.drag_started() {
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
-    }
+    widgets::title_bar_drag(ui, header);
     let header_fill = if look.terminal {
         palette.panel
     } else {

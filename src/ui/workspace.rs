@@ -1225,18 +1225,9 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .frame(Frame::new().fill(tint))
         .show(ui, |ui| {
             let rect = ui.max_rect();
-            // The empty bar moves the window, as a title bar does. Only
-            // the pointer can: it is no stop for the Tab key.
-            let drag = ui.interact(rect, ui.id().with("drag"), Sense::CLICK | Sense::DRAG);
+            // The empty bar moves the window, as a title bar does.
+            widgets::title_bar_drag(ui, rect);
             focus::region(ui, Region::Header, rect);
-            if drag.drag_started() {
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
-            }
-            if drag.double_clicked() {
-                let maximized = ui.input(|input| input.viewport().maximized.unwrap_or(false));
-                ui.ctx()
-                    .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-            }
             widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, border);
             if look.terminal {
                 terminal_bar(
