@@ -5,6 +5,7 @@
 
 mod changed;
 mod history;
+mod omarchy;
 mod pick;
 mod scenario;
 mod server;

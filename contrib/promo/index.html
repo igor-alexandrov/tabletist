@@ -540,6 +540,12 @@ async function renderAt(t) {
     $("shot").src = file;
     await $("shot").decode();
   }
+  // Omarchy switched its theme: Hyprland's border, and what is edged as
+  // it is, take the new accent, until the outro's card, which is the
+  // video's own.
+  const theme = t < T.outro ? latest(T.themes || [], t) : null;
+  if (theme) document.body.style.setProperty("--accent", theme.accent);
+  else document.body.style.removeProperty("--accent");
   const cover = curtain(t);
   drawWindow(t, cover);
   drawCurtain(cover);
