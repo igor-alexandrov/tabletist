@@ -5,12 +5,13 @@
 use egui::{CornerRadius, Id, Rect, Sense, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::{ObjectKind, ObjectRef};
 
+use crate::format::display_safe;
 use crate::i18n::{Locale, gettext};
 use crate::keymap::{Command, Keymap, Written};
 use crate::model::{Action, AgentsHere, ConnTabId, TreeNode, TreeRow, Workspace};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
-use crate::ui::format::display_safe;
+use crate::ui::focus::Link;
 use crate::ui::menu;
 use crate::ui::widgets::{self, ButtonSpec};
 use crate::ui::{Paint, focus};

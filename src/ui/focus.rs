@@ -428,6 +428,24 @@ pub fn hint(ui: &Ui, response: &Response, rect: Rect, ring: Ring) {
     ui.data_mut(|data| data.insert_temp(hint_id(), hint));
 }
 
+/// A laid out text added as a widget that answers `sense`.
+pub trait Link {
+    /// [`Laid::label`](crate::typography::Laid::label) that answers
+    /// `sense`. Text that can be clicked is a link: a tight ring round its
+    /// words.
+    fn label_sense(self, ui: &mut Ui, sense: Sense) -> Response;
+}
+
+impl Link for crate::typography::Laid {
+    fn label_sense(self, ui: &mut Ui, sense: Sense) -> Response {
+        let (rect, response) = self.allocate(ui, sense);
+        if sense.senses_click() {
+            hint(ui, &response, rect, Ring::Outer { radius: 3 });
+        }
+        response
+    }
+}
+
 /// Draws the ring of whatever has the keyboard. Call once the frame's
 /// widgets are drawn.
 pub fn paint(ctx: &egui::Context, look: &Look, palette: &Palette) {

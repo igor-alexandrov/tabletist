@@ -11,9 +11,11 @@ use std::rc::Rc;
 use tabletist_db::{ObjectKind, ObjectRef};
 
 use super::App;
-use super::commands::Runnable;
 use crate::keymap::Command;
-use crate::model::{Action, ConnTabId, Dialog, QuickGroup, QuickOpen, SettingsPane, StartRecent};
+use crate::model::{
+    Action, ConnTabId, Dialog, Found, QuickCommand, QuickGroup, QuickItem, QuickOpen, SettingsPane,
+    StartRecent, StartRow,
+};
 use crate::search::{self, Tier};
 use crate::settings::OptionId;
 
@@ -28,20 +30,6 @@ const SUGGESTED: [Command; 4] = [
     Command::ShowAgents,
     Command::History,
 ];
-
-/// A table or view that matches what is typed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Found {
-    /// The index's own: a search that matches thousands copies no name.
-    pub object: Rc<ObjectRef>,
-    pub kind: ObjectKind,
-    /// The catalog's estimate of its rows, where it has one.
-    pub estimate: Option<u64>,
-    pub tier: Tier,
-    /// The runs of the name that matched, as byte ranges of
-    /// `object.name`.
-    pub spans: Vec<Range<usize>>,
-}
 
 /// The index of a connection's objects: each with its name taken apart for
 /// matching once, in order by name and then schema (the last of the
@@ -137,102 +125,6 @@ impl Ranked {
 /// The index of each open connection, as last built.
 #[derive(Default)]
 pub struct Indexes(RefCell<HashMap<ConnTabId, (u64, Rc<Index>)>>);
-
-/// A row of a window's start screen list, as quick open shows it with
-/// nothing typed: a recent, or on a first visit one of the largest tables.
-#[derive(Debug, Clone, PartialEq)]
-pub enum StartRow {
-    Recent(StartRecent),
-    Largest(ObjectRef, Option<u64>),
-}
-
-/// One of the commands quick open offers in the macOS and Windows looks.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum QuickCommand {
-    /// A command of the keymap's, run as its key runs it.
-    Run(Runnable),
-    /// A row of the Settings window: the window opens at it.
-    Setting(OptionId),
-}
-
-impl QuickCommand {
-    /// The keymap's command it is, whose key the row writes: a setting's
-    /// is the one that opens Settings.
-    pub fn command(&self) -> Command {
-        match self {
-            Self::Run(runnable) => runnable.command,
-            Self::Setting(_) => Command::Settings,
-        }
-    }
-}
-
-/// One of quick open's results: what can be picked.
-#[derive(Debug, Clone, PartialEq)]
-pub enum QuickItem {
-    /// A table or view of the window `tab`'s connection.
-    Object { tab: ConnTabId, found: Found },
-    /// The row of `tab`'s start screen list numbered `index` there.
-    Start {
-        tab: ConnTabId,
-        index: usize,
-        row: StartRow,
-    },
-    /// A command, and the runs of its name that matched.
-    Command {
-        command: QuickCommand,
-        spans: Vec<Range<usize>>,
-    },
-    /// The row after a group's first results: the rest are `hidden`.
-    More { group: QuickGroup, hidden: usize },
-}
-
-impl QuickItem {
-    /// Whether `other` is this result, though it may be listed elsewhere
-    /// or say something else of itself now (an estimate read again, a
-    /// command's name): the same object of the same window, the same row
-    /// of a start screen, the same command or setting, the same group's
-    /// "more" row.
-    pub fn same(&self, other: &QuickItem) -> bool {
-        match (self, other) {
-            (
-                Self::Object { tab, found },
-                Self::Object {
-                    tab: at,
-                    found: other,
-                },
-            ) => tab == at && found.object == other.object && found.kind == other.kind,
-            (
-                Self::Start { tab, row, .. },
-                Self::Start {
-                    tab: at,
-                    row: other,
-                    ..
-                },
-            ) => {
-                // The largest tables by their table: an estimate read
-                // again is the same row.
-                let largest = |row: &StartRow| match row {
-                    StartRow::Largest(object, _) => Some(object.clone()),
-                    StartRow::Recent(_) => None,
-                };
-                tab == at
-                    && match (largest(row), largest(other)) {
-                        (Some(one), Some(two)) => one == two,
-                        _ => row == other,
-                    }
-            }
-            (Self::Command { command, .. }, Self::Command { command: other, .. }) => {
-                match (command, other) {
-                    (QuickCommand::Run(one), QuickCommand::Run(two)) => one.command == two.command,
-                    (QuickCommand::Setting(one), QuickCommand::Setting(two)) => one == two,
-                    _ => false,
-                }
-            }
-            (Self::More { group, .. }, Self::More { group: other, .. }) => group == other,
-            _ => false,
-        }
-    }
-}
 
 /// What heads a group of quick open's results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

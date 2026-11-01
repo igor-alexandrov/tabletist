@@ -288,11 +288,9 @@ impl View<'_> {
                 n,
             ),
         }
-        .replace("{n}", &crate::ui::format::group_digits(shown as u64));
-        let keeps = gettext(self.locale, "keeps the last {n}").replace(
-            "{n}",
-            &crate::ui::format::group_digits(u64::from(self.keep)),
-        );
+        .replace("{n}", &crate::format::group_digits(shown as u64));
+        let keeps = gettext(self.locale, "keeps the last {n}")
+            .replace("{n}", &crate::format::group_digits(u64::from(self.keep)));
         self.look.label(&format!(
             "{statements} · {keeps} · {}",
             gettext(self.locale, "on this computer")
@@ -841,11 +839,11 @@ impl View<'_> {
         x += widths[2];
         let rows = entry
             .rows
-            .map(crate::ui::format::group_digits)
+            .map(crate::format::group_digits)
             .unwrap_or_default();
         let took = entry
             .took_ms
-            .map(crate::ui::format::group_digits)
+            .map(crate::format::group_digits)
             .unwrap_or_default();
         for (number, width) in [(&rows, widths[3]), (&took, widths[4])] {
             widgets::paint_text_right(
@@ -1189,11 +1187,11 @@ impl View<'_> {
                             "{n} rows",
                             u32::try_from(rows).unwrap_or(u32::MAX),
                         )
-                        .replace("{n}", &crate::ui::format::group_digits(rows)),
+                        .replace("{n}", &crate::format::group_digits(rows)),
                     );
                 }
                 if let Some(took) = entry.took_ms {
-                    said.push(format!("{} ms", crate::ui::format::group_digits(took)));
+                    said.push(format!("{} ms", crate::format::group_digits(took)));
                 }
                 said.push(result);
                 said.join(" · ")
@@ -1208,7 +1206,7 @@ impl View<'_> {
         let say = |text: &'static str| self.say(text);
         let mut facts = Vec::new();
         let rows = |rows: Option<u64>| match rows {
-            Some(rows) => crate::ui::format::group_digits(rows),
+            Some(rows) => crate::format::group_digits(rows),
             None => say("none"),
         };
         match entry.source {
@@ -1220,7 +1218,7 @@ impl View<'_> {
         if let Some(took) = entry.took_ms {
             facts.push((
                 say("Took"),
-                format!("{} ms", crate::ui::format::group_digits(took)),
+                format!("{} ms", crate::format::group_digits(took)),
             ));
         }
         if entry.source == Source::Sql || entry.outcome != Outcome::Ok {

@@ -54,7 +54,7 @@ pub fn show(
         .map(|open| match open {
             model::Tab::Object(object) => {
                 let shared = workspace.name_is_shared(&object.object);
-                let name = crate::ui::format::object_title(&object.object, shared);
+                let name = crate::format::object_title(&object.object, shared);
                 // Pending cells, or an editor that was typed into: left
                 // behind another tab its text is not yet a pending cell,
                 // and nothing else would say the tab holds it.

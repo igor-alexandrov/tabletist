@@ -9,16 +9,15 @@ use egui::{CornerRadius, Frame, Margin, Rect, Sense, Stroke, StrokeKind, WidgetI
 use egui::{pos2, vec2};
 use tabletist_db::{Driver, ObjectKind, ObjectRef};
 
-use crate::app::Found;
 use crate::env::{Platform, env_colors};
+use crate::format::display_safe;
 use crate::i18n::{Locale, gettext};
 use crate::keymap::{Command, Keymap, Layout, Scope, Written};
-use crate::model::{Action, ConnTabId, Pane, StartRecent, Workspace};
+use crate::model::{Action, ConnTabId, Found, Pane, StartRecent, Workspace};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::Paint;
 use crate::ui::focus::{self, Region};
-use crate::ui::format::display_safe;
 use crate::ui::widgets::{self, ButtonSpec};
 use crate::ui::workspace::{Badge, BarInfo, database_menu, database_menu_id, env_badge};
 
@@ -693,10 +692,10 @@ fn estimate_text(rows: u64, skin: Skin<'_>) -> String {
 /// (`grouped`: in threes): quick open's too.
 pub(crate) fn estimate_words(rows: u64, look: &Look, grouped: bool, locale: Locale) -> String {
     if look.terminal {
-        look.label(&format!("≈ {}", crate::ui::format::compact_count(rows)))
+        look.label(&format!("≈ {}", crate::format::compact_count(rows)))
     } else {
         let count = if grouped {
-            crate::ui::format::group_digits(rows)
+            crate::format::group_digits(rows)
         } else {
             rows.to_string()
         };

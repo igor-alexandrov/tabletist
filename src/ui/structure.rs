@@ -9,13 +9,13 @@ use egui::accesskit::Role;
 use egui::{CornerRadius, Frame, Rect, Sense, Stroke, WidgetInfo, WidgetType, vec2};
 use tabletist_db::Driver;
 
+use crate::format::{NAME_MAX_CHARS, display_safe, for_display, one_line};
 use crate::i18n::{Locale, gettext};
 use crate::keymap::{Command, Keymap, Scope};
 use crate::labels::{self, Refused, Resolved, Source};
 use crate::model::{Action, ConnTabId, ObjectTab, Pane, Workspace};
 use crate::theme::{self, Look, Palette};
 use crate::typography::{Text, TextRole};
-use crate::ui::format::{NAME_MAX_CHARS, display_safe, for_display, one_line};
 use crate::ui::grid::ellipsize;
 use crate::ui::{Paint, focus, label_chooser, menu, states, widgets};
 
@@ -129,7 +129,7 @@ const TAG: usize = 1;
 const COMMENT_LINE_CHARS: usize = NAME_MAX_CHARS;
 // `one_line` cuts past `CELL_MAX_CHARS` with a "…" of its own: a line
 // cut here must not be cut there again.
-const _: () = assert!(COMMENT_LINE_CHARS <= crate::ui::format::CELL_MAX_CHARS);
+const _: () = assert!(COMMENT_LINE_CHARS <= crate::format::CELL_MAX_CHARS);
 
 /// The widest a comment runs in the Comment column.
 const COMMENT_WIDTH: f32 = 320.0;

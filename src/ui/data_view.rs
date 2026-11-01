@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use tabletist_db::{NewValue, SortDir, Value, ValueKind};
 
 use crate::edit::{EditorPlace, Pending, RowMark, State, Table, Told, Unset};
+use crate::format;
 use crate::i18n::{gettext, ngettext};
 use crate::keymap::Keymap;
 use crate::model::{
@@ -21,8 +22,7 @@ use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::Paint;
 use crate::ui::cell_editor;
-use crate::ui::focus;
-use crate::ui::format;
+use crate::ui::focus::{self, Link};
 use crate::ui::grid::{self, Cell, Column, Mark, Style};
 use crate::ui::key_picker;
 use crate::ui::pending_bar;
@@ -2759,7 +2759,7 @@ pub fn cell<'a>(
     shown: Shown,
 ) -> Cell<'a> {
     if let Some(style) = tags.style(value)
-        && format::color(value).is_none()
+        && grid::swatch_color(value).is_none()
     {
         return Cell {
             text: format::cell_text(value),
@@ -2809,7 +2809,7 @@ pub fn plain_cell<'a>(
         };
         return styled(label.into(), style);
     }
-    if let Some(color) = format::color(value) {
+    if let Some(color) = grid::swatch_color(value) {
         return styled(format::cell_text(value), Style::Color(color));
     }
     if let Some(doc) =

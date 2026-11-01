@@ -57,7 +57,6 @@ pub mod every_row_prompt;
 mod every_row_tests;
 pub mod filter_bar;
 pub mod focus;
-pub mod format;
 #[cfg(test)]
 mod format_settings_tests;
 pub mod grid;
@@ -4716,7 +4715,7 @@ value_tags   = true
             }
             // What a frame lays out and names: no piece longer than a
             // message may be, with its label before it.
-            let most = super::format::MESSAGE_MAX_CHARS + 64;
+            let most = crate::format::MESSAGE_MAX_CHARS + 64;
             let named = crate::testing::labels(&tree);
             let painted = harness.painted.iter().map(|(piece, _)| piece);
             for piece in named.iter().chain(painted) {
@@ -6856,7 +6855,7 @@ value_tags   = true
 
     #[test]
     fn a_result_rows_text_is_formatted_once_not_every_frame() {
-        use crate::ui::format::FULL_TEXTS;
+        use crate::format::FULL_TEXTS;
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
         let mut page = crate::testing::page(2, false);
@@ -8487,7 +8486,7 @@ value_tags   = true
 
     #[test]
     fn the_row_panel_formats_a_row_once_not_every_frame() {
-        use crate::ui::format::FULL_TEXTS;
+        use crate::format::FULL_TEXTS;
         let mut harness = Harness::new();
         harness.connect_fake();
         harness.click("users");
@@ -12263,7 +12262,7 @@ value_tags   = true
                 "The SSH server could not reach the database",
             ),
         ] {
-            let described = crate::ui::format::describe_error(crate::i18n::Locale::English, &error);
+            let described = crate::format::describe_error(crate::i18n::Locale::English, &error);
             assert!(described.starts_with(words), "{error:?}: {described}");
         }
     }
@@ -12939,7 +12938,7 @@ value_tags   = true
             named: Box::default(),
         };
         assert_eq!(
-            crate::ui::format::describe_error(crate::i18n::Locale::English, &error),
+            crate::format::describe_error(crate::i18n::Locale::English, &error),
             "database \"nosuchdb\" does not exist"
         );
     }

@@ -5,13 +5,13 @@ use egui::{CornerRadius, Frame, Margin, Rect, Sense, Stroke, StrokeKind, pos2, v
 use tabletist_db::{Access, TlsMode};
 
 use crate::app::App;
+use crate::format::display_safe;
 use crate::i18n::gettext;
 use crate::keymap::Command;
 use crate::model::{Action, ConnTabId, ObjectView, SessionStatus, TabId};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Region};
-use crate::ui::format::display_safe;
 use crate::ui::menu;
 use crate::ui::states;
 use crate::ui::widgets::{self, ButtonSpec};
@@ -653,7 +653,7 @@ fn failure(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     };
     let (icon, title) = failure_title(error, &workspace.spec, say);
     let sentence = error
-        .map(|error| crate::ui::format::describe_error(locale, error))
+        .map(|error| crate::format::describe_error(locale, error))
         .unwrap_or_default();
     let raw = error.map(ToString::to_string).unwrap_or_default();
     // The settings are what is wrong: changing them comes first.
@@ -2012,7 +2012,7 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
     let insert = edits.editor.as_ref().filter(|_| data).and_then(|editor| {
         let column = object.page()?.columns.get(editor.cell.col)?;
         // The type as the grid's header names it.
-        let kind = crate::ui::format::type_label(&column.type_name, column.kind);
+        let kind = crate::format::type_label(&column.type_name, column.kind);
         Some(format!(
             "{} · {}",
             display_safe(&column.name),
@@ -2078,7 +2078,7 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
         });
     let said = if let Some(line) = &workspace.command_error {
         // What the `:` prompt was given, until the next key.
-        let line = crate::ui::format::capped(line);
+        let line = crate::format::capped(line);
         Some(Said {
             mark: None,
             text: format!("{} {}", say("not a command:"), display_safe(&line)),
@@ -2549,7 +2549,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 .unwrap_or_else(|| "?".into());
             let rows = format!(
                 "{first}–{last}/{total} · {}",
-                crate::ui::format::elapsed(page.elapsed)
+                crate::format::elapsed(page.elapsed)
             );
             // The columns in view first, while some are out of it.
             let columns = (object.view == ObjectView::Data)
@@ -3338,7 +3338,7 @@ fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             let sentence = if matches!(error, tabletist_db::Error::ConnectionLost(_)) {
                 String::new()
             } else {
-                crate::ui::format::describe_error(locale, error)
+                crate::format::describe_error(locale, error)
             };
             (
                 format!("{} {name}{env} {}", say("Connection to"), say("lost.")),

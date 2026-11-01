@@ -1977,7 +1977,7 @@ fn delete_row(app: &App, tab: ConnTabId, id: TabId, actions: &mut Vec<Action>) -
         let object = workspace.object_tab(id)?;
         let row = object.selection?.row;
         let lock = crate::edit::Table::of(workspace, object)?.no_delete(row)?;
-        let table = crate::ui::format::display_safe(&object.object.name);
+        let table = crate::format::display_safe(&object.object.name);
         Some(crate::ui::cell_editor::delete_said(
             lock, &table, &app.look, app.locale,
         ))
@@ -2004,7 +2004,7 @@ fn delete_selected(
             return None;
         }
         let sweep = crate::edit::Table::of(workspace, object)?.sweep(&rows);
-        let table = crate::ui::format::display_safe(&object.object.name);
+        let table = crate::format::display_safe(&object.object.name);
         let said = crate::ui::cell_editor::sweep_said(&sweep, &table, &app.look, app.locale);
         Some((sweep, said))
     });
@@ -2036,7 +2036,7 @@ fn delete_count(
             return None;
         }
         let sweep = crate::edit::Table::of(workspace, object)?.sweep(&rows);
-        let table = crate::ui::format::display_safe(&object.object.name);
+        let table = crate::format::display_safe(&object.object.name);
         let said = crate::ui::cell_editor::sweep_said(&sweep, &table, &app.look, app.locale);
         Some((sweep, said))
     })?;

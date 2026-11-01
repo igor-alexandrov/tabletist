@@ -7,6 +7,7 @@
 use egui::{CornerRadius, Rect, Sense, Stroke, Ui, WidgetInfo, WidgetType, pos2, vec2};
 
 use crate::app::App;
+use crate::format::group_digits;
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::Command;
 use crate::model::{Action, SettingsDialog, SettingsPane};
@@ -18,7 +19,6 @@ use crate::settings::{
 use crate::theme::{DataFace, Look, Palette, Typeface};
 use crate::typography::{Laid, Text, TextRole};
 use crate::ui::focus::{self, Ring};
-use crate::ui::format::group_digits;
 use crate::ui::menu;
 use crate::ui::sql_editor;
 use crate::ui::value_tags::slot_colors;

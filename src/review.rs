@@ -10,7 +10,7 @@ use tabletist_db::{
 };
 
 use crate::edit::{Effect, NEW_ROWS, Pending, State, Table, change_set, new_row};
-use crate::ui::format;
+use crate::format;
 
 /// The most characters of a value that are shown: a longer one is cut, with
 /// `…` for the rest. Only where it is shown: the statement that runs, and
