@@ -141,6 +141,15 @@ Set by run 6, for runs 7 and 8 and the routers:
 - A view that draws others (`sql_editor`) takes what they take, calls them in the order it did and returns their actions in that order. Where one edits in place it takes `&mut Workspace`, lent beside `app.settings` and `app.keymap` through `crate::app::workspace_in_mut(&mut app.tabs, tab)` (what `App::workspace_mut` calls).
 - A query a router asks of the view's state (`status_summary`, `vim_mode`, `card_key`, `link_keys`) takes the workspace; the router finds it. A helper two views share that read `App` (`data_view::Fit::of`) takes the fields it read.
 
+### The slice of the grid
+
+Set by run 7, for run 8 and the routers:
+
+- A view that edits one object tab in place and reads the workspace around it (the grid's cell field, the terminal's WHERE line, the row panel's field) takes `&mut Workspace` and the tab's id, as `sql_editor` does. It reads `&` first, then takes `object_tab_mut` for the field: a `&mut ObjectTab` cannot be lent beside the `&Workspace` that holds it.
+- A one-time request the workspace holds for a view (`focus_where`, `fold_documents`) is taken by the view that meets it, where it meets it.
+- Two views that draw the same editor take one struct (`data_view::Around`). Each caller builds it from `app.dialog.is_none()` and `app.calendar()` before it borrows the workspace through `workspace_in_mut`, and lends `&app.settings` and `&app.keymap` beside the workspace.
+- A router function whose view's name is taken by a local is named for what it draws (`ui::workspace::inspector`, `data_grid`).
+
 ### Tests
 
 The headless tests drive the whole `App` through `src/testing.rs`, so they hold behaviour across a run without change. A test changes only where it calls a function whose signature moved. No run changes behaviour, so no run adds a behaviour test; each run states which existing tests draw the views it moved.
@@ -155,7 +164,7 @@ Each run is one PR, from `main`, passing `cargo fmt --all --check`, `cargo clipp
 4. **Settings panes that read `&App`:** `settings/file_pane`, `settings/updates`, `settings/updates_terminal`, `settings/keyboard`, `keyboard_sheet`, `keyboard_terminal`, `settings/agents`. Done: `2026-10-31-narrow-app-access-4-settings-panes.md`, which sets the slice a settings pane takes ("The slice of a settings pane", below).
 5. **Dialogs over a workspace:** `conflict_prompt`, `write_prompts` (Leave and the production confirmation, each its own function), `agent_access` (its caller passes `agents_access`), `connect_dialog` (passes `loaded_tables` and the keymap; `fold` for the frames it is not open). Done: `2026-10-31-narrow-app-access-5-workspace-dialogs.md`, which sets the slice a dialog over a workspace takes ("The slice of a dialog over a workspace", below).
 6. **Workspace and SQL panes:** `object_tabs`, `sql_text`, `sql_editor` (draws the other two, so takes `&mut Workspace` beside the settings and keymap through `workspace_in_mut`), `sql_results`, `history` (its caller passes `history_name`). Done: `2026-10-31-narrow-app-access-6-workspace-sql-panes.md`, which sets the slice a SQL editor takes ("The slice of a SQL editor", below).
-7. **The grid's view:** `data_view`, then `row_panel`, each its own PR if either is large (they are 2.9k and 3.3k lines, and take `settings`, `keymap`, `dialog` and the calendar). `data_view::Fit::of` already takes `&Settings` and the `Layout` (run 6); `row_panel` shows a SQL editor's row too, so it takes the `SqlTab` as `sql_results` does.
+7. **The grid's view:** `data_view` (header, toolbar, footer, grid) and `row_panel`, in one PR: only their heads and tails read `App`. The grid and the panel take `&mut Workspace` and the tab's id, as `sql_editor` does, with `data_view::Around` (the settings, keymap, whether a dialog is up, the calendar). `row_panel` does not take the `SqlTab`: it finds the object tab or SQL editor by its id and writes the workspace around both. Done: `2026-10-31-narrow-app-access-7-grid-view.md`, which sets the slice the grid takes ("The slice of the grid", above).
 8. **Panes beside the routers:** `sidebar`, `agents`, `start`, `picker`, `quick_open`.
 
 Then a plan of its own for the routers (`workspace.rs`, `keys.rs`, `settings/mod.rs`, `settings/sheet.rs`, `settings/terminal.rs`, `mod.rs`), written once the views under them are narrow: what they still need of `App` decides whether they stay its methods, take a context struct, or move into `app`.

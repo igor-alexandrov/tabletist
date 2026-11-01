@@ -9,13 +9,14 @@ use std::sync::Arc;
 
 use tabletist_db::{Value, ValueKind};
 
-use crate::app::App;
 use crate::edit::{Editor, Lock, State, Table, Unset};
 use crate::i18n::gettext;
 use crate::keymap::Command;
 use crate::model::{Action, CellPos, ConnTabId, RowFields, Tab, TabId, Workspace};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::Paint;
+use crate::ui::data_view::Around;
 use crate::ui::focus::{self, Region};
 use crate::ui::format;
 use crate::ui::json_view;
@@ -367,59 +368,69 @@ fn source(workspace: &Workspace, id: TabId, locale: crate::i18n::Locale) -> Opti
     }
 }
 
-/// Draws the panel for the tab `id`: an object tab, or a SQL editor.
-pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
+/// Draws the panel for the tab `id` of `workspace`, an object tab or a
+/// SQL editor, and returns what it asks for. Its field edits the tab's
+/// editor in place, and it takes the workspace's request to fold.
+pub fn show(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    id: TabId,
+    workspace: &mut Workspace,
+    around: Around<'_>,
+) -> Vec<Action> {
     // The editor the panel draws is out of its tab while the panel is
     // drawn: the field edits its text, and everything else is read.
-    let mut editor = app
-        .workspace_mut(tab)
-        .and_then(|workspace| workspace.object_tab_mut(id))
-        .and_then(row_form::take_editor);
+    let mut editor = workspace.object_tab_mut(id).and_then(row_form::take_editor);
     // The field an edit ended in is owed the keyboard. The request is
     // the reducer's: the panel reads it, and says when it is met.
-    let focus = app
-        .workspace(tab)
-        .and_then(|workspace| workspace.object_tab(id))
+    let focus = workspace
+        .object_tab(id)
         .and_then(|object| object.focus_field);
-    draw(app, ui, (tab, id), editor.as_mut(), focus);
-    if let Some(object) = app
-        .workspace_mut(tab)
-        .and_then(|workspace| workspace.object_tab_mut(id))
-    {
+    let actions = draw(
+        ui,
+        paint,
+        (tab, id),
+        workspace,
+        around,
+        editor.as_mut(),
+        focus,
+    );
+    if let Some(object) = workspace.object_tab_mut(id) {
         row_form::put_editor(object, editor);
     }
+    actions
 }
 
 /// The panel itself. `editor` is the tab's editor where the panel draws
 /// it, and `focus` the column whose field takes the keyboard.
 fn draw(
-    app: &mut App,
     ui: &mut egui::Ui,
+    paint: Paint,
     (tab, id): (ConnTabId, TabId),
+    workspace: &mut Workspace,
+    around: Around<'_>,
     editor: Option<&mut Editor>,
     focus: Option<usize>,
-) {
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
-    let value_tags = app.settings.value_tags;
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let value_tags = around.settings.value_tags;
     // An editor that is open has the keyboard, unless a dialog has it.
-    let hold = app.dialog.is_none();
-    let editor_keys = crate::ui::cell_editor::Keys::of(&app.keymap, app.layout());
-    let calendar = app.calendar();
+    let hold = around.hold;
+    let editor_keys = crate::ui::cell_editor::Keys::of(around.keymap, paint.layout());
+    let calendar = around.calendar;
     // `za` asked to fold the documents.
-    let fold = app.workspace_mut(tab).is_some_and(|workspace| {
-        let asked = workspace.fold_documents == Some(id);
-        if asked {
-            workspace.fold_documents = None;
-        }
-        asked
-    });
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
+    let fold = workspace.fold_documents == Some(id);
+    if fold {
+        workspace.fold_documents = None;
+    }
+    let workspace: &Workspace = workspace;
     let Some(source) = source(workspace, id, locale) else {
-        return;
+        return Vec::new();
     };
     let mut actions = Vec::new();
     // What ends the panel's open field, queued ahead of the rest.
@@ -1323,8 +1334,8 @@ fn draw(
     {
         ui.data_mut(|data| data.insert_persisted(panel.with("wanted"), after));
     }
-    app.actions.extend(ending);
-    app.actions.extend(actions);
+    ending.extend(actions);
+    ending
 }
 
 /// How fields draw.
