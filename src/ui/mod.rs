@@ -281,30 +281,38 @@ fn quick_open_asked(app: &App, open: &crate::model::QuickOpen) -> Option<quick_o
 
 /// What the screen draws under the bar that leads the window, which on
 /// macOS is the title bar, so that the window's own buttons keep their
-/// line: what was changed outside the app and is held, then the notice.
-/// Returns their height.
-pub(crate) fn notices(app: &mut App, ui: &mut egui::Ui) -> f32 {
-    agents_held(app, ui) + notice(app, ui)
+/// line: what was changed outside the app and is held (`held`, named by
+/// the saved connections), then the app's notice. Returns their height and
+/// what they ask for.
+pub(crate) fn notices(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    notice: Option<&str>,
+    held: &[crate::agents_shown::Raised],
+    saved: &[crate::connections::SavedConnection],
+) -> (f32, Vec<Action>) {
+    let mut actions = Vec::new();
+    let height = agents_held(ui, paint, held, saved, &mut actions)
+        + self::notice(ui, paint, notice, &mut actions);
+    (height, actions)
 }
 
 /// A problem worth the user's attention that belongs to no one tab (a
 /// keyring write that failed), until dismissed. Returns its height,
 /// nothing when there is no notice.
-fn notice(app: &mut App, ui: &mut egui::Ui) -> f32 {
-    let Some(message) = app.notice.clone() else {
+fn notice(ui: &mut egui::Ui, paint: Paint, notice: Option<&str>, actions: &mut Vec<Action>) -> f32 {
+    let Some(message) = notice else {
         return 0.0;
     };
-    let mut actions = Vec::new();
     let shown = egui::Panel::top(egui::Id::new("notice"))
         .resizable(false)
         .show_separator_line(false)
         .frame(
             Frame::new()
-                .fill(notice_fill(&app.palette))
+                .fill(notice_fill(&paint.palette))
                 .inner_margin(egui::Margin::symmetric(12, 8)),
         )
-        .show(ui, |ui| notice_line(app, ui, &message, &mut actions));
-    app.actions.extend(actions);
+        .show(ui, |ui| notice_line(ui, paint, message, actions));
     shown.response.rect.height()
 }
 
@@ -312,14 +320,23 @@ fn notice(app: &mut App, ui: &mut egui::Ui) -> f32 {
 /// the person keeps it or puts it back: a bar of its own, in both looks,
 /// which no dismissal takes away. Returns its height, nothing when nothing
 /// is held.
-fn agents_held(app: &mut App, ui: &mut egui::Ui) -> f32 {
-    let Some(said) = agents_held_said(app) else {
+fn agents_held(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    held: &[crate::agents_shown::Raised],
+    saved: &[crate::connections::SavedConnection],
+    actions: &mut Vec<Action>,
+) -> f32 {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let Some(said) = agents_held_said(locale, held, saved) else {
         return 0.0;
     };
-    let (look, palette, locale) = (app.look, app.palette, app.locale);
     // The buttons answer what the bar says, not what a later change holds.
-    let held = app.agents_held.clone();
-    let mut actions = Vec::new();
+    let held = held.to_vec();
     let shown = egui::Panel::top(egui::Id::new("agents-held"))
         .resizable(false)
         .show_separator_line(false)
@@ -354,19 +371,21 @@ fn agents_held(app: &mut App, ui: &mut egui::Ui) -> f32 {
                 });
             });
         });
-    app.actions.extend(actions);
     shown.response.rect.height()
 }
 
-/// What the held bar says: what was changed outside the app, and the
-/// question. `None` with nothing held.
-pub fn agents_held_said(app: &App) -> Option<String> {
+/// What the held bar says of `held`: what was changed outside the app,
+/// with the saved connections' names, and the question. `None` with
+/// nothing held.
+pub fn agents_held_said(
+    locale: crate::i18n::Locale,
+    held: &[crate::agents_shown::Raised],
+    saved: &[crate::connections::SavedConnection],
+) -> Option<String> {
     use crate::agents_shown::Raised;
-    if app.agents_held.is_empty() {
+    if held.is_empty() {
         return None;
     }
-    let locale = app.locale;
-    let saved = &app.connections.connections;
     let names = crate::backend::agent_names(saved);
     let called = |id: &crate::connections::ConnectionId| {
         saved
@@ -375,8 +394,7 @@ pub fn agents_held_said(app: &App) -> Option<String> {
             .find(|(saved, _)| saved.id == *id)
             .map_or(id.0.clone(), |(_, name)| name.clone())
     };
-    let parts: Vec<String> = app
-        .agents_held
+    let parts: Vec<String> = held
         .iter()
         .map(|raise| match raise {
             Raised::Server => {
@@ -427,14 +445,14 @@ fn notice_fill(palette: &crate::theme::Palette) -> egui::Color32 {
 
 /// A notice on one line: what it says, and at the right the button that
 /// dismisses it. The bar has it, and so has a screen that covers the bar.
-fn notice_line(app: &App, ui: &mut egui::Ui, message: &str, actions: &mut Vec<Action>) {
-    let look = &app.look;
+fn notice_line(ui: &mut egui::Ui, paint: Paint, message: &str, actions: &mut Vec<Action>) {
+    let look = &paint.look;
     ui.horizontal(|ui| {
-        crate::typography::Text::one(look, widgets::body(look), message, app.palette.text)
+        crate::typography::Text::one(look, widgets::body(look), message, paint.palette.text)
             .layout(ui.ctx())
             .label(ui);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let dismiss = crate::i18n::gettext(app.locale, "Dismiss");
+            let dismiss = crate::i18n::gettext(paint.locale, "Dismiss");
             if widgets::button(ui, &dismiss, look).clicked() {
                 actions.push(Action::DismissNotice);
             }
