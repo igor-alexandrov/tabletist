@@ -5,16 +5,15 @@
 use egui::{CornerRadius, Id, Rect, Sense, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::{ObjectKind, ObjectRef};
 
-use crate::app::App;
 use crate::i18n::{Locale, gettext};
-use crate::keymap::{Command, Written};
-use crate::model::{Action, ConnTabId, TreeNode, TreeRow};
+use crate::keymap::{Command, Keymap, Written};
+use crate::model::{Action, AgentsHere, ConnTabId, TreeNode, TreeRow, Workspace};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
-use crate::ui::focus;
 use crate::ui::format::display_safe;
 use crate::ui::menu;
 use crate::ui::widgets::{self, ButtonSpec};
+use crate::ui::{Paint, focus};
 
 /// The sidebar's width when it opens, per look: the design's 264 and 248
 /// and the 1 pt rule it draws outside them.
@@ -153,35 +152,43 @@ fn kind_tag(locale: Locale, kind: ObjectKind) -> Option<String> {
     }
 }
 
-pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
-    let show_system = app.settings.show_system_schemas;
+/// Draws the sidebar of the workspace `tab`, and returns what it asks for.
+/// `show_system` is the setting that lists the system's schemas; `agents`
+/// what the Agents entry says, where it has one. The terminal look's filter
+/// line edits the tree's filter in place, and the sidebar takes the tree's
+/// request to scroll its cursor into view.
+pub fn show(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    workspace: &mut Workspace,
+    keymap: &Keymap,
+    show_system: bool,
+    agents: Option<AgentsHere>,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     // The keys under the tree, as the keymap writes them for the look.
-    let layout = app.layout();
-    let hints = HINTS.map(|(command, label)| (app.keymap.key(layout, command), label));
-    let sql_key = app.keymap.key(layout, Command::NewSqlTab);
-    let history_key = app.keymap.key(layout, Command::History);
+    let layout = paint.layout();
+    let hints = HINTS.map(|(command, label)| (keymap.key(layout, command), label));
+    let sql_key = keymap.key(layout, Command::NewSqlTab);
+    let history_key = keymap.key(layout, Command::History);
     // The Agents entry, where agents can reach the app: what it says, and
     // the key that shows the tab.
     // The terminal look names the letters from the tree and the grid, as
     // the others name their chord.
     let agents_key = match look.terminal {
-        true => app
-            .keymap
-            .key_in(layout, Command::ShowAgents, crate::keymap::Scope::Grid),
-        false => app.keymap.key(layout, Command::ShowAgents),
+        true => keymap.key_in(layout, Command::ShowAgents, crate::keymap::Scope::Grid),
+        false => keymap.key(layout, Command::ShowAgents),
     };
-    let agents = app
-        .agents_here(tab)
+    let agents = agents
         .filter(|_| crate::endpoint::AVAILABLE)
         .map(|here| (here, agents_key));
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
     if workspace.sidebar_hidden {
-        return;
+        return Vec::new();
     }
     let agents_front = workspace.agents_in_front();
     let history_front = workspace.history_in_front();
@@ -285,7 +292,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     } else if field.clicked() {
                         actions.push(Action::OpenQuickOpen);
                     }
-                } else if let Some(workspace) = app.workspace_mut(tab) {
+                } else {
                     let hint = gettext(locale, "filter objects");
                     let style = widgets::FieldStyle {
                         fill: Some(palette.window),
@@ -475,10 +482,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 focus::pane_border(ui, full, &look, &palette);
             }
         });
-    if reveal_pending && let Some(workspace) = app.workspace_mut(tab) {
+    if reveal_pending {
         workspace.tree.reveal_cursor = false;
     }
-    app.actions.extend(actions);
+    actions
 }
 
 /// The terminal look's key hints under the tree: what each key does, and

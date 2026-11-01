@@ -1106,7 +1106,7 @@ impl App {
                     .picker_mut(tab)
                     .map(|picker| picker.search.clone())
                     .unwrap_or_default();
-                let shown = crate::ui::picker::visible(self, &search).contains(&conn);
+                let shown = crate::ui::picker::visible(&self.connections, &search).contains(&conn);
                 let search = if shown { search } else { String::new() };
                 let found = self.connections.search(&search);
                 let group = crate::ui::picker::groups(&found)
@@ -1142,7 +1142,7 @@ impl App {
                 let Some(search) = search else {
                     return;
                 };
-                let order = crate::ui::picker::visible(self, &search);
+                let order = crate::ui::picker::visible(&self.connections, &search);
                 if let Some(picker) = self.picker_mut(tab)
                     && !order.is_empty()
                 {

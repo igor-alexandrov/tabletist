@@ -2838,7 +2838,9 @@ fn letters(
             app.workspace(tab)
                 .is_some_and(|workspace| !session.connections.contains(&workspace.conn_id.0))
         })
-        .and_then(|session| crate::ui::agents::Elsewhere::of(app, session).on);
+        .and_then(|session| {
+            crate::ui::agents::Elsewhere::of(&app.connections.connections, session).on
+        });
     if agents_lists(app, tab)
         && !crate::ui::focus::on_control(ctx)
         && let Some((conn, _)) = elsewhere

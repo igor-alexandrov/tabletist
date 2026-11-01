@@ -2,11 +2,11 @@
 //! a table or view of the window's connection by name, or of every open
 //! connection (`⇥`, `tab`), and in the macOS and Windows looks runs a
 //! command or opens Settings at one of its rows (`>` first lists those
-//! alone). What it lists is [`App::quick_open_list`]'s; this draws
-//! it and reads its keys, which are its own while it is open (the window's
-//! handler does not run under a dialog). macOS: a floating panel 640 wide,
-//! 84 from the window's top, the window behind it not dimmed. Omarchy: the
-//! picker, 780 wide, an accent border on the sunken surface.
+//! alone). What it lists is [`crate::app::App::quick_open_list`]'s; this
+//! draws it and reads its keys, which are its own while it is open (the
+//! window's handler does not run under a dialog). macOS: a floating panel
+//! 640 wide, 84 from the window's top, the window behind it not dimmed.
+//! Omarchy: the picker, 780 wide, an accent border on the sunken surface.
 
 use std::collections::HashMap;
 
@@ -16,15 +16,15 @@ use egui::{WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::ObjectKind;
 
 use crate::app::{
-    About, App, Found, QuickCommand, QuickHeading, QuickItem, QuickList, QuickRow, StartRow,
-    TabName,
+    About, Found, QuickCommand, QuickHeading, QuickItem, QuickList, QuickRow, StartRow, TabName,
 };
 use crate::env::{Environment, Platform, env_colors};
 use crate::i18n::{Locale, gettext};
 use crate::keymap::{Command, Keymap, Layout, Scope, Written};
-use crate::model::{Action, AgentsHere, ConnTabId, Dialog, QuickCaret, QuickGroup, StartRecent};
+use crate::model::{Action, AgentsHere, ConnTabId, QuickCaret, QuickGroup, QuickOpen, StartRecent};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::Paint;
 use crate::ui::format::display_safe;
 use crate::ui::widgets::{self, ButtonSpec};
 use crate::ui::workspace::{Badge, env_badge};
@@ -69,10 +69,10 @@ fn rows_shown(look: &Look) -> usize {
 }
 
 /// A window quick open names: its connection, environment and database.
-struct Window {
-    name: String,
-    env: Environment,
-    database: String,
+pub struct Window {
+    pub name: String,
+    pub env: Environment,
+    pub database: String,
 }
 
 /// The keys the panel names and reads, as the keymap writes them.
@@ -142,39 +142,54 @@ impl Skin<'_> {
     }
 }
 
-pub fn show(app: &mut App, ctx: &egui::Context) {
-    let (look, palette, locale) = (app.look, app.palette, app.locale);
-    let Some(Dialog::QuickOpen(open)) = &app.dialog else {
-        return;
-    };
+/// What quick open asks of the app, answered by its caller before the
+/// dialog is lent.
+pub struct Asked {
+    /// What it lists, and the result picked, wherever the list has moved
+    /// it: none where it is gone.
+    pub list: QuickList,
+    pub picked: Option<usize>,
+    /// The open windows, which the chip and the headings name.
+    pub windows: HashMap<ConnTabId, Window>,
+    /// What the window's Agents entry says.
+    pub agents: Option<AgentsHere>,
+    /// Whether numbers are written in threes.
+    pub grouped: bool,
+    /// What follows the `>` of the commands alone.
+    pub commands_query: Option<String>,
+}
+
+/// Draws quick open, which `open` is, and returns what it asks for.
+/// `asked` is none where the window it was opened in is gone: it then
+/// closes.
+pub fn show(
+    ctx: &egui::Context,
+    paint: Paint,
+    open: &mut QuickOpen,
+    keymap: &Keymap,
+    asked: Option<Asked>,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let here = open.tab;
     // Quick open goes with the window it was opened in.
-    if app.workspace(here).is_none() {
-        app.actions.push(Action::CloseDialog);
-        return;
-    }
-    let list = app.quick_open_list(open);
-    // The result picked, wherever the list has moved it: none where it
-    // is gone.
-    let picked = app.quick_open_picked(open, &list);
-    let layout = app.layout();
-    let keymap = app.keymap.clone();
-    let keys = keys(&keymap, layout);
-    let windows: HashMap<ConnTabId, Window> = app
-        .open_connections()
-        .map(|(tab, workspace)| {
-            let database = crate::ui::workspace::bar_info(app, tab)
-                .map(|info| info.database)
-                .unwrap_or_default();
-            let window = Window {
-                name: workspace.name.clone(),
-                env: workspace.environment,
-                database,
-            };
-            (tab, window)
-        })
-        .collect();
-    let agents = app.agents_here(here).map(|state| {
+    let Some(Asked {
+        list,
+        picked,
+        windows,
+        agents,
+        grouped,
+        commands_query,
+    }) = asked
+    else {
+        return vec![Action::CloseDialog];
+    };
+    let layout = paint.layout();
+    let keys = keys(keymap, layout);
+    let agents = agents.map(|state| {
         let said = match &state {
             AgentsHere::ServerOff => gettext(locale, "server off").into_owned(),
             AgentsHere::OffHere => gettext(locale, "off here").into_owned(),
@@ -207,7 +222,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         palette: &palette,
         locale,
         now: crate::util::now_secs(),
-        grouped: app.settings.grouped(layout),
+        grouped,
         windows: &windows,
         here,
         agents,
@@ -222,12 +237,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     // Nothing typed but spaces lists what nothing typed lists, numbers
     // and all.
     let nothing_typed = open.query.trim().is_empty();
-    // What follows the `>` of the commands alone.
-    let commands_query = app.quick_open_commands_query(open).map(str::to_owned);
-    ctx.input_mut(|input| read_keys(input, &keymap, layout, nothing_typed, &mut actions));
-    let Some(Dialog::QuickOpen(open)) = &mut app.dialog else {
-        return;
-    };
+    ctx.input_mut(|input| read_keys(input, keymap, layout, nothing_typed, &mut actions));
     let (width, top) = place(&look);
     let width = width.min(ctx.content_rect().width() - 32.0).max(200.0);
     let area = egui::Modal::default_area(panel_id()).anchor(Align2::CENTER_TOP, vec2(0.0, top));
@@ -275,7 +285,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     if modal.backdrop_response.clicked() {
         actions.push(Action::CloseDialog);
     }
-    app.actions.extend(actions);
+    actions
 }
 
 /// The panel's frame: the dialog's corner and shadow, its parts edge to

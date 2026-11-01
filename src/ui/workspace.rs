@@ -74,7 +74,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     // The tab the row panel shows a row of: a table's Data view, or a SQL
     // editor with a row of its result selected.
     let row_panel = workspace.row_panel_tab();
-    super::sidebar::show(app, ui, tab);
+    sidebar(app, ui, tab);
     if look.terminal
         && let Some(shown) = row_panel
     {
@@ -103,7 +103,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 .is_some_and(crate::model::Workspace::history_in_front);
             match active {
                 Some(sql_tab) if sql => sql_editor(app, ui, tab, sql_tab),
-                Some(_) if agents => super::agents::show(app, ui, tab),
+                Some(_) if agents => agents_tab(app, ui, tab),
                 Some(_) if history => history_tab(app, ui, tab),
                 Some(object_tab) => {
                     header(app, ui, tab, object_tab);
@@ -170,9 +170,110 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                             }
                         });
                 }
-                None => super::start::show(app, ui, tab),
+                None => start(app, ui, tab),
             }
         });
+}
+
+/// The sidebar, handed its workspace, the keymap, whether the system's
+/// schemas are listed and what its Agents entry says: its terminal filter
+/// line edits the tree's filter in place.
+fn sidebar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    let paint = super::Paint::of(app);
+    let show_system = app.settings.show_system_schemas;
+    let agents = app.agents_here(tab);
+    if let Some(workspace) = crate::app::workspace_in_mut(&mut app.tabs, tab) {
+        let asked =
+            super::sidebar::show(ui, paint, tab, workspace, &app.keymap, show_system, agents);
+        app.actions.extend(asked);
+    }
+}
+
+/// The start screen, handed its workspace, what it asks of the app and the
+/// keymap: its search field edits the workspace's search in place.
+fn start(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    let paint = super::Paint::of(app);
+    let Some(asked) = start_asked(app, tab) else {
+        return;
+    };
+    if let Some(workspace) = crate::app::workspace_in_mut(&mut app.tabs, tab) {
+        let asked = super::start::show(ui, paint, tab, workspace, asked, &app.keymap);
+        app.actions.extend(asked);
+    }
+}
+
+/// What the start screen of `tab` asks of the app: none where the
+/// workspace is gone.
+fn start_asked(app: &App, tab: ConnTabId) -> Option<super::start::Asked> {
+    let workspace = app.workspace(tab)?;
+    let recents = app.start_recents(tab);
+    let largest = if recents.is_empty() {
+        app.start_largest(tab)
+    } else {
+        Vec::new()
+    };
+    let ready = match &app.updates.install {
+        crate::update::Install::Ready { version, .. } => Some(version.clone()),
+        _ => None,
+    };
+    Some(super::start::Asked {
+        info: bar_info(app, tab)?,
+        schema: app.start_schema(tab),
+        recents,
+        largest,
+        agents: app.agents_here(tab),
+        saved: app.connections.get(&workspace.conn_id).is_some(),
+        matches: app.start_matches(tab),
+        ready,
+        grouped: app.settings.grouped(app.layout()),
+    })
+}
+
+/// The Agents tab, handed its workspace, the saved connections, the keymap
+/// and what it asks of the app.
+fn agents_tab(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    let paint = super::Paint::of(app);
+    let Some(asked) = agents_asked(app, tab) else {
+        return;
+    };
+    if let Some(workspace) = app.workspace(tab) {
+        let asked = super::agents::show(
+            ui,
+            paint,
+            tab,
+            workspace,
+            &app.connections,
+            &app.keymap,
+            asked,
+        );
+        app.actions.extend(asked);
+    }
+}
+
+/// What the Agents tab of `tab` asks of the app: none where the workspace
+/// is gone.
+fn agents_asked(app: &App, tab: ConnTabId) -> Option<super::agents::Asked> {
+    let here = app.agents_here(tab)?;
+    let conn = &app.workspace(tab)?.conn_id;
+    let saved = &app.connections.connections;
+    Some(super::agents::Asked {
+        here,
+        connection: app.agents_name(tab).unwrap_or_default(),
+        allowed: app
+            .connections
+            .get(conn)
+            .map(|saved| app.agents_access(saved)),
+        sessions: app.agents.here(conn).into_iter().cloned().collect(),
+        elsewhere: app
+            .agents
+            .elsewhere(conn)
+            .into_iter()
+            .map(|session| super::agents::Elsewhere::of(saved, session))
+            .collect(),
+        calls: app.agents.calls_on(conn).cloned().collect(),
+        selected: app.agents_selected(tab).map(|session| session.id.clone()),
+        log_days: app.settings.mcp_log_days,
+    })
 }
 
 /// The strip of tabs, handed its workspace and the keymap.
@@ -2362,7 +2463,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     }
     // No tab: the start screen's keys, and that no table is open.
     if workspace.active_tab.is_none() {
-        super::start::status_line(app, ui, tab);
+        super::start::status_line(ui, super::Paint::of(app), tab, &app.keymap);
         return;
     }
     let read_only = workspace.access == tabletist_db::Access::ReadOnly;
