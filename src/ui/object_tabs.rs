@@ -3,11 +3,12 @@
 
 use egui::{CornerRadius, Frame, Id, Rect, Sense, WidgetInfo, WidgetType, pos2, vec2};
 
-use crate::app::App;
 use crate::i18n::gettext;
-use crate::model::{self, Action, ConnTabId, TabId};
+use crate::keymap::Keymap;
+use crate::model::{self, Action, ConnTabId, TabId, Workspace};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::Paint;
 use crate::ui::focus::{self, Ring};
 use crate::ui::widgets::{self, ButtonSpec, icon_button};
 
@@ -29,16 +30,21 @@ fn mac_width(text: f32) -> f32 {
 /// and the sidebar's in the terminal's.
 const TOGGLE_CELL: f32 = 40.0;
 
-pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
-    let sql_key = app
-        .keymap
-        .key(app.layout(), crate::keymap::Command::NewSqlTab);
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
+/// Draws the strip of `workspace`, the connection tab `tab`, and returns
+/// what it asks for.
+pub fn show(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    workspace: &Workspace,
+    keymap: &Keymap,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let sql_key = keymap.key(paint.layout(), crate::keymap::Command::NewSqlTab);
     // Each tab's id, name, whether it is pinned, its kind (a SQL editor
     // and the Agents tab are never a preview, so they draw like a pinned
     // tab) and whether it holds changes that are not saved.
@@ -257,7 +263,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 actions.push(Action::ToggleRowPanel(tab));
             }
         });
-    app.actions.extend(actions);
+    actions
 }
 
 /// The terminal's `+ sql` after the last tab: 8 from it and 4 from the

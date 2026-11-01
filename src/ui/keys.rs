@@ -2696,10 +2696,15 @@ fn letters(
     };
     // The card of a refused write, while a SQL editor's Messages show it:
     // the command its button stands for, and what the button does.
-    let mut card = crate::ui::sql_results::card_key(app, tab);
+    let mut card = app
+        .workspace(tab)
+        .and_then(|workspace| crate::ui::sql_results::card_key(&app.look, tab, workspace));
     let has_card = card.is_some();
     // The results' links on screen: the commands their letters stand for.
-    let mut links = crate::ui::sql_results::link_keys(app, tab);
+    let mut links = app
+        .workspace(tab)
+        .map(|workspace| crate::ui::sql_results::link_keys(&app.look, tab, workspace))
+        .unwrap_or_default();
     let offers = |command: Command| links.iter().any(|(offered, _)| *offered == command);
     let (cut, timed_out) = (
         offers(Command::ShowAllRows),
