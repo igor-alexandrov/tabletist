@@ -78,7 +78,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     if look.terminal
         && let Some(shown) = row_panel
     {
-        super::row_panel::show(app, ui, tab, shown);
+        inspector(app, ui, tab, shown);
     }
     egui::CentralPanel::default()
         .frame(Frame::new().fill(app.palette.window))
@@ -89,7 +89,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             if !look.terminal {
                 object_tabs(app, ui, tab);
                 if let Some(shown) = row_panel {
-                    super::row_panel::show(app, ui, tab, shown);
+                    inspector(app, ui, tab, shown);
                 }
             }
             let sql = app
@@ -106,14 +106,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 Some(_) if agents => super::agents::show(app, ui, tab),
                 Some(_) if history => history_tab(app, ui, tab),
                 Some(object_tab) => {
-                    super::data_view::header(app, ui, tab, object_tab);
+                    header(app, ui, tab, object_tab);
                     if view == Some(ObjectView::Data) {
-                        super::data_view::toolbar(app, ui, tab, object_tab);
+                        toolbar(app, ui, tab, object_tab);
                     }
                     if !look.terminal {
                         match view {
                             Some(ObjectView::Ddl) => ddl_footer(app, ui, tab, object_tab),
-                            _ => super::data_view::footer(app, ui, tab, object_tab),
+                            _ => footer(app, ui, tab, object_tab),
                         }
                         // Bottom panels stack upwards: the bar of pending
                         // changes stands on the footer.
@@ -166,7 +166,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                         );
                                     });
                                 }
-                                super::data_view::show(app, ui, tab, object_tab)
+                                data_grid(app, ui, tab, object_tab)
                             }
                         });
                 }
@@ -209,6 +209,84 @@ fn history_tab(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let keep = app.settings.history_keep;
     if let Some(workspace) = app.workspace(tab) {
         let asked = super::history::show(ui, paint, tab, workspace, &app.keymap, &name, keep);
+        app.actions.extend(asked);
+    }
+}
+
+/// The open object's header, handed its tab and workspace.
+fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let Some(workspace) = app.workspace(tab) else {
+        return;
+    };
+    if let Some(object) = workspace.object_tab(object_tab) {
+        let asked = super::data_view::header(ui, paint, tab, workspace, object);
+        app.actions.extend(asked);
+    }
+}
+
+/// The Data view's toolbar, handed its workspace: the terminal's WHERE
+/// line edits the tab's clause in place.
+fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    if let Some(workspace) = app.workspace_mut(tab) {
+        let asked = super::data_view::toolbar(ui, paint, tab, object_tab, workspace);
+        app.actions.extend(asked);
+    }
+}
+
+/// The open object's footer, handed its tab, the settings and the keymap.
+fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let Some(workspace) = app.workspace(tab) else {
+        return;
+    };
+    if let Some(object) = workspace.object_tab(object_tab) {
+        let asked = super::data_view::footer(
+            ui,
+            paint,
+            tab,
+            workspace,
+            object,
+            &app.settings,
+            &app.keymap,
+        );
+        app.actions.extend(asked);
+    }
+}
+
+/// The table's grid, handed its workspace and what its editor reads of
+/// the rest: the field on a cell edits its editor's text in place.
+fn data_grid(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let hold = app.dialog.is_none();
+    let calendar = app.calendar();
+    if let Some(workspace) = crate::app::workspace_in_mut(&mut app.tabs, tab) {
+        let around = super::data_view::Around {
+            settings: &app.settings,
+            keymap: &app.keymap,
+            hold,
+            calendar,
+        };
+        let asked = super::data_view::show(ui, paint, tab, object_tab, workspace, around);
+        app.actions.extend(asked);
+    }
+}
+
+/// The row panel, of the tab `shown`, handed its workspace and what its
+/// editor reads of the rest: its field edits the editor's text in place.
+fn inspector(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, shown: TabId) {
+    let paint = super::Paint::of(app);
+    let hold = app.dialog.is_none();
+    let calendar = app.calendar();
+    if let Some(workspace) = crate::app::workspace_in_mut(&mut app.tabs, tab) {
+        let around = super::data_view::Around {
+            settings: &app.settings,
+            keymap: &app.keymap,
+            hold,
+            calendar,
+        };
+        let asked = super::row_panel::show(ui, paint, tab, shown, workspace, around);
         app.actions.extend(asked);
     }
 }
