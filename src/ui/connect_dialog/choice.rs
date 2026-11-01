@@ -335,9 +335,9 @@ const ENVIRONMENT_NAMES: [&str; Environment::ALL.len()] =
 /// follows where the connection points until one is clicked.
 pub(super) fn environment_choice(
     ui: &mut Ui,
-    form: &mut ConnectionForm,
     heading: &str,
     skin: &Skin,
+    actions: &mut Vec<Action>,
 ) {
     let labels = ENVIRONMENT_NAMES.map(|name| skin.say(name));
     let options: Vec<(Environment, Choice<'_>)> = Environment::ALL
@@ -367,8 +367,6 @@ pub(super) fn environment_choice(
         skin,
     );
     if let Some(environment) = clicked {
-        form.environment = Some(environment);
-        // A new Files connection's agents follow it: Off on production.
-        form.follow_agents_default();
+        actions.push(Action::SetEnvironment(environment));
     }
 }
