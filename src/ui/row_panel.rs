@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tabletist_db::{Value, ValueKind};
 
 use crate::edit::{Editor, Lock, State, Table, Unset};
+use crate::format;
 use crate::i18n::gettext;
 use crate::keymap::Command;
 use crate::model::{Action, CellPos, ConnTabId, RowFields, Tab, TabId, Workspace};
@@ -17,8 +18,7 @@ use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::Paint;
 use crate::ui::data_view::Around;
-use crate::ui::focus::{self, Region};
-use crate::ui::format;
+use crate::ui::focus::{self, Link, Region};
 use crate::ui::json_view;
 use crate::ui::row_form::{self, Form, Part};
 use crate::ui::states::Tone;
@@ -2685,7 +2685,7 @@ fn value_of(
     ui.add_space(pad);
     ui.horizontal_top(|ui| {
         // A colour (`#3a7bd5`) leads with a swatch of it, on the first line.
-        if let Some(swatch) = format::color(value) {
+        if let Some(swatch) = crate::ui::grid::swatch_color(value) {
             let (place, _) =
                 ui.allocate_exact_size(vec2(SWATCH, line_of(ui, role, look)), Sense::hover());
             crate::ui::grid::paint_swatch(

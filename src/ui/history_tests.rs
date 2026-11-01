@@ -1116,11 +1116,11 @@ fn every_way_in_shows_one_history_tab_and_none_opens_it_by_itself() {
             .cloned()
             .collect::<Vec<_>>()
     };
-    let history = |item: &crate::app::QuickItem| {
+    let history = |item: &crate::model::QuickItem| {
         matches!(
             item,
-            crate::app::QuickItem::Command {
-                command: crate::app::QuickCommand::Run(runnable),
+            crate::model::QuickItem::Command {
+                command: crate::model::QuickCommand::Run(runnable),
                 ..
             } if runnable.command == crate::keymap::Command::History
         )
@@ -1129,7 +1129,7 @@ fn every_way_in_shows_one_history_tab_and_none_opens_it_by_itself() {
     // after it.
     let commands = listed(&mut harness, "> Hist");
     let command =
-        |item: &crate::app::QuickItem| matches!(item, crate::app::QuickItem::Command { .. });
+        |item: &crate::model::QuickItem| matches!(item, crate::model::QuickItem::Command { .. });
     assert!(commands.iter().all(command), "the commands alone");
     assert!(history(&commands[0]));
     let index = listed(&mut harness, "> History").iter().position(history);

@@ -12,12 +12,14 @@ use egui::{
     vec2,
 };
 
+use crate::format;
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::{Command, Layout};
 use crate::model::{Action, Held, LeavePrompt, Workspace, WritePrompt};
 use crate::review::{Line, Review, Values};
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::Paint;
 use crate::ui::focus::{self, Ring};
 use crate::ui::keys::{drop_repeats, take_enter};
 use crate::ui::pending_bar::counted;
@@ -25,7 +27,6 @@ use crate::ui::review;
 use crate::ui::states::Tone;
 use crate::ui::terminal_dialog;
 use crate::ui::widgets::{self, ButtonSpec};
-use crate::ui::{Paint, format};
 
 /// A row of buttons at a prompt's foot.
 pub(super) const ROW: f32 = 32.0;

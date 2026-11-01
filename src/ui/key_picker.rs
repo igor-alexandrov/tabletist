@@ -9,13 +9,13 @@ use egui::accesskit::Role;
 use egui::{CornerRadius, Id, Rect, Sense, Ui, UiBuilder, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::{LookupRow, Value};
 
+use crate::format::{display_safe, plain_text};
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::key_picker::{Columns, LIMIT, Picker, SAID, VISIBLE, found_in};
 use crate::labels::Source;
 use crate::model::{Action, ConnTabId, TabId};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
-use crate::ui::format::{display_safe, plain_text};
 use crate::ui::label_chooser;
 use crate::ui::{grid, sql_complete, widgets};
 

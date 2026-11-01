@@ -10,6 +10,7 @@ use egui::{CornerRadius, Id, Rect, Sense, Ui, WidgetInfo, WidgetType, pos2, vec2
 use tabletist_db::{Driver, Error, ScriptEnd, ScriptMode, StatementOutcome, ValueKind};
 
 use crate::backend::{CancelReason, RequestId};
+use crate::format;
 use crate::i18n::{Locale, gettext};
 use crate::keymap::Keymap;
 use crate::model::{
@@ -20,7 +21,6 @@ use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Laid, Text, TextRole};
 use crate::ui::Paint;
 use crate::ui::data_view;
-use crate::ui::format;
 use crate::ui::grid::{self, Column};
 use crate::ui::states;
 use crate::ui::value_tags::Tags;

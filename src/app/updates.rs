@@ -65,7 +65,7 @@ impl App {
             let environment = workspace.environment.label(platform);
             let window = format!("{} · {environment}", workspace.name);
             for object in workspace.object_tabs() {
-                let table = crate::ui::format::object_title(
+                let table = crate::format::object_title(
                     &object.object,
                     workspace.name_is_shared(&object.object),
                 );

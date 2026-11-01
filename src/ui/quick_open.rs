@@ -15,17 +15,18 @@ use egui::{Align2, Color32, CornerRadius, Rect, Sense, Stroke, StrokeKind, UiBui
 use egui::{WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::ObjectKind;
 
-use crate::app::{
-    About, Found, QuickCommand, QuickHeading, QuickItem, QuickList, QuickRow, StartRow, TabName,
-};
+use crate::app::{QuickHeading, QuickList, QuickRow};
 use crate::env::{Environment, Platform, env_colors};
+use crate::format::display_safe;
 use crate::i18n::{Locale, gettext};
 use crate::keymap::{Command, Keymap, Layout, Scope, Written};
-use crate::model::{Action, AgentsHere, ConnTabId, QuickCaret, QuickGroup, QuickOpen, StartRecent};
+use crate::model::{
+    About, Action, AgentsHere, ConnTabId, Found, QuickCaret, QuickCommand, QuickGroup, QuickItem,
+    QuickOpen, StartRecent, StartRow, TabName,
+};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::Paint;
-use crate::ui::format::display_safe;
 use crate::ui::widgets::{self, ButtonSpec};
 use crate::ui::workspace::{Badge, env_badge};
 

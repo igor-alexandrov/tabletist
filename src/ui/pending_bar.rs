@@ -7,14 +7,15 @@ use egui::{Frame, Id, Rect, Sense, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::Error;
 
 use crate::edit::{Note, Saved};
+use crate::format;
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::model::{Action, ConnTabId, ObjectTab, SaveBlock};
 use crate::theme::Icon;
 use crate::typography::{Text, TextRole};
+use crate::ui::Paint;
 use crate::ui::menu;
 use crate::ui::states::{self, Tone};
 use crate::ui::widgets::{self, ButtonSpec};
-use crate::ui::{Paint, format};
 
 /// The bar's height.
 const HEIGHT: f32 = 48.0;

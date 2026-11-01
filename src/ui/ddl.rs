@@ -15,12 +15,13 @@ use egui::{
 use tabletist_db::ddl::{PartKind, Source};
 use tabletist_db::{Ddl, Driver, ObjectKind};
 
+use crate::format;
 use crate::i18n::{Locale, gettext};
 use crate::keymap::Command;
 use crate::model::{Action, ConnTabId, ObjectTab, TabId};
 use crate::theme::{self, Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
-use crate::ui::{Paint, focus, format, sql_text, states, widgets};
+use crate::ui::{Paint, focus, sql_text, states, widgets};
 
 /// The text's role, and its line numbers': the SQL editor's.
 fn role(look: &Look) -> TextRole {

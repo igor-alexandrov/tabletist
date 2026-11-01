@@ -1170,7 +1170,7 @@ fn status(form: &ConnectionForm, skin: &Skin) -> Option<Status> {
                 .map_or(form.driver, |spec| spec.driver);
             let mut text = format!("{} · {}", gettext(skin.locale, "Connected"), driver.label());
             if let Some(took) = form.test_took {
-                text = format!("{text} · {}", crate::ui::format::elapsed(took));
+                text = format!("{text} · {}", crate::format::elapsed(took));
             }
             Some(Status::Passed(skin.look.label(&text)))
         }

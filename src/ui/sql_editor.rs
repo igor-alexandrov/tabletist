@@ -7,6 +7,7 @@ use egui::{
     pos2, vec2,
 };
 
+use crate::format;
 use crate::i18n::{Locale, gettext};
 use crate::keymap::{Command, Keymap, Scope, Written};
 use crate::model::{Action, ConnTabId, NoWrites, RunMode, SqlTab, TabId, Workspace};
@@ -15,7 +16,6 @@ use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::Paint;
 use crate::ui::focus;
-use crate::ui::format;
 use crate::ui::menu;
 use crate::ui::widgets::{self, ButtonSpec};
 
