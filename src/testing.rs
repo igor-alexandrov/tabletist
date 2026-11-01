@@ -31,6 +31,9 @@ pub struct Harness {
     pub painted: Vec<(String, egui::Color32)>,
     /// Where the last frame painted each piece of text, in points.
     pub text_rects: Vec<(String, egui::Rect)>,
+    /// Where the last frame drew each row of a grid, as a screen reader
+    /// has it: what [`Harness::is_row_number`] reads.
+    pub grid_rows: Vec<egui::Rect>,
     /// Every piece of text the last frame painted slanted.
     pub slanted: Vec<String>,
     /// Every piece of text the last frame painted struck through.
@@ -126,10 +129,35 @@ impl Harness {
                 egui::OutputCommand::CopyImage(_) => {}
             }
         }
-        output
+        let tree = output
             .platform_output
             .accesskit_update
-            .expect("AccessKit is enabled")
+            .expect("AccessKit is enabled");
+        self.grid_rows = tree
+            .nodes
+            .iter()
+            .filter(|(_, node)| {
+                node.label()
+                    .is_some_and(|label| label.starts_with("Row ") || label == "New row, not saved")
+            })
+            .filter_map(|(_, node)| node.bounds())
+            .map(|rect| {
+                egui::Rect::from_min_max(
+                    egui::pos2(rect.x0 as f32, rect.y0 as f32),
+                    egui::pos2(rect.x1 as f32, rect.y1 as f32),
+                )
+            })
+            .collect();
+        tree
+    }
+
+    /// Whether the piece of text the last frame painted at `rect` is a
+    /// grid's row number: in the gutter its row begins with.
+    pub fn is_row_number(&self, rect: egui::Rect) -> bool {
+        let gutter = crate::ui::grid::gutter(&self.app.look);
+        self.grid_rows.iter().any(|row| {
+            row.y_range().contains(rect.center().y) && rect.right() <= row.left() + gutter
+        })
     }
 
     /// Runs one frame that draws only `add` in a central panel, for
@@ -1687,6 +1715,7 @@ impl Harness {
             close_requested: false,
             painted: Vec::new(),
             text_rects: Vec::new(),
+            grid_rows: Vec::new(),
             slanted: Vec::new(),
             struck: Vec::new(),
             fills: Vec::new(),

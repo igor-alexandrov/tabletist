@@ -120,8 +120,8 @@ takes what you type (Mod+P opens the same search from anywhere):
 | Mod+. | Cancel the running query |
 | Mod+I | Open the row panel, with the keyboard on its fields. Esc goes back to the rows |
 | Mod+Shift+R | Show or hide the row panel |
-| Mod+C | Copy the cell |
-| Mod+Shift+C | Copy the row |
+| Mod+C | Copy the selection, or the cell |
+| Mod+Shift+C | Copy the selected rows |
 | Ctrl+Cmd+1, 2, 3 on macOS, Alt+1, 2, 3 on Windows | Show the rows, the structure, the DDL |
 
 In a table's [Structure view]({% link _guide/browsing-data.md %}#structure):
@@ -152,9 +152,13 @@ These are the keys of the macOS and Windows looks. The Omarchy look has
 | Enter, F2 | Edit the cell. Typing on a selected cell starts an edit too, and so does a double-click |
 | Mod+N | [Add a row]({% link _guide/editing-data.md %}#add-a-row), at the top of the grid, while a table's rows are in front |
 | Down | On the table's last row, on its last page: add a row below it |
-| Mod+D | [Duplicate the row]({% link _guide/editing-data.md %}#duplicate-a-row), as a new row at the top of the grid |
+| Mod+D | [Duplicate the selected rows]({% link _guide/editing-data.md %}#duplicate-a-row), as new rows at the top of the grid |
 | Backspace, Delete | [Delete the row]({% link _guide/editing-data.md %}#delete-a-row): mark it for deletion, or restore a marked row. A new row that is not saved yet is dropped |
-| Shift+Up, Shift+Down | Select the row above or below with the selected rows. Shift with a click selects through to the clicked row. Backspace then [deletes them all]({% link _guide/editing-data.md %}#delete-a-row) |
+| Shift+arrows | [Select cells]({% link _guide/browsing-data.md %}#selecting) from the selected one. Shift with a click, or a drag, selects through to the clicked cell. Backspace then [deletes their rows]({% link _guide/editing-data.md %}#delete-a-row) |
+| Click a row's number | Select the row. Shift-click selects through to another, Mod-click adds or takes out one |
+| Shift+Space | Select the rows of the selected cells |
+| Mod+A | Select every row loaded |
+| Mod+C, Mod+Shift+C | Copy the selection as tab-separated values, or its rows whole. One cell is copied as it is |
 | Enter, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Alt+Enter | Open the large editor. In it, Mod+Enter applies and Esc cancels |
 | Esc | Cancel the edit |

@@ -547,7 +547,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     let flips = object
         .filter(|_| grid && !editing && !tree_arrows && !focused)
         .filter(|&(tab, id)| app.flips(tab, id))
-        // Not under the terminal look's visual selection of rows.
+        // Not under the terminal look's visual selection.
         .filter(|&(tab, id)| {
             let object = app
                 .workspace(tab)
@@ -1117,13 +1117,38 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 actions.push(Action::CloseTab { tab, id });
             }
             if !editing && any_grid && !tree_arrows && !focused {
-                // Shift with an arrow takes the row it moves to into the
-                // selection. A table's rows only.
-                if sql.is_none() {
-                    for (command, rows) in [(Command::ExtendUp, -1), (Command::ExtendDown, 1)] {
-                        let presses = on(input, command, Scope::Grid).count;
-                        actions.extend((0..presses).map(|_| Action::ExtendBy { tab, id, rows }));
-                    }
+                // Shift with an arrow takes the cell it moves to into the
+                // selection, in a table's rows and a result's.
+                let rows_scope = if sql.is_some() {
+                    Scope::Results
+                } else {
+                    Scope::Grid
+                };
+                for (command, rows, cols) in [
+                    (Command::ExtendUp, -1, 0),
+                    (Command::ExtendDown, 1, 0),
+                    (Command::ExtendLeft, 0, -1),
+                    (Command::ExtendRight, 0, 1),
+                ] {
+                    let presses = on(input, command, rows_scope).count;
+                    actions.extend((0..presses).map(|_| Action::ExtendBy {
+                        tab,
+                        id,
+                        rows,
+                        cols,
+                    }));
+                }
+                if on(input, Command::SelectRowsOfCursor, rows_scope).fresh {
+                    actions.push(Action::SelectRowsOfCursor { tab, id });
+                }
+                if on(input, Command::SelectAllRows, rows_scope).fresh {
+                    actions.push(Action::SelectAllRows { tab, id });
+                }
+                // The terminal look's block: a chord, where `v` and `V`
+                // are letters.
+                if on(input, Command::SelectBlock, rows_scope).fresh {
+                    let mode = crate::model::Visual::Block;
+                    actions.push(Action::SelectRows { tab, id, mode });
                 }
                 // Down on a table's last row, on its last page, adds a
                 // row below it where the table takes one, in the looks
@@ -1281,15 +1306,16 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     if terminal {
         held_copy(ctx, open);
     }
-    if !editing && grid {
+    if !editing && any_grid {
         // The row's chord first: with Shift exact neither is the other's.
         // They come as the window's copy, which `presses` reads. A look
-        // with no chord for them copies nothing here.
+        // with no chord for them copies nothing here. A table's grid or a
+        // result's.
+        let scope = if grid { Scope::Grid } else { Scope::Results };
         let copied = ctx.input_mut(|input| {
             [Command::CopyRow, Command::CopyCells]
                 .into_iter()
                 .find(|command| {
-                    let scope = Scope::Grid;
                     asked(input, &app.keymap, layout, *command, scope, normal).count > 0
                 })
         });
@@ -1726,7 +1752,7 @@ fn editing_keys(
         asked(input, keymap, layout, command, scope, normal)
     };
     let open = object.edits.editor.is_some();
-    // The terminal look's visual selection of rows holds back the chords
+    // The terminal look's visual selection holds back the chords
     // that act on one cell or one row.
     let visual = app.look.terminal && object.visual();
     let editor = crate::ui::cell_editor::field_id(tab, id);
@@ -2073,10 +2099,10 @@ fn on_last_row(app: &App, tab: ConnTabId, id: TabId) -> bool {
         && place.is_some_and(|place| place + 1 == order.len())
 }
 
-/// Whether a visual selection of rows holds `command` back: what changes,
-/// copies or follows one cell or one row. The moves, the inspector's
-/// show and hide, a save, a discard, Review SQL, a reload, the filters and
-/// the pages are not among them.
+/// Whether a visual selection holds `command` back: what changes or
+/// follows one cell or one row, and what copies one row. The moves, the
+/// inspector's show and hide, a save, a discard, Review SQL, a reload, the
+/// filters, the pages and the copy of the selection are not among them.
 fn held_back(command: Command) -> bool {
     matches!(
         command,
@@ -2087,7 +2113,6 @@ fn held_back(command: Command) -> bool {
             | Command::SetDefault
             | Command::UndoCell
             | Command::RedoCell
-            | Command::CopyCells
             | Command::CopyRow
             | Command::PasteCells
             | Command::PasteNewRows
@@ -2291,7 +2316,7 @@ fn agents_here(app: &App, tab: ConnTabId) -> bool {
 
 /// Whether `sql` shows a result grid for the keys to move in: its last
 /// run's rows, unless the Messages pane covers them.
-fn shows_grid(sql: &crate::model::SqlTab) -> bool {
+pub(crate) fn shows_grid(sql: &crate::model::SqlTab) -> bool {
     sql.pane == crate::model::ResultPane::Results && sql.dims().0 > 0
 }
 
@@ -2556,9 +2581,18 @@ fn letters(
     // The cursor's row is a new one: the row panel is its form, and the
     // key that drops the row is read from the form's fields too.
     let on_new = selection.is_some_and(|cell| crate::edit::new_id(cell.row).is_some());
-    // A visual selection of rows is on: its keys are read, and the keys
-    // that act on one cell or one row are held back.
-    let visual = object.is_some_and(|object| object.visual());
+    // A visual selection is on, of a table's rows or a result's: its keys
+    // are read, and the keys that act on one cell or one row are held
+    // back. `V`'s holds the key that deletes its rows.
+    let visual_mode = match object {
+        Some(object) => object.visual_mode(),
+        None => workspace
+            .active_sql_tab()
+            .filter(|sql| shows_grid(sql))
+            .and_then(|sql| sql.visual_mode()),
+    };
+    let visual = visual_mode.is_some();
+    let visual_rows = visual_mode == Some(crate::model::Visual::Rows);
     let on_sql = workspace.active_sql_tab().is_some();
     // A SQL editor showing its result takes the letters that move in it.
     let sql_grid = workspace
@@ -2595,9 +2629,9 @@ fn letters(
     // field of the panel it gave the keys back to the grid, before this.)
     let quiet = !left_field && !menu_open;
     // A visual selection first: it is the innermost thing the key leaves.
-    if let Some(id) = active.filter(|_| visual)
+    if let Some(id) = active.or(sql_grid).filter(|_| visual)
         && quiet
-        && on(Command::LeaveVisual, Scope::Grid).fresh
+        && on(Command::LeaveVisual, rows).fresh
     {
         actions.push(Action::LeaveVisual { tab, id });
     }
@@ -2721,6 +2755,7 @@ fn letters(
         crate::keymap::When::TimedOut => timed_out,
         crate::keymap::When::NewRow => on_new,
         crate::keymap::When::Visual => visual,
+        crate::keymap::When::VisualRows => visual_rows,
         // The Structure view shows where the rows would: its own keys
         // come before the rows' there.
         crate::keymap::When::Structure => structure_shows,
@@ -3130,7 +3165,7 @@ fn letters(
             // is the page's.
             (Some(Command::YankRow), Some(id)) if rows_show && !tree && selection.is_some() => {
                 actions.push(Action::YankRow { tab, id });
-                if let Some(text) = app.copy_text(true) {
+                if let Some(text) = app.yank_text() {
                     ctx.copy_text(text);
                 }
                 let said = crate::i18n::gettext(app.locale, "Row yanked");
@@ -3145,8 +3180,18 @@ fn letters(
                 let above = command == Command::PutRowAbove;
                 actions.push(Action::PutRow { tab, id, above });
             }
-            (Some(Command::SelectRows), Some(id)) if rows_show && !tree && field.is_none() => {
-                actions.push(Action::SelectRows { tab, id });
+            // The visual selections, of a table's rows or a result's.
+            (Some(command @ (Command::SelectRows | Command::SelectCells)), _)
+                if !tree && field.is_none() =>
+            {
+                let mode = if command == Command::SelectRows {
+                    crate::model::Visual::Rows
+                } else {
+                    crate::model::Visual::Cells
+                };
+                if let Some(id) = active.filter(|_| rows_show).or(sql_grid) {
+                    actions.push(Action::SelectRows { tab, id, mode });
+                }
             }
             // The rows of the visual selection. Where none of them is
             // deleted the selection stays, to be made smaller.
@@ -3257,9 +3302,14 @@ fn letters(
             }
             // The rows' cell, where the rows show: no other view copies
             // one it hides.
-            (Some(Command::CopyCells), Some(_)) if rows_show => {
+            // A visual selection's cells, of the rows or a result, and as
+            // vim's `y` does the selection is left.
+            (Some(Command::CopySelection), _) if active.is_none() || rows_show => {
                 if let Some(text) = app.copy_text(false) {
                     ctx.copy_text(text);
+                }
+                if let Some(id) = active.or(sql_grid).filter(|_| visual) {
+                    actions.push(Action::LeaveVisual { tab, id });
                 }
             }
             // The whole statements, never the lines as the panel shows

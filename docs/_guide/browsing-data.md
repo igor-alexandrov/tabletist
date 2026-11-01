@@ -166,11 +166,33 @@ read-only or not as Settings › Editor says for a new tab, and always
 read-only on production or on a connection that cannot write. On
 production, the table's name has the production badge beside it.
 
+## Selecting
+
+Each row has its number at the left of the grid. On macOS and Windows:
+
+- Click a cell to select it. Drag over cells, Shift-click another cell,
+  or hold Shift and press the arrows to select the cells between them.
+  The footer says how many rows and columns they are.
+- Click a row's number to select the row. Shift-click another number to
+  select the rows between them, and Cmd/Ctrl-click one to add it or take
+  it out. Shift+Space selects the rows of the selected cells, and
+  Cmd/Ctrl+A every row loaded.
+
+In the Omarchy look, `v` starts a selection of cells on the cursor's
+cell, `Ctrl+V` a block, and `V` whole rows. The moves stretch it, the
+status line says its mode (`-- VISUAL --`, `-- VISUAL BLOCK --`,
+`-- VISUAL LINE --`) and its size, and Esc leaves it.
+
+A selection holds the rows loaded on the page. Filtering, sorting,
+reloading and going to another page end it. A SQL result's rows are
+selected the same way.
+
 ## Copying
 
-On macOS and Windows, Cmd/Ctrl+C copies the selected cell and
-Cmd/Ctrl+Shift+C the whole row, with tabs between its values. In the
-Omarchy look `v` then `y` copies the cell.
+On macOS and Windows, Cmd/Ctrl+C copies the selection with tabs between
+the values and a line for each row (the selected cell alone, without a
+selection), and Cmd/Ctrl+Shift+C its rows whole. In the Omarchy look `y`
+copies the selection, so `v` then `y` copies the cell.
 
 ## Next
 

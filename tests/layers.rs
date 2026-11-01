@@ -8,7 +8,7 @@ use std::path::Path;
 
 /// The modules of the lower layer, each with its directory where it has
 /// one.
-const LOWER: [&str; 34] = [
+const LOWER: [&str; 35] = [
     "agents_shown",
     "backend",
     "clock",
@@ -35,6 +35,7 @@ const LOWER: [&str; 34] = [
     "review",
     "search",
     "secrets",
+    "selection",
     "session",
     "settings",
     "theme",

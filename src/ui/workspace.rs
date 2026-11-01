@@ -1916,8 +1916,9 @@ struct Editing {
     can_edit: bool,
     /// Insert mode: the column being edited and its type.
     insert: Option<String>,
-    /// A visual selection of rows is on, with this many rows.
-    visual: Option<usize>,
+    /// A visual selection is on, of a table's rows or a result's: its mode,
+    /// and its size in words ("4 rows × 2 columns", "3 rows").
+    visual: Option<(crate::selection::Visual, String)>,
     /// Where Tab moves on to: the next cell from an editor on a cell, the
     /// next field from one in the row panel. Nowhere from the large
     /// editor, in either place: Tab is its text's own.
@@ -1999,7 +2000,18 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
         return Editing::default();
     };
     let Some(object) = workspace.active_object_tab() else {
-        return Editing::default();
+        // A result's visual selection: the line says it as a table's.
+        let visual = workspace.active_sql_tab().and_then(|sql| {
+            // Not under the Messages pane, where the rows do not show.
+            let mode = sql.visual_mode().filter(|_| super::keys::shows_grid(sql))?;
+            let size = sql.selection_size().unwrap_or((1, 1));
+            let rows = mode == crate::selection::Visual::Rows;
+            Some((mode, crate::selection::size_words(locale, size, rows)))
+        });
+        return Editing {
+            visual,
+            ..Editing::default()
+        };
     };
     let say = |text: &'static str| gettext(locale, text);
     let edits = &object.edits;
@@ -2037,8 +2049,12 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
         });
     let can_add = data
         && crate::edit::Table::of(workspace, object).is_some_and(|table| table.no_rows().is_none());
-    // The rows of a visual selection, while one is on and the rows show.
-    let visual = (data && object.visual()).then(|| object.selected_rows().len());
+    // A visual selection, while one is on and the rows show.
+    let visual = object.visual_mode().filter(|_| data).map(|mode| {
+        let size = object.selection_size().unwrap_or((1, 1));
+        let rows = mode == crate::selection::Visual::Rows;
+        (mode, crate::selection::size_words(locale, size, rows))
+    });
     let errors = counts.to_fix + counts.failed;
     let errors = (errors > 0).then(|| counted(locale, errors, "error", "errors"));
     // What a new row still needs, by its column: said while a value is
@@ -2436,6 +2452,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let (keep_key, next_key) = (key(Command::KeepEdit), key(Command::CommitNext));
     let (visual_delete_key, leave_visual_key) =
         (key(Command::DeleteSelection), key(Command::LeaveVisual));
+    let visual_copy_key = key(Command::CopySelection);
     // The keys of a foreign key's list, while one is open under the field.
     let pick_keys = app
         .keymap
@@ -2922,10 +2939,39 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     let text = Text::one(&look, TextRole::OModeLine, &label, color);
                     left += widgets::paint_label(ui, left, y, text) + gap;
                 }
-                let shown =
-                    fit(rect.right() - 12.0 - summary_width - gap - (left - rect.left() - 12.0));
-                let at = (left, y);
-                widgets::key_hints(ui, at, &hints[..shown], gap, &look, &palette);
+                // A visual selection of the result: its mode, its size and
+                // its keys, in place of the editor's.
+                if let Some((visual, held)) = &editing.visual {
+                    let mode = gettext(locale, visual.mode());
+                    let mode = Text::one(&look, TextRole::OModeLine, &mode, palette.magenta);
+                    left += widgets::paint_label(ui, left, y, mode) + gap;
+                    let text = Text::one(&look, role, held, palette.secondary);
+                    left += widgets::paint_label(ui, left, y, text) + gap;
+                    let (copies, normal) = (gettext(locale, "copy"), gettext(locale, "normal"));
+                    let keys = || {
+                        Text::new(&look)
+                            .add(role, &visual_copy_key, palette.text)
+                            .space(role, " ")
+                            .add(role, &copies, palette.dim)
+                            .add(role, " · ", palette.dim)
+                            .add(role, &leave_visual_key, palette.text)
+                            .space(role, " ")
+                            .add(role, &normal, palette.dim)
+                    };
+                    if left + widgets::measure(ui, keys())
+                        <= rect.right() - 12.0 - summary_width - gap
+                    {
+                        widgets::paint_label(ui, left, y, keys());
+                    }
+                } else {
+                    let shown = fit(rect.right()
+                        - 12.0
+                        - summary_width
+                        - gap
+                        - (left - rect.left() - 12.0));
+                    let at = (left, y);
+                    widgets::key_hints(ui, at, &hints[..shown], gap, &look, &palette);
+                }
                 widgets::paint_text_right(
                     ui,
                     rect.right() - 12.0,
@@ -2957,19 +3003,24 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 }
                 x
             };
-            if let Some(rows) = editing.visual {
-                // A visual selection of rows: the mode, how many rows it
-                // holds and the counts. Its keys, at the right, give way.
-                let mode = gettext(locale, "-- VISUAL --");
+            if let Some((visual, held)) = &editing.visual {
+                // A visual selection: the mode, what it holds and the
+                // counts. Its keys, at the right, give way: `V`'s rows
+                // are deleted, the others' cells copied.
+                let mode = gettext(locale, visual.mode());
                 let mode = || Text::one(&look, TextRole::OModeLine, &mode, palette.magenta);
-                let held = crate::ui::pending_bar::counted(locale, rows, "row", "rows");
-                let deletes = gettext(locale, "delete");
+                let rows = *visual == crate::selection::Visual::Rows;
+                let (act_key, acts) = if rows {
+                    (&visual_delete_key, gettext(locale, "delete"))
+                } else {
+                    (&visual_copy_key, gettext(locale, "copy"))
+                };
                 let normal = gettext(locale, "normal");
                 let keys = || {
                     Text::new(&look)
-                        .add(role, &visual_delete_key, palette.text)
+                        .add(role, act_key, palette.text)
                         .space(role, " ")
-                        .add(role, &deletes, palette.dim)
+                        .add(role, &acts, palette.dim)
                         .add(role, " · ", palette.dim)
                         .add(role, &leave_visual_key, palette.text)
                         .space(role, " ")
@@ -2977,7 +3028,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 };
                 let right = rect.right() - 12.0;
                 let mut x = left + widgets::paint_label(ui, left, y, mode()) + gap;
-                let text = Text::one(&look, role, &held, palette.secondary);
+                let text = Text::one(&look, role, held, palette.secondary);
                 x += widgets::paint_label(ui, x, y, text) + gap;
                 x = counts(ui, x);
                 if let Some(said) = &editing.said {

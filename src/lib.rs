@@ -33,6 +33,7 @@ pub mod relay;
 pub mod review;
 pub mod search;
 pub mod secrets;
+pub mod selection;
 pub mod session;
 pub mod settings;
 #[cfg(all(test, feature = "shots"))]

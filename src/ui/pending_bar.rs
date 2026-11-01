@@ -8,6 +8,7 @@ use tabletist_db::Error;
 
 use crate::edit::{Note, Saved};
 use crate::format;
+pub use crate::i18n::counted;
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::model::{Action, ConnTabId, ObjectTab, SaveBlock};
 use crate::theme::Icon;
@@ -37,12 +38,6 @@ const APART: f32 = 14.0;
 /// What the last save came to keeps this much room, or its own width,
 /// before the counts take theirs.
 const NOTE_LEAST: f32 = 120.0;
-
-/// `count` with its noun: "1 change", "3 changes".
-pub fn counted(locale: Locale, count: usize, one: &'static str, many: &'static str) -> String {
-    let plural = u32::try_from(count).unwrap_or(u32::MAX);
-    format!("{count} {}", ngettext(locale, one, many, plural))
-}
 
 /// "11 rows marked for deletion. 1 can't be deleted.": what a delete of
 /// several rows marked, and how many of the rows it named it left out.
