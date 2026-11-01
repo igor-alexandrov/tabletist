@@ -68,7 +68,7 @@ The order of a frame's actions is unchanged: each view returns what it pushed, i
 - [x] `cargo test --locked --workspace --all-targets`
 - [x] Push and open the PR.
 
-The net is the existing tests: `object_tabs::tests`, `sql_editor::tests`, `sql_text::tests`, `sql_results::tests`, `sql_complete::tests`, `src/ui/history_tests.rs`, `editor_results_tests.rs`, `editor_settings_tests.rs`, `complete_tests.rs`, `vim_tests.rs`, `pane_keys_tests.rs`, and the editor's, status line's and tab strip's tests in `src/ui/mod.rs` and `src/app.rs`. Three test calls moved with their signatures: `sql_results::tests` calls `card_key` twice and `Fit::of` once, `sql_editor::tests` `status_summary` once, each now with the workspace.
+The net is the existing tests: `object_tabs::tests`, `sql_editor::tests`, `sql_text::tests`, `sql_results::tests`, `sql_complete::tests`, `src/ui/history_tests.rs`, `editor_results_tests.rs`, `editor_settings_tests.rs`, `complete_tests.rs`, `vim_tests.rs`, `pane_keys_tests.rs`, and the editor's, status line's and tab strip's tests in `src/ui/mod.rs` and `src/app.rs`. Four test calls moved with their signatures: `sql_results::tests` calls `card_key` twice and `Fit::of` once, `sql_editor::tests` `status_summary` once, each now with the workspace.
 
 ## For the runs after
 
