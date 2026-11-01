@@ -47,7 +47,14 @@ pub fn bar_line(app: &App, zoom: f32) -> f32 {
 pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let look = app.look;
     top_bar(app, ui, tab);
-    super::notices(app, ui);
+    let (_, asked) = super::notices(
+        ui,
+        super::Paint::of(app),
+        app.notice.as_deref(),
+        &app.agents_held,
+        &app.connections.connections,
+    );
+    app.actions.extend(asked);
     let Some(workspace) = app.workspace(tab) else {
         return;
     };

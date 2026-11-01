@@ -10268,7 +10268,8 @@ mod tests {
             [AgentsCommand::Policy { connections, .. }] if connections.is_empty()
         ));
         assert_eq!(
-            crate::ui::agents_held_said(&app).as_deref(),
+            crate::ui::agents_held_said(app.locale, &app.agents_held, &app.connections.connections)
+                .as_deref(),
             Some(
                 "Agent access was changed outside Tabletist: the agent server was turned on, \
                  and agents may read Shop · dev. Until you answer, agents may not. Keep it, or \
@@ -10314,7 +10315,8 @@ mod tests {
         app.connections.upsert(other);
         app.check_agents();
         assert_eq!(
-            crate::ui::agents_held_said(&app).as_deref(),
+            crate::ui::agents_held_said(app.locale, &app.agents_held, &app.connections.connections)
+                .as_deref(),
             Some(
                 "Agent access was changed outside Tabletist: the agent server was turned on, \
                  agents may read Shop · dev, and agents may read Ledger · dev. Until you \
@@ -11469,7 +11471,9 @@ masked = ["orders.email"]
             [Raised::Tables { .. }]
         ));
         assert_eq!(sent(&app), customers);
-        let said = crate::ui::agents_held_said(&app).unwrap();
+        let said =
+            crate::ui::agents_held_said(app.locale, &app.agents_held, &app.connections.connections)
+                .unwrap();
         assert!(
             said.contains("agents may read more of Local · dev"),
             "{said}"
@@ -11542,7 +11546,9 @@ masked = ["orders.email"]
             [Raised::Masked { .. }]
         ));
         assert_eq!(sent(&app), columns(&["orders.phone", "orders.email"]));
-        let said = crate::ui::agents_held_said(&app).unwrap();
+        let said =
+            crate::ui::agents_held_said(app.locale, &app.agents_held, &app.connections.connections)
+                .unwrap();
         assert!(
             said.contains("agents may read more of Local · dev"),
             "{said}"
@@ -11612,7 +11618,9 @@ masked = ["orders.email"]
         );
         file_says(&mut app, Tables::All, &[]);
         assert_eq!(app.agents_held.len(), 2);
-        let said = crate::ui::agents_held_said(&app).unwrap();
+        let said =
+            crate::ui::agents_held_said(app.locale, &app.agents_held, &app.connections.connections)
+                .unwrap();
         assert_eq!(said.matches("Local · dev").count(), 1, "{said}");
     }
 

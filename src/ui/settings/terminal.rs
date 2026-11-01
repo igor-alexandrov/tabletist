@@ -197,7 +197,7 @@ pub(super) fn show(
             ui.set_height(screen.height());
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
             header(ui, pane, &skin);
-            let notice = notice(ui, app, actions);
+            let notice = notice(ui, &skin, app.notice.as_deref(), actions);
             // What the header, a notice, the footer and their rules leave.
             let height = (screen.height() - HEADER - notice - FOOTER - 2.0).max(0.0);
             let (body, _) =
@@ -437,15 +437,20 @@ fn header(ui: &mut Ui, pane: SettingsPane, skin: &Skin) {
 /// under the screen, and a save that fails here would go unseen until the
 /// screen closes. Returns the band's height with its rule, nothing when
 /// there is no notice.
-fn notice(ui: &mut Ui, app: &App, actions: &mut Vec<Action>) -> f32 {
-    let Some(message) = &app.notice else {
+fn notice(ui: &mut Ui, skin: &Skin, notice: Option<&str>, actions: &mut Vec<Action>) -> f32 {
+    let Some(message) = notice else {
         return 0.0;
     };
     let (rect, _) =
         ui.allocate_exact_size(vec2(ui.available_width(), NOTICE + 1.0), Sense::hover());
-    let fill = crate::ui::notice_fill(&app.palette);
+    let fill = crate::ui::notice_fill(skin.palette);
     ui.painter().rect_filled(rect, CornerRadius::ZERO, fill);
-    widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, app.palette.outline);
+    widgets::hline(
+        ui,
+        rect.x_range(),
+        rect.bottom() - 0.5,
+        skin.palette.outline,
+    );
     let left = rect.left() + NOTICE_SIDE;
     let right = (rect.right() - NOTICE_SIDE).max(left);
     let line = Rect::from_min_max(pos2(left, rect.top()), pos2(right, rect.bottom() - 1.0));
@@ -453,7 +458,12 @@ fn notice(ui: &mut Ui, app: &App, actions: &mut Vec<Action>) -> f32 {
     let centred = egui::Layout::left_to_right(egui::Align::Center);
     let builder = egui::UiBuilder::new().id_salt("notice").max_rect(line);
     let mut line = ui.new_child(builder.layout(centred));
-    crate::ui::notice_line(app, &mut line, message, actions);
+    let paint = crate::ui::Paint {
+        locale: skin.locale,
+        palette: *skin.palette,
+        look: *skin.look,
+    };
+    crate::ui::notice_line(&mut line, paint, message, actions);
     rect.height()
 }
 
