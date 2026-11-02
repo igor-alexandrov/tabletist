@@ -3,7 +3,7 @@
 //! the font the settings name by its fontconfig name. macOS reads the data
 //! font it names into the same [`Read`] ([`super::installed_font`]).
 
-use super::fonts::TerminalFaces;
+use super::TerminalFaces;
 
 #[cfg(target_os = "linux")]
 use std::{

@@ -6,7 +6,8 @@ use egui::{CornerRadius, Frame, Id, Rect, Sense, WidgetInfo, WidgetType, pos2, v
 use crate::i18n::gettext;
 use crate::keymap::Keymap;
 use crate::model::{self, Action, ConnTabId, TabId, Workspace};
-use crate::theme::{Icon, Look, Palette};
+use crate::style::Icon;
+use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::Paint;
 use crate::ui::focus::{self, Ring};

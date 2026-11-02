@@ -609,7 +609,7 @@ pub fn field(
             pos2(rect.left() + pad + SEARCH_ICON / 2.0, center),
             vec2(SEARCH_ICON, SEARCH_ICON),
         );
-        crate::theme::Icon::Search
+        crate::style::Icon::Search
             .image(palette.secondary, SEARCH_ICON)
             .paint_at(ui, place);
     }
@@ -1825,7 +1825,7 @@ mod tests {
             }
         }
         let ctx = egui::Context::default();
-        crate::theme::install(&ctx, false, look);
+        crate::style::install(&ctx, false, look);
         let palette = Palette::dark();
         let mut editor = Editor {
             cell: crate::model::CellPos { row: 0, col: 0 },

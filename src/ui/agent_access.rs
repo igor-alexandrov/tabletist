@@ -121,7 +121,7 @@ pub fn show(
                         egui::pos2(rect.left() + 24.0, rect.center().y),
                         vec2(12.0, 12.0),
                     );
-                    crate::theme::Icon::Check
+                    crate::style::Icon::Check
                         .image(palette.text, 12.0)
                         .paint_at(ui, place);
                 }

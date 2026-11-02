@@ -10,7 +10,8 @@ use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, WidgetInfo, Widget
 
 use crate::keymap::{Group, Keymap, Layout, Row, Why, Written, fixed};
 use crate::model::{Action, KeyboardPage, Recorded, Recording};
-use crate::theme::{Icon, mix};
+use crate::style::Icon;
+use crate::theme::mix;
 use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Ring};
 use crate::ui::widgets::{self, ButtonSpec, Segment};

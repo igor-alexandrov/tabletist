@@ -412,8 +412,9 @@ mod tests {
         assert_eq!(read.family.as_deref(), Some("Fira Code"));
         assert!(!read.missing);
         let faces = read.faces.expect("read");
+        let plex_mono = include_bytes!("../../assets/fonts/IBMPlexMono-Regular.ttf");
         let plex_mono_medium = include_bytes!("../../assets/fonts/IBMPlexMono-Medium.ttf");
-        assert_eq!(faces[0].font.len(), super::super::fonts::PLEX_MONO.len());
+        assert_eq!(faces[0].font.len(), plex_mono.len());
         assert_eq!(faces[1].font.len(), plex_mono_medium.len());
         assert!(Arc::ptr_eq(&faces[1], &faces[2]));
         // Written by hand in another case: the name as written.

@@ -10,7 +10,7 @@ use crate::i18n::{gettext, ngettext};
 use crate::keymap::Command;
 use crate::model::{Action, AgentsView};
 use crate::settings::{OptionId, Settings};
-use crate::theme::Icon;
+use crate::style::Icon;
 use crate::typography::{Laid, Text, TextRole};
 use crate::ui::widgets::{self, ButtonSpec, Segment};
 

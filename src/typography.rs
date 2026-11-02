@@ -16,22 +16,9 @@
 //!
 //! Text is built with [`Text`] and drawn from the [`Laid`] it lays out.
 
-pub mod desktop_font;
 mod fonts;
-pub mod installed_font;
 
-pub use fonts::{TerminalFaces, configure};
-
-/// The font the settings name, read from the system: on macOS the data's,
-/// an installed one through CoreText; elsewhere the terminal look's,
-/// through fontconfig.
-pub fn read_font(asked: Option<&str>) -> desktop_font::Read {
-    if cfg!(target_os = "macos") {
-        installed_font::read(asked)
-    } else {
-        desktop_font::read(asked)
-    }
-}
+pub use fonts::configure;
 
 use std::sync::Arc;
 
@@ -767,4 +754,53 @@ pub fn text_styles(faces: Faces) -> std::collections::BTreeMap<egui::TextStyle, 
         (TextStyle::Monospace, mono.font_id(faces)),
     ]
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::{FontSize, InterfaceSize, Settings};
+
+    /// The settings with the interface's size, the data font and its size
+    /// as given.
+    fn text(interface: InterfaceSize, font: Option<&str>, size: f64) -> Settings {
+        Settings {
+            interface_size: interface,
+            font: font.map(str::to_owned),
+            font_size: FontSize::of(size),
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn the_settings_size_the_interface_and_the_data_apart() {
+        for look in [Look::macos(), Look::standard()] {
+            let faces = look
+                .with_text(&text(InterfaceSize::Large, None, 16.0), false)
+                .faces;
+            // The interface's roles keep to the body's 14 as the design's
+            // to 13, the data's to 16 as the design's to 12.5.
+            assert_eq!(TextRole::UiBody.size(faces), 14.0, "{}", look.name);
+            assert_eq!(TextRole::Secondary.size(faces), 12.0 * 14.0 / 13.0);
+            assert_eq!(TextRole::MonoSecondary.size(faces), 12.0 * 14.0 / 13.0);
+            assert_eq!(TextRole::GridCell.size(faces), 16.0);
+            assert_eq!(TextRole::DataBody.size(faces), 13.0 * 16.0 / 12.5);
+            assert_eq!(TextRole::Code.size(faces), 13.0 * 16.0 / 12.5);
+            // Lines keep to their size: the editor's 22 at 13.
+            let code = TextRole::Code.line_height(faces).unwrap();
+            assert!((code - 22.0 * 16.0 / 12.5).abs() < 1e-4, "{code}");
+        }
+        // Before any is set, and in the terminal look whatever is set, the
+        // design's.
+        for faces in [
+            Look::macos().faces,
+            Look::omarchy()
+                .with_text(&text(InterfaceSize::Large, Some("Fira Code"), 20.0), true)
+                .faces,
+        ] {
+            for role in TextRole::ALL {
+                assert_eq!(role.size(faces), role.spec().size, "{}", role.id());
+            }
+        }
+    }
 }

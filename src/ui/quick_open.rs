@@ -24,7 +24,8 @@ use crate::model::{
     About, Action, AgentsHere, ConnTabId, Found, QuickCaret, QuickCommand, QuickGroup, QuickItem,
     QuickOpen, StartRecent, StartRow, TabName,
 };
-use crate::theme::{Icon, Look, Palette};
+use crate::style::Icon;
+use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::Paint;
 use crate::ui::widgets::{self, ButtonSpec};

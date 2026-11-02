@@ -25,6 +25,7 @@ use crate::model::{
 use crate::paths::AppDirs;
 use crate::secrets::{SecretString, password_account, ssh_account};
 use crate::settings::{Loaded, Settings, SettingsFile, Source};
+use crate::style;
 use crate::theme::{self, Catalog, Palette};
 
 mod commands;
@@ -207,7 +208,7 @@ pub struct App {
     /// What fontconfig gave the terminal look for the font the settings
     /// name, or CoreText macOS's data: nothing in tests, a demo's screenshot
     /// and Windows.
-    pub desktop_font: crate::typography::desktop_font::Read,
+    pub desktop_font: crate::font_files::desktop_font::Read,
     /// The installed monospace families macOS's data font menu lists after
     /// the bundled faces: read each time Settings opens, none in tests and
     /// a demo's screenshot.
@@ -445,7 +446,7 @@ impl App {
             theme_asked: 0,
             theme_taken: 0,
             pin_told: None,
-            desktop_font: crate::typography::desktop_font::Read::default(),
+            desktop_font: crate::font_files::desktop_font::Read::default(),
             installed_fonts: Vec::new(),
             font_asked: 0,
             font_taken: 0,
@@ -7755,7 +7756,7 @@ impl App {
     /// The palette and the look, applied to egui's style, with the caret
     /// as [`Self::caret_blinks`] says.
     pub fn apply_style(&self, ctx: &egui::Context) {
-        theme::apply(ctx, &self.palette, &self.look);
+        style::apply(ctx, &self.palette, &self.look);
         if !self.caret_blinks {
             ctx.all_styles_mut(|style| style.visuals.text_cursor.blink = false);
         }
@@ -7772,12 +7773,12 @@ impl App {
         // Read here, before the first frame, as the desktop's monospace
         // always was: a font that arrived later would move every line.
         if self.reads_font() {
-            self.desktop_font = crate::typography::read_font(self.settings.font.as_deref());
+            self.desktop_font = crate::font_files::read_font(self.settings.font.as_deref());
             // macOS: the data in the installed font read.
             self.look = self.text_look();
         }
         let desktop = self.desktop_font.faces.as_ref();
-        self.fonts = theme::install_with(ctx, follow_desktop, &self.look, desktop);
+        self.fonts = style::install_with(ctx, follow_desktop, &self.look, desktop);
         if follow_desktop {
             theme::enable_desktop_themes(&mut self.themes);
             let repaint = ctx.clone();
@@ -7996,7 +7997,7 @@ impl App {
         self.tell_missing_pin(ctx);
         if std::mem::take(&mut self.font_read) {
             let desktop = self.desktop_font.faces.as_ref();
-            theme::set_read_faces(ctx, &mut self.fonts, &self.look, desktop);
+            style::set_read_faces(ctx, &mut self.fonts, &self.look, desktop);
             crate::ui::grid::forget_marks(ctx);
             // macOS: the data in the installed font read, or in the default
             // where it is missing.
@@ -9219,7 +9220,7 @@ mod tests {
     fn a_font_read_is_drawn_and_an_older_one_that_ends_later_is_dropped() {
         let mut harness = Harness::new();
         harness.set_look(crate::theme::Look::omarchy());
-        let read = |family: &str| crate::typography::desktop_font::Read {
+        let read = |family: &str| crate::font_files::desktop_font::Read {
             asked: Some(family.into()),
             // Faces of their own, to tell them apart.
             faces: Some(std::array::from_fn(|_| {

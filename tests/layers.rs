@@ -1,7 +1,8 @@
 //! The lower layer knows nothing of the interface. The modules of the
 //! app's state, its edits, the backend, the settings and the text they
-//! write never name `crate::ui` or `crate::app`: the views and the reducer
-//! stand on them, never the other way round. What one of them needs from
+//! write never name `crate::ui`, `crate::typography`, `crate::style` or
+//! `crate::app`: the views, the text and style they draw with and the
+//! reducer stand on them, never the other way round. What one of them needs from
 //! above comes in as an argument, or moves down. Their tests stand on the
 //! lower layer too: they name neither the interface nor the harness of
 //! `crate::testing`, and take their data from `crate::fixtures`.
@@ -22,6 +23,7 @@ const LOWER: [&str; 35] = [
     "endpoint",
     "env",
     "fixtures",
+    "font_files",
     "format",
     "history",
     "i18n",
@@ -41,7 +43,6 @@ const LOWER: [&str; 35] = [
     "session",
     "settings",
     "theme",
-    "typography",
     "update",
     "util",
     "vim",
@@ -50,7 +51,7 @@ const LOWER: [&str; 35] = [
 
 /// The modules above it: the interface and the reducer, what starts and
 /// drives the window, and the tests' harness and scenes.
-const ABOVE: [&str; 10] = [
+const ABOVE: [&str; 12] = [
     "app",
     "entrypoint",
     "lib",
@@ -59,7 +60,9 @@ const ABOVE: [&str; 10] = [
     "menu",
     "promo",
     "shots",
+    "style",
     "testing",
+    "typography",
     "ui",
 ];
 
@@ -114,13 +117,14 @@ fn module(name: &str) -> Vec<(String, String, usize)> {
         .collect()
 }
 
-/// What the lower layer's code may not name: the interface and the
+/// What the lower layer's code may not name: the interface (its views, the
+/// text roles they draw with and the style it sets up on egui) and the
 /// reducer.
-const ABOVE_CODE: [&str; 2] = ["ui", "app"];
+const ABOVE_CODE: [&str; 4] = ["ui", "typography", "style", "app"];
 
 /// What the lower layer's tests may not name: the same, and the harness,
 /// which drives the whole app.
-const ABOVE_TESTS: [&str; 3] = ["ui", "app", "testing"];
+const ABOVE_TESTS: [&str; 5] = ["ui", "typography", "style", "app", "testing"];
 
 /// Whether `code`, a line trimmed at its end, opens a module at the
 /// margin: `mod tests {`, `pub(crate) mod parse_tests {`.
@@ -254,7 +258,7 @@ fn leads_up(path: &str, up: usize, names: &[&str]) -> bool {
 }
 
 /// What `code`, in a file `depth` modules below the crate's root, takes
-/// from `ui` or `app`.
+/// from the interface or `app`.
 fn upward_paths(code: &str, depth: usize) -> Vec<String> {
     paths_to(code, depth, &ABOVE_CODE)
 }

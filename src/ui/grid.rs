@@ -12,7 +12,8 @@ use tabletist_db::SortDir;
 use crate::edit::RowMark;
 use crate::format::{Marks, array_items, display_safe, for_display};
 use crate::model::CellPos;
-use crate::theme::{DataFont, Icon, Look, Palette};
+use crate::style::Icon;
+use crate::theme::{DataFont, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus;
 use crate::ui::states::Tone;
@@ -2209,8 +2210,8 @@ mod tests {
         for look in Look::ALL {
             let palette = Palette::light();
             let ctx = egui::Context::default();
-            crate::theme::install(&ctx, false, &look);
-            crate::theme::apply(&ctx, &palette, &look);
+            crate::style::install(&ctx, false, &look);
+            crate::style::apply(&ctx, &palette, &look);
             let key = crate::testing::key(egui::Key::ArrowDown, egui::Modifiers::NONE);
             // The cell's mark: the selection's colour on the cell alone,
             // or the terminal's accent block under its text.
@@ -2352,8 +2353,8 @@ mod tests {
             for palette in [Palette::light(), Palette::dark()] {
                 let said = format!("{}, dark: {}", look.name, palette.dark);
                 let ctx = egui::Context::default();
-                crate::theme::install(&ctx, false, &look);
-                crate::theme::apply(&ctx, &palette, &look);
+                crate::style::install(&ctx, false, &look);
+                crate::style::apply(&ctx, &palette, &look);
                 // The columns are fitted on the first frame.
                 marked(&ctx, &look, &palette, Mark::None, RowMark::None);
                 let (rects, texts) = marked(&ctx, &look, &palette, Mark::Added, RowMark::New);
@@ -2408,8 +2409,8 @@ mod tests {
             let palette = Palette::light();
             let said = look.name;
             let ctx = egui::Context::default();
-            crate::theme::install(&ctx, false, &look);
-            crate::theme::apply(&ctx, &palette, &look);
+            crate::style::install(&ctx, false, &look);
+            crate::style::apply(&ctx, &palette, &look);
             marked(&ctx, &look, &palette, Mark::None, RowMark::None);
             let here = Some(CellPos { row: 1, col: 1 });
             let on = (Mark::None, RowMark::New);
@@ -2449,8 +2450,8 @@ mod tests {
             let palette = Palette::light();
             let said = look.name;
             let ctx = egui::Context::default();
-            crate::theme::install(&ctx, false, &look);
-            crate::theme::apply(&ctx, &palette, &look);
+            crate::style::install(&ctx, false, &look);
+            crate::style::apply(&ctx, &palette, &look);
             marked(&ctx, &look, &palette, Mark::None, RowMark::None);
             // The second row is marked. Ranged, it and the row above are
             // the selected rows.
@@ -2509,8 +2510,8 @@ mod tests {
             let palette = Palette::light();
             let said = look.name;
             let ctx = egui::Context::default();
-            crate::theme::install(&ctx, false, &look);
-            crate::theme::apply(&ctx, &palette, &look);
+            crate::style::install(&ctx, false, &look);
+            crate::style::apply(&ctx, &palette, &look);
             marked(&ctx, &look, &palette, Mark::None, RowMark::None);
             // No key: the selection is the pointer's, and no cell is lit.
             let here = Some(CellPos { row: 1, col: 0 });
@@ -2534,8 +2535,8 @@ mod tests {
             for palette in [Palette::light(), Palette::dark()] {
                 let said = format!("{}, dark: {}", look.name, palette.dark);
                 let ctx = egui::Context::default();
-                crate::theme::install(&ctx, false, &look);
-                crate::theme::apply(&ctx, &palette, &look);
+                crate::style::install(&ctx, false, &look);
+                crate::style::apply(&ctx, &palette, &look);
                 marked(&ctx, &look, &palette, Mark::None, RowMark::None);
                 let (rects, texts) = marked(&ctx, &look, &palette, Mark::Doubt, RowMark::New);
                 let (_, plain) = marked(&ctx, &look, &palette, Mark::None, RowMark::New);
@@ -2581,8 +2582,8 @@ mod tests {
         for look in Look::ALL {
             let palette = Palette::light();
             let ctx = egui::Context::default();
-            crate::theme::install(&ctx, false, &look);
-            crate::theme::apply(&ctx, &palette, &look);
+            crate::style::install(&ctx, false, &look);
+            crate::style::apply(&ctx, &palette, &look);
             marked(&ctx, &look, &palette, Mark::None, RowMark::None);
             let new = |mark: RowMark| {
                 move |at: usize| match at {
@@ -2645,8 +2646,8 @@ mod tests {
         for look in Look::ALL {
             let palette = Palette::light();
             let ctx = egui::Context::default();
-            crate::theme::install(&ctx, false, &look);
-            crate::theme::apply(&ctx, &palette, &look);
+            crate::style::install(&ctx, false, &look);
+            crate::style::apply(&ctx, &palette, &look);
             let here = Some(CellPos { row: 1, col: 1 });
             // A key, and the arrows are the grid's: its cell is lit.
             let key = crate::testing::key(egui::Key::ArrowDown, egui::Modifiers::NONE);
@@ -2691,8 +2692,8 @@ mod tests {
         for look in Look::ALL {
             let palette = Palette::dark();
             let ctx = egui::Context::default();
-            crate::theme::install(&ctx, false, &look);
-            crate::theme::apply(&ctx, &palette, &look);
+            crate::style::install(&ctx, false, &look);
+            crate::style::apply(&ctx, &palette, &look);
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -2743,8 +2744,8 @@ mod tests {
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
         let (look, palette) = (Look::standard(), Palette::dark());
-        crate::theme::install(&ctx, false, &look);
-        crate::theme::apply(&ctx, &palette, &look);
+        crate::style::install(&ctx, false, &look);
+        crate::style::apply(&ctx, &palette, &look);
         let rows = |row: usize| match row {
             0 => Row {
                 mark: RowMark::New,
@@ -2800,8 +2801,8 @@ mod tests {
             for palette in [Palette::light(), Palette::dark()] {
                 let said = format!("{}, dark: {}", look.name, palette.dark);
                 let ctx = egui::Context::default();
-                crate::theme::install(&ctx, false, &look);
-                crate::theme::apply(&ctx, &palette, &look);
+                crate::style::install(&ctx, false, &look);
+                crate::style::apply(&ctx, &palette, &look);
                 // The columns are fitted on the first frame.
                 marked(&ctx, &look, &palette, Mark::None, RowMark::None);
                 type Texts = [(String, egui::Color32, egui::Pos2)];
@@ -2929,8 +2930,8 @@ mod tests {
         for look in Look::ALL {
             let palette = Palette::light();
             let ctx = egui::Context::default();
-            crate::theme::install(&ctx, false, &look);
-            crate::theme::apply(&ctx, &palette, &look);
+            crate::style::install(&ctx, false, &look);
+            crate::style::apply(&ctx, &palette, &look);
             let here = Some(CellPos { row: 1, col: 1 });
             let pending = (Mark::Pending, RowMark::Changed);
             // A key, and the arrows are the grid's: its cell is lit.
@@ -2977,8 +2978,8 @@ mod tests {
         let look = Look::omarchy();
         let palette = Palette::light();
         let ctx = egui::Context::default();
-        crate::theme::install(&ctx, false, &look);
-        crate::theme::apply(&ctx, &palette, &look);
+        crate::style::install(&ctx, false, &look);
+        crate::style::apply(&ctx, &palette, &look);
         let here = Some(CellPos { row: 1, col: 1 });
         let gone = (Mark::Gone, RowMark::None);
         // A key, and the arrows are the grid's: its cell is lit.
@@ -3002,7 +3003,7 @@ mod tests {
     fn a_double_click_reports_its_cell() {
         let ctx = egui::Context::default();
         let look = crate::theme::Look::standard();
-        crate::theme::install(&ctx, false, &look);
+        crate::style::install(&ctx, false, &look);
         ctx.enable_accesskit();
         frame(&ctx, 10, vec![]);
         frame(&ctx, 10, vec![]);
@@ -3031,7 +3032,7 @@ mod tests {
     #[test]
     fn a_leading_key_column_stays_in_sight_while_the_others_scroll() {
         let ctx = egui::Context::default();
-        crate::theme::install(&ctx, false, &Look::standard());
+        crate::style::install(&ctx, false, &Look::standard());
         ctx.enable_accesskit();
         let id = egui::Id::new("grid");
         let names: Vec<String> = (0..8).map(|col| format!("column_{col}")).collect();
@@ -3177,7 +3178,7 @@ mod tests {
         // Every width, so that a column starts under the pill at some.
         for width in 200..=520 {
             let ctx = egui::Context::default();
-            crate::theme::install(&ctx, false, &look);
+            crate::style::install(&ctx, false, &look);
             ctx.enable_accesskit();
             let id = egui::Id::new("grid");
             let frame = || {
@@ -3271,7 +3272,7 @@ mod tests {
     #[test]
     fn a_grid_without_a_leading_key_pins_nothing() {
         let ctx = egui::Context::default();
-        crate::theme::install(&ctx, false, &Look::standard());
+        crate::style::install(&ctx, false, &Look::standard());
         ctx.enable_accesskit();
         // A result's columns: none is a key.
         let mut columns = columns_that(false);
@@ -3342,7 +3343,7 @@ mod tests {
     fn only_visible_rows_are_built() {
         let ctx = egui::Context::default();
         // The header draws with Inter's named weights, which need the fonts.
-        crate::theme::install(&ctx, false, &crate::theme::Look::standard());
+        crate::style::install(&ctx, false, &crate::theme::Look::standard());
         ctx.enable_accesskit();
         frame(&ctx, 100_000, vec![]);
         let (_, tree) = frame(&ctx, 100_000, vec![]);
@@ -3357,7 +3358,7 @@ mod tests {
     #[test]
     fn a_forgotten_grid_leaves_nothing_in_eguis_memory() {
         let ctx = egui::Context::default();
-        crate::theme::install(&ctx, false, &crate::theme::Look::standard());
+        crate::style::install(&ctx, false, &crate::theme::Look::standard());
         ctx.enable_accesskit();
         let id = egui::Id::new("grid");
         frame(&ctx, 10, vec![]);
@@ -3387,7 +3388,7 @@ mod tests {
     #[test]
     fn a_header_says_its_columns_comment_after_its_name() {
         let ctx = egui::Context::default();
-        crate::theme::install(&ctx, false, &crate::theme::Look::standard());
+        crate::style::install(&ctx, false, &crate::theme::Look::standard());
         ctx.enable_accesskit();
         for sortable in [true, false] {
             let mut columns = columns_that(sortable);
@@ -3410,7 +3411,7 @@ mod tests {
     #[test]
     fn a_header_that_sorts_nothing_is_a_label_that_keeps_clicks_from_the_rows() {
         let ctx = egui::Context::default();
-        crate::theme::install(&ctx, false, &crate::theme::Look::standard());
+        crate::style::install(&ctx, false, &crate::theme::Look::standard());
         ctx.enable_accesskit();
         let columns = columns_that(false);
         frame_of(&ctx, &columns, 100, vec![]);
@@ -3481,7 +3482,7 @@ mod tests {
     #[test]
     fn clicking_a_header_reports_the_column_and_clicking_a_row_selects_it() {
         let ctx = egui::Context::default();
-        crate::theme::install(&ctx, false, &crate::theme::Look::standard());
+        crate::style::install(&ctx, false, &crate::theme::Look::standard());
         ctx.enable_accesskit();
         frame(&ctx, 10, vec![]);
         let (_, tree) = frame(&ctx, 10, vec![]);
@@ -3498,7 +3499,7 @@ mod tests {
     fn a_grid_without_columns_draws_its_header() {
         // PostgreSQL has tables of no columns (`CREATE TABLE t ()`).
         let ctx = egui::Context::default();
-        crate::theme::install(&ctx, false, &crate::theme::Look::standard());
+        crate::style::install(&ctx, false, &crate::theme::Look::standard());
         ctx.enable_accesskit();
         frame_of(&ctx, &[], 0, vec![]);
         let (output, _) = frame_of(&ctx, &[], 0, vec![]);
@@ -3509,7 +3510,7 @@ mod tests {
     fn past_a_columns_edge_the_pointer_resizes_it_and_leaves_the_next_header_be() {
         let ctx = egui::Context::default();
         let look = crate::theme::Look::standard();
-        crate::theme::install(&ctx, false, &look);
+        crate::style::install(&ctx, false, &look);
         ctx.enable_accesskit();
         // No key column: nothing is pinned, so the second header comes
         // after the first.
@@ -3564,7 +3565,7 @@ mod tests {
     fn a_header_under_the_pinned_column_takes_the_pointer_only_where_it_shows() {
         let ctx = egui::Context::default();
         let look = crate::theme::Look::standard();
-        crate::theme::install(&ctx, false, &look);
+        crate::style::install(&ctx, false, &look);
         ctx.enable_accesskit();
         // The key column is pinned; the email column after it scrolls.
         let columns = columns_that(true);

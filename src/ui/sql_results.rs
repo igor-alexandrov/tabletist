@@ -17,7 +17,8 @@ use crate::model::{
     Action, ConnTabId, NoWrites, ResultPane, RunMode, SqlRun, SqlTab, TabId, Workspace,
 };
 use crate::settings::Settings;
-use crate::theme::{Icon, Look, Palette};
+use crate::style::Icon;
+use crate::theme::{Look, Palette};
 use crate::typography::{Laid, Text, TextRole};
 use crate::ui::Paint;
 use crate::ui::data_view;

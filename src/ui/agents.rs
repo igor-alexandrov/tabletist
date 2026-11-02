@@ -10,7 +10,8 @@ use crate::connections::{SavedConnection, SavedConnections};
 use crate::i18n::{gettext, ngettext};
 use crate::keymap::Keymap;
 use crate::model::{Action, AgentsHere, AgentsView, ConnTabId, Workspace};
-use crate::theme::{Icon, Look, Palette};
+use crate::style::Icon;
+use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::{Paint, states, widgets};
 

@@ -5,24 +5,27 @@
 //!   bundled: `plex-sans-400` ... `plex-mono-500`; JetBrains Mono (400,
 //!   500), the other bundled face data can be drawn in: `jetbrains-mono-400`
 //!   and `jetbrains-mono-500`; and the installed font the settings name for
-//!   the data, where one was read ([`super::installed_font`]):
+//!   the data, where one was read ([`crate::font_files::installed_font`]):
 //!   `installed-mono-400` and `installed-mono-500`, holding Plex Mono
 //!   without one.
 //! - Omarchy: the desktop's monospace font at 400, 500 and 700 (fontconfig
-//!   reads it, [`super::desktop_font`]), or the bundled JetBrains Mono when
-//!   it found none: `omarchy-mono-400` ... `omarchy-mono-700`.
+//!   reads it, [`crate::font_files::desktop_font`]), or the bundled
+//!   JetBrains Mono when it found none: `omarchy-mono-400` ...
+//!   `omarchy-mono-700`.
 //!
 //! egui's own Proportional and Monospace families (and fastframe's Inter
 //! weight families, which the edit connection dialog still names) lead with
 //! the look's regular faces, so text egui draws by itself matches.
 
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 use std::sync::Arc;
 
 #[cfg(any(target_os = "macos", target_os = "linux", test))]
-use egui::epaint::text::VariationCoords;
-use egui::{FontData, FontDefinitions, FontFamily};
+use egui::{FontData, epaint::text::VariationCoords};
+use egui::{FontDefinitions, FontFamily};
 
 use super::{Kind, family_name};
+use crate::font_files::TerminalFaces;
 use crate::theme::{Look, Typeface};
 #[cfg(any(target_os = "macos", test))]
 use {super::data_family_name, crate::theme::DataFace};
@@ -130,10 +133,6 @@ fn alias(fonts: &mut FontDefinitions, name: &str, from: &FontFamily) {
     let list = fonts.families.get(from).cloned().unwrap_or_default();
     fonts.families.insert(FontFamily::Name(name.into()), list);
 }
-
-/// The terminal look's monospace at 400, 500 and 700, or the installed
-/// font macOS draws data in at the same.
-pub type TerminalFaces = [Arc<FontData>; 3];
 
 /// Replaces the faces fastframe set up with the look's. `desktop` is the
 /// font read from the system for the settings' name (never in tests or
