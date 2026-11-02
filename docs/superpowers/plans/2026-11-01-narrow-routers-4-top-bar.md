@@ -29,6 +29,8 @@ The bar takes it, from the `&mut Workspace` it is lent. That is the views' rule:
 
 Taking it in the router would change nothing a frame does, since the bar took it first and in every frame it was drawn. The cost of the bar taking it is a `&mut Workspace` beside a `BarInfo` built from the same workspace: `workspace::show` builds the `BarInfo` from `&App` first and lends the workspace through `workspace_in_mut` after, as `start` does with `start_asked`.
 
+AGENTS.md's rule that a view does not change application state named no exception for these requests, though every view that holds one takes it (`focus_where`, `focus_search`, `focus_editor`, `focus_start_search`, `blur_start_search`, `focus_command`, `database_menu_asked`). The review asked for this one to be cleared through an action instead; that would have made it the one handled differently. AGENTS.md now names a one-time request, taken by the view that meets it, beside a control's value and a field's cursor.
+
 ## What this run teaches
 
 - **A one-time ask is taken by the view that meets it, even where the router could take it without a change.** The view that answers the ask holds the id it answers with; the router stays dispatch.
