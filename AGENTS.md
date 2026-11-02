@@ -217,8 +217,9 @@ other way round.
   bumped with it. Check on each release whether it is still true.
 
 1. Bump `version` under `[workspace.package]` in `Cargo.toml`, run
-   `cargo update --workspace` (it updates the workspace's own entries and
-   resolves nothing else), commit, and get the commit onto `main`.
+   `cargo update --workspace` (it updates the workspace's own entries, and
+   leaves every locked dependency as it is; it would add only a package
+   missing from `Cargo.lock`), commit, and get the commit onto `main`.
 2. On that commit: `git tag -s v0.3.0 -m v0.3.0 && git push origin v0.3.0`.
 3. `release.yml` builds Linux (x86_64, aarch64 `.tar.gz`, and `.AppImage`
    named `tabletist-<version>-<arch>.AppImage`), Windows (x64, arm64 `.zip`
