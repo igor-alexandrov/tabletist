@@ -46,7 +46,15 @@ pub fn bar_line(look: &Look, titlebar: f32, zoom: f32) -> f32 {
 
 pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let look = app.look;
-    top_bar(app, ui, tab);
+    if let Some(info) = bar_info(app, tab) {
+        let paint = super::Paint::of(app);
+        let titlebar = (app.titlebar.inset, app.titlebar.height);
+        let env_bar = app.settings.env_bar;
+        if let Some(workspace) = crate::app::workspace_in_mut(&mut app.tabs, tab) {
+            let asked = top_bar(ui, paint, tab, workspace, &info, env_bar, titlebar);
+            app.actions.extend(asked);
+        }
+    }
     let (_, asked) = super::notices(
         ui,
         super::Paint::of(app),
@@ -1214,31 +1222,39 @@ pub(super) fn database_menu(
 }
 
 /// The connection bar: the connection's environment colour behind the open
-/// connections, and the way out.
-fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+/// connections, and the way out. `info` is what it shows of the workspace,
+/// `env_bar` how the settings tint it, and `titlebar` the title bar's inset
+/// and height in window points. It takes the workspace's one-time ask for
+/// its own chip's menu, and returns its actions.
+fn top_bar(
+    ui: &mut egui::Ui,
+    paint: super::Paint,
+    tab: ConnTabId,
+    workspace: &mut crate::model::Workspace,
+    info: &BarInfo,
+    env_bar: crate::settings::EnvBar,
+    (inset, titlebar): (f32, f32),
+) -> Vec<Action> {
     // Quick open's Switch database asks for the chip's menu, as its key
     // does: the menu opens as the chip is drawn.
-    if let Some(workspace) = app.workspace_mut(tab)
-        && std::mem::take(&mut workspace.database_menu_asked)
-    {
+    if std::mem::take(&mut workspace.database_menu_asked) {
         egui::Popup::open_id(ui.ctx(), database_menu_id(tab, false));
     }
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
-    let Some(info) = bar_info(app, tab) else {
-        return;
-    };
+    let super::Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let platform = crate::env::Platform::of(&look);
     let env = crate::env::env_colors(info.env, platform, &palette);
     // The bar's fill and rule as the settings have them, and the lines
     // over it with them.
-    let env = env.on_bar(info.env, app.settings.env_bar, platform, &palette);
+    let env = env.on_bar(info.env, env_bar, platform, &palette);
     let (tint, border) = (env.bar_bg(), env.bar_border());
     // macOS: the bar is the title bar, beside the window buttons.
     let zoom = ui.ctx().zoom_factor();
-    let inset = app.titlebar.inset / zoom;
-    let height = top_bar_height(&look, app.titlebar.height, zoom);
+    let inset = inset / zoom;
+    let height = top_bar_height(&look, titlebar, zoom);
     let mut actions = Vec::new();
     egui::Panel::top(egui::Id::new(("workspace-top", tab.0)))
         .exact_size(height)
@@ -1265,7 +1281,7 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     ui,
                     tab,
                     rect,
-                    &info,
+                    info,
                     &env,
                     &look,
                     &palette,
@@ -1284,7 +1300,7 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     ui,
                     tab,
                     body,
-                    &info,
+                    info,
                     &env,
                     &look,
                     &palette,
@@ -1293,7 +1309,7 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 );
             }
         });
-    app.actions.extend(actions);
+    actions
 }
 
 /// macOS: the Connections button, a chip for each open connection (the

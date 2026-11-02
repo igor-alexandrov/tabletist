@@ -11,7 +11,10 @@ MySQL, SQLite) on egui/eframe and fastframe. The design lives in
   in `src/app.rs` applies them after drawing. Do not mutate application state
   from inside a view, apart from the value a control is editing in place
   (a field's text, a checkbox, a dropdown's choice, as egui's widgets
-  write them) and the cursor position a field reports.
+  write them), the cursor position a field reports, and a one-time request
+  the state holds for the view (a flag such as `focus_where` or
+  `database_menu_asked`), which the view that meets it takes with
+  `std::mem::take` where it meets it.
 - A view takes `ui::Paint` (locale, palette, look), the ids it names and a
   borrow of the state it shows (a dialog's prompt, an object tab, a
   workspace), not `App`, and returns the `Action`s it asks for; its caller
