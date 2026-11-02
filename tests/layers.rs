@@ -309,6 +309,12 @@ fn the_search_finds_a_path_up() {
         "shown(1, crate::ui::focus::hint());",
         "{ crate::ui::focus::hint() }",
         "let shown = f(1, super::ui::Row);",
+        // The text the views draw with, and the style set up on egui.
+        "use crate::typography::{Text, TextRole};",
+        "let kind = crate::typography::Kind::Mono;",
+        "use crate::style::Icon;",
+        "crate::style::apply(ctx, &palette, &look);",
+        "use crate::{theme::Look, style};",
     ] {
         assert!(!upward_paths(&code(line), 1).is_empty(), "{line}");
     }
@@ -370,6 +376,23 @@ fn the_search_reads_every_test_module_one_module_down() {
     assert_eq!(found.len(), 3, "{found:?}");
     // A test that names only the fixtures, or its own module, passes.
     assert!(paths_to("use super::*; use crate::fixtures::page;", 2, &ABOVE_TESTS).is_empty());
+    // Nor the text and style the views draw with.
+    for line in [
+        "use crate::typography::TextRole;",
+        "use super::super::style::Icon;",
+        "crate::style::install(&ctx, false, &look);",
+    ] {
+        assert!(!paths_to(line, 2, &ABOVE_TESTS).is_empty(), "{line}");
+    }
+    // A module named like one, but not it, passes.
+    assert!(
+        paths_to(
+            "use crate::styles::Row; use crate::font_files::read_font;",
+            2,
+            &ABOVE_TESTS
+        )
+        .is_empty()
+    );
 }
 
 #[test]
