@@ -437,6 +437,74 @@ fn sheet_asked<'a>(
     }
 }
 
+/// How the terminal screen draws: the look, the palette and the language,
+/// with what its rows say beside them. `launches` is what On launch steps
+/// through (`launch_choices`), and `checked` when updates were last
+/// checked, as the Updates pane's row writes it.
+fn terminal_skin<'a>(
+    app: &'a App,
+    launches: &'a [Launch],
+    checked: Option<&'a str>,
+) -> terminal::Skin<'a> {
+    terminal::Skin {
+        look: &app.look,
+        palette: &app.palette,
+        locale: app.locale,
+        window: app.agents_window().is_some(),
+        system: app.system_zone.iana_name(),
+        named: app.named_zone.as_deref(),
+        connections: &app.connections.connections,
+        launches,
+        desktop: desktop_shown(app),
+        font: font_shown(app),
+        checked,
+    }
+}
+
+/// What fontconfig gave for the font the settings name, as the terminal
+/// screen's font row says it.
+fn font_shown(app: &App) -> terminal::FontShown<'_> {
+    let read = &app.desktop_font;
+    terminal::FontShown {
+        family: read.family.as_deref(),
+        missing: read.asked.as_deref().filter(|_| read.missing),
+    }
+}
+
+/// What the terminal screen's theme rows say of the desktop: Omarchy's
+/// theme of the moment, and how a pin stands.
+fn desktop_shown(app: &App) -> terminal::Desktop<'_> {
+    let pin = app.settings.theme.pin().zip(app.pin_state());
+    terminal::Desktop {
+        current: app.desktop_theme.current.as_deref(),
+        pin,
+        follows_omarchy: app.themes.follows_omarchy(),
+    }
+}
+
+/// What the terminal screen reads of the app beside its skin, for
+/// `dialog`: `interrupted` is `App::work_in_progress`, which the screen
+/// asks only while the Updates card is held.
+fn terminal_asked<'a>(
+    app: &'a App,
+    dialog: &SettingsDialog,
+    interrupted: &'a dyn Fn() -> Vec<crate::app::Work>,
+) -> terminal::Asked<'a> {
+    let cursor = dialog.pane.rows().get(dialog.row).copied();
+    terminal::Asked {
+        notice: app.notice.as_deref(),
+        keymap: &app.keymap,
+        file: &app.settings_file,
+        path: path_shown(app),
+        binds: &app.settings.keys.binds,
+        shown: shown(app),
+        server: server(app),
+        status: update_status(app),
+        opened: cursor.and_then(|row| opened(app, row)),
+        interrupted,
+    }
+}
+
 /// What a choice is called.
 #[derive(Clone, Copy)]
 pub(super) enum Said {
@@ -1038,6 +1106,9 @@ pub(crate) fn editor_preview_field() -> egui::Id {
     editor_preview::field_id()
 }
 
+/// The Settings window, while it is the dialog: the keys of a row being
+/// recorded first, then the terminal look's screen with its keys or the
+/// sheet. What they push reaches `app.actions` after them, in that order.
 pub fn show(app: &mut App, ctx: &egui::Context) {
     let Some(Dialog::Settings(dialog)) = &app.dialog else {
         return;
@@ -1072,7 +1143,12 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         } else {
             keys(app, ctx, dialog, in_preview, &mut actions);
         }
-        terminal::show(app, ctx, dialog, &mut actions);
+        let interrupted = || app.work_in_progress();
+        let asked = terminal_asked(app, dialog, &interrupted);
+        let launches = launch_choices(&app.connections.connections);
+        let checked = updates::checked_text(asked.status, &app.look, app.locale, true);
+        let skin = terminal_skin(app, &launches, checked.as_deref());
+        terminal::show(ctx, &skin, dialog, asked, &mut actions);
     } else {
         let interrupted = || app.work_in_progress();
         let asked = sheet_asked(app, &interrupted);
