@@ -1295,7 +1295,7 @@ pub struct Workspace {
     /// the tables and views that match (the `⌘P` index), grouped.
     pub start_search: String,
     /// Which match the start screen's search has picked, an index into
-    /// [`crate::app::App::start_matches`]. Clamped as it moves; reset to
+    /// `App::start_matches`. Clamped as it moves; reset to
     /// the first when what is typed changes.
     pub start_selected: usize,
     /// Give the start screen's search field the keyboard on the next
@@ -2876,7 +2876,7 @@ impl std::fmt::Debug for ConflictPrompt {
 
 /// Quick open (`⌘P`, `ctrl+p`): find a table or view of the connection, or
 /// of every open one, by name, or (macOS) start one of a few commands.
-/// What it lists is [`crate::app::App::quick_open_list`]'s.
+/// What it lists is `App::quick_open_list`'s.
 #[derive(Debug)]
 pub struct QuickOpen {
     /// The window it was opened in: the connection searched, and where
@@ -2967,6 +2967,18 @@ pub enum TabName {
     Query(u32),
     Agents,
     History,
+}
+
+impl TabName {
+    /// How a command's row names `tab`.
+    pub fn of(tab: &Tab) -> Self {
+        match tab {
+            Tab::Object(object) => Self::Object(object.object.name.clone()),
+            Tab::Sql(sql) => Self::Query(sql.number),
+            Tab::Agents(_) => Self::Agents,
+            Tab::History(_) => Self::History,
+        }
+    }
 }
 
 /// A command quick open offers: the keymap's command, the name it is

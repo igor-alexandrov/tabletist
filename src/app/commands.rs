@@ -112,17 +112,6 @@ pub const RUNNABLE: [Command; 30] = [
     Command::CancelQuery,
 ];
 
-impl TabName {
-    fn of(tab: &Tab) -> Self {
-        match tab {
-            Tab::Object(object) => Self::Object(object.object.name.clone()),
-            Tab::Sql(sql) => Self::Query(sql.number),
-            Tab::Agents(_) => Self::Agents,
-            Tab::History(_) => Self::History,
-        }
-    }
-}
-
 impl App {
     /// The commands quick open offers in `tab`'s window, in the order of
     /// [`RUNNABLE`], each where it applies now. None in the terminal look.
