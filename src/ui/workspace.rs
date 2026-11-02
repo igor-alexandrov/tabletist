@@ -27,17 +27,17 @@ pub fn bar_height(look: &Look) -> f32 {
 const STRIPE: f32 = 3.0;
 
 /// The bar's height in the window. The bar is the macOS title bar, and at
-/// least as tall as the window has it (window points, which egui's `zoom`
-/// scales away from its own).
-fn top_bar_height(app: &App, zoom: f32) -> f32 {
-    bar_height(&app.look).max(app.titlebar.height / zoom)
+/// least as tall as the window has it: `titlebar` is its height in window
+/// points, which egui's `zoom` scales away from its own.
+fn top_bar_height(look: &Look, titlebar: f32, zoom: f32) -> f32 {
+    bar_height(look).max(titlebar / zoom)
 }
 
 /// The line the bar's contents centre on, below its top: under the macOS
 /// stripe and over the rule, or the middle of the terminal bar.
-pub fn bar_line(app: &App, zoom: f32) -> f32 {
-    let height = top_bar_height(app, zoom);
-    if app.look.terminal {
+pub fn bar_line(look: &Look, titlebar: f32, zoom: f32) -> f32 {
+    let height = top_bar_height(look, titlebar, zoom);
+    if look.terminal {
         height / 2.0
     } else {
         (STRIPE + height - 1.0) / 2.0
@@ -58,18 +58,21 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
-    let opened = workspace.opened();
-    if look.terminal && opened {
+    if !workspace.opened() {
+        // Nothing of the database to show yet: how connecting goes, or
+        // why it failed.
+        let asked = opening(ui, super::Paint::of(app), tab, workspace);
+        app.actions.extend(asked);
+        return;
+    }
+    if look.terminal {
         object_tabs(app, ui, tab);
         status_line(app, ui, tab);
     }
-    if !opened {
-        // Nothing of the database to show yet: how connecting goes, or
-        // why it failed.
-        opening(app, ui, tab);
-        return;
+    if let Some(workspace) = app.workspace(tab) {
+        let asked = banner(ui, super::Paint::of(app), tab, workspace);
+        app.actions.extend(asked);
     }
-    banner(app, ui, tab);
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
@@ -485,34 +488,43 @@ fn ddl(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
 
 /// A tab that has not shown its content yet: how connecting goes, or why
 /// it failed.
-fn opening(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
-    let fill = app.palette.window;
-    let failed = app.workspace(tab).is_some_and(|workspace| {
-        matches!(
-            workspace.status,
-            SessionStatus::Disconnected(_) | SessionStatus::Cancelled
-        )
-    });
+fn opening(
+    ui: &mut egui::Ui,
+    paint: super::Paint,
+    tab: ConnTabId,
+    workspace: &crate::model::Workspace,
+) -> Vec<Action> {
+    let failed = matches!(
+        workspace.status,
+        SessionStatus::Disconnected(_) | SessionStatus::Cancelled
+    );
     egui::CentralPanel::default()
-        .frame(Frame::new().fill(fill))
+        .frame(Frame::new().fill(paint.palette.window))
         .show(ui, |ui| {
             if failed {
-                failure(app, ui, tab);
+                failure(ui, paint, tab, workspace)
             } else {
-                connecting(app, ui, tab);
+                connecting(ui, paint, tab, workspace)
             }
-        });
+        })
+        .inner
 }
 
 /// The steps of a connect, the one under way with its time, and, for a
 /// connect with nothing to lose, the button that gives up: in the middle
 /// of the tab, or in the terminal look from its top left.
-fn connecting(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+fn connecting(
+    ui: &mut egui::Ui,
+    paint: super::Paint,
+    tab: ConnTabId,
+    workspace: &crate::model::Workspace,
+) -> Vec<Action> {
     use tabletist_db::Driver;
-    let (locale, palette, look) = (app.locale, app.palette, app.look);
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
+    let super::Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let say = |text: &'static str| look.label(&gettext(locale, text));
     let spec = &workspace.spec;
     let (reach, target) = match spec.driver {
@@ -590,11 +602,13 @@ fn connecting(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         )
     };
     states::steps(ui, steps, &list, &look, &palette);
+    let mut actions = Vec::new();
     if let Some(cancel) = cancel
         && cancel.show_at(ui, button, &look, &palette).clicked()
     {
-        app.actions.push(Action::Disconnect(tab));
+        actions.push(Action::Disconnect(tab));
     }
+    actions
 }
 
 /// What a connect that failed says first and the sign beside it; `None`
@@ -647,12 +661,18 @@ fn failure_title(
 /// A connect that failed before the tab showed anything: what failed in
 /// plain words, the exact error under it, and the buttons, the one that
 /// fixes the cause first.
-fn failure(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+fn failure(
+    ui: &mut egui::Ui,
+    paint: super::Paint,
+    tab: ConnTabId,
+    workspace: &crate::model::Workspace,
+) -> Vec<Action> {
     use tabletist_db::Error;
-    let (locale, palette, look) = (app.locale, app.palette, app.look);
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
+    let super::Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let say = |text: &'static str| look.label(&gettext(locale, text));
     let error = match &workspace.status {
         SessionStatus::Disconnected(error) => Some(error),
@@ -754,12 +774,14 @@ fn failure(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             .layout(ui.ctx())
             .label(&mut ui);
     }
+    let mut actions = Vec::new();
     if retry {
-        app.actions.push(Action::Reconnect(tab));
+        actions.push(Action::Reconnect(tab));
     }
     if edit {
-        app.actions.push(Action::EditConnection(conn));
+        actions.push(Action::EditConnection(conn));
     }
+    actions
 }
 
 /// What the connection bar says: the open connections, and more about the
@@ -1216,7 +1238,7 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     // macOS: the bar is the title bar, beside the window buttons.
     let zoom = ui.ctx().zoom_factor();
     let inset = app.titlebar.inset / zoom;
-    let height = top_bar_height(app, zoom);
+    let height = top_bar_height(&look, app.titlebar.height, zoom);
     let mut actions = Vec::new();
     egui::Panel::top(egui::Id::new(("workspace-top", tab.0)))
         .exact_size(height)
@@ -3309,21 +3331,25 @@ fn tls_status(mode: TlsMode, encrypted: Option<bool>) -> (&'static str, bool) {
 /// The strip over a tab whose connection was lost: what happened, the way
 /// back (Reconnect) and the way out (Disconnect). What was on screen stays
 /// under it. While a reconnect is on its way the strip says so.
-fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
+fn banner(
+    ui: &mut egui::Ui,
+    paint: super::Paint,
+    tab: ConnTabId,
+    workspace: &crate::model::Workspace,
+) -> Vec<Action> {
+    let super::Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let say = |text: &'static str| look.label(&gettext(locale, text));
     let name = display_safe(&workspace.name).into_owned();
     // What happened, the plain sentence when it says more, the exact error.
     let (lead, sentence, raw, reconnecting) = match &workspace.status {
         // Closed on purpose: nothing went wrong, and the next use connects,
         // with no strip of its own.
-        SessionStatus::Connected | SessionStatus::Idle => return,
-        SessionStatus::Connecting { .. } if workspace.woken => return,
+        SessionStatus::Connected | SessionStatus::Idle => return Vec::new(),
+        SessionStatus::Connecting { .. } if workspace.woken => return Vec::new(),
         SessionStatus::Connecting { .. } => (
             format!("{} {name}…", say("Reconnecting to")),
             String::new(),
@@ -3430,12 +3456,14 @@ fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         strip.bottom() - 0.5,
         tone.line(&look, &palette),
     );
+    let mut actions = Vec::new();
     if reconnect {
-        app.actions.push(Action::Reconnect(tab));
+        actions.push(Action::Reconnect(tab));
     }
     if disconnect {
-        app.actions.push(Action::Disconnect(tab));
+        actions.push(Action::Disconnect(tab));
     }
+    actions
 }
 
 #[cfg(test)]

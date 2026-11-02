@@ -467,7 +467,7 @@ pub fn window_buttons_line(app: &App, zoom: f32) -> f32 {
     if matches!(app.active_tab().content, ConnTabContent::Picker(_)) {
         picker::header_line(&app.look)
     } else {
-        workspace::bar_line(app, zoom)
+        workspace::bar_line(&app.look, app.titlebar.height, zoom)
     }
 }
 
