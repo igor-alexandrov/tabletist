@@ -52,7 +52,8 @@ Where the survey differs from the plan:
 - [x] `cargo fmt --all --check`
 - [x] `cargo clippy --locked --workspace --all-targets -- -D warnings`
 - [x] `cargo test --locked --workspace --all-targets`
-- [ ] Push and open the PR.
+- [x] `RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --no-deps`
+- [x] Push and open the PR.
 
 The net is the existing tests, which drive the whole `App` in the terminal look: the mode line's and the line's in `src/ui/mod.rs` (`a_written_save_and_a_conflict_are_said_in_the_status_line`, `a_save_that_cannot_be_made_says_why_in_the_status_line`, `a_locked_cell_says_why_in_the_mode_line`), the foreign key picker's in `src/ui/key_picker_tests.rs` (`a_narrow_line_keeps_esc_close_when_the_keys_do_not_fit`, `a_new_rows_warning_is_said_by_the_line_the_bar_and_the_form`), the label chooser's in `src/ui/label_tests.rs` (`the_terminal_look_says_a_gone_column_in_its_status_line`, `the_terminal_look_confirms_a_choice_in_its_status_line`), the prompt's, which type `:` and a line into it (`an_unknown_command_says_so` in `src/ui/mod.rs`), the Agents tab's (`omarchy_shows_the_log_with_l_and_the_agents_log_line` in `src/ui/agents_tests.rs`), and the terminal look's shots in `src/shots.rs`. No test changed: no signature a test calls moved.
 
