@@ -2,13 +2,15 @@
 //! app's state, its edits, the backend, the settings and the text they
 //! write never name `crate::ui` or `crate::app`: the views and the reducer
 //! stand on them, never the other way round. What one of them needs from
-//! above comes in as an argument, or moves down.
+//! above comes in as an argument, or moves down. Their tests stand on the
+//! lower layer too: they name neither the interface nor the harness of
+//! `crate::testing`, and take their data from `crate::fixtures`.
 
 use std::path::Path;
 
 /// The modules of the lower layer, each with its directory where it has
 /// one.
-const LOWER: [&str; 34] = [
+const LOWER: [&str; 35] = [
     "agents_shown",
     "backend",
     "clock",
@@ -19,6 +21,7 @@ const LOWER: [&str; 34] = [
     "edit",
     "endpoint",
     "env",
+    "fixtures",
     "format",
     "history",
     "i18n",
@@ -111,26 +114,50 @@ fn module(name: &str) -> Vec<(String, String, usize)> {
         .collect()
 }
 
-/// Where a file's `tests` module stands: from `#[cfg(test)]` at the
-/// margin, then `mod tests {` with nothing between them but other
-/// attributes, to its `}` at the margin. A test may drive the interface to
-/// see what the module does there; what follows the module is code again.
-fn tests_module(text: &str) -> Option<std::ops::Range<usize>> {
+/// What the lower layer's code may not name: the interface and the
+/// reducer.
+const ABOVE_CODE: [&str; 2] = ["ui", "app"];
+
+/// What the lower layer's tests may not name: the same, and the harness,
+/// which drives the whole app.
+const ABOVE_TESTS: [&str; 3] = ["ui", "app", "testing"];
+
+/// Whether `code`, a line trimmed at its end, opens a module at the
+/// margin: `mod tests {`, `pub(crate) mod parse_tests {`.
+fn opens_module(code: &str) -> bool {
+    let Some((before, name)) = code
+        .strip_suffix(" {")
+        .and_then(|head| head.rsplit_once("mod "))
+    else {
+        return false;
+    };
+    (before.is_empty() || before.starts_with("pub"))
+        && !name.is_empty()
+        && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// Where a file's test modules stand: each from `#[cfg(test)]` at the
+/// margin, then `mod … {` with nothing between them but other attributes,
+/// to its `}` at the margin. A test may drive the interface to see what the
+/// module does there; what follows a test module is code again.
+fn test_modules(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut found = Vec::new();
     let mut at = 0;
     let mut marked = None;
     let mut start = None;
     for line in text.split_inclusive('\n') {
         let code = line.trim_end();
-        if let Some(start) = start {
+        if let Some(from) = start {
             if code == "}" {
-                return Some(start..at + line.len());
+                found.push(from..at + line.len());
+                start = None;
             }
         } else if code == "#[cfg(test)]" {
             marked = Some(at);
         } else if let Some(from) = marked {
-            let module = code.strip_suffix("mod tests {");
-            if module.is_some_and(|before| before.is_empty() || before.starts_with("pub")) {
+            if opens_module(code) {
                 start = Some(from);
+                marked = None;
             } else if !code.starts_with("#[") {
                 marked = None;
             }
@@ -138,29 +165,46 @@ fn tests_module(text: &str) -> Option<std::ops::Range<usize>> {
         at += line.len();
     }
     // A module left open runs to the end.
-    start.map(|start| start..text.len())
+    if let Some(from) = start {
+        found.push(from..text.len());
+    }
+    found
 }
 
-/// The code of a file on one line: no comment lines, and nothing of its
-/// `tests` module. A `use crate::{…}` over many lines reads as one.
-fn code(text: &str) -> String {
-    let (before, after) = match tests_module(text) {
-        Some(tests) => (&text[..tests.start], &text[tests.end..]),
-        None => (text, ""),
-    };
-    before
-        .lines()
-        .chain(after.lines())
+/// `lines` on one line, without comment lines: a `use crate::{…}` over
+/// many lines reads as one.
+fn one_line<'a>(lines: impl Iterator<Item = &'a str>) -> String {
+    lines
         .map(str::trim)
         .filter(|line| !line.starts_with("//"))
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-/// Whether `path` starts with the module `ui` or `app`: `ui::focus`,
-/// `app;`, `ui as shown`, but not `uiza` or `apply`.
-fn upward(path: &str) -> bool {
-    ["ui", "app"].iter().any(|name| {
+/// The code of a file on one line: nothing of its test modules.
+fn code(text: &str) -> String {
+    let mut parts = Vec::new();
+    let mut from = 0;
+    for tests in test_modules(text) {
+        parts.push(&text[from..tests.start]);
+        from = tests.end;
+    }
+    parts.push(&text[from..]);
+    one_line(parts.into_iter().flat_map(str::lines))
+}
+
+/// Each of a file's test modules on one line.
+fn tests(text: &str) -> Vec<String> {
+    test_modules(text)
+        .into_iter()
+        .map(|tests| one_line(text[tests].lines()))
+        .collect()
+}
+
+/// Whether `path` starts with one of the modules `names`: for `ui` and
+/// `app`, `ui::focus`, `app;`, `ui as shown`, but not `uiza` or `apply`.
+fn upward(path: &str, names: &[&str]) -> bool {
+    names.iter().any(|name| {
         path.strip_prefix(name)
             .is_some_and(|rest| !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_'))
     })
@@ -191,27 +235,35 @@ fn items(group: &str) -> Vec<&str> {
     found
 }
 
-/// Whether `path`, read `up` modules below the crate's root, leads to `ui`
-/// or `app`: each `super::` goes one up, and a group's items go on from
-/// where the group stands (`super::{super::ui::focus}`).
-fn leads_up(path: &str, up: usize) -> bool {
+/// Whether `path`, read `up` modules below the crate's root, leads to one
+/// of the modules `names`: each `super::` goes one up, and a group's items
+/// go on from where the group stands (`super::{super::ui::focus}`).
+fn leads_up(path: &str, up: usize, names: &[&str]) -> bool {
     let path = path.trim_start();
     if let Some(group) = path.strip_prefix('{') {
-        return items(group).into_iter().any(|item| leads_up(item, up));
+        return items(group)
+            .into_iter()
+            .any(|item| leads_up(item, up, names));
     }
     match (up, path.strip_prefix("super::")) {
-        (0, _) => upward(path),
-        (_, Some(rest)) => leads_up(rest, up - 1),
+        (0, _) => upward(path, names),
+        (_, Some(rest)) => leads_up(rest, up - 1, names),
         // A module of this one's own, whatever its name.
         (_, None) => false,
     }
 }
 
 /// What `code`, in a file `depth` modules below the crate's root, takes
-/// from `ui` or `app`: each path, with a little of what follows it. A path
-/// starts at `crate::`, or at `super::` and climbs from the file; a group
-/// (`crate::{app::App, model::Tab}`) is read item by item.
+/// from `ui` or `app`.
 fn upward_paths(code: &str, depth: usize) -> Vec<String> {
+    paths_to(code, depth, &ABOVE_CODE)
+}
+
+/// What `code`, `depth` modules below the crate's root, takes from the
+/// modules `names`: each path, with a little of what follows it. A path
+/// starts at `crate::`, or at `super::` and climbs from where the code
+/// stands; a group (`crate::{app::App, model::Tab}`) is read item by item.
+fn paths_to(code: &str, depth: usize, names: &[&str]) -> Vec<String> {
     let mut found = Vec::new();
     let roots = code
         .match_indices("crate::")
@@ -229,7 +281,7 @@ fn upward_paths(code: &str, depth: usize) -> Vec<String> {
         }
         let after = &code[at + root.len()..];
         let up = if root == "crate::" { 0 } else { depth - 1 };
-        if leads_up(after, up) {
+        if leads_up(after, up, names) {
             found.push(code[at..].chars().take(40).collect());
         }
     }
@@ -289,6 +341,34 @@ fn the_code_after_a_tests_module_is_read() {
 }
 
 #[test]
+fn the_search_reads_every_test_module_one_module_down() {
+    let text = "use crate::model::Tab;\n\
+        #[cfg(test)]\n\
+        mod tests {\n    use crate::testing::Harness;\n    use super::super::ui::focus;\n    \
+        use crate::fixtures::page;\n}\n\
+        fn shown() {}\n\
+        #[cfg(test)]\n#[allow(clippy::unwrap_used)]\n\
+        mod parse_tests {\n    use super::*;\n    use crate::{fixtures::page, testing::labels};\n}\n";
+    let code = code(text);
+    assert!(
+        code.contains("crate::model::Tab") && code.contains("fn shown"),
+        "{code}"
+    );
+    assert!(!code.contains("testing"), "{code}");
+    let tests = tests(text);
+    assert_eq!(tests.len(), 2, "{tests:?}");
+    // In `src/a.rs`, a test module is two modules down: `super::super` is
+    // the root there.
+    let found: Vec<String> = tests
+        .iter()
+        .flat_map(|tests| paths_to(tests, 2, &ABOVE_TESTS))
+        .collect();
+    assert_eq!(found.len(), 3, "{found:?}");
+    // A test that names only the fixtures, or its own module, passes.
+    assert!(paths_to("use super::*; use crate::fixtures::page;", 2, &ABOVE_TESTS).is_empty());
+}
+
+#[test]
 fn every_module_is_below_or_above() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut unplaced = Vec::new();
@@ -328,6 +408,25 @@ fn the_lower_layer_names_neither_the_interface_nor_the_app() {
     assert!(
         found.is_empty(),
         "the lower layer reaches up, where an argument should come down:\n{}",
+        found.join("\n")
+    );
+}
+
+#[test]
+fn the_lower_layers_tests_name_neither_the_interface_nor_the_harness() {
+    let mut found = Vec::new();
+    for name in LOWER {
+        for (file, text, depth) in module(name) {
+            for tests in tests(&text) {
+                for path in paths_to(&tests, depth + 1, &ABOVE_TESTS) {
+                    found.push(format!("{file}: {path}"));
+                }
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "the lower layer's tests reach up, where `crate::fixtures` should serve them:\n{}",
         found.join("\n")
     );
 }

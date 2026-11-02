@@ -12,6 +12,8 @@ pub mod edit;
 pub mod endpoint;
 pub mod entrypoint;
 pub mod env;
+#[cfg(test)]
+pub mod fixtures;
 pub mod format;
 pub mod history;
 pub mod i18n;

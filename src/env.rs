@@ -829,9 +829,9 @@ mod tests {
 
     #[test]
     fn no_view_writes_a_hex_colour() {
-        // The palette and its theme files, and the screenshots' copy of a
-        // theme, are colours by name, not a connection's.
-        let allowed = [OWNER, "src/theme.rs", "src/shots.rs"];
+        // The palette and its theme files, and the screenshots' and the
+        // tests' copies of a theme, are colours by name, not a connection's.
+        let allowed = [OWNER, "src/theme.rs", "src/shots.rs", "src/fixtures.rs"];
         let mut found = Vec::new();
         for (path, text) in sources() {
             if allowed.contains(&path.as_str()) {

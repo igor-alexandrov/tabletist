@@ -6154,7 +6154,7 @@ mod tests {
         let request = crate::backend::RequestId(9);
         let on = Some(RanOn(here()));
         let _ = sql.start_run_with(request, statements, mode, caps, on);
-        let outcome = crate::testing::script_outcome(outcomes);
+        let outcome = crate::fixtures::script_outcome(outcomes);
         assert!(sql.finish_run(request, Ok(outcome), cancel));
         sql
     }
@@ -6182,7 +6182,7 @@ mod tests {
         };
         let sql = ran(
             "SELECT 1",
-            vec![crate::testing::rows_outcome(1)],
+            vec![crate::fixtures::rows_outcome(1)],
             None,
             (tabletist_db::ScriptMode::ReadOnly, other),
         );
@@ -6191,7 +6191,7 @@ mod tests {
 
     #[test]
     fn show_all_is_the_shown_statement_of_a_read_cut_by_the_limit() {
-        use crate::testing::{cut_outcome, done_outcome, rows_outcome};
+        use crate::fixtures::{cut_outcome, done_outcome, rows_outcome};
         use tabletist_db::ScriptMode::{ReadOnly, Write};
         let caps = RunCaps::default();
         let text = "SELECT 1;\nSELECT 2;\nSELECT 3";
@@ -6221,14 +6221,14 @@ mod tests {
         assert!(sql.cut_statement(&here()).is_none());
         // A run started without saying where (`start_run`) offers nothing.
         let mut sql = SqlTab::new(TabId(1), 1, 1_000, None);
-        crate::testing::run_script(&mut sql, text, vec![cut_outcome(1_000)]);
+        crate::fixtures::run_script(&mut sql, text, vec![cut_outcome(1_000)]);
         assert!(sql.cut_statement(&here()).is_none());
     }
 
     #[test]
     fn run_without_timeout_is_the_last_run_where_the_timeout_stopped_it_and_nothing_was_written() {
         use crate::backend::CancelReason;
-        use crate::testing::rows_outcome;
+        use crate::fixtures::rows_outcome;
         use tabletist_db::StatementOutcome::Cancelled;
         let timeout = Some(CancelReason::Timeout(Duration::from_secs(30)));
         let read = (tabletist_db::ScriptMode::ReadOnly, RunCaps::default());
@@ -6395,7 +6395,7 @@ mod tests {
     fn covers(rows: usize) -> ObjectTab {
         let object = ObjectRef::new("main", "book_covers");
         let mut tab = ObjectTab::new(TabId(1), object, ObjectKind::Table, true, 300, None);
-        tab.rows.value = Some(crate::testing::book_covers_page(rows));
+        tab.rows.value = Some(crate::fixtures::book_covers_page(rows));
         tab
     }
 
@@ -6605,7 +6605,7 @@ mod tests {
 
     #[test]
     fn a_workspace_opens_once_its_schemas_were_listed() {
-        let mut workspace = crate::testing::workspace();
+        let mut workspace = crate::fixtures::workspace();
         assert!(!workspace.opened());
         assert_eq!(workspace.connecting_for(), None, "nothing was sent yet");
         workspace.connect_started = Some(std::time::Instant::now());
@@ -6618,7 +6618,7 @@ mod tests {
 
     #[test]
     fn the_bare_schema_is_the_one_a_dialect_searches() {
-        let mut workspace = crate::testing::workspace();
+        let mut workspace = crate::fixtures::workspace();
         // The fixture is SQLite.
         assert_eq!(workspace.bare_schema(), None, "no schemas listed yet");
         workspace.tree.schemas.value = Some(vec!["main".into(), "audit".into()]);
@@ -6637,7 +6637,7 @@ mod tests {
     #[test]
     fn a_need_is_loading_while_its_names_are_asked_for() {
         use crate::completion::Need;
-        let mut workspace = crate::testing::workspace();
+        let mut workspace = crate::fixtures::workspace();
         workspace.status = SessionStatus::Connected;
         let need = Need::Objects("main".into());
         assert!(!workspace.is_loading(&need), "never asked for");
@@ -6666,7 +6666,7 @@ mod tests {
     #[test]
     fn no_need_is_loading_unless_the_session_is_connected() {
         use crate::completion::Need;
-        let mut workspace = crate::testing::workspace();
+        let mut workspace = crate::fixtures::workspace();
         let node = workspace.tree.nodes.entry("reports".into()).or_default();
         node.objects.start(RequestId(7));
         let users = ObjectRef::new("main", "users");
@@ -6692,7 +6692,7 @@ mod tests {
 
     #[test]
     fn a_changed_catalog_is_another_generation() {
-        let mut workspace = crate::testing::workspace();
+        let mut workspace = crate::fixtures::workspace();
         let before = workspace.catalog_generation;
         workspace.catalog_changed();
         assert_ne!(workspace.catalog_generation, before);
@@ -6704,7 +6704,7 @@ mod tests {
 
     #[test]
     fn a_connect_is_given_up_only_with_nothing_to_lose() {
-        let mut workspace = crate::testing::workspace();
+        let mut workspace = crate::fixtures::workspace();
         assert!(workspace.can_give_up(), "a first connect");
         workspace.status = SessionStatus::Connected;
         assert!(workspace.can_give_up(), "its schemas are being listed");
@@ -6721,7 +6721,7 @@ mod tests {
 
     #[test]
     fn a_workspace_finds_its_tabs_by_kind() {
-        let mut workspace = crate::testing::workspace();
+        let mut workspace = crate::fixtures::workspace();
         workspace.tabs.push(object_tab(1, "users", true));
         workspace.tabs.push(sql_tab(2));
         workspace.active_tab = Some(TabId(2));
@@ -6746,7 +6746,7 @@ mod tests {
 
     #[test]
     fn a_new_workspace_has_no_tabs_and_numbers_queries_from_one() {
-        let workspace = crate::testing::workspace();
+        let workspace = crate::fixtures::workspace();
         assert!(workspace.tabs.is_empty() && workspace.active_tab.is_none());
         assert_eq!(workspace.next_query, 1);
         assert!(workspace.server_version.needs_load());
@@ -6875,7 +6875,7 @@ mod tests {
         assert!(sql.run.value.is_some());
     }
 
-    use crate::testing::{error_outcome, rows_outcome, run_script};
+    use crate::fixtures::{error_outcome, rows_outcome, run_script};
 
     #[test]
     fn a_sql_tab_reports_its_cursor_line_and_column() {
@@ -7058,7 +7058,7 @@ mod tests {
 
     #[test]
     fn the_row_panel_shows_a_tables_data_view_or_a_selected_result_row() {
-        let mut workspace = crate::testing::workspace();
+        let mut workspace = crate::fixtures::workspace();
         workspace.tabs.push(object_tab(1, "users", true));
         workspace.tabs.push(sql_tab(2));
         assert_eq!(workspace.row_panel_tab(), None, "no tab is active");
@@ -7183,7 +7183,7 @@ mod tests {
         sql.text = "SELECT x".into();
         let _ = sql.start_run(RequestId(9), script("SELECT x"), READ);
         sql.text.insert_str(0, "SELECT 1;\n");
-        let outcome = crate::testing::script_outcome(failing());
+        let outcome = crate::fixtures::script_outcome(failing());
         assert!(sql.finish_run(RequestId(9), Ok(outcome), None));
         assert_eq!(sql.error_mark(), None);
         // A later run that never answers leaves the older run's mark with
@@ -7240,7 +7240,7 @@ mod tests {
 
     #[test]
     fn a_pushed_sql_tab_takes_the_next_number_and_is_not_shown() {
-        let mut workspace = crate::testing::workspace();
+        let mut workspace = crate::fixtures::workspace();
         workspace.tabs.push(object_tab(1, "users", true));
         workspace.active_tab = Some(TabId(1));
         let first = workspace.push_sql_tab(TabId(2), 500, None);
@@ -7260,7 +7260,7 @@ mod tests {
 
     #[test]
     fn forgetting_the_session_abandons_runs_and_the_server_version() {
-        let mut workspace = crate::testing::workspace();
+        let mut workspace = crate::fixtures::workspace();
         workspace.tabs.push(object_tab(1, "users", true));
         workspace.push_sql_tab(TabId(2), 1_000, None);
         let running = workspace.push_sql_tab(TabId(3), 1_000, None);

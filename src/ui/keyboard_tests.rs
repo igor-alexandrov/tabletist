@@ -3,6 +3,7 @@
 //! Tabletist keep, unbinding and resetting, the search, the file it
 //! writes, and the cheat sheet. The brief's tests, by their numbers
 //! (`docs/superpowers/specs/2026-10-20-settings-keyboard-design.md`).
+//! And the Mac's faces, which draw every key the keymap writes.
 
 use egui::accesskit::Role;
 use egui::{Event, Key, Modifiers};
@@ -10,7 +11,8 @@ use egui::{Event, Key, Modifiers};
 use crate::keymap::{Command, Layout, Row, Scope, When};
 use crate::model::{Action, Dialog, SettingsPane};
 use crate::testing::{Harness, labels};
-use crate::theme::Look;
+use crate::theme::{Faces, Look, Typeface};
+use crate::typography::TextRole;
 
 /// ⌥⌘ on macOS, as the window reports it.
 const OPTION_COMMAND: Modifiers = Modifiers {
@@ -839,4 +841,46 @@ fn omarchy_records_a_line_with_words() {
         "{}",
         file(&harness)
     );
+}
+
+/// The keys a shortcut names on the Mac are glyphs of its faces, not
+/// replacement boxes.
+#[test]
+fn macos_draws_the_keys_its_shortcuts_name() {
+    let mut harness = Harness::new();
+    harness.set_look(Look::macos());
+    harness.settle();
+    for role in [TextRole::Secondary, TextRole::Shortcut] {
+        let font = role.font_id(Faces::of(Typeface::Plex));
+        assert!(
+            harness
+                .ctx
+                .fonts_mut(|fonts| fonts.has_glyphs(&font, "⌘⇧⌫↩")),
+            "{}: a replacement box instead of a key",
+            role.id()
+        );
+    }
+}
+
+/// Every character the keymap writes for the Mac is one its faces
+/// have: a key added to the keymap cannot come out as a box.
+#[test]
+fn the_mac_has_a_glyph_for_every_key_the_keymap_writes() {
+    let mut harness = Harness::new();
+    harness.set_look(Look::macos());
+    harness.settle();
+    let keymap = crate::keymap::Keymap::default();
+    for role in [TextRole::Secondary, TextRole::Shortcut] {
+        let font = role.font_id(Faces::of(Typeface::Plex));
+        for command in Command::ALL {
+            let label = keymap.label(Layout::Mac, *command);
+            assert!(
+                harness
+                    .ctx
+                    .fonts_mut(|fonts| fonts.has_glyphs(&font, &label)),
+                "{}: {command:?} is written {label}, with a box in it",
+                role.id()
+            );
+        }
+    }
 }

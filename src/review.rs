@@ -738,7 +738,7 @@ fn shortened(literal: &str) -> String {
 mod tests {
     use super::*;
     use crate::edit::Problem;
-    use crate::testing::{fixture_structure, page};
+    use crate::fixtures::{fixture_structure, page};
     use std::collections::BTreeSet;
     use tabletist_db::{Access, CellChange, NewValue, ObjectKind, RowChange, RowPage, Structure};
 
@@ -761,7 +761,7 @@ mod tests {
             gone: &NONE_GONE,
             added: &[],
             deleted: &crate::edit::NONE_DELETED,
-            zone: Some(&crate::testing::UTC),
+            zone: Some(&crate::fixtures::UTC),
             session_zone: None,
         }
     }
@@ -1013,8 +1013,8 @@ mod tests {
             .map(|_| edits.add_row(crate::edit::Place::Top, 3))
             .collect();
         (
-            crate::testing::book_covers_structure(),
-            crate::testing::book_covers_page(3),
+            crate::fixtures::book_covers_structure(),
+            crate::fixtures::book_covers_page(3),
             edits,
             ids,
         )

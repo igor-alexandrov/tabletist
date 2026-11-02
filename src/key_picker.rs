@@ -1363,7 +1363,7 @@ mod tests {
                     gone: &gone,
                     added: &edits.added,
                     deleted: &edits.deleted,
-                    zone: Some(&crate::testing::UTC),
+                    zone: Some(&crate::fixtures::UTC),
                     session_zone: None,
                 },
                 &own,
@@ -1461,7 +1461,7 @@ mod tests {
             gone: &gone,
             added: &edits.added,
             deleted: &edits.deleted,
-            zone: Some(&crate::testing::UTC),
+            zone: Some(&crate::fixtures::UTC),
             session_zone: None,
         };
         assert!(unmatched(&table, &own, &edits).is_empty());
