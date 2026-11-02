@@ -19,7 +19,8 @@ use crate::format;
 use crate::i18n::{Locale, gettext};
 use crate::keymap::Command;
 use crate::model::{Action, ConnTabId, ObjectTab, TabId};
-use crate::theme::{self, Icon, Look, Palette};
+use crate::style::Icon;
+use crate::theme::{self, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::{Paint, focus, sql_text, states, widgets};
 

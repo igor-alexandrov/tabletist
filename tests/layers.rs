@@ -1,7 +1,8 @@
 //! The lower layer knows nothing of the interface. The modules of the
 //! app's state, its edits, the backend, the settings and the text they
-//! write never name `crate::ui` or `crate::app`: the views and the reducer
-//! stand on them, never the other way round. What one of them needs from
+//! write never name `crate::ui`, `crate::typography`, `crate::style` or
+//! `crate::app`: the views, the text and style they draw with and the
+//! reducer stand on them, never the other way round. What one of them needs from
 //! above comes in as an argument, or moves down. Their tests stand on the
 //! lower layer too: they name neither the interface nor the harness of
 //! `crate::testing`, and take their data from `crate::fixtures`.
@@ -22,6 +23,7 @@ const LOWER: [&str; 35] = [
     "endpoint",
     "env",
     "fixtures",
+    "font_files",
     "format",
     "history",
     "i18n",
@@ -41,7 +43,6 @@ const LOWER: [&str; 35] = [
     "session",
     "settings",
     "theme",
-    "typography",
     "update",
     "util",
     "vim",
@@ -50,7 +51,7 @@ const LOWER: [&str; 35] = [
 
 /// The modules above it: the interface and the reducer, what starts and
 /// drives the window, and the tests' harness and scenes.
-const ABOVE: [&str; 10] = [
+const ABOVE: [&str; 12] = [
     "app",
     "entrypoint",
     "lib",
@@ -59,7 +60,9 @@ const ABOVE: [&str; 10] = [
     "menu",
     "promo",
     "shots",
+    "style",
     "testing",
+    "typography",
     "ui",
 ];
 
@@ -114,13 +117,14 @@ fn module(name: &str) -> Vec<(String, String, usize)> {
         .collect()
 }
 
-/// What the lower layer's code may not name: the interface and the
+/// What the lower layer's code may not name: the interface (its views, the
+/// text roles they draw with and the style it sets up on egui) and the
 /// reducer.
-const ABOVE_CODE: [&str; 2] = ["ui", "app"];
+const ABOVE_CODE: [&str; 4] = ["ui", "typography", "style", "app"];
 
 /// What the lower layer's tests may not name: the same, and the harness,
 /// which drives the whole app.
-const ABOVE_TESTS: [&str; 3] = ["ui", "app", "testing"];
+const ABOVE_TESTS: [&str; 5] = ["ui", "typography", "style", "app", "testing"];
 
 /// Whether `code`, a line trimmed at its end, opens a module at the
 /// margin: `mod tests {`, `pub(crate) mod parse_tests {`.
@@ -136,8 +140,19 @@ fn opens_module(code: &str) -> bool {
         && name.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
-/// Where a file's test modules stand: each from `#[cfg(test)]` at the
-/// margin, then `mod … {` with nothing between them but other attributes,
+/// Whether `code`, a line trimmed at its end, is an attribute at the
+/// margin that compiles what follows only for tests: `#[cfg(test)]`, or
+/// `#[cfg(all(test, target_os = "linux"))]`.
+fn marks_tests(code: &str) -> bool {
+    code == "#[cfg(test)]"
+        || code
+            .strip_prefix("#[cfg(all(")
+            .and_then(|rest| rest.strip_suffix("))]"))
+            .is_some_and(|all| all.split(',').any(|item| item.trim() == "test"))
+}
+
+/// Where a file's test modules stand: each from a test's `#[cfg]` at the
+/// margin ([`marks_tests`]), then `mod … {` with nothing between them but other attributes,
 /// to its `}` at the margin. A test may drive the interface to see what the
 /// module does there; what follows a test module is code again.
 fn test_modules(text: &str) -> Vec<std::ops::Range<usize>> {
@@ -152,7 +167,7 @@ fn test_modules(text: &str) -> Vec<std::ops::Range<usize>> {
                 found.push(from..at + line.len());
                 start = None;
             }
-        } else if code == "#[cfg(test)]" {
+        } else if marks_tests(code) {
             marked = Some(at);
         } else if let Some(from) = marked {
             if opens_module(code) {
@@ -254,7 +269,7 @@ fn leads_up(path: &str, up: usize, names: &[&str]) -> bool {
 }
 
 /// What `code`, in a file `depth` modules below the crate's root, takes
-/// from `ui` or `app`.
+/// from the interface or `app`.
 fn upward_paths(code: &str, depth: usize) -> Vec<String> {
     paths_to(code, depth, &ABOVE_CODE)
 }
@@ -305,6 +320,12 @@ fn the_search_finds_a_path_up() {
         "shown(1, crate::ui::focus::hint());",
         "{ crate::ui::focus::hint() }",
         "let shown = f(1, super::ui::Row);",
+        // The text the views draw with, and the style set up on egui.
+        "use crate::typography::{Text, TextRole};",
+        "let kind = crate::typography::Kind::Mono;",
+        "use crate::style::Icon;",
+        "crate::style::apply(ctx, &palette, &look);",
+        "use crate::{theme::Look, style};",
     ] {
         assert!(!upward_paths(&code(line), 1).is_empty(), "{line}");
     }
@@ -366,6 +387,40 @@ fn the_search_reads_every_test_module_one_module_down() {
     assert_eq!(found.len(), 3, "{found:?}");
     // A test that names only the fixtures, or its own module, passes.
     assert!(paths_to("use super::*; use crate::fixtures::page;", 2, &ABOVE_TESTS).is_empty());
+    // Nor the text and style the views draw with.
+    for line in [
+        "use crate::typography::TextRole;",
+        "use super::super::style::Icon;",
+        "crate::style::install(&ctx, false, &look);",
+    ] {
+        assert!(!paths_to(line, 2, &ABOVE_TESTS).is_empty(), "{line}");
+    }
+    // A module named like one, but not it, passes.
+    assert!(
+        paths_to(
+            "use crate::styles::Row; use crate::font_files::read_font;",
+            2,
+            &ABOVE_TESTS
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn a_test_module_one_platform_compiles_is_read_as_tests() {
+    // Two modules down, as any test module.
+    let text = "fn shown() {}\n\
+        #[cfg(all(test, target_os = \"linux\"))]\n\
+        mod load_tests {\n    use super::super::style::Icon;\n}\n";
+    assert!(!code(text).contains("style"), "{}", code(text));
+    let tests = tests(text);
+    assert_eq!(tests.len(), 1, "{tests:?}");
+    assert_eq!(paths_to(&tests[0], 2, &ABOVE_TESTS).len(), 1, "{tests:?}");
+    // A platform's own code is code.
+    assert!(!marks_tests(
+        "#[cfg(all(not(test), target_os = \"linux\"))]"
+    ));
+    assert!(!marks_tests("#[cfg(target_os = \"linux\")]"));
 }
 
 #[test]

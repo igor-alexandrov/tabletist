@@ -223,7 +223,7 @@ pub enum Command {
         pin: Option<String>,
         asked: u64,
     },
-    /// Reads the font `font` names ([`crate::typography::read_font`]): the
+    /// Reads the font `font` names ([`crate::font_files::read_font`]): the
     /// terminal look's through fontconfig, or the system's monospace; on
     /// macOS an installed one the data is drawn in, through CoreText.
     /// Answered with [`Event::Font`], which carries `asked`: reads end in
@@ -435,7 +435,7 @@ pub enum Event {
     /// What the [`Command::ReadFont`] numbered `asked` read.
     Font {
         asked: u64,
-        read: Box<crate::typography::desktop_font::Read>,
+        read: Box<crate::font_files::desktop_font::Read>,
     },
     /// The installed monospace families ([`Command::ListFonts`]), as the
     /// menu lists them.
@@ -2102,7 +2102,7 @@ impl Worker {
             Command::ReadFont { font, asked } => {
                 let outbox = self.outbox.clone();
                 tokio::task::spawn_blocking(move || {
-                    let read = crate::typography::read_font(font.as_deref());
+                    let read = crate::font_files::read_font(font.as_deref());
                     outbox.emit(Event::Font {
                         asked,
                         read: Box::new(read),
@@ -2112,7 +2112,7 @@ impl Worker {
             Command::ListFonts => {
                 let outbox = self.outbox.clone();
                 tokio::task::spawn_blocking(move || {
-                    outbox.emit(Event::Fonts(crate::typography::installed_font::families()));
+                    outbox.emit(Event::Fonts(crate::font_files::installed_font::families()));
                 });
             }
             Command::Flush { done } => {

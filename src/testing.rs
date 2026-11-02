@@ -1087,7 +1087,7 @@ impl Harness {
         let look = look.with_text(&self.app.settings, self.app.installed_drawn());
         self.app.look = look;
         let read = self.app.desktop_font.faces.as_ref();
-        self.app.fonts = crate::theme::install_with(&self.ctx, false, &look, read);
+        self.app.fonts = crate::style::install_with(&self.ctx, false, &look, read);
         self.app.apply_style(&self.ctx);
     }
 }

@@ -8,7 +8,8 @@ use serde::de::{MapAccess, SeqAccess, Visitor};
 use tabletist_db::{Value, ValueKind};
 
 use crate::i18n::{Locale, gettext, ngettext};
-use crate::theme::{self, Icon, Palette};
+use crate::style::Icon;
+use crate::theme::{self, Palette};
 use crate::typography::{Text, TextRole};
 
 /// JSON larger than this is shown as plain text, not parsed into a tree.

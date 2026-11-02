@@ -5,11 +5,11 @@
 use egui::{Key, Modifiers};
 
 use super::appearance_settings_tests::{on_the_pane, settings_saves, shows};
+use crate::font_files::desktop_font::Read;
 use crate::model::Action;
 use crate::settings::{FontSize, InterfaceSize, OptionValue};
 use crate::testing::Harness;
 use crate::theme::{DataFace, Look};
-use crate::typography::desktop_font::Read;
 
 /// One pass of the app's logic, as the window runs it between frames.
 fn logic(harness: &mut Harness) {

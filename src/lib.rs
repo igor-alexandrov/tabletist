@@ -14,6 +14,7 @@ pub mod entrypoint;
 pub mod env;
 #[cfg(test)]
 pub mod fixtures;
+pub mod font_files;
 pub mod format;
 pub mod history;
 pub mod i18n;
@@ -39,6 +40,7 @@ pub mod session;
 pub mod settings;
 #[cfg(all(test, feature = "shots"))]
 mod shots;
+pub mod style;
 #[cfg(test)]
 pub mod testing;
 pub mod theme;

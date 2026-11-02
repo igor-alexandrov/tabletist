@@ -611,8 +611,8 @@ mod tests {
 
     fn context(look: &Look, palette: &Palette) -> egui::Context {
         let ctx = egui::Context::default();
-        crate::theme::install(&ctx, false, look);
-        crate::theme::apply(&ctx, palette, look);
+        crate::style::install(&ctx, false, look);
+        crate::style::apply(&ctx, palette, look);
         ctx
     }
 

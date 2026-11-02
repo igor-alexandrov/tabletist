@@ -10,7 +10,7 @@ use crate::edit::{Note, Saved};
 use crate::format;
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::model::{Action, ConnTabId, ObjectTab, SaveBlock};
-use crate::theme::Icon;
+use crate::style::Icon;
 use crate::typography::{Text, TextRole};
 use crate::ui::Paint;
 use crate::ui::menu;

@@ -11,7 +11,8 @@ use crate::history::{Entry, Outcome, Source};
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::Keymap;
 use crate::model::{Action, ConnTabId, HistoryFilterSet, HistoryRow, HistoryTab, Workspace};
-use crate::theme::{Icon, Look, Palette};
+use crate::style::Icon;
+use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::{Paint, menu, states, widgets};
 

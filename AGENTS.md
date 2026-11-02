@@ -24,8 +24,11 @@ MySQL, SQLite) on egui/eframe and fastframe. The design lives in
   follows it, and a view never gains an `App` argument.
 - The lower layer (`model`, `edit`, `backend`, `settings`, `review`,
   `format`, … each module `LOWER` in `tests/layers.rs` lists) never names
-  `crate::ui` or `crate::app`: what it needs from above comes in as an
-  argument, or moves down. Their tests stand on the lower layer too: they
+  `crate::ui`, `crate::app`, or the text and style the views draw with
+  (`crate::typography`, `crate::style`): what it needs from above comes in
+  as an argument, or moves down. `theme` holds the palette and the looks as
+  data, and `style` sets them up on an egui context; `font_files` reads
+  fonts from the system, and `typography` draws with them. Their tests stand on the lower layer too: they
   name neither the interface nor the harness of `src/testing.rs`, and take
   their data (the Bookshop's structures and pages, outcomes, a workspace
   without an app) from `src/fixtures.rs`, which `testing` re-exports. That
