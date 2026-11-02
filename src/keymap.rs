@@ -5247,34 +5247,6 @@ mod tests {
     }
 
     #[test]
-    fn a_menu_key_holds_cmd_or_ctrl_and_is_one_press() {
-        let keymap = Keymap::default();
-        for layout in [Layout::Mac, Layout::Windows] {
-            for command in crate::app::RUNNABLE {
-                if let Some(key) = keymap.menu_key(command, layout) {
-                    assert!(key.mods.cmd || key.mods.ctrl, "{command:?}: {key:?}");
-                    // It is one of the command's own chords, spelled as one
-                    // press.
-                    let own = keymap
-                        .of(command)
-                        .flat_map(|binding| binding.bound(layout).chords.iter())
-                        .filter(|chord| chord.kind == Kind::Own)
-                        .any(|chord| {
-                            spell(chord.keys).is_ok_and(|spelled| {
-                                spelled
-                                    == Spelled::Strokes(vec![Stroke::Key {
-                                        mods: key.mods,
-                                        key: key.key,
-                                    }])
-                            })
-                        });
-                    assert!(own, "{command:?}");
-                }
-            }
-        }
-    }
-
-    #[test]
     fn the_edit_items_keys_are_the_ones_the_system_keeps() {
         let keymap = Keymap::default();
         let cmd = Mods {

@@ -3665,4 +3665,18 @@ mod tests {
         frame(vec![]);
         assert!(!hovered(0) && hovered(1));
     }
+
+    #[test]
+    fn data_is_monospace_on_macos_and_omarchy() {
+        use crate::theme::Look;
+        use crate::typography::{Kind, TextRole};
+        assert_eq!(data_role(&Look::omarchy()), TextRole::OBody);
+        assert_eq!(data_role(&Look::macos()), TextRole::GridCell);
+        assert_eq!(data_role(&Look::macos()).spec().kind, Kind::Mono);
+        assert_eq!(data_role(&Look::standard()).spec().kind, Kind::Sans);
+        // Data in every look, which the data's size sizes.
+        for look in Look::ALL {
+            assert!(data_role(&look).is_data() || look.terminal, "{}", look.name);
+        }
+    }
 }

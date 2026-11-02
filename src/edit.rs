@@ -3256,14 +3256,14 @@ mod tests {
             gone: &edits.gone,
             added: &edits.added,
             deleted: &edits.deleted,
-            zone: Some(&crate::testing::UTC),
+            zone: Some(&crate::fixtures::UTC),
             session_zone: None,
         }
     }
 
     /// What deleting `rows` of `page` comes to, with `edits` pending.
     fn swept(page: &RowPage, edits: &Edits, rows: &[usize]) -> Sweep {
-        let structure = crate::testing::book_covers_structure();
+        let structure = crate::fixtures::book_covers_structure();
         marked_covers(&structure, page, edits).sweep(rows)
     }
 
@@ -3273,7 +3273,7 @@ mod tests {
 
     #[test]
     fn a_sweep_marks_what_is_unmarked_and_restores_only_when_all_are_marked() {
-        let page = crate::testing::book_covers_page(5);
+        let page = crate::fixtures::book_covers_page(5);
         let mut edits = Edits::default();
         assert_eq!(
             swept(&page, &edits, &[1, 2, 3]),
@@ -3294,7 +3294,7 @@ mod tests {
 
     #[test]
     fn a_sweep_drops_new_rows_with_a_mark_and_leaves_them_at_a_restore() {
-        let page = crate::testing::book_covers_page(5);
+        let page = crate::fixtures::book_covers_page(5);
         let mut edits = Edits::default();
         let new = new_row(edits.add_row(Place::Below(1), 5));
         assert_eq!(
@@ -3310,7 +3310,7 @@ mod tests {
 
     #[test]
     fn a_sweep_leaves_out_a_row_that_cannot_be_deleted_and_counts_it() {
-        let mut page = crate::testing::book_covers_page(5);
+        let mut page = crate::fixtures::book_covers_page(5);
         page.rows[2][0] = Value::Null;
         let edits = Edits::default();
         assert_eq!(
@@ -3323,8 +3323,8 @@ mod tests {
 
     #[test]
     fn a_sweep_is_refused_for_the_table_and_over_the_cap() {
-        let structure = crate::testing::book_covers_structure();
-        let page = crate::testing::book_covers_page(MAX_ROWS_DELETED + 1);
+        let structure = crate::fixtures::book_covers_structure();
+        let page = crate::fixtures::book_covers_page(MAX_ROWS_DELETED + 1);
         let edits = Edits::default();
         let all: Vec<usize> = (0..=MAX_ROWS_DELETED).collect();
         assert_eq!(swept(&page, &edits, &all), Sweep::TooMany);
@@ -3350,7 +3350,7 @@ mod tests {
     /// The Bookshop's `genres`, which point at themselves, with these
     /// rows: (id, the genre it stands under).
     fn genres(rows: &[(i64, Option<i64>)]) -> (Structure, RowPage) {
-        let mut page = crate::testing::genres_page();
+        let mut page = crate::fixtures::genres_page();
         page.rows = rows
             .iter()
             .map(|(id, parent)| {
@@ -3361,7 +3361,7 @@ mod tests {
                 ]
             })
             .collect();
-        (crate::testing::genres_structure(), page)
+        (crate::fixtures::genres_structure(), page)
     }
 
     /// A row is deleted before the row it points at.
@@ -3460,8 +3460,8 @@ mod tests {
     /// where there are several.
     #[test]
     fn what_a_delete_takes_is_asked_once_for_each_key() {
-        let structure = crate::testing::publishers_structure();
-        let page = crate::testing::publishers_page();
+        let structure = crate::fixtures::publishers_structure();
+        let page = crate::fixtures::publishers_page();
         let mut edits = Edits::default();
         edits.mark(0);
         let object = ObjectRef::new("main", "publishers");
@@ -3540,8 +3540,8 @@ mod tests {
     /// counted for more than a hundred rows.
     #[test]
     fn counts_stay_bounded_with_many_rows_marked() {
-        let structure = crate::testing::publishers_structure();
-        let mut page = crate::testing::publishers_page();
+        let structure = crate::fixtures::publishers_structure();
+        let mut page = crate::fixtures::publishers_page();
         let row = page.rows[0].clone();
         page.rows = (0..1_500)
             .map(|id| {
@@ -3615,8 +3615,8 @@ mod tests {
             assert_eq!(asked[0].2, 0, "{on_delete}");
         }
         // Another table's key takes nothing off.
-        let publishers = crate::testing::publishers_structure();
-        let page = crate::testing::publishers_page();
+        let publishers = crate::fixtures::publishers_structure();
+        let page = crate::fixtures::publishers_page();
         let mut edits = Edits::default();
         edits.mark(0);
         edits.mark(2);
@@ -3675,8 +3675,8 @@ mod tests {
     /// that names none, for every key that holds.
     #[test]
     fn a_refused_delete_is_asked_who_holds_its_row() {
-        let structure = crate::testing::publishers_structure();
-        let page = crate::testing::publishers_page();
+        let structure = crate::fixtures::publishers_structure();
+        let page = crate::fixtures::publishers_page();
         let mut edits = Edits::default();
         edits.mark(0);
         let table = marked_covers(&structure, &page, &edits);
@@ -3747,8 +3747,8 @@ mod tests {
     /// the row.
     #[test]
     fn a_marked_rows_edits_are_kept_and_hidden() {
-        let structure = crate::testing::book_covers_structure();
-        let page = crate::testing::book_covers_page(3);
+        let structure = crate::fixtures::book_covers_structure();
+        let page = crate::fixtures::book_covers_page(3);
         let object = ObjectRef::new("main", "book_covers");
         let mut edits = Edits::default();
         edits.put((1, 2), pending_text("audio"));
@@ -3786,8 +3786,8 @@ mod tests {
     /// Spec 3: no cell of a marked row is edited, and the row says why.
     #[test]
     fn a_marked_row_is_locked_until_it_is_restored() {
-        let structure = crate::testing::book_covers_structure();
-        let page = crate::testing::book_covers_page(3);
+        let structure = crate::fixtures::book_covers_structure();
+        let page = crate::fixtures::book_covers_page(3);
         let mut edits = Edits::default();
         edits.mark(1);
         let table = marked_covers(&structure, &page, &edits);
@@ -3802,8 +3802,8 @@ mod tests {
     /// being edited keeps it from being deleted.
     #[test]
     fn a_row_that_cannot_be_edited_cannot_be_deleted() {
-        let structure = crate::testing::book_covers_structure();
-        let page = crate::testing::book_covers_page(3);
+        let structure = crate::fixtures::book_covers_structure();
+        let page = crate::fixtures::book_covers_page(3);
         let edits = Edits::default();
         let table = marked_covers(&structure, &page, &edits);
         assert_eq!(table.no_delete(1), None);
@@ -3888,8 +3888,8 @@ mod tests {
 
     #[test]
     fn the_bookshops_covers_have_a_column_of_each_kind() {
-        let structure = crate::testing::book_covers_structure();
-        let page = crate::testing::book_covers_page(3);
+        let structure = crate::fixtures::book_covers_structure();
+        let page = crate::fixtures::book_covers_page(3);
         let names: Vec<&str> = page.columns.iter().map(|c| c.name.as_str()).collect();
         let listed: Vec<&str> = structure.columns.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, listed);
@@ -3899,8 +3899,8 @@ mod tests {
 
     #[test]
     fn an_assigned_cell_of_a_new_row_is_locked() {
-        let structure = crate::testing::book_covers_structure();
-        let page = crate::testing::book_covers_page(3);
+        let structure = crate::fixtures::book_covers_structure();
+        let page = crate::fixtures::book_covers_page(3);
         let mut edits = Edits::default();
         let id = edits.add_row(Place::Top, 3);
         let table = Table {
@@ -3932,8 +3932,8 @@ mod tests {
 
     #[test]
     fn no_row_is_added_where_none_can_be() {
-        let structure = crate::testing::book_covers_structure();
-        let page = crate::testing::book_covers_page(3);
+        let structure = crate::fixtures::book_covers_structure();
+        let page = crate::fixtures::book_covers_page(3);
         let ok = || table(Some(&structure), &page);
         assert_eq!(ok().no_rows(), None);
         let read_only = Table {
@@ -3984,7 +3984,7 @@ mod tests {
 
     #[test]
     fn an_unset_cell_says_what_the_database_will_do() {
-        let structure = crate::testing::book_covers_structure();
+        let structure = crate::fixtures::book_covers_structure();
         let unsets: Vec<Unset> = structure
             .columns
             .iter()
@@ -4077,8 +4077,8 @@ mod tests {
 
     #[test]
     fn a_new_row_misses_its_required_columns_until_they_are_set() {
-        let structure = crate::testing::book_covers_structure();
-        let page = crate::testing::book_covers_page(3);
+        let structure = crate::fixtures::book_covers_structure();
+        let page = crate::fixtures::book_covers_page(3);
         let mut edits = Edits::default();
         let id = edits.add_row(Place::Top, 3);
         let missing = |edits: &Edits| {
@@ -4102,8 +4102,8 @@ mod tests {
 
     #[test]
     fn a_new_rows_fields_are_listed_as_a_form_to_fill_in() {
-        let structure = crate::testing::book_covers_structure();
-        let page = crate::testing::book_covers_page(3);
+        let structure = crate::fixtures::book_covers_structure();
+        let page = crate::fixtures::book_covers_page(3);
         let mut edits = Edits::default();
         let id = edits.add_row(Place::Top, 3);
         let fields = |edits: &Edits, row: usize| {
@@ -4447,8 +4447,8 @@ mod tests {
     /// default the database works out).
     fn covers() -> (Structure, RowPage) {
         (
-            crate::testing::book_covers_structure(),
-            crate::testing::book_covers_page(3),
+            crate::fixtures::book_covers_structure(),
+            crate::fixtures::book_covers_page(3),
         )
     }
 
@@ -4889,7 +4889,7 @@ mod tests {
             gone: &NONE_GONE,
             added: &[],
             deleted: &NONE_DELETED,
-            zone: Some(&crate::testing::UTC),
+            zone: Some(&crate::fixtures::UTC),
             session_zone: None,
         }
     }

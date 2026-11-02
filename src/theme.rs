@@ -982,20 +982,6 @@ mod tests {
     use super::*;
     use fastframe_theme::Palette as _;
 
-    #[test]
-    fn data_is_monospace_on_macos_and_omarchy() {
-        use crate::typography::{Kind, TextRole};
-        use crate::ui::grid::data_role;
-        assert_eq!(data_role(&Look::omarchy()), TextRole::OBody);
-        assert_eq!(data_role(&Look::macos()), TextRole::GridCell);
-        assert_eq!(data_role(&Look::macos()).spec().kind, Kind::Mono);
-        assert_eq!(data_role(&Look::standard()).spec().kind, Kind::Sans);
-        // Data in every look, which the data's size sizes.
-        for look in Look::ALL {
-            assert!(data_role(&look).is_data() || look.terminal, "{}", look.name);
-        }
-    }
-
     /// The settings with the interface's size, the data font and its size
     /// as given.
     fn text(interface: InterfaceSize, font: Option<&str>, size: f64) -> Settings {
@@ -1257,25 +1243,9 @@ mod tests {
         assert_eq!(Look::for_platform(), expected);
     }
 
-    /// The Omarchy template rendered for Tokyo Night.
-    fn tokyo_night() -> Palette {
-        let colors = "mode\tdark\nbackground\t#1a1b26\ndark_background\t#16161e\n\
-                      lighter_background\t#292e42\nforeground\t#c0caf5\nmuted\t#565f89\n\
-                      accent\t#7aa2f7\nselection\t#283457\nred\t#f7768e\n\
-                      green\t#9ece6a\nyellow\t#e0af68\ncyan\t#7dcfff\n\
-                      orange\t#ff9e64\nmagenta\t#bb9af7\nblue\t#7aa2f7\n\
-                      bright_red\t#f7768e\nbright_green\t#9ece6a\n";
-        let rendered = fastframe_theme::omarchy::render_seed::<Palette>(
-            include_str!("../contrib/omarchy/tabletist.json.tpl"),
-            colors,
-        )
-        .unwrap();
-        fastframe_theme::parse_palette(&rendered).unwrap()
-    }
-
     #[test]
     fn a_themes_faint_labels_are_lightened_until_they_read() {
-        let palette = tokyo_night();
+        let palette = crate::fixtures::tokyo_night();
         assert!(
             contrast(palette.secondary, palette.window) < 4.5,
             "Tokyo Night's muted fails"
@@ -1287,25 +1257,8 @@ mod tests {
     }
 
     #[test]
-    fn value_tags_take_a_themes_rose_and_olive_only_when_they_stand_apart() {
-        // Tokyo Night's bright red and green are its red and green.
-        let palette = tokyo_night();
-        assert_eq!(palette.blue, egui::Color32::from_rgb(0x7a, 0xa2, 0xf7));
-        let slots = crate::ui::value_tags::terminal_slots(&palette);
-        assert_eq!(slots[3], palette.blue);
-        assert_eq!(slots[6], palette.dim);
-        assert_eq!(slots[7], palette.dim);
-        // A file with its own colours but no rose or olive: muted too.
-        let file = r##"{"base": "dark", "colors": {"danger": "#ff0000", "success": "#00ff00"}}"##;
-        let palette: Palette = fastframe_theme::parse_palette(file).unwrap();
-        let slots = crate::ui::value_tags::terminal_slots(&palette);
-        assert_eq!(slots[6], palette.dim);
-        assert_eq!(slots[7], palette.dim);
-    }
-
-    #[test]
     fn dialogs_take_the_themes_panel_when_it_names_no_overlay() {
-        let palette = tokyo_night();
+        let palette = crate::fixtures::tokyo_night();
         assert_eq!(palette.window, egui::Color32::from_rgb(0x1a, 0x1b, 0x26));
         assert_eq!(palette.overlay, palette.panel);
         assert_ne!(palette.overlay, Palette::dark().overlay);

@@ -25,8 +25,12 @@ MySQL, SQLite) on egui/eframe and fastframe. The design lives in
 - The lower layer (`model`, `edit`, `backend`, `settings`, `review`,
   `format`, … each module `LOWER` in `tests/layers.rs` lists) never names
   `crate::ui` or `crate::app`: what it needs from above comes in as an
-  argument, or moves down. That test reads their sources, and a new module
-  goes in its `LOWER` or its `ABOVE`.
+  argument, or moves down. Their tests stand on the lower layer too: they
+  name neither the interface nor the harness of `src/testing.rs`, and take
+  their data (the Bookshop's structures and pages, outcomes, a workspace
+  without an app) from `src/fixtures.rs`, which `testing` re-exports. That
+  test reads their sources, and a new module goes in its `LOWER` or its
+  `ABOVE`.
 - Database, network, and disk work runs on the backend runtime
   (`src/backend.rs`), never on the UI thread.
 - `crates/tabletist-db` has no UI dependencies.

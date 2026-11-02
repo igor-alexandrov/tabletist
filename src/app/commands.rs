@@ -442,4 +442,33 @@ mod tests {
         assert!(!scripts.runs(Dialect::Postgres, "-- only a comment"));
         assert_eq!(tokenized(), start + 4);
     }
+
+    #[test]
+    fn a_menu_key_holds_cmd_or_ctrl_and_is_one_press() {
+        use crate::keymap::{Keymap, Kind, Layout, Spelled, Stroke, spell};
+        let keymap = Keymap::default();
+        for layout in [Layout::Mac, Layout::Windows] {
+            for command in RUNNABLE {
+                if let Some(key) = keymap.menu_key(command, layout) {
+                    assert!(key.mods.cmd || key.mods.ctrl, "{command:?}: {key:?}");
+                    // It is one of the command's own chords, spelled as one
+                    // press.
+                    let own = keymap
+                        .of(command)
+                        .flat_map(|binding| binding.bound(layout).chords.iter())
+                        .filter(|chord| chord.kind == Kind::Own)
+                        .any(|chord| {
+                            spell(chord.keys).is_ok_and(|spelled| {
+                                spelled
+                                    == Spelled::Strokes(vec![Stroke::Key {
+                                        mods: key.mods,
+                                        key: key.key,
+                                    }])
+                            })
+                        });
+                    assert!(own, "{command:?}");
+                }
+            }
+        }
+    }
 }

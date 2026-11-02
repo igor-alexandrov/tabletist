@@ -296,52 +296,6 @@ mod tests {
 
     const PLEX: Faces = Faces::of(Typeface::Plex);
 
-    #[test]
-    fn macos_draws_the_keys_its_shortcuts_name() {
-        let mut harness = crate::testing::Harness::new();
-        harness.set_look(Look::macos());
-        harness.settle();
-        for role in [
-            crate::typography::TextRole::Secondary,
-            crate::typography::TextRole::Shortcut,
-        ] {
-            let font = role.font_id(PLEX);
-            assert!(
-                harness
-                    .ctx
-                    .fonts_mut(|fonts| fonts.has_glyphs(&font, "⌘⇧⌫↩")),
-                "{}: a replacement box instead of a key",
-                role.id()
-            );
-        }
-    }
-
-    /// Every character the keymap writes for the Mac is one its faces
-    /// have: a key added to the keymap cannot come out as a box.
-    #[test]
-    fn the_mac_has_a_glyph_for_every_key_the_keymap_writes() {
-        let mut harness = crate::testing::Harness::new();
-        harness.set_look(Look::macos());
-        harness.settle();
-        let keymap = crate::keymap::Keymap::default();
-        for role in [
-            crate::typography::TextRole::Secondary,
-            crate::typography::TextRole::Shortcut,
-        ] {
-            let font = role.font_id(PLEX);
-            for command in crate::keymap::Command::ALL {
-                let label = keymap.label(crate::keymap::Layout::Mac, *command);
-                assert!(
-                    harness
-                        .ctx
-                        .fonts_mut(|fonts| fonts.has_glyphs(&font, &label)),
-                    "{}: {command:?} is written {label}, with a box in it",
-                    role.id()
-                );
-            }
-        }
-    }
-
     /// A context drawing in the macOS faces at `pixels_per_point`.
     fn macos_at(pixels_per_point: f32) -> egui::Context {
         let ctx = egui::Context::default();

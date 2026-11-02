@@ -4051,7 +4051,7 @@ skip = \"0.4.0\"  # a version to stop offering
             assert_eq!(Zone::from_name(zone.name()), Some(zone));
         }
         let system = jiff::tz::TimeZone::fixed(jiff::tz::offset(3));
-        let zones = crate::testing::zones();
+        let zones = crate::fixtures::zones();
         assert_eq!(Zone::System.resolve(&system, None), Some(system.clone()));
         assert_eq!(
             Zone::Utc.resolve(&system, None),
