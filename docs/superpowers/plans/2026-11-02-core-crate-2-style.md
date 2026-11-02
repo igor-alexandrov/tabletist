@@ -46,10 +46,11 @@ Where the run differs from the plan:
 - **`installed_font`'s test reads Plex Mono's bytes itself.** `the_font_the_settings_name_is_read_from_its_files` compared a read face with `super::super::fonts::PLEX_MONO`, the bundled bytes in `typography/fonts.rs`, which stay above. It now takes `include_bytes!` of the same file, as it already did for Plex Mono Medium; the path is the same depth from `src/font_files/`.
 - **`typography/fonts.rs` gates `Arc` and `FontData` by platform.** `TerminalFaces` was the one item there that named them on every platform; without it they are used only on macOS and Linux (and in tests), as `VariationCoords` already was, and Windows would warn of two unused imports, which CI's clippy denies. They take the same `cfg` as `VariationCoords`. Type-checked in a scratch crate (the real `fonts.rs` through `#[path]`, with stubs for what it names) with `cargo clippy --target … -- -D warnings`: clean for `x86_64-pc-windows-msvc`, `aarch64-apple-darwin` and Linux; the file without the `cfg` fails for Windows on exactly those two imports. Type-checked in an extract, not run: CI runs it on each.
 - **`tests/layers.rs` forbids `typography` and `style` to the lower layer.** Moving `typography` into `ABOVE` alone would not stop a lower module naming it, since the search looked only for `ui` and `app` (and `testing`, in tests). Both lists now hold `typography` and `style`. The check was shown to fail with one `type Probe = crate::typography::Kind;` put at the foot of `src/theme.rs`: it named the file and the path, and passed once it was taken out.
+- **`tests/layers.rs` reads a test module one platform compiles as tests** (from the review). Run 1's record says the search reads `desktop_font.rs`'s three test modules; it read only `name_tests`, the one under a bare `#[cfg(test)]`. `parse_tests` and `load_tests`, under `#[cfg(all(test, target_os = "linux"))]`, were read as code at the file's depth, so a `super::super::super::style` in one would have passed. `marks_tests` now takes `#[cfg(all(…, test, …))]` too, and a test of its own, `a_test_module_one_platform_compiles_is_read_as_tests`, holds it. The search's tests also gained cases of `typography` and `style` in code and in a test module (from the review).
 
 ## What did not change
 
-- **Every test still runs.** 3,712 `#[test]` functions under `src/` and `tests/` before and after: the eight moved ones under new paths.
+- **Every test still runs.** 3,712 `#[test]` functions under `src/` and `tests/` before, 3,713 after: the eight moved ones under new paths, and `tests/layers.rs`'s new one.
 - **The code moved as it was.** No function body changed, apart from the one test's bytes above; the font files keep their `cfg(target_os)` paths as they were, under their new directory. The only platform-specific change is the two imports above.
 - **`tests/keys.rs`** lists `src/typography/fonts.rs`, which did not move.
 
@@ -76,6 +77,7 @@ Where the run differs from the plan:
 ### Task 3: `tests/layers.rs`
 
 - [x] `typography` and `style` in `ABOVE`, `font_files` in `LOWER`; `typography` and `style` in what the lower layer may not name; `AGENTS.md`.
+- [x] A test module under `#[cfg(all(test, …))]` is read as tests (review).
 
 ### Task 4: CI's checks and the PR
 

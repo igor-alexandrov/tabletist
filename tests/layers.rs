@@ -140,8 +140,19 @@ fn opens_module(code: &str) -> bool {
         && name.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
-/// Where a file's test modules stand: each from `#[cfg(test)]` at the
-/// margin, then `mod … {` with nothing between them but other attributes,
+/// Whether `code`, a line trimmed at its end, is an attribute at the
+/// margin that compiles what follows only for tests: `#[cfg(test)]`, or
+/// `#[cfg(all(test, target_os = "linux"))]`.
+fn marks_tests(code: &str) -> bool {
+    code == "#[cfg(test)]"
+        || code
+            .strip_prefix("#[cfg(all(")
+            .and_then(|rest| rest.strip_suffix("))]"))
+            .is_some_and(|all| all.split(',').any(|item| item.trim() == "test"))
+}
+
+/// Where a file's test modules stand: each from a test's `#[cfg]` at the
+/// margin ([`marks_tests`]), then `mod … {` with nothing between them but other attributes,
 /// to its `}` at the margin. A test may drive the interface to see what the
 /// module does there; what follows a test module is code again.
 fn test_modules(text: &str) -> Vec<std::ops::Range<usize>> {
@@ -156,7 +167,7 @@ fn test_modules(text: &str) -> Vec<std::ops::Range<usize>> {
                 found.push(from..at + line.len());
                 start = None;
             }
-        } else if code == "#[cfg(test)]" {
+        } else if marks_tests(code) {
             marked = Some(at);
         } else if let Some(from) = marked {
             if opens_module(code) {
@@ -393,6 +404,23 @@ fn the_search_reads_every_test_module_one_module_down() {
         )
         .is_empty()
     );
+}
+
+#[test]
+fn a_test_module_one_platform_compiles_is_read_as_tests() {
+    // Two modules down, as any test module.
+    let text = "fn shown() {}\n\
+        #[cfg(all(test, target_os = \"linux\"))]\n\
+        mod load_tests {\n    use super::super::style::Icon;\n}\n";
+    assert!(!code(text).contains("style"), "{}", code(text));
+    let tests = tests(text);
+    assert_eq!(tests.len(), 1, "{tests:?}");
+    assert_eq!(paths_to(&tests[0], 2, &ABOVE_TESTS).len(), 1, "{tests:?}");
+    // A platform's own code is code.
+    assert!(!marks_tests(
+        "#[cfg(all(not(test), target_os = \"linux\"))]"
+    ));
+    assert!(!marks_tests("#[cfg(target_os = \"linux\")]"));
 }
 
 #[test]
