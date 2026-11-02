@@ -401,6 +401,42 @@ fn server(app: &App) -> agents::Server {
     }
 }
 
+/// How the sheet draws for `dialog`: the look, the palette and the
+/// language, with what its rows say beside them.
+fn sheet_skin<'a>(app: &'a App, dialog: &SettingsDialog) -> sheet::Skin<'a> {
+    sheet::Skin {
+        look: &app.look,
+        palette: &app.palette,
+        locale: app.locale,
+        system: app.system_zone.iana_name(),
+        zones: app.zones.as_deref().map_or(&[], crate::zones::Zones::names),
+        connections: &app.connections.connections,
+        fonts: sheet::DataFonts {
+            installed: &app.installed_fonts,
+            missing: app.data_font_missing(),
+        },
+        asked: dialog.asked.map(|option| (option, dialog.reveal)),
+    }
+}
+
+/// What the sheet reads of the app beside its skin: `interrupted` is
+/// `App::work_in_progress`, which the sheet asks only while the Updates
+/// card is held.
+fn sheet_asked<'a>(
+    app: &'a App,
+    interrupted: &'a dyn Fn() -> Vec<crate::app::Work>,
+) -> sheet::Asked<'a> {
+    sheet::Asked {
+        keymap: &app.keymap,
+        ignored: &app.settings_file.invalid,
+        shown: shown(app),
+        server: server(app),
+        status: update_status(app),
+        path: path_shown(app),
+        interrupted,
+    }
+}
+
 /// What a choice is called.
 #[derive(Clone, Copy)]
 pub(super) enum Said {
@@ -1038,7 +1074,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         }
         terminal::show(app, ctx, dialog, &mut actions);
     } else {
-        sheet::show(app, ctx, dialog, &mut actions);
+        let interrupted = || app.work_in_progress();
+        let asked = sheet_asked(app, &interrupted);
+        sheet::show(ctx, &sheet_skin(app, dialog), dialog, &asked, &mut actions);
     }
     app.actions.extend(actions);
 }

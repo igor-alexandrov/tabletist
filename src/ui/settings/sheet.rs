@@ -6,10 +6,10 @@
 
 use egui::{CornerRadius, Rect, Sense, Stroke, Ui, WidgetInfo, WidgetType, pos2, vec2};
 
-use crate::app::App;
+use crate::app::Work;
 use crate::format::group_digits;
 use crate::i18n::{Locale, gettext, ngettext};
-use crate::keymap::Command;
+use crate::keymap::{Command, Keymap, Layout};
 use crate::model::{Action, SettingsDialog, SettingsPane};
 use crate::settings::{
     Autocomplete, Commas, EditorKeys, EnvBar, FontSizes, Idle, Indent, InterfaceSize, KeywordCase,
@@ -24,7 +24,7 @@ use crate::ui::sql_editor;
 use crate::ui::value_tags::slot_colors;
 use crate::ui::widgets::{self, Segment};
 
-use super::{label, path_shown, said, sample_timestamp, small_print, zone_text};
+use super::{label, said, sample_timestamp, small_print, zone_text};
 
 /// The sheet at its widest and at its tallest, and what it leaves of the
 /// window at each side.
@@ -109,7 +109,8 @@ pub(super) struct DataFonts<'a> {
     /// listed them.
     pub(super) installed: &'a [String],
     /// The font the settings name, where it is no bundled face and no
-    /// installed one is read or on its way ([`App::data_font_missing`]):
+    /// installed one is read or on its way
+    /// ([`App::data_font_missing`](crate::app::App::data_font_missing)):
     /// the default is drawn in its place.
     pub(super) missing: Option<&'a str>,
 }
@@ -121,26 +122,35 @@ impl Skin<'_> {
     }
 }
 
+/// What the sheet reads of the app beside its skin and the dialog, built
+/// by `settings::sheet_asked`.
+pub(super) struct Asked<'a> {
+    /// The Keyboard pane's shortcuts, and what its footer counts changed.
+    pub(super) keymap: &'a Keymap,
+    /// The lines of the settings file that could not be read.
+    pub(super) ignored: &'a [usize],
+    /// The settings as the window shows them (`settings::shown`).
+    pub(super) shown: Settings,
+    /// The server, as the Agents pane says it; whether a connection window
+    /// is open, which Show History needs too.
+    pub(super) server: super::agents::Server,
+    /// Where updates stand, which the nav's dot and the Updates pane read.
+    pub(super) status: super::updates::Status<'a>,
+    /// The settings file's path as the window writes it.
+    pub(super) path: String,
+    /// What a restart would interrupt: asked only while the Updates card
+    /// is held.
+    pub(super) interrupted: &'a dyn Fn() -> Vec<Work>,
+}
+
 pub(super) fn show(
-    app: &App,
     ctx: &egui::Context,
+    skin: &Skin,
     dialog: &SettingsDialog,
+    asked: &Asked,
     actions: &mut Vec<Action>,
 ) {
     let resetting = dialog.resetting;
-    let skin = Skin {
-        look: &app.look,
-        palette: &app.palette,
-        locale: app.locale,
-        system: app.system_zone.iana_name(),
-        zones: app.zones.as_deref().map_or(&[], crate::zones::Zones::names),
-        connections: &app.connections.connections,
-        fonts: DataFonts {
-            installed: &app.installed_fonts,
-            missing: app.data_font_missing(),
-        },
-        asked: dialog.asked.map(|option| (option, dialog.reveal)),
-    };
     let screen = ctx.content_rect();
     let width = WIDTH.min(screen.width() - 2.0 * MARGIN).max(NAV + 320.0);
     // One height for every pane, whatever it holds: switching panes moves
@@ -174,8 +184,8 @@ pub(super) fn show(
             // laid out after it: its fill waits here, under its words, for
             // that height.
             let fill = ui.painter().add(egui::Shape::Noop);
-            let offered = super::updates::offered(super::update_status(app));
-            nav(ui, (room.min, offered), dialog.pane, &skin, actions);
+            let offered = super::updates::offered(asked.status);
+            nav(ui, (room.min, offered), dialog.pane, skin, actions);
             // No bottom of its own: its rows end where `content` is told to
             // end them. The sheet's bottom is the one the frame before left
             // it, and rows held to that would get their height back a
@@ -187,8 +197,8 @@ pub(super) fn show(
             // The footer's height before the content's: a window too short
             // for the sheet takes from the rows, which scroll, and the
             // footer stays.
-            let ignored = ignored_lines(ui, &app.settings_file.invalid, pane.width(), &skin);
-            let foot = footer_height(ui, ignored.as_ref(), &skin);
+            let ignored = ignored_lines(ui, asked.ignored, pane.width(), skin);
+            let foot = footer_height(ui, ignored.as_ref(), skin);
             let limit = room.top() + height - foot;
             let builder = egui::UiBuilder::new().id_salt("content").max_rect(pane);
             let mut pane = ui.new_child(builder.layout(egui::Layout::top_down(egui::Align::Min)));
@@ -201,18 +211,18 @@ pub(super) fn show(
                     (SettingsPane::General.sections(), Preview::None, None),
                     // As the window shows them: what the look has where the
                     // settings do not say (the grouping of numbers).
-                    &super::shown(app),
+                    &asked.shown,
                     limit,
-                    &skin,
+                    skin,
                     actions,
                 ),
                 SettingsPane::Appearance => content(
                     &mut pane,
                     ("Appearance", Some(APPEARANCE)),
                     (SettingsPane::Appearance.sections(), Preview::Grid, None),
-                    &super::shown(app),
+                    &asked.shown,
                     limit,
-                    &skin,
+                    skin,
                     actions,
                 ),
                 SettingsPane::Editor => content(
@@ -231,40 +241,40 @@ pub(super) fn show(
                             OptionId::HistoryKeep,
                             After {
                                 text: &show_history,
-                                disabled: app.agents_window().is_none().then_some(&*no_window),
+                                disabled: (!asked.server.window).then_some(&*no_window),
                                 action: Action::ShowHistoryFromSettings,
                             },
                         )),
                     ),
-                    &super::shown(app),
+                    &asked.shown,
                     limit,
-                    &skin,
+                    skin,
                     actions,
                 ),
                 SettingsPane::Keyboard => super::keyboard_sheet::content(
                     &mut pane,
-                    &app.keymap,
+                    asked.keymap,
                     &dialog.keyboard,
                     limit,
-                    &skin,
+                    skin,
                     actions,
                 ),
                 SettingsPane::Agents => super::agents::content(
                     &mut pane,
-                    &super::shown(app),
-                    super::server(app),
+                    &asked.shown,
+                    asked.server,
                     dialog.agent,
                     limit,
-                    &skin,
+                    skin,
                     actions,
                 ),
                 SettingsPane::Updates => super::updates::content(
                     &mut pane,
-                    super::update_status(app),
-                    &super::shown(app),
-                    || app.work_in_progress(),
+                    asked.status,
+                    &asked.shown,
+                    asked.interrupted,
                     limit,
-                    &skin,
+                    skin,
                     actions,
                 ),
             }
@@ -285,8 +295,7 @@ pub(super) fn show(
                 pos2(room.left() + NAV, bottom - foot),
                 pos2(room.right(), bottom),
             );
-            let asking = resetting.then_some(dialog.pane);
-            footer(ui, under, app, asking, ignored.as_ref(), &skin, actions);
+            footer(ui, under, dialog, asked, ignored.as_ref(), skin, actions);
             let side = Rect::from_min_max(room.min, pos2(room.left() + NAV, bottom));
             // The sheet's own corners, inside its border.
             let radius = skin.look.dialog_radius.saturating_sub(1);
@@ -1808,19 +1817,19 @@ fn reset_question(pane: SettingsPane) -> &'static str {
 }
 
 /// The footer, in `rect` under the content: where the settings file is
-/// and, at the right, what can be done with it. While the pane in
-/// `asking` asks it, the question Reset to defaults asks stands where
-/// those links were.
+/// and, at the right, what can be done with it. While the pane shown asks
+/// it, the question Reset to defaults asks stands where those links were.
 fn footer(
     ui: &Ui,
     rect: Rect,
-    app: &App,
-    asking: Option<SettingsPane>,
+    dialog: &SettingsDialog,
+    answers: &Asked,
     ignored: Option<&Laid>,
     skin: &Skin,
     actions: &mut Vec<Action>,
 ) {
     let Skin { look, palette, .. } = *skin;
+    let asking = dialog.resetting.then_some(dialog.pane);
     let role = TextRole::Secondary;
     // The sheet's own corner, inside its border.
     let corners = CornerRadius {
@@ -1850,12 +1859,16 @@ fn footer(
 
     // The history's question, where Settings › Editor asks one, and the
     // pane shown.
-    let (question, shown_pane) = match &app.dialog {
-        Some(crate::model::Dialog::Settings(dialog)) => (dialog.history_question, dialog.pane),
-        _ => (None, SettingsPane::General),
-    };
+    let (question, shown_pane) = (dialog.history_question, dialog.pane);
     if shown_pane == SettingsPane::Keyboard {
-        keyboard_footer(ui, (left, right, middle), app, skin, actions);
+        keyboard_footer(
+            ui,
+            (left, right, middle),
+            dialog,
+            answers.keymap,
+            skin,
+            actions,
+        );
         return;
     }
     // Where else a check is asked for: the menu bar's item, on macOS.
@@ -1971,10 +1984,10 @@ fn footer(
     }
     write(ui, left, middle, &stored);
     let at = left + stored.width() + WORD_GAP;
-    let path = path_shown(app);
+    let path = answers.path.as_str();
     let mono = TextRole::MonoSecondary;
     let fits = |text: &str| at + mono.width(ui.ctx(), look.faces, text) <= room;
-    if let Some(cut) = cut_start(&path, fits) {
+    if let Some(cut) = cut_start(path, fits) {
         let width = widgets::paint_text(
             ui,
             at,
@@ -1983,27 +1996,26 @@ fn footer(
         );
         // A screen reader is told all of it.
         let place = Rect::from_center_size(pos2(at + width / 2.0, middle), vec2(width, LINK));
-        widgets::announce(ui, place, &path);
+        widgets::announce(ui, place, path);
     }
 }
 
 /// The Keyboard pane's footer: where the editor's vim keys are set, with a
 /// link there, and Export cheat sheet; while Reset all… asks, its question
-/// and its answers. `(left, right, middle)` is the line it has.
+/// and its answers, which count what `keymap` changed. `(left, right,
+/// middle)` is the line it has.
 fn keyboard_footer(
     ui: &Ui,
     (left, right, middle): (f32, f32, f32),
-    app: &App,
+    dialog: &SettingsDialog,
+    keymap: &Keymap,
     skin: &Skin,
     actions: &mut Vec<Action>,
 ) {
     let Skin { look, palette, .. } = *skin;
     let role = TextRole::Secondary;
-    let resetting = match &app.dialog {
-        Some(crate::model::Dialog::Settings(dialog)) => dialog.keyboard.resetting,
-        _ => false,
-    };
-    let changed = super::keyboard::changed_count(&app.keymap, app.layout());
+    let resetting = dialog.keyboard.resetting;
+    let changed = super::keyboard::changed_count(keymap, Layout::of(look));
     let parts: Vec<(String, Option<(egui::Color32, Action)>)> = if resetting {
         let lines = u32::try_from(changed).unwrap_or(u32::MAX);
         let asks = ngettext(
