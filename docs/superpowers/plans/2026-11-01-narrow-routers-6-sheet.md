@@ -30,7 +30,7 @@ Where the survey differs from the plan:
 ## What did not change
 
 - **The order of actions.** Every part pushes into the window's `actions`, a local of `settings::show`, where it pushed, in the order it is drawn. `settings::show` extends `app.actions` after the sheet as before.
-- **What is asked, and when, but for three answers built once a frame:** `update_status` was built twice on the Updates pane (the nav's dot, then the pane) and is built once, so `now_secs` is read once a frame where it was read twice; the tests stop the clock. `server` and `path_shown` are built in every frame where the Agents pane and the footer's path asked them. None of the three reads egui's state, so the frame is the same.
+- **What is asked, and when, but for four answers built once a frame:** `update_status` was built twice on the Updates pane (the nav's dot, then the pane) and is built once, so `now_secs` is read once a frame where it was read twice; the tests stop the clock. `server` and `path_shown` are built in every frame where the Agents pane and the footer's path asked them, and `shown` on the Keyboard pane too, which did not read it. `path_shown` builds a `String` and `shown` clones the settings; none of the four touches the disk or reads egui's state, so the frame is the same.
 - **The focus order.** Nothing that is drawn moved.
 
 ## What this run teaches
@@ -53,7 +53,7 @@ Where the survey differs from the plan:
 - [x] `cargo clippy --locked --workspace --all-targets -- -D warnings`
 - [x] `cargo test --locked --workspace --all-targets`
 - [x] `RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --no-deps`
-- [ ] Push and open the PR.
+- [x] Push and open the PR.
 
 The net is the existing tests, which drive the whole `App` in the looks that draw the sheet: its footer's in `src/ui/mod.rs` (`the_settings_sheet_says_where_the_file_is_and_what_can_be_done_with_it`, `the_settings_sheet_counts_the_lines_the_app_ignores`, `the_settings_sheet_writes_the_files_path_from_the_home_directory`), the Keyboard pane's footer in `src/ui/keyboard_tests.rs` (`the_footer_links_to_the_vim_keys_and_exports_the_cheat_sheet`, `a_rows_reset_takes_its_lines_and_reset_all_every_table`), each pane's Reset to defaults (`theme_settings_tests.rs`, `appearance_settings_tests.rs`, `text_settings_tests.rs`, `editor_settings_tests.rs`), the history's questions in `src/ui/history_tests.rs` (`clear_history_clears_this_connection_and_settings_clears_every_one`, `while_clear_history_asks_only_its_answers_are_read`), the Updates pane's and its Work in progress in `src/ui/update_settings_tests.rs`, the Agents pane's in `agent_settings_tests.rs`, and the sheet's shots in `src/shots.rs`. No test changed: no signature a test calls moved.
 

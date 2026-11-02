@@ -143,6 +143,10 @@ pub(super) struct Asked<'a> {
     pub(super) interrupted: &'a dyn Fn() -> Vec<Work>,
 }
 
+/// The sheet over the dimmed window, drawn as `skin` has it: the nav, the
+/// pane `dialog` shows with what the app answered in `asked`, and the
+/// footer. What its controls, Escape and a click outside it do is pushed
+/// into `actions`.
 pub(super) fn show(
     ctx: &egui::Context,
     skin: &Skin,

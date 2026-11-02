@@ -1106,6 +1106,9 @@ pub(crate) fn editor_preview_field() -> egui::Id {
     editor_preview::field_id()
 }
 
+/// The Settings window, while it is the dialog: the keys of a row being
+/// recorded first, then the terminal look's screen with its keys or the
+/// sheet. What they push reaches `app.actions` after them, in that order.
 pub fn show(app: &mut App, ctx: &egui::Context) {
     let Some(Dialog::Settings(dialog)) = &app.dialog else {
         return;
