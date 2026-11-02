@@ -86,7 +86,7 @@ impl Ddl {
     pub fn source(&self) -> Source {
         match self.driver {
             Driver::Postgres => Source::Catalog,
-            Driver::MySql | Driver::Sqlite => Source::Stored,
+            Driver::MySql | Driver::Sqlite | Driver::BigQuery => Source::Stored,
         }
     }
 
@@ -119,7 +119,7 @@ impl Ddl {
         }
         let sections = match self.driver {
             Driver::Postgres | Driver::MySql => true,
-            Driver::Sqlite => false,
+            Driver::Sqlite | Driver::BigQuery => false,
         };
         let mut written = false;
         for part in &self.parts {

@@ -24,6 +24,14 @@ pub(super) fn book_covers(driver: Driver) -> Ddl {
         statements: statements.iter().map(|s| s.to_string()).collect(),
     };
     match driver {
+        // Never read: BigQuery's DDL is Unsupported. The empty form keeps
+        // the view's tests open to it.
+        Driver::BigQuery => Ddl {
+            driver,
+            server: "BigQuery".into(),
+            heading: None,
+            parts: Vec::new(),
+        },
         Driver::Postgres => Ddl {
             driver,
             server: "PostgreSQL 17.2".into(),

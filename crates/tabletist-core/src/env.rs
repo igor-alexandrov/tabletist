@@ -46,6 +46,8 @@ impl Environment {
         let local = match driver {
             Driver::Sqlite => true,
             Driver::Postgres | Driver::MySql => !tunnelled && crate::model::is_local_host(host),
+            // BigQuery is Google's cloud: never this machine.
+            Driver::BigQuery => false,
         };
         if local { Self::Local } else { Self::None }
     }

@@ -112,7 +112,7 @@ fn shown(
             .and_then(|path| path.file_name())
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default(),
-        Driver::Postgres | Driver::MySql => info.database.clone(),
+        Driver::Postgres | Driver::MySql | Driver::BigQuery => info.database.clone(),
     };
     let objects = schema
         .and_then(|schema| workspace.tree.nodes.get(&schema))
@@ -618,7 +618,8 @@ fn lists(
     } else {
         match shown.driver {
             Driver::Postgres | Driver::MySql => gettext(locale, "Largest tables").into_owned(),
-            Driver::Sqlite => gettext(locale, "Tables").into_owned(),
+            // BigQuery's list comes without row estimates.
+            Driver::Sqlite | Driver::BigQuery => gettext(locale, "Tables").into_owned(),
         }
     };
     let note = if first_visit {
@@ -626,7 +627,7 @@ fn lists(
             Driver::Postgres | Driver::MySql => {
                 skin.say("From table statistics. Nothing is queried.")
             }
-            Driver::Sqlite => skin.say("Nothing is queried."),
+            Driver::Sqlite | Driver::BigQuery => skin.say("Nothing is queried."),
         })
     } else {
         None

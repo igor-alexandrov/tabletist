@@ -538,6 +538,8 @@ fn connecting(
     let spec = &workspace.spec;
     let (reach, target) = match spec.driver {
         Driver::Sqlite => ("Open", spec.summary()),
+        // The project is the whole target.
+        Driver::BigQuery => ("Connect to", spec.summary()),
         Driver::Postgres | Driver::MySql => {
             let target = format!("{}:{}", spec.host, spec.port);
             let target = match &spec.ssh {
@@ -645,6 +647,10 @@ fn failure_title(
             Driver::Postgres | Driver::MySql => (
                 Icon::WifiOff,
                 format!("{} {}:{}", say("Can't reach"), spec.host, spec.port),
+            ),
+            Driver::BigQuery => (
+                Icon::WifiOff,
+                format!("{} {}", say("Can't reach"), spec.summary()),
             ),
         },
         Error::Tls(_) => (Icon::ShieldAlert, say("TLS or certificate problem")),
@@ -852,6 +858,7 @@ fn is_remote(workspace: &crate::model::Workspace) -> bool {
     match workspace.driver {
         Driver::Sqlite => false,
         Driver::Postgres | Driver::MySql => !crate::model::is_local_host(&workspace.spec.host),
+        Driver::BigQuery => true,
     }
 }
 
@@ -872,7 +879,8 @@ pub(super) fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
         read_only: workspace.access == tabletist_db::Access::ReadOnly,
         database: match workspace.driver {
             Driver::Sqlite => String::new(),
-            Driver::Postgres | Driver::MySql => spec.database.clone(),
+            // The project.
+            Driver::Postgres | Driver::MySql | Driver::BigQuery => spec.database.clone(),
         },
         databases: workspace.databases.value.clone().unwrap_or_default(),
         tls,
@@ -938,6 +946,12 @@ fn card_rows(
                 .map(|path| path.display().to_string())
                 .unwrap_or_default();
             rows.push((say("File"), path));
+        }
+        Driver::BigQuery => {
+            rows.push((say("Project"), display_safe(&spec.database).into_owned()));
+            if let Some(key) = &spec.bigquery_key {
+                rows.push((say("Key file"), key.display().to_string()));
+            }
         }
         Driver::Postgres | Driver::MySql => {
             rows.push((say("Host"), format!("{}:{}", spec.host, spec.port)));

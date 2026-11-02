@@ -831,6 +831,9 @@ async fn every_engine_reads_book_covers() {
                 ),
                 None => None,
             },
+            // BigQuery has no DDL to read (the adapter answers
+            // Unsupported), and no fixture to run it against.
+            Driver::BigQuery => None,
             Driver::MySql => match mysql::bookshop().await {
                 Some((connection, _, _)) => Some(
                     connection

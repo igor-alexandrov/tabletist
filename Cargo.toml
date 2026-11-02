@@ -19,7 +19,7 @@ unwrap_used = "warn"
 [package]
 name = "tabletist"
 version.workspace = true
-description = "A native database client for PostgreSQL, MySQL and SQLite"
+description = "A native database client for PostgreSQL, MySQL, SQLite and BigQuery"
 license = "MIT"
 repository = "https://github.com/igor-alexandrov/tabletist"
 readme = "README.md"

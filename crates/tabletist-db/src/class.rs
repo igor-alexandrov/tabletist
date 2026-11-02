@@ -71,6 +71,25 @@ pub fn column_class(dialect: Dialect, type_name: &str) -> ColumnClass {
         Dialect::Sqlite => sqlite(&name),
         Dialect::Postgres => postgres(&name),
         Dialect::MySql => mysql(&name),
+        Dialect::BigQuery => bigquery(&name),
+    }
+}
+
+/// BigQuery's types, as its catalog and the API name them (`INT64`,
+/// `STRING(255)`, `ARRAY<...>`). A parameterised or nested type whose
+/// arguments are not whole numbers keeps its class but no limits.
+fn bigquery(name: &str) -> ColumnClass {
+    match base(name) {
+        "int64" | "integer" | "smallint" | "tinyint" | "bigint" => signed(8),
+        "numeric" | "decimal" | "bignumeric" | "bigdecimal" => decimal(name),
+        "float64" | "float" | "double" => ColumnClass::Float,
+        "bool" | "boolean" => ColumnClass::Boolean,
+        "json" => ColumnClass::Json,
+        "string" | "char" | "character" | "varchar" => ColumnClass::Text {
+            max_chars: length(name),
+        },
+        "bytes" => ColumnClass::Binary,
+        _ => ColumnClass::Other,
     }
 }
 
@@ -297,6 +316,40 @@ mod tests {
         ] {
             assert_eq!(temporal(name), kind, "{name}");
         }
+    }
+
+    #[test]
+    fn bigquery_types_have_classes() {
+        for (name, class) in [
+            ("INT64", int(i128::from(i64::MIN), i128::from(i64::MAX))),
+            ("integer", int(i128::from(i64::MIN), i128::from(i64::MAX))),
+            (
+                "NUMERIC(10,2)",
+                Decimal {
+                    precision: Some(10),
+                    scale: Some(2),
+                },
+            ),
+            ("BIGNUMERIC", Decimal {
+                precision: None,
+                scale: None,
+            }),
+            ("FLOAT64", ColumnClass::Float),
+            ("BOOL", ColumnClass::Boolean),
+            ("JSON", ColumnClass::Json),
+            ("STRING(255)", ColumnClass::Text { max_chars: Some(255) }),
+            ("STRING", ColumnClass::Text { max_chars: None }),
+            ("BYTES", ColumnClass::Binary),
+            ("ARRAY<STRING>", ColumnClass::Other),
+            ("STRUCT<a INT64>", ColumnClass::Other),
+            ("GEOGRAPHY", ColumnClass::Other),
+        ] {
+            assert_eq!(column_class(Dialect::BigQuery, name), class, "{name}");
+        }
+        assert_eq!(crate::temporal("TIMESTAMP"), Some(crate::Temporal::Timestamp));
+        assert_eq!(crate::temporal("DATETIME"), Some(crate::Temporal::Timestamp));
+        assert_eq!(crate::temporal("TIME"), Some(crate::Temporal::Time));
+        assert_eq!(crate::temporal("DATE"), Some(crate::Temporal::Date));
     }
 
     #[test]

@@ -823,7 +823,7 @@ impl Hidden {
                     self.check_function(name)?;
                 }
             }
-            Dialect::MySql | Dialect::Sqlite => {}
+            Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery => {}
         }
         masked::check(read, &self.masks_known())
     }
@@ -1161,6 +1161,8 @@ fn system_catalog(dialect: Dialect, schema: Option<&str>, name: &str) -> bool {
                 || (schema.is_none() && fold(name).starts_with("pg_"))
         }
         Dialect::MySql => in_schema(&["information_schema", "mysql", "performance_schema", "sys"]),
+        // INFORMATION_SCHEMA is every dataset's own.
+        Dialect::BigQuery => schema.is_some_and(|schema| same(schema, "information_schema")),
         // SQLite's own tables are `sqlite_` ones, in any schema, and
         // `dbstat` describes every table's pages.
         Dialect::Sqlite => fold(name).starts_with("sqlite_") || same(name, "dbstat"),

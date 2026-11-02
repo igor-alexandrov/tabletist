@@ -90,6 +90,15 @@ pub fn kind(dialect: Dialect, type_name: &str) -> Option<Kind> {
             "time" => Some(Kind::Time { offset: false }),
             _ => None,
         },
+        // BigQuery's own names, as the API gives them (any case; the
+        // caller lowered none).
+        Dialect::BigQuery => match name.to_ascii_lowercase().as_str() {
+            "date" => Some(Kind::Date),
+            "datetime" => Some(Kind::Timestamp),
+            "timestamp" => Some(Kind::Zoned),
+            "time" => Some(Kind::Time { offset: false }),
+            _ => None,
+        },
         // SQLite has no such types: the declared name says what the
         // column is meant to keep.
         Dialect::Sqlite => {
@@ -125,6 +134,8 @@ fn kept_digits(dialect: Dialect, type_name: &str) -> u8 {
         (Dialect::Postgres, None) => 6,
         (Dialect::MySql, None) => 0,
         (Dialect::Sqlite, _) => 9,
+        // BigQuery's moments keep microseconds; its types state none.
+        (Dialect::BigQuery, _) => 6,
     }
 }
 
@@ -264,7 +275,7 @@ impl Column {
         let kind = kind(dialect, type_name)?;
         let stored = match dialect {
             Dialect::Sqlite => Stored::of(values),
-            Dialect::Postgres | Dialect::MySql => Stored::Fresh,
+            Dialect::Postgres | Dialect::MySql | Dialect::BigQuery => Stored::Fresh,
         };
         // A number such as `20260115` is a day's, and no time's.
         let stored = match (stored, kind) {
@@ -558,7 +569,7 @@ fn written_time(time: Time, digits: u8) -> String {
 fn eras(dialect: Dialect) -> bool {
     match dialect {
         Dialect::Postgres => true,
-        Dialect::MySql | Dialect::Sqlite => false,
+        Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery => false,
     }
 }
 
@@ -662,6 +673,7 @@ fn special(text: &str, column: &Column) -> Result<Option<Moment>, Refusal> {
                 Kind::Date | Kind::Timestamp | Kind::Zoned => Ok(None),
             }
         }
+        Dialect::BigQuery => Ok(None),
         Dialect::Sqlite => {
             if let Some(end) = end_of_day(text, column) {
                 return Ok(Some(end));
@@ -1305,7 +1317,8 @@ fn within(column: &Column, at: DateTime, instant: Option<Timestamp>) -> Result<(
             (instant < first || instant > last).then_some(Range::MySqlTimestamp)
         }
         // SQLite's dates run from 0000 to 9999, and the years read do.
-        (Dialect::Sqlite, _) | (Dialect::Postgres | Dialect::MySql, Kind::Time { .. }) => None,
+        (Dialect::Sqlite | Dialect::BigQuery, _)
+        | (Dialect::Postgres | Dialect::MySql, Kind::Time { .. }) => None,
     };
     refused.map_or(Ok(()), |range| Err(Refusal::Range(range)))
 }
@@ -1371,7 +1384,7 @@ fn resolve(parts: Parts, column: &Column, clock: &Clock) -> Result<Reading, Refu
             }
             let postgres = match column.dialect {
                 Dialect::Postgres => true,
-                Dialect::MySql | Dialect::Sqlite => false,
+                Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery => false,
             };
             if let Some(offset) = parts.offset
                 && postgres
@@ -1387,11 +1400,13 @@ fn resolve(parts: Parts, column: &Column, clock: &Clock) -> Result<Reading, Refu
                 // MySQL keeps as a span of a day.
                 reading.moment = match column.dialect {
                     Dialect::MySql => Moment::Span("24:00:00".to_owned()),
-                    Dialect::Postgres | Dialect::Sqlite => Moment::EndOfDay,
+                    Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => Moment::EndOfDay,
                 };
                 reading.literal = match column.dialect {
                     Dialect::MySql => "24:00:00".to_owned(),
-                    Dialect::Postgres | Dialect::Sqlite => day_end(column.stored),
+                    Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => {
+                        day_end(column.stored)
+                    }
                 };
             } else {
                 let time = at.time();
@@ -1420,7 +1435,7 @@ fn resolve(parts: Parts, column: &Column, clock: &Clock) -> Result<Reading, Refu
             // SQLite keeps the text it is given, an offset too.
             let keeps_any = match column.dialect {
                 Dialect::Sqlite => true,
-                Dialect::Postgres | Dialect::MySql => false,
+                Dialect::Postgres | Dialect::MySql | Dialect::BigQuery => false,
             };
             if parts.offset.is_some() && !keeps_any {
                 return Err(Refusal::NoZone);
@@ -1598,7 +1613,7 @@ fn zoned(
     // A MySQL literal has no offset to choose one of the two moments by:
     // the server takes the one it takes, and nothing is offered.
     reading.fold = match column.dialect {
-        Dialect::Postgres | Dialect::Sqlite => fold(zone, at),
+        Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => fold(zone, at),
         Dialect::MySql => None,
     };
     let (day, bc) = written_date(at.date(), column.dialect);
@@ -1607,7 +1622,7 @@ fn zoned(
         // The server reads a MySQL value in the session's zone, which is
         // this one: it is sent as that zone's clock writes it.
         Dialect::MySql => format!("{day} {time}"),
-        Dialect::Postgres | Dialect::Sqlite => {
+        Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => {
             era((format!("{day} {time}{}", written_offset(offset)), bc))
         }
     };
@@ -1789,7 +1804,7 @@ fn folded(at: DateTime, offset: Option<Offset>, column: &Column) -> Option<Offse
     let offset = offset?;
     let two = column.zone.as_ref().and_then(|zone| fold(zone, at))?;
     let sent = match column.dialect {
-        Dialect::Postgres | Dialect::Sqlite => true,
+        Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => true,
         Dialect::MySql => false,
     };
     (sent && (two.earlier.0 == offset || two.later.0 == offset)).then_some(offset)

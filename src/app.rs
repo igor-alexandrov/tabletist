@@ -3080,7 +3080,8 @@ impl App {
                     let old_default = form.driver.default_port().to_string();
                     form.driver = driver;
                     match driver {
-                        Driver::Sqlite => {}
+                        // No port or password of its own to default.
+                        Driver::Sqlite | Driver::BigQuery => {}
                         Driver::Postgres | Driver::MySql => {
                             if form.port.trim().is_empty() || form.port.trim() == old_default {
                                 form.port = driver.default_port().to_string();
@@ -6090,7 +6091,7 @@ impl App {
         };
         let asks = match workspace.driver {
             Driver::MySql => workspace.session_zone.needs_load(),
-            Driver::Postgres | Driver::Sqlite => false,
+            Driver::Postgres | Driver::Sqlite | Driver::BigQuery => false,
         };
         if asks {
             let session = workspace.session;
@@ -6117,7 +6118,7 @@ impl App {
                     self.backend
                         .send(Command::ListDatabases { session, request });
                 }
-                Driver::MySql | Driver::Sqlite => {}
+                Driver::MySql | Driver::Sqlite | Driver::BigQuery => {}
             }
         }
         self.ask_server_version(tab);
@@ -7325,9 +7326,9 @@ impl App {
                             (named.name.clone(), true)
                         }
                         tabletist_db::Dialect::Postgres => (named.name.to_lowercase(), true),
-                        tabletist_db::Dialect::MySql | tabletist_db::Dialect::Sqlite => {
-                            (named.name.clone(), false)
-                        }
+                        tabletist_db::Dialect::MySql
+                        | tabletist_db::Dialect::Sqlite
+                        | tabletist_db::Dialect::BigQuery => (named.name.clone(), false),
                     };
                     let object = crate::completion::resolve(schema, &name, &catalog)
                         .filter(|object| !exact || object.name == name)?;
@@ -8578,6 +8579,17 @@ fn apply_url(form: &mut ConnectionForm) -> Result<(), String> {
             form.driver = Driver::Sqlite;
             form.sqlite_path = path;
         }
+        Driver::BigQuery => {
+            if form.name.trim().is_empty() {
+                form.name = spec.database.clone();
+            }
+            form.driver = Driver::BigQuery;
+            form.database = spec.database;
+            form.bigquery_key = spec
+                .bigquery_key
+                .map(|path| path.display().to_string())
+                .unwrap_or_default();
+        }
         Driver::Postgres | Driver::MySql => {
             if form.name.trim().is_empty() {
                 form.name = spec.summary();
@@ -8954,7 +8966,7 @@ fn logged_statement(driver: Driver, sql: &str, params: Option<&str>) -> String {
                 let place = at + 1;
                 let named = match driver {
                     Driver::Postgres => format!("${place}"),
-                    Driver::Sqlite => format!("?{place}"),
+                    Driver::Sqlite | Driver::BigQuery => format!("?{place}"),
                     Driver::MySql => format!("? #{place}"),
                 };
                 text.push_str(&format!("-- {named} = {value}\n"));

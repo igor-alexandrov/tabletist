@@ -205,7 +205,9 @@ pub fn model(
     };
     let postgres = match column.dialect {
         tabletist_db::Dialect::Postgres => true,
-        tabletist_db::Dialect::MySql | tabletist_db::Dialect::Sqlite => false,
+        tabletist_db::Dialect::MySql
+        | tabletist_db::Dialect::Sqlite
+        | tabletist_db::Dialect::BigQuery => false,
     };
     Model {
         typed: text.to_owned(),

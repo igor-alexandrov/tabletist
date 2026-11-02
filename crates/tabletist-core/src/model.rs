@@ -2026,6 +2026,9 @@ pub struct ConnectionForm {
     pub focus_name: bool,
     pub driver: Driver,
     pub sqlite_path: String,
+    /// BigQuery's service-account key file (JSON), as typed; empty takes
+    /// Google Cloud's application default credentials.
+    pub bigquery_key: String,
     pub host: String,
     /// As typed; checked on save.
     pub port: String,
@@ -2157,6 +2160,7 @@ impl Default for ConnectionForm {
             focus_name: true,
             driver: Driver::Sqlite,
             sqlite_path: String::new(),
+            bigquery_key: String::new(),
             host: "localhost".into(),
             port: String::new(),
             user: String::new(),
@@ -2272,7 +2276,8 @@ impl ConnectionForm {
     /// `require` with a CA file does, like libpq).
     pub fn password_can_be_intercepted(&self) -> bool {
         let unchecked = match self.driver {
-            Driver::Sqlite => false,
+            // No password crosses: the API is HTTPS to Google.
+            Driver::Sqlite | Driver::BigQuery => false,
             Driver::Postgres => match self.tls {
                 TlsMode::Disable | TlsMode::Prefer => true,
                 TlsMode::Require => self.ca_file.trim().is_empty(),
@@ -2347,6 +2352,11 @@ impl ConnectionForm {
                 .as_ref()
                 .map(|path| path.display().to_string())
                 .unwrap_or_default(),
+            bigquery_key: spec
+                .bigquery_key
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
             host: spec.host.clone(),
             port: if spec.port == 0 {
                 String::new()
@@ -2413,6 +2423,17 @@ impl ConnectionForm {
     /// What to connect to, or why the fields do not describe a connection.
     pub fn to_spec(&self) -> Result<ConnectSpec, String> {
         match self.driver {
+            Driver::BigQuery => {
+                let project = self.database.trim();
+                if project.is_empty() {
+                    return Err("Enter a GCP project.".into());
+                }
+                let key = self.bigquery_key.trim();
+                Ok(ConnectSpec::bigquery(
+                    project,
+                    (!key.is_empty()).then(|| key.into()),
+                ))
+            }
             Driver::Sqlite => {
                 let path = self.sqlite_path.trim();
                 if path.is_empty() {
@@ -2476,6 +2497,7 @@ impl ConnectionForm {
                     user: user.to_owned(),
                     database: self.database.trim().to_owned(),
                     sqlite_path: None,
+                    bigquery_key: None,
                     tls: self.tls,
                     ca_file: (!ca_file.is_empty()).then(|| ca_file.into()),
                     ssh,
@@ -2561,7 +2583,7 @@ impl ConnectionForm {
         }
         let spec = self.to_spec()?;
         let password = match spec.driver {
-            Driver::Sqlite => PasswordMode::None,
+            Driver::Sqlite | Driver::BigQuery => PasswordMode::None,
             // Nothing typed and nothing saved (or the saved one forgotten):
             // a server that needs no password (trust or peer
             // authentication).
@@ -3924,6 +3946,8 @@ pub fn is_system_schema(driver: Driver, name: &str) -> bool {
             "mysql" | "sys" | "performance_schema" | "information_schema"
         ),
         Driver::Sqlite => false,
+        // A dataset's INFORMATION_SCHEMA is its own views'.
+        Driver::BigQuery => name.eq_ignore_ascii_case("information_schema"),
     }
 }
 
@@ -6336,6 +6360,8 @@ impl Workspace {
             Driver::Postgres => "public",
             Driver::MySql => self.spec.database.as_str(),
             Driver::Sqlite => "main",
+            // BigQuery names resolve dataset-less in no dataset.
+            Driver::BigQuery => return None,
         };
         let schemas = self.tree.schemas.value.as_ref()?;
         let found = schemas.iter().find(|schema| *schema == name);

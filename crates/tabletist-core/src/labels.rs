@@ -360,7 +360,8 @@ pub struct Place {
 /// connection is its one file.
 pub fn database_key(driver: Driver, database: &str) -> String {
     match driver {
-        Driver::Postgres => database.to_owned(),
+        // A project too: a tab's tables are of one.
+        Driver::Postgres | Driver::BigQuery => database.to_owned(),
         Driver::MySql | Driver::Sqlite => String::new(),
     }
 }

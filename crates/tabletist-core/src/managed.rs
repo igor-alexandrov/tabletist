@@ -101,7 +101,8 @@ impl Match {
     /// not followed. A key the driver has no use for does not match.
     pub fn matches(&self, spec: &ConnectSpec, home: Option<&Path>) -> bool {
         let server = match spec.driver {
-            Driver::Postgres | Driver::MySql => true,
+            // BigQuery's `database` (its project) is a rule's to match.
+            Driver::Postgres | Driver::MySql | Driver::BigQuery => true,
             Driver::Sqlite => false,
         };
         if let Some(driver) = &self.driver
@@ -154,6 +155,7 @@ fn driver_key(driver: Driver) -> &'static str {
         Driver::Postgres => "postgres",
         Driver::MySql => "mysql",
         Driver::Sqlite => "sqlite",
+        Driver::BigQuery => "bigquery",
     }
 }
 

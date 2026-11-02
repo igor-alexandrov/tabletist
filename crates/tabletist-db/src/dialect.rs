@@ -12,6 +12,8 @@ pub enum Dialect {
     Postgres,
     MySql,
     Sqlite,
+    /// GoogleSQL (BigQuery).
+    BigQuery,
 }
 
 /// SQL text with its bound parameters.
@@ -259,6 +261,11 @@ impl Dialect {
     pub fn quote_ident(self, ident: &str) -> String {
         match self {
             Self::MySql => format!("`{}`", ident.replace('`', "``")),
+            // GoogleSQL quotes names in backticks too, but a backtick is
+            // escaped with a backslash there, and a backslash with one.
+            Self::BigQuery => {
+                format!("`{}`", ident.replace('\\', "\\\\").replace('`', "\\`"))
+            }
             Self::Postgres | Self::Sqlite => format!("\"{}\"", ident.replace('"', "\"\"")),
         }
     }
@@ -271,7 +278,9 @@ impl Dialect {
     pub fn ident(self, name: &str) -> std::borrow::Cow<'_, str> {
         let word = |byte: u8| match self {
             Self::Postgres => byte.is_ascii_lowercase() || byte == b'_',
-            Self::MySql | Self::Sqlite => byte.is_ascii_alphabetic() || byte == b'_',
+            Self::MySql | Self::Sqlite | Self::BigQuery => {
+                byte.is_ascii_alphabetic() || byte == b'_'
+            }
         };
         let mut bytes = name.bytes();
         let plain =
@@ -299,6 +308,7 @@ impl Dialect {
     fn as_text(self, column: &str) -> String {
         match self {
             Self::MySql => format!("CAST({column} AS CHAR)"),
+            Self::BigQuery => format!("CAST({column} AS STRING)"),
             Self::Postgres | Self::Sqlite => format!("CAST({column} AS TEXT)"),
         }
     }
@@ -306,15 +316,16 @@ impl Dialect {
     fn like(self) -> &'static str {
         match self {
             Self::Postgres => "ILIKE",
-            Self::MySql | Self::Sqlite => "LIKE",
+            Self::MySql | Self::Sqlite | Self::BigQuery => "LIKE",
         }
     }
 
-    /// PostgreSQL and MySQL already treat `\` as LIKE's escape character.
+    /// PostgreSQL and MySQL already treat `\` as LIKE's escape character,
+    /// and so does GoogleSQL.
     fn like_escape(self) -> &'static str {
         match self {
             Self::Sqlite => " ESCAPE '\\'",
-            Self::Postgres | Self::MySql => "",
+            Self::Postgres | Self::MySql | Self::BigQuery => "",
         }
     }
 
@@ -322,6 +333,14 @@ impl Dialect {
     /// with this engine's sense of case.
     fn matches(self, column: &str, pattern: String, params: &mut Binds) -> String {
         let placeholder = self.bind(params, pattern);
+        // GoogleSQL's LIKE is case-sensitive and has no ILIKE: lower both
+        // sides for the case-insensitive match the other dialects give.
+        if self == Self::BigQuery {
+            return format!(
+                "LOWER({}) LIKE LOWER({placeholder})",
+                self.as_text(column)
+            );
+        }
         format!(
             "{} {} {placeholder}{}",
             self.as_text(column),
@@ -333,10 +352,13 @@ impl Dialect {
     /// A filter value in SQL. PostgreSQL rows are read through the
     /// simple-query protocol, which has no parameters, so its values become
     /// escape-string literals that do not depend on the session's
-    /// `standard_conforming_strings`. The others bind.
+    /// `standard_conforming_strings`. BigQuery's REST API is asked the
+    /// same way (a job's text alone), so its values are written in too.
+    /// The others bind.
     fn bind(self, binds: &mut Binds, value: String) -> String {
         match self {
             Self::Postgres => quote_literal(&value),
+            Self::BigQuery => self.literal(&value),
             Self::MySql | Self::Sqlite if binds.inline => self.literal(&value),
             Self::MySql | Self::Sqlite => {
                 binds.params.push(Value::Text(value.into()));
@@ -356,6 +378,7 @@ impl Dialect {
                 }
                 quote_literal(&hex)
             }
+            Self::BigQuery => self.bytes_literal(&bytes),
             Self::MySql | Self::Sqlite if binds.inline => self.bytes_literal(&bytes),
             Self::MySql | Self::Sqlite => {
                 binds.params.push(Value::Bytes(bytes.into()));
@@ -458,6 +481,12 @@ impl Dialect {
         match self {
             Self::Postgres if text.contains('\\') => quote_literal(text),
             Self::Postgres | Self::Sqlite => format!("'{}'", text.replace('\'', "''")),
+            // GoogleSQL's strings read a backslash as an escape in every
+            // one, so it is doubled there, and the quote itself escaped.
+            Self::BigQuery => format!(
+                "'{}'",
+                text.replace('\\', "\\\\").replace('\'', "\\'")
+            ),
             Self::MySql => format!(
                 "'{}'",
                 text.replace('\\', "\\\\")
@@ -467,7 +496,8 @@ impl Dialect {
         }
     }
 
-    /// Bytes as a literal: PostgreSQL's hex `bytea`, `x'..'` elsewhere.
+    /// Bytes as a literal: PostgreSQL's hex `bytea`, `b'\x..'` on
+    /// BigQuery, `x'..'` elsewhere.
     pub(crate) fn bytes_literal(self, bytes: &[u8]) -> String {
         let mut hex = String::new();
         for byte in bytes {
@@ -475,6 +505,13 @@ impl Dialect {
         }
         match self {
             Self::Postgres => quote_literal(&format!("\\x{hex}")),
+            Self::BigQuery => {
+                let mut escaped = String::new();
+                for byte in bytes {
+                    let _ = write!(escaped, "\\x{byte:02x}");
+                }
+                format!("b'{escaped}'")
+            }
             Self::MySql | Self::Sqlite => format!("x'{hex}'"),
         }
     }
@@ -516,8 +553,11 @@ impl Dialect {
     fn now(self, kind: Temporal) -> &'static str {
         match (self, kind) {
             (Self::Postgres | Self::MySql | Self::Sqlite, Temporal::Date) => "CURRENT_DATE",
+            (Self::BigQuery, Temporal::Date) => "CURRENT_DATE()",
             (Self::Postgres | Self::Sqlite, Temporal::Time) => "CURRENT_TIME",
+            (Self::BigQuery, Temporal::Time) => "CURRENT_TIME()",
             (Self::Postgres, Temporal::Timestamp) => "now()",
+            (Self::BigQuery, Temporal::Timestamp) => "CURRENT_TIMESTAMP()",
             // To the microsecond: without the precision MySQL gives whole
             // seconds, whatever the column keeps.
             (Self::MySql, Temporal::Time) => "CURRENT_TIME(6)",
@@ -530,7 +570,7 @@ impl Dialect {
     /// PostgreSQL, whose rows go through the simple-query protocol, and a
     /// bound value elsewhere. NULL is written out in both.
     fn sent(self, operand: &Operand, params: &mut Vec<Value>) -> String {
-        if self == Self::Postgres {
+        if matches!(self, Self::Postgres | Self::BigQuery) {
             return self.shown(operand);
         }
         params.push(match operand {
@@ -618,8 +658,12 @@ impl Dialect {
             (_, Value::Int(number)) => Operand::Int(*number),
             (_, Value::Text(text)) => Operand::Text(text.to_string()),
             (_, Value::Bytes(bytes)) => Operand::Bytes(bytes.to_vec()),
-            (Self::Postgres, Value::Bool(flag)) => Operand::Text(flag.to_string()),
-            (Self::Postgres, Value::Float(number)) => Operand::Text(number.to_string()),
+            (Self::Postgres | Self::BigQuery, Value::Bool(flag)) => {
+                Operand::Text(flag.to_string())
+            }
+            (Self::Postgres | Self::BigQuery, Value::Float(number)) => {
+                Operand::Text(number.to_string())
+            }
             (Self::MySql | Self::Sqlite, Value::Bool(flag)) => Operand::Int(i64::from(*flag)),
             (Self::MySql | Self::Sqlite, Value::Float(number)) => Operand::Float(*number),
         }
@@ -663,7 +707,7 @@ impl Dialect {
             NewValue::Null => return Ok(Operand::Null),
             NewValue::Default { expression } => {
                 return Ok(Operand::Raw(match self {
-                    Self::Postgres | Self::MySql => "DEFAULT".to_owned(),
+                    Self::Postgres | Self::MySql | Self::BigQuery => "DEFAULT".to_owned(),
                     // SQLite has no DEFAULT to write in an UPDATE or among
                     // VALUES: the column's own expression, which is what
                     // the word would have come to, or NULL where it has
@@ -691,7 +735,9 @@ impl Dialect {
                 .map(Operand::Float)
         };
         match (self, class) {
-            (Self::Postgres, _) => Ok(Operand::Text(text.clone())),
+            // BigQuery never reaches a save (a session opens read-only),
+            // but its server coerces a literal to the column's type too.
+            (Self::Postgres | Self::BigQuery, _) => Ok(Operand::Text(text.clone())),
             // A tinyint(1) holds any tinyint, and some tables keep more
             // than a flag in one.
             (Self::MySql, ColumnClass::Boolean) => match typed.to_ascii_lowercase().as_str() {
@@ -846,12 +892,14 @@ impl Dialect {
         let table = self.qualified(object);
         let back = match self {
             Self::Postgres | Self::Sqlite => " RETURNING *",
-            Self::MySql => "",
+            Self::MySql | Self::BigQuery => "",
         };
         let lead = format!("INSERT INTO {table}");
         if row.set.is_empty() {
             let (text, values) = match self {
-                Self::Postgres | Self::Sqlite => (format!("{lead} DEFAULT VALUES"), lead.len() + 1),
+                Self::Postgres | Self::Sqlite | Self::BigQuery => {
+                    (format!("{lead} DEFAULT VALUES"), lead.len() + 1)
+                }
                 Self::MySql => (format!("{lead} () VALUES ()"), lead.len() + 4),
             };
             let parts = InsertParts {
@@ -903,7 +951,7 @@ impl Dialect {
         // in a message: see `update_row`.
         let refused = match self {
             Self::Postgres => text.contains('\0'),
-            Self::MySql | Self::Sqlite => false,
+            Self::MySql | Self::Sqlite | Self::BigQuery => false,
         };
         if refused {
             return Err(Error::query("PostgreSQL text cannot hold a NUL character"));
@@ -943,7 +991,7 @@ impl Dialect {
         // in a message: see `update_row`.
         let refused = match self {
             Self::Postgres => text.contains('\0'),
-            Self::MySql | Self::Sqlite => false,
+            Self::MySql | Self::Sqlite | Self::BigQuery => false,
         };
         if refused {
             return Err(Error::query("PostgreSQL text cannot hold a NUL character"));
@@ -1002,8 +1050,8 @@ impl Dialect {
         // A list of rows on the right of `IN`: SQLite takes one only as
         // `VALUES`.
         let open = match (self, several) {
-            (Self::Postgres | Self::MySql | Self::Sqlite, false) => " IN (",
-            (Self::Postgres | Self::MySql, true) => ") IN (",
+            (Self::Postgres | Self::MySql | Self::Sqlite | Self::BigQuery, false) => " IN (",
+            (Self::Postgres | Self::MySql | Self::BigQuery, true) => ") IN (",
             (Self::Sqlite, true) => ") IN (VALUES ",
         };
         shown.push_str(open);
@@ -1038,7 +1086,7 @@ impl Dialect {
         // PostgreSQL text cannot hold a NUL: see `delete_row`.
         let refused = match self {
             Self::Postgres => sent.contains('\0'),
-            Self::MySql | Self::Sqlite => false,
+            Self::MySql | Self::Sqlite | Self::BigQuery => false,
         };
         if refused {
             return Err(Error::query("PostgreSQL text cannot hold a NUL character"));
@@ -1070,6 +1118,8 @@ impl Dialect {
                 .as_deref()
                 .and_then(|code| code.parse::<u32>().ok())
                 .is_some_and(|code| matches!(code & 0xff, 5 | 6)),
+            // BigQuery has no row locks to wait for.
+            Self::BigQuery => false,
         }
     }
 
@@ -1081,7 +1131,7 @@ impl Dialect {
     pub fn select_row(self, object: &ObjectRef, key: &[(String, Value)], lock: bool) -> Sql {
         let mut params = Vec::new();
         let clause = self.key_clause(key, &mut params).sent;
-        let lock = if lock && self != Self::Sqlite {
+        let lock = if lock && !matches!(self, Self::Sqlite | Self::BigQuery) {
             " FOR UPDATE"
         } else {
             ""
@@ -1408,6 +1458,62 @@ mod tests {
         RowQuery::new(ObjectRef::new("public", "users"), 300)
     }
 
+    #[test]
+    fn bigquery_quotes_filters_and_writes_its_values_in() {
+        let mut q = RowQuery::new(ObjectRef::new("sales", "orders"), 100);
+        q.filters = vec![
+            Filter {
+                column: "name".into(),
+                op: FilterOp::Contains,
+                value: "o's".into(),
+            },
+            Filter {
+                column: "id".into(),
+                op: FilterOp::Gt,
+                value: "41".into(),
+            },
+        ];
+        q.sort = vec![Sort {
+            column: "id".into(),
+            dir: SortDir::Desc,
+        }];
+        let sql = Dialect::BigQuery.select_rows(&q, &["id".into()], &[]);
+        // Every value is written in: nothing is bound over the REST API.
+        assert!(sql.params.is_empty());
+        assert_eq!(
+            sql.text,
+            "SELECT * FROM `sales`.`orders` \
+             WHERE LOWER(CAST(`name` AS STRING)) LIKE LOWER('%o\\'s%') AND `id` > '41' \
+             ORDER BY `id` DESC LIMIT 101 OFFSET 0"
+        );
+        let count = Dialect::BigQuery.count_rows(&q, &[]);
+        assert!(count.text.starts_with("SELECT count(*) FROM `sales`.`orders` WHERE "));
+        assert!(count.params.is_empty());
+    }
+
+    #[test]
+    fn bigquery_writes_bytes_and_bools() {
+        let sql = Dialect::BigQuery.lookup(&crate::Lookup {
+            object: ObjectRef::new("d", "files"),
+            key: "hash".into(),
+            label: None,
+            part: crate::LookupPart::Pinned(Value::Bytes(Box::new([0x0a, 0x0b]))),
+            limit: 10,
+        });
+        assert!(sql.params.is_empty());
+        assert!(sql.text.contains("b'\\x0a\\x0b'"), "{}", sql.text);
+        // `key_operand`: a bool is written as its word, for the column's
+        // coercion of the text.
+        let clause = Dialect::BigQuery.select_row(
+            &ObjectRef::new("d", "t"),
+            &[("active".into(), Value::Bool(true))],
+            false,
+        );
+        assert!(clause.params.is_empty());
+        assert!(clause.text.contains("`active` = 'true'"), "{}", clause.text);
+        assert!(!clause.text.contains("FOR UPDATE"));
+    }
+
     fn text(value: &str) -> Value {
         Value::Text(value.into())
     }
@@ -1420,6 +1526,7 @@ mod tests {
         );
         assert_eq!(Dialect::Sqlite.quote_ident("select"), r#""select""#);
         assert_eq!(Dialect::MySql.quote_ident("a`b"), "`a``b`");
+        assert_eq!(Dialect::BigQuery.quote_ident("a`b\\c"), "`a\\`b\\\\c`");
         assert_eq!(
             Dialect::MySql.qualified(&ObjectRef::new("shop", "orders")),
             "`shop`.`orders`"
@@ -2324,7 +2431,7 @@ mod tests {
                 assert!(update.sql.text.contains(literal), "{dialect:?}: {literal}");
             }
             let bound = match dialect {
-                Dialect::Postgres => 0,
+                Dialect::Postgres | Dialect::BigQuery => 0,
                 Dialect::MySql | Dialect::Sqlite => 1,
             };
             assert_eq!(update.sql.params.len(), bound, "{dialect:?}");
@@ -2412,7 +2519,7 @@ mod tests {
                     assert_eq!(after, ") RETURNING *");
                     assert_eq!(back, Some("RETURNING *"));
                 }
-                Dialect::MySql => {
+                Dialect::MySql | Dialect::BigQuery => {
                     assert_eq!(after, ")");
                     assert_eq!(back, None);
                 }
@@ -2427,6 +2534,10 @@ mod tests {
                 Dialect::Postgres | Dialect::Sqlite => {
                     assert_eq!(clause, "DEFAULT VALUES RETURNING *");
                     assert_eq!(parts.back.map(|at| &shown[at..]), Some("RETURNING *"));
+                }
+                Dialect::BigQuery => {
+                    assert_eq!(clause, "DEFAULT VALUES");
+                    assert_eq!(parts.back, None);
                 }
                 Dialect::MySql => {
                     assert_eq!(clause, "VALUES ()");

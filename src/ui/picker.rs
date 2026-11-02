@@ -112,6 +112,7 @@ fn is_local(connection: &SavedConnection) -> bool {
         Driver::Postgres | Driver::MySql => {
             spec.ssh.is_none() && crate::model::is_local_host(&spec.host)
         }
+        Driver::BigQuery => false,
     }
 }
 
@@ -813,7 +814,8 @@ pub(crate) fn target(connection: &SavedConnection) -> (String, String) {
     use tabletist_db::Driver;
     let spec = &connection.spec;
     match spec.driver {
-        Driver::Sqlite => (spec.summary(), String::new()),
+        // A BigQuery summary is the project alone.
+        Driver::Sqlite | Driver::BigQuery => (spec.summary(), String::new()),
         Driver::Postgres | Driver::MySql => (
             format!("{}:{}", spec.host, spec.port),
             format!("/{}", spec.database),

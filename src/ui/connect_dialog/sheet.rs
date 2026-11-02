@@ -269,6 +269,11 @@ pub(super) fn body(
                             file_field(ui, form, skin, actions);
                         });
                     }
+                    Driver::BigQuery => {
+                        fieldset(ui, &skin.say("BigQuery"), skin, |ui| {
+                            bigquery(ui, form, skin);
+                        });
+                    }
                     Driver::Postgres | Driver::MySql => {
                         fieldset(ui, &skin.say("Server"), skin, |ui| {
                             server(ui, form, skin, actions);
@@ -337,6 +342,22 @@ fn identity(
 }
 
 /// macOS: where the server is and who logs in.
+/// BigQuery's project and how it signs in: a service-account key file,
+/// or Google Cloud's application default credentials when none is named.
+fn bigquery(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
+    let role = skin.value_role();
+    let small = TextRole::Secondary;
+    let height = skin.field_height();
+    labelled(ui, &skin.say("Project"), small, skin, |ui| {
+        ui.add(input(ui, &mut form.database, role, height, skin))
+    });
+    ui.add_space(10.0);
+    labelled(ui, &skin.say("Key file"), small, skin, |ui| {
+        let hint = hint(ui, &skin.say("Default credentials when empty"), role, skin);
+        ui.add(input(ui, &mut form.bigquery_key, role, height, skin).hint_text(hint))
+    });
+}
+
 fn server(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut Vec<Action>) {
     let role = skin.value_role();
     let small = TextRole::Secondary;
