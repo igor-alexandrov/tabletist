@@ -1,5 +1,11 @@
 CREATE TABLE public.reviews (
-  id bigint PRIMARY KEY
+  id bigint PRIMARY KEY,
+  rating integer,
+  title text,
+  body text,
+  metadata jsonb,
+  cover bytea,
+  created_at timestamptz
 );
 
 INSERT INTO public.reviews (id, rating, title, body, metadata, cover, created_at) VALUES

@@ -302,8 +302,13 @@ fn the_grids_menu_copies_the_cell_under_the_pointer() {
 
 /// The Bookshop's covers with a page of `rows`, the grid holding the keys.
 fn covers_of(page: tabletist_db::RowPage) -> (Harness, ConnTabId, TabId) {
+    covers_of_in(Look::macos(), page)
+}
+
+/// [`covers_of`], in `look`.
+fn covers_of_in(look: Look, page: tabletist_db::RowPage) -> (Harness, ConnTabId, TabId) {
     let mut harness = Harness::new();
-    harness.set_look(Look::macos());
+    harness.set_look(look);
     let tab = harness.connect_fake_as(false);
     harness.app.apply(Action::OpenObject {
         tab,
@@ -365,6 +370,27 @@ fn one_cell_over_twenty_megabytes_copies_nothing() {
     harness.copied = None;
     harness.copy(false);
     assert_eq!(harness.copied, None);
+    let words = "That's over 20 MB. Export to a file?";
+    assert_eq!(said(&harness).as_deref(), Some(words));
+}
+
+/// Test 7: in the terminal look, a copy the grid's menu makes past the
+/// limit says why on the status line, though a refused save's reason was
+/// there: a pick with the pointer is no key that would end it.
+#[test]
+fn a_copy_past_the_limit_takes_the_line_from_a_refused_save() {
+    let mut page = crate::testing::book_covers_page(2);
+    page.rows[1][2] = Value::Text("w".repeat(crate::export::CLIPBOARD_BYTES + 1).into());
+    let (mut harness, tab, id) = covers_of_in(Look::omarchy(), page);
+    select(&mut harness, tab, id, (1, 2));
+    harness.app.workspace_mut(tab).unwrap().save_refused = true;
+    harness.copied = None;
+    let pick = crate::model::CopyPick::Selection;
+    let how = crate::model::CopyHow::As(crate::export::Format::Csv);
+    harness.app.apply(Action::CopyAs { tab, pick, how });
+    harness.settle();
+    assert_eq!(harness.copied, None);
+    assert!(!harness.app.workspace(tab).unwrap().save_refused);
     let words = "That's over 20 MB. Export to a file?";
     assert_eq!(said(&harness).as_deref(), Some(words));
 }

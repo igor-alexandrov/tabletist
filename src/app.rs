@@ -2206,14 +2206,19 @@ impl App {
                     // The grid menu's Copy and Copy rows as TSV are ⌘C's
                     // and ⇧⌘C's, which say nothing of a copy made.
                     let silent = how == How::Plain && pick != Pick::CursorRow;
-                    match copying.copied {
-                        crate::export::Copied::Text { ref text, .. } => {
-                            if !silent {
-                                self.said = Some(copy_said(self.locale, &copying, how));
-                            }
-                            self.to_clipboard = Some(text.clone());
+                    let copied = matches!(copying.copied, crate::export::Copied::Text { .. });
+                    if let crate::export::Copied::Text { ref text, .. } = copying.copied {
+                        self.to_clipboard = Some(text.clone());
+                    }
+                    if !(copied && silent) {
+                        self.said = Some(copy_said(self.locale, &copying, how));
+                        // What the copy came to is what the terminal's
+                        // line says next, not why the last save was not
+                        // made.
+                        if let Some(workspace) = self.workspace_mut(tab) {
+                            workspace.save_refused = false;
+                            workspace.review_refused = false;
                         }
-                        _ => self.said = Some(copy_said(self.locale, &copying, how)),
                     }
                 }
                 // As `y` leaves a visual selection.
@@ -8696,7 +8701,8 @@ fn copying(
     let cursor = selected.cursor;
     // One cell, alone or held by `v`: its text as it is, tabs and lines in
     // it kept.
-    let one = selected.size(width).is_none_or(|size| size == (1, 1));
+    let one = selected.range.is_none_or(|range| !range.rows())
+        && selected.size(width).is_none_or(|size| size == (1, 1));
     // A new row's cell nothing is set in is a NULL, and past the
     // clipboard's limit nothing is copied.
     if how == How::Plain && pick == Pick::Selection && one {
@@ -8899,6 +8905,50 @@ fn logged_statement(driver: Driver, sql: &str, params: Option<&str>) -> String {
 mod tests {
     use super::*;
     use crate::model::{Action, ConnTabContent};
+
+    /// A whole row of one column is a row, not one cell: ⌘C writes it as
+    /// TSV, its NULL empty, where one cell alone is written `NULL`.
+    #[test]
+    fn a_whole_row_of_one_column_copies_as_tsv() {
+        use crate::edit::Order;
+        use crate::selection::{Range, Selection};
+        let mut columns = crate::testing::page(1, false).columns;
+        columns.truncate(1);
+        let source = || CopySource {
+            columns: &columns,
+            dialect: tabletist_db::Dialect::Postgres,
+            target: crate::export::Target::Named("result"),
+        };
+        let null = |_: usize, _: usize| crate::export::Pending {
+            value: Some(tabletist_db::Value::Null),
+            sql: None,
+        };
+        let options = crate::export::Options::default();
+        let cursor = CellPos { row: 0, col: 0 };
+        let row = Range::Rows {
+            anchor: Some(0),
+            picked: Default::default(),
+            held: false,
+        };
+        let copied = |range| {
+            let selected = Selection {
+                cursor,
+                range,
+                order: Order::of(&[], 1),
+            };
+            copying(
+                &selected,
+                source(),
+                Pick::Selection,
+                How::Plain,
+                &options,
+                null,
+            )
+            .and_then(Copying::text)
+        };
+        assert_eq!(copied(Some(&row)).as_deref(), Some(""));
+        assert_eq!(copied(None).as_deref(), Some("NULL"));
+    }
 
     fn app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();

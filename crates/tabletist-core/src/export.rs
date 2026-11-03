@@ -1260,7 +1260,7 @@ mod tests {
         check("sql-default.sql", Format::SqlInsert, &Options::default());
         let one = with(|o| o.sql.rows_per_insert = 1);
         check("sql-one-per-insert.sql", Format::SqlInsert, &one);
-        let create = "CREATE TABLE public.reviews (\n  id bigint PRIMARY KEY\n);\n";
+        let create = "CREATE TABLE public.reviews (\n  id bigint PRIMARY KEY,\n  rating integer,\n  title text,\n  body text,\n  metadata jsonb,\n  cover bytea,\n  created_at timestamptz\n);\n";
         let started = with(|o| o.sql.create_table = true);
         check_in(
             "sql-create.sql",
