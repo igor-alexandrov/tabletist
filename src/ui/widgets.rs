@@ -6,7 +6,8 @@ use egui::{
 };
 
 use crate::keymap::Written;
-use crate::theme::{DialogStyle, Icon, Look, Palette, Selection, TabStyle};
+use crate::style::Icon;
+use crate::theme::{DialogStyle, Look, Palette, Selection, TabStyle};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Ring};
 

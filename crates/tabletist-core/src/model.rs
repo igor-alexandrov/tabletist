@@ -1,0 +1,8396 @@
+//! Application state types and the actions that change them.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use tabletist_db::ssh_config::{AgentSocket, ConfigHost, Proxy};
+use tabletist_db::{ConnectSpec, Driver, Filter, FilterOp, SshAuth, SshSpec, TlsMode};
+
+use crate::backend::{Event, RequestId, SessionId};
+use crate::connections::{ConnectionId, PasswordMode, SavedConnection};
+
+/// Identifies a connection tab for its whole life, whatever its position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ConnTabId(pub u64);
+
+/// One tab: one connection (a chip in the connection bar), or the picker
+/// that chooses one.
+#[derive(Debug)]
+pub struct ConnTab {
+    pub id: ConnTabId,
+    pub content: ConnTabContent,
+}
+
+#[derive(Debug)]
+pub enum ConnTabContent {
+    /// Choose a saved connection (or create one).
+    Picker(PickerState),
+    /// A connection, connected or not.
+    Workspace(Box<Workspace>),
+}
+
+#[derive(Debug, Default)]
+pub struct PickerState {
+    /// Text typed into the picker's search field.
+    pub search: String,
+    /// The connection the keys act on.
+    pub selected: Option<ConnectionId>,
+    /// Groups the user folded, by title.
+    pub folded: Vec<String>,
+    /// Focus the search on the next frame.
+    pub focus_search: bool,
+    /// Delete was asked for this connection: the footer asks whether to,
+    /// and its answer is the only key until it is given.
+    pub deleting: Option<ConnectionId>,
+    /// The connection's form the question was asked from, as it was:
+    /// keeping the connection opens it again, edits and all.
+    pub form: Option<Box<ConnectionForm>>,
+}
+
+/// Everything that changes application state. Views push these; `App::apply`
+/// applies them after the frame is drawn.
+#[derive(Debug)]
+pub enum Action {
+    /// Cmd/Ctrl+O and the Connections button: show the saved connections,
+    /// in the picker tab there is, or in a new one at the end.
+    ShowConnections,
+    CloseConnTab(ConnTabId),
+    ActivateConnTab(ConnTabId),
+    /// Cmd/Ctrl+1..9: activate the open connection at this position, as the
+    /// header numbers them, if there is one.
+    ActivateConnection(usize),
+    /// Ctrl+Tab (+1) and Ctrl+Shift+Tab (-1), wrapping around.
+    CycleConnTab(isize),
+    /// A result from the backend.
+    Backend(Event),
+    /// Select a saved connection in the picker (`None` clears it).
+    SelectConnection {
+        tab: ConnTabId,
+        conn: Option<ConnectionId>,
+    },
+    /// Move the picker's selection by this many connections.
+    MovePickerSelection {
+        tab: ConnTabId,
+        step: isize,
+    },
+    /// Fold or unfold a group of connections in the picker.
+    FoldConnectionGroup {
+        tab: ConnTabId,
+        group: String,
+    },
+    /// Open the connection dialog for a new connection.
+    NewConnection,
+    EditConnection(ConnectionId),
+    DuplicateConnection(ConnectionId),
+    /// The picker's key, its rows' Delete and the connection form's: show
+    /// the picker on the connection, and ask there whether to delete it.
+    AskDeleteConnection(ConnectionId),
+    /// The answer to that question: delete it, or keep it.
+    AnswerDeleteConnection {
+        tab: ConnTabId,
+        delete: bool,
+    },
+    /// Delete a saved connection with its secrets, at once: what the
+    /// question's Delete does.
+    DeleteConnection(ConnectionId),
+    CloseDialog,
+    /// Hide the notice above the window's content.
+    DismissNotice,
+    /// Open the native file dialog for the connection dialog's SQLite path.
+    PickSqliteFile,
+    /// Open the native file dialog for the SSH key file.
+    PickKeyFile,
+    /// Open the native file dialog for the CA certificate.
+    PickCaFile,
+    /// Put this ~/.ssh/config Host alias in the SSH host field.
+    PickSshHost(String),
+    /// Ask an open window of the saved connection for the columns of these
+    /// tables, for the editor's Masked columns control.
+    LoadAgentColumns {
+        conn: ConnectionId,
+        objects: Vec<tabletist_db::ObjectRef>,
+    },
+    /// Fill the connection dialog from its URL field.
+    ApplyUrl,
+    TestConnection,
+    /// Trust the SSH host key the prompt shows, then reconnect.
+    TrustHostKey,
+    /// Close the host key prompt without trusting anything.
+    CancelHostKey,
+    /// Trust the key the dialog's Test ran into, then test again.
+    TrustTestHostKey,
+    /// Save the dialog's connection; `connect` also opens it in the active tab.
+    SaveConnection {
+        connect: bool,
+    },
+    /// Open a saved connection in this tab (replacing its picker).
+    Connect {
+        tab: ConnTabId,
+        conn: ConnectionId,
+    },
+    Reconnect(ConnTabId),
+    /// Close the connection and turn the tab back into a picker.
+    Disconnect(ConnTabId),
+    ToggleSchema {
+        tab: ConnTabId,
+        schema: String,
+    },
+    /// Show this schema's objects in the sidebar (loading them if needed).
+    ShowSchema {
+        tab: ConnTabId,
+        schema: String,
+    },
+    /// Fold or unfold a group of objects sharing a name prefix.
+    ToggleGroup {
+        tab: ConnTabId,
+        schema: String,
+        prefix: String,
+    },
+    /// Switch the sidebar between prefix groups and one flat list.
+    ToggleFlatTree(ConnTabId),
+    /// Open the start screen's recent at `index`, as the screen lists
+    /// them: a table or view of the connection's list, or a SQL editor of
+    /// this window.
+    OpenRecent {
+        tab: ConnTabId,
+        index: usize,
+    },
+    /// Empty the connection's recents, and the window's SQL editors among
+    /// them. Nothing is lost, so nothing asks.
+    ClearRecents(ConnTabId),
+    /// Give the start screen's search field the keyboard: `/` in the
+    /// Omarchy look, where the screen has the keys.
+    StartSearchFocus(ConnTabId),
+    /// What the search field holds changed: pick the first match again.
+    StartSearchChanged(ConnTabId),
+    /// Move the start screen's search by `by` matches, clamped.
+    StartSearchMove {
+        tab: ConnTabId,
+        by: isize,
+    },
+    /// Open a start screen search match: the one picked, or `index` where a
+    /// row was clicked; in a new SQL editor (`SELECT * FROM … LIMIT n`)
+    /// where `in_editor`, else as a table or view tab. Clears the search.
+    StartSearchOpen {
+        tab: ConnTabId,
+        index: Option<usize>,
+        in_editor: bool,
+    },
+    /// Empty the start screen's search and show the recents again. The
+    /// Omarchy field gives the keys back to the screen.
+    StartSearchClear(ConnTabId),
+    /// Hide or show the sidebar.
+    ToggleSidebar(ConnTabId),
+    /// Show timestamps in the grid to the microsecond, or to the second.
+    ToggleFullPrecision(ConnTabId),
+    /// Drop one applied filter (the raw WHERE counts last) and query again.
+    DropFilter {
+        tab: ConnTabId,
+        object_tab: TabId,
+        index: usize,
+    },
+    /// Put keyboard focus in the terminal look's WHERE line.
+    FocusWhere(ConnTabId),
+    /// Open the terminal look's `:` prompt in the status line.
+    OpenCommand(ConnTabId),
+    /// Open the prompt from a SQL editor in vim's normal mode, which gets
+    /// the keyboard back when the prompt closes.
+    EditorCommand {
+        tab: ConnTabId,
+        sql_tab: TabId,
+    },
+    /// Close the prompt, and take away what it said of its last line.
+    CloseCommand(ConnTabId),
+    /// Close the prompt with Esc: as `CloseCommand`, and a SQL editor
+    /// that opened it gets the keyboard back.
+    EscapeCommand(ConnTabId),
+    /// Run what the prompt holds: `w` writes the pending changes of the
+    /// table on screen, `e!` discards them, and anything else is not a
+    /// command.
+    RunCommand(ConnTabId),
+    /// Put keyboard focus in the picker's search.
+    FocusPickerSearch(ConnTabId),
+    /// Fold (or unfold) every JSON document in the row panel (`za`).
+    FoldDocuments {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Follow the foreign key of the selected cell's column (`gd`).
+    FollowSelectedKey {
+        tab: ConnTabId,
+        object_tab: TabId,
+    },
+    /// Drop the active object tab's sort, back to the key order.
+    ClearSort {
+        tab: ConnTabId,
+        object_tab: TabId,
+    },
+    /// Open the table a foreign key points at, filtered to the row it names.
+    FollowForeignKey {
+        tab: ConnTabId,
+        object: ObjectRef,
+        column: String,
+        value: String,
+    },
+    /// Open a table filtered to the rows that hold each value of `by` in
+    /// its column: what following a key comes to, held while the table's
+    /// tab has changes to ask about. The rows that hold a row are found by
+    /// a key of any number of columns.
+    OpenFiltered {
+        tab: ConnTabId,
+        object: ObjectRef,
+        by: Vec<(String, String)>,
+    },
+    RefreshTree(ConnTabId),
+    OpenObject {
+        tab: ConnTabId,
+        object: ObjectRef,
+        kind: ObjectKind,
+        pin: bool,
+    },
+    /// Show this tab (an object tab or a SQL editor).
+    ActivateTab {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Close this tab (an object tab or a SQL editor).
+    CloseTab {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    PinObjectTab {
+        tab: ConnTabId,
+        object_tab: TabId,
+    },
+    /// Step through the workspace's tabs of either kind, wrapping around.
+    CycleTab {
+        tab: ConnTabId,
+        step: isize,
+    },
+    SetView {
+        tab: ConnTabId,
+        object_tab: TabId,
+        view: ObjectView,
+    },
+    NextPage {
+        tab: ConnTabId,
+        object_tab: TabId,
+    },
+    PrevPage {
+        tab: ConnTabId,
+        object_tab: TabId,
+    },
+    SortBy {
+        tab: ConnTabId,
+        object_tab: TabId,
+        column: String,
+    },
+    /// The keyboard came to a grid (the Tab key, a screen reader): the
+    /// arrows move in it from now on. Selects nothing.
+    GridKeys(ConnTabId),
+    /// Save the binary value in column `col` of row `row`, of an object
+    /// tab's page or a SQL editor's result, to a file the user names.
+    SaveValue {
+        tab: ConnTabId,
+        id: TabId,
+        row: usize,
+        col: usize,
+    },
+    /// Select a cell of an object tab's page or a SQL editor's result.
+    SelectCell {
+        tab: ConnTabId,
+        id: TabId,
+        cell: CellPos,
+    },
+    /// Select the rows from the cursor's row, or from the range's anchor,
+    /// to `cell`'s row, and put the cursor on `cell`: Shift with a click.
+    /// With no cursor it selects the cell.
+    ExtendTo {
+        tab: ConnTabId,
+        id: TabId,
+        cell: CellPos,
+    },
+    /// The same by rows from the cursor: Shift with an arrow.
+    ExtendBy {
+        tab: ConnTabId,
+        id: TabId,
+        rows: isize,
+    },
+    /// Start a visual selection of rows on the cursor's row, or leave the
+    /// one that is on: the terminal look's `V`.
+    SelectRows {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Leave a visual selection of rows. The cursor stays.
+    LeaveVisual {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Open the editor on a cell of a table's grid, or say why it cannot
+    /// be edited.
+    EditCell {
+        tab: ConnTabId,
+        id: TabId,
+        cell: CellPos,
+        start: EditStart,
+    },
+    /// Open the editor on a field of the row panel: the selected row's
+    /// value in the column of `cell`, edited in the panel instead of on the
+    /// cell. From `start`, as `EditCell` is. On a field that cannot be
+    /// edited it says why.
+    EditField {
+        tab: ConnTabId,
+        id: TabId,
+        cell: CellPos,
+        start: EditStart,
+    },
+    /// Put the keyboard on the row panel's field `by` fields after the one
+    /// of the column `from` (before it, below zero), in the page's column
+    /// order, locked ones too. At the row's ends it stays, and `by` zero
+    /// asks for the field of `from` itself.
+    MoveField {
+        tab: ConnTabId,
+        id: TabId,
+        from: usize,
+        by: isize,
+    },
+    /// Put the keyboard on the selected row's fields in the row panel: show
+    /// the panel, and focus the row's first field that can be edited. No
+    /// editor opens. On a row no field of which can be, the panel says why.
+    FocusFields {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// The row panel's field of the column `col` has the keyboard: it
+    /// took it, or was given the keyboard it was owed after an edit ended
+    /// (that request is met). Its cell is the selected one from now on.
+    FieldFocused {
+        tab: ConnTabId,
+        id: TabId,
+        col: usize,
+    },
+    /// The editor's text changed: check it again.
+    EditorTyped {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Take the editor's text as the cell's new value, if its column takes
+    /// it, and move on.
+    CommitEdit {
+        tab: ConnTabId,
+        id: TabId,
+        then: Advance,
+    },
+    /// The editor on `cell`, drawn in `place`, lost the keyboard: keep its
+    /// text, as a cell to fix when its column does not take it. It names
+    /// the editor it is about: the click that took the keyboard can have
+    /// asked for another editor in the same frame, which is the one open
+    /// by the time this is applied, and is not the one that was left.
+    LeaveEdit {
+        tab: ConnTabId,
+        id: TabId,
+        cell: CellPos,
+        place: crate::edit::EditorPlace,
+    },
+    /// Close the editor and drop its text.
+    CancelEdit {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Move the highlight of the open editor's foreign key picker `by`
+    /// options: the arrows, Page Up and Page Down, the terminal look's
+    /// Ctrl+N and Ctrl+P.
+    PickerMove {
+        tab: ConnTabId,
+        id: TabId,
+        by: isize,
+    },
+    /// Take the option at `index` of that picker's list as the cell's new
+    /// value: a click on it.
+    PickOption {
+        tab: ConnTabId,
+        id: TabId,
+        index: usize,
+    },
+    /// The picker's Set NULL: drop the editor's text and make the cell
+    /// NULL, where its column takes one.
+    PickerNull {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Open the chooser of what labels the options of the open editor's
+    /// foreign key picker, or close it where it is open: the picker's key
+    /// for it, and a click on its foot's button. Where the table has
+    /// nothing to choose the picker says so, and nothing opens.
+    ToggleLabelChooser {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Move that chooser's keys `by` lines: the arrows, the terminal
+    /// look's `j` and `k`.
+    MoveLabelChooser {
+        tab: ConnTabId,
+        id: TabId,
+        by: isize,
+    },
+    /// Put its keys on `line`: the pointer came over it.
+    PointLabelChooser {
+        tab: ConnTabId,
+        id: TabId,
+        line: usize,
+    },
+    /// A letter typed in it: go to the next column the letter begins.
+    JumpLabelChooser {
+        tab: ConnTabId,
+        id: TabId,
+        to: char,
+    },
+    /// Choose `line` of it, or the line its keys are on: a click, Enter.
+    /// The choice is kept, the chooser closes and the list is searched
+    /// again for the text that shows.
+    ChooseLabel {
+        tab: ConnTabId,
+        id: TabId,
+        line: Option<usize>,
+    },
+    /// Close it and choose nothing: Esc, a press beside it.
+    CloseLabelChooser {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Move the cursor of the Structure view's columns `by` lines.
+    MoveStructureCursor {
+        tab: ConnTabId,
+        id: TabId,
+        by: isize,
+    },
+    /// Put that cursor on `line`: a click on it.
+    SetStructureCursor {
+        tab: ConnTabId,
+        id: TabId,
+        line: usize,
+    },
+    /// Use the column on `line` of the Structure view as what labels the
+    /// table's rows, or the one under the cursor: a column's menu, the
+    /// view's key. A column that cannot be a label is refused, and the
+    /// workspace says why.
+    UseAsLabel {
+        tab: ConnTabId,
+        id: TabId,
+        line: Option<usize>,
+    },
+    /// Keep `choice` as what labels the rows of the table the tab shows:
+    /// the Structure view's Use Automatic, the prompt's lines.
+    SetLabel {
+        tab: ConnTabId,
+        id: TabId,
+        choice: crate::labels::LabelChoice,
+    },
+    /// Label the table the tab shows by its column `name`, as a line of
+    /// the prompt names it. Refused, with why, where no column is called
+    /// that or the column cannot be a label.
+    LabelByName {
+        tab: ConnTabId,
+        id: TabId,
+        name: String,
+    },
+    /// Add a line break and move the text into the large editor.
+    EditorBreak {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Lay the document in the tab's large editor out a member to a line.
+    /// Only where its text is one: what is no JSON yet stays as typed.
+    FormatEditor {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Make the active cell NULL, where its column allows it.
+    SetNull {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// `SetNull`, asked for on the cell's field of the row panel: where the
+    /// column takes no NULL, the field says so.
+    SetFieldNull {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Flip the active cell where it is a boolean's: true, false, and NULL
+    /// where the column takes it.
+    CycleBoolean {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Set the active boolean cell to `value`.
+    SetBoolean {
+        tab: ConnTabId,
+        id: TabId,
+        value: bool,
+    },
+    /// Give a date or time cell the time of the save: the cell the open
+    /// editor is on, whose text is dropped.
+    SetNow {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Give the active cell its column's default, where it has one.
+    SetDefault {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Add a new row to the tab's table at `place`, and open the editor on
+    /// its first cell a save needs a value in.
+    AddRow {
+        tab: ConnTabId,
+        id: TabId,
+        place: crate::edit::Place,
+    },
+    /// Add a copy of the selected row as a new row at the top, below the
+    /// new rows already there: what is pending in the row is what the copy
+    /// holds, and an open editor's text with it.
+    DuplicateRow {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Keep what the selected row shows on the tab, for `PutRow`.
+    YankRow {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Add a copy of the tab's yanked row right below the selected row, or
+    /// right above it. With nothing yanked, nothing.
+    PutRow {
+        tab: ConnTabId,
+        id: TabId,
+        above: bool,
+    },
+    /// Drop the selected row where it is a new one, with what was set in
+    /// it. A row of the page stays.
+    DropRow {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Delete the selected row: a new one is dropped with what was set in
+    /// it, a row of the page is marked for deletion, and one that is
+    /// marked is restored.
+    DeleteRow {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Delete the selected rows. One row is `DeleteRow`'s. Of several, the
+    /// unmarked are marked and the new ones dropped, or, where every one
+    /// is marked, all are restored (`edit::Table::sweep`).
+    DeleteSelected {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Delete the cursor's row and the rows after it, `count` in all, as
+    /// far as the grid goes, and put the cursor after them: the terminal
+    /// look's `{count}dd`.
+    DeleteCount {
+        tab: ConnTabId,
+        id: TabId,
+        count: u32,
+    },
+    /// Take the mark for deletion off the selected row.
+    RestoreRow {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Open the rows that hold the page's row `row`, whose delete a
+    /// foreign key refused: their table, filtered to them.
+    OpenHolders {
+        tab: ConnTabId,
+        id: TabId,
+        row: usize,
+    },
+    /// Put back a cell's loaded value: `cell`, or the active cell where
+    /// none is named, as the keys ask.
+    RevertCell {
+        tab: ConnTabId,
+        id: TabId,
+        cell: Option<CellPos>,
+    },
+    /// Drop every pending change of the tab.
+    DiscardEdits {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Drop every pending change of the tab once the Leave prompt is
+    /// answered, or at once where dropping edits asks nothing.
+    AskDiscard {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Take away what the tab's last save came to, and nothing else: an
+    /// editor that is open keeps its text.
+    DismissNote {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Save the tab's pending changes, in one transaction.
+    WriteEdits {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Show or hide Review SQL: what a save of the tab's pending changes
+    /// would run.
+    ReviewEdits {
+        tab: ConnTabId,
+        id: TabId,
+        show: bool,
+    },
+    /// The Leave prompt's Save: save, then do what was held if everything
+    /// was written.
+    LeaveSave,
+    /// The Leave prompt's Discard: drop the pending changes and do what was
+    /// held.
+    LeaveDiscard,
+    /// The Leave prompt's Cancel: keep the pending changes and drop what
+    /// was held.
+    LeaveStay,
+    /// Send the save the production confirmation shows.
+    ConfirmWrite,
+    /// Close the production confirmation and send nothing.
+    CancelWrite,
+    /// The question before a run that reaches every row of a table: Run
+    /// anyway sends the run it holds. `refocus`: the editor had the
+    /// keyboard when the question came, and has it back.
+    RunEveryRow {
+        refocus: bool,
+    },
+    /// Its Cancel: the run is not sent. `refocus` as for Run anyway.
+    CancelEveryRow {
+        refocus: bool,
+    },
+    /// Answer the question about a row a save found changed. `at` is the
+    /// row's place among the save's conflicts as the question showed it: an
+    /// answer for another row than the one asked about is dropped.
+    AnswerConflict {
+        at: usize,
+        answer: crate::edit::Answer,
+    },
+    /// Arrow keys (±1), Page Up/Down (±page), Home/End (isize::MIN/MAX).
+    MoveSelection {
+        tab: ConnTabId,
+        id: TabId,
+        rows: isize,
+        cols: isize,
+    },
+    /// Next error (`forward`) or Previous error: in a table's grid the
+    /// cursor goes to the next or the previous error of the set, round to
+    /// the first or the last; in a SQL editor its cursor goes to the error
+    /// mark of its last run.
+    NextError {
+        tab: ConnTabId,
+        id: TabId,
+        forward: bool,
+    },
+    ToggleRowPanel(ConnTabId),
+    /// Refetch the active object tab (and its structure if loaded). Does
+    /// nothing on a SQL editor.
+    Refresh(ConnTabId),
+    /// Stop what the active tab waits for: an object tab's loads, a SQL
+    /// editor's run.
+    CancelQuery(ConnTabId),
+    /// Open a SQL editor in the connection tab's workspace and show it.
+    NewSqlTab(ConnTabId),
+    /// Show the workspace's Agents tab: open it at the end of the strip
+    /// where it is not open yet.
+    ShowAgents(ConnTabId),
+    /// Turn the agent server on, from the Agents tab: a change of the
+    /// settings, which starts it. No connection's access changes.
+    TurnAgentsOn,
+    /// Stop one agent's session, by its id, wherever it works.
+    StopAgentSession(String),
+    /// Stop every session that is here, and set the connection's access to
+    /// Off, so that an agent that connects again does not see it.
+    StopAgentsHere(ConnTabId),
+    /// Show the Agents tab of a connection's window: the one an agent
+    /// works on elsewhere. Its window is opened first where there is none.
+    ShowAgentsOn(ConnectionId),
+    /// Move the Agents tab's selection among its sessions, in the terminal
+    /// look.
+    MoveAgentSelection {
+        tab: ConnTabId,
+        step: isize,
+    },
+    /// Show the Agents tab on one of its views, opening it where it is not
+    /// open: Show log, `l`, `:agents log`.
+    ShowAgentsView {
+        tab: ConnTabId,
+        view: AgentsView,
+    },
+    /// The Log view: every connection's calls, or this one's again.
+    ToggleAgentsLogScope(ConnTabId),
+    /// The Log view: read the page after the last call shown.
+    MoreAgentsLog(ConnTabId),
+    /// The Log view: show only the calls of an agent, that ended one way,
+    /// or whose request holds a text; or every one again.
+    FilterAgentsLog {
+        tab: ConnTabId,
+        filter: AgentsLogFilter,
+    },
+    /// The Log view, in the terminal look: open its filters, or close
+    /// them and keep what they are set to.
+    ShowAgentsLogFilters {
+        tab: ConnTabId,
+        open: bool,
+    },
+    /// The Log view, in the terminal look: show the selected call's pane,
+    /// or close it.
+    ShowAgentsLogDetails {
+        tab: ConnTabId,
+        open: bool,
+    },
+    /// The Log view: its calls that pass its filters, every one, to a file
+    /// the person chooses, as CSV or JSON Lines.
+    ExportAgentsLog(ConnTabId),
+    /// The Log view: the statement of a call, by its place in the log, in
+    /// a new SQL editor of its connection's window, read-only and not run.
+    OpenAgentsLogCall {
+        tab: ConnTabId,
+        id: i64,
+    },
+    /// The Log view: select a call, by its place in the log.
+    SelectAgentsLogCall {
+        tab: ConnTabId,
+        id: i64,
+    },
+    /// The Log view: move the selection among the calls, in the terminal
+    /// look.
+    MoveAgentsLogSelection {
+        tab: ConnTabId,
+        step: isize,
+    },
+    /// Show the workspace's History tab: open it at the end of the strip
+    /// where it is not open yet. ⌘Y, View › History, the clock of the
+    /// sidebar's SQL Editor button, quick open and `:history`.
+    ShowHistory(ConnTabId),
+    /// The History tab: show only the entries of a source, that ended one
+    /// way, or whose statement holds a text; or every one again.
+    FilterHistory {
+        tab: ConnTabId,
+        filter: HistoryFilterSet,
+    },
+    /// The History tab, in the terminal look: open its filter line, or
+    /// close it and keep what it says.
+    ShowHistoryLine {
+        tab: ConnTabId,
+        open: bool,
+    },
+    /// The History tab: select an entry, by its key.
+    SelectHistoryEntry {
+        tab: ConnTabId,
+        key: u64,
+    },
+    /// The History tab: move the selection among the entries shown.
+    MoveHistorySelection {
+        tab: ConnTabId,
+        step: isize,
+    },
+    /// The History tab: run a read again, in a new SQL editor, with the
+    /// Editor settings of a new tab. A write is never run again.
+    RunHistoryAgain {
+        tab: ConnTabId,
+        key: u64,
+    },
+    /// The History tab: an entry's statement in a new SQL editor, not run;
+    /// a write's in a read-only one.
+    OpenHistoryEntry {
+        tab: ConnTabId,
+        key: u64,
+    },
+    /// The History tab: a filter's table, with that filter and sort.
+    ReapplyHistoryFilter {
+        tab: ConnTabId,
+        key: u64,
+    },
+    /// The History tab: an agent's entry, as its call in the Agents Log.
+    ShowHistoryCall {
+        tab: ConnTabId,
+        key: u64,
+    },
+    /// The History tab's Clear history… and `:history clear`: ask whether
+    /// to clear this connection's history.
+    ClearHistory(ConnTabId),
+    /// The answer to that question: clear it, or keep it.
+    ConfirmClearHistory {
+        tab: ConnTabId,
+        clear: bool,
+    },
+    /// Set what agents may do on a saved connection, from the Connections
+    /// list's menu or Omarchy's box: the person's own, never held.
+    SetAgentAccess {
+        conn: ConnectionId,
+        access: crate::connections::AgentAccess,
+    },
+    /// Open the connection's editor at its Agents part: Tables, columns
+    /// and limits… in the list's menu, and, with `allow`, Allow agents… in
+    /// the Agents tab, with Read chosen. Nothing changes until Save.
+    EditAgents {
+        conn: ConnectionId,
+        allow: bool,
+    },
+    /// Open the terminal look's box of what agents may do on a connection.
+    OpenAgentAccess(ConnectionId),
+    /// Move the box's cursor among the levels.
+    MoveAgentAccess(isize),
+    /// Keep what was changed outside the app and lets agents do more: what
+    /// the bar said, and only what is still held of it.
+    KeepAgentChanges(Vec<crate::agents_shown::Raised>),
+    /// Put back what was changed outside the app: the narrower setting, in
+    /// the files. What the bar said, as Keep.
+    PutBackAgentChanges(Vec<crate::agents_shown::Raised>),
+    /// Run the statement at the editor's cursor, or every statement.
+    RunSql {
+        tab: ConnTabId,
+        sql_tab: TabId,
+        all: bool,
+    },
+    /// The card of a refused write: run the statements of the editor's
+    /// last run again, in a read-write transaction.
+    RunSqlAgain {
+        tab: ConnTabId,
+        sql_tab: TabId,
+    },
+    /// The results' Show all: run the statement whose rows the limit cut
+    /// again, alone, with no limit (see `SqlTab::cut_statement`).
+    ShowAllRows {
+        tab: ConnTabId,
+        sql_tab: TabId,
+    },
+    /// Run without timeout: run the last run, which the timeout stopped,
+    /// again with no timeout (see `SqlTab::timed_out_run`).
+    RunWithoutTimeout {
+        tab: ConnTabId,
+        sql_tab: TabId,
+    },
+    /// Format the editor's script, or the statements its selection
+    /// overlaps.
+    FormatSql {
+        tab: ConnTabId,
+        sql_tab: TabId,
+    },
+    /// The Limit menu: this editor's row limit, and the one new editors get.
+    SetSqlLimit {
+        tab: ConnTabId,
+        sql_tab: TabId,
+        limit: u32,
+    },
+    /// The Timeout menu: this editor's timeout in seconds (`None` waits
+    /// for ever), and the one new editors get.
+    SetSqlTimeout {
+        tab: ConnTabId,
+        sql_tab: TabId,
+        secs: Option<u32>,
+    },
+    /// The toolbar's switch: how this editor's runs end. Nothing on a
+    /// connection whose editors cannot write (see `Workspace::sql_writes`).
+    SetSqlMode {
+        tab: ConnTabId,
+        sql_tab: TabId,
+        mode: RunMode,
+    },
+    /// `Mod+Shift+M`: the editor's other mode.
+    ToggleSqlMode {
+        tab: ConnTabId,
+        sql_tab: TabId,
+    },
+    /// Show a SQL editor's Results or its Messages.
+    SetResultPane {
+        tab: ConnTabId,
+        sql_tab: TabId,
+        pane: ResultPane,
+    },
+    /// The splitter under a SQL editor: the editor's share of the height
+    /// it and its results have.
+    SetSqlSplit {
+        tab: ConnTabId,
+        sql_tab: TabId,
+        split: f32,
+    },
+    /// A SQL editor's text has taken the keyboard (the view tells, it is
+    /// not asked to): the arrows it gives up (Esc) go to its results, not
+    /// to the tree.
+    SqlEditorFocused {
+        tab: ConnTabId,
+        sql_tab: TabId,
+    },
+    /// A SQL editor's text changed by typing (the view tells): a
+    /// completion list may open.
+    SqlTyped {
+        tab: ConnTabId,
+        sql_tab: TabId,
+    },
+    /// Open the completion list at the editor's cursor (`Ctrl+Space`).
+    OpenCompletion {
+        tab: ConnTabId,
+        sql_tab: TabId,
+    },
+    /// Move the completion list's highlight by this many rows.
+    MoveCompletion {
+        tab: ConnTabId,
+        sql_tab: TabId,
+        step: isize,
+    },
+    /// Insert a row of the completion list: the one given (a click), or
+    /// the highlighted one.
+    AcceptCompletion {
+        tab: ConnTabId,
+        sql_tab: TabId,
+        row: Option<usize>,
+    },
+    /// Close the completion list.
+    CloseCompletion {
+        tab: ConnTabId,
+        sql_tab: TabId,
+    },
+    /// A key for the sidebar tree.
+    TreeKey {
+        tab: ConnTabId,
+        key: TreeKey,
+    },
+    /// Put the tree's cursor on a row (a click) and give the tree the arrows.
+    SetTreeCursor {
+        tab: ConnTabId,
+        node: TreeNode,
+    },
+    /// Show the keyboard shortcuts.
+    ShowHelp,
+    /// Show the About dialog.
+    ShowAbout,
+    /// Show the Settings window.
+    ShowSettings,
+    /// The font size a step larger (`Some(true)`), smaller, or back to the
+    /// look's own (`None`), written to the settings.
+    TextSize(Option<bool>),
+    /// Show the Settings window on its Agents pane: from the Agents tab.
+    ShowAgentSettings,
+    /// Show this pane of the Settings window, its cursor on its first row.
+    ShowSettingsPane(SettingsPane),
+    /// Settings › Editor's Show History: close Settings and show the
+    /// History tab of the window in front, or of the last one.
+    ShowHistoryFromSettings,
+    /// Settings › Editor's Clear history…: ask whether to clear every
+    /// connection's history.
+    ClearAllHistory,
+    /// The answer to the history's question in Settings: clear it, or keep
+    /// it.
+    AnswerHistoryQuestion(bool),
+    /// Show the Settings window at this option: its pane, the sheet's row
+    /// on the selection's ground, scrolled to, its control with the
+    /// keyboard (the terminal look's cursor on it, where that screen has
+    /// its row). From quick open.
+    ShowSetting(crate::settings::OptionId),
+    /// The sheet has scrolled to the row it was asked for and given its
+    /// control the keyboard.
+    SettingShown,
+    /// Show how this agent is connected, in Settings › Agents.
+    ChooseAgentSetup(crate::endpoint::Agent),
+    /// Ask GitHub for a newer release now: Check now, Try again, the
+    /// menu's Check for Updates…, `c`, `:update`. A version the settings
+    /// skip is offered by a check asked for.
+    CheckForUpdates,
+    /// Show Settings › Updates and check there now: the menu's Check for
+    /// Updates…, quick open's.
+    ShowUpdates,
+    /// `:update`: [`Action::ShowUpdates`], and in the terminal look, where
+    /// the check finds a version this copy can install, the footer asks
+    /// whether to install it and restart.
+    UpdateNow,
+    /// The answer to that question: download it, then restart once it is
+    /// ready, as Restart now does; or not.
+    AnswerUpdateQuestion(bool),
+    /// Drop the check under way: what it brings is not read.
+    CancelUpdateCheck,
+    /// Stop offering the version offered: `updates.skip`.
+    SkipUpdate,
+    /// Show the notes of the version offered in `$PAGER`, in a terminal;
+    /// where there is none to start, open its page.
+    ShowReleaseNotes,
+    /// Download and verify the version offered, where this copy can
+    /// install it: Download and install, Download again, `U`.
+    DownloadUpdate,
+    /// Stop the download under way: Cancel, `ctrl+c`.
+    CancelDownload,
+    /// Install the download that verified and restart into it, once no
+    /// window has work open: Restart now, the start screen's Restart,
+    /// `U`. With work open the card lists it instead.
+    RestartToUpdate,
+    /// Restart as soon as the work listed is done.
+    RestartWhenDone,
+    /// Go back to Ready from waiting for the work: Don't restart.
+    DontRestart,
+    /// Keep the download for later, and close Settings.
+    UpdateLater,
+    /// Bring the first window with work forward, on the tab that holds
+    /// it: Show them.
+    ShowWork,
+    /// Open a new issue on GitHub about the download that failed, filled
+    /// in: Report on GitHub.
+    ReportUpdateFailure,
+    /// Close Settings and show the Agents tab on this view: the window's in
+    /// front, or with Connections in front the last window's.
+    ShowAgentsFromSettings(AgentsView),
+    /// Move the Settings window's cursor by this many rows.
+    MoveSettingsRow(isize),
+    /// Put the Settings window's cursor on this row of its pane.
+    SelectSettingsRow(usize),
+    /// Set an option. Applied and saved at once.
+    SetOption(crate::settings::OptionValue),
+    /// Open the settings file in the editor.
+    EditSettingsFile,
+    /// Show the settings file in the file manager.
+    RevealSettingsFile,
+    /// Save a copy of the settings where the user says.
+    ExportSettings,
+    /// Ask whether to put the Settings window's options back.
+    ResetSettings,
+    /// The answer: put them back, or leave them.
+    ConfirmResetSettings(bool),
+    /// The Keyboard pane's search: what its field holds (macOS, Windows)
+    /// or what the `/` line filters by (Omarchy).
+    KeyboardSearch(String),
+    /// List the rows a key is a key of, in every scope; none lists them
+    /// all again.
+    KeyboardFind(Option<&'static str>),
+    /// List the changed rows alone (`true`), or every row.
+    KeyboardChanged(bool),
+    /// Put the Omarchy pane's cursor on this row.
+    KeyboardCursor(crate::keymap::Row),
+    /// Give the Omarchy pane's `/` line the keys, or take them from it.
+    KeyboardFiltering(bool),
+    /// Record a key for a row, or one to find the rows by.
+    RecordKeys(Recorded),
+    /// Stop recording, and keep the keys as they were.
+    StopRecording,
+    /// A character typed while recording on Omarchy (a key of several,
+    /// or a line of the prompt), at this time of the frame's input.
+    RecordTyped {
+        char: char,
+        at: f64,
+    },
+    /// Backspace while recording on Omarchy: the last character back.
+    RecordBack,
+    /// The keys recorded: given to the row, or refused with why.
+    RecordPress(&'static str),
+    /// A key Omarchy never binds was pressed while recording.
+    RecordNever(crate::keymap::Never),
+    /// Unbind a row: none of its keys does anything.
+    UnbindRow(crate::keymap::Row),
+    /// Put a row's keys back to its defaults.
+    ResetRow(crate::keymap::Row),
+    /// Give the recorded key to its row and the row that had it this
+    /// row's old keys, as the refusal offers.
+    SwapKeys,
+    /// Ask whether to reset every key (`true`), or leave it.
+    AskResetAllKeys(bool),
+    /// Every key back to the keymap's own: the keys' tables taken out of
+    /// the file.
+    ResetAllKeys,
+    /// Save the cheat sheet of the keys where the person says.
+    ExportCheatSheet,
+    /// Open the full list of the keys, commented, in the editor: a file of
+    /// its own, never the settings.
+    KeysDefault,
+    /// Open quick open for the active connection tab, its scope that
+    /// connection. While it is open, select what its field holds.
+    OpenQuickOpen,
+    /// Open quick open as `OpenQuickOpen` does, with this typed in its
+    /// field: what was typed on the sidebar's field, which is its way in.
+    QuickOpenTyped(String),
+    /// Quick open's field changed: pick the first result again, and fold
+    /// the groups opened in full.
+    QuickOpenChanged,
+    /// Move quick open's pick by this many results.
+    QuickOpenMove(isize),
+    /// Open quick open's picked result, or the result at `index` where a
+    /// row was clicked or its number typed; `in_editor` opens it in a new
+    /// SQL editor (`⌥↩`). A group's "more" row shows that group in full,
+    /// and quick open stays.
+    QuickOpenPick {
+        index: Option<usize>,
+        in_editor: bool,
+    },
+    /// Switch quick open between this connection and every open one.
+    QuickOpenScope,
+    /// Open the menu of the server's other databases under the connection
+    /// bar's chip, as Switch database's key does.
+    ShowDatabaseMenu(ConnTabId),
+    /// Put keyboard focus back into the open filter bar.
+    FocusFilterBar(ConnTabId),
+    /// Open or close the active object tab's filter bar.
+    ToggleFilterBar(ConnTabId),
+    AddFilterRow {
+        tab: ConnTabId,
+        object_tab: TabId,
+    },
+    RemoveFilterRow {
+        tab: ConnTabId,
+        object_tab: TabId,
+        index: usize,
+    },
+    /// Query with the filter bar's conditions, from the first page.
+    ApplyFilters {
+        tab: ConnTabId,
+        object_tab: TabId,
+    },
+    /// Drop every condition, close the bar, and query everything.
+    ClearFilters {
+        tab: ConnTabId,
+        object_tab: TabId,
+    },
+    /// Count the object tab's rows exactly (with its filters).
+    CountRows {
+        tab: ConnTabId,
+        object_tab: TabId,
+    },
+    RetryRows {
+        tab: ConnTabId,
+        object_tab: TabId,
+    },
+    RetryStructure {
+        tab: ConnTabId,
+        object_tab: TabId,
+    },
+    /// Read the DDL view's definition again: its Try again, and the view
+    /// that holds none and waits for none.
+    RetryDdl {
+        tab: ConnTabId,
+        object_tab: TabId,
+    },
+    /// Move the cursor of the terminal look's DDL text `by` lines.
+    MoveDdlCursor {
+        tab: ConnTabId,
+        id: TabId,
+        by: isize,
+    },
+    /// Put that cursor on `line` (the last one where it has fewer).
+    DdlCursorTo {
+        tab: ConnTabId,
+        id: TabId,
+        line: usize,
+    },
+    /// Move it to the start of the next part of the text, or of the one
+    /// before (`]]`, `[[`).
+    DdlSection {
+        tab: ConnTabId,
+        id: TabId,
+        forward: bool,
+    },
+    /// Start the selection of lines at the cursor, or end it (`V`).
+    ToggleDdlVisual {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// End the selection of lines.
+    LeaveDdlVisual {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Open the DDL view's text in a new SQL editor, which runs nothing.
+    OpenDdlInEditor {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// The terminal's `:ddl`: the DDL view of the table under the tree's
+    /// cursor, or of the tab in front.
+    OpenDdl(ConnTabId),
+    /// The connection dialog's driver switch.
+    SetDriver(Driver),
+    /// Drop the connection dialog's saved database password: saved with
+    /// nothing typed, the connection then needs no password.
+    ForgetSavedPassword,
+    SubmitPassword,
+    CancelPassword,
+    /// Reconnect this tab to another database on the same server.
+    SwitchDatabase {
+        tab: ConnTabId,
+        database: String,
+    },
+}
+
+/// A connection tab that is (or was) connected.
+#[derive(Debug)]
+pub struct Workspace {
+    pub session: SessionId,
+    pub conn_id: ConnectionId,
+    /// Copied from the saved connection when the tab opened, so editing or
+    /// deleting the saved entry never breaks an open tab.
+    pub name: String,
+    pub environment: crate::env::Environment,
+    /// What the session was opened as, as the session itself said when
+    /// it connected. While the tab is connecting it is what the connect
+    /// asked for: the saved connection's box as it stood then, over the
+    /// tab's own environment, or what it had for a session opened again
+    /// for a use (see `keep_access`). Fixed until the tab connects again.
+    pub access: tabletist_db::Access,
+    pub spec: ConnectSpec,
+    pub driver: Driver,
+    /// Whether the session runs over TLS, as negotiated. Set when the
+    /// session connects; `prefer` may have fallen back to plain text.
+    pub encrypted: bool,
+    pub status: SessionStatus,
+    /// When the connect in flight was sent to the backend (after any
+    /// password prompt), for the time the tab shows.
+    pub connect_started: Option<std::time::Instant>,
+    pub tree: Tree,
+    /// Open tabs, in strip order.
+    pub tabs: Vec<Tab>,
+    /// The number the next SQL editor gets ("Query 1", "Query 2", ...).
+    pub next_query: u32,
+    /// "PostgreSQL 17.2", asked for when the first SQL editor opens.
+    pub server_version: Fetch<String>,
+    /// The zone a MySQL session moves its `TIMESTAMP` values to and from,
+    /// asked for once the session is up: `Some(None)` where the server
+    /// names one the zone database does not know.
+    pub session_zone: Fetch<Option<jiff::tz::TimeZone>>,
+    /// The columns of tables and views, for the SQL editors' completion:
+    /// fetched for the tables a statement names, and filled by a table
+    /// tab's structure. A fetch that failed stays failed, so it is not
+    /// asked for again. Cleared with the tree, and with the session.
+    pub columns: HashMap<ObjectRef, Fetch<Vec<tabletist_db::ColumnInfo>>>,
+    /// Bumped whenever the names a completion list reads change (the
+    /// tree's schemas and objects, and `columns`), so an open list is
+    /// worked out again. Change it through `catalog_changed`.
+    pub catalog_generation: u64,
+    /// The tab the workspace shows: an object tab or a SQL editor.
+    pub active_tab: Option<TabId>,
+    /// Whether the row panel is open.
+    pub row_panel: bool,
+    /// An object to open as soon as the session connects (demo mode).
+    pub pending_open: Option<(ObjectRef, ObjectKind)>,
+    pub password_mode: PasswordMode,
+    /// The secrets this tab connected with (kept in memory for Reconnect).
+    pub secrets: tabletist_db::Secrets,
+    /// Databases on the server (PostgreSQL), for the switcher.
+    pub databases: Fetch<Vec<String>>,
+    /// Save the typed password in the keyring once the server accepts it.
+    pub save_password: bool,
+    /// Why the next connect must ask for the password (the saved or typed
+    /// one was rejected, or a dialog was open when it was needed).
+    pub needs_prompt: Option<String>,
+    /// The keyring had no database password for this keyring connection
+    /// when the attempt read it. A blank answer the server then accepts
+    /// means the server needs none (see `App::adopt_no_password`).
+    pub keyring_empty: bool,
+    /// How the SSH password or key passphrase is kept.
+    pub ssh_mode: PasswordMode,
+    /// Save the typed SSH secret in the keyring once the server accepts it.
+    pub save_ssh: bool,
+    /// Why the next connect must ask for the SSH secret.
+    pub needs_ssh_prompt: Option<String>,
+    /// Where the arrow keys go.
+    pub pane: Pane,
+    /// The SQL editors closed in this window that had a script, newest
+    /// first, at most [`crate::recents::KEPT`]: the start screen lists
+    /// them with the tables and views of `recents.json`, which are the
+    /// connection's, and opens one again with its script.
+    pub recent_sql: Vec<ClosedSql>,
+    /// What is typed in the start screen's search, while no tab is open:
+    /// the field edits it. Empty shows the recents; anything else shows
+    /// the tables and views that match (the `⌘P` index), grouped.
+    pub start_search: String,
+    /// Which match the start screen's search has picked, an index into
+    /// `App::start_matches`. Clamped as it moves; reset to
+    /// the first when what is typed changes.
+    pub start_selected: usize,
+    /// Give the start screen's search field the keyboard on the next
+    /// frame: when `/` asks for it in the Omarchy look. On macOS a letter
+    /// typed on the screen asks for the field directly, in `src/ui/keys.rs`.
+    pub focus_start_search: bool,
+    /// Take the keyboard off the start screen's search field on the next
+    /// frame, so the screen's own keys answer again: when `esc` clears
+    /// the search in the Omarchy look.
+    pub blur_start_search: bool,
+    /// Open the menu of the server's other databases under the connection
+    /// bar's chip on the next frame: quick open's Switch database asked.
+    pub database_menu_asked: bool,
+    pub sidebar_hidden: bool,
+    /// The grid shows timestamps in full rather than to the second.
+    pub full_precision: bool,
+    /// The zone a value with an offset is shown in: the settings' zone,
+    /// set when the workspace opens and when the option changes. Read
+    /// through [`Workspace::zone_shown`], which says whether its engine's
+    /// values are moved to it.
+    pub zone: Option<jiff::tz::TimeZone>,
+    /// Focus the WHERE line on the next frame.
+    pub focus_where: bool,
+    /// The terminal look's `:` prompt: the text after the colon while it
+    /// is open. Only the text is the view's to change.
+    pub command: Option<String>,
+    /// Focus the prompt on the next frame.
+    pub focus_command: bool,
+    /// The SQL tab whose editor opened the prompt from vim's normal mode:
+    /// the keyboard goes back to it when the prompt closes.
+    pub command_returns: Option<TabId>,
+    /// What the prompt was given that is not a command, until the next
+    /// key.
+    pub command_error: Option<String>,
+    /// A save was asked for and could not be made. The terminal's line
+    /// says why ahead of what else it has to say, until the next key.
+    pub save_refused: bool,
+    /// `:diff` was run with nothing pending. The terminal's line says so,
+    /// until the next key.
+    pub review_refused: bool,
+    /// A column was named for a table's label and was not taken: the
+    /// tab whose table it was named for, its name as it was given, and
+    /// why. Said there, and nowhere else, until the next key.
+    pub label_refused: Option<(TabId, String, crate::labels::Refused)>,
+    /// Fold or unfold the row panel's documents on the next frame (`za`).
+    pub fold_documents: Option<TabId>,
+    /// When the session last connected, in seconds since the Unix epoch
+    /// (the connection bar's card says how long ago).
+    pub connected_at: Option<u64>,
+    /// When the session was last used: a command sent for it, or a key, a
+    /// click or a scroll in the connection's tab while it is in front.
+    pub used: std::time::Instant,
+    /// The connect under way opens again a session closed while idle,
+    /// for a use: what the use sent waits for it in the backend, and what
+    /// the tab shows stays as it is.
+    pub woken: bool,
+    /// The connect under way opens again a session closed while idle,
+    /// whether it was sent at once or waits for a secret, and goes on
+    /// after a refused password is typed again: it asks for the access
+    /// the session had, so a window in front of the person does not
+    /// become writable on its next use. Only a connect the person asks
+    /// for reads the saved connection's box again: Reconnect, and the
+    /// reconnect that trusting a new host key makes. True only until the
+    /// session is up.
+    pub keep_access: bool,
+}
+
+#[derive(Debug)]
+pub enum SessionStatus {
+    Connecting {
+        request: RequestId,
+    },
+    Connected,
+    Disconnected(tabletist_db::Error),
+    /// The user cancelled a password or SSH secret prompt.
+    Cancelled,
+    /// Closed after it went unused for the time the settings give
+    /// (`safety.idle_disconnect`). The tab stays as it was, and connects
+    /// again when something needs its session.
+    Idle,
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub enum TestState {
+    #[default]
+    Idle,
+    Running(RequestId),
+    Passed,
+    Failed(String),
+    /// The SSH host's key is not trusted yet.
+    Untrusted {
+        host: String,
+        port: u16,
+        fingerprint: String,
+    },
+}
+
+/// The schema a connection opens on, of those it lists: the one named as
+/// its database (MySQL's databases are its schemas), else `public` or
+/// `main`, else the only one there is.
+pub fn first_schema(schemas: &[String], database: &str) -> Option<String> {
+    schemas
+        .iter()
+        .find(|schema| !database.is_empty() && **schema == database)
+        .or_else(|| {
+            schemas
+                .iter()
+                .find(|schema| *schema == "public" || *schema == "main")
+        })
+        .or(if schemas.len() == 1 {
+            schemas.first()
+        } else {
+            None
+        })
+        .cloned()
+}
+
+/// Which tables agents may read, as the editor's Tables control has it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TablesMode {
+    #[default]
+    All,
+    AllExcept,
+    Only,
+}
+
+/// The Tables control's state: the mode chosen, and a list for each of
+/// the two that have one, so that a switch from one to the other and back
+/// finds its names again.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TablesChoice {
+    pub mode: TablesMode,
+    pub hidden: Vec<tabletist_db::agent::TableName>,
+    pub only: Vec<tabletist_db::agent::TableName>,
+}
+
+impl TablesChoice {
+    pub fn of(tables: &tabletist_db::agent::Tables) -> Self {
+        use tabletist_db::agent::Tables;
+        match tables {
+            Tables::All => Self::default(),
+            Tables::AllExcept(names) if names.is_empty() => Self::default(),
+            Tables::AllExcept(names) => Self {
+                mode: TablesMode::AllExcept,
+                hidden: names.clone(),
+                only: Vec::new(),
+            },
+            Tables::Only(names) => Self {
+                mode: TablesMode::Only,
+                hidden: Vec::new(),
+                only: names.clone(),
+            },
+        }
+    }
+
+    /// What the control says: "All except" a list that is empty is "All".
+    pub fn tables(&self) -> tabletist_db::agent::Tables {
+        use tabletist_db::agent::Tables;
+        match self.mode {
+            TablesMode::All => Tables::All,
+            TablesMode::AllExcept if self.hidden.is_empty() => Tables::All,
+            TablesMode::AllExcept => Tables::AllExcept(self.hidden.clone()),
+            TablesMode::Only => Tables::Only(self.only.clone()),
+        }
+    }
+
+    /// The names the chosen mode lists, where it lists any.
+    pub fn names(&self) -> Option<&Vec<tabletist_db::agent::TableName>> {
+        match self.mode {
+            TablesMode::All => None,
+            TablesMode::AllExcept => Some(&self.hidden),
+            TablesMode::Only => Some(&self.only),
+        }
+    }
+
+    fn names_mut(&mut self) -> Option<&mut Vec<tabletist_db::agent::TableName>> {
+        match self.mode {
+            TablesMode::All => None,
+            TablesMode::AllExcept => Some(&mut self.hidden),
+            TablesMode::Only => Some(&mut self.only),
+        }
+    }
+
+    /// Adds `written` to the chosen mode's list, once: a name already
+    /// there in another case is the same name. The error says what is
+    /// wrong with it.
+    pub fn add(&mut self, written: &str) -> Result<(), String> {
+        let name: tabletist_db::agent::TableName = written.trim().parse()?;
+        let key = |name: &tabletist_db::agent::TableName| name.to_string().to_lowercase();
+        let Some(names) = self.names_mut() else {
+            return Ok(());
+        };
+        if !names.iter().any(|known| key(known) == key(&name)) {
+            names.push(name);
+        }
+        Ok(())
+    }
+
+    /// Takes the name at `at` out of the chosen mode's list.
+    pub fn remove(&mut self, at: usize) {
+        if let Some(names) = self.names_mut()
+            && at < names.len()
+        {
+            names.remove(at);
+        }
+    }
+}
+
+/// The tables and views the open windows of a connection have loaded in
+/// their sidebars: what Add table… offers, and what a listed name is
+/// checked against to be marked as in no table of the database. Only what
+/// is loaded is known: a schema not loaded neither offers nor marks, and
+/// the system's schemas and tables, which the sidebar does not load, are
+/// left out.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LoadedTables {
+    /// The connection's driver, for which schemas and tables are the
+    /// system's.
+    pub driver: Option<Driver>,
+    /// The schema a name without one is first looked up in.
+    pub home: Option<String>,
+    /// Every schema of the database the windows list, the system's left
+    /// out.
+    pub schemas: Vec<String>,
+    /// Whether a window's list of schemas was cut at
+    /// [`tabletist_db::MAX_LISTED`], counted before the system's are left
+    /// out: then a schema not in `schemas` may be the database's still.
+    pub schemas_cut: bool,
+    /// Each loaded schema with its tables' and views' names.
+    pub loaded: Vec<(String, Vec<String>)>,
+    /// The tables and views whose columns a window fetched, each with its
+    /// schema and its columns' names.
+    pub columns: Vec<(ObjectRef, Vec<String>)>,
+    /// The tables and views whose columns are on their way.
+    pub columns_loading: Vec<ObjectRef>,
+    /// The tables and views whose columns could not be fetched.
+    pub columns_failed: Vec<ObjectRef>,
+}
+
+/// A row of Add column…'s list: a table, to be chosen for its columns, or
+/// one of its columns, to be masked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OfferedColumn {
+    Table(tabletist_db::agent::TableName),
+    Column(tabletist_db::agent::ColumnName),
+}
+
+/// As the row says it: `orders.` for a table, as the field takes it to
+/// list its columns, and `orders.email` for a column.
+impl std::fmt::Display for OfferedColumn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Table(table) => write!(f, "{table}."),
+            Self::Column(column) => write!(f, "{column}"),
+        }
+    }
+}
+
+/// What Add column…'s list shows for what is typed: its rows, and the
+/// tables whose columns they are, where the text names a loaded one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ColumnsOffered {
+    pub rows: Vec<OfferedColumn>,
+    /// The table the text names, as typed, where it names a loaded one:
+    /// then the rows are its columns.
+    pub of: Option<tabletist_db::agent::TableName>,
+    /// The loaded tables that name stands for: one in every schema for a
+    /// name without one.
+    pub tables: Vec<ObjectRef>,
+}
+
+/// How many tables Add table…'s list shows at once.
+pub const OFFERED: usize = 8;
+
+/// Whether two names are the same but for case, as lowercase letters:
+/// each is folded as it is read, so that a long list costs no allocation.
+fn same_name(one: &str, other: &str) -> bool {
+    one.chars()
+        .flat_map(char::to_lowercase)
+        .eq(other.chars().flat_map(char::to_lowercase))
+}
+
+impl LoadedTables {
+    /// Whether `schema` is the system's, which no entry is checked in.
+    fn system_schema(&self, schema: &str) -> bool {
+        self.driver
+            .is_some_and(|driver| is_system_schema(driver, &schema.to_lowercase()))
+    }
+
+    /// Whether `name` is one of the system's own tables, as the checks
+    /// that stop agents take them (SQLite's `sqlite_` ones and `dbstat`,
+    /// a `pg_` name without a schema), which hiding never stops agents for.
+    fn system_table(&self, name: &tabletist_db::agent::TableName) -> bool {
+        self.driver
+            .is_some_and(|driver| name.is_system(driver.dialect()))
+    }
+
+    /// The loaded tables whose names match `typed`, best first, at most
+    /// [`OFFERED`], and none an entry of `listed` already covers. Each is
+    /// written as an entry: with its schema, except a home schema's table
+    /// whose name no other loaded schema has, where the person typed no
+    /// schema and `qualify` (an "Only" list, where a name without a schema
+    /// would read every schema's) is not asked. Nothing for nothing typed.
+    pub fn offered(
+        &self,
+        typed: &str,
+        listed: &[tabletist_db::agent::TableName],
+        qualify: bool,
+    ) -> Vec<tabletist_db::agent::TableName> {
+        use tabletist_db::agent::TableName;
+        let typed = typed.trim().replace('"', "");
+        if typed.is_empty() {
+            return Vec::new();
+        }
+        let home = |schema: &str| {
+            self.home
+                .as_deref()
+                .is_some_and(|home| same_name(home, schema))
+        };
+        // Where a home table may go without its schema, the names that
+        // another loaded schema has too, folded once: those keep theirs.
+        let may_be_bare = !qualify && !typed.contains('.');
+        let shared: HashSet<String> = match may_be_bare {
+            true => self
+                .loaded
+                .iter()
+                .filter(|(schema, _)| !home(schema))
+                .flat_map(|(_, names)| names.iter().map(|name| name.to_lowercase()))
+                .collect(),
+            false => HashSet::new(),
+        };
+        // An entry covers a table of `schema` where its name is the
+        // table's and its schema, if it has one, is `schema`.
+        let covered = |schema: &str, name: &str| {
+            listed.iter().any(|entry| {
+                same_name(&entry.name, name)
+                    && entry
+                        .schema
+                        .as_deref()
+                        .is_none_or(|own| same_name(own, schema))
+            })
+        };
+        let mut scored: Vec<(i64, String, TableName)> = self
+            .loaded
+            .iter()
+            .flat_map(|(schema, names)| names.iter().map(move |name| (schema, name)))
+            .filter(|(schema, name)| listed.is_empty() || !covered(schema, name))
+            .filter_map(|(schema, name)| {
+                let qualified = format!("{schema}.{name}");
+                let score = crate::util::fuzzy_score(&typed, name)
+                    .max(crate::util::fuzzy_score(&typed, &qualified))?;
+                let bare = may_be_bare && home(schema) && !shared.contains(&name.to_lowercase());
+                let entry = TableName {
+                    schema: (!bare).then(|| schema.clone()),
+                    name: name.clone(),
+                };
+                Some((score, qualified.to_lowercase(), entry))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        scored.truncate(OFFERED);
+        scored.into_iter().map(|(_, _, entry)| entry).collect()
+    }
+
+    /// Whether `name` is a table or view of the database, where what the
+    /// windows loaded can say: `Some(false)` marks it. A name in a schema
+    /// the database does not list is missing; one in a schema not loaded is
+    /// not known; one without a schema is any schema's, so it is missing
+    /// only when every schema is loaded. The system's are never marked. A
+    /// list the catalog cut at [`tabletist_db::MAX_LISTED`] is not the
+    /// whole: what is not in it is not known.
+    pub fn has(&self, name: &tabletist_db::agent::TableName) -> Option<bool> {
+        let same = same_name;
+        let whole = |count: usize| count < tabletist_db::MAX_LISTED as usize;
+        let in_schema = |names: &Vec<String>| names.iter().any(|known| same(known, &name.name));
+        // In it: `Some(true)`; not in a whole list: `Some(false)`.
+        let found = |names: &Vec<String>| match in_schema(names) {
+            true => Some(true),
+            false => whole(names.len()).then_some(false),
+        };
+        if self.system_table(name) {
+            return None;
+        }
+        match &name.schema {
+            Some(schema) if self.system_schema(schema) => None,
+            Some(schema) => match self.loaded.iter().find(|(loaded, _)| same(loaded, schema)) {
+                Some((_, names)) => found(names),
+                None => {
+                    let listed = !self.schemas.is_empty()
+                        && !self.schemas_cut
+                        && !self.schemas.iter().any(|known| same(known, schema));
+                    listed.then_some(false)
+                }
+            },
+            None => {
+                if self.loaded.iter().any(|(_, names)| in_schema(names)) {
+                    return Some(true);
+                }
+                self.whole().then_some(false)
+            }
+        }
+    }
+
+    /// Whether every schema of the database is loaded, each wholly: then
+    /// what no loaded schema has, no schema has.
+    fn whole(&self) -> bool {
+        let whole = |count: usize| count < tabletist_db::MAX_LISTED as usize;
+        !self.schemas.is_empty()
+            && !self.schemas_cut
+            && self.schemas.iter().all(|schema| {
+                self.loaded
+                    .iter()
+                    .any(|(loaded, names)| same_name(loaded, schema) && whole(names.len()))
+            })
+    }
+
+    /// The loaded tables and views `schema` and `table` name: the one of
+    /// that schema, or, without a schema, the one of that name in each.
+    /// None of the system's.
+    pub fn named(&self, schema: Option<&str>, table: &str) -> Vec<ObjectRef> {
+        let name = tabletist_db::agent::TableName {
+            schema: schema.map(str::to_owned),
+            name: table.to_owned(),
+        };
+        if self.system_table(&name) {
+            return Vec::new();
+        }
+        self.loaded
+            .iter()
+            .filter(|(loaded, _)| !self.system_schema(loaded))
+            .filter(|(loaded, _)| schema.is_none_or(|schema| same_name(schema, loaded)))
+            .flat_map(|(loaded, names)| {
+                names
+                    .iter()
+                    .filter(|known| same_name(known, table))
+                    .map(move |known| ObjectRef::new(loaded.clone(), known.clone()))
+            })
+            .collect()
+    }
+
+    /// The columns a window fetched of `object`, where it fetched them:
+    /// that table's own, by its name as the catalog has it, and not those
+    /// of one whose name differs only in case.
+    fn columns_of(&self, object: &ObjectRef) -> Option<&[String]> {
+        self.columns
+            .iter()
+            .find(|(known, _)| known == object)
+            .map(|(_, columns)| columns.as_slice())
+    }
+
+    /// Whether `entry` names a column of the database, where what the
+    /// windows loaded and fetched can say: `Some(false)` marks it, as the
+    /// agent server finds it missing. A table not in the database has no
+    /// column; one whose columns were not fetched is not known; an entry
+    /// without a schema is the table of that name in any schema, so it is
+    /// missing only when every schema is loaded.
+    pub fn has_column(&self, entry: &tabletist_db::agent::ColumnName) -> Option<bool> {
+        let table = tabletist_db::agent::TableName {
+            schema: entry.schema.clone(),
+            name: entry.table.clone(),
+        };
+        if !self.has(&table)? {
+            return Some(false);
+        }
+        let mut known = true;
+        for object in self.named(entry.schema.as_deref(), &entry.table) {
+            match self.columns_of(&object) {
+                Some(columns) if columns.iter().any(|name| same_name(name, &entry.column)) => {
+                    return Some(true);
+                }
+                Some(_) => {}
+                None => known = false,
+            }
+        }
+        (known && (entry.schema.is_some() || self.whole())).then_some(false)
+    }
+
+    /// Add column…'s list for `typed`. A table and a dot, `orders.em`,
+    /// where the table is loaded: its columns that match what follows the
+    /// dot, written with the table as typed (with its schema where one is
+    /// typed), none an entry of `listed` already masks. Else the loaded
+    /// tables that match, as Add table… offers them, each to be chosen for
+    /// its columns. At most [`OFFERED`] rows; nothing for nothing typed.
+    pub fn offered_columns(
+        &self,
+        typed: &str,
+        listed: &[tabletist_db::agent::ColumnName],
+    ) -> ColumnsOffered {
+        use tabletist_db::agent::{ColumnName, TableName};
+        // Read as the file reads a name, quotes and all: a table and a dot,
+        // or a table, a dot and the start of a column.
+        let typed_now = typed.trim();
+        let parts = match typed_now.strip_suffix('.') {
+            Some(front) => front
+                .parse::<TableName>()
+                .ok()
+                .map(|of| (of, String::new())),
+            None => typed_now.parse::<ColumnName>().ok().map(|entry| {
+                let of = TableName {
+                    schema: entry.schema,
+                    name: entry.table,
+                };
+                (of, entry.column)
+            }),
+        };
+        if let Some((of, rest)) = parts {
+            let rest = rest.as_str();
+            let tables = self.named(of.schema.as_deref(), &of.name);
+            if !tables.is_empty() {
+                let masks = |column: &str| {
+                    listed.iter().any(|entry| {
+                        same_name(&entry.table, &of.name)
+                            && same_name(&entry.column, column)
+                            && match (&entry.schema, &of.schema) {
+                                (None, _) => true,
+                                (Some(own), Some(schema)) => same_name(own, schema),
+                                (Some(_), None) => false,
+                            }
+                    })
+                };
+                let mut seen = HashSet::new();
+                let mut scored: Vec<(i64, String, String)> = tables
+                    .iter()
+                    .filter_map(|table| self.columns_of(table))
+                    .flatten()
+                    .filter(|column| seen.insert(column.to_lowercase()))
+                    .filter(|column| !masks(column))
+                    .filter_map(|column| {
+                        let score = match rest.is_empty() {
+                            true => 0,
+                            false => crate::util::fuzzy_score(rest, column)?,
+                        };
+                        Some((score, column.to_lowercase(), column.clone()))
+                    })
+                    .collect();
+                scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+                scored.truncate(OFFERED);
+                // The table's own name, as the catalog has it.
+                let table = tables[0].name.clone();
+                let schema = of.schema.as_ref().map(|_| tables[0].schema.clone());
+                let rows = scored
+                    .into_iter()
+                    .map(|(_, _, column)| {
+                        OfferedColumn::Column(ColumnName {
+                            schema: schema.clone(),
+                            table: table.clone(),
+                            column,
+                        })
+                    })
+                    .collect();
+                return ColumnsOffered {
+                    rows,
+                    of: Some(of),
+                    tables,
+                };
+            }
+        }
+        ColumnsOffered {
+            rows: self
+                .offered(typed, &[], false)
+                .into_iter()
+                .map(OfferedColumn::Table)
+                .collect(),
+            ..ColumnsOffered::default()
+        }
+    }
+}
+
+/// Where the Tables or the Masked columns control puts the keyboard on
+/// the next frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableFocus {
+    /// The field for a name: opened, or still open after a name.
+    Field,
+    /// Add table… or Add column…, once the field is closed with Escape.
+    Add,
+}
+
+/// The connection dialog's fields while it is open.
+pub struct ConnectionForm {
+    /// `Some` when editing a saved connection, `None` for a new one.
+    pub editing: Option<ConnectionId>,
+    pub name: String,
+    /// The environment the user chose; `None` until they do, while it
+    /// follows where the connection points (see
+    /// [`ConnectionForm::environment`]).
+    pub environment: Option<crate::env::Environment>,
+    /// Read-only as saved: `None` until the user sets it.
+    pub read_only: Option<bool>,
+    /// Whether production is read-only while the switch is not set: the
+    /// settings' "New production connections open read-only" for a new
+    /// connection, the built-in rule (yes) for a saved one.
+    pub production_read_only: bool,
+    /// What agents may do on the connection: its access as the person
+    /// chooses it here. Rows and the timeout are typed in the two fields
+    /// below.
+    pub agents: crate::connections::Agents,
+    /// The access in force when the dialog opened: a choice other than it
+    /// is the person's own, and the same one keeps what the file says.
+    pub agents_opened: crate::connections::AgentAccess,
+    /// The Tables control: what agents may not read.
+    pub agents_tables: TablesChoice,
+    /// The tables in force when the dialog opened: others are the
+    /// person's own, and the same keep what the file says.
+    pub agents_tables_opened: tabletist_db::agent::Tables,
+    /// The Masked columns control: the columns whose values agents get
+    /// as `•••`.
+    pub agents_masked: Vec<tabletist_db::agent::ColumnName>,
+    /// The masked columns in force when the dialog opened: others are the
+    /// person's own, and the same keep what the file says.
+    pub agents_masked_opened: Vec<tabletist_db::agent::ColumnName>,
+    /// The name being typed after Add column…, while its field is open.
+    pub agents_column_typed: Option<String>,
+    /// Why the column's name typed does not read, said under the names.
+    pub agents_column_error: Option<String>,
+    /// Where the Masked columns control puts the keyboard on the next
+    /// frame.
+    pub agents_column_focus: Option<TableFocus>,
+    /// The row of Add column…'s list the keyboard is on, by its place.
+    pub agents_column_pick: Option<usize>,
+    /// The name being typed after Add table…, while its field is open.
+    pub agents_table_typed: Option<String>,
+    /// Why the name typed does not read, said under the names.
+    pub agents_table_error: Option<String>,
+    /// Where the Tables control puts the keyboard on the next frame.
+    pub agents_table_focus: Option<TableFocus>,
+    /// What an open window of the connection has loaded, for the lists of
+    /// Add table… and Add column…, and the mark of a name in no table or
+    /// column; `None` with none open.
+    pub agents_loaded: Option<LoadedTables>,
+    /// The table of Add table…'s list the keyboard is on, by its place.
+    pub agents_table_pick: Option<usize>,
+    /// Rows per answer, as typed.
+    pub agents_rows: String,
+    /// The statement's timeout in seconds, as typed.
+    pub agents_timeout: String,
+    /// Bring the Agents part into sight on the next frame: Allow agents…
+    /// and the menu's Tables, columns and limits… open the dialog there.
+    pub show_agents: bool,
+    /// Put the keyboard in Name on the next frame (a new connection).
+    pub focus_name: bool,
+    pub driver: Driver,
+    pub sqlite_path: String,
+    pub host: String,
+    /// As typed; checked on save.
+    pub port: String,
+    pub user: String,
+    /// Typed in this dialog only. Empty while editing means "keep the saved one".
+    pub password: String,
+    pub database: String,
+    pub tls: TlsMode,
+    pub ca_file: String,
+    pub password_mode: PasswordMode,
+    /// Editing a connection whose password is in the keyring, until the
+    /// person deletes it from the Password field (`forget_password`).
+    pub has_saved_password: bool,
+    /// The connection as saved, when editing one. Saved secrets belong to
+    /// its servers and are never sent to another one.
+    pub saved_spec: Option<ConnectSpec>,
+    /// Text in the URL field.
+    pub url: String,
+    /// The URL field is showing: the dialog's URL tab, the terminal look's
+    /// `u`.
+    pub url_mode: bool,
+    /// A validation or URL error shown above the footer.
+    pub message: Option<String>,
+    pub test: TestState,
+    /// When the running Test was sent to the server.
+    pub test_started: Option<std::time::Instant>,
+    /// How long the Test that passed took.
+    pub test_took: Option<std::time::Duration>,
+    /// The file dialog request in flight, if any.
+    pub pick_request: Option<RequestId>,
+    /// Which field the file dialog fills.
+    pub pick_target: PickTarget,
+    /// Connect through an SSH tunnel.
+    pub ssh: bool,
+    pub ssh_host: String,
+    /// As typed; checked on save.
+    pub ssh_port: String,
+    pub ssh_user: String,
+    pub ssh_auth: SshAuthKind,
+    pub ssh_key_file: String,
+    /// The SSH password or key passphrase typed in this dialog.
+    pub ssh_secret: String,
+    pub ssh_secret_mode: PasswordMode,
+    /// Editing a connection whose SSH secret is in the keyring.
+    pub has_saved_ssh_secret: bool,
+    /// The SSH login method that secret belongs to.
+    pub saved_ssh_auth: Option<SshAuthKind>,
+    /// The Host aliases in ~/.ssh/config, for the SSH host list.
+    pub ssh_hosts: Vec<ConfigHost>,
+    /// The request whose answer fills `ssh_hosts`.
+    pub ssh_hosts_request: Option<RequestId>,
+    /// What a running Test connects to, fixed when it started.
+    pub test_spec: Option<ConnectSpec>,
+    /// The secrets a running Test uses, filled as saved ones load.
+    pub test_secrets: tabletist_db::Secrets,
+    /// Saved secrets the running Test still waits for.
+    pub test_waiting: u8,
+}
+
+/// The field a file dialog fills.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PickTarget {
+    #[default]
+    Sqlite,
+    KeyFile,
+    CaFile,
+}
+
+/// How the SSH tunnel logs in, as the dialog offers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SshAuthKind {
+    #[default]
+    Password,
+    KeyFile,
+    Agent,
+}
+
+impl SshAuthKind {
+    pub const ALL: [Self; 3] = [Self::Password, Self::KeyFile, Self::Agent];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Password => "Password",
+            Self::KeyFile => "Key file",
+            Self::Agent => "Agent",
+        }
+    }
+}
+
+/// What `~/.ssh/config` gives the typed SSH host, for the dialog's hints.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SshHints {
+    pub host_name: Option<String>,
+    pub port: Option<u16>,
+    pub user: Option<String>,
+    pub key_file: Option<String>,
+    /// A ProxyJump or ProxyCommand the tunnel cannot follow.
+    pub proxy: Option<Proxy>,
+}
+
+impl Default for ConnectionForm {
+    fn default() -> Self {
+        Self {
+            editing: None,
+            name: String::new(),
+            environment: None,
+            read_only: None,
+            production_read_only: true,
+            agents: crate::connections::Agents::default(),
+            agents_opened: crate::connections::AgentAccess::Off,
+            agents_tables: TablesChoice::default(),
+            agents_tables_opened: tabletist_db::agent::Tables::All,
+            agents_masked: Vec::new(),
+            agents_masked_opened: Vec::new(),
+            agents_column_typed: None,
+            agents_column_error: None,
+            agents_column_focus: None,
+            agents_column_pick: None,
+            agents_table_typed: None,
+            agents_table_error: None,
+            agents_table_focus: None,
+            agents_loaded: None,
+            agents_table_pick: None,
+            agents_rows: crate::connections::Agents::default().rows.to_string(),
+            agents_timeout: crate::connections::Agents::default()
+                .timeout_secs
+                .to_string(),
+            show_agents: false,
+            focus_name: true,
+            driver: Driver::Sqlite,
+            sqlite_path: String::new(),
+            host: "localhost".into(),
+            port: String::new(),
+            user: String::new(),
+            password: String::new(),
+            database: String::new(),
+            tls: TlsMode::Prefer,
+            ca_file: String::new(),
+            password_mode: PasswordMode::None,
+            has_saved_password: false,
+            saved_spec: None,
+            url: String::new(),
+            url_mode: false,
+            message: None,
+            test: TestState::Idle,
+            test_started: None,
+            test_took: None,
+            pick_request: None,
+            pick_target: PickTarget::Sqlite,
+            ssh: false,
+            ssh_host: String::new(),
+            ssh_port: String::new(),
+            ssh_user: String::new(),
+            ssh_auth: SshAuthKind::Password,
+            ssh_key_file: String::new(),
+            ssh_secret: String::new(),
+            ssh_secret_mode: PasswordMode::Keyring,
+            has_saved_ssh_secret: false,
+            saved_ssh_auth: None,
+            ssh_hosts: Vec::new(),
+            ssh_hosts_request: None,
+            test_spec: None,
+            test_secrets: tabletist_db::Secrets::default(),
+            test_waiting: 0,
+        }
+    }
+}
+
+impl ConnectionForm {
+    /// Set aside while the Connections list asks whether to delete its
+    /// connection: an answer to what it waits for would find no form to
+    /// fill, so it waits for nothing. A running Test stops, as if never
+    /// pressed, and comes back idle.
+    pub fn set_aside(&mut self) {
+        if let TestState::Running(_) = self.test {
+            self.test = TestState::Idle;
+            self.test_started = None;
+            self.test_spec = None;
+            self.test_secrets = tabletist_db::Secrets::default();
+            self.test_waiting = 0;
+        }
+        self.pick_request = None;
+        self.ssh_hosts_request = None;
+    }
+
+    /// The config's Host whose alias is the typed SSH host, compared as
+    /// OpenSSH compares Host names (ignoring case).
+    pub fn ssh_config_host(&self) -> Option<&ConfigHost> {
+        let host = self.ssh_host.trim();
+        self.ssh_hosts
+            .iter()
+            .find(|known| known.alias.eq_ignore_ascii_case(host))
+    }
+
+    /// Puts `alias` in SSH host and clears the fields its config fills, so
+    /// the config's values show; presets the login method the config
+    /// implies (its agent, else its key file).
+    pub fn pick_ssh_host(&mut self, alias: &str) {
+        self.ssh_host = alias.to_owned();
+        self.ssh_port.clear();
+        self.ssh_user.clear();
+        self.ssh_key_file.clear();
+        let preset = self.ssh_config_host().and_then(|host| {
+            let config = &host.config;
+            if matches!(
+                config.identity_agent,
+                Some(AgentSocket::Path(_) | AgentSocket::Environment)
+            ) {
+                Some(SshAuthKind::Agent)
+            } else {
+                config
+                    .identity_file
+                    .is_some()
+                    .then_some(SshAuthKind::KeyFile)
+            }
+        });
+        if let Some(kind) = preset {
+            self.ssh_auth = kind;
+        }
+    }
+
+    /// The typed SSH host's values from ~/.ssh/config: empty for a host
+    /// the config does not spell out.
+    pub fn ssh_hints(&self) -> SshHints {
+        let Some(host) = self.ssh_config_host() else {
+            return SshHints::default();
+        };
+        let config = &host.config;
+        SshHints {
+            host_name: config.host_name.clone(),
+            port: config.port,
+            user: config.user.clone(),
+            key_file: config
+                .identity_file
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            proxy: config.proxy.clone().filter(|proxy| *proxy != Proxy::Off),
+        }
+    }
+
+    /// Whether the password crosses a network with nothing to stop someone
+    /// on the way reading it: a remote host, no SSH tunnel, and TLS that is
+    /// off or does not check the server's certificate (PostgreSQL's
+    /// `require` with a CA file does, like libpq).
+    pub fn password_can_be_intercepted(&self) -> bool {
+        let unchecked = match self.driver {
+            Driver::Sqlite => false,
+            Driver::Postgres => match self.tls {
+                TlsMode::Disable | TlsMode::Prefer => true,
+                TlsMode::Require => self.ca_file.trim().is_empty(),
+                TlsMode::VerifyCa | TlsMode::VerifyFull => false,
+            },
+            Driver::MySql => match self.tls {
+                TlsMode::Disable | TlsMode::Prefer | TlsMode::Require => true,
+                TlsMode::VerifyCa | TlsMode::VerifyFull => false,
+            },
+        };
+        unchecked && !self.ssh && !is_local_host(&self.host)
+    }
+
+    /// The environment the connection is saved with: the chosen one, else
+    /// `Local` while it points at this machine.
+    pub fn environment(&self) -> crate::env::Environment {
+        self.environment.unwrap_or_else(|| {
+            crate::env::Environment::for_target(self.driver, &self.host, self.ssh)
+        })
+    }
+
+    /// Whether the connection is saved read-only: as set, else the
+    /// environment's default, which for production is
+    /// [`Self::production_read_only`].
+    pub fn read_only(&self) -> bool {
+        self.read_only.unwrap_or_else(|| {
+            // Production is the one environment read-only by default.
+            self.environment().read_only_by_default() && self.production_read_only
+        })
+    }
+
+    /// The switch as the connection is saved with it: as set; for a new
+    /// connection to production, as it shows, so that it keeps what the
+    /// settings said when it was made; else not set, and the environment's
+    /// rule applies.
+    fn saved_read_only(&self) -> Option<bool> {
+        let new_production = self.editing.is_none() && self.environment().read_only_by_default();
+        self.read_only
+            .or_else(|| new_production.then(|| self.read_only()))
+    }
+
+    pub fn from_saved(saved: &crate::connections::SavedConnection) -> Self {
+        let spec = &saved.spec;
+        Self {
+            editing: Some(saved.id.clone()),
+            name: saved.name.clone(),
+            environment: Some(saved.environment),
+            read_only: saved.read_only,
+            production_read_only: true,
+            agents: saved.agents.clone(),
+            agents_opened: saved.agents.access,
+            agents_tables: TablesChoice::of(&saved.agents.tables),
+            agents_tables_opened: saved.agents.tables.clone(),
+            agents_masked: saved.agents.masked.clone(),
+            agents_masked_opened: saved.agents.masked.clone(),
+            agents_column_typed: None,
+            agents_column_error: None,
+            agents_column_focus: None,
+            agents_column_pick: None,
+            agents_table_typed: None,
+            agents_table_error: None,
+            agents_table_focus: None,
+            agents_loaded: None,
+            agents_table_pick: None,
+            agents_rows: saved.agents.rows.to_string(),
+            agents_timeout: saved.agents.timeout_secs.to_string(),
+            show_agents: false,
+            focus_name: false,
+            driver: spec.driver,
+            sqlite_path: spec
+                .sqlite_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
+            host: spec.host.clone(),
+            port: if spec.port == 0 {
+                String::new()
+            } else {
+                spec.port.to_string()
+            },
+            user: spec.user.clone(),
+            database: spec.database.clone(),
+            tls: spec.tls,
+            ca_file: spec
+                .ca_file
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
+            // A connection saved without a password opens in the keyring
+            // mode, so a password typed into it is kept. With nothing typed
+            // it still saves without one (see `to_saved`).
+            password_mode: match saved.password {
+                PasswordMode::Ask => PasswordMode::Ask,
+                PasswordMode::Keyring | PasswordMode::None => PasswordMode::Keyring,
+            },
+            has_saved_password: saved.password == PasswordMode::Keyring,
+            saved_spec: Some(spec.clone()),
+            ssh: spec.ssh.is_some(),
+            ssh_host: spec
+                .ssh
+                .as_ref()
+                .map(|ssh| ssh.host.clone())
+                .unwrap_or_default(),
+            ssh_port: spec
+                .ssh
+                .as_ref()
+                .and_then(|ssh| ssh.port)
+                .map(|port| port.to_string())
+                .unwrap_or_default(),
+            ssh_user: spec
+                .ssh
+                .as_ref()
+                .map(|ssh| ssh.user.clone())
+                .unwrap_or_default(),
+            ssh_auth: match spec.ssh.as_ref().map(|ssh| &ssh.auth) {
+                Some(SshAuth::KeyFile { .. }) => SshAuthKind::KeyFile,
+                Some(SshAuth::Agent) => SshAuthKind::Agent,
+                _ => SshAuthKind::Password,
+            },
+            ssh_key_file: match spec.ssh.as_ref().map(|ssh| &ssh.auth) {
+                Some(SshAuth::KeyFile { path }) => path.display().to_string(),
+                _ => String::new(),
+            },
+            ssh_secret_mode: match saved.ssh_secret {
+                PasswordMode::Ask => PasswordMode::Ask,
+                PasswordMode::Keyring | PasswordMode::None => PasswordMode::Keyring,
+            },
+            has_saved_ssh_secret: saved.ssh_secret == PasswordMode::Keyring,
+            saved_ssh_auth: spec.ssh.as_ref().map(|ssh| match ssh.auth {
+                SshAuth::Password => SshAuthKind::Password,
+                SshAuth::KeyFile { .. } => SshAuthKind::KeyFile,
+                SshAuth::Agent => SshAuthKind::Agent,
+            }),
+            ..Self::default()
+        }
+    }
+
+    /// What to connect to, or why the fields do not describe a connection.
+    pub fn to_spec(&self) -> Result<ConnectSpec, String> {
+        match self.driver {
+            Driver::Sqlite => {
+                let path = self.sqlite_path.trim();
+                if path.is_empty() {
+                    return Err("Choose a SQLite file.".into());
+                }
+                Ok(ConnectSpec::sqlite(path))
+            }
+            Driver::Postgres | Driver::MySql => {
+                let host = self.host.trim();
+                if host.is_empty() {
+                    return Err("Enter a host.".into());
+                }
+                let port: u16 = self
+                    .port
+                    .trim()
+                    .parse()
+                    .map_err(|_| "Enter a port number.".to_owned())?;
+                let user = self.user.trim();
+                if user.is_empty() {
+                    return Err("Enter a user name.".into());
+                }
+                let ca_file = self.ca_file.trim();
+                // Without the host check, the system roots vouch for any
+                // public certificate, so verify-ca needs its own CA.
+                if self.tls == TlsMode::VerifyCa && ca_file.is_empty() {
+                    return Err(
+                        "verify-ca needs a CA file. Choose verify-full to use the system \
+                         certificates."
+                            .into(),
+                    );
+                }
+                let ssh = if self.ssh {
+                    let host = self.ssh_host.trim();
+                    if host.is_empty() {
+                        return Err("Enter the SSH host.".into());
+                    }
+                    // Empty port, user and key file are left to ~/.ssh/config.
+                    let port = self
+                        .typed_ssh_port()
+                        .map_err(|_| "Enter the SSH port number.".to_owned())?;
+                    let auth = match self.ssh_auth {
+                        SshAuthKind::Password => SshAuth::Password,
+                        SshAuthKind::Agent => SshAuth::Agent,
+                        SshAuthKind::KeyFile => SshAuth::KeyFile {
+                            path: self.ssh_key_file.trim().into(),
+                        },
+                    };
+                    Some(SshSpec {
+                        host: host.to_owned(),
+                        port,
+                        user: self.ssh_user.trim().to_owned(),
+                        auth,
+                    })
+                } else {
+                    None
+                };
+                Ok(ConnectSpec {
+                    driver: self.driver,
+                    host: host.to_owned(),
+                    port,
+                    user: user.to_owned(),
+                    database: self.database.trim().to_owned(),
+                    sqlite_path: None,
+                    tls: self.tls,
+                    ca_file: (!ca_file.is_empty()).then(|| ca_file.into()),
+                    ssh,
+                })
+            }
+        }
+    }
+
+    /// Whether the fields still name the database server and login the
+    /// connection was saved with.
+    fn same_server(&self) -> bool {
+        self.saved_spec.as_ref().is_some_and(|saved| {
+            saved.driver == self.driver
+                && saved.host == self.host.trim()
+                && self.port.trim().parse() == Ok(saved.port)
+                && saved.user == self.user.trim()
+        })
+    }
+
+    /// The SSH port as typed: `None` when empty, left to ~/.ssh/config.
+    fn typed_ssh_port(&self) -> Result<Option<u16>, std::num::ParseIntError> {
+        match self.ssh_port.trim() {
+            "" => Ok(None),
+            port => port.parse().map(Some),
+        }
+    }
+
+    /// Whether the fields still name the SSH server and login the
+    /// connection was saved with.
+    fn same_ssh_server(&self) -> bool {
+        self.saved_spec
+            .as_ref()
+            .and_then(|saved| saved.ssh.as_ref())
+            .is_some_and(|saved| {
+                saved.host == self.ssh_host.trim()
+                    && self.typed_ssh_port() == Ok(saved.port)
+                    && saved.user == self.ssh_user.trim()
+            })
+    }
+
+    /// Whether the keyring's database password may be used: one is saved and
+    /// the driver, host, port and user are still the ones it was saved for.
+    pub fn password_is_saved(&self) -> bool {
+        self.has_saved_password && self.same_server()
+    }
+
+    /// Whether a saved database password no longer fits the fields (the
+    /// server or user changed): it is dropped on save and asked for instead.
+    pub fn password_is_stale(&self) -> bool {
+        self.has_saved_password && !self.same_server()
+    }
+
+    /// Drops the saved database password, as deleting it from the Password
+    /// field: saved with nothing typed and the keyring box ticked, the
+    /// connection needs no password, and saving deletes the keyring's copy.
+    pub fn forget_password(&mut self) {
+        self.has_saved_password = false;
+    }
+
+    /// Whether a saved SSH secret belongs to the login method now chosen. A
+    /// passphrase saved for a key is never used as a password.
+    fn ssh_secret_fits_method(&self) -> bool {
+        self.has_saved_ssh_secret && self.ssh && self.saved_ssh_auth == Some(self.ssh_auth)
+    }
+
+    /// Whether the keyring holds the SSH secret for the login method now
+    /// chosen, on the SSH host, port and user it was saved for.
+    pub fn ssh_secret_is_saved(&self) -> bool {
+        self.ssh_secret_fits_method() && self.same_ssh_server()
+    }
+
+    /// Whether a saved SSH secret no longer fits the SSH host, port or user:
+    /// it is dropped on save and asked for instead.
+    pub fn ssh_secret_is_stale(&self) -> bool {
+        self.ssh_secret_fits_method() && !self.same_ssh_server()
+    }
+
+    /// The connection the form describes, or why it cannot be saved.
+    pub fn to_saved(&self) -> Result<crate::connections::SavedConnection, String> {
+        let name = self.name.trim();
+        if name.is_empty() {
+            return Err("Give the connection a name.".into());
+        }
+        let spec = self.to_spec()?;
+        let password = match spec.driver {
+            Driver::Sqlite => PasswordMode::None,
+            // Nothing typed and nothing saved (or the saved one forgotten):
+            // a server that needs no password (trust or peer
+            // authentication).
+            Driver::Postgres | Driver::MySql
+                if self.password_mode == PasswordMode::Keyring
+                    && self.password.is_empty()
+                    && !self.has_saved_password =>
+            {
+                PasswordMode::None
+            }
+            Driver::Postgres | Driver::MySql => self.password_mode,
+        };
+        let ssh_secret = match (&spec.ssh, self.ssh_auth) {
+            (None, _) | (Some(_), SshAuthKind::Agent) => PasswordMode::None,
+            // Nothing typed and nothing saved: an unencrypted key, or a
+            // password the server will ask for when connecting.
+            _ if self.ssh_secret_mode == PasswordMode::Keyring
+                && self.ssh_secret.is_empty()
+                && !self.ssh_secret_fits_method() =>
+            {
+                PasswordMode::None
+            }
+            _ => self.ssh_secret_mode,
+        };
+        let agents = self.agents_to_saved()?;
+        Ok(crate::connections::SavedConnection {
+            id: self.editing.clone().unwrap_or_else(ConnectionId::new),
+            name: name.to_owned(),
+            environment: self.environment(),
+            read_only: self.saved_read_only(),
+            password,
+            ssh_secret,
+            spec,
+            agents,
+        })
+    }
+
+    /// Takes into the Tables control a name typed and not yet added, as a
+    /// Save does: added, or `Err` with why it does not read, which is then
+    /// also said under the names.
+    pub fn take_typed_table(&mut self) -> Result<(), String> {
+        let Some(mut typed) = self.agents_table_typed.clone() else {
+            return Ok(());
+        };
+        // The table chosen in Add table…'s list, where one is: Enter, Tab,
+        // a click away and a save all add what the person chose.
+        if let Some(at) = self.agents_table_pick.take() {
+            let listed = self.agents_tables.names().cloned().unwrap_or_default();
+            let only = self.agents_tables.mode == TablesMode::Only;
+            if let Some(picked) = self
+                .agents_loaded
+                .as_ref()
+                .and_then(|loaded| loaded.offered(&typed, &listed, only).into_iter().nth(at))
+            {
+                typed = picked.to_string();
+            }
+        }
+        if typed.trim().is_empty() {
+            self.agents_table_typed = None;
+            return Ok(());
+        }
+        match self.agents_tables.add(&typed) {
+            Ok(()) => {
+                self.agents_table_typed = None;
+                self.agents_table_error = None;
+                Ok(())
+            }
+            Err(why) => {
+                self.agents_table_error = Some(why.clone());
+                Err(why)
+            }
+        }
+    }
+
+    /// Masks the column `written` names, where no entry masks it already
+    /// as written, in any case; `Err` with why it does not read.
+    pub fn add_masked(&mut self, written: &str) -> Result<(), String> {
+        let entry: tabletist_db::agent::ColumnName = written.trim().parse()?;
+        let key = |entry: &tabletist_db::agent::ColumnName| entry.to_string().to_lowercase();
+        if !self
+            .agents_masked
+            .iter()
+            .any(|known| key(known) == key(&entry))
+        {
+            self.agents_masked.push(entry);
+        }
+        Ok(())
+    }
+
+    /// Add column…'s list for what its field holds.
+    pub fn columns_offered(&self, typed: &str) -> ColumnsOffered {
+        self.agents_loaded
+            .as_ref()
+            .map(|loaded| loaded.offered_columns(typed, &self.agents_masked))
+            .unwrap_or_default()
+    }
+
+    /// Takes into the Masked columns control a name typed and not yet
+    /// added, as a Save does: added, or `Err` with why it does not read,
+    /// which is then also said under the names. The column chosen in Add
+    /// column…'s list is added in place of what is typed; a table chosen
+    /// there is no column, and what is typed is taken.
+    pub fn take_typed_column(&mut self) -> Result<(), String> {
+        let Some(mut typed) = self.agents_column_typed.clone() else {
+            return Ok(());
+        };
+        if let Some(at) = self.agents_column_pick.take()
+            && let Some(OfferedColumn::Column(picked)) =
+                self.columns_offered(&typed).rows.into_iter().nth(at)
+        {
+            typed = picked.to_string();
+        }
+        if typed.trim().is_empty() {
+            self.agents_column_typed = None;
+            return Ok(());
+        }
+        match self.add_masked(&typed) {
+            Ok(()) => {
+                self.agents_column_typed = None;
+                self.agents_column_error = None;
+                Ok(())
+            }
+            Err(why) => {
+                self.agents_column_error = Some(why.clone());
+                Err(why)
+            }
+        }
+    }
+
+    /// What agents may do, as the fields say it: the rows and the timeout
+    /// in the ranges a connection may be given.
+    pub fn agents_to_saved(&self) -> Result<crate::connections::Agents, String> {
+        use crate::connections::{MAX_AGENT_ROWS, MAX_AGENT_TIMEOUT_SECS};
+        let within = |text: &str, most: u32| {
+            text.trim()
+                .parse::<u32>()
+                .ok()
+                .filter(|number| (1..=most).contains(number))
+        };
+        let rows = within(&self.agents_rows, MAX_AGENT_ROWS)
+            .ok_or_else(|| format!("Rows per answer is a number from 1 to {MAX_AGENT_ROWS}."))?;
+        let timeout_secs =
+            within(&self.agents_timeout, MAX_AGENT_TIMEOUT_SECS).ok_or_else(|| {
+                format!(
+                    "Statement timeout is a number of seconds from 1 to {MAX_AGENT_TIMEOUT_SECS}."
+                )
+            })?;
+        Ok(crate::connections::Agents {
+            access: self.agents.access,
+            rows,
+            timeout_secs,
+            tables: self.agents_tables.tables(),
+            masked: self.agents_masked.clone(),
+        })
+    }
+}
+
+/// Which secret a prompt asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretKind {
+    Database,
+    SshPassword,
+    SshPassphrase,
+}
+
+impl SecretKind {
+    /// The SSH secret this spec can use, if any.
+    pub fn for_ssh(spec: &ConnectSpec) -> Option<Self> {
+        match spec.ssh.as_ref()?.auth {
+            SshAuth::Password => Some(Self::SshPassword),
+            SshAuth::KeyFile { .. } => Some(Self::SshPassphrase),
+            SshAuth::Agent => None,
+        }
+    }
+
+    /// Where this secret goes in `secrets`.
+    pub fn slot(self, secrets: &mut tabletist_db::Secrets) -> &mut Option<String> {
+        match self {
+            Self::Database => &mut secrets.password,
+            Self::SshPassword => &mut secrets.ssh_password,
+            Self::SshPassphrase => &mut secrets.ssh_passphrase,
+        }
+    }
+
+    /// Whether `secrets` holds this secret.
+    pub fn held(self, secrets: &tabletist_db::Secrets) -> bool {
+        match self {
+            Self::Database => secrets.password.is_some(),
+            Self::SshPassword => secrets.ssh_password.is_some(),
+            Self::SshPassphrase => secrets.ssh_passphrase.is_some(),
+        }
+    }
+
+    pub fn is_ssh(self) -> bool {
+        self != Self::Database
+    }
+}
+
+/// One secret a connect needs (see `Workspace::secret_steps`).
+#[derive(Debug, Clone)]
+pub struct SecretStep {
+    pub kind: SecretKind,
+    /// How the connection keeps it.
+    pub mode: PasswordMode,
+    /// The tab holds it.
+    pub held: bool,
+    /// Why it must be typed again: the server refused the one sent.
+    pub reason: Option<String>,
+}
+
+impl SecretStep {
+    /// Whether filling it asks the person: it must be typed again, or is
+    /// asked for on every connect and the tab does not hold it. One the
+    /// tab holds, one from the keyring and none at all ask nothing.
+    pub fn asks_person(&self) -> bool {
+        self.reason.is_some()
+            || (!self.held
+                && match self.mode {
+                    PasswordMode::Ask => true,
+                    PasswordMode::None | PasswordMode::Keyring => false,
+                })
+    }
+}
+
+/// Asks for a password before connecting.
+pub struct PasswordPrompt {
+    pub tab: ConnTabId,
+    /// The secret asked for.
+    pub kind: SecretKind,
+    /// The connection's name, for the prompt's title.
+    pub name: String,
+    pub password: String,
+    /// Save the password in the keyring.
+    pub save: bool,
+    /// Why the prompt appeared (no saved password, keyring locked).
+    pub message: Option<String>,
+}
+
+#[derive(Debug)]
+pub enum Dialog {
+    Connection(Box<ConnectionForm>),
+    Password(Box<PasswordPrompt>),
+    HostKey(Box<HostKeyPrompt>),
+    QuickOpen(Box<QuickOpen>),
+    /// The keyboard shortcuts.
+    Help,
+    /// The app's name, version and where it lives.
+    About,
+    /// The Settings window.
+    Settings(Box<SettingsDialog>),
+    /// Pending changes are about to be dropped: save, discard or stay.
+    Leave(Box<LeavePrompt>),
+    /// A save to production, with its statements, before anything is sent.
+    ConfirmWrite(Box<WritePrompt>),
+    /// A run of the SQL editor that reaches every row of a table, before
+    /// anything is sent.
+    ConfirmEveryRow(Box<EveryRowPrompt>),
+    /// A save found rows changed on the server: what to do with each.
+    Conflict(Box<ConflictPrompt>),
+    /// What agents may do on a connection, in the terminal look's box.
+    AgentAccess(Box<AgentAccessBox>),
+}
+
+/// The terminal look's box of what agents may do on a saved connection.
+#[derive(Debug)]
+pub struct AgentAccessBox {
+    pub conn: ConnectionId,
+    /// As an agent names it: "Bookshop · dev".
+    pub name: String,
+    /// The level the box's cursor is on.
+    pub chosen: crate::connections::AgentAccess,
+}
+
+/// What waits for the user's answer about pending changes.
+#[derive(Debug)]
+pub enum Held {
+    Action(Box<Action>),
+    /// The window was asked to close.
+    CloseWindow,
+    /// Nothing waits on the answer: the changes themselves were asked to
+    /// be dropped.
+    Nothing,
+}
+
+/// Asks before pending changes are dropped.
+#[derive(Debug)]
+pub struct LeavePrompt {
+    pub held: Held,
+    /// The tabs whose pending changes the held action would drop.
+    pub tabs: Vec<(ConnTabId, TabId)>,
+    /// One tab, and its save is not disabled: Save is offered.
+    pub can_save: bool,
+    /// How many changes would be dropped, over all the tabs.
+    pub changes: usize,
+    /// One of the tabs is saving: only the window's close is asked about
+    /// then, and the prompt says what leaving a save comes to.
+    pub saving: bool,
+}
+
+/// Asks before a run of the SQL editor that writes to every row of a
+/// table: an `UPDATE` or a `DELETE` without `WHERE`, or a `TRUNCATE`.
+/// Nothing of the run is sent before the answer.
+#[derive(Debug)]
+pub struct EveryRowPrompt {
+    pub tab: ConnTabId,
+    pub id: TabId,
+    /// This question's own number, from `App::next_id`: what the view
+    /// keeps of it is kept under it, and never meets another question's.
+    pub asked: u64,
+    /// Where the run goes: Run anyway sends nothing once the tab is on
+    /// another database.
+    pub on: RanOn,
+    /// What Run anyway sends: the run as it was asked for.
+    pub statements: Vec<tabletist_db::sql::Statement>,
+    pub caps: RunCaps,
+    /// The run's statements that reach every row, in its order.
+    pub wide: Vec<WideStatement>,
+}
+
+/// A statement of a run that reaches every row of the tables it names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WideStatement {
+    /// The editor's line it starts on.
+    pub line: usize,
+    pub verb: tabletist_db::sql::Verb,
+    /// Its tables, as the statement names them: with their schema where it
+    /// gives one. Empty where they cannot be read off it.
+    pub tables: Vec<String>,
+    /// The rows they hold together, by the database's statistics: where
+    /// the sidebar has a count above 0 for each of them.
+    pub rows: Option<u64>,
+}
+
+/// Asks before a save to production.
+pub struct WritePrompt {
+    pub tab: ConnTabId,
+    pub id: TabId,
+    /// The statements the save would run, as lines to read.
+    pub review: crate::review::Review,
+    pub changes: usize,
+    pub rows: usize,
+    /// How many rows the save adds.
+    pub added: usize,
+    /// How many rows the save deletes.
+    pub deleted: usize,
+    /// What the Omarchy box's field holds: the database's name confirms.
+    pub typed: String,
+    pub focus: bool,
+    /// What the statements are of: a save is sent only while the tab's
+    /// pending set still makes this one.
+    pub changeset: tabletist_db::ChangeSet,
+    pub then: Option<Held>,
+    /// When the answer to another dialog brought the confirmation up (Save
+    /// in the Leave prompt, Overwrite in the conflict question): it came up
+    /// under the hand that gave that answer, and takes none in its first
+    /// moment (`edit::ANSWER_AFTER`). `None` when Save itself asked for it.
+    pub after_answer: Option<std::time::Instant>,
+}
+
+/// Asks what to do with each row a save found changed on the server, one
+/// after another. Every answer is applied when it is given.
+pub struct ConflictPrompt {
+    pub tab: ConnTabId,
+    pub id: TabId,
+    /// The rows the save found changed, in its order. One that is answered
+    /// keeps its place and gives up its row.
+    pub rows: Vec<crate::edit::Conflicting>,
+    /// The one being asked about.
+    pub at: usize,
+    /// The columns the user changed in that row, with their values ready
+    /// to draw (`edit::shown_lines`).
+    pub lines: Vec<crate::edit::ShownLine>,
+    /// When that one came on screen: its question takes no answer in its
+    /// first moment (`edit::ANSWER_AFTER`).
+    pub shown: std::time::Instant,
+    /// That one's question has not been drawn yet. Its lines start with
+    /// the first the server changed in view; from then on they are where
+    /// the user moves them. The view that placed them takes this down.
+    pub fresh: bool,
+    /// A row was answered Overwrite: the save may run again.
+    pub overwrite: bool,
+    /// A row was answered Keep mine: no save runs again by itself.
+    pub kept: bool,
+}
+
+/// Without the rows: they are the database's, and can be megabytes.
+impl std::fmt::Debug for ConflictPrompt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ConflictPrompt {{ tab: {:?}, id: {:?}, rows: {}, at: {} }}",
+            self.tab,
+            self.id,
+            self.rows.len(),
+            self.at
+        )
+    }
+}
+
+/// Quick open (`⌘P`, `ctrl+p`): find a table or view of the connection, or
+/// of every open one, by name, or (macOS) start one of a few commands.
+/// What it lists is `App::quick_open_list`'s.
+#[derive(Debug)]
+pub struct QuickOpen {
+    /// The window it was opened in: the connection searched, and where
+    /// its commands act.
+    pub tab: ConnTabId,
+    /// What the field holds: the field edits it.
+    pub query: String,
+    /// The picked result, an index into the list's results (headings are
+    /// none). Clamped as it moves; reset when what is typed changes.
+    pub selected: usize,
+    /// Whether every open connection is searched (`⇥`), not only this
+    /// one. Each open starts with this one.
+    pub everywhere: bool,
+    /// The groups shown in full: their "more" row was opened.
+    pub expanded: Vec<QuickGroup>,
+    /// Where the field's caret goes on the next frame, where anything
+    /// moves it: `⌘P` again while open selects the text, and what was
+    /// typed on the sidebar's field leaves the caret after it.
+    pub caret: Option<QuickCaret>,
+    /// The selection the list last scrolled to, so it scrolls only when the
+    /// selection moves and a wheel scroll is left alone.
+    pub scrolled_to: Option<usize>,
+    /// The list's scroll offset, in points.
+    pub scroll_offset: f32,
+    /// The result the pick was put on (by a move, a scope, what was
+    /// typed): what Enter opens, wherever the list, which can change by
+    /// itself (a run that ends, a list that comes in), has moved it.
+    pub picked: Option<QuickItem>,
+}
+
+/// Where quick open moves its field's caret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuickCaret {
+    /// Select the whole text.
+    All,
+    /// After the text.
+    End,
+}
+
+/// A group of quick open's results, which shows its first three until its
+/// "more" row opens it in full: a kind of object of this connection, or
+/// one connection's objects where every open one is searched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuickGroup {
+    Tables,
+    /// Views and materialized views.
+    Views,
+    /// The objects of the window `ConnTabId`, of every kind.
+    Connection(ConnTabId),
+    /// The commands and the settings' rows whose names match.
+    Commands,
+}
+
+/// A table or view that matches what is typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Found {
+    /// The index's own: a search that matches thousands copies no name.
+    pub object: std::rc::Rc<ObjectRef>,
+    pub kind: ObjectKind,
+    /// The catalog's estimate of its rows, where it has one.
+    pub estimate: Option<u64>,
+    pub tier: crate::search::Tier,
+    /// The runs of the name that matched, as byte ranges of
+    /// `object.name`.
+    pub spans: Vec<std::ops::Range<usize>>,
+}
+
+/// What a command's row says after its name: where it acts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum About {
+    Nothing,
+    /// New SQL query on production, where a new editor opens read-only.
+    OpensReadOnly,
+    /// The window's connection (`Bookshop · dev`).
+    Connection,
+    /// The window's connection, and who is connected to its Agents tab.
+    Agents,
+    /// The tab in front.
+    Tab(TabName),
+}
+
+/// A tab as a command's row names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TabName {
+    /// A table or view, by its name.
+    Object(String),
+    /// A SQL editor, by its number (`Query 2`).
+    Query(u32),
+    Agents,
+    History,
+}
+
+impl TabName {
+    /// How a command's row names `tab`.
+    pub fn of(tab: &Tab) -> Self {
+        match tab {
+            Tab::Object(object) => Self::Object(object.object.name.clone()),
+            Tab::Sql(sql) => Self::Query(sql.number),
+            Tab::Agents(_) => Self::Agents,
+            Tab::History(_) => Self::History,
+        }
+    }
+}
+
+/// A command quick open offers: the keymap's command, the name it is
+/// listed by (English: the caller translates it), and what its row says
+/// after the name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Runnable {
+    pub command: crate::keymap::Command,
+    pub name: &'static str,
+    pub about: About,
+}
+
+/// A row of a window's start screen list, as quick open shows it with
+/// nothing typed: a recent, or on a first visit one of the largest tables.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StartRow {
+    Recent(StartRecent),
+    Largest(ObjectRef, Option<u64>),
+}
+
+/// One of the commands quick open offers in the macOS and Windows looks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuickCommand {
+    /// A command of the keymap's, run as its key runs it.
+    Run(Runnable),
+    /// A row of the Settings window: the window opens at it.
+    Setting(crate::settings::OptionId),
+}
+
+impl QuickCommand {
+    /// The keymap's command it is, whose key the row writes: a setting's
+    /// is the one that opens Settings.
+    pub fn command(&self) -> crate::keymap::Command {
+        match self {
+            Self::Run(runnable) => runnable.command,
+            Self::Setting(_) => crate::keymap::Command::Settings,
+        }
+    }
+}
+
+/// One of quick open's results: what can be picked.
+#[derive(Debug, Clone, PartialEq)]
+pub enum QuickItem {
+    /// A table or view of the window `tab`'s connection.
+    Object { tab: ConnTabId, found: Found },
+    /// The row of `tab`'s start screen list numbered `index` there.
+    Start {
+        tab: ConnTabId,
+        index: usize,
+        row: StartRow,
+    },
+    /// A command, and the runs of its name that matched.
+    Command {
+        command: QuickCommand,
+        spans: Vec<std::ops::Range<usize>>,
+    },
+    /// The row after a group's first results: the rest are `hidden`.
+    More { group: QuickGroup, hidden: usize },
+}
+
+impl QuickItem {
+    /// Whether `other` is this result, though it may be listed elsewhere
+    /// or say something else of itself now (an estimate read again, a
+    /// command's name): the same object of the same window, the same row
+    /// of a start screen, the same command or setting, the same group's
+    /// "more" row.
+    pub fn same(&self, other: &QuickItem) -> bool {
+        match (self, other) {
+            (
+                Self::Object { tab, found },
+                Self::Object {
+                    tab: at,
+                    found: other,
+                },
+            ) => tab == at && found.object == other.object && found.kind == other.kind,
+            (
+                Self::Start { tab, row, .. },
+                Self::Start {
+                    tab: at,
+                    row: other,
+                    ..
+                },
+            ) => {
+                // The largest tables by their table: an estimate read
+                // again is the same row.
+                let largest = |row: &StartRow| match row {
+                    StartRow::Largest(object, _) => Some(object.clone()),
+                    StartRow::Recent(_) => None,
+                };
+                tab == at
+                    && match (largest(row), largest(other)) {
+                        (Some(one), Some(two)) => one == two,
+                        _ => row == other,
+                    }
+            }
+            (Self::Command { command, .. }, Self::Command { command: other, .. }) => {
+                match (command, other) {
+                    (QuickCommand::Run(one), QuickCommand::Run(two)) => one.command == two.command,
+                    (QuickCommand::Setting(one), QuickCommand::Setting(two)) => one == two,
+                    _ => false,
+                }
+            }
+            (Self::More { group, .. }, Self::More { group: other, .. }) => group == other,
+            _ => false,
+        }
+    }
+}
+
+/// The Settings window while it is open. The settings themselves are the
+/// app's: every change applies at once, so the window holds nothing of
+/// them.
+#[derive(Debug, Default)]
+pub struct SettingsDialog {
+    /// The pane shown.
+    pub pane: SettingsPane,
+    /// The row the keys act on, as an index into the pane's
+    /// [`SettingsPane::rows`].
+    pub row: usize,
+    /// Reset to defaults was chosen and waits for its answer: the footer
+    /// asks in place of its links.
+    pub resetting: bool,
+    /// A question of the query history's waits for its answer, where the
+    /// footer asks it as it asks Reset's.
+    pub history_question: Option<HistoryQuestion>,
+    /// `:update` asks whether to install this version and restart: the
+    /// Updates pane's footer asks it, as it asks the history's.
+    pub update_question: Option<String>,
+    /// The agent Settings › Agents says how to connect.
+    pub agent: crate::endpoint::Agent,
+    /// The option quick open opened the window at: the sheet draws its row
+    /// on the selection's ground while its pane shows.
+    pub asked: Option<crate::settings::OptionId>,
+    /// That row is still to be scrolled to and its control given the
+    /// keyboard: once, by the sheet's next frame, which says so
+    /// ([`Action::SettingShown`]).
+    pub reveal: bool,
+    /// The Keyboard pane's.
+    pub keyboard: KeyboardPage,
+}
+
+/// What the Keyboard pane lists, and what it records.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct KeyboardPage {
+    /// The search's text: the field's (macOS, Windows), or the `/` line's
+    /// (Omarchy). It filters by the command's name and its group's.
+    pub search: String,
+    /// A key pressed to find the rows bound to it, in every scope.
+    pub found: Option<&'static str>,
+    /// The changed rows alone.
+    pub changed_only: bool,
+    /// The Omarchy cursor's row. None: the first row listed.
+    pub cursor: Option<crate::keymap::Row>,
+    /// The Omarchy `/` line has the keys.
+    pub filtering: bool,
+    /// What is being recorded, if anything is.
+    pub recording: Option<Recording>,
+    /// Reset all… waits for its answer.
+    pub resetting: bool,
+}
+
+/// What a recording is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Recorded {
+    /// A row's new key.
+    Row(crate::keymap::Row),
+    /// A key to find the rows by (Omarchy's `?`).
+    Find,
+}
+
+/// A recording under way.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Recording {
+    pub of: Recorded,
+    /// The characters typed so far, on Omarchy: a key of several (`gd`)
+    /// or a line of the prompt (`:w`).
+    pub typed: String,
+    /// When the last of them was typed, in the input's seconds: a key of
+    /// several ends [`Recording::WAIT`] after its last character.
+    pub at: f64,
+    /// The last key pressed, and why it was refused: the recording goes
+    /// on.
+    pub refused: Option<(&'static str, crate::keymap::Why)>,
+    /// Whether the refusal offers a swap: the key is another row's, and
+    /// the exchange would stand.
+    pub swaps: bool,
+}
+
+impl Recording {
+    /// How long a key of several waits for its next character.
+    pub const WAIT: f64 = 0.8;
+
+    pub fn of(of: Recorded) -> Self {
+        Self {
+            of,
+            typed: String::new(),
+            at: 0.0,
+            refused: None,
+            swaps: false,
+        }
+    }
+}
+
+/// What Settings › Editor asks of the query history.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HistoryQuestion {
+    /// Clear history…: clear every connection's.
+    ClearAll,
+    /// Don't keep was chosen: delete what is kept?
+    Forget,
+}
+
+/// A pane of the Settings window.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SettingsPane {
+    #[default]
+    General,
+    /// How the grid and the connection bar are drawn.
+    Appearance,
+    /// How the SQL editor runs, types and formats.
+    Editor,
+    /// Every command's keys, which can be recorded again.
+    Keyboard,
+    /// How agents reach the app. Listed where they can.
+    Agents,
+    /// Whether a newer version is out, and how often to ask.
+    Updates,
+}
+
+impl SettingsPane {
+    /// The panes the window lists, in order.
+    pub fn listed() -> &'static [SettingsPane] {
+        if crate::endpoint::AVAILABLE {
+            &[
+                Self::General,
+                Self::Appearance,
+                Self::Editor,
+                Self::Keyboard,
+                Self::Agents,
+                Self::Updates,
+            ]
+        } else {
+            &[
+                Self::General,
+                Self::Appearance,
+                Self::Editor,
+                Self::Keyboard,
+                Self::Updates,
+            ]
+        }
+    }
+
+    /// The pane's name. English: the caller translates it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::General => "General",
+            Self::Appearance => "Appearance",
+            Self::Editor => "Editor",
+            Self::Keyboard => "Keyboard",
+            Self::Agents => "Agents",
+            Self::Updates => "Updates",
+        }
+    }
+
+    /// The pane whose rows hold `option`.
+    pub fn of(option: crate::settings::OptionId) -> Self {
+        [
+            Self::General,
+            Self::Appearance,
+            Self::Editor,
+            Self::Agents,
+            Self::Updates,
+        ]
+        .into_iter()
+        .find(|pane| pane.options().contains(&option))
+        .unwrap_or_default()
+    }
+
+    /// The sections the sheet (macOS, Windows) shows the pane's options
+    /// in, each under its heading (English), in order. The Agents pane
+    /// draws its own, and has none here.
+    pub fn sections(self) -> &'static [(&'static str, &'static [crate::settings::OptionId])] {
+        use crate::settings::OptionId;
+        match self {
+            Self::General => &[
+                ("Startup", &OptionId::STARTUP),
+                ("Data", &OptionId::DATA),
+                ("Safety", &OptionId::SAFETY),
+            ],
+            Self::Appearance => &[
+                ("Theme", &OptionId::THEME),
+                ("Text", &OptionId::TEXT),
+                ("Grid", &OptionId::GRID),
+                ("Environment color", &OptionId::ENVIRONMENT),
+            ],
+            // `{format}` is the editor's Format key, as the keymap writes
+            // it for the look.
+            Self::Editor => &[
+                ("Running queries", &OptionId::RUNNING),
+                ("Typing", &OptionId::TYPING),
+                ("Format · {format}", &OptionId::FORMAT),
+                ("History", &OptionId::HISTORY),
+            ],
+            Self::Keyboard | Self::Agents | Self::Updates => &[],
+        }
+    }
+
+    /// The options the sheet (macOS, Windows) has a row for, in order:
+    /// what quick open lists of the pane. The Agents pane's switch stands
+    /// by its title, and its Log section has the other two.
+    pub fn sheet_options(self) -> Vec<crate::settings::OptionId> {
+        match self {
+            Self::Agents => crate::settings::OptionId::AGENTS.to_vec(),
+            Self::Updates => crate::settings::OptionId::UPDATES.to_vec(),
+            Self::Keyboard => Vec::new(),
+            Self::General | Self::Appearance | Self::Editor => self
+                .sections()
+                .iter()
+                .flat_map(|(_, options)| options.iter().copied())
+                .collect(),
+        }
+    }
+
+    /// The pane's options, in order.
+    pub fn options(self) -> &'static [crate::settings::OptionId] {
+        match self {
+            Self::General => &crate::settings::OptionId::GENERAL,
+            Self::Appearance => &crate::settings::OptionId::APPEARANCE,
+            Self::Editor => &crate::settings::OptionId::EDITOR,
+            Self::Keyboard => &[],
+            Self::Agents => &crate::settings::OptionId::AGENTS,
+            Self::Updates => &crate::settings::OptionId::UPDATES,
+        }
+    }
+
+    /// What Reset to defaults puts back: the pane's options but the
+    /// server's switch, which turned off would end every agent's session
+    /// for a question about defaults. The Editor pane's are all of its
+    /// keys, the ones it has no row for yet among them.
+    pub fn reset_options(self) -> &'static [crate::settings::OptionId] {
+        use crate::settings::OptionId;
+        match self {
+            Self::General => &OptionId::GENERAL,
+            Self::Appearance => &OptionId::APPEARANCE,
+            Self::Editor => &OptionId::EDITOR,
+            // Reset all… of its own, which asks first.
+            Self::Keyboard => &[],
+            Self::Agents => &[OptionId::LogDays, OptionId::AgentsNotify],
+            Self::Updates => &OptionId::UPDATES,
+        }
+    }
+
+    /// The rows the terminal look's cursor moves among, in order.
+    pub fn rows(self) -> &'static [SettingsRow] {
+        use crate::settings::OptionId;
+        match self {
+            Self::General => &[
+                SettingsRow::Option(OptionId::OnLaunch),
+                SettingsRow::Option(OptionId::RestoreTabs),
+                SettingsRow::Option(OptionId::PageSize),
+                SettingsRow::Option(OptionId::Timestamps),
+                SettingsRow::Option(OptionId::Tz),
+                SettingsRow::Option(OptionId::GroupDigits),
+                SettingsRow::Option(OptionId::ValueTags),
+                SettingsRow::Option(OptionId::DatePicker),
+                SettingsRow::Option(OptionId::ProductionReadOnly),
+                SettingsRow::Option(OptionId::ConfirmCloseEdits),
+                SettingsRow::Option(OptionId::IdleDisconnect),
+            ],
+            Self::Appearance => &[
+                SettingsRow::Option(OptionId::Theme),
+                SettingsRow::Option(OptionId::Font),
+                SettingsRow::Option(OptionId::FontSize),
+                SettingsRow::Option(OptionId::RowHeight),
+                SettingsRow::Option(OptionId::Zebra),
+                SettingsRow::Option(OptionId::ColumnTypes),
+                SettingsRow::Option(OptionId::TableList),
+                SettingsRow::Option(OptionId::EnvBar),
+            ],
+            // As the terminal look's board orders them.
+            Self::Editor => &[
+                SettingsRow::Option(OptionId::NewTab),
+                SettingsRow::Option(OptionId::RowLimit),
+                SettingsRow::Option(OptionId::Timeout),
+                SettingsRow::Option(OptionId::RunScope),
+                SettingsRow::Option(OptionId::ConfirmUnsafeWrites),
+                SettingsRow::Option(OptionId::EditorKeys),
+                SettingsRow::Option(OptionId::LineNumbers),
+                SettingsRow::Option(OptionId::Indent),
+                SettingsRow::Option(OptionId::Autocomplete),
+                SettingsRow::Option(OptionId::ClosePairs),
+                SettingsRow::Option(OptionId::Wrap),
+                SettingsRow::Option(OptionId::Keywords),
+                SettingsRow::Option(OptionId::Commas),
+                SettingsRow::Option(OptionId::HistoryKeep),
+            ],
+            // The pane has a cursor of its own, by row of the keymap.
+            Self::Keyboard => &[],
+            Self::Agents => &[
+                SettingsRow::Option(OptionId::AgentsOn),
+                SettingsRow::AgentsStatus,
+                SettingsRow::AgentsAccess,
+                SettingsRow::Option(OptionId::LogDays),
+                SettingsRow::Option(OptionId::AgentsNotify),
+            ],
+            // The status over it is no row: its keys are the pane's.
+            Self::Updates => &[SettingsRow::Option(OptionId::UpdatesCheck)],
+        }
+    }
+}
+
+/// A row of the terminal look's Settings screen that the cursor can be on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsRow {
+    /// An option, which the keys change.
+    Option(crate::settings::OptionId),
+    /// Whether agents can connect, and who has: Enter shows the Agents tab.
+    AgentsStatus,
+    /// What agents may do, which is set in Connections: Enter opens them.
+    AgentsAccess,
+}
+
+impl SettingsRow {
+    /// The row's option, if it is one.
+    pub fn option(self) -> Option<crate::settings::OptionId> {
+        match self {
+            Self::Option(option) => Some(option),
+            Self::AgentsStatus | Self::AgentsAccess => None,
+        }
+    }
+}
+
+/// Asks whether to trust an SSH host seen for the first time.
+#[derive(Debug)]
+pub struct HostKeyPrompt {
+    pub tab: ConnTabId,
+    pub host: String,
+    pub port: u16,
+    pub fingerprint: String,
+}
+
+/// The file name of `path`, for naming a connection after its file.
+/// Loopback names and addresses, and Unix socket directories (PostgreSQL
+/// reads a host starting with `/` as one). An empty host is not checked yet.
+pub fn is_local_host(host: &str) -> bool {
+    let host = host.trim();
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    host.is_empty()
+        || host.starts_with('/')
+        || host.eq_ignore_ascii_case("localhost")
+        || bare
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+pub fn file_name(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+use std::collections::{HashMap, HashSet};
+
+use tabletist_db::{
+    Error, ObjectInfo, ObjectKind, ObjectRef, RowPage, RowQuery, SortDir, Structure,
+};
+
+/// Something being fetched: the last good value, the request in flight, and
+/// the last error. Only the pending request's result is accepted, which is
+/// how stale results are dropped.
+#[derive(Debug)]
+pub struct Fetch<T> {
+    pub value: Option<T>,
+    pub pending: Option<RequestId>,
+    pub error: Option<Error>,
+    /// The request whose answer `value` holds.
+    pub loaded: Option<RequestId>,
+    /// When the pending request was sent, for the time a wait shows.
+    pub started: Option<std::time::Instant>,
+    /// A read the person asked for while a connect that restarts the tab
+    /// was under way, and not sent (see `App::wake_to_read`):
+    /// `App::after_connect` sends it once the session is up.
+    pub asked: bool,
+}
+
+impl<T> Default for Fetch<T> {
+    fn default() -> Self {
+        Self {
+            value: None,
+            pending: None,
+            error: None,
+            loaded: None,
+            started: None,
+            asked: false,
+        }
+    }
+}
+
+impl<T> Fetch<T> {
+    pub fn start(&mut self, request: RequestId) {
+        self.pending = Some(request);
+        self.error = None;
+        self.started = Some(std::time::Instant::now());
+        self.asked = false;
+    }
+
+    /// Applies a result if it answers the pending request. Returns whether it did.
+    pub fn finish(&mut self, request: RequestId, result: Result<T, Error>) -> bool {
+        if self.pending != Some(request) {
+            return false;
+        }
+        self.pending = None;
+        self.started = None;
+        match result {
+            Ok(value) => {
+                self.value = Some(value);
+                self.error = None;
+                self.loaded = Some(request);
+            }
+            Err(error) => self.error = Some(error),
+        }
+        true
+    }
+
+    pub fn is_loading(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// How long the request in flight has been going.
+    pub fn running_for(&self) -> Option<Duration> {
+        self.pending
+            .and(self.started)
+            .map(|started| started.elapsed())
+    }
+
+    /// The error shown in place of the value. Two are not shown while a
+    /// value is held, and what was on screen stays: a lost connection,
+    /// which the strip over the tab says, and a cancelled refresh, which
+    /// failed at nothing.
+    pub fn shown_error(&self) -> Option<&Error> {
+        let keeps_value = |error: &Error| {
+            self.value.is_some() && (error.is_connection_lost() || *error == Error::Cancelled)
+        };
+        self.error.as_ref().filter(|error| !keeps_value(error))
+    }
+
+    /// Never loaded and not loading.
+    pub fn needs_load(&self) -> bool {
+        self.value.is_none() && self.pending.is_none() && self.error.is_none()
+    }
+}
+
+/// The sidebar's state.
+#[derive(Debug, Default)]
+pub struct Tree {
+    pub schemas: Fetch<Vec<String>>,
+    pub nodes: HashMap<String, SchemaNode>,
+    /// Typed into the sidebar's filter field.
+    pub filter: String,
+    /// The row the arrow keys move from.
+    pub cursor: Option<TreeNode>,
+    /// Scroll the cursor row into view on the next frame (it moved by key).
+    pub reveal_cursor: bool,
+    /// The schema the sidebar shows, once the user picked one.
+    pub schema: Option<String>,
+    /// List objects flat rather than in prefix groups.
+    pub flat: bool,
+}
+
+/// Where the arrow keys go: the pane the user last worked in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Pane {
+    #[default]
+    Tree,
+    Grid,
+}
+
+/// A key pressed while the tree has the arrows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeKey {
+    Up,
+    Down,
+    /// Unfold, or step into an unfolded row.
+    Right,
+    /// Fold, or climb to the parent.
+    Left,
+    /// Open an object, fold or unfold anything else.
+    Enter,
+    Home,
+    End,
+}
+
+#[derive(Debug, Default)]
+pub struct SchemaNode {
+    /// Its objects were asked for (the sidebar showed it).
+    pub expanded: bool,
+    pub objects: Fetch<Vec<ObjectInfo>>,
+    /// Prefix groups the user unfolded (`book_`).
+    pub open_groups: HashSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TreeNode {
+    /// "No tables or views" in a loaded schema that has none.
+    Empty(String),
+    /// Objects of a schema sharing a name prefix: the schema, the prefix
+    /// without its underscore (`book`).
+    Group(String, String),
+    Object(ObjectRef, ObjectKind),
+}
+
+/// One visible line of the tree.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TreeRow {
+    pub node: TreeNode,
+    pub depth: u8,
+    /// What the row shows: a group's prefix (`book_`), an object's name
+    /// without its group's prefix.
+    pub label: String,
+    /// Objects in a group.
+    pub count: Option<usize>,
+    /// `Some` for rows that fold.
+    pub expanded: Option<bool>,
+    pub loading: bool,
+    pub error: Option<String>,
+}
+
+/// Objects sorted into prefix groups: `book_authors` and `book_reviews`
+/// share the group `book_`, and `orders` joins `orders_archive` in `orders`.
+/// A prefix with one object stays a plain row.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Entry<'a> {
+    Object(&'a ObjectInfo),
+    Group {
+        /// The shared prefix without its underscore.
+        prefix: String,
+        /// `book_`, or `orders` when the bare prefix is an object too.
+        label: String,
+        objects: Vec<&'a ObjectInfo>,
+    },
+}
+
+/// The part of `name` before its first underscore (all of it if none).
+fn prefix_of(name: &str) -> &str {
+    match name.find('_') {
+        Some(at) if at > 0 => &name[..at],
+        _ => name,
+    }
+}
+
+/// What an object in the group `prefix` is called there: its name without
+/// the prefix and underscore, or in full when it is the prefix itself.
+pub fn short_name<'a>(name: &'a str, prefix: &str) -> &'a str {
+    name.strip_prefix(prefix)
+        .and_then(|rest| rest.strip_prefix('_'))
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(name)
+}
+
+/// `objects` in prefix groups, by name.
+pub fn group_objects<'a>(objects: &[&'a ObjectInfo]) -> Vec<Entry<'a>> {
+    let mut by_prefix: std::collections::BTreeMap<&str, Vec<&'a ObjectInfo>> =
+        std::collections::BTreeMap::new();
+    for object in objects {
+        by_prefix
+            .entry(prefix_of(&object.name))
+            .or_default()
+            .push(object);
+    }
+    let mut entries: Vec<(String, Entry<'a>)> = by_prefix
+        .into_iter()
+        .flat_map(|(prefix, mut members)| {
+            members.sort_by(|a, b| a.name.cmp(&b.name));
+            if members.len() < 2 {
+                return members
+                    .into_iter()
+                    .map(|object| (object.name.clone(), Entry::Object(object)))
+                    .collect::<Vec<_>>();
+            }
+            let bare = members.iter().any(|object| object.name == prefix);
+            let label = if bare {
+                prefix.to_owned()
+            } else {
+                format!("{prefix}_")
+            };
+            vec![(
+                label.clone(),
+                Entry::Group {
+                    prefix: prefix.to_owned(),
+                    label,
+                    objects: members,
+                },
+            )]
+        })
+        .collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    entries.into_iter().map(|(_, entry)| entry).collect()
+}
+
+/// Schemas the database keeps for itself, hidden unless the user asks.
+pub fn is_system_schema(driver: Driver, name: &str) -> bool {
+    match driver {
+        Driver::Postgres => {
+            matches!(name, "pg_catalog" | "information_schema")
+                || name.starts_with("pg_toast")
+                || name.starts_with("pg_temp_")
+        }
+        Driver::MySql => matches!(
+            name,
+            "mysql" | "sys" | "performance_schema" | "information_schema"
+        ),
+        Driver::Sqlite => false,
+    }
+}
+
+impl Tree {
+    /// The schemas the sidebar offers, system ones only when asked for.
+    pub fn visible_schemas(&self, driver: Driver, show_system: bool) -> Vec<String> {
+        self.schemas
+            .value
+            .iter()
+            .flatten()
+            .filter(|schema| show_system || !is_system_schema(driver, schema))
+            .cloned()
+            .collect()
+    }
+
+    /// The schema whose objects the sidebar lists: the one picked, else the
+    /// first one opened, else the first one.
+    pub fn shown_schema(&self, driver: Driver, show_system: bool) -> Option<String> {
+        let schemas = self.visible_schemas(driver, show_system);
+        self.schema
+            .as_ref()
+            .filter(|schema| schemas.contains(schema))
+            .cloned()
+            .or_else(|| {
+                schemas
+                    .iter()
+                    .find(|schema| self.nodes.get(*schema).is_some_and(|node| node.expanded))
+                    .cloned()
+            })
+            .or_else(|| schemas.first().cloned())
+    }
+
+    /// The lines to draw: the shown schema's objects, in prefix groups or
+    /// flat. A filter shows every match, unfolded.
+    pub fn visible_rows(&self, driver: Driver, show_system: bool) -> Vec<TreeRow> {
+        let needle = self.filter.trim().to_lowercase();
+        let filtering = !needle.is_empty();
+        let mut rows = Vec::new();
+        let Some(schema) = self.shown_schema(driver, show_system) else {
+            return rows;
+        };
+        let Some(node) = self.nodes.get(&schema) else {
+            return rows;
+        };
+        let Some(objects) = node.objects.value.as_ref() else {
+            return rows;
+        };
+        if objects.is_empty() {
+            rows.push(TreeRow {
+                node: TreeNode::Empty(schema.clone()),
+                depth: 0,
+                label: "No tables or views".into(),
+                count: None,
+                expanded: None,
+                loading: false,
+                error: None,
+            });
+            return rows;
+        }
+        let matching: Vec<&ObjectInfo> = objects
+            .iter()
+            .filter(|object| !filtering || object.name.to_lowercase().contains(&needle))
+            .collect();
+        let object_row = |object: &ObjectInfo, depth: u8, label: &str| TreeRow {
+            node: TreeNode::Object(
+                ObjectRef::new(schema.clone(), object.name.clone()),
+                object.kind,
+            ),
+            depth,
+            label: label.to_owned(),
+            count: None,
+            expanded: None,
+            loading: false,
+            error: None,
+        };
+        if self.flat {
+            let mut sorted = matching;
+            sorted.sort_by(|a, b| a.name.cmp(&b.name));
+            for object in sorted {
+                rows.push(object_row(object, 0, &object.name));
+            }
+            return rows;
+        }
+        for entry in group_objects(&matching) {
+            match entry {
+                Entry::Object(object) => rows.push(object_row(object, 0, &object.name)),
+                Entry::Group {
+                    prefix,
+                    label,
+                    objects,
+                } => {
+                    let open = filtering || node.open_groups.contains(&prefix);
+                    rows.push(TreeRow {
+                        node: TreeNode::Group(schema.clone(), prefix.clone()),
+                        depth: 0,
+                        label,
+                        count: Some(objects.len()),
+                        expanded: Some(open),
+                        loading: false,
+                        error: None,
+                    });
+                    if open {
+                        for object in objects {
+                            rows.push(object_row(object, 1, short_name(&object.name, &prefix)));
+                        }
+                    }
+                }
+            }
+        }
+        rows
+    }
+
+    /// Unfolds the group `object` sits in, so the sidebar shows it.
+    pub fn reveal(&mut self, object: &ObjectRef) {
+        let prefix = prefix_of(&object.name).to_owned();
+        if let Some(node) = self.nodes.get_mut(&object.schema) {
+            node.open_groups.insert(prefix);
+        }
+    }
+
+    pub fn object_info(&self, object: &ObjectRef) -> Option<&ObjectInfo> {
+        self.nodes
+            .get(&object.schema)?
+            .objects
+            .value
+            .as_ref()?
+            .iter()
+            .find(|info| info.name == object.name)
+    }
+}
+
+/// One open tab in a workspace (an object or a SQL editor). Ids come from
+/// `App::next_id`, so they never repeat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TabId(pub u64);
+
+/// One row of the start screen's recents: a table or view of the
+/// connection's list (`recents.json`), or a SQL editor closed in this
+/// window with a script in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartRecent {
+    Object {
+        object: ObjectRef,
+        kind: ObjectKind,
+        opened: u64,
+    },
+    Sql {
+        /// Its place in the window's closed editors
+        /// (`Workspace::recent_sql`).
+        closed: usize,
+        /// The editor's number: `Query 1`.
+        number: u32,
+        /// The first comment line of its script, where it has one.
+        comment: Option<String>,
+        opened: u64,
+    },
+}
+
+/// A SQL editor closed with a script in it, as the start screen offers it
+/// again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosedSql {
+    /// The number it had: `Query 1`.
+    pub number: u32,
+    pub text: String,
+    /// Whether its runs could write: an agent's statement opened read-only,
+    /// or a choice the person made, comes back as it was.
+    pub mode: RunMode,
+    /// When it was opened, in seconds since the Unix epoch.
+    pub opened: u64,
+}
+
+impl StartRecent {
+    /// When it was opened, in seconds since the Unix epoch.
+    pub fn opened(&self) -> u64 {
+        match self {
+            Self::Object { opened, .. } | Self::Sql { opened, .. } => *opened,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ObjectView {
+    /// The rows, which the switch calls Rows.
+    #[default]
+    Data,
+    Structure,
+    /// The definition as text (`tabletist_db::Ddl`).
+    Ddl,
+}
+
+/// A cell of an object tab's page or of a SQL result: its row there, and
+/// its column. In a table's tab the row can be a new row's own instead
+/// (`edit::new_row`), which no page holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellPos {
+    pub row: usize,
+    pub col: usize,
+}
+
+/// Where an editor starts.
+pub enum EditStart {
+    /// From the cell's value, or its pending one, the cursor at the end.
+    Value,
+    /// From this text, with nothing of the old value (Omarchy's `cc`).
+    Replace(String),
+    /// From the character that was typed on the cell. On a cell that cannot
+    /// be edited this does nothing: only an edit that was asked for says
+    /// why.
+    Typed(String),
+}
+
+/// Where the selection goes after an edit is committed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Advance {
+    Stay,
+    Down,
+    Right,
+    Left,
+    /// To the row panel's next field that can be edited, in the page's
+    /// column order: Enter and Tab in a field of the panel.
+    NextField,
+    /// To the one before it: Shift+Tab there.
+    PrevField,
+}
+
+/// Why a tab's pending changes cannot be saved now. The view words it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveBlock {
+    /// A save is running.
+    Saving,
+    /// A cell fails its check.
+    ToFix,
+    /// A new row lacks a value a save needs.
+    Required,
+    /// The session is not connected.
+    Disconnected,
+    /// The session came back read-only.
+    ReadOnly,
+    /// No change set can be built from what is pending: the table's key or
+    /// one of the columns is not what the cells were changed under.
+    Unsendable,
+}
+
+/// The rows selected with the cursor's: from `anchor` to the cursor's row,
+/// in the order the grid shows them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowRange {
+    /// A row as [`CellPos::row`] names it: of the page, or a new row.
+    pub anchor: usize,
+    /// Moves keep the range until it is left: the terminal look's visual
+    /// selection.
+    pub held: bool,
+}
+
+/// What becomes of the range when the cursor is set
+/// ([`ObjectTab::set_cursor`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// Shift with a click or an arrow: the range runs from its anchor, or
+    /// from the row the cursor was on, to the new row.
+    Extend,
+    /// A move by key: a held range follows, another ends.
+    Move,
+    /// Anything else ends it: a click, an editor that opens, a new row, a
+    /// page that goes.
+    End,
+    /// The rows under the cursor changed, not what is selected: a new row
+    /// was dropped.
+    Keep,
+}
+
+/// One open table or view.
+#[derive(Debug)]
+pub struct ObjectTab {
+    pub id: TabId,
+    pub object: ObjectRef,
+    pub kind: ObjectKind,
+    /// A preview tab (not pinned) is replaced by the next single click.
+    pub pinned: bool,
+    pub view: ObjectView,
+    pub query: RowQuery,
+    /// The size the tab pages by: the settings' Rows per page when it last
+    /// loaded from a place (opened, refreshed, sorted, filtered). Next and
+    /// Previous keep it, so a new size never lands while the person pages.
+    pub page_size: u32,
+    pub rows: Fetch<RowPage>,
+    pub structure: Fetch<Structure>,
+    /// The definition the DDL view shows, read when the view is first
+    /// shown and kept with the tab, as its structure is: a refresh reads
+    /// it again. A read the view was left during is dropped.
+    pub ddl: Fetch<tabletist_db::Ddl>,
+    /// When the definition the tab holds arrived: the view says how long
+    /// ago it was read.
+    pub ddl_read: Option<std::time::Instant>,
+    /// The terminal look's cursor in the DDL view's text: a line, from
+    /// nought. Held inside the text's lines.
+    pub ddl_cursor: usize,
+    /// Where the terminal look's selection of lines (`V`) started, while
+    /// it is on: it runs from there to the cursor's line.
+    pub ddl_visual: Option<usize>,
+    pub selection: Option<CellPos>,
+    /// The rows selected with the cursor's, where there are several.
+    /// Written with the cursor, by [`ObjectTab::set_cursor`].
+    pub range: Option<RowRange>,
+    pub estimated_rows: Option<u64>,
+    /// The exact row count for the current filters, when asked for.
+    pub count: Fetch<u64>,
+    pub filter: FilterBar,
+    /// The row panel's text for the selected row (see `App::format_rows`).
+    pub fields: Option<RowFields>,
+    /// The column whose field of the row panel gets the keyboard back: an
+    /// edit made there was committed or dropped. The panel gives it the
+    /// keyboard when it draws that field, and says so
+    /// (`Action::FieldFocused`), which is what forgets it.
+    pub focus_field: Option<usize>,
+    /// What is pending, while the tab's values are edited. A tab that holds
+    /// edits keeps its page.
+    pub edits: crate::edit::Edits,
+    /// The row the terminal look's `yy` took, for `p` and `P` to put: its
+    /// values by column. It is the tab's own and goes with the tab. A
+    /// reload, a save and a discard leave it.
+    pub yanked: Option<crate::edit::Yank>,
+    /// The line of the Structure view's columns the cursor is on: the
+    /// column its keys act on. Held inside the columns there are, where
+    /// it moves and where a structure arrives.
+    pub structure_cursor: usize,
+    /// The chooser of what labels this table's rows, while it is open in
+    /// the Structure view. A picker's chooser is the picker's own
+    /// (`key_picker::Picker::chooser`).
+    pub label_chooser: Option<crate::labels::Chooser>,
+    /// Reopened from what the window last had (`session.json`), and not
+    /// read yet: it is read when it is first in front
+    /// (`App::read_reopened`, or any read of it). The one in front is read
+    /// with the connect; one behind it is not.
+    pub reopened: bool,
+    /// The load of the rows that a filter or a sort the person set asked
+    /// for: the query history keeps its `SELECT` once it is answered.
+    pub history_load: Option<RequestId>,
+}
+
+/// The row panel's text for one row, formatted once when the selection or
+/// the page (or the SQL result) changes: a cell can hold megabytes, too much
+/// to format again every frame.
+#[derive(Clone, PartialEq)]
+pub struct RowFields {
+    /// The request whose answer holds the row: a table's rows, or a SQL
+    /// editor's run.
+    pub request: Option<RequestId>,
+    pub row: usize,
+    /// One per column. A pending cell's is the text of its new value.
+    pub fields: Vec<crate::format::FieldText>,
+    /// What is pending in a table's row, one per column. Empty where
+    /// nothing is, and for a SQL editor's result.
+    pub pending: Vec<Option<PendingField>>,
+}
+
+/// A pending cell as the row panel shows it.
+#[derive(Clone, PartialEq)]
+pub struct PendingField {
+    /// The new value, as a value the panel draws.
+    pub new: tabletist_db::Value,
+    /// What the cell loaded as, short, as the grid shows it.
+    pub was: String,
+    /// Whether the cell is ready to save, or what stands against it: the
+    /// check its text fails, or what the last save's statement came to.
+    pub state: crate::edit::State,
+}
+
+/// Without the texts: a pending cell's is what the user typed, which stays
+/// out of logs and panics, and a loaded one can be megabytes.
+impl std::fmt::Debug for RowFields {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "RowFields {{ request: {:?}, row: {}, fields: {}, pending: {} }}",
+            self.request,
+            self.row,
+            self.fields.len(),
+            self.pending.iter().flatten().count()
+        )
+    }
+}
+
+/// One condition in the filter bar.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FilterRow {
+    pub column: String,
+    pub op: FilterOp,
+    pub value: String,
+}
+
+/// An object tab's filter bar: rows combined with AND, plus raw SQL.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FilterBar {
+    pub open: bool,
+    pub rows: Vec<FilterRow>,
+    /// Use `raw_text` as a WHERE clause as well.
+    pub raw: bool,
+    pub raw_text: String,
+    /// Move keyboard focus into the bar on the next frame.
+    pub focus: bool,
+    /// The columns last seen, for when no page is loaded (a filter is
+    /// running or failed).
+    pub columns: Vec<String>,
+}
+
+impl FilterBar {
+    /// The filters and raw WHERE the bar describes. Rows without a column,
+    /// or without a value for an operator that needs one, are skipped.
+    pub fn to_query(&self) -> (Vec<Filter>, Option<String>) {
+        let filters = self
+            .rows
+            .iter()
+            .filter(|row| !row.column.is_empty())
+            .filter(|row| {
+                matches!(row.op, FilterOp::IsNull | FilterOp::IsNotNull)
+                    || !row.value.trim().is_empty()
+            })
+            .map(|row| Filter {
+                column: row.column.clone(),
+                op: row.op,
+                value: row.value.trim().to_owned(),
+            })
+            .collect();
+        let raw = self.raw_text.trim();
+        (
+            filters,
+            (self.raw && !raw.is_empty()).then(|| raw.to_owned()),
+        )
+    }
+}
+
+impl ObjectTab {
+    /// Asks the row panel to give the keyboard to its field of the column
+    /// `col`, and makes that field's cell the selected one at once: what
+    /// acts on the selection in the frame before the panel is drawn (a
+    /// copy) acts on the field the keyboard is going to.
+    pub fn focus_field(&mut self, col: usize) {
+        self.focus_field = Some(col);
+        if let Some(cell) = self.selection.as_mut() {
+            cell.col = col;
+        }
+    }
+
+    /// Puts the cursor on `cell`, or takes it away. The one place the
+    /// app's own code writes `selection`: what becomes of the range is
+    /// said here, by `reach`.
+    pub fn set_cursor(&mut self, cell: Option<CellPos>, reach: Reach) {
+        let was = self.selection;
+        self.selection = cell;
+        let Some(cell) = cell else {
+            self.range = None;
+            return;
+        };
+        let range = match reach {
+            Reach::Extend => self.range.or_else(|| {
+                was.map(|was| RowRange {
+                    anchor: was.row,
+                    held: false,
+                })
+            }),
+            Reach::Move => self.range.filter(|range| range.held),
+            Reach::End => None,
+            Reach::Keep => self.range,
+        };
+        // One row that is not held is no range.
+        self.range = range.filter(|range| range.held || range.anchor != cell.row);
+    }
+
+    /// The places of the grid the range covers, the first and the last,
+    /// where a range stands.
+    pub fn selected_span(&self) -> Option<(usize, usize)> {
+        let (cell, range) = (self.selection?, self.range?);
+        let height = self.page().map_or(0, |page| page.rows.len());
+        let order = crate::edit::Order::of(&self.edits.added, height);
+        let (from, to) = (order.place(range.anchor)?, order.place(cell.row)?);
+        Some((from.min(to), from.max(to)))
+    }
+
+    /// The selected rows, in the grid's order: the cursor's, and with a
+    /// range every row from its anchor to the cursor's.
+    pub fn selected_rows(&self) -> Vec<usize> {
+        let Some(cell) = self.selection else {
+            return Vec::new();
+        };
+        let Some((first, last)) = self.selected_span() else {
+            return vec![cell.row];
+        };
+        let height = self.page().map_or(0, |page| page.rows.len());
+        let order = crate::edit::Order::of(&self.edits.added, height);
+        (first..=last)
+            .filter_map(|place| order.row(place))
+            .collect()
+    }
+
+    /// Whether a visual selection of rows is on: a range that moves keep.
+    pub fn visual(&self) -> bool {
+        self.range.is_some_and(|range| range.held)
+    }
+
+    /// Starts a visual selection of rows on the cursor's row, or leaves
+    /// the one that is on. A range that stands becomes it, from its
+    /// anchor. With no cursor there is none to start.
+    pub fn toggle_visual(&mut self) {
+        if self.visual() {
+            self.range = None;
+            return;
+        }
+        if let Some(cell) = self.selection {
+            let anchor = self.range.map_or(cell.row, |range| range.anchor);
+            self.range = Some(RowRange { anchor, held: true });
+        }
+    }
+
+    /// The cursor's row and the rows after it in the grid's order, `count`
+    /// in all, as far as the grid goes: what `{count}dd` names.
+    pub fn rows_from_cursor(&self, count: u32) -> Vec<usize> {
+        let Some(cell) = self.selection else {
+            return Vec::new();
+        };
+        let height = self.page().map_or(0, |page| page.rows.len());
+        let order = crate::edit::Order::of(&self.edits.added, height);
+        let Some(from) = order.place(cell.row) else {
+            return Vec::new();
+        };
+        let to = from.saturating_add(count as usize).min(order.len());
+        (from..to).filter_map(|place| order.row(place)).collect()
+    }
+
+    pub fn new(
+        id: TabId,
+        object: ObjectRef,
+        kind: ObjectKind,
+        pinned: bool,
+        page_size: u32,
+        estimated_rows: Option<u64>,
+    ) -> Self {
+        Self {
+            id,
+            query: RowQuery::new(object.clone(), page_size),
+            page_size,
+            object,
+            kind,
+            pinned,
+            view: ObjectView::Data,
+            rows: Fetch::default(),
+            structure: Fetch::default(),
+            ddl: Fetch::default(),
+            ddl_read: None,
+            ddl_cursor: 0,
+            ddl_visual: None,
+            selection: None,
+            range: None,
+            estimated_rows,
+            count: Fetch::default(),
+            filter: FilterBar::default(),
+            fields: None,
+            focus_field: None,
+            edits: crate::edit::Edits::default(),
+            yanked: None,
+            structure_cursor: 0,
+            label_chooser: None,
+            reopened: false,
+            history_load: None,
+        }
+    }
+
+    /// The DDL view's text as the view shows it: none while it is first
+    /// read, nor where its read failed (a failed Reload keeps the text it
+    /// had, under the error).
+    pub fn ddl_shown(&self) -> Option<&tabletist_db::Ddl> {
+        self.ddl
+            .value
+            .as_ref()
+            .filter(|_| self.ddl.shown_error().is_none())
+    }
+
+    /// How many lines the DDL view's text has, as it shows: none before it
+    /// is read.
+    pub fn ddl_lines(&self) -> usize {
+        self.ddl_shown().map_or(0, |ddl| ddl.text().lines().count())
+    }
+
+    /// The lines the terminal look's selection takes, while it is on: from
+    /// its start to the cursor's line, whichever comes first.
+    pub fn ddl_selected(&self) -> Option<std::ops::Range<usize>> {
+        let anchor = self.ddl_visual?;
+        let (from, to) = (anchor.min(self.ddl_cursor), anchor.max(self.ddl_cursor));
+        Some(from..to + 1)
+    }
+
+    /// Forgets the exact count: the rows it counted changed (filters,
+    /// refresh). Returns the count still running for them, to cancel.
+    #[must_use]
+    pub fn reset_count(&mut self) -> Option<RequestId> {
+        std::mem::take(&mut self.count).pending
+    }
+
+    /// Every request this tab still waits for: what it loads, and the save
+    /// it sent.
+    pub fn pending(&self) -> impl Iterator<Item = RequestId> {
+        [
+            self.rows.pending,
+            self.structure.pending,
+            self.ddl.pending,
+            self.count.pending,
+            self.edits.saving.as_ref().map(|saving| saving.request),
+        ]
+        .into_iter()
+        .flatten()
+        // And the counts of what its deletes take with them.
+        .chain(self.edits.counts_out())
+    }
+
+    pub fn page(&self) -> Option<&RowPage> {
+        self.rows.value.as_ref()
+    }
+
+    /// Forgets the page and the selection in it, before a fetch that
+    /// answers an error. The filter bar keeps the columns it offered.
+    pub fn drop_page(&mut self) {
+        if let Some(page) = self.page() {
+            self.filter.columns = page.columns.iter().map(|c| c.name.clone()).collect();
+        }
+        self.set_cursor(None, Reach::End);
+        self.rows.value = None;
+    }
+
+    /// Takes the selection off a new row: the set that held it was dropped.
+    pub fn off_new_rows(&mut self) {
+        if self
+            .selection
+            .is_some_and(|cell| crate::edit::new_id(cell.row).is_some())
+        {
+            self.set_cursor(None, Reach::End);
+        }
+        // A range that began on a new row, the cursor on a row of the
+        // page: the set that held its anchor was dropped.
+        if self
+            .range
+            .is_some_and(|range| crate::edit::new_id(range.anchor).is_some())
+        {
+            self.range = None;
+        }
+    }
+
+    /// The row panel's text for the selected row, if it is up to date.
+    pub fn selected_fields(&self) -> Option<&RowFields> {
+        let cell = self.selection?;
+        self.fields
+            .as_ref()
+            .filter(|fields| fields.row == cell.row && fields.request == self.rows.loaded)
+    }
+
+    pub fn sort_of(&self, column: &str) -> Option<SortDir> {
+        self.query
+            .sort
+            .iter()
+            .find(|sort| sort.column == column)
+            .map(|sort| sort.dir)
+    }
+}
+
+/// One open tab in a workspace. A table and a SQL editor are boxed: an
+/// object tab is much larger than a SQL editor, and a SQL editor much
+/// larger than a pointer (clippy's large_enum_variant either way).
+#[derive(Debug)]
+pub enum Tab {
+    Object(Box<ObjectTab>),
+    Sql(Box<SqlTab>),
+    /// What agents do on the workspace's connection. One at most.
+    Agents(Box<AgentsTab>),
+    /// Every statement run on the workspace's connection. One at most.
+    History(Box<HistoryTab>),
+}
+
+impl Tab {
+    pub fn id(&self) -> TabId {
+        match self {
+            Self::Object(object) => object.id,
+            Self::Sql(sql) => sql.id,
+            Self::Agents(agents) => agents.id,
+            Self::History(history) => history.id,
+        }
+    }
+
+    pub fn as_object(&self) -> Option<&ObjectTab> {
+        match self {
+            Self::Object(object) => Some(object.as_ref()),
+            Self::Sql(_) | Self::Agents(_) | Self::History(_) => None,
+        }
+    }
+
+    pub fn as_object_mut(&mut self) -> Option<&mut ObjectTab> {
+        match self {
+            Self::Object(object) => Some(object.as_mut()),
+            Self::Sql(_) | Self::Agents(_) | Self::History(_) => None,
+        }
+    }
+
+    pub fn as_sql(&self) -> Option<&SqlTab> {
+        match self {
+            Self::Sql(sql) => Some(sql.as_ref()),
+            Self::Object(_) | Self::Agents(_) | Self::History(_) => None,
+        }
+    }
+
+    pub fn as_sql_mut(&mut self) -> Option<&mut SqlTab> {
+        match self {
+            Self::Sql(sql) => Some(sql.as_mut()),
+            Self::Object(_) | Self::Agents(_) | Self::History(_) => None,
+        }
+    }
+
+    /// What the tab is loading; closing it cancels these. The Agents and
+    /// History tabs load nothing of the session's.
+    pub fn pending(&self) -> Vec<RequestId> {
+        match self {
+            Self::Object(object) => object.pending().collect(),
+            Self::Sql(sql) => sql.run.pending.into_iter().collect(),
+            Self::Agents(_) | Self::History(_) => Vec::new(),
+        }
+    }
+
+    /// A preview tab is replaced by the next single click. SQL tabs never
+    /// are, nor is a table that holds edits, whatever its pin says: a
+    /// replaced tab asks nothing.
+    pub fn is_preview(&self) -> bool {
+        matches!(self, Self::Object(object) if !object.pinned && !object.edits.holds())
+    }
+}
+
+/// The History tab: every statement run on the workspace's connection,
+/// the newest first, read from the history's file when it opens and kept
+/// up to date as statements run. Its `Debug` leaves out the statements
+/// and what was typed into its filters.
+#[derive(Clone, PartialEq)]
+pub struct HistoryTab {
+    pub id: TabId,
+    /// The entries kept, the newest first.
+    pub entries: Vec<HistoryRow>,
+    /// The read that is out.
+    pub asked: Option<u64>,
+    /// Whether it was read once at least.
+    pub read: bool,
+    /// Why the history could not be read.
+    pub failed: Option<String>,
+    /// Which entries show.
+    pub filter: crate::history::Filter,
+    /// The terminal look's filter line, as typed: what `filter` was read
+    /// from there.
+    pub line: String,
+    /// The terminal look's filter line is open over the list.
+    pub line_open: bool,
+    /// How many times it was asked to open: each time, it takes the
+    /// keyboard.
+    pub line_asked: u64,
+    /// The selected entry, by its key.
+    pub selected: Option<u64>,
+    /// The agents' calls the Agents Log no longer holds, by their place
+    /// there, as the last look said.
+    pub gone: std::collections::BTreeSet<i64>,
+    /// The agent of each call the Agents Log holds, by its place there, as
+    /// the log says it. Only the log keeps what an agent sent, its name
+    /// too: the history keeps the call's place, and the tab holds the name
+    /// while it shows it.
+    pub agents: std::collections::BTreeMap<i64, String>,
+    /// The look into the Agents Log that is out, and the calls it asks
+    /// about: a call that ended since is not among them.
+    pub held_asked: Option<(u64, Vec<i64>)>,
+    /// Clear history… was asked, and waits for its answer.
+    pub clearing: bool,
+    /// What the terminal look's line says until the next key: why a key
+    /// did nothing.
+    pub said: Option<String>,
+}
+
+impl std::fmt::Debug for HistoryTab {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HistoryTab")
+            .field("id", &self.id)
+            .field("entries", &self.entries.len())
+            .field("read", &self.read)
+            .field("selected", &self.selected)
+            .field("clearing", &self.clearing)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for HistoryRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HistoryRow")
+            .field("key", &self.key)
+            .field("entry", &self.entry)
+            .finish_non_exhaustive()
+    }
+}
+
+impl HistoryTab {
+    pub fn new(id: TabId) -> Self {
+        Self {
+            id,
+            entries: Vec::new(),
+            asked: None,
+            read: false,
+            failed: None,
+            filter: crate::history::Filter::default(),
+            line: String::new(),
+            line_open: false,
+            line_asked: 0,
+            selected: None,
+            gone: Default::default(),
+            agents: Default::default(),
+            held_asked: None,
+            clearing: false,
+            said: None,
+        }
+    }
+
+    /// The entries that pass the filter, the newest first.
+    pub fn shown(&self) -> impl Iterator<Item = &HistoryRow> {
+        self.entries
+            .iter()
+            .filter(|row| self.filter.passes(&row.entry, &row.searched))
+    }
+
+    /// The entry of `key`, shown or not.
+    pub fn row(&self, key: u64) -> Option<&HistoryRow> {
+        self.entries.iter().find(|row| row.key == key)
+    }
+
+    /// The selected entry, where it passes the filter.
+    pub fn chosen(&self) -> Option<&HistoryRow> {
+        let key = self.selected?;
+        self.shown().find(|row| row.key == key)
+    }
+
+    /// Whether an agent's entry's call is no longer in the Agents Log.
+    pub fn call_gone(&self, entry: &crate::history::Entry) -> bool {
+        entry.call.is_none_or(|call| self.gone.contains(&call))
+    }
+
+    /// The agent of an agent's entry, as the Agents Log names it: none for
+    /// a call the log does not hold, or has not said yet.
+    pub fn agent_of(&self, entry: &crate::history::Entry) -> Option<&str> {
+        self.agents.get(&entry.call?).map(String::as_str)
+    }
+
+    /// Takes the agent of `call` as the Agents Log names it: its entry
+    /// shows it, and its search reads it.
+    pub fn named(&mut self, call: i64, agent: String) {
+        for row in &mut self.entries {
+            if row.entry.call == Some(call) {
+                row.searched = format!("{} {}", agent.to_lowercase(), row.entry.searched());
+            }
+        }
+        self.agents.insert(call, agent);
+    }
+}
+
+/// One entry of a History tab, with what its search reads. Its `Debug`
+/// leaves out the statement, as the entry's does.
+#[derive(Clone, PartialEq)]
+pub struct HistoryRow {
+    /// The tab's own name for it: what the selection holds.
+    pub key: u64,
+    pub entry: crate::history::Entry,
+    /// [`crate::history::Entry::searched`], read once.
+    pub searched: String,
+}
+
+/// One of the History tab's filters, set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HistoryFilterSet {
+    Source(Option<crate::history::Source>),
+    Outcome(Option<crate::history::Outcome>),
+    Search(String),
+    /// The terminal look's line, read whole.
+    Line(String),
+}
+
+/// The Agents tab: the app's own view of what agents do on the
+/// workspace's connection. What it shows lives in [`AgentsState`], not
+/// here: closing the tab stops nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentsTab {
+    pub id: TabId,
+    /// The terminal look's selected session, by its id: the one `S` stops
+    /// and `enter` shows. Kept by id, since the list puts the session that
+    /// called last first: a key lands on the session the person saw.
+    pub selected: Option<String>,
+    /// Which of its two views shows.
+    pub view: AgentsView,
+    pub log: AgentsLog,
+}
+
+impl AgentsTab {
+    pub fn new(id: TabId) -> Self {
+        Self {
+            id,
+            selected: None,
+            view: AgentsView::default(),
+            log: AgentsLog::default(),
+        }
+    }
+}
+
+/// The Agents tab's two views: what agents do now, and what they did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AgentsView {
+    #[default]
+    Activity,
+    Log,
+}
+
+/// One of the Log view's filters, set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentsLogFilter {
+    /// One agent's calls, or every agent's.
+    Agent(Option<String>),
+    /// The calls that ended one way, as the log says it, or every one.
+    Result(Option<String>),
+    /// The calls whose request holds this text: every call where it is
+    /// empty.
+    Search(String),
+}
+
+/// A call's values, as the log keeps them (`Entry::params`): each one's
+/// JSON as it came, not read and written again; the length of what the log
+/// cut; or nothing to read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoggedValues {
+    Each(Vec<String>),
+    Cut(Option<u64>),
+    Unread,
+}
+
+impl LoggedValues {
+    pub fn of(params: &str) -> Self {
+        if let Ok(values) = serde_json::from_str::<Vec<&serde_json::value::RawValue>>(params) {
+            return Self::Each(values.iter().map(|value| value.get().to_owned()).collect());
+        }
+        match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(params) {
+            Ok(cut) if cut.contains_key("cut") => {
+                Self::Cut(cut.get("bytes").and_then(serde_json::Value::as_u64))
+            }
+            _ => Self::Unread,
+        }
+    }
+}
+
+/// How a call can end, as the log keeps it: what the result filter
+/// offers. A write's outcomes come with writes.
+pub const LOG_RESULTS: [&str; 6] = ["ok", "refused", "error", "timeout", "cancelled", "stopped"];
+
+/// The Agents tab's Log view: the log of calls, a page at a time, the
+/// newest first, read from the log's file whether the server runs or not.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentsLog {
+    /// Every connection's calls, not this one's alone.
+    pub all: bool,
+    /// The agent whose calls alone are shown.
+    pub agent: Option<String>,
+    /// How the calls shown ended, as the log says it.
+    pub result: Option<String>,
+    /// Text the requests shown hold; none where it is empty.
+    pub search: String,
+    /// The agents that called on what is shown, whatever else is
+    /// filtered: what the agent filter offers. Said by each first page.
+    pub agents: Vec<String>,
+    /// The terminal look's filters, open over the list.
+    pub filters_open: bool,
+    /// How many times they were asked to open: each time, the search takes
+    /// the keyboard.
+    pub filters_asked: u64,
+    /// The terminal look's pane of the selected call, open beside the
+    /// list. macOS shows it whenever a call is selected.
+    pub details_open: bool,
+    pub calls: Vec<tabletist_mcp::Logged>,
+    /// How many calls the log holds of what is shown.
+    pub total: u64,
+    /// Whether there are older ones to read.
+    pub more: bool,
+    /// The read that is out, and whether it reads on after the last call.
+    pub asked: Option<(u64, bool)>,
+    /// A call ended while a read was out, which may not hold it: the first
+    /// page is read again once that read is in.
+    pub stale: bool,
+    /// Why the log could not be read.
+    pub failed: Option<String>,
+    /// The selected call, by its place in the log.
+    pub selected: Option<i64>,
+    /// A call to select once a page holds it: the one History's Show in
+    /// Agents Log asked for. Pages are read until one does.
+    pub seek: Option<i64>,
+    /// Whether it was read once at least.
+    pub read: bool,
+}
+
+impl AgentsLog {
+    /// Whether any filter but the connection's is set.
+    pub fn filtered(&self) -> bool {
+        self.agent.is_some() || self.result.is_some() || !self.search.is_empty()
+    }
+
+    /// The filter a page of it is read with, the calls on `conn` alone
+    /// where it shows this connection's.
+    pub fn filter(&self, conn: &str) -> tabletist_mcp::LogFilter {
+        tabletist_mcp::LogFilter {
+            connection: (!self.all).then(|| conn.to_owned()),
+            agent: self.agent.clone(),
+            result: self.result.clone(),
+            search: (!self.search.is_empty()).then(|| self.search.clone()),
+        }
+    }
+}
+
+/// What the app knows of the agent server: the sessions open on it, as
+/// the backend last said them, empty while the server is off; and the
+/// calls that ended since the app started, the newest first.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentsState {
+    pub sessions: Vec<tabletist_mcp::SessionInfo>,
+    /// The last [`FEED_KEPT`] calls, on every connection. The log has
+    /// them all.
+    pub feed: std::collections::VecDeque<tabletist_mcp::Call>,
+    /// The open sessions the person was told of: one notification for
+    /// each session, not for each call.
+    pub told: std::collections::BTreeSet<String>,
+}
+
+/// How many calls the app keeps for the feed.
+pub const FEED_KEPT: usize = 300;
+
+/// What the sidebar's Agents entry says of a connection, and which state
+/// its tab shows. A write that waits for the person comes with writes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentsHere {
+    /// The server is off in the settings, whatever the connection allows.
+    ServerOff,
+    /// This connection's access is Off: agents do not see it.
+    OffHere,
+    /// Agents may use it, and none has named it.
+    NoneConnected,
+    /// An agent is working here: the one that called last, of `count`.
+    Connected { agent: String, count: usize },
+}
+
+impl AgentsState {
+    /// Takes a call that ended into the feed.
+    pub fn called(&mut self, call: tabletist_mcp::Call) {
+        self.feed.push_front(call);
+        self.feed.truncate(FEED_KEPT);
+    }
+
+    /// The feed's calls on `conn`, the newest first.
+    pub fn calls_on<'a>(
+        &'a self,
+        conn: &'a ConnectionId,
+    ) -> impl Iterator<Item = &'a tabletist_mcp::Call> + 'a {
+        self.feed
+            .iter()
+            .filter(move |call| call.connection.as_deref() == Some(conn.0.as_str()))
+    }
+
+    /// The sessions that are not here: those that work only elsewhere, and
+    /// those that have named no connection yet. The one that called last
+    /// first, and those that have not called after them.
+    pub fn elsewhere(&self, conn: &ConnectionId) -> Vec<&tabletist_mcp::SessionInfo> {
+        let mut elsewhere: Vec<_> = self
+            .sessions
+            .iter()
+            .filter(|session| !session.connections.contains(&conn.0))
+            .collect();
+        elsewhere.sort_by_key(|session| std::cmp::Reverse(session.last_call_at));
+        elsewhere
+    }
+
+    /// The sessions that are here, then those that are elsewhere: the
+    /// terminal look's list, which its selection moves in.
+    pub fn listed(&self, conn: &ConnectionId) -> Vec<&tabletist_mcp::SessionInfo> {
+        let mut listed = self.here(conn);
+        listed.extend(self.elsewhere(conn));
+        listed
+    }
+
+    /// The sessions that are here: those whose calls have named `conn`,
+    /// the one that called last first.
+    pub fn here(&self, conn: &ConnectionId) -> Vec<&tabletist_mcp::SessionInfo> {
+        let mut here: Vec<_> = self
+            .sessions
+            .iter()
+            .filter(|session| session.connections.contains(&conn.0))
+            .collect();
+        here.sort_by_key(|session| std::cmp::Reverse(session.last_call_at));
+        here
+    }
+
+    /// The state of `conn` for its Agents entry and tab: the server's
+    /// switch first, then the connection's access, then who is here.
+    /// `access` is `None` for a connection that is saved no more.
+    pub fn of(
+        &self,
+        enabled: bool,
+        access: Option<crate::connections::AgentAccess>,
+        conn: &ConnectionId,
+    ) -> AgentsHere {
+        use crate::connections::AgentAccess;
+        if !enabled {
+            return AgentsHere::ServerOff;
+        }
+        match access {
+            None | Some(AgentAccess::Off) => AgentsHere::OffHere,
+            Some(AgentAccess::Read) => {
+                let here = self.here(conn);
+                match here.first() {
+                    None => AgentsHere::NoneConnected,
+                    Some(last) => AgentsHere::Connected {
+                        agent: agent_name(last),
+                        count: here.len(),
+                    },
+                }
+            }
+        }
+    }
+}
+
+/// What a session's agent is called on screen: what its client says it
+/// is, or "Agent" until it has said.
+pub fn agent_name(session: &tabletist_mcp::SessionInfo) -> String {
+    session.agent.clone().unwrap_or_else(|| "Agent".to_owned())
+}
+
+/// Which pane of a SQL tab's results shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResultPane {
+    #[default]
+    Results,
+    Messages,
+}
+
+/// A result's columns and rows, and whether the limit cut rows off.
+pub type ShownRows<'a> = (
+    &'a [tabletist_db::ColumnMeta],
+    &'a [Vec<tabletist_db::Value>],
+    bool,
+);
+
+/// How a SQL editor's runs are meant to end: what its toolbar's switch
+/// shows and sets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RunMode {
+    /// Every run is a read-only transaction that is rolled back.
+    #[default]
+    ReadOnly,
+    /// A run that changes data is one read-write transaction, committed
+    /// when every statement succeeded. A run of reads is still read-only.
+    ReadWrite,
+}
+
+impl RunMode {
+    pub fn other(self) -> Self {
+        match self {
+            Self::ReadOnly => Self::ReadWrite,
+            Self::ReadWrite => Self::ReadOnly,
+        }
+    }
+
+    /// The mode a new editor opens in. It follows the connection:
+    /// read-write where an editor can write, and read-only everywhere
+    /// else. An environment whose connections open read-only by default
+    /// opens its editors read-only too, on a writable connection as well:
+    /// there the user switches a tab to write.
+    pub fn of_new_tab(writes: Result<(), NoWrites>, environment: crate::env::Environment) -> Self {
+        match writes {
+            Ok(()) if !environment.read_only_by_default() => Self::ReadWrite,
+            Ok(()) | Err(NoWrites::ReadOnlyConnection | NoWrites::Unconfirmed) => Self::ReadOnly,
+        }
+    }
+}
+
+/// Why no SQL editor of a workspace runs read-write, whatever its mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoWrites {
+    /// The session was opened read-only.
+    ReadOnlyConnection,
+    /// The connection's environment asks before a write, and the question
+    /// for a script is not built yet: no read-write run goes to production
+    /// without it.
+    Unconfirmed,
+}
+
+/// What a SQL editor run is sent with beside its statements: the most rows
+/// a statement keeps (`u32::MAX` keeps every one, see
+/// `Settings::fetch_cap`) and how long the run may go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunCaps {
+    pub limit: u32,
+    pub timeout: Option<Duration>,
+}
+
+/// Neither cap: every row, and no timer. Never a limit of no rows.
+impl Default for RunCaps {
+    fn default() -> Self {
+        Self {
+            limit: u32::MAX,
+            timeout: None,
+        }
+    }
+}
+
+/// The connection and database a run went to: the workspace's
+/// `ConnectSpec` when it was sent. A link of the results is offered only
+/// while the tab is still there. Its `Debug` names none of it, as
+/// `SqlTab`'s names none of the text.
+#[derive(Clone, PartialEq)]
+pub struct RanOn(pub tabletist_db::ConnectSpec);
+
+impl std::fmt::Debug for RanOn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RanOn").finish_non_exhaustive()
+    }
+}
+
+/// A finished SQL editor run.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SqlRun {
+    /// The statements as split when the run started.
+    pub statements: Vec<tabletist_db::sql::Statement>,
+    /// The transaction the run was sent in.
+    pub mode: tabletist_db::ScriptMode,
+    pub outcome: tabletist_db::ScriptOutcome,
+    /// Who stopped the run, if someone did.
+    pub cancel: Option<crate::backend::CancelReason>,
+    /// Where the first statement that failed sits in the editor: its line,
+    /// and the column when the database gave a position. Worked out once,
+    /// when the run finishes, since views ask every frame.
+    pub error_mark: Option<(usize, Option<usize>)>,
+    /// What the run was sent with. Show all and Run without timeout each
+    /// lift one of the two and keep the other.
+    pub caps: RunCaps,
+    /// Where the run went; `None` for a run started without saying
+    /// (`SqlTab::start_run`), which offers no link.
+    pub on: Option<RanOn>,
+}
+
+impl SqlRun {
+    fn new(
+        (statements, mode, caps, on): (
+            Vec<tabletist_db::sql::Statement>,
+            tabletist_db::ScriptMode,
+            RunCaps,
+            Option<RanOn>,
+        ),
+        outcome: tabletist_db::ScriptOutcome,
+        cancel: Option<crate::backend::CancelReason>,
+    ) -> Self {
+        // One result per statement that started, in order.
+        let error_mark = statements
+            .iter()
+            .zip(&outcome.results)
+            .find_map(|(statement, result)| {
+                let tabletist_db::StatementOutcome::Error { position, .. } = &result.outcome else {
+                    return None;
+                };
+                Some(match position {
+                    Some(position) => {
+                        let (line, column) = statement.line_col(*position);
+                        (line, Some(column))
+                    }
+                    None => (statement.first_line, None),
+                })
+            });
+        Self {
+            statements,
+            mode,
+            outcome,
+            cancel,
+            error_mark,
+            caps,
+            on,
+        }
+    }
+
+    /// Whether the run went to `spec`: the connection and database a tab
+    /// is on now.
+    pub fn ran_on(&self, spec: &tabletist_db::ConnectSpec) -> bool {
+        self.on.as_ref().is_some_and(|on| on.0 == *spec)
+    }
+
+    /// Whether nothing of the run stayed written, its transaction known to
+    /// be rolled back: a read-only run, or one sent to write whose
+    /// transaction rolled back whole. Not one MySQL committed part of by
+    /// itself, nor one the database could not roll back fully, nor one
+    /// whose session could not be put back and was closed. (Every run is
+    /// its own transaction, which the backend ends before it answers. A
+    /// PostgreSQL cancel aborts it, and the rollback has run by the time
+    /// the run has an outcome.)
+    pub fn nothing_written(&self) -> bool {
+        use tabletist_db::ScriptEnd;
+        if self.outcome.broken.is_some() {
+            return false;
+        }
+        match self.mode {
+            tabletist_db::ScriptMode::ReadOnly => true,
+            tabletist_db::ScriptMode::Write => {
+                self.outcome.rollback_warning.is_none()
+                    && matches!(
+                        self.outcome.end,
+                        ScriptEnd::RolledBack | ScriptEnd::Partly { committed: 0 }
+                    )
+            }
+        }
+    }
+}
+
+/// What a text was, without keeping it: its length and a hash. Tells
+/// whether an editor's text is still the one a run started with.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct TextPrint {
+    len: usize,
+    hash: u64,
+}
+
+// Hand-written: a guess at a script can be checked against its hash, so
+// the hash stays out of logs and panic messages as the script does.
+impl std::fmt::Debug for TextPrint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextPrint").finish_non_exhaustive()
+    }
+}
+
+impl TextPrint {
+    pub fn of(text: &str) -> Self {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut hasher = std::hash::DefaultHasher::new();
+        text.hash(&mut hasher);
+        Self {
+            len: text.len(),
+            hash: hasher.finish(),
+        }
+    }
+
+    /// Whether `text` is the text this is the print of.
+    pub fn is_of(self, text: &str) -> bool {
+        self.len == text.len() && self == Self::of(text)
+    }
+}
+
+/// A SQL editor run the backend has not answered yet.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunInFlight {
+    /// The statements as split when the run started.
+    pub statements: Vec<tabletist_db::sql::Statement>,
+    /// The transaction the run was sent in.
+    pub mode: tabletist_db::ScriptMode,
+    /// What the run was sent with.
+    pub caps: RunCaps,
+    /// Where the run went; `None` offers no link.
+    pub on: Option<RanOn>,
+    /// When the run started, for the elapsed time.
+    pub started: std::time::Instant,
+    /// The editor's text when the run started.
+    pub text: TextPrint,
+}
+
+/// How a completion list was asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wanted {
+    /// By typing a word.
+    Typed,
+    /// By hand (`Ctrl+Space`).
+    Manual,
+}
+
+/// What a completion list was worked out from: the script, the cursor and
+/// the catalog's generation.
+pub type ListedOf = (TextPrint, usize, u64);
+
+/// The serial of the next completion list to open.
+static NEXT_COMPLETION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A SQL editor's completion list, while it is open. Its site holds names
+/// read from the script, so it is never logged (it has no `Debug`).
+#[derive(Clone)]
+pub struct Completion {
+    /// Tells this list from any other that was ever open: its own from the
+    /// time it opens until it closes, whatever is typed meanwhile. What
+    /// the view keeps for a list between frames is kept for this serial.
+    pub serial: u64,
+    /// Opened with `Ctrl+Space`, not by typing.
+    pub manual: bool,
+    of: ListedOf,
+    /// Shared: the view clones the list every frame, and a site names
+    /// every table of its statement.
+    pub site: Arc<tabletist_db::complete::Site>,
+    /// It opened on an empty word (by hand, or right after a dot): it
+    /// stays open when the word typed since is deleted again.
+    on_empty: bool,
+    /// The part of the word before the cursor.
+    pub typed: String,
+    pub candidates: Arc<Vec<crate::completion::Candidate>>,
+    /// Matches beyond the ones kept.
+    pub more: usize,
+    /// The highlighted row.
+    pub selected: usize,
+    /// The user moved the highlight since the typed word last changed.
+    pub moved: bool,
+    /// Objects or columns this site needs are being fetched.
+    pub loading: bool,
+    /// Insert the highlighted row on the next draw. Set through
+    /// [`accept`](Self::accept()); the list is not worked out again while
+    /// it waits.
+    pub accept: bool,
+}
+
+impl Completion {
+    pub fn new(
+        manual: bool,
+        of: ListedOf,
+        site: tabletist_db::complete::Site,
+        typed: String,
+        listed: crate::completion::Listed,
+        loading: bool,
+    ) -> Self {
+        let serial = NEXT_COMPLETION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self {
+            serial,
+            manual,
+            of,
+            on_empty: site.word.is_empty(),
+            site: Arc::new(site),
+            typed,
+            candidates: Arc::new(listed.candidates),
+            more: listed.more,
+            selected: 0,
+            moved: false,
+            loading,
+            accept: false,
+        }
+    }
+
+    /// Whether the list was worked out from `of`: nothing to recompute.
+    pub fn is_of(&self, of: ListedOf) -> bool {
+        self.of == of
+    }
+
+    /// Whether the list was worked out from the script `text`.
+    pub fn is_of_text(&self, text: &str) -> bool {
+        self.of.0.is_of(text)
+    }
+
+    /// Whether a cursor at `site` of the script `text` is still on the
+    /// word the list is on: the same start and qualifier, and the word has
+    /// not gone (the cursor at its start, or all of it deleted). A list
+    /// that opened on an empty word is on it again when its word is
+    /// deleted, but not when the script is the one it was last worked out
+    /// from: then the word is still there and the cursor went back to its
+    /// start, where a row would go in front of the word.
+    pub fn is_on(&self, site: &tabletist_db::complete::Site, text: TextPrint) -> bool {
+        if site.word.start != self.site.word.start || site.qualifier != self.site.qualifier {
+            return false;
+        }
+        if !site.word.is_empty() {
+            return true;
+        }
+        let before_its_word = !self.site.word.is_empty() && self.of.0 == text;
+        self.on_empty && !before_its_word
+    }
+
+    pub fn highlighted(&self) -> Option<&crate::completion::Candidate> {
+        self.candidates.get(self.selected)
+    }
+
+    /// Replaces the rows. The highlight is the first row, unless the user
+    /// moved it and the typed word is the same: then it stays on its row
+    /// while that row is still listed. How the list opened (by hand or
+    /// not, on an empty word or not) is not changed here.
+    pub fn relist(
+        &mut self,
+        of: ListedOf,
+        site: tabletist_db::complete::Site,
+        typed: String,
+        listed: crate::completion::Listed,
+        loading: bool,
+    ) {
+        let kept = (self.moved && typed == self.typed)
+            .then(|| self.highlighted())
+            .flatten()
+            .and_then(|old| {
+                listed
+                    .candidates
+                    .iter()
+                    .position(|new| new.kind == old.kind && new.insert == old.insert)
+            });
+        self.selected = kept.unwrap_or(0);
+        self.moved = kept.is_some();
+        self.of = of;
+        self.site = Arc::new(site);
+        self.typed = typed;
+        self.candidates = Arc::new(listed.candidates);
+        self.more = listed.more;
+        self.loading = loading;
+    }
+
+    /// Moves the highlight by `step` rows, stopping at the ends.
+    pub fn move_by(&mut self, step: isize) {
+        let Some(last) = self.candidates.len().checked_sub(1) else {
+            return;
+        };
+        let next = self.selected.saturating_add_signed(step).min(last);
+        if next != self.selected {
+            self.selected = next;
+            self.moved = true;
+        }
+    }
+
+    /// Asks for a row to be inserted, on the view's next draw: the `row`
+    /// given (a click), or the highlighted one. A row that is not listed
+    /// (the list changed since the click's frame was drawn) asks for
+    /// nothing, and so does a list with no row.
+    pub fn accept(&mut self, row: Option<usize>) {
+        match row {
+            Some(row) if row < self.candidates.len() => self.selected = row,
+            Some(_) => return,
+            None => {}
+        }
+        self.accept = self.highlighted().is_some();
+    }
+
+    /// Whether Enter is the editor's line break rather than an insertion:
+    /// there is no row, or the highlighted one inserts what the script
+    /// `text` already reads there, or the list only guesses at it. A list
+    /// that opened by typing, with its highlight where the list put it,
+    /// guesses unless its row goes on from the typed text: a row that
+    /// holds the text further in (`birthday` for `day`) is most likely no
+    /// completion of a word that is whole. Tab inserts such a row, and so
+    /// does Enter once the user moved the highlight or asked for the list
+    /// by hand.
+    pub fn enter_is_a_line_break(&self, text: &str) -> bool {
+        self.highlighted().is_none_or(|candidate| {
+            let word = text.get(self.site.word.clone());
+            let typed = candidate.is_typed(&self.typed)
+                || word.is_some_and(|word| candidate.is_typed(word));
+            let chosen = self.manual || self.moved;
+            typed || (!chosen && candidate.matched.start != 0)
+        })
+    }
+}
+
+/// One SQL editor. Its text lives only in memory.
+pub struct SqlTab {
+    pub id: TabId,
+    /// "Query 3".
+    pub number: u32,
+    /// When it was opened, in seconds since the Unix epoch: what the start
+    /// screen says of it once it is closed.
+    pub opened: u64,
+    pub text: String,
+    /// Byte offset of the editor's cursor, reported by the view.
+    pub cursor: usize,
+    /// The bytes the editor's selection covers, where it covers any,
+    /// reported by the view: what Run runs in place of a statement.
+    pub selected: Option<std::ops::Range<usize>>,
+    /// The rows a statement keeps; 0 keeps every one.
+    pub limit: u32,
+    pub timeout: Option<Duration>,
+    /// What the switch was set to: when the tab opened (by
+    /// `Workspace::push_sql_tab`, then `App::new_sql_tab` as the settings
+    /// say), and by the user since. It counts only while the session
+    /// can write: ask `Workspace::run_mode` for the mode a run has.
+    pub mode: RunMode,
+    /// The last run, or the one running (a whole-run failure is its error).
+    /// Change it through `start_run`, `finish_run` and `abandon_run`.
+    pub run: Fetch<SqlRun>,
+    /// The run `run` waits for: `Some` exactly while it is pending.
+    pub in_flight: Option<RunInFlight>,
+    pub pane: ResultPane,
+    /// The editor's share of the height it and its results have, from 0
+    /// to 1. Change it through `set_split`.
+    pub split: f32,
+    pub selection: Option<CellPos>,
+    /// The row panel's text for the selected row (see `App::format_rows`).
+    pub fields: Option<RowFields>,
+    /// Focus the editor on the next frame.
+    pub focus_editor: bool,
+    /// Put the editor's cursor at this byte on the next frame.
+    pub go_to: Option<usize>,
+    /// The completion list, while it is open.
+    pub completion: Option<Completion>,
+    /// A list was asked for and is not worked out yet:
+    /// `App::refresh_completion` takes this and decides.
+    pub completion_wanted: Option<Wanted>,
+    /// Format the script on the next frame: the editor does it, where the
+    /// selection and the undo history are.
+    pub format: bool,
+    /// Vim's mode in the editor, a command typed in part and vim's undo
+    /// history, where the keybindings are vim's. A new tab is for typing: it opens in insert
+    /// mode.
+    pub vim: crate::vim::Vim,
+    /// The text the last run that finished started with. Its error mark
+    /// names a line of that text, so it holds only while the text is that.
+    ran_text: Option<TextPrint>,
+    /// The transaction that run was sent in. A run that failed as a whole
+    /// leaves no `SqlRun` to say it.
+    ran_mode: tabletist_db::ScriptMode,
+}
+
+// Hand-written so the SQL text never reaches logs or panic messages (a
+// statement prints without its text too).
+impl std::fmt::Debug for SqlTab {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SqlTab")
+            .field("id", &self.id)
+            .field("number", &self.number)
+            .field("cursor", &self.cursor)
+            .field("limit", &self.limit)
+            .field("timeout", &self.timeout)
+            .field("mode", &self.mode)
+            .field("run", &self.run)
+            .field("in_flight", &self.in_flight)
+            .field("pane", &self.pane)
+            .field("split", &self.split)
+            .field("selection", &self.selection)
+            .field("focus_editor", &self.focus_editor)
+            .field("go_to", &self.go_to)
+            .field("format", &self.format)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SqlTab {
+    /// The editor's share of the height in a new tab.
+    pub const DEFAULT_SPLIT: f32 = 0.45;
+
+    pub fn new(id: TabId, number: u32, limit: u32, timeout: Option<Duration>) -> Self {
+        Self {
+            id,
+            number,
+            opened: crate::util::now_secs(),
+            text: String::new(),
+            cursor: 0,
+            selected: None,
+            limit,
+            timeout,
+            mode: RunMode::default(),
+            run: Fetch::default(),
+            in_flight: None,
+            pane: ResultPane::default(),
+            split: Self::DEFAULT_SPLIT,
+            selection: None,
+            fields: None,
+            focus_editor: true,
+            go_to: None,
+            completion: None,
+            completion_wanted: None,
+            format: false,
+            vim: crate::vim::Vim::new(crate::vim::Mode::Insert),
+            ran_text: None,
+            ran_mode: tabletist_db::ScriptMode::ReadOnly,
+        }
+    }
+
+    /// Gives the editor `split` of the height, kept between none and all
+    /// of it. A share that is no number changes nothing.
+    pub fn set_split(&mut self, split: f32) {
+        if split.is_finite() {
+            self.split = split.clamp(0.0, 1.0);
+        }
+    }
+
+    /// What a run of this editor is sent with: its limit, as the fetch cap,
+    /// and its timeout.
+    pub fn caps(&self) -> RunCaps {
+        RunCaps {
+            limit: crate::settings::Settings::fetch_cap(self.limit),
+            timeout: self.timeout,
+        }
+    }
+
+    /// Starts a run of `statements` as `request`, sent in a transaction
+    /// of `mode` with the editor's caps. Returns the run it replaces, if
+    /// one was still pending, for the caller to cancel.
+    #[must_use]
+    pub fn start_run(
+        &mut self,
+        request: RequestId,
+        statements: Vec<tabletist_db::sql::Statement>,
+        mode: tabletist_db::ScriptMode,
+    ) -> Option<RequestId> {
+        let caps = self.caps();
+        self.start_run_with(request, statements, mode, caps, None)
+    }
+
+    /// [`Self::start_run`], sent with `caps` in place of the editor's, to
+    /// `on`: what the results' links need to be offered.
+    #[must_use]
+    pub fn start_run_with(
+        &mut self,
+        request: RequestId,
+        statements: Vec<tabletist_db::sql::Statement>,
+        mode: tabletist_db::ScriptMode,
+        caps: RunCaps,
+        on: Option<RanOn>,
+    ) -> Option<RequestId> {
+        let superseded = self.run.pending;
+        self.run.start(request);
+        self.in_flight = Some(RunInFlight {
+            statements,
+            mode,
+            caps,
+            on,
+            started: std::time::Instant::now(),
+            text: TextPrint::of(&self.text),
+        });
+        superseded
+    }
+
+    /// Applies the answer to `request` if that is the run in flight, and
+    /// returns whether it was. A run that failed as a whole becomes
+    /// `run.error` and drops the result of the run before it: nothing ran,
+    /// so nothing of an older run may read as this one's.
+    pub fn finish_run(
+        &mut self,
+        request: RequestId,
+        result: Result<tabletist_db::ScriptOutcome, Error>,
+        cancel: Option<crate::backend::CancelReason>,
+    ) -> bool {
+        if self.run.pending != Some(request) {
+            return false;
+        }
+        let in_flight = self.in_flight.take();
+        self.ran_text = in_flight.as_ref().map(|run| run.text);
+        self.ran_mode = in_flight.as_ref().map(|run| run.mode).unwrap_or_default();
+        if result.is_err() {
+            self.run.value = None;
+            self.run.loaded = None;
+        }
+        let ran = in_flight
+            .map(|run| (run.statements, run.mode, run.caps, run.on))
+            .unwrap_or_default();
+        self.run.finish(
+            request,
+            result.map(|outcome| SqlRun::new(ran, outcome, cancel)),
+        )
+    }
+
+    /// Forgets the run in flight (its session is gone, so nothing will
+    /// answer it) and keeps the last result.
+    pub fn abandon_run(&mut self) {
+        self.run.pending = None;
+        self.in_flight = None;
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.run.is_loading()
+    }
+
+    /// Whether the run in flight was sent to write. Such a run is never
+    /// replaced by another: that would cancel a transaction that may be
+    /// on its way to its commit. Cancel stops it.
+    pub fn is_writing(&self) -> bool {
+        self.in_flight
+            .as_ref()
+            .is_some_and(|run| run.mode == tabletist_db::ScriptMode::Write)
+    }
+
+    /// How long the run in flight has been going.
+    pub fn running_for(&self) -> Option<Duration> {
+        self.in_flight.as_ref().map(|run| run.started.elapsed())
+    }
+
+    /// The last run that ran: none before any run, and none after one
+    /// that failed as a whole. It stays while the next run is in flight.
+    /// What the results, the footer and the gutter show is all this run's.
+    pub fn last_run(&self) -> Option<&SqlRun> {
+        self.run.value.as_ref()
+    }
+
+    /// Whether the editor still holds the text its last run started with,
+    /// and no run is in flight: what that run says of a line, or offers to
+    /// do with its statements, holds only then.
+    pub fn ran_this_text(&self) -> bool {
+        !self.is_running() && self.ran_text.is_some_and(|ran| ran.is_of(&self.text))
+    }
+
+    /// Whether the last run was sent to write and lost its session before
+    /// its end was known: some or all of it may be written, and nothing
+    /// can say which.
+    pub fn lost_writing(&self) -> bool {
+        self.ran_mode == tabletist_db::ScriptMode::Write
+            && self
+                .run
+                .error
+                .as_ref()
+                .is_some_and(Error::is_connection_lost)
+    }
+
+    /// What the Results pane shows: the last statement of the last run
+    /// that returned rows, with its index in the run.
+    pub fn shown(&self) -> Option<(usize, &tabletist_db::StatementResult)> {
+        let run = self.last_run()?;
+        run.outcome
+            .results
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, result)| {
+                matches!(result.outcome, tabletist_db::StatementOutcome::Rows { .. })
+            })
+    }
+
+    /// The shown result's columns and rows, and whether the limit cut
+    /// rows off.
+    pub fn shown_rows(&self) -> Option<ShownRows<'_>> {
+        match &self.shown()?.1.outcome {
+            tabletist_db::StatementOutcome::Rows {
+                columns,
+                rows,
+                truncated,
+            } => Some((columns, rows, *truncated)),
+            _ => None,
+        }
+    }
+
+    /// The statement Show all sends again: the one whose rows the Results
+    /// show, where the limit cut them, in a run that only read. Only while
+    /// the editor holds the text that ran, no run is in flight and the tab
+    /// is on `on`, the connection and database the run went to: what
+    /// would be sent is then what the editor shows, where it was answered.
+    pub fn cut_statement(
+        &self,
+        on: &tabletist_db::ConnectSpec,
+    ) -> Option<&tabletist_db::sql::Statement> {
+        let run = self
+            .last_run()
+            .filter(|run| self.ran_this_text() && run.ran_on(on))?;
+        if run.mode != tabletist_db::ScriptMode::ReadOnly {
+            return None;
+        }
+        let (index, result) = self.shown()?;
+        let cut = matches!(
+            result.outcome,
+            tabletist_db::StatementOutcome::Rows {
+                truncated: true,
+                ..
+            }
+        );
+        if cut { run.statements.get(index) } else { None }
+    }
+
+    /// The run Run without timeout sends again: the last one, where the
+    /// timeout stopped it and nothing of it was written. Only while the
+    /// editor holds the text that ran, no run is in flight and the tab is
+    /// on `on`, as [`Self::cut_statement`].
+    pub fn timed_out_run(&self, on: &tabletist_db::ConnectSpec) -> Option<&SqlRun> {
+        self.last_run()
+            .filter(|run| self.ran_this_text() && run.ran_on(on))
+            .filter(|run| matches!(run.cancel, Some(crate::backend::CancelReason::Timeout(_))))
+            .filter(|run| run.nothing_written())
+    }
+
+    /// Rows and columns of the shown result; zero of both without one.
+    pub fn dims(&self) -> (usize, usize) {
+        self.shown_rows()
+            .map_or((0, 0), |(columns, rows, _)| (rows.len(), columns.len()))
+    }
+
+    /// The selected row of the result, while the Results pane shows it:
+    /// the row the row panel is for. None under the Messages pane, which
+    /// shows no rows.
+    pub fn selected_row(&self) -> Option<usize> {
+        let row = self.selection?.row;
+        (self.pane == ResultPane::Results && row < self.dims().0).then_some(row)
+    }
+
+    /// The row panel's text for the selected row, if it is up to date.
+    pub fn selected_fields(&self) -> Option<&RowFields> {
+        let row = self.selected_row()?;
+        self.fields
+            .as_ref()
+            .filter(|fields| fields.row == row && fields.request == self.run.loaded)
+    }
+
+    /// The cursor's 1-based line and column (in characters).
+    pub fn line_col(&self) -> (usize, usize) {
+        // The cursor is the view's: text set from elsewhere may leave it
+        // inside a character.
+        let before = &self.text[..self.text.floor_char_boundary(self.cursor)];
+        let line = before.matches('\n').count() + 1;
+        let column = before
+            .rsplit('\n')
+            .next()
+            .map_or(0, |line| line.chars().count())
+            + 1;
+        (line, column)
+    }
+
+    /// The byte of the text at its 1-based `line` and `column` (in
+    /// characters), or at the start of the line with no column. A place
+    /// past the end of the line or of the text is its end.
+    pub fn offset_of(&self, line: usize, column: Option<usize>) -> usize {
+        let mut start = 0;
+        for _ in 1..line {
+            match self.text[start..].find('\n') {
+                Some(at) => start += at + 1,
+                None => return self.text.len(),
+            }
+        }
+        let end = self.text[start..]
+            .find('\n')
+            .map_or(self.text.len(), |at| start + at);
+        let into = column.unwrap_or(1).saturating_sub(1);
+        let mut chars = self.text[start..end]
+            .char_indices()
+            .map(|(at, _)| start + at);
+        chars.nth(into).unwrap_or(end)
+    }
+
+    /// Where the last run failed: the editor line, and the column when the
+    /// database gave a position. `None` while a run is in flight, and once
+    /// the text is no longer the one that ran: the line may have moved.
+    pub fn error_mark(&self) -> Option<(usize, Option<usize>)> {
+        if self.is_running() {
+            return None;
+        }
+        let mark = match &self.run.error {
+            Some(Error::Refused { line, .. }) => Some((*line, None)),
+            // Nothing ran: there is no statement to mark.
+            Some(_) => None,
+            None => self.last_run()?.error_mark,
+        }?;
+        // Asked every frame: the text is hashed only while there is a mark.
+        self.ran_text?.is_of(&self.text).then_some(mark)
+    }
+}
+
+impl Workspace {
+    /// The zone a moment with an offset is shown and edited in, where the
+    /// engine sends one (`edit::shows_in_zone`): elsewhere none, and values
+    /// are shown as stored.
+    pub fn zone_shown(&self) -> Option<&jiff::tz::TimeZone> {
+        if crate::edit::shows_in_zone(self.driver.dialect()) {
+            self.zone.as_ref()
+        } else {
+            None
+        }
+    }
+
+    /// Whether a SQL editor of this workspace can run read-write, or why
+    /// none can.
+    pub fn sql_writes(&self) -> Result<(), NoWrites> {
+        if self.access != tabletist_db::Access::Writable {
+            return Err(NoWrites::ReadOnlyConnection);
+        }
+        if self.environment.confirms_writes() {
+            return Err(NoWrites::Unconfirmed);
+        }
+        Ok(())
+    }
+
+    /// The mode a run of `sql` has: its own while the session can write,
+    /// and read-only everywhere else. A tab's own mode is kept through a
+    /// session that came back read-only, and counts again once one is
+    /// writable.
+    pub fn run_mode(&self, sql: &SqlTab) -> RunMode {
+        match self.sql_writes() {
+            Ok(()) => sql.mode,
+            Err(_) => RunMode::ReadOnly,
+        }
+    }
+
+    /// Whether the tab has content to show now: its schemas are listed, or
+    /// could not be. Until then the tab shows how connecting goes. A switch
+    /// of database starts the tree over, so a tab in use can go back to
+    /// not opened.
+    pub fn opened(&self) -> bool {
+        self.tree.schemas.value.is_some() || self.tree.schemas.error.is_some()
+    }
+
+    /// Whether giving up the connect loses nothing: the tab has not opened,
+    /// a connect or its schema listing is under way, and no tab is open in
+    /// it. Giving up closes the workspace, and with it the SQL editors a
+    /// switch of database keeps.
+    pub fn can_give_up(&self) -> bool {
+        !self.opened()
+            && matches!(
+                self.status,
+                SessionStatus::Connecting { .. } | SessionStatus::Connected
+            )
+            && self.tabs.is_empty()
+    }
+
+    /// How long the connect in flight has been going, once it was sent.
+    pub fn connecting_for(&self) -> Option<Duration> {
+        matches!(self.status, SessionStatus::Connecting { .. })
+            .then_some(self.connect_started)
+            .flatten()
+            .map(|started| started.elapsed())
+    }
+
+    /// A workspace for `saved` that is connecting as `session`; `request`
+    /// is the connect it waits for, and `secrets` are the ones typed so far.
+    pub fn new(
+        session: SessionId,
+        request: RequestId,
+        saved: SavedConnection,
+        secrets: tabletist_db::Secrets,
+    ) -> Self {
+        Self {
+            session,
+            access: saved.access(),
+            environment: saved.environment,
+            conn_id: saved.id,
+            name: saved.name,
+            driver: saved.spec.driver,
+            encrypted: false,
+            spec: saved.spec,
+            status: SessionStatus::Connecting { request },
+            connect_started: None,
+            tree: Tree::default(),
+            tabs: Vec::new(),
+            next_query: 1,
+            server_version: Fetch::default(),
+            session_zone: Fetch::default(),
+            columns: HashMap::new(),
+            catalog_generation: 0,
+            active_tab: None,
+            row_panel: true,
+            pending_open: None,
+            password_mode: saved.password,
+            secrets,
+            databases: Fetch::default(),
+            save_password: false,
+            needs_prompt: None,
+            keyring_empty: false,
+            ssh_mode: saved.ssh_secret,
+            save_ssh: false,
+            needs_ssh_prompt: None,
+            pane: Pane::Tree,
+            recent_sql: Vec::new(),
+            start_search: String::new(),
+            start_selected: 0,
+            focus_start_search: false,
+            blur_start_search: false,
+            database_menu_asked: false,
+            sidebar_hidden: false,
+            full_precision: false,
+            zone: None,
+            focus_where: false,
+            command: None,
+            focus_command: false,
+            command_returns: None,
+            command_error: None,
+            save_refused: false,
+            review_refused: false,
+            label_refused: None,
+            fold_documents: None,
+            connected_at: None,
+            used: std::time::Instant::now(),
+            woken: false,
+            keep_access: false,
+        }
+    }
+
+    /// Whether the window shows the start screen: its schema listing has
+    /// answered (listed, or failed), and no tab is open.
+    pub fn on_start(&self) -> bool {
+        self.opened() && self.active_tab.is_none()
+    }
+
+    pub fn tab(&self, id: TabId) -> Option<&Tab> {
+        self.tabs.iter().find(|tab| tab.id() == id)
+    }
+
+    pub fn tab_mut(&mut self, id: TabId) -> Option<&mut Tab> {
+        self.tabs.iter_mut().find(|tab| tab.id() == id)
+    }
+
+    /// Where this workspace's tables are, for what is kept of their
+    /// labels: its saved connection, and the database it is on now.
+    pub fn label_place(&self) -> crate::labels::Place {
+        crate::labels::Place {
+            conn: self.conn_id.clone(),
+            database: crate::labels::database_key(self.driver, &self.spec.database),
+        }
+    }
+
+    /// The lines of the chooser of what labels the rows of `table`, by
+    /// its columns as the workspace knows them now. `keys` are the
+    /// columns its rows are found by: the one a picker's foreign key
+    /// references, or the table's primary key.
+    pub fn label_lines(&self, table: &ObjectRef, keys: &[&str]) -> Vec<crate::labels::Line> {
+        let known = self.columns.get(table);
+        let columns = known.and_then(|kept| kept.value.as_deref());
+        crate::labels::lines(self.driver.dialect(), columns, keys)
+    }
+
+    pub fn object_tab(&self, id: TabId) -> Option<&ObjectTab> {
+        self.tab(id)?.as_object()
+    }
+
+    pub fn object_tab_mut(&mut self, id: TabId) -> Option<&mut ObjectTab> {
+        self.tab_mut(id)?.as_object_mut()
+    }
+
+    pub fn sql_tab(&self, id: TabId) -> Option<&SqlTab> {
+        self.tab(id)?.as_sql()
+    }
+
+    pub fn sql_tab_mut(&mut self, id: TabId) -> Option<&mut SqlTab> {
+        self.tab_mut(id)?.as_sql_mut()
+    }
+
+    /// The active tab, when it is an object tab.
+    pub fn active_object_tab(&self) -> Option<&ObjectTab> {
+        self.object_tab(self.active_tab?)
+    }
+
+    /// Whether another schema has an object named like `object`, among
+    /// the open tabs or the schemas loaded in the sidebar. Its tab then
+    /// names the schema too, so `public.users` and `audit.users` can be
+    /// told apart.
+    pub fn name_is_shared(&self, object: &ObjectRef) -> bool {
+        let other = |schema: &str| schema != object.schema;
+        self.object_tabs()
+            .any(|tab| tab.object.name == object.name && other(&tab.object.schema))
+            || self.tree.nodes.iter().any(|(schema, node)| {
+                other(schema)
+                    && node
+                        .objects
+                        .value
+                        .as_ref()
+                        .is_some_and(|objects| objects.iter().any(|info| info.name == object.name))
+            })
+    }
+
+    /// The active tab, when it is a SQL editor.
+    pub fn active_sql_tab(&self) -> Option<&SqlTab> {
+        self.sql_tab(self.active_tab?)
+    }
+
+    /// The tab whose row the row panel shows: none while the panel is
+    /// closed. A table's Data view keeps the panel open with no row
+    /// selected; a SQL editor gives it room only while a row of its result
+    /// is selected.
+    pub fn row_panel_tab(&self) -> Option<TabId> {
+        if !self.row_panel {
+            return None;
+        }
+        match self.tab(self.active_tab?)? {
+            Tab::Object(object) => (object.view == ObjectView::Data).then_some(object.id),
+            Tab::Sql(sql) => sql.selected_row().map(|_| sql.id),
+            Tab::Agents(_) | Tab::History(_) => None,
+        }
+    }
+
+    /// Whether what is sent for the session now is answered: it is up, it
+    /// was closed while idle (sending opens it again), or it is opening
+    /// again for a use, and what is sent waits for it.
+    pub fn takes_commands(&self) -> bool {
+        match self.status {
+            SessionStatus::Connected | SessionStatus::Idle => true,
+            SessionStatus::Connecting { .. } => self.woken,
+            SessionStatus::Disconnected(_) | SessionStatus::Cancelled => false,
+        }
+    }
+
+    /// The secrets a connect of this tab needs, in the order
+    /// `App::authenticate` fills them: the database password, then the
+    /// SSH secret.
+    pub fn secret_steps(&self) -> Vec<SecretStep> {
+        let database = SecretStep {
+            kind: SecretKind::Database,
+            mode: self.password_mode,
+            held: SecretKind::Database.held(&self.secrets),
+            reason: self.needs_prompt.clone(),
+        };
+        let ssh = SecretKind::for_ssh(&self.spec).map(|kind| SecretStep {
+            kind,
+            mode: self.ssh_mode,
+            held: kind.held(&self.secrets),
+            reason: self.needs_ssh_prompt.clone(),
+        });
+        std::iter::once(database).chain(ssh).collect()
+    }
+
+    /// Whether connecting the tab asks the person for nothing: each
+    /// secret it needs is held, comes from the keyring, or is none.
+    pub fn connects_unasked(&self) -> bool {
+        !self.secret_steps().iter().any(SecretStep::asks_person)
+    }
+
+    /// Whether a connect is under way that restarts the tab once the
+    /// session is up (see `App::after_connect`): any connect that is not
+    /// woken, so a reconnect, the first connect, or a connect again for a
+    /// use whose secret was not at hand (a prompt, or a keyring read). It
+    /// is the `Connecting` arm of `!takes_commands()`. What the tab shows
+    /// is read then, so a read asked for meanwhile is not sent.
+    pub fn restarts_once_up(&self) -> bool {
+        match self.status {
+            SessionStatus::Connecting { .. } => !self.woken,
+            SessionStatus::Connected
+            | SessionStatus::Idle
+            | SessionStatus::Disconnected(_)
+            | SessionStatus::Cancelled => false,
+        }
+    }
+
+    /// Whether a table tab holds edits: something pending, an editor open,
+    /// or a save running.
+    pub fn holds_edits(&self) -> bool {
+        self.object_tabs().any(|object| object.edits.holds())
+    }
+
+    /// Whether something waits for the session's answer: a tab's page,
+    /// structure, count, run or save, the tree, the databases, the
+    /// server's version, or a table's columns.
+    pub fn waits(&self) -> bool {
+        self.tabs.iter().any(|tab| !tab.pending().is_empty())
+            || self.tree.schemas.is_loading()
+            || self
+                .tree
+                .nodes
+                .values()
+                .any(|node| node.objects.is_loading())
+            || self.databases.is_loading()
+            // Not the server's version: asked with every connect for the
+            // start screen's line, and no use of the session.
+            || self.columns.values().any(Fetch::is_loading)
+    }
+
+    /// The object tabs, in strip order.
+    pub fn object_tabs(&self) -> impl Iterator<Item = &ObjectTab> {
+        self.tabs.iter().filter_map(Tab::as_object)
+    }
+
+    pub fn object_tabs_mut(&mut self) -> impl Iterator<Item = &mut ObjectTab> {
+        self.tabs.iter_mut().filter_map(Tab::as_object_mut)
+    }
+
+    /// The Agents tab, where it is open.
+    pub fn agents_tab(&self) -> Option<TabId> {
+        self.tabs.iter().find_map(|open| match open {
+            Tab::Agents(agents) => Some(agents.id),
+            Tab::Object(_) | Tab::Sql(_) | Tab::History(_) => None,
+        })
+    }
+
+    /// The Agents tab, where it is open.
+    pub fn agents_tab_mut(&mut self) -> Option<&mut AgentsTab> {
+        self.tabs.iter_mut().find_map(|open| match open {
+            Tab::Agents(agents) => Some(&mut **agents),
+            Tab::Object(_) | Tab::Sql(_) | Tab::History(_) => None,
+        })
+    }
+
+    /// Whether the tab in front is the Agents tab.
+    pub fn agents_in_front(&self) -> bool {
+        self.active_tab.is_some() && self.active_tab == self.agents_tab()
+    }
+
+    /// The History tab, where it is open.
+    pub fn history_tab(&self) -> Option<&HistoryTab> {
+        self.tabs.iter().find_map(|open| match open {
+            Tab::History(history) => Some(&**history),
+            Tab::Object(_) | Tab::Sql(_) | Tab::Agents(_) => None,
+        })
+    }
+
+    /// The History tab, where it is open.
+    pub fn history_tab_mut(&mut self) -> Option<&mut HistoryTab> {
+        self.tabs.iter_mut().find_map(|open| match open {
+            Tab::History(history) => Some(&mut **history),
+            Tab::Object(_) | Tab::Sql(_) | Tab::Agents(_) => None,
+        })
+    }
+
+    /// Whether the tab in front is the History tab.
+    pub fn history_in_front(&self) -> bool {
+        self.active_tab.is_some() && self.active_tab == self.history_tab().map(|history| history.id)
+    }
+
+    /// The SQL editors, in strip order.
+    pub fn sql_tabs(&self) -> impl Iterator<Item = &SqlTab> {
+        self.tabs.iter().filter_map(Tab::as_sql)
+    }
+
+    pub fn sql_tabs_mut(&mut self) -> impl Iterator<Item = &mut SqlTab> {
+        self.tabs.iter_mut().filter_map(Tab::as_sql_mut)
+    }
+
+    /// Adds an empty SQL editor at the end of the strip, numbered after the
+    /// last one, without showing it, in the mode the connection gives a new
+    /// editor of this workspace now (see `RunMode::of_new_tab`): Follow
+    /// connection's. `App::new_sql_tab` makes it read-only where the
+    /// settings say so.
+    pub fn push_sql_tab(
+        &mut self,
+        id: TabId,
+        limit: u32,
+        timeout: Option<Duration>,
+    ) -> &mut SqlTab {
+        let number = self.next_query;
+        self.next_query += 1;
+        let mut sql = SqlTab::new(id, number, limit, timeout);
+        sql.mode = RunMode::of_new_tab(self.sql_writes(), self.environment);
+        self.tabs.push(Tab::Sql(Box::new(sql)));
+        match self.tabs.last_mut() {
+            Some(Tab::Sql(sql)) => sql,
+            _ => unreachable!("a SQL tab was just pushed"),
+        }
+    }
+
+    /// The schema a statement's bare names are looked up in: `public` on
+    /// PostgreSQL, the connection's database on MySQL, `main` on SQLite.
+    /// `None` when the server has no such schema: then a completion
+    /// inserts every name with its schema.
+    pub fn bare_schema(&self) -> Option<&str> {
+        let name = match self.driver {
+            Driver::Postgres => "public",
+            Driver::MySql => self.spec.database.as_str(),
+            Driver::Sqlite => "main",
+        };
+        let schemas = self.tree.schemas.value.as_ref()?;
+        let found = schemas.iter().find(|schema| *schema == name);
+        found.map(String::as_str)
+    }
+
+    /// The names a completion list reads changed: an open list is worked
+    /// out again.
+    pub fn catalog_changed(&mut self) {
+        self.catalog_generation = self.catalog_generation.wrapping_add(1);
+    }
+
+    /// Whether what `need` names is on its way: it was asked for, and the
+    /// session it was asked of is still there to answer. A fetch left
+    /// pending by a session that was replaced (a reconnect) or lost never
+    /// ends, and a list must not wait for it.
+    pub fn is_loading(&self, need: &crate::completion::Need) -> bool {
+        if !matches!(self.status, SessionStatus::Connected) {
+            return false;
+        }
+        match need {
+            crate::completion::Need::Objects(schema) => {
+                let node = self.tree.nodes.get(schema);
+                node.is_some_and(|node| node.objects.is_loading())
+            }
+            crate::completion::Need::Columns(object) => {
+                self.columns.get(object).is_some_and(Fetch::is_loading)
+            }
+        }
+    }
+
+    /// Forgets what the SQL editors asked the session for. Call it wherever
+    /// `session` is replaced: answers for the old one are dropped, so a run
+    /// left pending would look like it runs for ever. The server may differ
+    /// too, so its version is asked for again (see `App::after_connect`),
+    /// and so are the columns a completion list offers.
+    /// What object tabs load is not touched: the connect reloads them. A
+    /// save one of them sent is given up.
+    pub fn forget_session_requests(&mut self) {
+        for sql in self.sql_tabs_mut() {
+            sql.abandon_run();
+        }
+        // A save sent on the old session will not be answered here: what it
+        // wrote is not known. The set is kept.
+        for object in self.object_tabs_mut() {
+            if object.edits.saving.take().is_some() {
+                object.edits.note = Some(crate::edit::Note::Lost);
+            }
+            // A question about a kept key, asked on the old session, will
+            // not be answered either. An answered one stays.
+            object.edits.doubts.retain(|_, doubt| match doubt.state {
+                crate::edit::DoubtState::Asked(_) => false,
+                crate::edit::DoubtState::Missing => true,
+            });
+            // Nor will a count of what the tab's deletes take, or of who
+            // holds a row: the next review asks the first again.
+            object.edits.taken = None;
+            object.edits.holders.clear();
+        }
+        self.server_version = Fetch::default();
+        self.session_zone = Fetch::default();
+        // Fetches the old session will never answer, and names that may
+        // not be the new one's.
+        self.columns.clear();
+        self.catalog_changed();
+    }
+}
+
+// Hand-written so a typed password never reaches logs or panic messages.
+impl std::fmt::Debug for ConnectionForm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectionForm")
+            .field("editing", &self.editing)
+            .field("name", &self.name)
+            .field("driver", &self.driver)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field("database", &self.database)
+            .field("tls", &self.tls)
+            .field("password_mode", &self.password_mode)
+            .field("password", &"..")
+            .finish_non_exhaustive()
+    }
+}
+
+// Which it is, without the text: what a user typed stays out of logs and
+// panics, and an action is printed with its fields.
+impl std::fmt::Debug for EditStart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Value => "Value",
+            Self::Replace(_) => "Replace(..)",
+            Self::Typed(_) => "Typed(..)",
+        })
+    }
+}
+
+// Only the counts: the statements and the change set hold the values the
+// user typed.
+impl std::fmt::Debug for WritePrompt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WritePrompt")
+            .field("tab", &self.tab)
+            .field("id", &self.id)
+            .field("changes", &self.changes)
+            .field("rows", &self.rows)
+            .field("added", &self.added)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for PasswordPrompt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PasswordPrompt")
+            .field("tab", &self.tab)
+            .field("name", &self.name)
+            .field("save", &self.save)
+            .field("message", &self.message)
+            .field("password", &"..")
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Where the tests' runs go.
+    fn here() -> tabletist_db::ConnectSpec {
+        tabletist_db::ConnectSpec::sqlite("/tmp/bookshop.db")
+    }
+
+    /// An editor that ran `text` (split as SQLite does) in `mode` on
+    /// [`here`] and got `outcomes`, stopped by `cancel`, sent with `caps`.
+    fn ran(
+        text: &str,
+        outcomes: Vec<tabletist_db::StatementOutcome>,
+        cancel: Option<crate::backend::CancelReason>,
+        (mode, caps): (tabletist_db::ScriptMode, RunCaps),
+    ) -> SqlTab {
+        let mut sql = SqlTab::new(TabId(1), 1, 1_000, Some(Duration::from_secs(30)));
+        sql.text = text.into();
+        let statements =
+            tabletist_db::sql::statements(tabletist_db::Driver::Sqlite.dialect(), text);
+        let request = crate::backend::RequestId(9);
+        let on = Some(RanOn(here()));
+        let _ = sql.start_run_with(request, statements, mode, caps, on);
+        let outcome = crate::fixtures::script_outcome(outcomes);
+        assert!(sql.finish_run(request, Ok(outcome), cancel));
+        sql
+    }
+
+    #[test]
+    fn a_run_keeps_the_caps_it_was_sent_with() {
+        let mut sql = SqlTab::new(TabId(1), 1, 0, None);
+        assert_eq!(
+            sql.caps(),
+            RunCaps {
+                limit: u32::MAX,
+                timeout: None
+            }
+        );
+        sql.limit = 500;
+        sql.timeout = Some(Duration::from_secs(5));
+        let caps = sql.caps();
+        assert_eq!(
+            (caps.limit, caps.timeout),
+            (500, Some(Duration::from_secs(5)))
+        );
+        let other = RunCaps {
+            limit: u32::MAX,
+            timeout: Some(Duration::from_secs(5)),
+        };
+        let sql = ran(
+            "SELECT 1",
+            vec![crate::fixtures::rows_outcome(1)],
+            None,
+            (tabletist_db::ScriptMode::ReadOnly, other),
+        );
+        assert_eq!(sql.last_run().unwrap().caps, other);
+    }
+
+    #[test]
+    fn show_all_is_the_shown_statement_of_a_read_cut_by_the_limit() {
+        use crate::fixtures::{cut_outcome, done_outcome, rows_outcome};
+        use tabletist_db::ScriptMode::{ReadOnly, Write};
+        let caps = RunCaps::default();
+        let text = "SELECT 1;\nSELECT 2;\nSELECT 3";
+        // The Results show the last statement that returned rows.
+        let outcomes = vec![rows_outcome(1), cut_outcome(1_000), done_outcome(None)];
+        let mut sql = ran(text, outcomes.clone(), None, (ReadOnly, caps));
+        let cut = sql.cut_statement(&here()).expect("the cut statement");
+        assert_eq!(cut.first_line, 2);
+        // Not on another database, nor on another connection.
+        let mut other = here();
+        other.database = "main2".into();
+        assert!(sql.cut_statement(&other).is_none());
+        let elsewhere = tabletist_db::ConnectSpec::sqlite("/tmp/elsewhere.db");
+        assert!(sql.cut_statement(&elsewhere).is_none());
+        // Not once the text is another, and again when it is that text.
+        sql.text.push(' ');
+        assert!(sql.cut_statement(&here()).is_none());
+        sql.text.pop();
+        assert!(sql.cut_statement(&here()).is_some());
+        // Not while a run is in flight.
+        let _ = sql.start_run(crate::backend::RequestId(10), Vec::new(), ReadOnly);
+        assert!(sql.cut_statement(&here()).is_none());
+        // Not for a run sent to write, nor for a whole result.
+        let sql = ran(text, outcomes, None, (Write, caps));
+        assert!(sql.cut_statement(&here()).is_none());
+        let sql = ran(text, vec![rows_outcome(3)], None, (ReadOnly, caps));
+        assert!(sql.cut_statement(&here()).is_none());
+        // A run started without saying where (`start_run`) offers nothing.
+        let mut sql = SqlTab::new(TabId(1), 1, 1_000, None);
+        crate::fixtures::run_script(&mut sql, text, vec![cut_outcome(1_000)]);
+        assert!(sql.cut_statement(&here()).is_none());
+    }
+
+    #[test]
+    fn run_without_timeout_is_the_last_run_where_the_timeout_stopped_it_and_nothing_was_written() {
+        use crate::backend::CancelReason;
+        use crate::fixtures::rows_outcome;
+        use tabletist_db::StatementOutcome::Cancelled;
+        let timeout = Some(CancelReason::Timeout(Duration::from_secs(30)));
+        let read = (tabletist_db::ScriptMode::ReadOnly, RunCaps::default());
+        let text = "SELECT 1;\nSELECT 2";
+        let outcomes = vec![rows_outcome(1), Cancelled];
+        let mut sql = ran(text, outcomes.clone(), timeout, read);
+        assert!(sql.timed_out_run(&here()).is_some());
+        let mut other = here();
+        other.database = "main2".into();
+        assert!(sql.timed_out_run(&other).is_none());
+        sql.text.push(' ');
+        assert!(sql.timed_out_run(&here()).is_none());
+        // Cancelled by hand, or stopped for no reason of ours: no.
+        for cancel in [Some(CancelReason::User), None] {
+            let sql = ran(text, outcomes.clone(), cancel, read);
+            assert!(sql.timed_out_run(&here()).is_none(), "{cancel:?}");
+        }
+    }
+
+    #[test]
+    fn nothing_is_written_by_a_read_or_by_a_write_rolled_back_whole() {
+        use tabletist_db::{ScriptEnd, ScriptMode};
+        let run = |mode, end, warning: Option<&str>| SqlRun {
+            statements: Vec::new(),
+            mode,
+            outcome: tabletist_db::ScriptOutcome {
+                end,
+                rollback_warning: warning.map(str::to_owned),
+                ..Default::default()
+            },
+            cancel: None,
+            error_mark: None,
+            caps: RunCaps::default(),
+            on: None,
+        };
+        let partly = |committed| ScriptEnd::Partly { committed };
+        assert!(run(ScriptMode::ReadOnly, ScriptEnd::RolledBack, None).nothing_written());
+        assert!(run(ScriptMode::Write, ScriptEnd::RolledBack, None).nothing_written());
+        assert!(run(ScriptMode::Write, partly(0), None).nothing_written());
+        assert!(!run(ScriptMode::Write, partly(1), None).nothing_written());
+        assert!(!run(ScriptMode::Write, ScriptEnd::Committed, None).nothing_written());
+        let kept = Some("could not roll back");
+        assert!(!run(ScriptMode::Write, ScriptEnd::RolledBack, kept).nothing_written());
+        // A session that could not be put back was closed: its rollback
+        // is not known to have run.
+        let mut closed = run(ScriptMode::Write, ScriptEnd::RolledBack, None);
+        closed.outcome.broken = Some(tabletist_db::Error::ConnectionLost("closed".into()));
+        assert!(!closed.nothing_written());
+    }
+
+    #[test]
+    fn a_connections_agents_state_is_the_server_then_its_access_then_who_called_last() {
+        use crate::connections::AgentAccess::{Off, Read};
+        let conn = ConnectionId("shop".into());
+        let session = |agent: &str, connections: &[&str], at: u64| tabletist_mcp::SessionInfo {
+            id: agent.into(),
+            agent: Some(agent.into()),
+            project: None,
+            transport: tabletist_mcp::Transport::Stdio,
+            connected_at: std::time::SystemTime::UNIX_EPOCH,
+            calls: 1,
+            connections: connections.iter().map(|id| (*id).to_owned()).collect(),
+            last_call_at: Some(
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(at),
+            ),
+        };
+        let mut state = AgentsState::default();
+        // The server off says so whatever the connection allows, Off too.
+        assert_eq!(state.of(false, Some(Read), &conn), AgentsHere::ServerOff);
+        assert_eq!(state.of(false, Some(Off), &conn), AgentsHere::ServerOff);
+        assert_eq!(state.of(true, Some(Off), &conn), AgentsHere::OffHere);
+        // A connection that is saved no more is Off.
+        assert_eq!(state.of(true, None, &conn), AgentsHere::OffHere);
+        assert_eq!(state.of(true, Some(Read), &conn), AgentsHere::NoneConnected);
+        // Elsewhere, or nowhere yet, is not here.
+        state.sessions = vec![session("Cursor", &["other"], 9), session("Zed", &[], 9)];
+        assert_eq!(state.of(true, Some(Read), &conn), AgentsHere::NoneConnected);
+        state
+            .sessions
+            .push(session("Claude Code", &["other", "shop"], 5));
+        state.sessions.push(session("Cline", &["shop"], 7));
+        assert_eq!(
+            state.of(true, Some(Read), &conn),
+            AgentsHere::Connected {
+                agent: "Cline".into(),
+                count: 2
+            }
+        );
+        assert_eq!(state.here(&conn).len(), 2);
+        // Its access Off, nobody is here for it.
+        assert_eq!(state.of(true, Some(Off), &conn), AgentsHere::OffHere);
+    }
+
+    #[test]
+    fn the_feed_keeps_the_last_calls_and_a_window_sees_those_on_its_connection() {
+        let call = |n: usize, conn: &str| tabletist_mcp::Call {
+            at: std::time::SystemTime::UNIX_EPOCH,
+            session: "s".into(),
+            agent: "Claude Code".into(),
+            connection: Some(conn.to_owned()),
+            tool: "run_query".into(),
+            statement: true,
+            logged: Some(1),
+            request: Some(format!("SELECT {n}")),
+            result: "ok".into(),
+            message: None,
+            rows: Some(1),
+            columns: Some(1),
+            took: std::time::Duration::from_millis(4),
+        };
+        let mut state = AgentsState::default();
+        for n in 0..FEED_KEPT + 4 {
+            state.called(call(n, if n % 2 == 0 { "shop" } else { "ledger" }));
+        }
+        assert_eq!(state.feed.len(), FEED_KEPT);
+        let shop = ConnectionId("shop".into());
+        let newest: Vec<_> = state
+            .calls_on(&shop)
+            .take(2)
+            .map(|call| call.request.clone().unwrap())
+            .collect();
+        assert_eq!(
+            newest,
+            [
+                format!("SELECT {}", FEED_KEPT + 2),
+                format!("SELECT {FEED_KEPT}")
+            ]
+        );
+        assert_eq!(state.calls_on(&shop).count(), FEED_KEPT / 2);
+    }
+
+    #[test]
+    fn a_session_that_does_not_work_here_is_elsewhere_and_one_that_named_none_too() {
+        let session = |agent: &str, connections: &[&str], at: u64| tabletist_mcp::SessionInfo {
+            id: agent.into(),
+            agent: Some(agent.into()),
+            project: None,
+            transport: tabletist_mcp::Transport::Stdio,
+            connected_at: std::time::SystemTime::UNIX_EPOCH,
+            calls: 1,
+            connections: connections.iter().map(|id| (*id).to_owned()).collect(),
+            last_call_at: (at > 0)
+                .then(|| std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(at)),
+        };
+        let state = AgentsState {
+            sessions: vec![
+                session("Zed", &[], 0),
+                session("Cursor", &["staging"], 3),
+                session("Claude Code", &["staging", "shop"], 9),
+                session("Cline", &["ledger"], 5),
+            ],
+            ..AgentsState::default()
+        };
+        let shop = ConnectionId("shop".into());
+        let names: Vec<_> = state
+            .elsewhere(&shop)
+            .into_iter()
+            .map(|session| session.id.as_str())
+            .collect();
+        assert_eq!(names, ["Cline", "Cursor", "Zed"]);
+    }
+
+    /// The Bookshop's covers, `rows` of them, as a tab holds them.
+    fn covers(rows: usize) -> ObjectTab {
+        let object = ObjectRef::new("main", "book_covers");
+        let mut tab = ObjectTab::new(TabId(1), object, ObjectKind::Table, true, 300, None);
+        tab.rows.value = Some(crate::fixtures::book_covers_page(rows));
+        tab
+    }
+
+    fn at(row: usize) -> Option<CellPos> {
+        Some(CellPos { row, col: 1 })
+    }
+
+    #[test]
+    fn an_extend_selects_the_rows_from_the_anchor_to_the_cursor() {
+        let mut tab = covers(5);
+        tab.set_cursor(at(1), Reach::End);
+        assert_eq!(tab.selected_rows(), [1]);
+        tab.set_cursor(at(3), Reach::Extend);
+        assert_eq!(tab.selected_rows(), [1, 2, 3]);
+        // The anchor stays where the range began.
+        tab.set_cursor(at(0), Reach::Extend);
+        assert_eq!(tab.selected_rows(), [0, 1]);
+        // Back on the anchor one row is selected, and no range stands.
+        tab.set_cursor(at(1), Reach::Extend);
+        assert_eq!((tab.selected_rows(), tab.range), (vec![1], None));
+    }
+
+    #[test]
+    fn with_no_cursor_an_extend_selects_one_row() {
+        let mut tab = covers(5);
+        tab.set_cursor(at(2), Reach::Extend);
+        assert_eq!((tab.selected_rows(), tab.range), (vec![2], None));
+    }
+
+    #[test]
+    fn a_move_ends_a_range_unless_it_is_held() {
+        let mut tab = covers(5);
+        tab.set_cursor(at(1), Reach::End);
+        tab.set_cursor(at(2), Reach::Extend);
+        tab.set_cursor(at(3), Reach::Move);
+        assert_eq!((tab.selected_rows(), tab.range), (vec![3], None));
+        // A held range follows the cursor, along the row too.
+        tab.range = Some(RowRange {
+            anchor: 3,
+            held: true,
+        });
+        tab.set_cursor(at(1), Reach::Move);
+        assert_eq!(tab.selected_rows(), [1, 2, 3]);
+        tab.set_cursor(Some(CellPos { row: 1, col: 4 }), Reach::Move);
+        assert_eq!(tab.selected_rows(), [1, 2, 3]);
+        // On its anchor it is still a range: it is held.
+        tab.set_cursor(at(3), Reach::Move);
+        assert!(tab.range.is_some());
+        // Anything else ends it, and so does a cursor that goes.
+        tab.set_cursor(at(2), Reach::End);
+        assert_eq!(tab.range, None);
+        tab.set_cursor(at(1), Reach::Extend);
+        tab.set_cursor(None, Reach::Keep);
+        assert_eq!((tab.selected_rows(), tab.range), (Vec::new(), None));
+    }
+
+    #[test]
+    fn a_range_counts_a_new_row_where_it_stands() {
+        let mut tab = covers(3);
+        let new = tab.edits.add_row(crate::edit::Place::Below(0), 3);
+        tab.set_cursor(at(0), Reach::End);
+        tab.set_cursor(at(1), Reach::Extend);
+        assert_eq!(tab.selected_rows(), [0, crate::edit::new_row(new), 1]);
+        assert_eq!(tab.selected_span(), Some((0, 2)));
+    }
+
+    #[test]
+    fn a_range_anchored_on_a_new_row_ends_when_the_new_rows_go() {
+        let mut tab = covers(3);
+        let new = crate::edit::new_row(tab.edits.add_row(crate::edit::Place::Below(0), 3));
+        tab.set_cursor(at(new), Reach::End);
+        tab.set_cursor(at(2), Reach::Extend);
+        assert_eq!(tab.selected_rows(), [new, 1, 2]);
+        tab.edits = crate::edit::Edits::default();
+        tab.off_new_rows();
+        assert_eq!((tab.selected_rows(), tab.range), (vec![2], None));
+    }
+
+    #[test]
+    fn a_visual_selection_is_started_and_left_on_the_cursors_row() {
+        let mut tab = covers(5);
+        // With no cursor there is none to start.
+        tab.toggle_visual();
+        assert!(!tab.visual());
+        tab.set_cursor(at(2), Reach::End);
+        tab.toggle_visual();
+        assert!(tab.visual());
+        assert_eq!(tab.selected_rows(), [2]);
+        // Moves extend it, up and down.
+        tab.set_cursor(at(4), Reach::Move);
+        assert_eq!(tab.selected_rows(), [2, 3, 4]);
+        tab.set_cursor(at(0), Reach::Move);
+        assert_eq!(tab.selected_rows(), [0, 1, 2]);
+        tab.toggle_visual();
+        assert_eq!((tab.visual(), tab.selected_rows()), (false, vec![0]));
+        // A range made with Shift becomes the visual one, from its anchor.
+        tab.set_cursor(at(1), Reach::Extend);
+        tab.toggle_visual();
+        assert!(tab.visual());
+        tab.set_cursor(at(3), Reach::Move);
+        assert_eq!(tab.selected_rows(), [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn a_count_names_the_cursors_row_and_the_rows_after_it() {
+        let mut tab = covers(5);
+        assert!(tab.rows_from_cursor(3).is_empty());
+        tab.set_cursor(at(1), Reach::End);
+        assert_eq!(tab.rows_from_cursor(1), [1]);
+        assert_eq!(tab.rows_from_cursor(3), [1, 2, 3]);
+        // It stops at the grid's last row.
+        assert_eq!(tab.rows_from_cursor(999_999), [1, 2, 3, 4]);
+        // A new row counts where it stands.
+        let new = crate::edit::new_row(tab.edits.add_row(crate::edit::Place::Below(1), 5));
+        assert_eq!(tab.rows_from_cursor(3), [1, new, 2]);
+    }
+
+    fn info(name: &str, kind: ObjectKind) -> ObjectInfo {
+        ObjectInfo {
+            name: name.into(),
+            kind,
+            estimated_rows: None,
+        }
+    }
+
+    fn tree() -> Tree {
+        let mut tree = Tree::default();
+        tree.schemas.value = Some(vec!["public".into(), "billing".into(), "pg_catalog".into()]);
+        let mut public = SchemaNode {
+            expanded: true,
+            ..SchemaNode::default()
+        };
+        public.objects.value = Some(vec![
+            info("orders", ObjectKind::Table),
+            info("users", ObjectKind::Table),
+            info("active_users", ObjectKind::View),
+        ]);
+        tree.nodes.insert("public".into(), public);
+        let mut billing = SchemaNode::default();
+        billing.objects.value = Some(vec![info("invoices", ObjectKind::Table)]);
+        tree.nodes.insert("billing".into(), billing);
+        tree
+    }
+
+    #[test]
+    fn a_new_editor_opens_read_only_wherever_connections_do_by_default() {
+        use crate::env::Environment;
+        for environment in Environment::ALL {
+            // Where an editor can write, and that will be so on production
+            // once its runs are confirmed first.
+            let writes = RunMode::of_new_tab(Ok(()), environment) == RunMode::ReadWrite;
+            assert_eq!(
+                writes,
+                !environment.read_only_by_default(),
+                "{environment:?}"
+            );
+            for no in [NoWrites::ReadOnlyConnection, NoWrites::Unconfirmed] {
+                assert_eq!(
+                    RunMode::of_new_tab(Err(no), environment),
+                    RunMode::ReadOnly,
+                    "{environment:?} {no:?}"
+                );
+            }
+        }
+        let production = RunMode::of_new_tab(Ok(()), Environment::Production);
+        assert_eq!(production, RunMode::ReadOnly);
+    }
+
+    fn sql_tab(id: u64) -> Tab {
+        Tab::Sql(Box::new(SqlTab::new(
+            TabId(id),
+            1,
+            1_000,
+            Some(Duration::from_secs(30)),
+        )))
+    }
+
+    fn object_tab(id: u64, name: &str, pinned: bool) -> Tab {
+        Tab::Object(Box::new(ObjectTab::new(
+            TabId(id),
+            ObjectRef::new("main", name),
+            ObjectKind::Table,
+            pinned,
+            100,
+            None,
+        )))
+    }
+
+    #[test]
+    fn a_fetch_times_the_request_in_flight() {
+        let mut fetch: Fetch<u32> = Fetch::default();
+        assert_eq!(fetch.running_for(), None);
+        fetch.start(RequestId(1));
+        assert!(fetch.running_for().is_some());
+        assert!(fetch.finish(RequestId(1), Ok(7)));
+        assert_eq!(fetch.running_for(), None, "nothing is in flight");
+    }
+
+    #[test]
+    fn a_fetch_dropped_without_an_answer_is_not_timed() {
+        let mut fetch: Fetch<u32> = Fetch::default();
+        fetch.start(RequestId(1));
+        // Dropped without an answer: nothing is in flight any more.
+        fetch.pending = None;
+        assert_eq!(fetch.running_for(), None);
+    }
+
+    #[test]
+    fn a_workspace_opens_once_its_schemas_were_listed() {
+        let mut workspace = crate::fixtures::workspace();
+        assert!(!workspace.opened());
+        assert_eq!(workspace.connecting_for(), None, "nothing was sent yet");
+        workspace.connect_started = Some(std::time::Instant::now());
+        assert!(workspace.connecting_for().is_some());
+        workspace.status = SessionStatus::Connected;
+        assert_eq!(workspace.connecting_for(), None, "the connect was answered");
+        workspace.tree.schemas.value = Some(Vec::new());
+        assert!(workspace.opened());
+    }
+
+    #[test]
+    fn the_bare_schema_is_the_one_a_dialect_searches() {
+        let mut workspace = crate::fixtures::workspace();
+        // The fixture is SQLite.
+        assert_eq!(workspace.bare_schema(), None, "no schemas listed yet");
+        workspace.tree.schemas.value = Some(vec!["main".into(), "audit".into()]);
+        assert_eq!(workspace.bare_schema(), Some("main"));
+        workspace.driver = Driver::Postgres;
+        assert_eq!(workspace.bare_schema(), None, "no public here");
+        workspace.tree.schemas.value = Some(vec!["public".into(), "audit".into()]);
+        assert_eq!(workspace.bare_schema(), Some("public"));
+        workspace.driver = Driver::MySql;
+        workspace.spec.database = "audit".into();
+        assert_eq!(workspace.bare_schema(), Some("audit"));
+        workspace.spec.database = String::new();
+        assert_eq!(workspace.bare_schema(), None, "no database chosen");
+    }
+
+    #[test]
+    fn a_need_is_loading_while_its_names_are_asked_for() {
+        use crate::completion::Need;
+        let mut workspace = crate::fixtures::workspace();
+        workspace.status = SessionStatus::Connected;
+        let need = Need::Objects("main".into());
+        assert!(!workspace.is_loading(&need), "never asked for");
+        let node = workspace.tree.nodes.entry("main".into()).or_default();
+        node.objects.start(RequestId(7));
+        assert!(workspace.is_loading(&need));
+        assert!(!workspace.is_loading(&Need::Objects("audit".into())));
+        let node = workspace.tree.nodes.get_mut("main").unwrap();
+        assert!(node.objects.finish(RequestId(7), Ok(Vec::new())));
+        assert!(!workspace.is_loading(&need), "answered");
+
+        // A table's columns.
+        let users = ObjectRef::new("main", "users");
+        let need = Need::Columns(users.clone());
+        assert!(!workspace.is_loading(&need), "never asked for");
+        let kept = workspace.columns.entry(users.clone()).or_default();
+        kept.start(RequestId(8));
+        assert!(workspace.is_loading(&need));
+        let orders = Need::Columns(ObjectRef::new("main", "orders"));
+        assert!(!workspace.is_loading(&orders));
+        let kept = workspace.columns.get_mut(&users).unwrap();
+        assert!(kept.finish(RequestId(8), Err(Error::query("permission denied"))));
+        assert!(!workspace.is_loading(&need), "answered");
+    }
+
+    #[test]
+    fn no_need_is_loading_unless_the_session_is_connected() {
+        use crate::completion::Need;
+        let mut workspace = crate::fixtures::workspace();
+        let node = workspace.tree.nodes.entry("reports".into()).or_default();
+        node.objects.start(RequestId(7));
+        let users = ObjectRef::new("main", "users");
+        let kept = workspace.columns.entry(users.clone()).or_default();
+        kept.start(RequestId(8));
+        let needs = [Need::Objects("reports".into()), Need::Columns(users)];
+        workspace.status = SessionStatus::Connected;
+        assert!(needs.iter().all(|need| workspace.is_loading(need)));
+        // A session that is being replaced, or is gone, answers nothing:
+        // what was asked of it is not on its way, pending or not.
+        for status in [
+            SessionStatus::Connecting {
+                request: RequestId(9),
+            },
+            SessionStatus::Disconnected(Error::query("gone")),
+            SessionStatus::Cancelled,
+        ] {
+            workspace.status = status;
+            let loading = needs.iter().any(|need| workspace.is_loading(need));
+            assert!(!loading, "{:?}", workspace.status);
+        }
+    }
+
+    #[test]
+    fn a_changed_catalog_is_another_generation() {
+        let mut workspace = crate::fixtures::workspace();
+        let before = workspace.catalog_generation;
+        workspace.catalog_changed();
+        assert_ne!(workspace.catalog_generation, before);
+        // It wraps rather than panics.
+        workspace.catalog_generation = u64::MAX;
+        workspace.catalog_changed();
+        assert_eq!(workspace.catalog_generation, 0);
+    }
+
+    #[test]
+    fn a_connect_is_given_up_only_with_nothing_to_lose() {
+        let mut workspace = crate::fixtures::workspace();
+        assert!(workspace.can_give_up(), "a first connect");
+        workspace.status = SessionStatus::Connected;
+        assert!(workspace.can_give_up(), "its schemas are being listed");
+        // A SQL editor is the user's work: a switch of database keeps it.
+        workspace.tabs.push(sql_tab(1));
+        assert!(!workspace.can_give_up(), "an editor is open");
+        workspace.tabs.clear();
+        workspace.status = SessionStatus::Cancelled;
+        assert!(!workspace.can_give_up(), "nothing is under way");
+        workspace.status = SessionStatus::Connected;
+        workspace.tree.schemas.value = Some(Vec::new());
+        assert!(!workspace.can_give_up(), "the tab opened");
+    }
+
+    #[test]
+    fn a_workspace_finds_its_tabs_by_kind() {
+        let mut workspace = crate::fixtures::workspace();
+        workspace.tabs.push(object_tab(1, "users", true));
+        workspace.tabs.push(sql_tab(2));
+        workspace.active_tab = Some(TabId(2));
+        assert!(workspace.tab(TabId(1)).is_some() && workspace.tab(TabId(3)).is_none());
+        assert!(workspace.object_tab(TabId(1)).is_some());
+        assert!(workspace.object_tab(TabId(2)).is_none());
+        assert!(workspace.sql_tab(TabId(2)).is_some());
+        assert!(workspace.sql_tab(TabId(1)).is_none());
+        assert!(workspace.active_object_tab().is_none());
+        assert_eq!(workspace.active_sql_tab().map(|sql| sql.number), Some(1));
+        assert_eq!(workspace.object_tabs().count(), 1);
+        assert_eq!(workspace.object_tabs_mut().count(), 1);
+        assert_eq!(workspace.sql_tabs().count(), 1);
+        assert_eq!(workspace.sql_tabs_mut().count(), 1);
+        workspace.active_tab = Some(TabId(1));
+        assert!(workspace.active_sql_tab().is_none());
+        assert_eq!(
+            workspace.active_object_tab().map(|object| object.id),
+            Some(TabId(1))
+        );
+    }
+
+    #[test]
+    fn a_new_workspace_has_no_tabs_and_numbers_queries_from_one() {
+        let workspace = crate::fixtures::workspace();
+        assert!(workspace.tabs.is_empty() && workspace.active_tab.is_none());
+        assert_eq!(workspace.next_query, 1);
+        assert!(workspace.server_version.needs_load());
+    }
+
+    fn script(text: &str) -> Vec<tabletist_db::sql::Statement> {
+        tabletist_db::sql::statements(Driver::Sqlite.dialect(), text)
+    }
+
+    /// The transaction every run was sent in before an editor could write.
+    const READ: tabletist_db::ScriptMode = tabletist_db::ScriptMode::ReadOnly;
+
+    fn editor() -> SqlTab {
+        SqlTab::new(TabId(2), 1, 1_000, Some(Duration::from_secs(30)))
+    }
+
+    #[test]
+    fn a_sql_tab_keeps_its_split_between_none_and_all_of_the_height() {
+        let mut sql = editor();
+        assert_eq!(sql.split, SqlTab::DEFAULT_SPLIT);
+        assert_eq!(SqlTab::DEFAULT_SPLIT, 0.45);
+        sql.set_split(0.7);
+        assert_eq!(sql.split, 0.7);
+        sql.set_split(1.5);
+        assert_eq!(sql.split, 1.0);
+        sql.set_split(-0.2);
+        assert_eq!(sql.split, 0.0);
+        sql.set_split(0.3);
+        for odd in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            sql.set_split(odd);
+            assert_eq!(sql.split, 0.3);
+        }
+    }
+
+    #[test]
+    fn a_sql_tab_waits_for_its_run() {
+        let mut tab = sql_tab(2);
+        assert!(tab.pending().is_empty());
+        let sql = tab.as_sql_mut().unwrap();
+        assert_eq!(sql.start_run(RequestId(9), script("SELECT 1"), READ), None);
+        assert_eq!(tab.pending(), vec![RequestId(9)]);
+    }
+
+    #[test]
+    fn a_new_run_names_the_one_it_replaces() {
+        let mut sql = editor();
+        assert!(!sql.is_running() && sql.running_for().is_none());
+        assert_eq!(sql.start_run(RequestId(9), script("SELECT 1"), READ), None);
+        assert!(sql.is_running() && sql.running_for().is_some());
+        assert_eq!(
+            sql.start_run(RequestId(10), script("SELECT 2; SELECT 3"), READ),
+            Some(RequestId(9)),
+            "the caller cancels it"
+        );
+        assert_eq!(sql.run.pending, Some(RequestId(10)));
+        assert_eq!(sql.in_flight.as_ref().unwrap().statements.len(), 2);
+    }
+
+    #[test]
+    fn a_finished_run_keeps_the_statements_it_ran() {
+        let mut sql = editor();
+        let _ = sql.start_run(RequestId(9), script("SELECT 1; SELECT 2"), READ);
+        let cancel = Some(crate::backend::CancelReason::User);
+        let outcome = tabletist_db::ScriptOutcome {
+            stopped: true,
+            ..Default::default()
+        };
+        assert!(sql.finish_run(RequestId(9), Ok(outcome.clone()), cancel));
+        assert!(!sql.is_running() && sql.running_for().is_none());
+        assert!(sql.in_flight.is_none());
+        let run = sql.run.value.as_ref().unwrap();
+        assert_eq!(run.statements, script("SELECT 1; SELECT 2"));
+        assert_eq!(run.outcome, outcome);
+        assert_eq!(run.cancel, cancel);
+        assert_eq!(sql.run.loaded, Some(RequestId(9)));
+    }
+
+    #[test]
+    fn a_stale_answer_does_not_finish_the_run() {
+        let mut sql = editor();
+        let _ = sql.start_run(RequestId(9), script("SELECT 1"), READ);
+        let _ = sql.start_run(RequestId(10), script("SELECT 2"), READ);
+        assert!(!sql.finish_run(RequestId(9), Ok(Default::default()), None));
+        assert_eq!(sql.run.pending, Some(RequestId(10)));
+        assert!(sql.run.value.is_none());
+        assert_eq!(
+            sql.in_flight.as_ref().unwrap().statements,
+            script("SELECT 2"),
+            "the run in flight keeps its statements"
+        );
+        // Nor does an answer when nothing runs.
+        let mut idle = editor();
+        assert!(!idle.finish_run(RequestId(9), Ok(Default::default()), None));
+        assert!(idle.run.needs_load());
+    }
+
+    #[test]
+    fn a_run_that_fails_as_a_whole_is_the_runs_error_and_leaves_no_result() {
+        let mut sql = editor();
+        let _ = sql.start_run(RequestId(9), script("SELECT 1"), READ);
+        assert!(sql.finish_run(RequestId(9), Ok(Default::default()), None));
+        let _ = sql.start_run(RequestId(10), script("SELECT 2"), READ);
+        let lost = Error::ConnectionLost("the server went away".into());
+        assert!(sql.finish_run(RequestId(10), Err(lost.clone()), None));
+        assert!(!sql.is_running() && sql.in_flight.is_none());
+        assert_eq!(sql.run.error, Some(lost));
+        // Nothing ran: the result of the run before is not this run's.
+        assert_eq!(sql.run.loaded, None);
+        assert!(sql.run.value.is_none());
+    }
+
+    #[test]
+    fn abandoning_a_run_keeps_the_last_result() {
+        let mut sql = editor();
+        let _ = sql.start_run(RequestId(9), script("SELECT 1"), READ);
+        assert!(sql.finish_run(RequestId(9), Ok(Default::default()), None));
+        let _ = sql.start_run(RequestId(10), script("SELECT 2"), READ);
+        sql.abandon_run();
+        assert!(!sql.is_running() && sql.running_for().is_none());
+        assert!(sql.in_flight.is_none());
+        assert_eq!(sql.run.loaded, Some(RequestId(9)));
+        // Its answer, should one still arrive, is dropped.
+        assert!(!sql.finish_run(RequestId(10), Ok(Default::default()), None));
+        // Abandoning nothing changes nothing.
+        sql.abandon_run();
+        assert!(sql.run.value.is_some());
+    }
+
+    use crate::fixtures::{error_outcome, rows_outcome, run_script};
+
+    #[test]
+    fn a_sql_tab_reports_its_cursor_line_and_column() {
+        let mut sql = editor();
+        assert_eq!(sql.line_col(), (1, 1));
+        sql.text = "SELECT 1;\nSELECT ë, 2".into();
+        sql.cursor = sql.text.len();
+        assert_eq!(sql.line_col(), (2, 12), "columns count characters");
+        sql.cursor = "SELECT 1;\n".len();
+        assert_eq!(sql.line_col(), (2, 1));
+        sql.cursor = "SELECT 1".len();
+        assert_eq!(sql.line_col(), (1, 9));
+        // A cursor the text no longer reaches, or inside a character
+        // (the view reports it a frame late), stays in the text.
+        sql.cursor = sql.text.len() + 40;
+        assert_eq!(sql.line_col(), (2, 12));
+        sql.cursor = "SELECT 1;\nSELECT ".len() + 1;
+        assert_eq!(sql.line_col(), (2, 8));
+    }
+
+    #[test]
+    fn results_show_the_last_statement_that_returned_rows() {
+        let mut sql = editor();
+        assert!(sql.shown().is_none() && sql.shown_rows().is_none());
+        assert_eq!(sql.dims(), (0, 0));
+        run_script(
+            &mut sql,
+            "SELECT 1; SELECT 2; SET x = 1",
+            vec![
+                rows_outcome(5),
+                rows_outcome(2),
+                tabletist_db::StatementOutcome::Done {
+                    affected: None,
+                    warnings: 0,
+                },
+            ],
+        );
+        let (index, result) = sql.shown().unwrap();
+        assert_eq!(index, 1);
+        assert_eq!(result.elapsed, Duration::from_millis(14));
+        let (columns, rows, truncated) = sql.shown_rows().unwrap();
+        assert_eq!((columns.len(), rows.len(), truncated), (3, 2, false));
+        assert_eq!(sql.dims(), (2, 3));
+        assert_eq!(sql.error_mark(), None);
+        // A run without a result set shows none.
+        run_script(
+            &mut sql,
+            "SET x = 1",
+            vec![tabletist_db::StatementOutcome::Done {
+                affected: None,
+                warnings: 0,
+            }],
+        );
+        assert!(sql.shown().is_none());
+        assert_eq!(sql.dims(), (0, 0));
+    }
+
+    #[test]
+    fn a_failed_statement_is_marked_on_the_line_of_its_sql() {
+        let mut sql = editor();
+        run_script(
+            &mut sql,
+            "SELECT 1;\n-- the typo\nSELECT x",
+            vec![rows_outcome(1), error_outcome("no such column: x", None)],
+        );
+        assert_eq!(sql.error_mark(), Some((3, None)));
+        assert_eq!(
+            sql.run.value.as_ref().unwrap().error_mark,
+            Some((3, None)),
+            "kept with the run, not worked out again for every frame"
+        );
+        assert_eq!(sql.shown().map(|(index, _)| index), Some(0));
+    }
+
+    #[test]
+    fn an_error_position_becomes_an_editor_line_and_column() {
+        let text = "SELECT 1;\n  SELECT a,\n  nope FROM t";
+        // On the statement's first line the column counts from the line's
+        // start, not the statement's.
+        let mut sql = editor();
+        run_script(
+            &mut sql,
+            text,
+            vec![
+                rows_outcome(1),
+                error_outcome("column \"a\" does not exist", Some(8)),
+            ],
+        );
+        assert_eq!(sql.error_mark(), Some((2, Some(10))));
+        // "nope" is the 13th character of the second statement.
+        run_script(
+            &mut sql,
+            text,
+            vec![
+                rows_outcome(1),
+                error_outcome("column \"nope\" does not exist", Some(13)),
+            ],
+        );
+        assert_eq!(sql.error_mark(), Some((3, Some(3))));
+    }
+
+    /// What the views read of `sql`: the last run's statements, the rows
+    /// that show, and the gutter's mark.
+    fn readings(sql: &SqlTab) -> (Option<usize>, bool, (usize, usize), Option<usize>) {
+        (
+            sql.last_run().map(|run| run.statements.len()),
+            sql.shown().is_some(),
+            sql.dims(),
+            sql.error_mark().map(|(line, _)| line),
+        )
+    }
+
+    #[test]
+    fn a_run_that_failed_as_a_whole_drops_the_result_before_it() {
+        let mut sql = editor();
+        assert_eq!(readings(&sql), (None, false, (0, 0), None));
+        run_script(&mut sql, "SELECT 1", vec![rows_outcome(5)]);
+        assert_eq!(readings(&sql), (Some(1), true, (5, 3), None));
+        // The run in flight leaves the last one in place.
+        let _ = sql.start_run(RequestId(20), script("COMMIT"), READ);
+        assert_eq!(readings(&sql), (Some(1), true, (5, 3), None));
+        let lost = Error::ConnectionLost("the server went away".into());
+        assert!(sql.finish_run(RequestId(20), Err(lost), None));
+        assert!(sql.run.value.is_none() && sql.run.loaded.is_none());
+        assert_eq!(readings(&sql), (None, false, (0, 0), None));
+        // Starting the next run clears the error and brings nothing back,
+        // nor does an answer for a run that was replaced.
+        let _ = sql.start_run(RequestId(21), script("SELECT 2"), READ);
+        assert!(sql.run.error.is_none());
+        assert_eq!(readings(&sql), (None, false, (0, 0), None));
+        assert!(!sql.finish_run(RequestId(20), Ok(Default::default()), None));
+        assert_eq!(readings(&sql), (None, false, (0, 0), None));
+        run_script(&mut sql, "SELECT 2", vec![rows_outcome(2)]);
+        assert_eq!(readings(&sql), (Some(1), true, (2, 3), None));
+    }
+
+    #[test]
+    fn a_sql_tabs_selected_row_is_one_its_results_pane_shows() {
+        let mut sql = editor();
+        sql.selection = Some(CellPos { row: 0, col: 0 });
+        assert_eq!(sql.selected_row(), None, "nothing ran");
+        run_script(&mut sql, "SELECT 1", vec![rows_outcome(3)]);
+        sql.selection = None;
+        assert_eq!(sql.selected_row(), None);
+        sql.selection = Some(CellPos { row: 2, col: 1 });
+        assert_eq!(sql.selected_row(), Some(2));
+        sql.pane = ResultPane::Messages;
+        assert_eq!(sql.selected_row(), None, "the messages show no rows");
+        sql.pane = ResultPane::Results;
+        // A selection past the result's rows is no row of it.
+        sql.selection = Some(CellPos { row: 3, col: 0 });
+        assert_eq!(sql.selected_row(), None);
+    }
+
+    #[test]
+    fn a_sql_tabs_row_text_holds_for_its_row_and_its_run() {
+        let mut sql = editor();
+        run_script(&mut sql, "SELECT 1", vec![rows_outcome(3)]);
+        sql.selection = Some(CellPos { row: 1, col: 0 });
+        assert!(sql.selected_fields().is_none(), "not formatted yet");
+        sql.fields = Some(RowFields {
+            request: sql.run.loaded,
+            row: 1,
+            fields: Vec::new(),
+            pending: Vec::new(),
+        });
+        assert!(sql.selected_fields().is_some());
+        sql.selection = Some(CellPos { row: 2, col: 0 });
+        assert!(sql.selected_fields().is_none(), "another row");
+        sql.selection = Some(CellPos { row: 1, col: 2 });
+        assert!(sql.selected_fields().is_some(), "another cell of the row");
+        sql.pane = ResultPane::Messages;
+        assert!(sql.selected_fields().is_none(), "no row shows");
+        sql.pane = ResultPane::Results;
+        assert!(sql.selected_fields().is_some());
+        // The same row of the next result is not the row that was formatted.
+        run_script(&mut sql, "SELECT 2", vec![rows_outcome(3)]);
+        assert!(sql.selected_fields().is_none());
+    }
+
+    #[test]
+    fn the_row_panel_shows_a_tables_data_view_or_a_selected_result_row() {
+        let mut workspace = crate::fixtures::workspace();
+        workspace.tabs.push(object_tab(1, "users", true));
+        workspace.tabs.push(sql_tab(2));
+        assert_eq!(workspace.row_panel_tab(), None, "no tab is active");
+        workspace.active_tab = Some(TabId(1));
+        assert_eq!(workspace.row_panel_tab(), Some(TabId(1)));
+        workspace.object_tab_mut(TabId(1)).unwrap().view = ObjectView::Structure;
+        assert_eq!(workspace.row_panel_tab(), None, "the Structure view");
+        workspace.active_tab = Some(TabId(2));
+        assert_eq!(workspace.row_panel_tab(), None, "nothing ran");
+        let sql = workspace.sql_tab_mut(TabId(2)).unwrap();
+        run_script(sql, "SELECT 1", vec![rows_outcome(3)]);
+        assert_eq!(workspace.row_panel_tab(), None, "no row is selected");
+        let sql = workspace.sql_tab_mut(TabId(2)).unwrap();
+        sql.selection = Some(CellPos { row: 0, col: 0 });
+        assert_eq!(workspace.row_panel_tab(), Some(TabId(2)));
+        workspace.row_panel = false;
+        assert_eq!(workspace.row_panel_tab(), None, "the panel is closed");
+        workspace.active_tab = Some(TabId(1));
+        workspace.object_tab_mut(TabId(1)).unwrap().view = ObjectView::Data;
+        assert_eq!(workspace.row_panel_tab(), None, "closed for a table too");
+        workspace.row_panel = true;
+        assert_eq!(workspace.row_panel_tab(), Some(TabId(1)));
+    }
+
+    #[test]
+    fn what_the_views_read_agrees_after_an_error_a_failure_and_an_abandoned_run() {
+        let mut sql = editor();
+        // A statement fails: the run ran, and its line is marked.
+        let failing = vec![rows_outcome(1), error_outcome("no such column: x", None)];
+        run_script(&mut sql, "SELECT 1;\nSELECT x", failing);
+        assert_eq!(readings(&sql), (Some(2), true, (1, 3), Some(2)));
+        // The next run fails as a whole: nothing of the run before stays,
+        // its rows and its mark alike.
+        let _ = sql.start_run(RequestId(20), script("SELECT 1;\nSELECT x"), READ);
+        assert_eq!(readings(&sql), (Some(2), true, (1, 3), None), "in flight");
+        assert!(sql.finish_run(RequestId(20), Err(Error::LeftReadOnly), None));
+        assert_eq!(readings(&sql), (None, false, (0, 0), None));
+        // The run after it is never answered (its session is gone).
+        let _ = sql.start_run(RequestId(21), script("SELECT 1;\nSELECT x"), READ);
+        assert_eq!(readings(&sql), (None, false, (0, 0), None));
+        sql.abandon_run();
+        assert!(sql.run.error.is_none() && !sql.is_running());
+        assert_eq!(readings(&sql), (None, false, (0, 0), None));
+        // A refusal is the one whole-run failure with a line to mark, and
+        // it too leaves no rows.
+        run_script(&mut sql, "SELECT 1;\nSELECT x", vec![rows_outcome(4)]);
+        let _ = sql.start_run(RequestId(30), script("SELECT 1;\nSELECT x"), READ);
+        let refused = Error::Refused {
+            line: 2,
+            what: "COMMIT".into(),
+            mode: tabletist_db::ScriptMode::ReadOnly,
+        };
+        assert!(sql.finish_run(RequestId(30), Err(refused), None));
+        assert_eq!(readings(&sql), (None, false, (0, 0), Some(2)));
+    }
+
+    #[test]
+    fn a_refusal_is_marked_and_an_older_runs_error_is_not() {
+        let mut sql = editor();
+        run_script(
+            &mut sql,
+            "SELECT x",
+            vec![error_outcome("no such column: x", None)],
+        );
+        assert_eq!(sql.error_mark(), Some((1, None)));
+        // The run in flight has not failed anywhere yet.
+        let _ = sql.start_run(RequestId(20), script("SELECT 1;\n\n\nCOMMIT"), READ);
+        assert_eq!(sql.error_mark(), None);
+        let refused = Error::Refused {
+            line: 4,
+            what: "COMMIT".into(),
+            mode: tabletist_db::ScriptMode::ReadOnly,
+        };
+        assert!(sql.finish_run(RequestId(20), Err(refused), None));
+        assert_eq!(sql.error_mark(), Some((4, None)));
+        // A run that failed as a whole for another reason marks nothing:
+        // no statement ran.
+        let _ = sql.start_run(RequestId(21), script("SELECT 1"), READ);
+        let lost = Error::ConnectionLost("the server went away".into());
+        assert!(sql.finish_run(RequestId(21), Err(lost), None));
+        assert!(sql.run.value.is_none());
+        assert_eq!(sql.error_mark(), None);
+    }
+
+    #[test]
+    fn an_error_mark_holds_only_while_the_text_is_the_one_that_ran() {
+        let failing = || vec![rows_outcome(1), error_outcome("no such column: x", None)];
+        let mut sql = editor();
+        run_script(&mut sql, "SELECT 1;\nSELECT x", failing());
+        assert_eq!(sql.error_mark(), Some((2, None)));
+        // A line typed above moves the statement: the mark would sit on
+        // the wrong line.
+        sql.text.insert_str(0, "-- first\n");
+        assert_eq!(sql.error_mark(), None);
+        // Nor does a change that keeps the text's length keep the mark.
+        sql.text = "SELECT 1;\nSELECT y".into();
+        assert_eq!(sql.error_mark(), None);
+        // The text as it ran is marked again, and so is the next run.
+        sql.text = "SELECT 1;\nSELECT x".into();
+        assert_eq!(sql.error_mark(), Some((2, None)));
+        run_script(&mut sql, "\nSELECT 1;\nSELECT x", failing());
+        assert_eq!(sql.error_mark(), Some((3, None)));
+        // A refusal's line is a line of the text that was refused.
+        sql.text = "SELECT 1;\nCOMMIT".into();
+        let _ = sql.start_run(RequestId(30), script("SELECT 1;\nCOMMIT"), READ);
+        let refused = Error::Refused {
+            line: 2,
+            what: "COMMIT".into(),
+            mode: tabletist_db::ScriptMode::ReadOnly,
+        };
+        assert!(sql.finish_run(RequestId(30), Err(refused), None));
+        assert_eq!(sql.error_mark(), Some((2, None)));
+        sql.text.insert(0, '\n');
+        assert_eq!(sql.error_mark(), None);
+    }
+
+    #[test]
+    fn an_error_mark_is_of_the_text_its_own_run_started_with() {
+        let failing = || vec![error_outcome("no such column: x", None)];
+        // Typed in while the run was in flight: the mark is stale at once.
+        let mut sql = editor();
+        sql.text = "SELECT x".into();
+        let _ = sql.start_run(RequestId(9), script("SELECT x"), READ);
+        sql.text.insert_str(0, "SELECT 1;\n");
+        let outcome = crate::fixtures::script_outcome(failing());
+        assert!(sql.finish_run(RequestId(9), Ok(outcome), None));
+        assert_eq!(sql.error_mark(), None);
+        // A later run that never answers leaves the older run's mark with
+        // the older run's text.
+        let mut sql = editor();
+        run_script(&mut sql, "SELECT x", failing());
+        sql.text = "\nSELECT x".into();
+        let _ = sql.start_run(RequestId(40), script("\nSELECT x"), READ);
+        sql.abandon_run();
+        assert_eq!(sql.error_mark(), None);
+        sql.text = "SELECT x".into();
+        assert_eq!(sql.error_mark(), Some((1, None)));
+    }
+
+    #[test]
+    fn a_text_print_tells_its_text_from_others_without_keeping_it() {
+        let print = TextPrint::of("SELECT secret");
+        assert!(print.is_of("SELECT secret"));
+        assert!(!print.is_of("SELECT secrex"));
+        assert!(!print.is_of("SELECT secret "));
+        assert_eq!(format!("{print:?}"), "TextPrint { .. }");
+    }
+
+    #[test]
+    fn a_sql_tab_never_prints_its_text() {
+        let mut tab = sql_tab(2);
+        let sql = tab.as_sql_mut().unwrap();
+        sql.text = "SELECT secret_column FROM vault".into();
+        let _ = sql.start_run(
+            RequestId(9),
+            script("SELECT secret_column FROM vault"),
+            READ,
+        );
+        for printed in [format!("{tab:?}"), format!("{tab:#?}")] {
+            assert!(printed.contains("SqlTab"), "{printed}");
+            assert!(!printed.contains("secret_column"), "{printed}");
+            assert!(!printed.contains("vault"), "{printed}");
+        }
+        // Nor what a guess at the text could be checked against: the
+        // print of the text the run in flight started with shows no hash.
+        let sql = tab.as_sql().unwrap();
+        let print = sql.in_flight.as_ref().unwrap().text;
+        for printed in [
+            format!("{print:?}"),
+            format!("{:?}", sql.in_flight),
+            format!("{tab:?}"),
+            format!("{tab:#?}"),
+        ] {
+            assert!(printed.contains("TextPrint"), "{printed}");
+            assert!(!printed.contains(&print.hash.to_string()), "{printed}");
+            assert!(!printed.contains(&format!("{:x}", print.hash)), "{printed}");
+        }
+    }
+
+    #[test]
+    fn a_pushed_sql_tab_takes_the_next_number_and_is_not_shown() {
+        let mut workspace = crate::fixtures::workspace();
+        workspace.tabs.push(object_tab(1, "users", true));
+        workspace.active_tab = Some(TabId(1));
+        let first = workspace.push_sql_tab(TabId(2), 500, None);
+        assert_eq!(
+            (first.id, first.number, first.limit, first.timeout),
+            (TabId(2), 1, 500, None)
+        );
+        let second = workspace.push_sql_tab(TabId(3), 1_000, Some(Duration::from_secs(5)));
+        assert_eq!(second.number, 2);
+        assert_eq!(workspace.next_query, 3);
+        assert_eq!(workspace.active_tab, Some(TabId(1)));
+        assert_eq!(
+            workspace.tabs.iter().map(Tab::id).collect::<Vec<_>>(),
+            vec![TabId(1), TabId(2), TabId(3)]
+        );
+    }
+
+    #[test]
+    fn forgetting_the_session_abandons_runs_and_the_server_version() {
+        let mut workspace = crate::fixtures::workspace();
+        workspace.tabs.push(object_tab(1, "users", true));
+        workspace.push_sql_tab(TabId(2), 1_000, None);
+        let running = workspace.push_sql_tab(TabId(3), 1_000, None);
+        let _ = running.start_run(RequestId(9), script("SELECT 1"), READ);
+        workspace.server_version.value = Some("SQLite 3.46.0".into());
+        workspace
+            .object_tab_mut(TabId(1))
+            .unwrap()
+            .rows
+            .start(RequestId(4));
+        // Columns a completion list has, and ones it waits for.
+        let users = workspace.columns.entry(ObjectRef::new("main", "users"));
+        users.or_default().value = Some(Vec::new());
+        let orders = workspace.columns.entry(ObjectRef::new("main", "orders"));
+        orders.or_default().start(RequestId(5));
+        let generation = workspace.catalog_generation;
+        workspace.forget_session_requests();
+        assert!(workspace.sql_tabs().all(|sql| !sql.is_running()));
+        assert!(workspace.server_version.needs_load());
+        assert!(workspace.columns.is_empty());
+        assert_ne!(
+            workspace.catalog_generation, generation,
+            "an open list is worked out again"
+        );
+        assert!(
+            workspace.object_tab(TabId(1)).unwrap().rows.is_loading(),
+            "object tabs are reloaded after the connect instead"
+        );
+    }
+
+    #[test]
+    fn an_object_tab_waits_for_everything_it_loads() {
+        let mut tab = object_tab(1, "users", true);
+        assert_eq!(tab.id(), TabId(1));
+        assert!(tab.pending().is_empty());
+        let object = tab.as_object_mut().unwrap();
+        object.rows.start(RequestId(3));
+        object.count.start(RequestId(4));
+        assert_eq!(tab.pending(), vec![RequestId(3), RequestId(4)]);
+        // A save is the tab's to cancel too.
+        tab.as_object_mut().unwrap().edits.saving = Some(crate::edit::Saving {
+            request: RequestId(5),
+            rows: vec![0],
+            inserts: Vec::new(),
+            started: std::time::Instant::now(),
+            then: None,
+            history: None,
+            deletes: Vec::new(),
+        });
+        assert_eq!(
+            tab.pending(),
+            vec![RequestId(3), RequestId(4), RequestId(5)]
+        );
+        assert!(tab.as_sql().is_none() && tab.as_object().is_some());
+    }
+
+    #[test]
+    fn only_an_unpinned_object_tab_is_a_preview() {
+        assert!(object_tab(1, "users", false).is_preview());
+        assert!(!object_tab(1, "users", true).is_preview());
+        assert!(!sql_tab(2).is_preview());
+    }
+
+    #[test]
+    fn only_remote_hosts_without_a_tunnel_or_verification_expose_the_password() {
+        for host in [
+            "localhost",
+            "LOCALHOST",
+            " 127.0.0.1 ",
+            "127.0.0.2",
+            "::1",
+            "[::1]",
+            "/var/run/postgresql",
+            "",
+        ] {
+            assert!(is_local_host(host), "{host:?}");
+        }
+        for host in ["db.example.com", "10.0.0.5", "::2", "localhost.example.com"] {
+            assert!(!is_local_host(host), "{host:?}");
+        }
+        let mut form = ConnectionForm {
+            driver: Driver::Postgres,
+            host: "db.example.com".into(),
+            tls: TlsMode::Prefer,
+            ..ConnectionForm::default()
+        };
+        assert!(form.password_can_be_intercepted());
+        form.tls = TlsMode::VerifyFull;
+        assert!(!form.password_can_be_intercepted());
+        form.tls = TlsMode::Require;
+        form.ca_file = "/etc/ca.pem".into();
+        assert!(!form.password_can_be_intercepted(), "verify-ca, like libpq");
+        form.driver = Driver::MySql;
+        assert!(form.password_can_be_intercepted(), "MySQL refuses it");
+        form.driver = Driver::Postgres;
+        form.ca_file.clear();
+        assert!(form.password_can_be_intercepted());
+        form.ssh = true;
+        assert!(!form.password_can_be_intercepted());
+        form.ssh = false;
+        form.driver = Driver::Sqlite;
+        assert!(!form.password_can_be_intercepted());
+    }
+
+    fn labels(rows: &[TreeRow]) -> Vec<String> {
+        rows.iter()
+            .map(|row| match &row.node {
+                TreeNode::Group(..) => format!("{}({})", row.label, row.count.unwrap()),
+                _ => format!("{}{}", "  ".repeat(usize::from(row.depth)), row.label),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_sidebar_lists_the_shown_schema_and_hides_system_ones() {
+        let tree = tree();
+        assert_eq!(
+            tree.shown_schema(Driver::Postgres, false).as_deref(),
+            Some("public"),
+            "the opened one"
+        );
+        assert_eq!(
+            labels(&tree.visible_rows(Driver::Postgres, false)),
+            ["active_users", "orders", "users"]
+        );
+        assert_eq!(
+            tree.visible_schemas(Driver::Postgres, false),
+            ["public", "billing"]
+        );
+        assert!(
+            tree.visible_schemas(Driver::Postgres, true)
+                .contains(&"pg_catalog".to_owned())
+        );
+    }
+
+    fn grouped() -> Tree {
+        let mut tree = Tree::default();
+        tree.schemas.value = Some(vec!["public".into()]);
+        let mut public = SchemaNode::default();
+        public.objects.value = Some(vec![
+            info("orders_archive", ObjectKind::Table),
+            info("book_reviews", ObjectKind::Table),
+            info("books", ObjectKind::Table),
+            info("orders", ObjectKind::Table),
+            info("book_authors", ObjectKind::View),
+        ]);
+        tree.nodes.insert("public".into(), public);
+        tree
+    }
+
+    #[test]
+    fn objects_sharing_a_prefix_fold_into_a_group() {
+        let mut tree = grouped();
+        assert_eq!(
+            labels(&tree.visible_rows(Driver::Postgres, false)),
+            ["book_(2)", "books", "orders(2)"]
+        );
+        tree.reveal(&ObjectRef::new("public", "book_reviews"));
+        tree.nodes
+            .get_mut("public")
+            .unwrap()
+            .open_groups
+            .insert("orders".into());
+        assert_eq!(
+            labels(&tree.visible_rows(Driver::Postgres, false)),
+            [
+                "book_(2)",
+                "  authors",
+                "  reviews",
+                "books",
+                "orders(2)",
+                "  orders",
+                "  archive"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_flat_list_names_every_object_in_full() {
+        let mut tree = grouped();
+        tree.flat = true;
+        assert_eq!(
+            labels(&tree.visible_rows(Driver::Postgres, false)),
+            [
+                "book_authors",
+                "book_reviews",
+                "books",
+                "orders",
+                "orders_archive"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_filter_shows_matches_unfolded() {
+        let mut tree = grouped();
+        tree.filter = "REV".into();
+        assert_eq!(
+            labels(&tree.visible_rows(Driver::Postgres, false)),
+            ["book_reviews"],
+            "one match is no group"
+        );
+        tree.filter = "book_".into();
+        assert_eq!(
+            labels(&tree.visible_rows(Driver::Postgres, false)),
+            ["book_(2)", "  authors", "  reviews"]
+        );
+        tree.filter = "nothing matches".into();
+        assert!(tree.visible_rows(Driver::Postgres, false).is_empty());
+    }
+
+    #[test]
+    fn system_schemas_are_per_driver() {
+        assert!(is_system_schema(Driver::Postgres, "pg_toast_temp_1"));
+        assert!(is_system_schema(Driver::MySql, "performance_schema"));
+        assert!(!is_system_schema(Driver::Sqlite, "main"));
+        assert!(!is_system_schema(Driver::Postgres, "public"));
+    }
+
+    #[test]
+    fn fetch_accepts_only_the_pending_request() {
+        let mut fetch: Fetch<u32> = Fetch::default();
+        assert!(fetch.needs_load());
+        fetch.start(RequestId(1));
+        fetch.start(RequestId(2));
+        assert!(!fetch.finish(RequestId(1), Ok(1)));
+        assert!(fetch.is_loading());
+        assert!(fetch.finish(RequestId(2), Ok(2)));
+        assert_eq!(fetch.value, Some(2));
+        fetch.start(RequestId(3));
+        assert!(fetch.finish(RequestId(3), Err(Error::Cancelled)));
+        assert_eq!(fetch.value, Some(2), "an error keeps the last good value");
+        assert_eq!(fetch.error, Some(Error::Cancelled));
+    }
+
+    fn ssh_form() -> ConnectionForm {
+        ConnectionForm {
+            name: "Prod".into(),
+            driver: Driver::Postgres,
+            host: "db.internal".into(),
+            port: "5432".into(),
+            user: "me".into(),
+            ssh: true,
+            ssh_host: "bastion".into(),
+            ssh_port: "22".into(),
+            ssh_user: "ops".into(),
+            ssh_auth: SshAuthKind::KeyFile,
+            ssh_key_file: "/home/me/.ssh/id_ed25519".into(),
+            ..ConnectionForm::default()
+        }
+    }
+
+    /// A new connection to production, its switch as the settings start
+    /// it.
+    fn production_form(production_read_only: bool) -> ConnectionForm {
+        ConnectionForm {
+            environment: Some(crate::env::Environment::Production),
+            production_read_only,
+            ..ssh_form()
+        }
+    }
+
+    #[test]
+    fn a_new_production_connection_keeps_the_switch_the_settings_gave_it() {
+        for on in [true, false] {
+            let form = production_form(on);
+            assert_eq!(form.read_only(), on);
+            // Saved with the switch set: a later change of the settings
+            // changes no saved connection.
+            assert_eq!(form.to_saved().unwrap().read_only, Some(on));
+        }
+        // What the person sets wins.
+        let form = ConnectionForm {
+            read_only: Some(true),
+            ..production_form(false)
+        };
+        assert_eq!(form.to_saved().unwrap().read_only, Some(true));
+        // Another environment has its own rule, and saves no switch.
+        let form = ConnectionForm {
+            environment: Some(crate::env::Environment::Staging),
+            ..production_form(true)
+        };
+        assert!(!form.read_only());
+        assert_eq!(form.to_saved().unwrap().read_only, None);
+    }
+
+    #[test]
+    fn a_saved_connection_keeps_the_built_in_rule_whatever_the_settings_say() {
+        let saved = crate::connections::SavedConnection {
+            read_only: None,
+            ..production_form(false).to_saved().unwrap()
+        };
+        let form = ConnectionForm::from_saved(&saved);
+        assert!(form.read_only(), "production is read-only by its rule");
+        assert_eq!(form.to_saved().unwrap().read_only, None, "and stays unset");
+    }
+
+    #[test]
+    fn an_ssh_form_becomes_a_spec_and_back() {
+        let saved = ssh_form().to_saved().unwrap();
+        assert_eq!(
+            saved.spec.ssh,
+            Some(SshSpec {
+                host: "bastion".into(),
+                port: Some(22),
+                user: "ops".into(),
+                auth: SshAuth::KeyFile {
+                    path: "/home/me/.ssh/id_ed25519".into()
+                },
+            })
+        );
+        assert_eq!(
+            saved.ssh_secret,
+            PasswordMode::None,
+            "unencrypted key, nothing typed"
+        );
+        let back = ConnectionForm::from_saved(&saved);
+        assert!(back.ssh);
+        assert_eq!(back.ssh_key_file, "/home/me/.ssh/id_ed25519");
+        assert_eq!(back.ssh_auth, SshAuthKind::KeyFile);
+    }
+
+    #[test]
+    fn an_ssh_form_needs_a_host_and_a_numeric_port() {
+        type Change = fn(&mut ConnectionForm);
+        let changes: [(Change, &str); 2] = [
+            (|f| f.ssh_host.clear(), "SSH host"),
+            (|f| f.ssh_port = "twenty-two".into(), "SSH port"),
+        ];
+        for (change, message) in changes {
+            let mut form = ssh_form();
+            change(&mut form);
+            let error = form.to_spec().unwrap_err();
+            assert!(error.contains(message), "{error}");
+        }
+    }
+
+    #[test]
+    fn empty_ssh_port_user_and_key_file_are_left_to_the_config() {
+        let mut form = ssh_form();
+        form.ssh_port.clear();
+        form.ssh_user.clear();
+        form.ssh_key_file.clear();
+        let ssh = form.to_spec().unwrap().ssh.unwrap();
+        assert_eq!(ssh.port, None);
+        assert_eq!(ssh.user, "");
+        assert_eq!(
+            ssh.auth,
+            SshAuth::KeyFile {
+                path: std::path::PathBuf::new()
+            }
+        );
+        let saved = form.to_saved().unwrap();
+        assert_eq!(ConnectionForm::from_saved(&saved).ssh_port, "");
+    }
+
+    #[test]
+    fn a_saved_ssh_secret_fits_a_port_left_to_the_config() {
+        let mut form = ssh_form();
+        form.ssh_port.clear();
+        let mut saved = form.to_saved().unwrap();
+        saved.ssh_secret = PasswordMode::Keyring;
+        let mut back = ConnectionForm::from_saved(&saved);
+        assert!(back.ssh_secret_is_saved());
+        back.ssh_port = "2222".into();
+        assert!(back.ssh_secret_is_stale(), "another port, another server");
+    }
+
+    #[test]
+    fn add_column_offers_tables_then_their_columns_and_marks_a_column_in_none() {
+        use tabletist_db::agent::ColumnName;
+        let entry = |written: &str| -> ColumnName { written.parse().unwrap() };
+        let rows = |offered: ColumnsOffered| -> Vec<String> {
+            offered.rows.iter().map(ToString::to_string).collect()
+        };
+        let loaded = LoadedTables {
+            driver: Some(Driver::Postgres),
+            home: Some("public".into()),
+            schemas: vec!["public".into(), "sales".into(), "audit".into()],
+            schemas_cut: false,
+            loaded: vec![
+                ("public".into(), vec!["customers".into(), "orders".into()]),
+                ("sales".into(), vec!["orders".into()]),
+            ],
+            columns: vec![
+                (
+                    ObjectRef::new("public", "orders"),
+                    vec!["id".into(), "email".into(), "phone".into()],
+                ),
+                (
+                    ObjectRef::new("sales", "orders"),
+                    vec!["id".into(), "email".into(), "total".into()],
+                ),
+            ],
+            columns_loading: vec![ObjectRef::new("public", "customers")],
+            columns_failed: Vec::new(),
+        };
+        // A table typed: the loaded ones that match, each to be chosen for
+        // its columns.
+        assert_eq!(
+            rows(loaded.offered_columns("ord", &[])),
+            ["public.orders.", "sales.orders."]
+        );
+        assert_eq!(rows(loaded.offered_columns("cust", &[])), ["customers."]);
+        // A table and a dot: its columns, every schema's for a name
+        // without one, written as typed; what follows the dot narrows them.
+        let offered = loaded.offered_columns("orders.", &[]);
+        assert_eq!(
+            offered.tables,
+            [
+                ObjectRef::new("public", "orders"),
+                ObjectRef::new("sales", "orders")
+            ]
+        );
+        assert_eq!(
+            rows(offered),
+            ["orders.email", "orders.id", "orders.phone", "orders.total"]
+        );
+        assert_eq!(
+            rows(loaded.offered_columns("sales.orders.to", &[])),
+            ["sales.orders.total"]
+        );
+        // What an entry masks already is not offered: one without a
+        // schema masks every schema's.
+        assert_eq!(
+            rows(loaded.offered_columns("orders.", &[entry("ORDERS.email")])),
+            ["orders.id", "orders.phone", "orders.total"]
+        );
+        assert_eq!(
+            rows(loaded.offered_columns("orders.em", &[entry("sales.orders.email")])),
+            ["orders.email"]
+        );
+        // A table whose columns are on their way offers none yet.
+        let waiting = loaded.offered_columns("customers.", &[]);
+        assert!(waiting.rows.is_empty());
+        assert_eq!(waiting.tables, [ObjectRef::new("public", "customers")]);
+        // A column of a fetched table: known either way. A table not in
+        // the database has none; one whose columns are not fetched, or in
+        // a schema not loaded, is not known.
+        assert_eq!(loaded.has_column(&entry("orders.email")), Some(true));
+        assert_eq!(loaded.has_column(&entry("sales.orders.phone")), Some(false));
+        assert_eq!(loaded.has_column(&entry("public.orders.mail")), Some(false));
+        assert_eq!(
+            loaded.has_column(&entry("sales.clients.email")),
+            Some(false)
+        );
+        assert_eq!(loaded.has_column(&entry("customers.email")), None);
+        assert_eq!(loaded.has_column(&entry("audit.log.who")), None);
+        // Without a schema: any schema's table of that name, so missing
+        // only when every schema is loaded.
+        assert_eq!(loaded.has_column(&entry("orders.mail")), None);
+        let whole = LoadedTables {
+            schemas: vec!["public".into(), "sales".into()],
+            ..loaded.clone()
+        };
+        assert_eq!(whole.has_column(&entry("orders.mail")), Some(false));
+        assert_eq!(whole.has_column(&entry("orders.TOTAL")), Some(true));
+        // The system's are never marked.
+        assert_eq!(whole.has_column(&entry("pg_catalog.pg_class.oid")), None);
+        // Two tables whose names differ in case are two tables: the
+        // columns of one are not the other's. An entry names both, in any
+        // case, as the agent server reads it.
+        let cased = LoadedTables {
+            driver: Some(Driver::Postgres),
+            home: Some("public".into()),
+            schemas: vec!["public".into()],
+            loaded: vec![("public".into(), vec!["Orders".into(), "orders".into()])],
+            columns: vec![(ObjectRef::new("public", "orders"), vec!["id".into()])],
+            ..LoadedTables::default()
+        };
+        assert_eq!(cased.has_column(&entry("public.Orders.email")), None);
+        assert_eq!(cased.has_column(&entry("orders.email")), None);
+        assert_eq!(cased.has_column(&entry("public.orders.email")), None);
+        let both = LoadedTables {
+            columns: vec![
+                (ObjectRef::new("public", "orders"), vec!["id".into()]),
+                (ObjectRef::new("public", "Orders"), vec!["email".into()]),
+            ],
+            ..cased.clone()
+        };
+        assert_eq!(both.has_column(&entry("public.orders.email")), Some(true));
+        assert_eq!(both.has_column(&entry("orders.phone")), Some(false));
+        // A table whose name holds a dot is read in its quotes.
+        let dotted = LoadedTables {
+            driver: Some(Driver::Postgres),
+            home: Some("public".into()),
+            schemas: vec!["public".into()],
+            loaded: vec![("public".into(), vec!["my.table".into()])],
+            columns: vec![(ObjectRef::new("public", "my.table"), vec!["note".into()])],
+            ..LoadedTables::default()
+        };
+        assert_eq!(rows(dotted.offered_columns("my", &[])), ["\"my.table\"."]);
+        assert_eq!(
+            rows(dotted.offered_columns("\"my.table\".", &[])),
+            ["\"my.table\".note"]
+        );
+    }
+
+    #[test]
+    fn what_a_window_loaded_is_offered_and_marks_a_name_in_no_table() {
+        let names = |written: &[&str]| -> Vec<tabletist_db::agent::TableName> {
+            written.iter().map(|entry| entry.parse().unwrap()).collect()
+        };
+        let name = |written: &str| names(&[written]).remove(0);
+        let written = |offered: Vec<tabletist_db::agent::TableName>| -> Vec<String> {
+            offered.iter().map(ToString::to_string).collect()
+        };
+        let loaded = LoadedTables {
+            driver: Some(Driver::Postgres),
+            home: Some("public".into()),
+            schemas: vec!["public".into(), "sales".into(), "audit".into()],
+            schemas_cut: false,
+            loaded: vec![
+                (
+                    "public".into(),
+                    vec!["books".into(), "customers".into(), "authors".into()],
+                ),
+                ("sales".into(), vec!["orders".into(), "customers".into()]),
+            ],
+            ..LoadedTables::default()
+        };
+        // A home table whose name no other schema has goes without its
+        // schema; one another schema shares, or under "Only", with it; and
+        // with it where the person typed a schema.
+        assert_eq!(written(loaded.offered("auth", &[], false)), ["authors"]);
+        assert_eq!(
+            written(loaded.offered("auth", &[], true)),
+            ["public.authors"]
+        );
+        assert_eq!(
+            written(loaded.offered("cust", &[], false)),
+            ["public.customers", "sales.customers"]
+        );
+        assert_eq!(
+            written(loaded.offered("public.auth", &[], false)),
+            ["public.authors"]
+        );
+        // What an entry covers already is not offered: one without a
+        // schema covers every schema's.
+        assert_eq!(
+            written(loaded.offered("cust", &names(&["Customers"]), false)),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            written(loaded.offered("cust", &names(&["public.customers"]), false)),
+            ["sales.customers"]
+        );
+        assert_eq!(
+            written(loaded.offered("\"ord", &[], false)),
+            ["sales.orders"]
+        );
+        assert!(loaded.offered("  ", &[], false).is_empty());
+        // In a loaded schema: known either way; in one not loaded: unknown;
+        // in one the database does not have: missing.
+        assert_eq!(loaded.has(&name("sales.orders")), Some(true));
+        assert_eq!(loaded.has(&name("sales.old_orders")), Some(false));
+        assert_eq!(loaded.has(&name("audit.log")), None);
+        assert_eq!(loaded.has(&name("salse.orders")), Some(false));
+        assert_eq!(loaded.has(&name("BOOKS")), Some(true));
+        // The system's are never marked.
+        assert_eq!(loaded.has(&name("pg_catalog.pg_class")), None);
+        // Without a schema: any schema's, so missing only when every one of
+        // the database's own is loaded.
+        assert_eq!(loaded.has(&name("old_orders")), None);
+        let whole = LoadedTables {
+            schemas: vec!["public".into(), "sales".into()],
+            ..loaded.clone()
+        };
+        assert_eq!(whole.has(&name("old_orders")), Some(false));
+        // A `pg_` name without a schema is PostgreSQL's catalog's, as the
+        // checks that stop agents take it.
+        assert_eq!(whole.has(&name("pg_class")), None);
+        // A list of schemas the catalog cut, though the system's taken out
+        // of it leave it shorter: a schema not in it, or a name without
+        // one, is not known.
+        let schemas_cut = LoadedTables {
+            schemas_cut: true,
+            ..whole
+        };
+        assert_eq!(schemas_cut.has(&name("zz_sales.orders")), None);
+        assert_eq!(schemas_cut.has(&name("old_orders")), None);
+        assert_eq!(schemas_cut.has(&name("sales.old_orders")), Some(false));
+        // SQLite's own tables are the system's.
+        let sqlite = LoadedTables {
+            driver: Some(Driver::Sqlite),
+            home: Some("main".into()),
+            schemas: vec!["main".into()],
+            schemas_cut: false,
+            loaded: vec![("main".into(), vec!["books".into()])],
+            ..LoadedTables::default()
+        };
+        assert_eq!(sqlite.has(&name("sqlite_stat1")), None);
+        assert_eq!(sqlite.has(&name("dbstat")), None);
+        assert_eq!(sqlite.has(&name("old_orders")), Some(false));
+        // A list the catalog cut at its most is not the whole schema: what
+        // is not in it is not known, with or without a schema.
+        let cut: Vec<String> = (0..tabletist_db::MAX_LISTED)
+            .map(|at| format!("t{at:05}"))
+            .collect();
+        let full = LoadedTables {
+            loaded: vec![("main".into(), cut)],
+            ..sqlite
+        };
+        assert_eq!(full.has(&name("main.zz_orders")), None);
+        assert_eq!(full.has(&name("zz_orders")), None);
+        assert_eq!(full.has(&name("t00001")), Some(true));
+        // And one letter typed over it still offers its best few, a home
+        // table without its schema.
+        let offered = full.offered("t", &[], false);
+        assert_eq!(offered.len(), OFFERED);
+        assert!(offered.iter().all(|entry| entry.schema.is_none()));
+    }
+
+    #[test]
+    fn the_tables_control_keeps_a_list_for_each_mode_and_says_what_is_chosen() {
+        use tabletist_db::agent::Tables;
+        let names = |written: &[&str]| -> Vec<tabletist_db::agent::TableName> {
+            written.iter().map(|entry| entry.parse().unwrap()).collect()
+        };
+        // Each setting reads back as it was; an empty "All except" is All.
+        for tables in [
+            Tables::All,
+            Tables::AllExcept(names(&["customers", "sales.orders"])),
+            Tables::Only(names(&["books"])),
+            Tables::Only(Vec::new()),
+        ] {
+            assert_eq!(TablesChoice::of(&tables).tables(), tables);
+        }
+        assert_eq!(
+            TablesChoice::of(&Tables::AllExcept(Vec::new())).tables(),
+            Tables::All
+        );
+        let mut choice = TablesChoice::of(&Tables::AllExcept(names(&["customers"])));
+        // A name once, in any case; one that does not read is refused.
+        assert_eq!(choice.add("Customers"), Ok(()));
+        assert_eq!(choice.add(" sales.orders "), Ok(()));
+        assert!(choice.add("a.b.c").is_err());
+        assert_eq!(
+            choice.tables(),
+            Tables::AllExcept(names(&["customers", "sales.orders"]))
+        );
+        // "Only" has a list of its own, and "All except" finds its again.
+        choice.mode = TablesMode::Only;
+        assert_eq!(choice.tables(), Tables::Only(Vec::new()));
+        choice.add("books").unwrap();
+        choice.mode = TablesMode::AllExcept;
+        choice.remove(0);
+        choice.remove(9);
+        assert_eq!(choice.tables(), Tables::AllExcept(names(&["sales.orders"])));
+        choice.remove(0);
+        assert_eq!(choice.tables(), Tables::All, "emptied, it hides nothing");
+        choice.mode = TablesMode::Only;
+        assert_eq!(choice.tables(), Tables::Only(names(&["books"])));
+        // "All" has no list to add to.
+        choice.mode = TablesMode::All;
+        assert_eq!(choice.add("orders"), Ok(()));
+        assert_eq!(choice.names(), None);
+    }
+
+    #[test]
+    fn an_edit_keeps_what_agents_may_do_on_the_connection() {
+        let mut saved = ssh_form().to_saved().unwrap();
+        saved.agents = crate::connections::Agents {
+            access: crate::connections::AgentAccess::Read,
+            rows: 1_000,
+            timeout_secs: 30,
+            ..crate::connections::Agents::default()
+        };
+        let mut edited = ConnectionForm::from_saved(&saved);
+        edited.name = "Production".into();
+        let again = edited.to_saved().unwrap();
+        assert_eq!(again.name, "Production");
+        assert_eq!(again.agents, saved.agents);
+        // A new connection starts Off.
+        let new = ssh_form().to_saved().unwrap();
+        assert_eq!(new.agents, crate::connections::Agents::default());
+    }
+
+    #[test]
+    fn a_new_form_leaves_the_ssh_port_to_the_config() {
+        assert_eq!(ConnectionForm::default().ssh_port, "");
+    }
+
+    use tabletist_db::ssh_config::{AgentSocket, ConfigHost, HostConfig, Proxy};
+
+    fn config_host(alias: &str, config: HostConfig) -> ConfigHost {
+        ConfigHost {
+            alias: alias.into(),
+            config,
+        }
+    }
+
+    fn with_hosts() -> ConnectionForm {
+        ConnectionForm {
+            ssh_hosts: vec![
+                config_host(
+                    "bastion",
+                    HostConfig {
+                        host_name: Some("10.0.0.5".into()),
+                        port: Some(2222),
+                        user: Some("ops".into()),
+                        identity_agent: Some(AgentSocket::Environment),
+                        ..HostConfig::default()
+                    },
+                ),
+                config_host(
+                    "replica",
+                    HostConfig {
+                        identity_file: Some("/home/me/.ssh/id_work".into()),
+                        ..HostConfig::default()
+                    },
+                ),
+                config_host(
+                    "gateway-only",
+                    HostConfig {
+                        proxy: Some(Proxy::Jump("bastion".into())),
+                        ..HostConfig::default()
+                    },
+                ),
+            ],
+            ..ssh_form()
+        }
+    }
+
+    #[test]
+    fn the_typed_ssh_host_finds_its_config_host_ignoring_case() {
+        let mut form = with_hosts();
+        form.ssh_host = " BASTION ".into();
+        assert_eq!(form.ssh_config_host().unwrap().alias, "bastion");
+        form.ssh_host = "db.example.com".into();
+        assert!(form.ssh_config_host().is_none());
+    }
+
+    #[test]
+    fn picking_a_host_clears_what_the_config_supplies_and_presets_the_login() {
+        let mut form = with_hosts();
+        form.ssh_auth = SshAuthKind::Password;
+        form.pick_ssh_host("bastion");
+        assert_eq!(form.ssh_host, "bastion");
+        assert_eq!(
+            (
+                form.ssh_port.as_str(),
+                form.ssh_user.as_str(),
+                form.ssh_key_file.as_str()
+            ),
+            ("", "", "")
+        );
+        assert_eq!(form.ssh_auth, SshAuthKind::Agent, "IdentityAgent");
+        form.pick_ssh_host("replica");
+        assert_eq!(form.ssh_auth, SshAuthKind::KeyFile, "IdentityFile");
+        form.ssh_auth = SshAuthKind::Password;
+        form.pick_ssh_host("gateway-only");
+        assert_eq!(form.ssh_auth, SshAuthKind::Password, "nothing to preset");
+    }
+
+    #[test]
+    fn an_agent_turned_off_does_not_preset_the_agent() {
+        let mut form = ConnectionForm {
+            ssh_hosts: vec![config_host(
+                "bastion",
+                HostConfig {
+                    identity_agent: Some(AgentSocket::Off),
+                    ..HostConfig::default()
+                },
+            )],
+            ssh_auth: SshAuthKind::Password,
+            ..ssh_form()
+        };
+        form.pick_ssh_host("bastion");
+        assert_eq!(form.ssh_auth, SshAuthKind::Password);
+    }
+
+    #[test]
+    fn hints_come_from_the_config_host_or_are_empty() {
+        let mut form = with_hosts();
+        form.ssh_host = "bastion".into();
+        let hints = form.ssh_hints();
+        assert_eq!(hints.host_name.as_deref(), Some("10.0.0.5"));
+        assert_eq!(hints.port, Some(2222));
+        assert_eq!(hints.user.as_deref(), Some("ops"));
+        assert_eq!(hints.key_file, None);
+        assert_eq!(hints.proxy, None);
+        form.ssh_host = "gateway-only".into();
+        assert_eq!(form.ssh_hints().proxy, Some(Proxy::Jump("bastion".into())));
+        form.ssh_host = "db.example.com".into();
+        assert_eq!(form.ssh_hints(), SshHints::default());
+    }
+
+    #[test]
+    fn verify_ca_needs_a_ca_file() {
+        let mut form = ConnectionForm {
+            ssh: false,
+            tls: TlsMode::VerifyCa,
+            ..ssh_form()
+        };
+        let error = form.to_spec().unwrap_err();
+        assert!(error.contains("needs a CA file"), "{error}");
+        form.ca_file = "/etc/ssl/db-ca.pem".into();
+        assert_eq!(
+            form.to_spec().unwrap().ca_file,
+            Some("/etc/ssl/db-ca.pem".into())
+        );
+        form.ca_file.clear();
+        form.tls = TlsMode::VerifyFull;
+        assert_eq!(form.to_spec().unwrap().ca_file, None);
+    }
+
+    #[test]
+    fn unticking_ssh_drops_the_tunnel() {
+        let mut form = ssh_form();
+        form.ssh = false;
+        assert_eq!(form.to_spec().unwrap().ssh, None);
+    }
+
+    #[test]
+    fn a_filter_bar_becomes_filters_and_a_raw_where() {
+        use tabletist_db::{Filter, FilterOp};
+        let bar = FilterBar {
+            open: true,
+            rows: vec![
+                FilterRow {
+                    column: "age".into(),
+                    op: FilterOp::Gt,
+                    value: "30".into(),
+                },
+                // Empty value: skipped, except for the NULL tests.
+                FilterRow {
+                    column: "name".into(),
+                    op: FilterOp::Contains,
+                    value: " ".into(),
+                },
+                FilterRow {
+                    column: "email".into(),
+                    op: FilterOp::IsNull,
+                    value: String::new(),
+                },
+                // No column: skipped.
+                FilterRow {
+                    column: String::new(),
+                    op: FilterOp::Eq,
+                    value: "x".into(),
+                },
+            ],
+            raw: true,
+            raw_text: "  id % 2 = 0 ".into(),
+            focus: false,
+            columns: Vec::new(),
+        };
+        let (filters, raw) = bar.to_query();
+        assert_eq!(
+            filters,
+            vec![
+                Filter {
+                    column: "age".into(),
+                    op: FilterOp::Gt,
+                    value: "30".into()
+                },
+                Filter {
+                    column: "email".into(),
+                    op: FilterOp::IsNull,
+                    value: String::new()
+                },
+            ]
+        );
+        assert_eq!(raw.as_deref(), Some("id % 2 = 0"));
+        let off = FilterBar {
+            raw: false,
+            ..bar.clone()
+        };
+        assert_eq!(off.to_query().1, None);
+    }
+
+    fn completion_of(labels: &[&str], typed: &str) -> Completion {
+        Completion::new(
+            false,
+            (TextPrint::of(typed), typed.len(), 0),
+            completion_site(typed),
+            typed.to_owned(),
+            completion_rows(labels),
+            false,
+        )
+    }
+
+    fn completion_site(typed: &str) -> tabletist_db::complete::Site {
+        tabletist_db::complete::Site {
+            word: 0..typed.len(),
+            qualifier: Vec::new(),
+            expects: tabletist_db::complete::Expects::Columns,
+            value: false,
+            sources: Vec::new(),
+            ctes: Vec::new(),
+        }
+    }
+
+    fn completion_rows(labels: &[&str]) -> crate::completion::Listed {
+        crate::completion::Listed {
+            candidates: labels
+                .iter()
+                .map(|label| crate::completion::Candidate {
+                    kind: crate::completion::Kind::Column,
+                    label: (*label).to_owned(),
+                    insert: (*label).to_owned(),
+                    matched: 0..0,
+                    detail: String::new(),
+                })
+                .collect(),
+            more: 0,
+        }
+    }
+
+    #[test]
+    fn a_completion_keeps_its_serial_and_no_other_list_has_it() {
+        let mut list = completion_of(&["desc"], "de");
+        let other = completion_of(&["desc"], "de");
+        assert_ne!(list.serial, other.serial);
+        // The same list after more of its word is typed, and as the view
+        // copies it.
+        let serial = list.serial;
+        let of = (TextPrint::of("des"), 3, 0);
+        let rows = completion_rows(&["desc"]);
+        list.relist(of, completion_site("des"), "des".into(), rows, false);
+        assert_eq!(list.serial, serial);
+        assert_eq!(list.clone().serial, serial);
+    }
+
+    #[test]
+    fn a_completions_highlight_moves_and_stops_at_the_ends() {
+        let mut list = completion_of(&["a", "b", "c"], "");
+        list.move_by(-1);
+        assert_eq!((list.selected, list.moved), (0, false));
+        list.move_by(1);
+        list.move_by(1);
+        list.move_by(1);
+        assert_eq!((list.selected, list.moved), (2, true));
+        // No rows: nothing to move to.
+        let mut empty = completion_of(&[], "");
+        empty.move_by(1);
+        assert_eq!(empty.selected, 0);
+        assert!(empty.highlighted().is_none());
+    }
+
+    #[test]
+    fn a_moved_highlight_stays_on_its_row_until_the_typed_word_changes() {
+        let relist = |list: &mut Completion, labels: &[&str], typed: &str| {
+            let of = (TextPrint::of(typed), typed.len(), 0);
+            let rows = completion_rows(labels);
+            list.relist(of, completion_site(typed), typed.to_owned(), rows, false);
+        };
+        let mut list = completion_of(&["description", "desc"], "des");
+        // Not moved: always the first row.
+        relist(&mut list, &["dest", "description", "desc"], "des");
+        assert_eq!(list.selected, 0);
+        // Moved: it follows its row when rows arrive around it.
+        list.move_by(2);
+        relist(&mut list, &["desc", "description"], "des");
+        assert_eq!(list.highlighted().map(|c| c.label.as_str()), Some("desc"));
+        assert!(list.moved);
+        // Its row went: the first row, and not moved.
+        relist(&mut list, &["description"], "des");
+        assert_eq!((list.selected, list.moved), (0, false));
+        // The typed word changed: the first row again, moved or not.
+        relist(&mut list, &["description", "desc"], "des");
+        list.move_by(1);
+        assert_eq!((list.selected, list.moved), (1, true));
+        relist(&mut list, &["desc", "description"], "desc");
+        assert_eq!((list.selected, list.moved), (0, false));
+    }
+
+    #[test]
+    fn enter_is_a_line_break_on_what_is_already_typed() {
+        let list = completion_of(&["as", "asc"], "as");
+        assert!(list.enter_is_a_line_break("as"));
+        let mut moved = completion_of(&["as", "asc"], "as");
+        moved.move_by(1);
+        assert!(!moved.enter_is_a_line_break("as"));
+        // No row to insert: Enter is the editor's.
+        assert!(completion_of(&[], "zz").enter_is_a_line_break("zz"));
+    }
+
+    /// A list of these columns, each with the part of its name that
+    /// matched `typed`, opened by hand (`manual`) or by typing.
+    fn completion_matching(
+        manual: bool,
+        rows: &[(&str, std::ops::Range<usize>)],
+        typed: &str,
+    ) -> Completion {
+        let mut listed = completion_rows(&[]);
+        listed.candidates = rows
+            .iter()
+            .map(|(label, matched)| crate::completion::Candidate {
+                kind: crate::completion::Kind::Column,
+                label: (*label).to_owned(),
+                insert: (*label).to_owned(),
+                matched: matched.clone(),
+                detail: String::new(),
+            })
+            .collect();
+        let of = (TextPrint::of(typed), typed.len(), 0);
+        let site = completion_site(typed);
+        Completion::new(manual, of, site, typed.to_owned(), listed, false)
+    }
+
+    #[test]
+    fn enter_inserts_a_row_the_typed_text_begins() {
+        let list = completion_matching(false, &[("email", 0..2)], "em");
+        assert!(!list.enter_is_a_line_break("em"));
+        // Nothing typed (right after a dot): every row goes on from it.
+        let after_dot = completion_matching(false, &[("email", 0..0)], "");
+        assert!(!after_dot.enter_is_a_line_break(""));
+    }
+
+    #[test]
+    fn enter_is_a_line_break_on_a_row_that_only_holds_the_typed_text() {
+        // `day` is most likely a whole word, not the start of `birthday`.
+        let rows = [("birthday", 5..8), ("holiday", 4..7)];
+        let list = completion_matching(false, &rows, "day");
+        assert!(list.enter_is_a_line_break("day"));
+        // A row that begins with it leads the list and is inserted.
+        let leading = [("day_of_week", 0..3), ("birthday", 5..8)];
+        let list = completion_matching(false, &leading, "day");
+        assert!(!list.enter_is_a_line_break("day"));
+    }
+
+    #[test]
+    fn enter_inserts_a_row_the_user_chose_or_asked_for() {
+        let rows = [("birthday", 5..8), ("holiday", 4..7)];
+        // The highlight moved to another row.
+        let mut moved = completion_matching(false, &rows, "day");
+        moved.move_by(1);
+        assert!(!moved.enter_is_a_line_break("day"));
+        // And back to the first one: the user's choice all the same.
+        moved.move_by(-1);
+        assert_eq!((moved.selected, moved.moved), (0, true));
+        assert!(!moved.enter_is_a_line_break("day"));
+        // The typed word changed since: the highlight is the list's again.
+        let of = (TextPrint::of("days"), 4, 0);
+        let mut listed = completion_rows(&["holidays"]);
+        listed.candidates[0].matched = 4..8;
+        moved.relist(of, completion_site("days"), "days".into(), listed, false);
+        assert!(moved.enter_is_a_line_break("days"));
+        // A list opened by hand was asked for: Enter inserts its row.
+        let manual = completion_matching(true, &rows, "day");
+        assert!(!manual.enter_is_a_line_break("day"));
+        // Whatever the list, a row that is what is typed is a line break.
+        let mut exact = completion_matching(true, &[("day", 0..3), ("birthday", 5..8)], "day");
+        assert!(exact.enter_is_a_line_break("day"));
+        exact.move_by(1);
+        exact.move_by(-1);
+        assert!(exact.enter_is_a_line_break("day"));
+    }
+
+    #[test]
+    fn accepting_takes_the_row_given_or_the_highlighted_one() {
+        let mut list = completion_of(&["a", "b", "c"], "");
+        list.move_by(1);
+        list.accept(None);
+        assert_eq!((list.selected, list.accept), (1, true));
+        // A click names its row.
+        let mut list = completion_of(&["a", "b", "c"], "");
+        list.accept(Some(2));
+        assert_eq!((list.selected, list.accept), (2, true));
+        // A row that is gone (a click on a list that changed since it was
+        // drawn): nothing, not the highlighted row in its place.
+        let mut list = completion_of(&["a", "b", "c"], "");
+        list.accept(Some(3));
+        assert_eq!((list.selected, list.accept), (0, false));
+        // No row to insert.
+        let mut empty = completion_of(&[], "");
+        empty.accept(None);
+        assert!(!empty.accept);
+    }
+
+    #[test]
+    fn a_list_is_on_the_word_it_was_opened_on() {
+        let print = TextPrint::of;
+        let list = completion_of(&["select"], "se");
+        let mut site = completion_site("sel");
+        assert!(list.is_on(&site, print("sel")));
+        // The word is gone: the cursor is at its start, or it was deleted.
+        site.word = 0..0;
+        assert!(!list.is_on(&site, print("se")));
+        assert!(!list.is_on(&site, print("")));
+        // Another word.
+        site.word = 4..6;
+        assert!(!list.is_on(&site, print("sel sel")));
+        // A list opened on an empty word goes on as the word is typed.
+        let mut empty = completion_of(&["select"], "");
+        assert!(empty.is_on(&completion_site("s"), print("s")));
+        assert!(empty.is_on(&completion_site(""), print("")));
+        // Its word typed, it is still the list of an empty word: deleting
+        // the word does not close it.
+        let of = (print("s"), 1, 0);
+        let rows = completion_rows(&["select"]);
+        empty.relist(of, completion_site("s"), "s".to_owned(), rows, false);
+        assert!(empty.is_on(&completion_site(""), print("")));
+        assert!(!list.is_on(&completion_site(""), print("")));
+        // The cursor back at the start of the word, which is still there:
+        // a row would go in front of it.
+        assert!(!empty.is_on(&completion_site(""), print("s")));
+        // Another qualifier, or another start, is another word.
+        let mut other = completion_site("s");
+        other.qualifier = vec!["users".to_owned()];
+        assert!(!empty.is_on(&other, print("s")));
+        // Opened by hand right before a word (`|users`): on its empty word
+        // whatever follows the cursor, when the list is worked out again
+        // from the same script (names arrived).
+        let users = (print("users"), 0, 0);
+        let rows = completion_rows(&["select"]);
+        let mut before =
+            Completion::new(true, users, completion_site(""), String::new(), rows, false);
+        assert!(before.is_on(&completion_site(""), print("users")));
+        // A letter typed there (`s|users`) and deleted again: still on it.
+        let of = (print("susers"), 1, 0);
+        let rows = completion_rows(&["select"]);
+        let typed = completion_site("susers");
+        before.relist(of, typed, "s".to_owned(), rows, false);
+        assert!(before.is_on(&completion_site(""), print("users")));
+        // But not with the cursor moved back before the letter.
+        assert!(!before.is_on(&completion_site(""), print("susers")));
+    }
+}

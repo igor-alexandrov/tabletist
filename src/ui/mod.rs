@@ -467,7 +467,7 @@ pub fn window_buttons_line(app: &App, zoom: f32) -> f32 {
     if matches!(app.active_tab().content, ConnTabContent::Picker(_)) {
         picker::header_line(&app.look)
     } else {
-        workspace::bar_line(app, zoom)
+        workspace::bar_line(&app.look, app.titlebar.height, zoom)
     }
 }
 
@@ -11479,7 +11479,8 @@ value_tags   = true
         mac_title_bar(&mut harness);
         harness.connect_fake();
         harness.settle();
-        let line = crate::ui::workspace::bar_line(&harness.app, 1.0);
+        let line =
+            crate::ui::workspace::bar_line(&harness.app.look, harness.app.titlebar.height, 1.0);
         assert_press_and_move_drags(&mut harness, egui::pos2(700.0, line));
     }
 
@@ -11496,7 +11497,10 @@ value_tags   = true
     fn a_double_click_on_the_connection_bar_maximizes_and_restores_the_window() {
         assert_double_click_toggles_maximized(|harness| {
             harness.connect_fake();
-            egui::pos2(700.0, crate::ui::workspace::bar_line(&harness.app, 1.0))
+            egui::pos2(
+                700.0,
+                crate::ui::workspace::bar_line(&harness.app.look, harness.app.titlebar.height, 1.0),
+            )
         });
     }
 

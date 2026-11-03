@@ -14,7 +14,8 @@ use crate::clock::Day;
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::model::Action;
 use crate::settings::{OptionId, Settings};
-use crate::theme::{Icon, Look};
+use crate::style::Icon;
+use crate::theme::Look;
 use crate::typography::{Laid, Text, TextRole};
 use crate::ui::widgets::{self, ButtonSpec};
 use crate::update::{

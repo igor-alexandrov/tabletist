@@ -2,8 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
-/// Every Rust file of the app, of the database layer and of the MCP
-/// server, by its path from the repository root, with its text.
+/// Every Rust file of the app (its interface and its core), of the
+/// database layer and of the MCP server, by its path from the repository
+/// root, with its text.
 fn sources() -> Vec<(String, String)> {
     fn walk(dir: &Path, into: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).expect("read a source directory") {
@@ -17,7 +18,12 @@ fn sources() -> Vec<(String, String)> {
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut paths = Vec::new();
-    for dir in ["src", "crates/tabletist-db/src", "crates/tabletist-mcp/src"] {
+    for dir in [
+        "src",
+        "crates/tabletist-core/src",
+        "crates/tabletist-db/src",
+        "crates/tabletist-mcp/src",
+    ] {
         let before = paths.len();
         walk(&root.join(dir), &mut paths);
         assert!(paths.len() > before, "no sources under {dir}");

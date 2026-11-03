@@ -11,7 +11,10 @@ MySQL, SQLite) on egui/eframe and fastframe. The design lives in
   in `src/app.rs` applies them after drawing. Do not mutate application state
   from inside a view, apart from the value a control is editing in place
   (a field's text, a checkbox, a dropdown's choice, as egui's widgets
-  write them) and the cursor position a field reports.
+  write them), the cursor position a field reports, and a one-time request
+  the state holds for the view (a flag such as `focus_where` or
+  `database_menu_asked`), which the view that meets it takes with
+  `std::mem::take` where it meets it.
 - A view takes `ui::Paint` (locale, palette, look), the ids it names and a
   borrow of the state it shows (a dialog's prompt, an object tab, a
   workspace), not `App`, and returns the `Action`s it asks for; its caller
@@ -19,13 +22,29 @@ MySQL, SQLite) on egui/eframe and fastframe. The design lives in
   take `App` move to this one at a time
   (`docs/superpowers/plans/2026-10-31-narrow-app-access.md`). A new view
   follows it, and a view never gains an `App` argument.
-- The lower layer (`model`, `edit`, `backend`, `settings`, `review`,
-  `format`, … each module `LOWER` in `tests/layers.rs` lists) never names
-  `crate::ui` or `crate::app`: what it needs from above comes in as an
-  argument, or moves down. That test reads their sources, and a new module
-  goes in its `LOWER` or its `ABOVE`.
+- The lower layer is a crate of its own, `crates/tabletist-core` (`model`,
+  `edit`, `backend`, `settings`, `review`, `format`, `theme`, `keymap`, …),
+  and `src/lib.rs` re-exports each of its modules, so `crate::model` means
+  the same in the interface. The core does not depend on the `tabletist`
+  crate, so it cannot name `crate::ui`, `crate::app`, or the text and style
+  the views draw with (`crate::typography`, `crate::style`): what it needs
+  from above comes in as an argument, or moves down. `theme` holds the
+  palette and the looks as data, and `style` sets them up on an egui
+  context; `font_files` reads fonts from the system, and `typography` draws
+  with them. The core takes three data types from egui (`Key`, `Color32`,
+  `FontData`) and draws nothing: its `tests/interface.rs` keeps the
+  window's and the widgets' crates out of its `Cargo.toml`, and
+  `egui::Context`, `Ui`, `Painter` and `Response` out of its sources. Its
+  tests stand on it alone; their data (the Bookshop's structures and pages,
+  outcomes, a workspace without an app) is in
+  `crates/tabletist-core/src/fixtures.rs`, which `src/testing.rs`
+  re-exports. The hooks the interface's tests use (`util::pin_now`, the
+  backend's `sent`) and `fixtures` are under
+  `cfg(any(test, feature = "testing"))`, and the root's dev-dependency
+  turns `testing` on. A new module goes in the core unless it draws, sets
+  up egui or drives the app.
 - Database, network, and disk work runs on the backend runtime
-  (`src/backend.rs`), never on the UI thread.
+  (`crates/tabletist-core/src/backend.rs`), never on the UI thread.
 - `crates/tabletist-db` has no UI dependencies.
 - `crates/tabletist-mcp`, the MCP server agents use, has none either. It
   reaches a database only through its `Gateway`, which lists the connections
@@ -84,22 +103,22 @@ keyboard. A view never paints a control's focus ring: a widget that needs
 another form than the default says so with `focus::hint`. Only a pane (the
 tree, a grid) marks where its arrows are by itself: its cursor, its cell.
 
-A key is spelled in `src/keymap.rs` (and `src/keymap/overrides.rs`, which
-lays the person's keys from `settings.toml` over it) and nowhere else: each
-command with the scopes it holds in and its keys for macOS and for Omarchy
-(Windows has the Mac's, with Ctrl for Cmd, unless a line gives it keys of
-its own: `Binding::windows`). `src/ui/keys.rs` and the
-dialogs ask the keymap whether a command's key went down, and name no key
-themselves. What paints a key beside a word (a hint, a button's shortcut)
-takes a `keymap::Written`, which only the keymap makes; `tests/keys.rs`
-finds a key spelled by hand anywhere else. A command that is not built yet
-is in the keymap with its keys and `built: false`: nothing answers it, and
-nothing else can have its keys. The keymap's own tests are generated from
-its data: no two commands share a key where both could be read. Vim's
-modes in the SQL editor are typing, as a text field's keys are: their
-letters are the engine's (`src/vim.rs`), and Esc, Enter, the arrows and
-the field's own deleting chords are the field's; vim's chords (`VimRedo`,
-`VimNormal`) are in the keymap.
+A key is spelled in `crates/tabletist-core/src/keymap.rs` (and
+`keymap/overrides.rs` beside it, which lays the person's keys from
+`settings.toml` over it) and nowhere else: each command with the scopes it
+holds in and its keys for macOS and for Omarchy (Windows has the Mac's, with
+Ctrl for Cmd, unless a line gives it keys of its own: `Binding::windows`).
+`src/ui/keys.rs` and the dialogs ask the keymap whether a command's key went
+down, and name no key themselves. What paints a key beside a word (a hint, a
+button's shortcut) takes a `keymap::Written`, which only the keymap makes;
+`tests/keys.rs` finds a key spelled by hand anywhere else. A command that is
+not built yet is in the keymap with its keys and `built: false`: nothing
+answers it, and nothing else can have its keys. The keymap's own tests are
+generated from its data: no two commands share a key where both could be
+read. Vim's modes in the SQL editor are typing, as a text field's keys are:
+their letters are the engine's (`crates/tabletist-core/src/vim.rs`), and
+Esc, Enter, the arrows and the field's own deleting chords are the field's;
+vim's chords (`VimRedo`, `VimNormal`) are in the keymap.
 
 The menu bar (`src/menu.rs`) shows the keymap's keys and changes none: a key
 AppKit takes for a menu item goes back to egui as the same press
@@ -154,12 +173,13 @@ GitHub Pages from `main`. `docs/superpowers/` is not part of the site:
     bundle exec jekyll serve --livereload     # http://localhost:4000/tabletist/
 
 - Update the pages when user-visible behaviour, settings, files or keys
-  change. The keys are `BINDINGS` in `src/keymap.rs`:
+  change. The keys are `BINDINGS` in `crates/tabletist-core/src/keymap.rs`:
   `_reference/keyboard-shortcuts.md` follows its macOS column, written for
   macOS and Windows together, `_guide/macos.md` writes that column with
   Cmd, and `_guide/omarchy.md` writes the Omarchy column, the keys of its
   dialogs too. `_reference/settings-and-files.md` follows
-  `src/settings.rs` and `src/paths.rs`.
+  `crates/tabletist-core/src/settings.rs` and
+  `crates/tabletist-core/src/paths.rs`.
 - The site is served under `/tabletist`. Link to a page with
   `{% link _guide/name.md %}` and to a file with the `relative_url` filter,
   never with a bare `/path/`.
@@ -180,10 +200,11 @@ GitHub Pages from `main`. `docs/superpowers/` is not part of the site:
 
 ## Releasing
 
-The version has one source: `version` under `[package]` in the root
-`Cargo.toml`. The About window, `tabletist --version`, the log and the
-Windows version details all read it at build time, and `release.yml` takes the
-package file names from the tag. So the tag follows `Cargo.toml`, never the
+The version has one source: `version` under `[workspace.package]` in the
+root `Cargo.toml`, which each package whose version is the app's takes with
+`version.workspace = true`. The About window, `tabletist --version`, the log
+and the Windows version details all read it at build time, and `release.yml`
+takes the package file names from the tag. So the tag follows `Cargo.toml`, never the
 other way round.
 
 - The bump lands on `main` before the tag exists. Tag the commit that carries
@@ -191,9 +212,11 @@ other way round.
 - The tag is `v` plus the version in `Cargo.toml`, character for character
   (`0.2.0-rc1` is tagged `v0.2.0-rc1`). `release.yml` checks this first and
   builds nothing for a tag that disagrees.
-- `Cargo.toml` and the `tabletist` entry in `Cargo.lock` change in the same
-  commit: every release build is `--locked`. That one line is the whole
-  `Cargo.lock` diff. The crates under `crates/` keep their own versions.
+- `Cargo.toml` and `Cargo.lock` change in the same commit: every release
+  build is `--locked`. The whole `Cargo.lock` diff is the `version` line of
+  each package that takes the workspace's version: `tabletist` and
+  `tabletist-core`. The other crates under `crates/` keep their own
+  versions.
 - Never create the release, or its tag, in the GitHub UI or with
   `gh release create`. `release.yml` creates the release from the pushed tag.
   One made by hand has no packages, and its tag points at whatever `main` was.
@@ -203,8 +226,10 @@ other way round.
 - A user-facing string that names a version ("read-only in 0.1.0") is not
   bumped with it. Check on each release whether it is still true.
 
-1. Bump `version` in `Cargo.toml`, run `cargo update -p tabletist`, commit,
-   and get the commit onto `main`.
+1. Bump `version` under `[workspace.package]` in `Cargo.toml`, run
+   `cargo update --workspace` (it updates the workspace's own entries, and
+   leaves every locked dependency as it is; it would add only a package
+   missing from `Cargo.lock`), commit, and get the commit onto `main`.
 2. On that commit: `git tag -s v0.3.0 -m v0.3.0 && git push origin v0.3.0`.
 3. `release.yml` builds Linux (x86_64, aarch64 `.tar.gz`, and `.AppImage`
    named `tabletist-<version>-<arch>.AppImage`), Windows (x64, arm64 `.zip`
@@ -258,11 +283,11 @@ runtime by version and SHA-256; move them together. Locally,
 
 ## Updates
 
-`src/update.rs` holds the check Settings › Updates shows and configures
-fastframe-update, which installs an update. The check is one GET of
-`releases/latest` that sends `Tabletist/<version> (<system>; <chip>)` and
-no other header of the person's: `src/update/check.rs` tests what goes on
-the wire. Tests never reach GitHub; they serve fixture JSON from a local
+`crates/tabletist-core/src/update.rs` holds the check Settings › Updates
+shows and configures fastframe-update, which installs an update. The check
+is one GET of `releases/latest` that sends `Tabletist/<version> (<system>;
+<chip>)` and no other header of the person's: `update/check.rs` beside it
+tests what goes on the wire. Tests never reach GitHub; they serve fixture JSON from a local
 port (`tests/fixtures/update/latest.json`). A test harness never checks on
 its own: only `App::watch_updates`, which the window calls outside a demo,
 turns the schedule on.

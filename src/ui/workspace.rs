@@ -9,7 +9,8 @@ use crate::format::display_safe;
 use crate::i18n::gettext;
 use crate::keymap::Command;
 use crate::model::{Action, ConnTabId, ObjectView, SessionStatus, TabId};
-use crate::theme::{Icon, Look, Palette};
+use crate::style::Icon;
+use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Region};
 use crate::ui::menu;
@@ -27,17 +28,17 @@ pub fn bar_height(look: &Look) -> f32 {
 const STRIPE: f32 = 3.0;
 
 /// The bar's height in the window. The bar is the macOS title bar, and at
-/// least as tall as the window has it (window points, which egui's `zoom`
-/// scales away from its own).
-fn top_bar_height(app: &App, zoom: f32) -> f32 {
-    bar_height(&app.look).max(app.titlebar.height / zoom)
+/// least as tall as the window has it: `titlebar` is its height in window
+/// points, which egui's `zoom` scales away from its own.
+fn top_bar_height(look: &Look, titlebar: f32, zoom: f32) -> f32 {
+    bar_height(look).max(titlebar / zoom)
 }
 
 /// The line the bar's contents centre on, below its top: under the macOS
 /// stripe and over the rule, or the middle of the terminal bar.
-pub fn bar_line(app: &App, zoom: f32) -> f32 {
-    let height = top_bar_height(app, zoom);
-    if app.look.terminal {
+pub fn bar_line(look: &Look, titlebar: f32, zoom: f32) -> f32 {
+    let height = top_bar_height(look, titlebar, zoom);
+    if look.terminal {
         height / 2.0
     } else {
         (STRIPE + height - 1.0) / 2.0
@@ -46,7 +47,15 @@ pub fn bar_line(app: &App, zoom: f32) -> f32 {
 
 pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let look = app.look;
-    top_bar(app, ui, tab);
+    if let Some(info) = bar_info(app, tab) {
+        let paint = super::Paint::of(app);
+        let titlebar = (app.titlebar.inset, app.titlebar.height);
+        let env_bar = app.settings.env_bar;
+        if let Some(workspace) = crate::app::workspace_in_mut(&mut app.tabs, tab) {
+            let asked = top_bar(ui, paint, tab, workspace, &info, env_bar, titlebar);
+            app.actions.extend(asked);
+        }
+    }
     let (_, asked) = super::notices(
         ui,
         super::Paint::of(app),
@@ -58,18 +67,21 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
-    let opened = workspace.opened();
-    if look.terminal && opened {
-        object_tabs(app, ui, tab);
-        status_line(app, ui, tab);
-    }
-    if !opened {
+    if !workspace.opened() {
         // Nothing of the database to show yet: how connecting goes, or
         // why it failed.
-        opening(app, ui, tab);
+        let asked = opening(ui, super::Paint::of(app), tab, workspace);
+        app.actions.extend(asked);
         return;
     }
-    banner(app, ui, tab);
+    if look.terminal {
+        object_tabs(app, ui, tab);
+        bottom_line(app, ui, tab);
+    }
+    if let Some(workspace) = app.workspace(tab) {
+        let asked = banner(ui, super::Paint::of(app), tab, workspace);
+        app.actions.extend(asked);
+    }
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
@@ -485,34 +497,43 @@ fn ddl(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
 
 /// A tab that has not shown its content yet: how connecting goes, or why
 /// it failed.
-fn opening(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
-    let fill = app.palette.window;
-    let failed = app.workspace(tab).is_some_and(|workspace| {
-        matches!(
-            workspace.status,
-            SessionStatus::Disconnected(_) | SessionStatus::Cancelled
-        )
-    });
+fn opening(
+    ui: &mut egui::Ui,
+    paint: super::Paint,
+    tab: ConnTabId,
+    workspace: &crate::model::Workspace,
+) -> Vec<Action> {
+    let failed = matches!(
+        workspace.status,
+        SessionStatus::Disconnected(_) | SessionStatus::Cancelled
+    );
     egui::CentralPanel::default()
-        .frame(Frame::new().fill(fill))
+        .frame(Frame::new().fill(paint.palette.window))
         .show(ui, |ui| {
             if failed {
-                failure(app, ui, tab);
+                failure(ui, paint, tab, workspace)
             } else {
-                connecting(app, ui, tab);
+                connecting(ui, paint, tab, workspace)
             }
-        });
+        })
+        .inner
 }
 
 /// The steps of a connect, the one under way with its time, and, for a
 /// connect with nothing to lose, the button that gives up: in the middle
 /// of the tab, or in the terminal look from its top left.
-fn connecting(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+fn connecting(
+    ui: &mut egui::Ui,
+    paint: super::Paint,
+    tab: ConnTabId,
+    workspace: &crate::model::Workspace,
+) -> Vec<Action> {
     use tabletist_db::Driver;
-    let (locale, palette, look) = (app.locale, app.palette, app.look);
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
+    let super::Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let say = |text: &'static str| look.label(&gettext(locale, text));
     let spec = &workspace.spec;
     let (reach, target) = match spec.driver {
@@ -590,11 +611,13 @@ fn connecting(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         )
     };
     states::steps(ui, steps, &list, &look, &palette);
+    let mut actions = Vec::new();
     if let Some(cancel) = cancel
         && cancel.show_at(ui, button, &look, &palette).clicked()
     {
-        app.actions.push(Action::Disconnect(tab));
+        actions.push(Action::Disconnect(tab));
     }
+    actions
 }
 
 /// What a connect that failed says first and the sign beside it; `None`
@@ -647,12 +670,18 @@ fn failure_title(
 /// A connect that failed before the tab showed anything: what failed in
 /// plain words, the exact error under it, and the buttons, the one that
 /// fixes the cause first.
-fn failure(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+fn failure(
+    ui: &mut egui::Ui,
+    paint: super::Paint,
+    tab: ConnTabId,
+    workspace: &crate::model::Workspace,
+) -> Vec<Action> {
     use tabletist_db::Error;
-    let (locale, palette, look) = (app.locale, app.palette, app.look);
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
+    let super::Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let say = |text: &'static str| look.label(&gettext(locale, text));
     let error = match &workspace.status {
         SessionStatus::Disconnected(error) => Some(error),
@@ -754,12 +783,14 @@ fn failure(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             .layout(ui.ctx())
             .label(&mut ui);
     }
+    let mut actions = Vec::new();
     if retry {
-        app.actions.push(Action::Reconnect(tab));
+        actions.push(Action::Reconnect(tab));
     }
     if edit {
-        app.actions.push(Action::EditConnection(conn));
+        actions.push(Action::EditConnection(conn));
     }
+    actions
 }
 
 /// What the connection bar says: the open connections, and more about the
@@ -1192,31 +1223,39 @@ pub(super) fn database_menu(
 }
 
 /// The connection bar: the connection's environment colour behind the open
-/// connections, and the way out.
-fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+/// connections, and the way out. `info` is what it shows of the workspace,
+/// `env_bar` how the settings tint it, and `titlebar` the title bar's inset
+/// and height in window points. It takes the workspace's one-time ask for
+/// its own chip's menu, and returns its actions.
+fn top_bar(
+    ui: &mut egui::Ui,
+    paint: super::Paint,
+    tab: ConnTabId,
+    workspace: &mut crate::model::Workspace,
+    info: &BarInfo,
+    env_bar: crate::settings::EnvBar,
+    (inset, titlebar): (f32, f32),
+) -> Vec<Action> {
     // Quick open's Switch database asks for the chip's menu, as its key
     // does: the menu opens as the chip is drawn.
-    if let Some(workspace) = app.workspace_mut(tab)
-        && std::mem::take(&mut workspace.database_menu_asked)
-    {
+    if std::mem::take(&mut workspace.database_menu_asked) {
         egui::Popup::open_id(ui.ctx(), database_menu_id(tab, false));
     }
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
-    let Some(info) = bar_info(app, tab) else {
-        return;
-    };
+    let super::Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let platform = crate::env::Platform::of(&look);
     let env = crate::env::env_colors(info.env, platform, &palette);
     // The bar's fill and rule as the settings have them, and the lines
     // over it with them.
-    let env = env.on_bar(info.env, app.settings.env_bar, platform, &palette);
+    let env = env.on_bar(info.env, env_bar, platform, &palette);
     let (tint, border) = (env.bar_bg(), env.bar_border());
     // macOS: the bar is the title bar, beside the window buttons.
     let zoom = ui.ctx().zoom_factor();
-    let inset = app.titlebar.inset / zoom;
-    let height = top_bar_height(app, zoom);
+    let inset = inset / zoom;
+    let height = top_bar_height(&look, titlebar, zoom);
     let mut actions = Vec::new();
     egui::Panel::top(egui::Id::new(("workspace-top", tab.0)))
         .exact_size(height)
@@ -1234,7 +1273,7 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     ui,
                     tab,
                     rect,
-                    &info,
+                    info,
                     &env,
                     &look,
                     &palette,
@@ -1253,7 +1292,7 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     ui,
                     tab,
                     body,
-                    &info,
+                    info,
                     &env,
                     &look,
                     &palette,
@@ -1262,7 +1301,7 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 );
             }
         });
-    app.actions.extend(actions);
+    actions
 }
 
 /// macOS: the Connections button, a chip for each open connection (the
@@ -1987,15 +2026,45 @@ pub(super) fn drawable(
     marks.iter().copied().find(|mark| has(mark))
 }
 
-/// What editing adds to the line of the table the workspace of `tab`
-/// shows.
-fn editing_status(app: &App, tab: ConnTabId) -> Editing {
+/// What the line asks of the app about the table in front: what editing
+/// says of its new rows and of a save.
+#[derive(Default)]
+struct EditingAsked {
+    /// The columns its new rows still need a value in.
+    lacking: Vec<String>,
+    /// Why what is pending cannot be saved: asked only while anything is.
+    blocked: Option<crate::model::SaveBlock>,
+}
+
+/// What the line of the workspace of `tab` asks of the app about the
+/// table in front: nothing where none is.
+fn editing_asked(app: &App, tab: ConnTabId) -> EditingAsked {
+    let Some(object) = app
+        .workspace(tab)
+        .and_then(crate::model::Workspace::active_object_tab)
+    else {
+        return EditingAsked::default();
+    };
+    EditingAsked {
+        lacking: app.lacking(tab, object.id),
+        blocked: object
+            .edits
+            .pending()
+            .then(|| app.save_blocked(tab, object.id))
+            .flatten(),
+    }
+}
+
+/// What editing adds to the line of the table `workspace` shows, with
+/// what `asked` answers of its new rows and of a save.
+fn editing_status(
+    paint: super::Paint,
+    workspace: &crate::model::Workspace,
+    asked: EditingAsked,
+) -> Editing {
     use super::pending_bar::{block_text, counted, note_line, written_text};
     use crate::edit::Note;
-    let (palette, look, locale) = (&app.palette, &app.look, app.locale);
-    let Some(workspace) = app.workspace(tab) else {
-        return Editing::default();
-    };
+    let (palette, look, locale) = (&paint.palette, &paint.look, paint.locale);
     let Some(object) = workspace.active_object_tab() else {
         return Editing::default();
     };
@@ -2042,8 +2111,7 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
     // What a new row still needs, by its column: said while a value is
     // typed too.
     let needs = {
-        let lacking = app.lacking(tab, object.id);
-        match lacking.as_slice() {
+        match asked.lacking.as_slice() {
             [] => None,
             [one] => Some(format!("{one} {}", look.label(&say("required")))),
             more => Some(look.label(&format!("{} {}", more.len(), say("values required")))),
@@ -2053,10 +2121,8 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
     let back = palette.secondary;
     // Why what is pending cannot be saved, as the other looks say it on
     // their disabled Save. A save that is running is said by its tab.
-    let blocked = edits
-        .pending()
-        .then(|| app.save_blocked(tab, object.id))
-        .flatten()
+    let blocked = asked
+        .blocked
         .filter(|block| *block != crate::model::SaveBlock::Saving)
         .map(|block| match block {
             // What a new row still needs: in the danger tone, as the
@@ -2265,18 +2331,25 @@ fn command_id(tab: ConnTabId) -> egui::Id {
 /// The status line while the `:` prompt is open: the colon, the line being
 /// typed, and at the right what is pending. Enter runs the line; Esc, and
 /// the keyboard going anywhere else, close the prompt. It edits the
-/// prompt's text and takes its focus flag, and nothing else.
-fn command_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
-    let (palette, look, locale) = (app.palette, app.look, app.locale);
-    let editing = editing_status(app, tab);
-    let Some(workspace) = app.workspace_mut(tab) else {
-        return;
-    };
+/// prompt's text and takes its focus flag, and nothing else. `editing` is
+/// what the line says of the table in front; it returns its actions.
+fn command_line(
+    ui: &mut egui::Ui,
+    paint: super::Paint,
+    tab: ConnTabId,
+    workspace: &mut crate::model::Workspace,
+    editing: &Editing,
+) -> Vec<Action> {
+    let super::Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let focus = std::mem::take(&mut workspace.focus_command);
-    let Some(line) = workspace.command.as_mut() else {
-        return;
-    };
     let mut actions = Vec::new();
+    let Some(line) = workspace.command.as_mut() else {
+        return actions;
+    };
     egui::Panel::bottom(egui::Id::new(("status-line", tab.0)))
         .exact_size(STATUS_LINE)
         .resizable(false)
@@ -2347,20 +2420,119 @@ fn command_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 actions.push(Action::CloseCommand(tab));
             }
         });
-    app.actions.extend(actions);
+    actions
+}
+
+/// The terminal look's bottom line: the `:` prompt while it is open, and
+/// the status line else, each handed the workspace and what it asks of
+/// the app. The prompt edits its line in place.
+fn bottom_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    let paint = super::Paint::of(app);
+    let Some(workspace) = app.workspace(tab) else {
+        return;
+    };
+    if workspace.command.is_some() {
+        let editing = editing_status(paint, workspace, editing_asked(app, tab));
+        if let Some(workspace) = crate::app::workspace_in_mut(&mut app.tabs, tab) {
+            let asked = command_line(ui, paint, tab, workspace, &editing);
+            app.actions.extend(asked);
+        }
+        return;
+    }
+    if let Some(asked) = status_asked(app, tab) {
+        status_line(ui, paint, tab, workspace, &app.keymap, &app.settings, asked);
+    }
+}
+
+/// What the status line asks of the app.
+struct StatusAsked {
+    /// What the Agents tab says of agents here, while it is in front.
+    agents: Option<crate::model::AgentsHere>,
+    /// Whether the workspace's connection is still saved.
+    saved: bool,
+    /// Whether the workspace's agents list has sessions, elsewhere ones
+    /// too.
+    listed: bool,
+    /// Whether the call selected in the Agents tab's Log view was made on
+    /// a connection still saved.
+    call_saved: bool,
+    /// Whether the Structure view in front has anything to choose a label
+    /// from: not for a view, nor for a table of its key alone.
+    labels: bool,
+    /// What editing asks of the app about the table in front.
+    editing: EditingAsked,
+}
+
+/// What the status line of `tab` asks of the app: none where the
+/// workspace is gone.
+fn status_asked(app: &App, tab: ConnTabId) -> Option<StatusAsked> {
+    let workspace = app.workspace(tab)?;
+    let saved = |id: &crate::connections::ConnectionId| app.connections.get(id).is_some();
+    let call_saved = shown_log(workspace)
+        .and_then(|(_, call)| call?.entry.connection_id.clone())
+        .is_some_and(|id| saved(&crate::connections::ConnectionId(id)));
+    let labels = workspace
+        .active_object_tab()
+        .filter(|object| object.view == ObjectView::Structure)
+        .and_then(|object| app.structure_label(tab, object.id))
+        .is_some_and(|label| match label.source {
+            crate::labels::Source::Automatic | crate::labels::Source::User => true,
+            crate::labels::Source::KeysOnly => false,
+        });
+    Some(StatusAsked {
+        agents: workspace
+            .agents_in_front()
+            .then(|| app.agents_here(tab))
+            .flatten(),
+        saved: saved(&workspace.conn_id),
+        listed: !app.agents.listed(&workspace.conn_id).is_empty(),
+        call_saved,
+        labels,
+        editing: editing_asked(app, tab),
+    })
+}
+
+/// The Agents tab's log in `workspace`, while its Log view shows, and the
+/// call selected in it.
+fn shown_log(
+    workspace: &crate::model::Workspace,
+) -> Option<(&crate::model::AgentsLog, Option<&tabletist_mcp::Logged>)> {
+    workspace.tabs.iter().find_map(|open| match open {
+        crate::model::Tab::Agents(agents) if agents.view == crate::model::AgentsView::Log => {
+            let log = &agents.log;
+            let call = log
+                .selected
+                .and_then(|id| log.calls.iter().find(|logged| logged.id == id));
+            Some((log, call))
+        }
+        _ => None,
+    })
 }
 
 /// Omarchy's bottom line: the keys that work here, and the page's range
 /// or, on a SQL editor, the cursor and what the last run did. On a table it
 /// says what is pending too, and while a cell is edited it is the mode
 /// line: `-- INSERT --`, the column, the counts and the keys that leave.
-/// The `:` prompt takes the whole of it while it is open.
-fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
-    let palette = app.palette;
-    let look = app.look;
-    let locale = app.locale;
+/// The `:` prompt takes the whole of it while it is open (`command_line`).
+/// `asked` is what it asks of the app; `settings` say whether the editor
+/// keys are vim's, and how the columns in view are fitted.
+fn status_line(
+    ui: &mut egui::Ui,
+    paint: super::Paint,
+    tab: ConnTabId,
+    workspace: &crate::model::Workspace,
+    keymap: &crate::keymap::Keymap,
+    settings: &crate::settings::Settings,
+    asked: StatusAsked,
+) {
+    let super::Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let layout = paint.layout();
     // The line's keys, as the keymap writes them for the look.
-    let key = |command: Command| app.keymap.key(app.layout(), command);
+    let key = |command: Command| keymap.key(layout, command);
     let cancel_key = key(Command::CancelQuery);
     let (rows_key, cols_key) = (key(Command::MoveRow), key(Command::MoveColumn));
     let (inspect_key, edit_key) = (key(Command::OpenInspector), key(Command::EditCell));
@@ -2378,17 +2550,10 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         key(Command::StopAgentsHere),
     );
     // The Agents tab in front: its keys, by the state it shows.
-    let agents = app
-        .workspace(tab)
-        .filter(|workspace| workspace.agents_in_front())
-        .and_then(|_| app.agents_here(tab));
+    let agents = asked.agents;
     // The tab's own `l`, not the prompt's `:agents log`.
     let (agents_log_key, agents_scope_key, agents_filter_key) = (
-        app.keymap.key_in(
-            app.layout(),
-            Command::ShowAgentsLog,
-            crate::keymap::Scope::Agents,
-        ),
+        keymap.key_in(layout, Command::ShowAgentsLog, crate::keymap::Scope::Agents),
         key(Command::ToggleAgentsLogScope),
         key(Command::FilterAgentsLog),
     );
@@ -2400,44 +2565,22 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     // Its Log view, while it shows: whether every connection's, whether a
     // call is selected, and whether that call's statement opens (it has
     // one, on a connection still saved).
-    let agents_log = app.workspace(tab).and_then(|workspace| {
-        workspace.tabs.iter().find_map(|open| match open {
-            crate::model::Tab::Agents(agents) if agents.view == crate::model::AgentsView::Log => {
-                let log = &agents.log;
-                let call = log
-                    .selected
-                    .and_then(|id| log.calls.iter().find(|logged| logged.id == id));
-                let opens = call.is_some_and(|logged| {
-                    logged.entry.sql.is_some()
-                        && logged.entry.connection_id.as_ref().is_some_and(|id| {
-                            app.connections
-                                .get(&crate::connections::ConnectionId(id.clone()))
-                                .is_some()
-                        })
-                });
-                Some((log.all, call.is_some(), opens, log.total > 0))
-            }
-            _ => None,
-        })
+    let agents_log = shown_log(workspace).map(|(log, call)| {
+        let opens = call.is_some_and(|logged| logged.entry.sql.is_some() && asked.call_saved);
+        (log.all, call.is_some(), opens, log.total > 0)
     });
     // Whether its connection is saved: one saved no more has nothing to
     // allow.
-    let agents_saved = app
-        .workspace(tab)
-        .is_some_and(|workspace| app.connections.get(&workspace.conn_id).is_some());
+    let agents_saved = asked.saved;
     // Whether its list has sessions, elsewhere ones too.
-    let agents_listed = app
-        .workspace(tab)
-        .is_some_and(|workspace| !app.agents.listed(&workspace.conn_id).is_empty());
+    let agents_listed = asked.listed;
     let (run_key, run_all_key) = (key(Command::RunStatement), key(Command::RunAll));
     let (leave_key, complete_key) = (key(Command::LeaveEditor), key(Command::InsertCompletion));
     let (keep_key, next_key) = (key(Command::KeepEdit), key(Command::CommitNext));
     let (visual_delete_key, leave_visual_key) =
         (key(Command::DeleteSelection), key(Command::LeaveVisual));
     // The keys of a foreign key's list, while one is open under the field.
-    let pick_keys = app
-        .keymap
-        .together(app.layout(), &[Command::NextPick, Command::PreviousPick]);
+    let pick_keys = keymap.together(layout, &[Command::NextPick, Command::PreviousPick]);
     let (set_key, close_key) = (key(Command::CommitDown), key(Command::ClosePicker));
     // The keys of the chooser of that list's label, while it is open: the
     // pairs that move in it, each as one hint (`j/k`, `ctrl+n/p`). The
@@ -2446,30 +2589,23 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .filter_map(|nth| {
             let moves = (Command::NextLabel, Command::PreviousLabel);
             let scope = crate::keymap::Scope::Prompt;
-            app.keymap.pair(app.layout(), moves, scope, nth)
+            keymap.pair(layout, moves, scope, nth)
         })
         .collect();
     // The key that opens it from the list.
     let label_key = key(Command::ChangeLabelColumn);
     let (choose_key, back_key) = (key(Command::ChooseLabel), key(Command::CloseLabelChooser));
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
-    if workspace.command.is_some() {
-        command_line(app, ui, tab);
-        return;
-    }
     // No tab: the start screen's keys, and that no table is open.
     if workspace.active_tab.is_none() {
-        super::start::status_line(ui, super::Paint::of(app), tab, &app.keymap);
+        super::start::status_line(ui, paint, tab, keymap);
         return;
     }
     let read_only = workspace.access == tabletist_db::Access::ReadOnly;
-    let editor = super::sql_editor::status_summary(workspace, app.locale);
+    let editor = super::sql_editor::status_summary(workspace, locale);
     let on_editor = editor.is_some();
     // Vim's mode, where the editor has the keyboard: the line starts with
     // it, as vim's does, and out of normal mode Esc goes to normal mode.
-    let vim_mode = super::sql_editor::vim_mode(ui.ctx(), &app.look, tab, workspace, &app.settings);
+    let vim_mode = super::sql_editor::vim_mode(ui.ctx(), &look, tab, workspace, settings);
     let to_normal = vim_mode.is_some_and(|mode| mode != crate::vim::Mode::Normal);
     // The Structure view of the table in front shows: the line names
     // that view's keys in the rows' place. The keys that choose what
@@ -2478,12 +2614,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let structure = workspace
         .active_object_tab()
         .filter(|object| object.view == ObjectView::Structure);
-    let labels = structure
-        .and_then(|object| app.structure_label(tab, object.id))
-        .is_some_and(|label| match label.source {
-            crate::labels::Source::Automatic | crate::labels::Source::User => true,
-            crate::labels::Source::KeysOnly => false,
-        });
+    let labels = asked.labels;
     let (column_key, use_key) = (key(Command::MoveInStructure), key(Command::UseAsLabel));
     let (chooser_key, automatic_key) =
         (key(Command::OpenLabelChooser), key(Command::LabelAutomatic));
@@ -2497,8 +2628,8 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         key(Command::SelectDdlLines),
         key(Command::CopyDdl),
         key(Command::OpenDdlInEditor),
-        app.keymap.together(
-            app.layout(),
+        keymap.together(
+            layout,
             &[Command::NextDdlSection, Command::PreviousDdlSection],
         ),
         key(Command::ShowRows),
@@ -2552,7 +2683,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             // The columns in view first, while some are out of it.
             let columns = (object.view == ObjectView::Data)
                 .then(|| {
-                    let fit = super::data_view::Fit::of(workspace, &app.settings, app.layout());
+                    let fit = super::data_view::Fit::of(workspace, settings, layout);
                     super::data_view::columns_note(ui.ctx(), tab, object, fit, &look, locale)
                 })
                 .flatten();
@@ -2564,9 +2695,9 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .unwrap_or_default();
     // The History tab in front: what its selected entry offers, and what
     // its line says of a key that did nothing.
-    let history_line = app
-        .workspace(tab)
-        .filter(|workspace| workspace.history_in_front())
+    let history_line = workspace
+        .history_in_front()
+        .then_some(workspace)
         .and_then(crate::model::Workspace::history_tab)
         .map(|history| {
             let chosen = history.chosen().map(|row| {
@@ -2578,7 +2709,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             });
             (chosen, history.said.clone(), history.shown().count())
         });
-    let history_key = app.keymap.key(app.layout(), Command::History);
+    let history_key = keymap.key(layout, Command::History);
     let history_keys = [
         Command::MoveInHistory,
         Command::RunHistoryAgain,
@@ -2590,7 +2721,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         Command::ClearHistory,
         Command::CloseHistoryLine,
     ]
-    .map(|command| app.keymap.key(app.layout(), command));
+    .map(|command| keymap.key(layout, command));
     let history_words = [
         "move",
         "run again",
@@ -2603,7 +2734,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         "back",
     ]
     .map(|word| gettext(locale, word));
-    let mut editing = editing_status(app, tab);
+    let mut editing = editing_status(paint, workspace, asked.editing);
     // What was just done (a copy of the review's SQL), where the line has
     // nothing of a lock or of a save to say: this look floats no toast.
     if editing.said.is_none() {
@@ -3300,21 +3431,25 @@ fn tls_status(mode: TlsMode, encrypted: Option<bool>) -> (&'static str, bool) {
 /// The strip over a tab whose connection was lost: what happened, the way
 /// back (Reconnect) and the way out (Disconnect). What was on screen stays
 /// under it. While a reconnect is on its way the strip says so.
-fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
+fn banner(
+    ui: &mut egui::Ui,
+    paint: super::Paint,
+    tab: ConnTabId,
+    workspace: &crate::model::Workspace,
+) -> Vec<Action> {
+    let super::Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let say = |text: &'static str| look.label(&gettext(locale, text));
     let name = display_safe(&workspace.name).into_owned();
     // What happened, the plain sentence when it says more, the exact error.
     let (lead, sentence, raw, reconnecting) = match &workspace.status {
         // Closed on purpose: nothing went wrong, and the next use connects,
         // with no strip of its own.
-        SessionStatus::Connected | SessionStatus::Idle => return,
-        SessionStatus::Connecting { .. } if workspace.woken => return,
+        SessionStatus::Connected | SessionStatus::Idle => return Vec::new(),
+        SessionStatus::Connecting { .. } if workspace.woken => return Vec::new(),
         SessionStatus::Connecting { .. } => (
             format!("{} {name}…", say("Reconnecting to")),
             String::new(),
@@ -3421,12 +3556,14 @@ fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         strip.bottom() - 0.5,
         tone.line(&look, &palette),
     );
+    let mut actions = Vec::new();
     if reconnect {
-        app.actions.push(Action::Reconnect(tab));
+        actions.push(Action::Reconnect(tab));
     }
     if disconnect {
-        app.actions.push(Action::Disconnect(tab));
+        actions.push(Action::Disconnect(tab));
     }
+    actions
 }
 
 #[cfg(test)]

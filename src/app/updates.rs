@@ -843,7 +843,7 @@ mod tests {
     }
 
     fn latest(tag: &str) -> release::Latest {
-        serde_json::from_str(&crate::update::check::tests::RELEASE.replace("v0.4.0", tag)).unwrap()
+        serde_json::from_str(&crate::fixtures::RELEASE.replace("v0.4.0", tag)).unwrap()
     }
 
     fn answer(harness: &mut Harness, result: Result<release::Latest, Failed>) {
