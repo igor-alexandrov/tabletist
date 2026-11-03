@@ -59,9 +59,6 @@ pub fn row_name(how: CopyHow, row: bool, locale: crate::i18n::Locale) -> String 
     }
 }
 
-/// Draws the Copy as menu, reads its keys, and returns what it asks for.
-/// `size` is what it copies, in words ("4 rows × 2 columns"), for the
-/// terminal look's title.
 /// Reads the menu's keys, before anything else in the frame reads them: a
 /// field under it would take Enter. Returns what they ask for.
 pub fn keys(ctx: &egui::Context, paint: Paint, open: &CopyAsMenu) -> Vec<Action> {
