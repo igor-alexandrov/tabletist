@@ -3064,7 +3064,14 @@ fn status_line(
             };
             if on_editor {
                 // The toolbar says the transaction is read-only; the line
-                // has no editing keys to strike out.
+                // has no editing keys to strike out. What was just done (a
+                // copy of the result) is said at its end in place of the
+                // summary: this look floats no toast.
+                let (summary, summary_color) = match &editing.said {
+                    Some(said) => (said.text.clone(), said.color),
+                    None => (summary.clone(), palette.dim),
+                };
+                let summary_width = measure(&summary);
                 let mut left = rect.left() + 12.0;
                 if let Some(mode) =
                     vim_mode.and_then(|mode| mode.label().map(|label| (mode, label)))
@@ -3117,12 +3124,15 @@ fn status_line(
                     let at = (left, y);
                     widgets::key_hints(ui, at, &hints[..shown], gap, &look, &palette);
                 }
-                widgets::paint_text_right(
-                    ui,
-                    rect.right() - 12.0,
-                    y,
-                    Text::one(&look, role, &summary, palette.dim),
-                );
+                let text = Text::one(&look, role, &summary, summary_color);
+                let width = widgets::paint_text_right(ui, rect.right() - 12.0, y, text);
+                if editing.said.is_some() {
+                    let place = Rect::from_min_size(
+                        pos2(rect.right() - 12.0 - width, y - 8.0),
+                        vec2(width.max(1.0), 16.0),
+                    );
+                    widgets::announce(ui, place, &summary);
+                }
                 return;
             }
             let left = rect.left() + 12.0;

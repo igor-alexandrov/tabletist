@@ -245,6 +245,35 @@ fn a_results_selection_is_copied_into_result() {
     assert_eq!(sql.lines().count(), 3, "{sql}");
 }
 
+/// In the terminal look, a copy of a SQL result says what it copied on
+/// the status line, which floats no toast.
+#[test]
+fn a_results_copy_is_said_on_the_terminal_status_line() {
+    let mut harness = Harness::new();
+    harness.set_look(Look::omarchy());
+    let tab = harness.connect_fake();
+    super::tests::with_sql_result(&mut harness, tab, 3);
+    let tree = harness.settle();
+    let row = crate::testing::bounds(&tree, "Row 1", Role::Button).expect("Row 1");
+    let pos =
+        row.left_center() + egui::vec2(crate::ui::grid::gutter(&harness.app.look) + 10.0, 0.0);
+    let button = |pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    harness.frame(vec![egui::Event::PointerMoved(pos)]);
+    harness.frame(vec![button(true)]);
+    harness.frame(vec![button(false)]);
+    harness.settle();
+    gy(&mut harness);
+    assert!(menu_open(&harness), "{:?}", harness.app.dialog);
+    pick(&mut harness, Key::C, "c").expect("CSV");
+    let said = |(text, _): &(String, egui::Color32)| text.ends_with(" as csv");
+    assert!(harness.painted.iter().any(said), "{:?}", harness.painted);
+}
+
 /// Test 6: the row panel's Copy row ▾ copies the cursor's row, whole.
 #[test]
 fn the_row_panels_copy_row_copies_the_row_in_a_format() {

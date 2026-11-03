@@ -205,8 +205,10 @@ Markdown or SQL INSERT, or only the names of its columns, ready for a
 pick with one letter: `C`, `T`, `J`, `M`, `S` or `N`. A right-click on a
 cell offers it too, as does **Copy row ▾** at the top of the row panel for
 its row. With no range selected it copies the cursor's row. Values are
-written as the database holds them, never as the grid formats them, and
-SQL INSERT writes into the table, or into `result` for a SQL result. The
+written as the database holds them, never as the grid formats them. A
+change not yet saved is copied as it now reads, and SQL INSERT writes a
+pending DEFAULT, or a new row's unset value, as a save would. SQL INSERT
+writes into the table, or into `result` for a SQL result. The
 toast says what was copied: "Copied 4 rows × 2 columns as Markdown".
 
 The clipboard takes up to 10,000 rows and 20 MB. A larger selection is not
