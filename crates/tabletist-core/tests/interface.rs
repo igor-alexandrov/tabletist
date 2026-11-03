@@ -60,18 +60,32 @@ fn sources() -> Vec<(String, String)> {
 }
 
 /// The names of the packages `manifest` depends on, in every table of
-/// dependencies: `[dependencies]`, `[dev-dependencies]`, a target's.
+/// dependencies: `[dependencies]`, `[dev-dependencies]`,
+/// `[build-dependencies]`, a target's. Read as TOML, so a dependency
+/// written as a table of its own (`[dependencies.eframe]`) or as a dotted
+/// key (`eframe.workspace = true`) is found, and a rename gives both its
+/// name and the package it renames (`package = "eframe"`).
 fn dependencies(manifest: &str) -> Vec<String> {
+    const TABLES: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
+    let manifest: toml::Table = toml::from_str(manifest).expect("Cargo.toml parses");
+    let mut tables: Vec<&toml::Table> = TABLES
+        .iter()
+        .filter_map(|name| manifest.get(*name)?.as_table())
+        .collect();
+    if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
+        for target in targets.values().filter_map(toml::Value::as_table) {
+            tables.extend(
+                TABLES
+                    .iter()
+                    .filter_map(|name| target.get(*name)?.as_table()),
+            );
+        }
+    }
     let mut found = Vec::new();
-    let mut inside = false;
-    for line in manifest.lines().map(str::trim) {
-        if line.starts_with('[') {
-            inside = line.trim_end_matches(']').ends_with("dependencies");
-        } else if inside
-            && !line.starts_with('#')
-            && let Some((name, _)) = line.split_once('=')
-        {
-            found.push(name.trim().to_owned());
+    for (name, spec) in tables.into_iter().flatten() {
+        found.push(name.clone());
+        if let Some(package) = spec.get("package").and_then(toml::Value::as_str) {
+            found.push(package.to_owned());
         }
     }
     found
@@ -130,8 +144,26 @@ fn the_search_finds_what_draws() {
         assert!(drawing(line).is_empty(), "{line}");
     }
     let manifest = "[dependencies]\negui = \"0.36\"\n# eframe = \"0.36\"\n\
-        [target.'cfg(windows)'.dependencies]\nwinit = \"0.30\"\n[features]\neframe = []\n";
-    assert_eq!(dependencies(manifest), ["egui", "winit"]);
+        glow.workspace = true\nwindow = { package = \"egui-winit\", version = \"0.36\" }\n\
+        [dependencies.egui_extras]\nversion = \"0.36\"\n\
+        [target.'cfg(windows)'.dependencies]\nwinit = \"0.30\"\n\
+        [target.'cfg(unix)'.dev-dependencies.eframe]\nversion = \"0.36\"\n\
+        [build-dependencies]\ncc = \"1\"\n[features]\nfastframe-text = []\n";
+    let mut named = dependencies(manifest);
+    named.sort();
+    assert_eq!(
+        named,
+        [
+            "cc",
+            "eframe",
+            "egui",
+            "egui-winit",
+            "egui_extras",
+            "glow",
+            "window",
+            "winit"
+        ]
+    );
 }
 
 #[test]
