@@ -3371,8 +3371,9 @@ fn letters(
                 let pick = crate::model::CopyPick::Selection;
                 actions.push(Action::OpenCopyAs { tab, pick });
             }
-            // Copy row as, from a field of the row panel.
-            (Some(Command::CopyRowAs), Some(_)) if rows_show && selection.is_some() => {
+            // Copy row as, from a field of the row panel: not of a new
+            // row, as the macOS look's Copy row ▾ hides there.
+            (Some(Command::CopyRowAs), Some(_)) if rows_show && selection.is_some() && !on_new => {
                 let pick = crate::model::CopyPick::CursorRow;
                 actions.push(Action::OpenCopyAs { tab, pick });
             }

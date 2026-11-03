@@ -435,6 +435,20 @@ fn copy_as_on_a_new_row_copies_it() {
     );
 }
 
+/// Test 6: `gy` in the row panel of a new row opens nothing, as the macOS
+/// look's Copy row ▾ is not drawn there: its TSV would copy nothing.
+#[test]
+fn gy_in_the_row_panel_of_a_new_row_opens_nothing() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    let new = crate::edit::new_row(super::insert_audit_tests::add(&mut harness, tab, id));
+    super::insert_audit_tests::set(&mut harness, tab, id, (new, 2), "audio");
+    select(&mut harness, tab, id, (new, 2));
+    harness.press(Key::L, Modifiers::CTRL);
+    assert!(crate::ui::row_panel::focused_field(&harness.ctx, tab, id, 5).is_some());
+    gy(&mut harness);
+    assert!(!menu_open(&harness), "{:?}", harness.app.dialog);
+}
+
 /// Test 6: `gy` in the row panel opens the float on its row: titled for
 /// it, five rows, its TSV as Mod+Shift+C's.
 #[test]
