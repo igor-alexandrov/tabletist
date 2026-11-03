@@ -56,7 +56,7 @@ pub use script::{
 };
 pub use spec::{ConnectSpec, Driver, ParsedUrl, Secrets, SshAuth, SshSpec, TlsMode};
 pub use ssh::HostKeys;
-pub use value::{ColumnMeta, Value, ValueKind, value_from_pg_text};
+pub use value::{ColumnMeta, Value, ValueKind, is_plain_number, value_from_pg_text};
 pub use write::{
     CellChange, ChangeSet, Conflict, InsertValue, MAX_RUN, NewValue, RowChange, RowDelete,
     RowInsert, WriteOutcome, delete_runs,

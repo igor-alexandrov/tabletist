@@ -264,6 +264,9 @@ pub enum StateFile {
     /// How each connection lists its tables where its user chose, by id:
     /// a list's name, or a value a newer version wrote, kept as it was.
     TableLists(std::collections::BTreeMap<String, serde_json::Value>),
+    /// The options last chosen for each format of an export, by the
+    /// format's key (`export::Options::to_file`).
+    ExportOptions(std::collections::BTreeMap<String, serde_json::Value>),
     /// The connection tabs open, and each connection's tables.
     Session(crate::session::Session),
     /// What was opened lately on each connection.
@@ -289,6 +292,7 @@ impl StateFile {
             Self::Labels(labels) => labels.save(path),
             Self::AgentsShown(shown) => shown.save(path),
             Self::TableLists(lists) => crate::util::save_json(path, lists),
+            Self::ExportOptions(options) => crate::util::save_json(path, options),
             Self::Session(session) => session.save(path),
             Self::Recents(recents) => recents.save(path),
             Self::Updates(seen) => crate::util::save_json(path, seen),
@@ -4839,6 +4843,24 @@ mod tests {
             crate::settings::Settings::from_toml(&text).settings,
             settings
         );
+    }
+
+    #[test]
+    fn export_options_are_saved_as_a_state_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("export_options.json");
+        let mut options = crate::export::Options::default();
+        options.md.long_values = crate::export::LongValues::Cut;
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        backend.send(Command::Save {
+            path: path.clone(),
+            file: StateFile::ExportOptions(options.to_file()),
+        });
+        match backend.wait(WAIT) {
+            Some(Event::Saved { result: Ok(()), .. }) => {}
+            other => panic!("expected the save to be written, got {other:?}"),
+        }
+        assert_eq!(crate::export::Options::load(&path), options);
     }
 
     #[test]

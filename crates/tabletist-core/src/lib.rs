@@ -14,6 +14,7 @@ pub mod desktop_theme;
 pub mod edit;
 pub mod endpoint;
 pub mod env;
+pub mod export;
 #[cfg(any(test, feature = "testing"))]
 pub mod fixtures;
 pub mod font_files;

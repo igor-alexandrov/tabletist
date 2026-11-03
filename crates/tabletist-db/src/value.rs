@@ -120,6 +120,43 @@ fn decode_bytea(text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+/// Whether `text` is a number as JSON and SQL both write one: an optional
+/// minus, digits with no leading zero, a fraction and an exponent.
+/// `NaN`, `Infinity` and `$1.00` are not.
+pub fn is_plain_number(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut at = usize::from(bytes.first() == Some(&b'-'));
+    let digits = |at: &mut usize| {
+        let start = *at;
+        while bytes.get(*at).is_some_and(u8::is_ascii_digit) {
+            *at += 1;
+        }
+        *at - start
+    };
+    let whole = at;
+    match digits(&mut at) {
+        0 => return false,
+        many if many > 1 && bytes[whole] == b'0' => return false,
+        _ => {}
+    }
+    if bytes.get(at) == Some(&b'.') {
+        at += 1;
+        if digits(&mut at) == 0 {
+            return false;
+        }
+    }
+    if matches!(bytes.get(at), Some(b'e' | b'E')) {
+        at += 1;
+        if matches!(bytes.get(at), Some(b'+' | b'-')) {
+            at += 1;
+        }
+        if digits(&mut at) == 0 {
+            return false;
+        }
+    }
+    at == bytes.len()
+}
+
 /// A result column.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ColumnMeta {
@@ -133,6 +170,25 @@ pub struct ColumnMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_numbers_are_told_from_other_text() {
+        for number in [
+            "0",
+            "-1",
+            "12.50",
+            "1e9",
+            "-0.5E-3",
+            "123456789012345678901234567890",
+        ] {
+            assert!(is_plain_number(number), "{number}");
+        }
+        for text in [
+            "", "-", "01", "1.", ".5", "1e", "NaN", "Infinity", "$1.00", "1 ", "+1",
+        ] {
+            assert!(!is_plain_number(text), "{text}");
+        }
+    }
 
     #[test]
     fn sqlite_declared_types_map_to_kinds() {

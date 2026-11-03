@@ -152,6 +152,9 @@ pub struct App {
     /// id, as the file had them: a newer version may have written them,
     /// and they are written back with the others.
     table_lists_unread: std::collections::BTreeMap<String, serde_json::Value>,
+    /// The options last chosen for each format of an export and of Copy
+    /// as, from export_options.json.
+    pub export: crate::export::Options,
     /// What was open at the last quit, and each connection's tables as
     /// its window last had them, from session.json.
     pub session: crate::session::Session,
@@ -386,6 +389,7 @@ impl App {
         };
         let (table_lists, table_lists_unread) = load_table_lists(&dirs.table_lists_file());
         let session = crate::session::Session::load(&dirs.session_file());
+        let export = crate::export::Options::load(&dirs.export_options_file());
         let recents = crate::recents::Recents::load(&dirs.recents_file());
         let updates = crate::update::Updates {
             seen: crate::update::Seen::load(&dirs.updates_file()),
@@ -420,6 +424,7 @@ impl App {
             labels,
             table_lists,
             table_lists_unread,
+            export,
             session,
             writes_session,
             recents,
@@ -5033,6 +5038,14 @@ impl App {
         self.backend.send(Command::Save {
             path: self.dirs.table_lists_file(),
             file: StateFile::TableLists(lists),
+        });
+    }
+
+    /// Saves the options last chosen for each format, on the backend.
+    pub fn save_export_options(&mut self) {
+        self.backend.send(Command::Save {
+            path: self.dirs.export_options_file(),
+            file: StateFile::ExportOptions(self.export.to_file()),
         });
     }
 

@@ -545,6 +545,61 @@ impl Dialect {
         self.placeholder().to_owned()
     }
 
+    /// A loaded value as a literal of this dialect, for an `INSERT` a
+    /// person copies or exports: what a save would write for it. A
+    /// numeric column's text that reads as a number (PostgreSQL's
+    /// `numeric`, MySQL's `DECIMAL`) is written bare, every digit kept.
+    pub fn value_literal(self, value: &Value, kind: crate::ValueKind) -> String {
+        let operand = match (self, value) {
+            (_, Value::Null) => Operand::Null,
+            (_, Value::Int(number)) => Operand::Int(*number),
+            (Self::Sqlite, Value::Bool(flag)) => Operand::Int(i64::from(*flag)),
+            (Self::Postgres | Self::MySql, Value::Bool(flag)) => {
+                Operand::Raw(if *flag { "TRUE" } else { "FALSE" }.to_owned())
+            }
+            // PostgreSQL reads its words for the numbers no digits write.
+            (Self::Postgres, Value::Float(number)) if !number.is_finite() => {
+                let word = match number {
+                    number if number.is_nan() => "NaN",
+                    number if number.is_sign_positive() => "Infinity",
+                    _ => "-Infinity",
+                };
+                Operand::Text(word.to_owned())
+            }
+            // SQLite keeps a NaN as NULL, and MySQL keeps none.
+            (Self::Sqlite | Self::MySql, Value::Float(number)) if number.is_nan() => Operand::Null,
+            (_, Value::Float(number)) => Operand::Float(*number),
+            (_, Value::Text(text))
+                if kind == crate::ValueKind::Numeric && crate::value::is_plain_number(text) =>
+            {
+                Operand::Raw(text.to_string())
+            }
+            (_, Value::Text(text)) => Operand::Text(text.to_string()),
+            (_, Value::Bytes(bytes)) => Operand::Bytes(bytes.to_vec()),
+        };
+        self.shown(&operand)
+    }
+
+    /// What a save writes in place of a pending DEFAULT or the time of the
+    /// save, in a column of `type_name`: `DEFAULT` (on SQLite the column's
+    /// default, or NULL), or the dialect's clock. `None` for a value.
+    pub fn pending_literal(self, new: &NewValue, type_name: &str) -> Option<String> {
+        let operand = match new {
+            NewValue::Null | NewValue::Text(_) => return None,
+            // As `new_operand` writes it: SQLite has no DEFAULT among VALUES.
+            NewValue::Default { expression } => Operand::Raw(match (self, expression) {
+                (Self::Postgres | Self::MySql, _) => "DEFAULT".to_owned(),
+                (Self::Sqlite, Some(expression)) => format!("({expression})"),
+                (Self::Sqlite, None) => "NULL".to_owned(),
+            }),
+            NewValue::Now => {
+                let kind = temporal(type_name).unwrap_or(Temporal::Timestamp);
+                Operand::Raw(self.now(kind).to_owned())
+            }
+        };
+        Some(self.shown(&operand))
+    }
+
     /// A key's loaded value as the operand that finds its row again.
     /// PostgreSQL converts a literal to the column's type, so everything
     /// but a whole number goes as text there.
@@ -1197,6 +1252,74 @@ mod tests {
         CellChange, Filter, FilterOp, InsertValue, NewValue, ObjectRef, RowChange, RowQuery, Sort,
         SortDir, Value,
     };
+
+    #[test]
+    fn a_pending_default_or_now_is_what_a_save_sends() {
+        let default = NewValue::Default {
+            expression: Some("'print'".into()),
+        };
+        let pg = Dialect::Postgres;
+        assert_eq!(
+            pg.pending_literal(&default, "text").as_deref(),
+            Some("DEFAULT")
+        );
+        assert_eq!(
+            Dialect::Sqlite.pending_literal(&default, "TEXT").as_deref(),
+            Some("('print')")
+        );
+        assert_eq!(
+            pg.pending_literal(&NewValue::Now, "timestamptz").as_deref(),
+            Some("now()")
+        );
+        assert_eq!(
+            pg.pending_literal(&NewValue::Now, "date").as_deref(),
+            Some("CURRENT_DATE")
+        );
+        assert_eq!(pg.pending_literal(&NewValue::Null, "text"), None);
+    }
+
+    #[test]
+    fn a_loaded_value_is_the_literal_a_save_would_write() {
+        use crate::ValueKind::{Numeric, Text};
+        let pg = Dialect::Postgres;
+        assert_eq!(pg.value_literal(&Value::Null, Text), "NULL");
+        assert_eq!(pg.value_literal(&Value::Bool(true), Text), "TRUE");
+        assert_eq!(Dialect::Sqlite.value_literal(&Value::Bool(true), Text), "1");
+        assert_eq!(pg.value_literal(&Value::Int(-4), Numeric), "-4");
+        assert_eq!(pg.value_literal(&Value::Float(4.5), Numeric), "4.5");
+        assert_eq!(pg.value_literal(&Value::Float(f64::NAN), Numeric), "'NaN'");
+        assert_eq!(
+            Dialect::Sqlite.value_literal(&Value::Float(f64::NAN), Numeric),
+            "NULL"
+        );
+        assert_eq!(
+            pg.value_literal(&Value::Text("12.50".into()), Numeric),
+            "12.50"
+        );
+        assert_eq!(
+            pg.value_literal(&Value::Text("$1.00".into()), Numeric),
+            "'$1.00'"
+        );
+        assert_eq!(
+            pg.value_literal(&Value::Text("12.50".into()), Text),
+            "'12.50'"
+        );
+        assert_eq!(
+            pg.value_literal(&Value::Text("it's".into()), Text),
+            "'it''s'"
+        );
+        assert_eq!(
+            pg.value_literal(&Value::Text("a\\b".into()), Text),
+            "E'a\\\\b'"
+        );
+        assert_eq!(
+            Dialect::MySql.value_literal(&Value::Text("a\\b".into()), Text),
+            "'a\\\\b'"
+        );
+        let bytes = Value::Bytes(vec![0x0a, 0xff].into());
+        assert_eq!(pg.value_literal(&bytes, Text), "E'\\\\x0aff'");
+        assert_eq!(Dialect::MySql.value_literal(&bytes, Text), "x'0aff'");
+    }
 
     fn query() -> RowQuery {
         RowQuery::new(ObjectRef::new("public", "users"), 300)

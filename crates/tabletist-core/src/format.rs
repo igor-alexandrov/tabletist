@@ -19,7 +19,7 @@ pub const COLLAPSE_CHARS: usize = 4_000;
 
 /// A float with an exponent where PostgreSQL writes one: plain digits
 /// would run to a line of zeros that says nothing of the number.
-fn float_text(number: f64) -> String {
+pub fn float_text(number: f64) -> String {
     let size = number.abs();
     if number.is_finite() && size != 0.0 && !(1e-4..1e15).contains(&size) {
         format!("{number:e}")

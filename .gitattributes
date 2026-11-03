@@ -3,3 +3,6 @@ tests/fixtures/update/** -text
 
 # Expected texts the DDL tests compare byte for byte: LF on every checkout.
 crates/tabletist-db/tests/ddl/*.sql text eol=lf
+
+# Expected texts of the export writers, byte for byte: CRLF and the BOM stay.
+crates/tabletist-core/src/export/golden/** -text
