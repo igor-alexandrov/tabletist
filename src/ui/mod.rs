@@ -27,6 +27,9 @@ mod comment_tests;
 mod complete_tests;
 pub mod conflict_prompt;
 pub mod connect_dialog;
+pub mod copy_as;
+#[cfg(test)]
+mod copy_as_tests;
 pub mod data_view;
 pub mod date_line;
 #[cfg(test)]
@@ -162,6 +165,19 @@ impl Paint {
 }
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
+    // What the app's last actions copied and said: the clipboard and the
+    // toast are the frame's.
+    if let Some(text) = app.to_clipboard.take() {
+        ui.ctx().copy_text(text);
+    }
+    if let Some(said) = app.said.take() {
+        toast::say(ui.ctx(), &said);
+    }
+    // The Copy as menu's keys, before any view reads them.
+    if let Some(Dialog::CopyAs(open)) = &app.dialog {
+        let asked = copy_as::keys(ui.ctx(), Paint::of(app), open);
+        app.actions.extend(asked);
+    }
     let fill = app.palette.window;
     egui::CentralPanel::default()
         .frame(Frame::new().fill(fill))
@@ -246,8 +262,26 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let asked = agent_access::show(&ui.ctx().clone(), paint, prompt, current);
         app.actions.extend(asked);
     }
+    if let Some(Dialog::CopyAs(open)) = &app.dialog {
+        let size = copy_as_size(app, open);
+        let asked = copy_as::show(&ui.ctx().clone(), paint, open, &size);
+        app.actions.extend(asked);
+    } else {
+        copy_as::fold(ui.ctx());
+    }
     // Last: it says what was done, whatever is on screen by now.
     toast::show(ui.ctx(), paint);
+}
+
+/// What the Copy as menu copies, in words: "4 rows × 2 columns".
+fn copy_as_size(app: &App, open: &crate::model::CopyAsMenu) -> String {
+    let how = crate::model::CopyHow::ColumnNames;
+    app.copy_in(open.tab, open.pick, how)
+        .map(|copying| {
+            let size = (copying.rows, copying.cols);
+            crate::selection::size_words(app.locale, size, copying.whole_rows)
+        })
+        .unwrap_or_default()
 }
 
 /// What quick open over `open.tab` asks of the app: none where that
@@ -8289,10 +8323,8 @@ value_tags   = true
         harness.copy(false);
         assert_eq!(harness.copied.as_deref(), Some("user5@example.com"));
         harness.copy(true);
-        assert_eq!(
-            harness.copied.as_deref(),
-            Some("5\tuser5@example.com\tNULL")
-        );
+        // TSV's NULL as: empty by default.
+        assert_eq!(harness.copied.as_deref(), Some("5\tuser5@example.com\t"));
     }
 
     #[test]

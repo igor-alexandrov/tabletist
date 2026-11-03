@@ -1317,19 +1317,30 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         // They come as the window's copy, which `presses` reads. A look
         // with no chord for them copies nothing here. A table's grid or a
         // result's.
+        // Copy as's chord too: it holds Alt with the copy.
         let scope = if grid { Scope::Grid } else { Scope::Results };
         let copied = ctx.input_mut(|input| {
-            [Command::CopyRow, Command::CopyCells]
+            [Command::CopyAs, Command::CopyRow, Command::CopyCells]
                 .into_iter()
                 .find(|command| {
                     asked(input, &app.keymap, layout, *command, scope, normal).count > 0
                 })
         });
-        let row = copied == Some(Command::CopyRow);
-        if copied.is_some()
-            && let Some(text) = app.copy_text(row)
-        {
-            ctx.copy_text(text);
+        match copied {
+            Some(Command::CopyAs) => {
+                let pick = crate::model::CopyPick::Selection;
+                let tab = app.active_tab_id();
+                actions.push(Action::OpenCopyAs { tab, pick });
+            }
+            Some(command) => {
+                let pick = if command == Command::CopyRow {
+                    crate::model::CopyPick::Rows
+                } else {
+                    crate::model::CopyPick::Selection
+                };
+                copy_plain(ctx, app, pick);
+            }
+            None => {}
         }
     }
     // The Settings window, wherever the keyboard is.
@@ -2108,6 +2119,22 @@ fn on_last_row(object: &ObjectTab) -> bool {
     let place = object.selection.and_then(|cell| order.place(cell.row));
     object.view == crate::model::ObjectView::Data
         && place.is_some_and(|place| place + 1 == order.len())
+}
+
+/// Copies `pick` of the grid in front as ⌘C does, saying nothing: past the
+/// clipboard's limits it copies nothing and says why.
+fn copy_plain(ctx: &egui::Context, app: &App, pick: crate::model::CopyPick) {
+    let how = crate::model::CopyHow::Plain;
+    let Some(copying) = app.copy(pick, how) else {
+        return;
+    };
+    match copying.copied {
+        crate::export::Copied::Text { text, .. } => ctx.copy_text(text),
+        _ => {
+            let said = crate::app::copy_said(app.locale, &copying, how);
+            crate::ui::toast::say(ctx, &said);
+        }
+    }
 }
 
 /// Whether a visual selection holds `command` back: what changes or
@@ -3177,10 +3204,23 @@ fn letters(
             // is the page's.
             (Some(Command::YankRow), Some(id)) if rows_show && !tree && selection.is_some() => {
                 actions.push(Action::YankRow { tab, id });
-                if let Some(text) = app.yank_text() {
-                    ctx.copy_text(text);
-                }
-                let said = crate::i18n::gettext(app.locale, "Row yanked");
+                let how = crate::model::CopyHow::Plain;
+                let yanked = app.copy(crate::model::CopyPick::CursorRow, how);
+                // Past the clipboard's limits it is yanked, and not put
+                // there: the toast says why.
+                let said = match yanked {
+                    Some(copying)
+                        if !matches!(copying.copied, crate::export::Copied::Text { .. }) =>
+                    {
+                        crate::app::copy_said(app.locale, &copying, how)
+                    }
+                    yanked => {
+                        if let Some(text) = yanked.and_then(crate::app::Copying::text) {
+                            ctx.copy_text(text);
+                        }
+                        crate::i18n::gettext(app.locale, "Row yanked").into_owned()
+                    }
+                };
                 crate::ui::toast::say(ctx, &app.look.label(&said));
             }
             // A copy of the yanked row below the cursor's, or above it
@@ -3321,12 +3361,20 @@ fn letters(
             // A visual selection's cells, of the rows or a result, and as
             // vim's `y` does the selection is left.
             (Some(Command::CopySelection), _) if active.is_none() || rows_show => {
-                if let Some(text) = app.copy_text(false) {
-                    ctx.copy_text(text);
-                }
+                copy_plain(ctx, app, crate::model::CopyPick::Selection);
                 if let Some(id) = active.or(sql_grid).filter(|_| visual) {
                     actions.push(Action::LeaveVisual { tab, id });
                 }
+            }
+            // Copy as, over the selection of the rows or a result.
+            (Some(Command::CopyAs), _) if active.is_none() || rows_show => {
+                let pick = crate::model::CopyPick::Selection;
+                actions.push(Action::OpenCopyAs { tab, pick });
+            }
+            // Copy row as, from a field of the row panel.
+            (Some(Command::CopyRowAs), Some(_)) if rows_show && selection.is_some() => {
+                let pick = crate::model::CopyPick::CursorRow;
+                actions.push(Action::OpenCopyAs { tab, pick });
             }
             // The whole statements, never the lines as the panel shows
             // them. The copy shows nowhere, so the status line says it.

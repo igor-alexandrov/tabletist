@@ -894,6 +894,45 @@ fn draw(
                         }
                     });
                 }
+                // Copy row ▾, left of them: the row in a format. A new row
+                // is no row of the page's to copy.
+                if fresh.is_none() {
+                    let text = format!("{} ▾", gettext(locale, "Copy row"));
+                    let button = widgets::ButtonSpec::new(&text).icon(Icon::Copy);
+                    let width = button.width(ui, &look);
+                    let at = Rect::from_min_size(pos2(right - width, y - 14.0), vec2(width, 28.0));
+                    let response = button.show_at(ui, at, &look, &palette);
+                    // As the board lists them: TSV first, as ⇧⌘C copies it.
+                    let order = {
+                        use crate::export::Format;
+                        use crate::model::CopyHow::{As, Plain};
+                        [
+                            Plain,
+                            As(Format::Json),
+                            As(Format::Csv),
+                            As(Format::Markdown),
+                            As(Format::SqlInsert),
+                        ]
+                    };
+                    let rows = || {
+                        order
+                            .iter()
+                            .map(|how| crate::ui::menu::Choice {
+                                text: crate::ui::copy_as::row_name(*how, true, locale),
+                                name: None,
+                                selected: false,
+                                disabled: None,
+                            })
+                            .collect()
+                    };
+                    if let Some(picked) =
+                        crate::ui::menu::actions(&response, 0.0, &look, &palette, rows)
+                    {
+                        let pick = crate::model::CopyPick::CursorRow;
+                        let how = order[picked];
+                        actions.push(Action::CopyAs { tab, pick, how });
+                    }
+                }
             }
             // A row no field of which can be edited says why, once, in a
             // line under the header: a lock, and the reason.

@@ -2605,6 +2605,7 @@ fn status_line(
     let (visual_delete_key, leave_visual_key) =
         (key(Command::DeleteSelection), key(Command::LeaveVisual));
     let visual_copy_key = key(Command::CopySelection);
+    let copy_as_key = key(Command::CopyAs);
     // The keys of a foreign key's list, while one is open under the field.
     let pick_keys = keymap.together(layout, &[Command::NextPick, Command::PreviousPick]);
     let (set_key, close_key) = (key(Command::CommitDown), key(Command::ClosePicker));
@@ -2808,6 +2809,7 @@ fn status_line(
                 (&filter_key, "filter", true),
                 (&sidebar_key, "tables", true),
                 (&copy_key, "copy", true),
+                (&copy_as_key, "copy as", true),
             ]);
             // The prompt's line that saves, where a save can be made.
             let write = gettext(locale, "write");
@@ -3085,12 +3087,17 @@ fn status_line(
                     left += widgets::paint_label(ui, left, y, mode) + gap;
                     let text = Text::one(&look, role, held, palette.secondary);
                     left += widgets::paint_label(ui, left, y, text) + gap;
-                    let (copies, normal) = (gettext(locale, "copy"), gettext(locale, "normal"));
+                    let (copies, normal) = (gettext(locale, "copy tsv"), gettext(locale, "normal"));
+                    let copies_as = gettext(locale, "copy as");
                     let keys = || {
                         Text::new(&look)
                             .add(role, &visual_copy_key, palette.text)
                             .space(role, " ")
                             .add(role, &copies, palette.dim)
+                            .add(role, " · ", palette.dim)
+                            .add(role, &copy_as_key, palette.text)
+                            .space(role, " ")
+                            .add(role, &copies_as, palette.dim)
                             .add(role, " · ", palette.dim)
                             .add(role, &leave_visual_key, palette.text)
                             .space(role, " ")
@@ -3151,16 +3158,26 @@ fn status_line(
                 let (act_key, acts) = if rows {
                     (&visual_delete_key, gettext(locale, "delete"))
                 } else {
-                    (&visual_copy_key, gettext(locale, "copy"))
+                    (&visual_copy_key, gettext(locale, "copy tsv"))
                 };
                 let normal = gettext(locale, "normal");
+                let copies_as = gettext(locale, "copy as");
                 let keys = || {
-                    Text::new(&look)
+                    let keys = Text::new(&look)
                         .add(role, act_key, palette.text)
                         .space(role, " ")
                         .add(role, &acts, palette.dim)
-                        .add(role, " · ", palette.dim)
-                        .add(role, &leave_visual_key, palette.text)
+                        .add(role, " · ", palette.dim);
+                    // A block's cells are copied in a format too.
+                    let keys = if rows {
+                        keys
+                    } else {
+                        keys.add(role, &copy_as_key, palette.text)
+                            .space(role, " ")
+                            .add(role, &copies_as, palette.dim)
+                            .add(role, " · ", palette.dim)
+                    };
+                    keys.add(role, &leave_visual_key, palette.text)
                         .space(role, " ")
                         .add(role, &normal, palette.dim)
                 };

@@ -1846,6 +1846,8 @@ pub fn show(
         // grid of the fit before kept goes when this one is drawn.
         let id = grid_id(tab, object_tab, fit);
         grid::keep(ui.ctx(), table_id(tab, object_tab), id);
+        // A secondary click's menu: Copy, Copy as ›, Copy rows as TSV.
+        let menu_rows = |ui: &mut egui::Ui| crate::ui::copy_as::context_rows(ui, paint);
         let output = grid::show(
             ui,
             id,
@@ -1855,6 +1857,7 @@ pub fn show(
             grid::Picked {
                 block,
                 said: said.as_deref(),
+                menu: Some(grid::Menu(&menu_rows)),
             },
             keys,
             &palette,
@@ -2027,6 +2030,13 @@ pub fn show(
         // A drag over the cells: the range runs to the one under it.
         if let Some(cell) = output.dragged.and_then(held) {
             actions.push(Action::ExtendTo { tab, id, cell });
+        }
+        // A secondary click outside the selection selects its cell.
+        if let Some(cell) = output.context_clicked.and_then(held) {
+            actions.push(Action::SelectCell { tab, id, cell });
+        }
+        if let Some(chosen) = output.chosen {
+            actions.push(chosen.action(tab));
         }
         if let Some((place, click)) = output.row_clicked
             && let Some(row) = order.row(place)

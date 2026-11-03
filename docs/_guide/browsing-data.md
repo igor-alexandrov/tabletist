@@ -192,7 +192,23 @@ selected the same way.
 On macOS and Windows, Cmd/Ctrl+C copies the selection with tabs between
 the values and a line for each row (the selected cell alone, without a
 selection), and Cmd/Ctrl+Shift+C its rows whole. In the Omarchy look `y`
-copies the selection, so `v` then `y` copies the cell.
+copies the selection, so `v` then `y` copies the cell, and `yy` copies the
+cursor's row. A tab, a line break, a carriage return or a backslash inside
+a value is written as `\t`, `\n`, `\r` or `\\`, a NULL is left empty, and
+binary values are written in hex (`0x…`).
+
+**Copy as** copies the selection in another format: CSV, TSV, JSON,
+Markdown or SQL INSERT, or only the names of its columns, ready for a
+`SELECT` list. Open it with Cmd/Ctrl+Alt+C (`gy` in the Omarchy look) and
+pick with one letter: `C`, `T`, `J`, `M`, `S` or `N`. A right-click on a
+cell offers it too, as does **Copy row ▾** at the top of the row panel for
+its row. With no range selected it copies the cursor's row. Values are
+written as the database holds them, never as the grid formats them, and
+SQL INSERT writes into the table, or into `result` for a SQL result. The
+toast says what was copied: "Copied 4 rows × 2 columns as Markdown".
+
+The clipboard takes up to 10,000 rows and 20 MB. A larger selection is not
+copied, and the toast says so. Copying records nothing in the history.
 
 ## Next
 

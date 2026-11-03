@@ -1990,6 +1990,13 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         Some(crate::selection::said(locale, size, whole_rows))
     });
     // The grid asks for the cells in view only.
+    // A secondary click's menu: Copy, Copy as ›, Copy rows as TSV.
+    let paint = crate::ui::Paint {
+        locale,
+        palette: *palette,
+        look: *look,
+    };
+    let menu_rows = |ui: &mut egui::Ui| crate::ui::copy_as::context_rows(ui, paint);
     let output = grid::show(
         &mut child,
         id,
@@ -1999,6 +2006,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         grid::Picked {
             block,
             said: said.as_deref(),
+            menu: Some(grid::Menu(&menu_rows)),
         },
         keys,
         palette,
@@ -2043,6 +2051,14 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
     if let Some(cell) = output.dragged {
         let id = sql.id;
         actions.push(Action::ExtendTo { tab, id, cell });
+    }
+    // A secondary click outside the selection selects its cell.
+    if let Some(cell) = output.context_clicked {
+        let id = sql.id;
+        actions.push(Action::SelectCell { tab, id, cell });
+    }
+    if let Some(chosen) = output.chosen {
+        actions.push(chosen.action(tab));
     }
     if let Some((row, click)) = output.row_clicked {
         let id = sql.id;

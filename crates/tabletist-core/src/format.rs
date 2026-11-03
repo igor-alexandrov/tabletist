@@ -959,23 +959,6 @@ pub fn refuses_writes(error: &tabletist_db::Error, driver: tabletist_db::Driver)
     }
 }
 
-/// A row as tab-separated values on one line.
-pub fn tsv_row(row: &[Value]) -> String {
-    tsv_cells(row.iter().cloned().map(Some))
-}
-
-/// Cells as one line of TSV, as [`tsv_row`] writes them: a cell with no
-/// value (a new row's that nothing is set in) is empty.
-pub fn tsv_cells(cells: impl Iterator<Item = Option<Value>>) -> String {
-    cells
-        .map(|value| {
-            let text = value.map_or_else(String::new, |value| plain_text(&value));
-            text.replace(['\t', '\n', '\r'], " ")
-        })
-        .collect::<Vec<_>>()
-        .join("\t")
-}
-
 pub fn elapsed(duration: Duration) -> String {
     if duration < Duration::from_secs(1) {
         format!("{} ms", duration.as_millis())
@@ -1397,7 +1380,6 @@ mod tests {
         assert_eq!(cell_text(&key), uuid);
         assert_eq!(plain_text(&key), uuid);
         assert_eq!(full_text(&key), uuid);
-        assert_eq!(tsv_row(&[Value::Int(1), key]), format!("1\t{uuid}"));
         // Any other length stays a blob.
         for len in [15, 17] {
             let blob = Value::Bytes(vec![0xab; len].into());
@@ -1546,12 +1528,6 @@ mod tests {
     }
 
     #[test]
-    fn tsv_rows_keep_one_line_per_row() {
-        let row = vec![Value::Int(1), text("a\tb\nc"), Value::Null];
-        assert_eq!(tsv_row(&row), "1\ta b c\tNULL");
-    }
-
-    #[test]
     fn elapsed_times_read_naturally() {
         assert_eq!(elapsed(Duration::from_millis(84)), "84 ms");
         assert_eq!(elapsed(Duration::from_millis(1234)), "1.2 s");
@@ -1670,7 +1646,6 @@ mod tests {
     fn copying_keeps_hidden_characters() {
         let value = text("users_\u{202E}atad");
         assert_eq!(plain_text(&value), "users_\u{202E}atad");
-        assert_eq!(tsv_row(&[value]), "users_\u{202E}atad");
     }
 
     #[test]
