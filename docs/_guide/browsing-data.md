@@ -193,9 +193,11 @@ On macOS and Windows, Cmd/Ctrl+C copies the selection with tabs between
 the values and a line for each row (the selected cell alone, without a
 selection), and Cmd/Ctrl+Shift+C its rows whole. In the Omarchy look `y`
 copies the selection, so `v` then `y` copies the cell, and `yy` copies the
-cursor's row. A tab, a line break, a carriage return or a backslash inside
-a value is written as `\t`, `\n`, `\r` or `\\`, a NULL is left empty, and
-binary values are written in hex (`0x…`).
+cursor's row. One cell alone is copied as it is: its tabs and line breaks
+kept, a NULL as `NULL`, and a 16-byte value as the UUID the grid shows.
+Anything more, rows or a range, is written with a tab, a line break, a
+carriage return or a backslash inside a value as `\t`, `\n`, `\r` or
+`\\`, a NULL left empty, and binary values in hex (`0x…`).
 
 **Copy as** copies the selection in another format: CSV, TSV, JSON,
 Markdown or SQL INSERT, or only the names of its columns, ready for a

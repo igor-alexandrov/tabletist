@@ -8697,14 +8697,21 @@ fn copying(
     // One cell, alone or held by `v`: its text as it is, tabs and lines in
     // it kept.
     let one = selected.size(width).is_none_or(|size| size == (1, 1));
+    // A new row's cell nothing is set in is a NULL, and past the
+    // clipboard's limit nothing is copied.
     if how == How::Plain && pick == Pick::Selection && one {
-        let value = value(cursor.row, cursor.col).value?;
-        let text = crate::format::plain_text(&value);
-        return Some(Copying {
-            copied: Copied::Text {
+        let value = value(cursor.row, cursor.col).value;
+        let text = crate::format::plain_text(&value.unwrap_or(tabletist_db::Value::Null));
+        let copied = if text.len() > crate::export::CLIPBOARD_BYTES {
+            Copied::TooLarge
+        } else {
+            Copied::Text {
                 text,
                 statements: 0,
-            },
+            }
+        };
+        return Some(Copying {
+            copied,
             rows: 1,
             cols: 1,
             whole_rows: false,

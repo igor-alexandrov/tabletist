@@ -355,6 +355,34 @@ fn more_than_twenty_megabytes_copy_nothing() {
     assert_eq!(said(&harness).as_deref(), Some(words));
 }
 
+/// Test 7: one cell over 20 MB is not copied either.
+#[test]
+fn one_cell_over_twenty_megabytes_copies_nothing() {
+    let mut page = crate::testing::book_covers_page(2);
+    page.rows[1][2] = Value::Text("w".repeat(crate::export::CLIPBOARD_BYTES + 1).into());
+    let (mut harness, tab, id) = covers_of(page);
+    select(&mut harness, tab, id, (1, 2));
+    harness.copied = None;
+    harness.copy(false);
+    assert_eq!(harness.copied, None);
+    let words = "That's over 20 MB. Export to a file?";
+    assert_eq!(said(&harness).as_deref(), Some(words));
+}
+
+/// Test 5: `v` then `y` on a new row's cell nothing is set in copies it
+/// as the NULL it is.
+#[test]
+fn v_y_on_an_unset_cell_of_a_new_row_copies_null() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    let new = crate::edit::new_row(super::insert_audit_tests::add(&mut harness, tab, id));
+    super::insert_audit_tests::set(&mut harness, tab, id, (new, 2), "audio");
+    select(&mut harness, tab, id, (new, 4));
+    type_key(&mut harness, Key::V, "v");
+    harness.copied = None;
+    type_key(&mut harness, Key::Y, "y");
+    assert_eq!(harness.copied.as_deref(), Some("NULL"));
+}
+
 /// Test 5: Mod+C and `y` write TSV with no header row, its NULL empty.
 #[test]
 fn the_copy_of_a_range_is_tsv_with_no_header() {
