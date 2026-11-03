@@ -805,19 +805,13 @@ fn draw(
                 let (title_line, sub_line) =
                     (line_of(ui, title_role, &look), line_of(ui, sub_role, &look));
                 let top = header.top() + (52.0 - title_line - sub_line) / 2.0;
-                widgets::paint_label(
-                    ui,
-                    header.left() + side,
-                    top + title_line / 2.0,
-                    Text::one(&look, title_role, &title, palette.text),
-                );
                 // Under it the table's name, or how much of the row is
                 // not saved yet, while anything is.
                 let changed = texts.map_or(0, |texts| texts.pending.iter().flatten().count());
-                let under = match changed {
+                let (under, under_color) = match changed {
                     // A new row is unsaved whole, whatever is set in it.
-                    _ if fresh.is_some() => Text::one(&look, sub_role, &not_saved, green.marker),
-                    0 => Text::one(&look, sub_role, &source.name, palette.dim),
+                    _ if fresh.is_some() => (not_saved.clone(), green.marker),
+                    0 => (source.name.clone(), palette.dim),
                     _ => {
                         let what = if changed == 1 {
                             "unsaved change"
@@ -825,9 +819,42 @@ fn draw(
                             "unsaved changes"
                         };
                         let said = format!("{changed} {}", gettext(locale, what));
-                        Text::one(&look, sub_role, &said, palette.warning)
+                        (said, palette.warning)
                     }
                 };
+                // Both lines end 8 before the buttons at the right: the
+                // three icons and, but over a new row, Copy row ▾. Where
+                // they do not fit beside its words, the button gives them
+                // up, its name kept; what still does not fit is cut, the
+                // title named whole.
+                let copy_text = format!("{} ▾", gettext(locale, "Copy row"));
+                let icons_left = header.right() - 8.0 - 3.0 * 34.0;
+                let room_beside = |button: Option<&widgets::ButtonSpec<'_>>| {
+                    let buttons_left = icons_left - button.map_or(0.0, |b| b.width(ui, &look));
+                    (buttons_left - 8.0 - header.left() - side).max(0.0)
+                };
+                let worded = widgets::ButtonSpec::new(&copy_text).icon(Icon::Copy);
+                let widest = title_role
+                    .width(ui.ctx(), look.faces, &title)
+                    .max(sub_role.width(ui.ctx(), look.faces, &under));
+                let copy_button = if widest <= room_beside(Some(&worded)) {
+                    worded
+                } else {
+                    widgets::ButtonSpec::new("▾")
+                        .icon(Icon::Copy)
+                        .label(&copy_text)
+                };
+                let room = room_beside(fresh.is_none().then_some(&copy_button));
+                let cut = |role: TextRole, text: &str| {
+                    let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
+                    crate::ui::grid::ellipsize(text, room, false, measure).into_owned()
+                };
+                let (x, y) = (header.left() + side, top + title_line / 2.0);
+                let shown = Text::one(&look, title_role, &cut(title_role, &title), palette.text);
+                let title_width = widgets::paint_text(ui, x, y, shown);
+                let place = Rect::from_min_size(pos2(x, y - 8.0), vec2(title_width.max(1.0), 16.0));
+                widgets::announce(ui, place, &title);
+                let under = Text::one(&look, sub_role, &cut(sub_role, &under), under_color);
                 let under_width = widgets::paint_text(
                     ui,
                     header.left() + side,
@@ -897,8 +924,7 @@ fn draw(
                 // Copy row ▾, left of them: the row in a format. A new row
                 // is no row of the page's to copy.
                 if fresh.is_none() {
-                    let text = format!("{} ▾", gettext(locale, "Copy row"));
-                    let button = widgets::ButtonSpec::new(&text).icon(Icon::Copy);
+                    let button = copy_button;
                     let width = button.width(ui, &look);
                     let at = Rect::from_min_size(pos2(right - width, y - 14.0), vec2(width, 28.0));
                     let response = button.show_at(ui, at, &look, &palette);

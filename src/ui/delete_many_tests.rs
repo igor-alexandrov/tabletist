@@ -610,7 +610,7 @@ fn a_visual_selection_shows_in_the_status_line_and_is_told() {
         |(text, color): &(String, egui::Color32)| text == "-- VISUAL LINE --" && *color == magenta;
     assert!(harness.painted.iter().any(mode), "{:?}", harness.painted);
     // Its keys, one piece, in place of the grid's.
-    assert!(painted(&harness, "d delete · esc normal"));
+    assert!(painted(&harness, "d delete · gy copy as · esc normal"));
     assert!(!painted(&harness, "dd delete"));
     harness.press(Key::Escape, Modifiers::NONE);
     assert!(!painted(&harness, "-- VISUAL LINE --"));
@@ -632,7 +632,7 @@ fn a_refused_delete_is_said_on_the_visual_line() {
     assert!(marked(&harness, tab, id).is_empty());
     assert!(painted(&harness, "-- VISUAL LINE --"));
     assert!(painted(&harness, "read-only connection"));
-    assert!(!painted(&harness, "d delete · esc normal"));
+    assert!(!painted(&harness, "d delete · gy copy as · esc normal"));
 }
 
 /// Types `text` on the grid, a key at a time, as digits and letters come.

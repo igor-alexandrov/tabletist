@@ -3168,16 +3168,12 @@ fn status_line(
                         .space(role, " ")
                         .add(role, &acts, palette.dim)
                         .add(role, " · ", palette.dim);
-                    // A block's cells are copied in a format too.
-                    let keys = if rows {
-                        keys
-                    } else {
-                        keys.add(role, &copy_as_key, palette.text)
-                            .space(role, " ")
-                            .add(role, &copies_as, palette.dim)
-                            .add(role, " · ", palette.dim)
-                    };
-                    keys.add(role, &leave_visual_key, palette.text)
+                    // The cells, or `V`'s rows, are copied in a format too.
+                    keys.add(role, &copy_as_key, palette.text)
+                        .space(role, " ")
+                        .add(role, &copies_as, palette.dim)
+                        .add(role, " · ", palette.dim)
+                        .add(role, &leave_visual_key, palette.text)
                         .space(role, " ")
                         .add(role, &normal, palette.dim)
                 };

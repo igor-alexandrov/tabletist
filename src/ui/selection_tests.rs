@@ -212,7 +212,7 @@ fn the_visual_modes_are_said_and_copy() {
     type_key(&mut harness, Key::V, "V");
     assert!(painted(&harness, "-- VISUAL LINE --"));
     assert!(painted(&harness, "1 row"));
-    assert!(painted(&harness, "d delete · esc normal"));
+    assert!(painted(&harness, "d delete · gy copy as · esc normal"));
     type_key(&mut harness, Key::J, "j");
     assert!(painted(&harness, "2 rows"));
     type_key(&mut harness, Key::D, "d");

@@ -489,6 +489,27 @@ fn copy_as_on_a_new_row_copies_it() {
     );
 }
 
+/// The row panel's title and the line under it end before Copy row ▾. In
+/// a narrow window the button gives up its words, its name kept, and the
+/// title is cut only where it still does not fit.
+#[test]
+fn the_row_panels_title_keeps_clear_of_copy_row() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, (1, 2));
+    harness.settle();
+    let whole = "Row · id 2";
+    assert!(painted(&harness, whole), "{:?}", harness.painted);
+    assert!(painted(&harness, "Copy row ▾"));
+    harness.size.x = 700.0;
+    harness.settle();
+    assert!(harness.has("Copy row ▾"));
+    assert!(!painted(&harness, "Copy row ▾"), "{:?}", harness.painted);
+    assert!(painted(&harness, "▾"), "{:?}", harness.painted);
+    let cut = |(text, _): &(String, egui::Color32)| text.starts_with("Ro") && text.ends_with('…');
+    let shown = painted(&harness, whole) || harness.painted.iter().any(cut);
+    assert!(shown, "{:?}", harness.painted);
+}
+
 /// Test 6: `gy` in the row panel of a new row opens nothing, as the macOS
 /// look's Copy row ▾ is not drawn there: its TSV would copy nothing.
 #[test]

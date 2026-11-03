@@ -8744,6 +8744,9 @@ fn copying(
     let (format, options) = match how {
         How::ColumnNames => {
             let text = crate::export::column_names(&names, source.dialect);
+            if text.len() > crate::export::CLIPBOARD_BYTES {
+                return done(Copied::TooLarge);
+            }
             return done(Copied::Text {
                 text,
                 statements: 0,
@@ -8948,6 +8951,43 @@ mod tests {
         };
         assert_eq!(copied(Some(&row)).as_deref(), Some(""));
         assert_eq!(copied(None).as_deref(), Some("NULL"));
+    }
+
+    /// Column names are held to the clipboard's limit too.
+    #[test]
+    fn column_names_past_twenty_megabytes_copy_nothing() {
+        use crate::edit::Order;
+        use crate::selection::Selection;
+        let mut columns = crate::testing::page(1, false).columns;
+        columns.truncate(1);
+        columns[0].name = "w".repeat(crate::export::CLIPBOARD_BYTES + 1);
+        let source = CopySource {
+            columns: &columns,
+            dialect: tabletist_db::Dialect::Postgres,
+            target: crate::export::Target::Named("result"),
+        };
+        let selected = Selection {
+            cursor: CellPos { row: 0, col: 0 },
+            range: None,
+            order: Order::of(&[], 1),
+        };
+        let options = crate::export::Options::default();
+        let none = |_: usize, _: usize| crate::export::Pending {
+            value: None,
+            sql: None,
+        };
+        let copying = copying(
+            &selected,
+            source,
+            Pick::Selection,
+            How::ColumnNames,
+            &options,
+            none,
+        );
+        assert!(matches!(
+            copying.map(|copying| copying.copied),
+            Some(crate::export::Copied::TooLarge)
+        ));
     }
 
     fn app() -> (App, tempfile::TempDir) {
