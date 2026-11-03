@@ -15,9 +15,13 @@ workspace = true
 # The updater's transport and its downloads report through fastframe-update,
 # whose calls return anyhow's errors.
 anyhow = "1"
+# The files the app keeps (settings, connections, the session, recents,
+# the theme) and the releases the updater reads, as TOML and JSON.
 serde = { version = "1", features = ["derive"] }
 # `raw_value` keeps a JSON cell's text as it came (model.rs).
 serde_json = { version = "1", features = ["raw_value"] }
+# Warnings from the backend, the updater, the secrets and the settings,
+# to the logger the app sets up.
 log = "0.4"
 # Platform config/state directories (XDG on Linux).
 directories = "6"

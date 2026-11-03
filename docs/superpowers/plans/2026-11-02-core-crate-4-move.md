@@ -5,11 +5,11 @@
 **Goal:** The lower layer leaves the `tabletist` crate for a workspace crate of its own, `tabletist-core`, so an edit to the interface no longer compiles it again, and the crate boundary holds the layers in place of `tests/layers.rs`. This is run 4 of `2026-11-02-core-crate.md`, the last. Behaviour does not change.
 
 **Files:**
-- Create: `crates/tabletist-core/Cargo.toml`, `build.rs`, `src/lib.rs`, `tests/interface.rs`
+- Create: `crates/tabletist-core/Cargo.toml`, `build.rs`, `src/lib.rs`, `tests/interface.rs`; the root's `tests/environments.rs`
 - Move (`git mv`): the 35 modules `LOWER` listed, from `src/` to `crates/tabletist-core/src/`, their directories with them
 - Delete: `tests/layers.rs`
 - Modify: `Cargo.toml`, `Cargo.lock`, `build.rs`, `src/lib.rs`
-- Modify: the moved files' `include_str!`/`include_bytes!` paths, `env.rs`'s and `installed_font.rs`'s `CARGO_MANIFEST_DIR`, the test hooks' `cfg`, eleven items made `pub`, `fixtures.rs` (`pub`, `RELEASE`, two `expect`s)
+- Modify: the moved files' `include_str!`/`include_bytes!` paths, `installed_font.rs`'s `CARGO_MANIFEST_DIR`, `env.rs`'s four scans moved to `tests/environments.rs`, the test hooks' `cfg`, eleven items made `pub`, `fixtures.rs` (`pub`, `RELEASE`, two `expect`s)
 - Modify: `tests/keys.rs`, `tests/engines.rs`; `src/app/updates.rs`, `src/ui/update_settings_tests.rs` (`RELEASE`'s new path); comments naming old paths in `src/entrypoint.rs`, `src/ui/connect_dialog/choice.rs`, `crates/tabletist-db/tests/postgres.rs`
 - Modify: `.github/workflows/ci.yml`, `packaging.yml`, `claude-review.yml`; `packaging/arch/tabletist/PKGBUILD.in`; `AGENTS.md`
 - Modify: `docs/superpowers/plans/2026-11-02-core-crate.md` (run 4 done, the plan closed)
@@ -35,7 +35,7 @@
 
 ### What reads sources by path
 
-- **`env.rs`'s four tests** read both crates: `sources()` walks `src/` and `crates/tabletist-core/src/` from the repository root (`CARGO_MANIFEST_DIR/../..`), and names each file by that path, so `src/ui/value_tags.rs` stays what it was and `src/theme.rs` is `crates/tabletist-core/src/theme.rs`. Each directory must hold more than 20 files, so neither can drop out unseen.
+- **`env.rs`'s four scans** read both crates, so they move to the root as `tests/environments.rs` (the review on #270: the core's tests stand on the core alone, and a scan of `src/` would fail `cargo test -p tabletist-core` over an interface file). Its `sources()` walks `src/` and `crates/tabletist-core/src/` from the root and names each file by that path, so `src/ui/value_tags.rs` stays what it was and `src/theme.rs` is `crates/tabletist-core/src/theme.rs`; each directory must hold more than 20 files, so neither can drop out unseen. The design's fixed colours come from `env_colors(env, Platform::Native, &Palette::light())`, which in the light are `native_table`'s as they stand, so nothing new is `pub`.
 - **`installed_font.rs`'s test** joins `../../assets/fonts` to the core's directory.
 - **`tests/keys.rs` and `tests/engines.rs`** walk `crates/tabletist-core/src` beside the rest; `keys.rs`'s `MAY` names the keymap's new paths.
 - **`include_str!`/`include_bytes!`** gain `../../`: the Omarchy templates (`desktop_theme`, `env`, `theme`, `fixtures`), `assets/update-public-key.hex`, `tests/fixtures/…` (`connections`, `fixtures`'s `RELEASE`), `docs/_reference/settings-and-files.md`, and the fonts in `installed_font.rs`.
@@ -117,7 +117,7 @@ What the numbers say against the plan's estimate:
 
 ### Task 2: what reads paths
 
-- [x] The include paths; `env.rs`'s `sources()`; `installed_font.rs`'s font path.
+- [x] The include paths; `env.rs`'s scans to `tests/environments.rs`; `installed_font.rs`'s font path.
 - [x] `tests/keys.rs`, `tests/engines.rs`; `tests/layers.rs` goes, `tests/interface.rs` comes.
 - [x] CI's integration jobs, the AUR check, `packaging.yml`'s paths, the review prompt, `AGENTS.md`.
 
