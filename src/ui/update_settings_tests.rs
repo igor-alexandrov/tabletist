@@ -25,7 +25,7 @@ const NOW: i64 = 1_793_092_320;
 
 /// A release far newer than this version, as the fake server gives it.
 fn offer() -> Offer {
-    let json = crate::update::check::tests::RELEASE
+    let json = crate::fixtures::RELEASE
         .replace("v0.4.0", "v99.0.0")
         .replace("0.4.0", "99.0.0");
     let latest: Latest = serde_json::from_str(&json).unwrap();
@@ -1167,7 +1167,7 @@ fn update_on_the_prompt_asks_before_installing() {
             _ => None,
         })
         .expect("a check");
-    let json = crate::update::check::tests::RELEASE.replace("v0.4.0", "v99.0.0");
+    let json = crate::fixtures::RELEASE.replace("v0.4.0", "v99.0.0");
     let mut latest: Latest = serde_json::from_str(&json).unwrap();
     // A build of this computer's, whatever it is.
     let name = release::asset_name("99.0.0", Os::current(), Some(Kind::Portable))

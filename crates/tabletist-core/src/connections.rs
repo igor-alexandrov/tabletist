@@ -846,7 +846,7 @@ mod tests {
         );
         assert!(path.with_file_name("connections.json.bad").exists());
         // Mended and put back, it is read as any older file is.
-        let fixture = include_str!("../tests/fixtures/connections-v1.json");
+        let fixture = include_str!("../../../tests/fixtures/connections-v1.json");
         std::fs::write(&path, fixture).unwrap();
         let mended = SavedConnections::load(&dirs);
         assert_eq!(mended.store.connections.len(), 14);
@@ -862,7 +862,7 @@ mod tests {
     fn the_older_file_does_not_come_back_for_a_file_kept_aside() {
         let (dirs, _dir) = dirs();
         let path = dirs.connections_file();
-        let fixture = include_str!("../tests/fixtures/connections-v1.json");
+        let fixture = include_str!("../../../tests/fixtures/connections-v1.json");
         std::fs::write(dirs.legacy_connections_file(), fixture).unwrap();
         // Moved, then changed by its user, then broken by a typo.
         let mut store = SavedConnections::load(&dirs).store;
@@ -926,7 +926,7 @@ mod tests {
     #[test]
     fn the_move_is_noted_once_a_connections_toml_was_found() {
         let (dirs, _dir) = dirs();
-        let fixture = include_str!("../tests/fixtures/connections-v1.json");
+        let fixture = include_str!("../../../tests/fixtures/connections-v1.json");
         std::fs::write(dirs.legacy_connections_file(), fixture).unwrap();
         // The move itself, twice: nothing was written between the two.
         for _ in 0..2 {
@@ -965,7 +965,7 @@ mod tests {
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
         std::fs::write(&target, "version = 3\noops\n").unwrap();
         crate::util::symlink_file(&target, &path);
-        let fixture = include_str!("../tests/fixtures/connections-v1.json");
+        let fixture = include_str!("../../../tests/fixtures/connections-v1.json");
         std::fs::write(dirs.legacy_connections_file(), fixture).unwrap();
         assert!(SavedConnections::load(&dirs).problem.is_some());
         assert!(target.with_file_name("connections.toml.bad").exists());
@@ -1001,7 +1001,7 @@ mod tests {
     #[test]
     fn the_older_file_is_not_read_beside_the_new_one() {
         let (dirs, _dir) = dirs();
-        let fixture = include_str!("../tests/fixtures/connections-v1.json");
+        let fixture = include_str!("../../../tests/fixtures/connections-v1.json");
         std::fs::write(dirs.legacy_connections_file(), fixture).unwrap();
         let mut store = SavedConnections::default();
         store.upsert(saved("Only", "/only.db"));
@@ -1113,7 +1113,7 @@ mod tests {
 
     /// The version 1 fixture, upgraded as a store is loaded.
     fn fixture() -> (SavedConnections, Vec<String>) {
-        let text = include_str!("../tests/fixtures/connections-v1.json");
+        let text = include_str!("../../../tests/fixtures/connections-v1.json");
         serde_json::from_str::<StoredConnections>(text)
             .unwrap()
             .upgrade()
@@ -1194,7 +1194,7 @@ mod tests {
     #[test]
     fn an_older_file_is_read_once_and_written_as_the_new_ones() {
         let (dirs, _dir) = dirs();
-        let fixture = include_str!("../tests/fixtures/connections-v1.json");
+        let fixture = include_str!("../../../tests/fixtures/connections-v1.json");
         std::fs::write(dirs.legacy_connections_file(), fixture).unwrap();
         let first = SavedConnections::load(&dirs);
         assert!(first.save && first.save_last_used);

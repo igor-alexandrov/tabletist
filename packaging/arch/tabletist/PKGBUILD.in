@@ -32,7 +32,8 @@ build() {
 check() {
   cd "${srcdir}/tabletist-${pkgver}"
   export RUSTUP_TOOLCHAIN=stable
-  cargo test --frozen --release --lib
+  # The app's own tests: its interface's and its core's.
+  cargo test --frozen --release --lib -p tabletist -p tabletist-core
 }
 
 package() {

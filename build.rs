@@ -1,8 +1,10 @@
-//! Compiles the gettext catalogs in assets/i18n into Rust modules and, for a
-//! Windows program built on Windows, embeds its icon and version details.
+//! For a Windows program built on Windows, embeds its icon and version
+//! details. The gettext catalogs are tabletist-core's (its build.rs).
 
 fn main() {
-    fastframe_i18n::build::compile_catalogs("assets/i18n");
+    // Without a line of its own, cargo would run the script again after an
+    // edit anywhere in the package.
+    println!("cargo:rerun-if-changed=build.rs");
     embed_windows_resources();
 }
 

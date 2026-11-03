@@ -111,13 +111,14 @@ jobs:
       - run: cargo test --locked -p tabletist-db --lib --test postgres --test insert_audit --test lookup --test delete_rows --test agent --test ddl
         env:
           TABLETIST_TEST_PG_URL: postgres://tabletist:tabletist@localhost:55432/tabletist
-      # The app's gateway for the MCP server, which opens its own sessions.
-      # The app builds with its GUI, which wants these.
+      # The app's gateway for the MCP server, which opens its own sessions:
+      # tabletist-core's. Its file dialogs (rfd) build a Wayland client,
+      # which wants these.
       - name: GUI build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev
-      - run: cargo test --locked --lib backend::agents
+      - run: cargo test --locked -p tabletist-core --lib backend::agents
         env:
           TABLETIST_TEST_PG_URL: postgres://tabletist:tabletist@localhost:55432/tabletist
 
@@ -134,13 +135,14 @@ jobs:
       - run: cargo test --locked -p tabletist-db --lib --test mysql --test insert_audit --test lookup --test delete_rows --test agent --test ddl
         env:
           TABLETIST_TEST_MYSQL_URL: mysql://tabletist:tabletist@localhost:53306/tabletist
-      # The app's gateway for the MCP server, which opens its own sessions.
-      # The app builds with its GUI, which wants these.
+      # The app's gateway for the MCP server, which opens its own sessions:
+      # tabletist-core's. Its file dialogs (rfd) build a Wayland client,
+      # which wants these.
       - name: GUI build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev
-      - run: cargo test --locked --lib backend::agents
+      - run: cargo test --locked -p tabletist-core --lib backend::agents
         env:
           TABLETIST_TEST_MYSQL_URL: mysql://tabletist:tabletist@localhost:53306/tabletist
 

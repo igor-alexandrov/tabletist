@@ -67,7 +67,7 @@ pub fn run() -> std::process::ExitCode {
     // First of all: `--apply-update <job>` makes this process an update's
     // helper, which installs it and exits. Otherwise the receipt or the
     // error an update's relaunch carries is taken out of the arguments
-    // before clap reads them (src/update.rs).
+    // before clap reads them (`crate::update`).
     let launch = fastframe_update::intercept(&crate::update::CONFIG);
     let cli = Cli::parse_from(&launch.arguments);
     // Before the logger, the settings and the window: the relay writes

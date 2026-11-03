@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/tabletist-appkit", "crates/tabletist-db", "crates/tabletist-mcp", "crates/tabletist-menubar", "crates/tabletist-sqlite-ffi"]
+members = [".", "crates/tabletist-appkit", "crates/tabletist-core", "crates/tabletist-db", "crates/tabletist-mcp", "crates/tabletist-menubar", "crates/tabletist-sqlite-ffi"]
 resolver = "3"
 
 [workspace.package]
@@ -45,10 +45,8 @@ anyhow = "1"
 # Command-line flags: --verbose and the demo/screenshot flags.
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["raw_value"] }
+serde_json = "1"
 log = "0.4"
-# Platform config/state directories (XDG on Linux).
-directories = "6"
 # The whole UI. glow keeps the binary and dependency tree small; a 2D table
 # browser does not need wgpu. AccessKit exposes controls to screen readers and
 # to the headless tests. `links` opens the About dialog's link to the source
@@ -56,11 +54,6 @@ directories = "6"
 # (url, log, objc2) are in the tree already.
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "links", "persistence", "wayland", "x11"] }
 egui = "0.36"
-# Checks that a font read from the system parses before egui loads it (egui
-# panics on a font it cannot read): the desktop's monospace on Linux, an
-# installed data font on macOS, whose face in a collection it finds by name.
-# The version epaint already uses on every platform.
-skrifa = { version = "0.44", default-features = false, features = ["std"] }
 # SVG loading for the Lucide icons.
 egui_extras = { version = "0.36", features = ["svg"] }
 # Writes --demo-shot screenshots as PNG.
@@ -75,107 +68,43 @@ fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" 
 fastframe-icons = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
 # Palettes, presets, and following the Omarchy theme live.
 fastframe-theme = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
-# gettext catalogs compiled at build time (see build.rs).
+# The gettext calls the views make (`crate::i18n`, tabletist-core's).
 fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
 # Log file for bug reports and a panic log without payloads.
 fastframe-log = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
-# Self-update from GitHub releases (src/update.rs): detects how this copy
-# was installed, checks the signature on checksums.txt, hands an update to
-# a helper that installs it and rolls back if the new version does not
-# start.
+# Self-update from GitHub releases (tabletist-core's `update`): the
+# entrypoint runs the helper that installs an update.
 fastframe-update = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
+# The app beneath its interface: its state and edits, the backend, the
+# settings, the keymap and the theme's data (src/lib.rs re-exports each of
+# its modules). The crate boundary keeps it off the interface.
+tabletist-core = { path = "crates/tabletist-core" }
 # The database layer (no UI dependencies).
 tabletist-db = { path = "crates/tabletist-db" }
 # The MCP server agents reach the saved connections through. The backend
-# runs it, and is its gateway to the databases (src/backend/agents.rs).
+# runs it, and is its gateway to the databases (tabletist-core's
+# `backend::agents`); `tabletist mcp` and the Agents views name its types.
 tabletist-mcp = { path = "crates/tabletist-mcp" }
-# The check for updates and the updater's HTTP client: blocking GETs to
-# GitHub, on rustls with ring and Mozilla's roots (webpki-roots), all
-# already in the tree. Adds ureq, ureq-proto, http, httparse, utf8-zero
-# and base64 0.23 (beside the tree's 0.22); reqwest would add hyper, h2
-# and tower. No gzip: release files are compressed already.
-ureq = { version = "3.4", default-features = false, features = ["rustls"] }
 # The menu bar on macOS and Windows, built with muda from `src/menu.rs`'s
 # model. Empty elsewhere.
 tabletist-menubar = { path = "crates/tabletist-menubar" }
 # The window the menu bar attaches to (`src/menu/bar.rs`), which eframe's
 # creation context hands out; eframe already builds this version.
 raw-window-handle = "0.6"
-# `CancellationToken`: how the server tells its gateway that a call is
-# over. In the tree through tabletist-mcp, which hands one to every call.
-tokio-util = "0.7"
-# The backend runtime: one OS thread running tokio, where every database
-# call happens (src/backend.rs). `net` for the socket agents reach the app
-# through, `io-util` and `io-std` for `tabletist mcp`, which copies its
-# stdin and stdout to it (src/relay.rs). tabletist-db turns the first two
-# on already: nothing new is built.
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time", "net", "io-util", "io-std"] }
-# Native file dialogs (portal on Linux), built on the UI thread and awaited
-# on the backend runtime.
+# The native dialog a failed start is shown in (src/entrypoint.rs).
 rfd = "0.17"
-# Stable ids for saved connections, so renaming one keeps its identity.
-uuid = { version = "1", features = ["v4"] }
-# The proofs the app and `tabletist mcp` give each other that each holds
-# the key, before either says anything else (src/endpoint.rs). In the tree
-# through russh, on every system: nothing new is built.
-hmac = { version = "0.13", default-features = false }
-sha2 = { version = "0.11", default-features = false }
-
-# One protected-store API for saved passwords; each platform's native
-# provider below. Passwords never go into connections.toml.
-keyring-core = "1"
-# Settings and state files are written through a uniquely named temporary
-# file created exclusively (0600 on Unix) and renamed into place
-# (src/util.rs), and --demo runs in a private, self-removing directory.
+# --demo runs in a private, self-removing directory.
 tempfile = "3"
-# Reads settings.toml: `DeTable::parse_recoverable` keeps what it could read
-# of a file with a bad line and says where each key and each error is. And
-# reads connections.toml, strictly, into its own types (`serde`, which adds
-# no crate: serde is in the tree). The app writes both files itself
-# (src/settings.rs, src/connections/file.rs), so no writer is built: the
-# default `display` feature would bring in toml_writer.
-toml = { version = "1.1", default-features = false, features = ["parse", "serde"] }
-# Tells the backend when settings.toml changes on disk, so an edit made in
-# an editor reaches the running app (src/backend.rs). The version and the
-# features fastframe-theme already brings in for following the desktop's
-# theme: nothing new is built.
-notify = "8.2"
-# The query history's file (src/history.rs), SQLite as the Agents Log's is.
-# The version and the features tabletist-mcp already brings in: nothing new
-# is built.
-rusqlite = { version = "0.37", features = ["bundled"] }
 # The person's clock and time zone, for the times of agents' calls, and the
 # zone database a `timestamptz` value is shown in. The version and the
 # features env_logger already brings in: nothing new is built.
 jiff = "0.2"
 
-[target.'cfg(target_os = "linux")'.dependencies]
-# Notifications on the desktop (mako on Omarchy), for an agent that
-# connects. The version and the features the keyring store already brings
-# in: nothing new is built.
-zbus = "5"
-# The desktop's Secret Service (GNOME Keyring, KWallet) over D-Bus.
-zbus-secret-service-keyring-store = { version = "1.0.1", features = ["rt-tokio-crypto-rust"] }
-# The Secret Service itself, which the store above is built on, with the
-# same features: nothing new is built. To ask whether an entry is locked
-# before it is read, which the store's read would answer with a prompt to
-# unlock it (`secrets::linux_locked`), for a read an agent's call made.
-secret-service = { version = "5", features = ["rt-tokio-crypto-rust"] }
-
 [target.'cfg(target_os = "macos")'.dependencies]
-apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
-# The keychain store above is built on it. To tell the keychain to ask the
-# person nothing while it reads for an agent (`secrets::NativeStore::
-# read_quietly`), which the store has no call for. The version and the
-# features the store builds: nothing new is built.
-security-framework = "3.7"
 # The unified title bar the tabs share with the window buttons.
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSGeometry"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSView", "NSWindow", "NSToolbar", "NSControl", "NSButton", "objc2-core-foundation"] }
-# The installed fonts CoreText lists for the data font: CoreText calls that
-# need unsafe code, kept in a crate of their own because this one forbids it.
-tabletist-appkit = { path = "crates/tabletist-appkit" }
 # Quit (Cmd+Q, the app menu, the Dock) reaches the app as a close request for
 # its window, which a tab with pending changes holds back to ask first
 # (`App::hold_close`); without the feature AppKit ends the process and
@@ -183,20 +112,22 @@ tabletist-appkit = { path = "crates/tabletist-appkit" }
 # in below and at the version it resolves to: the feature adds no crate.
 winit = { version = "0.30.13", default-features = false, features = ["macos-quit-as-close"] }
 
-[target.'cfg(windows)'.dependencies]
-windows-native-keyring-store = { version = "1.1", default-features = false }
-
 [dev-dependencies]
-# A paused clock (`start_paused`) for the backend test that reads the waits
-# between two cancels, which grow to seconds: they pass at once, and exactly.
-tokio = { version = "1", features = ["test-util"] }
+# The test hooks and the data fixtures the interface's tests stand on.
+tabletist-core = { path = "crates/tabletist-core", features = ["testing"] }
+# The promo's runtime, which serves its scenes to the recorder
+# (src/promo/). The core builds every feature it needs already.
+tokio = { version = "1", features = ["rt"] }
+# Reads a promo scenario (src/promo/scenario.rs). The version and the
+# features the core builds.
+toml = { version = "1.1", default-features = false, features = ["parse", "serde"] }
+# Reads the bundled fonts' metrics, to hold the ones typography/fonts.rs
+# writes down. The version and the features the core builds.
+skrifa = { version = "0.44", default-features = false, features = ["std"] }
 # Checks that what packaging/sign-checksums.sh signs with OpenSSL verifies
 # under ring, as fastframe-update verifies it (tests/update_release.rs).
 # Already in the tree through rustls.
 ring = "0.17"
-
-[build-dependencies]
-fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0", features = ["build"] }
 
 # A target-specific build dependency is chosen by the host, so only a build
 # on Windows compiles this; Linux and macOS builds never see it.

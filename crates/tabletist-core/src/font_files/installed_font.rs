@@ -288,8 +288,9 @@ mod tests {
     /// A bundled font's file, as an installed face of `name`.
     fn bundled(name: &str, file: &str, weight: f64) -> Face {
         Face {
+            // The bundled fonts are in the repository's assets/, two up.
             path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("assets/fonts")
+                .join("../../assets/fonts")
                 .join(file),
             ..face(name, weight)
         }
@@ -412,8 +413,8 @@ mod tests {
         assert_eq!(read.family.as_deref(), Some("Fira Code"));
         assert!(!read.missing);
         let faces = read.faces.expect("read");
-        let plex_mono = include_bytes!("../../assets/fonts/IBMPlexMono-Regular.ttf");
-        let plex_mono_medium = include_bytes!("../../assets/fonts/IBMPlexMono-Medium.ttf");
+        let plex_mono = include_bytes!("../../../../assets/fonts/IBMPlexMono-Regular.ttf");
+        let plex_mono_medium = include_bytes!("../../../../assets/fonts/IBMPlexMono-Medium.ttf");
         assert_eq!(faces[0].font.len(), plex_mono.len());
         assert_eq!(faces[1].font.len(), plex_mono_medium.len());
         assert!(Arc::ptr_eq(&faces[1], &faces[2]));

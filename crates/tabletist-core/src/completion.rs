@@ -18,7 +18,7 @@ pub const KEPT: usize = 120;
 /// How many of a statement's tables have their columns fetched.
 pub const TABLES: usize = 8;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 thread_local! {
     /// How many times this thread worked out a list.
     pub static LISTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -221,11 +221,7 @@ fn target<'a>(site: &Site, manual: bool, catalog: &Catalog<'a>) -> Target<'a> {
 /// schema, a bare name in the bare schema and then in the other loaded
 /// ones, in their order. The name as spelled first, else whatever its
 /// case.
-pub(crate) fn resolve(
-    schema: Option<&str>,
-    name: &str,
-    catalog: &Catalog<'_>,
-) -> Option<ObjectRef> {
+pub fn resolve(schema: Option<&str>, name: &str, catalog: &Catalog<'_>) -> Option<ObjectRef> {
     let within = |schema: &str| {
         let objects = objects_of(catalog, schema);
         let spelled = objects.iter().find(|info| info.name == name);
@@ -331,7 +327,7 @@ pub fn list(
     catalog: &Catalog<'_>,
     case: KeywordCase,
 ) -> Listed {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     LISTED.with(|count| count.set(count.get() + 1));
     let dialect = catalog.dialect;
     let mut found: Vec<(Group, Candidate)> = Vec::new();

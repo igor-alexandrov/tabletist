@@ -743,9 +743,11 @@ pub fn resolve(
 pub fn enable_desktop_themes(catalog: &mut Catalog) {
     catalog.enable_desktop_themes(fastframe_theme::DesktopThemes {
         slug: "tabletist",
-        omarchy_template: include_str!("../contrib/omarchy/tabletist.json.tpl"),
+        omarchy_template: include_str!("../../../contrib/omarchy/tabletist.json.tpl"),
         // 0.1 mapped only the base colours; an untouched copy is replaced.
-        omarchy_previous_templates: &[include_str!("../contrib/omarchy/tabletist-0.1.json.tpl")],
+        omarchy_previous_templates: &[include_str!(
+            "../../../contrib/omarchy/tabletist-0.1.json.tpl"
+        )],
         presets: true,
     });
 }
@@ -985,7 +987,7 @@ mod tests {
 
     #[test]
     fn the_omarchy_template_names_only_known_colours() {
-        let template = include_str!("../contrib/omarchy/tabletist.json.tpl");
+        let template = include_str!("../../../contrib/omarchy/tabletist.json.tpl");
         for line in template.lines().filter(|line| line.contains("\": \"{{")) {
             let name = line.trim().trim_start_matches('"');
             let name = &name[..name.find('"').unwrap()];

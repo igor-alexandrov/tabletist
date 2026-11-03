@@ -291,7 +291,7 @@ impl Kept {
 
 impl KeptTab {
     /// The tab as it is now: its object, its sort and its filter bar.
-    pub(crate) fn of(object: &ObjectTab) -> Self {
+    pub fn of(object: &ObjectTab) -> Self {
         let bar = &object.filter;
         Self {
             schema: object.object.schema.clone(),
@@ -341,14 +341,14 @@ impl KeptTab {
 
     /// The object the tab shows, and its kind: `None` for a kind this
     /// version does not know.
-    pub(crate) fn object(&self) -> Option<(ObjectRef, ObjectKind)> {
+    pub fn object(&self) -> Option<(ObjectRef, ObjectKind)> {
         let kind = kind_of(&self.kind)?;
         Some((ObjectRef::new(self.schema.clone(), self.name.clone()), kind))
     }
 
     /// Its sort, without a column whose direction this version does not
     /// know.
-    pub(crate) fn sorts(&self) -> Vec<Sort> {
+    pub fn sorts(&self) -> Vec<Sort> {
         self.sort
             .iter()
             .filter_map(|(column, dir)| {
@@ -362,7 +362,7 @@ impl KeptTab {
 
     /// Its filter bar, without a row whose operator this version does not
     /// know.
-    pub(crate) fn bar(&self) -> FilterBar {
+    pub fn bar(&self) -> FilterBar {
         let filter = &self.filter;
         FilterBar {
             open: filter.open,

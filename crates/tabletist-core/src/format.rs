@@ -627,7 +627,7 @@ pub fn required_word(unique: bool, locale: crate::i18n::Locale) -> String {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 thread_local! {
     /// How many times this thread ran `full_text`.
     pub static FULL_TEXTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -638,7 +638,7 @@ thread_local! {
 /// UUID the grid shows; any other binary value is its first bytes
 /// ([`hex_preview`]). Text is borrowed, not copied.
 pub fn full_text(value: &Value) -> Cow<'_, str> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     FULL_TEXTS.with(|count| count.set(count.get() + 1));
     match value {
         Value::Text(text) => Cow::Borrowed(text),

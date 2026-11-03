@@ -15,7 +15,7 @@ const LIMIT: u64 = 64 * 1024;
 
 /// Tabletist's own Omarchy template: what maps a theme's colours onto the
 /// palette when the user has no template of their own.
-const TEMPLATE: &str = include_str!("../contrib/omarchy/tabletist.json.tpl");
+const TEMPLATE: &str = include_str!("../../../contrib/omarchy/tabletist.json.tpl");
 
 /// Where Omarchy keeps what is read, for one user.
 #[derive(Clone, Debug, PartialEq, Eq)]

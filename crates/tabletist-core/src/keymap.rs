@@ -3448,7 +3448,7 @@ pub(crate) fn presses(layout: Layout, spelled: &Spelled) -> Vec<Vec<Stroke>> {
 /// Whether two spellings would be read as one another: the same line
 /// of the prompt, the same presses, or presses the other begins with
 /// (after `y` nothing can tell `y` from `yy p`).
-pub(crate) fn clash(layout: Layout, a: &Spelled, b: &Spelled) -> bool {
+pub fn clash(layout: Layout, a: &Spelled, b: &Spelled) -> bool {
     if let (Spelled::Ex(a), Spelled::Ex(b)) = (a, b) {
         return a == b;
     }
