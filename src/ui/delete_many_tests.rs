@@ -48,7 +48,12 @@ fn rows(harness: &Harness, tab: ConnTabId, id: TabId) -> Vec<usize> {
 fn select_rows(harness: &mut Harness, tab: ConnTabId, id: TabId, from: usize, to: usize) {
     select(harness, tab, id, (from, 1));
     let rows = to as isize - from as isize;
-    harness.app.apply(Action::ExtendBy { tab, id, rows });
+    harness.app.apply(Action::ExtendBy {
+        tab,
+        id,
+        rows,
+        cols: 0,
+    });
     harness.settle();
 }
 
@@ -103,7 +108,7 @@ fn a_range_ends_with_its_page_and_with_what_works_on_one_row() {
     };
     let range = |harness: &Harness, tab: ConnTabId, id: TabId| {
         let workspace = harness.app.workspace(tab).unwrap();
-        workspace.object_tab(id).unwrap().range
+        workspace.object_tab(id).unwrap().range.clone()
     };
     // A reload.
     let (mut harness, tab, id) = ranged();
@@ -148,14 +153,18 @@ fn a_range_ends_with_its_page_and_with_what_works_on_one_row() {
 }
 
 /// Spec 1 and tests 1 and 11: the footer counts the selected rows, and
-/// each row of a range is told to a screen reader as selected.
+/// each row of a range of rows is told to a screen reader as selected.
 #[test]
 fn a_range_is_counted_in_the_footer_and_told_as_selected() {
     for look in desktop() {
         let (mut harness, tab, id) = covers_with(look, book_covers_page(5));
         select(&mut harness, tab, id, (1, 2));
         assert!(painted(&harness, "1 row selected"));
+        // Shift with the arrows selects cells: their rows and columns.
         select_rows(&mut harness, tab, id, 1, 3);
+        assert!(painted(&harness, "3 rows × 1 column selected"));
+        // Shift with Space makes them whole rows.
+        harness.press(Key::Space, Modifiers::SHIFT);
         assert!(painted(&harness, "3 rows selected"));
         let tree = harness.settle();
         let told = |label: &str| {
@@ -246,7 +255,12 @@ fn new_rows_of_a_range_are_dropped_with_the_mark() {
     // A new row under row 0, and the range from it down to row 2.
     let new = add_below(&mut harness, tab, id, 0);
     select(&mut harness, tab, id, (new, 1));
-    harness.app.apply(Action::ExtendBy { tab, id, rows: 2 });
+    harness.app.apply(Action::ExtendBy {
+        tab,
+        id,
+        rows: 2,
+        cols: 0,
+    });
     assert_eq!(rows(&harness, tab, id), [new, 1, 2]);
     harness.press(Key::Backspace, Modifiers::NONE);
     assert!(edits(&harness, tab, id).added.is_empty());
@@ -261,7 +275,12 @@ fn new_rows_of_a_range_are_dropped_with_the_mark() {
     // 0 again, and with it rows 1 and 2, which are both marked.
     let new = add_below(&mut harness, tab, id, 0);
     select(&mut harness, tab, id, (new, 1));
-    harness.app.apply(Action::ExtendBy { tab, id, rows: 2 });
+    harness.app.apply(Action::ExtendBy {
+        tab,
+        id,
+        rows: 2,
+        cols: 0,
+    });
     assert_eq!(rows(&harness, tab, id), [new, 1, 2]);
     harness.press(Key::Backspace, Modifiers::NONE);
     assert_eq!(edits(&harness, tab, id).added.len(), 1);
@@ -276,7 +295,12 @@ fn a_range_of_new_rows_alone_drops_them() {
     add(&mut harness, tab, id);
     let first = crate::edit::new_row(edits(&harness, tab, id).added[0].id);
     select(&mut harness, tab, id, (first, 1));
-    harness.app.apply(Action::ExtendBy { tab, id, rows: 1 });
+    harness.app.apply(Action::ExtendBy {
+        tab,
+        id,
+        rows: 1,
+        cols: 0,
+    });
     assert_eq!(rows(&harness, tab, id).len(), 2);
     harness.press(Key::Backspace, Modifiers::NONE);
     assert!(edits(&harness, tab, id).added.is_empty());
@@ -382,7 +406,11 @@ fn move_rows(harness: &mut Harness, tab: ConnTabId, id: TabId, rows: isize) {
 fn a_visual_selections_delete_marks_its_rows_and_leaves_it() {
     let (mut harness, tab, id) = covers_with(Look::omarchy(), book_covers_page(5));
     select(&mut harness, tab, id, (3, 2));
-    harness.app.apply(Action::SelectRows { tab, id });
+    harness.app.apply(Action::SelectRows {
+        tab,
+        id,
+        mode: crate::model::Visual::Rows,
+    });
     assert!(visual(&harness, tab, id));
     // Up from the anchor: the first row of the range is the cursor's.
     move_rows(&mut harness, tab, id, -2);
@@ -394,13 +422,21 @@ fn a_visual_selections_delete_marks_its_rows_and_leaves_it() {
     assert_eq!(rows(&harness, tab, id), [1]);
     // Down from the anchor: the cursor goes back to the first row.
     select(&mut harness, tab, id, (1, 2));
-    harness.app.apply(Action::SelectRows { tab, id });
+    harness.app.apply(Action::SelectRows {
+        tab,
+        id,
+        mode: crate::model::Visual::Rows,
+    });
     move_rows(&mut harness, tab, id, 2);
     harness.app.apply(Action::DeleteSelected { tab, id });
     assert!(marked(&harness, tab, id).is_empty());
     assert_eq!(selected(&harness, tab, id), Some((1, 2)));
     // Left, it marks nothing and the cursor stays.
-    harness.app.apply(Action::SelectRows { tab, id });
+    harness.app.apply(Action::SelectRows {
+        tab,
+        id,
+        mode: crate::model::Visual::Rows,
+    });
     move_rows(&mut harness, tab, id, 2);
     harness.app.apply(Action::LeaveVisual { tab, id });
     assert!(!visual(&harness, tab, id));
@@ -415,7 +451,11 @@ fn a_visual_selections_delete_lands_on_the_first_row_left() {
     let (mut harness, tab, id) = covers_with(Look::omarchy(), book_covers_page(4));
     let new = add_below(&mut harness, tab, id, 0);
     select(&mut harness, tab, id, (new, 1));
-    harness.app.apply(Action::SelectRows { tab, id });
+    harness.app.apply(Action::SelectRows {
+        tab,
+        id,
+        mode: crate::model::Visual::Rows,
+    });
     move_rows(&mut harness, tab, id, 2);
     assert_eq!(rows(&harness, tab, id), [new, 1, 2]);
     harness.app.apply(Action::DeleteSelected { tab, id });
@@ -555,9 +595,9 @@ fn a_visual_selection_shows_in_the_status_line_and_is_told() {
     let (mut harness, tab, id) = covers_with(Look::omarchy(), book_covers_page(5));
     harness.app.workspace_mut(tab).unwrap().row_panel = false;
     select(&mut harness, tab, id, (1, 2));
-    assert!(!painted(&harness, "-- VISUAL --"));
+    assert!(!painted(&harness, "-- VISUAL LINE --"));
     type_key(&mut harness, Key::V, "V");
-    assert!(painted(&harness, "-- VISUAL --"));
+    assert!(painted(&harness, "-- VISUAL LINE --"));
     assert!(painted(&harness, "1 row"));
     assert!(polite(&mut harness, "Visual. 1 row selected."));
     type_key(&mut harness, Key::J, "j");
@@ -567,13 +607,13 @@ fn a_visual_selection_shows_in_the_status_line_and_is_told() {
     // The mode is in the palette's magenta, as the board's is.
     let magenta = harness.app.palette.magenta;
     let mode =
-        |(text, color): &(String, egui::Color32)| text == "-- VISUAL --" && *color == magenta;
+        |(text, color): &(String, egui::Color32)| text == "-- VISUAL LINE --" && *color == magenta;
     assert!(harness.painted.iter().any(mode), "{:?}", harness.painted);
     // Its keys, one piece, in place of the grid's.
     assert!(painted(&harness, "d delete · esc normal"));
     assert!(!painted(&harness, "dd delete"));
     harness.press(Key::Escape, Modifiers::NONE);
-    assert!(!painted(&harness, "-- VISUAL --"));
+    assert!(!painted(&harness, "-- VISUAL LINE --"));
     assert!(painted(&harness, "dd delete"));
 }
 
@@ -590,7 +630,7 @@ fn a_refused_delete_is_said_on_the_visual_line() {
     type_key(&mut harness, Key::D, "d");
     assert!(visual(&harness, tab, id));
     assert!(marked(&harness, tab, id).is_empty());
-    assert!(painted(&harness, "-- VISUAL --"));
+    assert!(painted(&harness, "-- VISUAL LINE --"));
     assert!(painted(&harness, "read-only connection"));
     assert!(!painted(&harness, "d delete · esc normal"));
 }
