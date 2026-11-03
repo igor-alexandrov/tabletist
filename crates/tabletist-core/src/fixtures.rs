@@ -13,7 +13,7 @@ use tabletist_db::{
 
 /// What the fake session lists in schema `main`: `users`, `orders` and
 /// the view `active_users`.
-pub(crate) fn fixture_objects() -> Vec<ObjectInfo> {
+pub fn fixture_objects() -> Vec<ObjectInfo> {
     vec![
         ObjectInfo {
             name: "active_users".into(),
@@ -36,7 +36,7 @@ pub(crate) fn fixture_objects() -> Vec<ObjectInfo> {
 /// The Bookshop's objects as a catalog lists them, with the planner's
 /// estimate of each table's rows: what a start screen's first visit sorts
 /// by. In schema `main`, as the fake session's are.
-pub(crate) fn bookshop_objects() -> Vec<ObjectInfo> {
+pub fn bookshop_objects() -> Vec<ObjectInfo> {
     let table = |name: &str, rows: u64| ObjectInfo {
         name: name.into(),
         kind: ObjectKind::Table,
@@ -61,7 +61,7 @@ pub(crate) fn bookshop_objects() -> Vec<ObjectInfo> {
 }
 
 /// The saved connection the fake session stands for.
-pub(crate) fn fixture_connection() -> SavedConnection {
+pub fn fixture_connection() -> SavedConnection {
     SavedConnection {
         id: ConnectionId::new(),
         name: "Fixture".into(),
@@ -216,7 +216,7 @@ pub fn book_covers_page(rows: usize) -> RowPage {
 }
 
 /// The zone database, read once for every test.
-pub(crate) fn zones_shared() -> std::sync::Arc<crate::zones::Zones> {
+pub fn zones_shared() -> std::sync::Arc<crate::zones::Zones> {
     static ZONES: std::sync::OnceLock<std::sync::Arc<crate::zones::Zones>> =
         std::sync::OnceLock::new();
     std::sync::Arc::clone(ZONES.get_or_init(|| std::sync::Arc::new(crate::zones::Zones::load())))
@@ -658,9 +658,13 @@ pub fn tokyo_night() -> crate::theme::Palette {
                   orange\t#ff9e64\nmagenta\t#bb9af7\nblue\t#7aa2f7\n\
                   bright_red\t#f7768e\nbright_green\t#9ece6a\n";
     let rendered = fastframe_theme::omarchy::render_seed::<crate::theme::Palette>(
-        include_str!("../contrib/omarchy/tabletist.json.tpl"),
+        include_str!("../../../contrib/omarchy/tabletist.json.tpl"),
         colors,
     )
-    .unwrap();
-    fastframe_theme::parse_palette(&rendered).unwrap()
+    .expect("the template renders Tokyo Night");
+    fastframe_theme::parse_palette(&rendered).expect("Tokyo Night's palette parses")
 }
+
+/// The latest release as the fake server gives it: Bookshop's notes are
+/// the app's own.
+pub const RELEASE: &str = include_str!("../../../tests/fixtures/update/latest.json");

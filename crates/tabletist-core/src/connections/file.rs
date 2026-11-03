@@ -1182,7 +1182,7 @@ masked       = ["orders.email", "\"odd.schema\".orders.phone"]
     fn the_websites_example_is_read_and_written_as_it_shows() {
         // Windows checks the page out with CRLF line ends.
         let page =
-            include_str!("../../docs/_reference/settings-and-files.md").replace("\r\n", "\n");
+            include_str!("../../../../docs/_reference/settings-and-files.md").replace("\r\n", "\n");
         let (_, section) = page.split_once("## The connections file").unwrap();
         let (_, block) = section.split_once("```toml\n").unwrap();
         let (example, _) = block.split_once("```").unwrap();

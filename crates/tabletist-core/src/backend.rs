@@ -499,15 +499,15 @@ pub struct Backend {
     /// Kept so file dialogs can be awaited on the runtime.
     runtime: Option<tokio::runtime::Handle>,
     outbox: Outbox,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub sent: Vec<Command>,
     /// What a test asked to save: the dialog's title, the name it
     /// suggests, and the size of what is saved.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub saves: Vec<(String, String, usize)>,
     /// What a test asked to export of the agents' log: its filter, and
     /// the name the dialog suggests.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub exports: Vec<(tabletist_mcp::LogFilter, String)>,
     #[cfg(test)]
     watched: Watched,
@@ -575,11 +575,11 @@ impl Backend {
             events: event_rx,
             runtime,
             outbox,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "testing"))]
             sent: Vec::new(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "testing"))]
             saves: Vec::new(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "testing"))]
             exports: Vec::new(),
             #[cfg(test)]
             watched,
@@ -598,11 +598,11 @@ impl Backend {
                 events: event_tx,
                 waker: Waker::default(),
             },
-            #[cfg(test)]
+            #[cfg(any(test, feature = "testing"))]
             sent: Vec::new(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "testing"))]
             saves: Vec::new(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "testing"))]
             exports: Vec::new(),
             #[cfg(test)]
             watched: Watched::default(),
@@ -611,7 +611,7 @@ impl Backend {
 
     pub fn send(&mut self, command: Command) {
         let Some(commands) = &self.commands else {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "testing"))]
             self.sent.push(command);
             return;
         };
@@ -685,7 +685,7 @@ impl Backend {
     /// without a choice saves nothing and says nothing; a write that fails
     /// is told as any failed save is.
     pub fn save_bytes(&mut self, title: &str, name: String, bytes: Vec<u8>) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "testing"))]
         self.saves
             .push((title.to_owned(), name.clone(), bytes.len()));
         let Some(runtime) = &self.runtime else {
@@ -721,7 +721,7 @@ impl Backend {
     /// private to the user, as the log is. A dialog closed without a
     /// choice exports nothing; one that fails is told as a failed save is.
     pub fn export_log(&mut self, file: PathBuf, filter: tabletist_mcp::LogFilter, name: String) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "testing"))]
         self.exports.push((filter.clone(), name.clone()));
         let Some(runtime) = &self.runtime else {
             return;
@@ -775,7 +775,7 @@ impl Backend {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub fn inject(&self, event: Event) {
         self.outbox.emit(event);
     }

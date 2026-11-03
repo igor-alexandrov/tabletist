@@ -5772,9 +5772,7 @@ name = "tabletist"
 version = "0.4.1"
 dependencies = [
  "anyhow",
- "apple-native-keyring-store",
  "clap",
- "directories",
  "eframe",
  "egui",
  "egui_extras",
@@ -5786,18 +5784,55 @@ dependencies = [
  "fastframe-text",
  "fastframe-theme",
  "fastframe-update",
- "hmac",
  "image",
  "jiff",
- "keyring-core",
  "log",
- "notify",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "raw-window-handle",
  "rfd",
  "ring",
+ "serde",
+ "serde_json",
+ "skrifa",
+ "tabletist-core",
+ "tabletist-db",
+ "tabletist-mcp",
+ "tabletist-menubar",
+ "tempfile",
+ "tokio",
+ "toml",
+ "winit",
+ "winresource",
+]
+
+[[package]]
+name = "tabletist-appkit"
+version = "0.1.0"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-core-text",
+]
+
+[[package]]
+name = "tabletist-core"
+version = "0.4.1"
+dependencies = [
+ "anyhow",
+ "apple-native-keyring-store",
+ "directories",
+ "egui",
+ "fastframe-i18n",
+ "fastframe-theme",
+ "fastframe-update",
+ "hmac",
+ "jiff",
+ "keyring-core",
+ "log",
+ "notify",
+ "rfd",
  "rusqlite",
  "secret-service",
  "security-framework",
@@ -5808,7 +5843,6 @@ dependencies = [
  "tabletist-appkit",
  "tabletist-db",
  "tabletist-mcp",
- "tabletist-menubar",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -5816,19 +5850,8 @@ dependencies = [
  "ureq",
  "uuid",
  "windows-native-keyring-store",
- "winit",
- "winresource",
  "zbus",
  "zbus-secret-service-keyring-store",
-]
-
-[[package]]
-name = "tabletist-appkit"
-version = "0.1.0"
-dependencies = [
- "objc2 0.6.4",
- "objc2-core-foundation",
- "objc2-core-text",
 ]
 
 [[package]]

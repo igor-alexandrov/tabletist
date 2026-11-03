@@ -47,7 +47,7 @@ pub const CONFIG: UpdateConfig = UpdateConfig {
     },
     // Releases sign checksums.txt (packaging/sign-checksums.sh); nothing is
     // downloaded from a release whose signature does not verify.
-    publisher_key: Some(include_str!("../assets/update-public-key.hex")),
+    publisher_key: Some(include_str!("../../../assets/update-public-key.hex")),
     // Releases list tabletist-<version>-<arch>.AppImage in the signed
     // checksums, so an AppImage replaces itself with the next one.
     appimage: true,

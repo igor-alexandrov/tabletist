@@ -2825,8 +2825,8 @@ pub struct WritePrompt {
     pub focus: bool,
     /// What the statements are of: a save is sent only while the tab's
     /// pending set still makes this one.
-    pub(crate) changeset: tabletist_db::ChangeSet,
-    pub(crate) then: Option<Held>,
+    pub changeset: tabletist_db::ChangeSet,
+    pub then: Option<Held>,
     /// When the answer to another dialog brought the confirmation up (Save
     /// in the Leave prompt, Overwrite in the conflict question): it came up
     /// under the hand that gave that answer, and takes none in its first
@@ -2855,9 +2855,9 @@ pub struct ConflictPrompt {
     /// the user moves them. The view that placed them takes this down.
     pub fresh: bool,
     /// A row was answered Overwrite: the save may run again.
-    pub(crate) overwrite: bool,
+    pub overwrite: bool,
     /// A row was answered Keep mine: no save runs again by itself.
-    pub(crate) kept: bool,
+    pub kept: bool,
 }
 
 /// Without the rows: they are the database's, and can be megabytes.

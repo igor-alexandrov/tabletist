@@ -285,7 +285,7 @@ pub(super) fn driver_choice(
 
 /// The environments as the dialog names them. A badge says them its own
 /// way (`Environment::label`). The names are tied to [`Environment::ALL`]
-/// by position, not by a `match`: src/env.rs keeps every match on an
+/// by position, not by a `match`: `crate::env` keeps every match on an
 /// environment to itself. The array's length follows `ALL`'s, and a
 /// reorder is caught by the tests that name each environment: the env
 /// test of the dialog's colours and the dialog's own test of its choices.

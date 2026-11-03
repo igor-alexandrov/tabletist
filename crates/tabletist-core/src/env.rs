@@ -593,7 +593,7 @@ mod tests {
             words.chunks(2).map(|pair| (pair[0], pair[1])).collect();
         let seed: String = keys.iter().map(|(k, v)| format!("{k}\t{v}\n")).collect();
         let rendered = fastframe_theme::omarchy::render_seed::<Palette>(
-            include_str!("../contrib/omarchy/tabletist.json.tpl"),
+            include_str!("../../../contrib/omarchy/tabletist.json.tpl"),
             &seed,
         )
         .unwrap();
@@ -737,8 +737,9 @@ mod tests {
         }
     }
 
-    /// Every Rust file under `src/`, by its path from the crate root, with
-    /// its text.
+    /// Every Rust file of the app, by its path from the repository root,
+    /// with its text: this crate's under `crates/tabletist-core/src/` and
+    /// the interface's under `src/`, which these tests read too.
     fn sources() -> Vec<(String, String)> {
         fn walk(dir: &std::path::Path, into: &mut Vec<std::path::PathBuf>) {
             for entry in std::fs::read_dir(dir).unwrap() {
@@ -750,14 +751,17 @@ mod tests {
                 }
             }
         }
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let mut paths = Vec::new();
-        walk(&root.join("src"), &mut paths);
-        assert!(paths.len() > 20, "found the sources");
+        for dir in ["src", "crates/tabletist-core/src"] {
+            let before = paths.len();
+            walk(&root.join(dir), &mut paths);
+            assert!(paths.len() - before > 20, "found the sources under {dir}");
+        }
         paths
             .into_iter()
             .map(|path| {
-                let name = path.strip_prefix(root).unwrap().display().to_string();
+                let name = path.strip_prefix(&root).unwrap().display().to_string();
                 // Windows checks the sources out with CRLF line ends.
                 let text = std::fs::read_to_string(&path).unwrap();
                 (name.replace('\\', "/"), text.replace("\r\n", "\n"))
@@ -774,7 +778,8 @@ mod tests {
             .collect()
     }
 
-    const OWNER: &str = "src/env.rs";
+    const OWNER: &str = "crates/tabletist-core/src/env.rs";
+    const THEME: &str = "crates/tabletist-core/src/theme.rs";
 
     /// The code of a file: no comment lines, and nothing from its `tests`
     /// module on. Colours named in prose or as test data are not drawn.
@@ -810,7 +815,7 @@ mod tests {
                 ];
                 for (path, text) in sources() {
                     if path == OWNER
-                        || (path == "src/theme.rs" && shared.contains(&color))
+                        || (path == THEME && shared.contains(&color))
                         || (path == "src/ui/value_tags.rs" && value_tags.contains(&color))
                     {
                         continue;
@@ -831,7 +836,12 @@ mod tests {
     fn no_view_writes_a_hex_colour() {
         // The palette and its theme files, and the screenshots' and the
         // tests' copies of a theme, are colours by name, not a connection's.
-        let allowed = [OWNER, "src/theme.rs", "src/shots.rs", "src/fixtures.rs"];
+        let allowed = [
+            OWNER,
+            THEME,
+            "src/shots.rs",
+            "crates/tabletist-core/src/fixtures.rs",
+        ];
         let mut found = Vec::new();
         for (path, text) in sources() {
             if allowed.contains(&path.as_str()) {
@@ -915,7 +925,11 @@ mod tests {
             if text.contains(concat!("Color", "Tag")) {
                 found.push(format!("{path}: names the removed colour tag"));
             }
-            let stored = ["src/connections.rs", "src/model.rs", "src/settings.rs"];
+            let stored = [
+                "crates/tabletist-core/src/connections.rs",
+                "crates/tabletist-core/src/model.rs",
+                "crates/tabletist-core/src/settings.rs",
+            ];
             if stored.contains(&path.as_str()) && text.contains("Color32") {
                 found.push(format!("{path}: a stored colour"));
             }

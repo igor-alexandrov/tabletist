@@ -182,10 +182,7 @@ pub(crate) mod tests {
     use std::thread::JoinHandle;
 
     use super::*;
-
-    /// The latest release as the fake server gives it: Bookshop's notes
-    /// are the app's own.
-    pub(crate) const RELEASE: &str = include_str!("../../tests/fixtures/update/latest.json");
+    use crate::fixtures::RELEASE;
 
     /// Answers one request on a local port with `answer`, after `wait`,
     /// and gives back the request's lines, the request line first.

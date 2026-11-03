@@ -2374,8 +2374,8 @@ async fn a_save_writes_every_kind_of_value_and_reads_the_row_back() {
 }
 
 /// What the app's check of a typed value says of a numeric before it is
-/// sent (`decimal` in the app's `src/edit.rs`, whose tests name the same
-/// values), held to the server: a value it lets pass is stored as typed,
+/// sent (`decimal` in tabletist-core's `src/edit.rs`, whose tests name the
+/// same values), held to the server: a value it lets pass is stored as typed,
 /// one it refuses for its rounding is stored as the check says it would be,
 /// and one it refuses for its size the server refuses too.
 #[tokio::test]

@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 /// Seconds since the Unix epoch. Tests can pin it (`pin_now`) so dates
 /// the interface prints ("yesterday", "Sep 12") stay the same.
 pub fn now_secs() -> u64 {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     if let Some(now) = PINNED_NOW.with(std::cell::Cell::get) {
         return now;
     }
@@ -18,13 +18,13 @@ pub fn now_secs() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 thread_local! {
     static PINNED_NOW: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
 /// Pins [`now_secs`] on this thread (`None` lets the clock run again).
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub fn pin_now(now: Option<u64>) {
     PINNED_NOW.with(|pinned| pinned.set(now));
 }
