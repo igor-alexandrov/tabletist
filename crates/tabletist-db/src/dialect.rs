@@ -566,9 +566,18 @@ impl Dialect {
                 };
                 Operand::Text(word.to_owned())
             }
-            // SQLite keeps a NaN as NULL, and MySQL keeps none.
-            (Self::Sqlite | Self::MySql, Value::Float(number)) if number.is_nan() => Operand::Null,
-            (_, Value::Float(number)) => Operand::Float(*number),
+            // SQLite keeps a NaN as NULL, and reads its infinities back
+            // from a number too large for a REAL.
+            (Self::Sqlite, Value::Float(number)) if number.is_nan() => Operand::Null,
+            (Self::Sqlite, Value::Float(number)) if number.is_infinite() => {
+                let sign = if number.is_sign_positive() { "" } else { "-" };
+                Operand::Raw(format!("{sign}9e999"))
+            }
+            // MySQL keeps neither a NaN nor an infinity.
+            (Self::MySql, Value::Float(number)) if !number.is_finite() => Operand::Null,
+            (Self::Postgres | Self::MySql | Self::Sqlite, Value::Float(number)) => {
+                Operand::Float(*number)
+            }
             (_, Value::Text(text))
                 if kind == crate::ValueKind::Numeric && crate::value::is_plain_number(text) =>
             {
@@ -1290,6 +1299,23 @@ mod tests {
         assert_eq!(pg.value_literal(&Value::Float(f64::NAN), Numeric), "'NaN'");
         assert_eq!(
             Dialect::Sqlite.value_literal(&Value::Float(f64::NAN), Numeric),
+            "NULL"
+        );
+        let sqlite = Dialect::Sqlite;
+        assert_eq!(
+            sqlite.value_literal(&Value::Float(f64::INFINITY), Numeric),
+            "9e999"
+        );
+        assert_eq!(
+            sqlite.value_literal(&Value::Float(f64::NEG_INFINITY), Numeric),
+            "-9e999"
+        );
+        assert_eq!(
+            pg.value_literal(&Value::Float(f64::NEG_INFINITY), Numeric),
+            "'-Infinity'"
+        );
+        assert_eq!(
+            Dialect::MySql.value_literal(&Value::Float(f64::INFINITY), Numeric),
             "NULL"
         );
         assert_eq!(
