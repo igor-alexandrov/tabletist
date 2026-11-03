@@ -11,10 +11,14 @@ use std::path::{Path, PathBuf};
 
 /// The crates of the window, the widgets and the text they draw, which the
 /// core may not depend on.
-const DRAWING_CRATES: [&str; 8] = [
+const DRAWING_CRATES: [&str; 12] = [
     "eframe",
+    "winit",
+    "raw-window-handle",
+    "glow",
     "egui-winit",
     "egui_glow",
+    "egui-wgpu",
     "egui_extras",
     "egui_kittest",
     "fastframe-text",

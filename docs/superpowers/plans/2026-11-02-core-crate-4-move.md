@@ -60,7 +60,7 @@ What names `src/…` paths, the package or its tests, outside the crates:
 
 ### The guard
 
-`crates/tabletist-core/tests/interface.rs`: the core's `Cargo.toml`, in every dependency table, names no `eframe`, `egui-winit`, `egui_glow`, `egui_extras`, `egui_kittest`, `fastframe-text`, `fastframe-fonts` or `fastframe-icons`, read as TOML so a `[dependencies.<crate>]` table, a dotted key and a rename's `package` are found too (the review on #270 found the first reading went line by line and missed them); and no file under its `src/` or `tests/` names `egui::Context`, `egui::Ui…`, `egui::Painter` or `egui::Response`, as a path or an item of a `use egui::{…}` group. A test of the search finds each form and passes over `Color32`, `FontData` and a longer crate name. `cargo tree -p tabletist-core` holds none of those crates, nor `tabletist`.
+`crates/tabletist-core/tests/interface.rs`: the core's `Cargo.toml`, in every dependency table, names no `eframe`, `winit`, `raw-window-handle`, `glow`, `egui-winit`, `egui_glow`, `egui-wgpu`, `egui_extras`, `egui_kittest`, `fastframe-text`, `fastframe-fonts` or `fastframe-icons`, read as TOML so a `[dependencies.<crate>]` table, a dotted key and a rename's `package` are found too (the review on #270 found the first reading went line by line and missed them); and no file under its `src/` or `tests/` names `egui::Context`, `egui::Ui…`, `egui::Painter` or `egui::Response`, as a path or an item of a `use egui::{…}` group. A test of the search finds each form and passes over `Color32`, `FontData` and a longer crate name. `cargo tree -p tabletist-core` holds none of those crates, nor `tabletist`.
 
 ## Measurements (2026-11-03)
 
