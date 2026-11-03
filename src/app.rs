@@ -7893,25 +7893,36 @@ impl App {
             let page = object.page()?;
             // As ⌘C, the cursor's cell or row alone is copied from the
             // page's rows: a new row is none of them. A copy in a format
-            // takes a new row too, what is not set in it NULL.
+            // takes a new row too, what is not set in it NULL, and in SQL
+            // INSERT its column's default, as a save leaves it.
             let new = crate::edit::new_id(selected.cursor.row).is_some();
             if how == How::Plain && selected.range.is_none() && new {
                 return None;
             }
+            let table = crate::edit::Table::of(workspace, object);
             // What is pending reads as what it shows; a pending DEFAULT or
             // time of the save is written in SQL INSERT as a save sends it.
-            let value = |row: usize, col: usize| match object.edits.cells.get(&(row, col)) {
-                Some(pending) => {
-                    let type_name = page.columns.get(col).map_or("", |column| &column.type_name);
-                    crate::export::Pending {
+            let value = |row: usize, col: usize| {
+                let type_name = page.columns.get(col).map_or("", |column| &column.type_name);
+                match object.edits.cells.get(&(row, col)) {
+                    Some(pending) => crate::export::Pending {
                         value: Some(crate::edit::shown_value(&pending.new)),
                         sql: dialect.pending_literal(&pending.new, type_name),
+                    },
+                    None if crate::edit::new_id(row).is_some() => {
+                        let column = table.as_ref().and_then(|table| table.column(col));
+                        let expression = column.and_then(|column| column.default.clone());
+                        let default = tabletist_db::NewValue::Default { expression };
+                        crate::export::Pending {
+                            value: None,
+                            sql: dialect.pending_literal(&default, type_name),
+                        }
                     }
+                    None => crate::export::Pending {
+                        value: page.rows.get(row).and_then(|row| row.get(col)).cloned(),
+                        sql: None,
+                    },
                 }
-                None => crate::export::Pending {
-                    value: page.rows.get(row).and_then(|row| row.get(col)).cloned(),
-                    sql: None,
-                },
             };
             let target = crate::export::Target::Table {
                 object: &object.object,

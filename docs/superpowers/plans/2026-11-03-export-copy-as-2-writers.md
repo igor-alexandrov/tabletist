@@ -44,7 +44,7 @@ The spec's departures and decisions stand as approved. Building it settled these
 | B11 | The spec's sketch of `Writer` | `Writer::new(format, options, columns, target)`, then `start`, `row` for each row and `finish`; `Columns` holds no type names (no writer needs them: a pending DEFAULT comes with its cell, as `export::Pending`) | One row at a time is what a stream of batches is made of. The other way: `rows(batch)` |
 | B12 | (a byte-order mark on the clipboard) | The clipboard never takes one, whatever CSV's and TSV's option says | It is for Excel opening a file. The other way: as the option says |
 | B13 | (a pending DEFAULT or time of the save) | SQL INSERT writes what a save sends: `DEFAULT`, SQLite's default expression, the dialect's clock (`now()`). The other formats write the word the grid shows | A copied INSERT must not store the word. The other way: the loaded value |
-| B14 | (Copy as on a new row with no range) | Copies the row, what is not set in it NULL. Mod+C there still copies nothing, as before | The row is what is selected. The other way: nothing, as Mod+C |
+| B14 | (Copy as on a new row with no range) | Copies the row, what is not set in it NULL, and in SQL INSERT its column's default, as a save leaves it. Mod+C there still copies nothing, as before | The row is what is selected. The other way: nothing, as Mod+C |
 
 ## Files
 

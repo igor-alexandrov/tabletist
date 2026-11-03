@@ -489,6 +489,23 @@ fn copy_as_on_a_new_row_copies_it() {
     );
 }
 
+/// Test 6: in SQL INSERT a new row's unset cells take their column's
+/// default, as its save leaves them: on SQLite the default's expression,
+/// or NULL where the column has none.
+#[test]
+fn sql_insert_of_a_new_row_gives_unset_cells_their_default() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    let new = crate::edit::new_row(super::insert_audit_tests::add(&mut harness, tab, id));
+    super::insert_audit_tests::set(&mut harness, tab, id, (new, 1), "7");
+    select(&mut harness, tab, id, (new, 1));
+    copy_as_chord(&mut harness);
+    let sql = pick(&mut harness, Key::S, "s").expect("SQL INSERT");
+    assert!(
+        sql.ends_with("\n  (NULL, 7, ('print'), NULL, (CURRENT_TIMESTAMP));"),
+        "{sql}"
+    );
+}
+
 /// The row panel's title and the line under it end before Copy row ▾. In
 /// a narrow window the button gives up its words, its name kept, and the
 /// title is cut only where it still does not fit.
