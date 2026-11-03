@@ -717,6 +717,8 @@ mod tests {
         let (spec, _) =
             tabletist_db::ConnectSpec::from_url("postgres://demo@localhost:5432/bookshop").unwrap();
         assert_eq!(database_of(&spec), "bookshop");
+        let spec = tabletist_db::ConnectSpec::bigquery("analytics-project", None);
+        assert_eq!(database_of(&spec), "analytics-project");
     }
 
     #[test]

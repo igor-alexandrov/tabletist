@@ -209,12 +209,7 @@ impl ParsedUrl {
                     }
                 }
                 return Ok(Self {
-                    spec: ConnectSpec {
-                        driver: Driver::BigQuery,
-                        database: project,
-                        bigquery_key: key,
-                        ..ConnectSpec::default()
-                    },
+                    spec: ConnectSpec::bigquery(project, key),
                     secrets: Secrets::default(),
                     names_tls: false,
                     names_ca_file: false,
@@ -487,9 +482,9 @@ mod tests {
     #[test]
     fn bigquery_urls_name_a_project_and_a_key() {
         let (spec, secrets) = ConnectSpec::from_url("bigquery:my-project").unwrap();
-        assert_eq!(spec.driver, Driver::BigQuery);
-        assert_eq!(spec.database, "my-project");
-        assert_eq!(spec.bigquery_key, None);
+        assert_eq!(spec, ConnectSpec::bigquery("my-project", None));
+        assert_eq!(spec.host, "");
+        assert_eq!(spec.port, 0);
         assert_eq!(secrets, Secrets::default());
         assert_eq!(spec.summary(), "my-project");
 

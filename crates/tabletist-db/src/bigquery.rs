@@ -7,17 +7,20 @@
 //! transaction would refuse it.
 
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use gcp_bigquery_client::Client;
 use gcp_bigquery_client::error::BQError;
 use gcp_bigquery_client::model::get_query_results_parameters::GetQueryResultsParameters;
+use gcp_bigquery_client::model::job::Job;
+use gcp_bigquery_client::model::job_configuration::JobConfiguration;
+use gcp_bigquery_client::model::job_configuration_query::JobConfigurationQuery;
+use gcp_bigquery_client::model::job_reference::JobReference;
 use gcp_bigquery_client::model::query_parameter::QueryParameter;
 use gcp_bigquery_client::model::query_parameter_type::QueryParameterType;
 use gcp_bigquery_client::model::query_parameter_value::QueryParameterValue;
-use gcp_bigquery_client::model::query_request::QueryRequest;
-use gcp_bigquery_client::model::query_response::QueryResponse;
 use gcp_bigquery_client::model::table_field_schema::TableFieldSchema;
 
 use crate::adapter::Adapter;
@@ -195,63 +198,136 @@ impl Conn {
             .await
             .map_err(|error| match error {
                 BQError::AuthError(_) | BQError::YupAuthError(_) => Error::Auth(error.to_string()),
+                // The API was reached and answered: a bad project or a
+                // missing permission, not a network failure.
+                BQError::ResponseError { .. } => Error::query(error.to_string()),
                 other => Error::Connect(other.to_string()),
             })?;
         Ok(conn)
     }
 
-    /// Runs `sql` as a query job and keeps at most `limit` rows. Waits
-    /// [`JOB_WAIT`] for the job, then fetches rows of it as they come.
-    /// The job's id is noted while it runs so [`CancelHandle`] reaches it.
+    /// Runs `sql` as a query job and keeps at most `limit` rows. The job
+    /// gets its id here, before anything is sent, and is noted in
+    /// `running` first: a cancel reaches it from its first moment, while
+    /// the job still runs. `timeout` ends the job on the server
+    /// (an agent's statement timeout; browsing has none).
+    ///
+    /// Every statement goes through [`crate::agent::check_read`], here in
+    /// the one place: a filter's raw WHERE is written into the built SQL,
+    /// and BigQuery would run a second statement it smuggles.
     async fn query(
         &self,
         sql: &str,
+        params: &[Param],
         limit: usize,
-        params: Vec<QueryParameter>,
+        timeout: Option<Duration>,
     ) -> Result<(Vec<ColumnMeta>, Vec<Vec<Value>>, Duration)> {
+        let read = crate::agent::check_read(Dialect::BigQuery, sql, params).map_err(Error::Agent)?;
         let started = Instant::now();
-        let mut request = QueryRequest::new(sql);
-        request.max_results = Some(limit as i32);
-        request.timeout_ms = Some(JOB_WAIT.as_millis() as i32);
-        if !params.is_empty() {
-            request.parameter_mode = Some("POSITIONAL".to_owned());
-            request.query_parameters = Some(params);
-        }
-        let response = self
-            .client
-            .job()
-            .query(&self.project, request)
+        // A unique id of this process's own: job ids are letters, digits,
+        // dashes and underscores.
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let job_id = format!(
+            "tabletist-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        );
+        *self.running.lock().expect("running-job lock") = Some((job_id.clone(), None));
+        let result = self
+            .run_job(&read, limit, timeout, job_id)
             .await
-            .map_err(query_error)?;
-        // A job that did not finish within the wait has its rows fetched
-        // by its reference; both kinds page the same way.
-        let job = response.job_reference.clone();
-        if let Some(reference) = &job {
-            let mut running = self.running.lock().expect("running-job lock");
-            *running = reference
-                .job_id
-                .clone()
-                .map(|id| (id, reference.location.clone()));
-        }
-        let result = self.collect(response, job, limit).await;
+            .map(|(columns, rows)| (columns, rows, started.elapsed()));
         *self.running.lock().expect("running-job lock") = None;
-        result.map(|(columns, rows)| (columns, rows, started.elapsed()))
+        result
     }
 
-    /// The rows of a finished or running query's first response, and of
-    /// its later pages, at most `limit` of them.
-    async fn collect(
+    /// The job of a checked read, from its insert to its last page.
+    async fn run_job(
         &self,
-        mut response: QueryResponse,
-        job: Option<gcp_bigquery_client::model::job_reference::JobReference>,
+        read: &Read,
         limit: usize,
+        timeout: Option<Duration>,
+        job_id: String,
     ) -> Result<(Vec<ColumnMeta>, Vec<Vec<Value>>)> {
+        let clamped = i32::try_from(limit).unwrap_or(i32::MAX);
+        let params: Vec<QueryParameter> = read
+            .params()
+            .iter()
+            .map(|param| {
+                let (kind, value) = match param {
+                    Param::Null => ("STRING", None),
+                    Param::Bool(flag) => ("BOOL", Some(flag.to_string())),
+                    Param::Int(number) => ("INT64", Some(number.to_string())),
+                    Param::Float(number) => ("FLOAT64", Some(number.to_string())),
+                    Param::Text(text) => ("STRING", Some(text.clone())),
+                };
+                QueryParameter {
+                    name: None,
+                    parameter_type: Some(QueryParameterType {
+                        r#type: kind.to_owned(),
+                        ..Default::default()
+                    }),
+                    parameter_value: Some(QueryParameterValue {
+                        value,
+                        ..Default::default()
+                    }),
+                }
+            })
+            .collect();
+        let job = Job {
+            job_reference: Some(JobReference {
+                job_id: Some(job_id),
+                project_id: Some(self.project.clone()),
+                location: None,
+            }),
+            configuration: Some(JobConfiguration {
+                query: Some(JobConfigurationQuery {
+                    query: read.text().to_owned(),
+                    use_legacy_sql: Some(false),
+                    parameter_mode: (!params.is_empty()).then(|| "POSITIONAL".to_owned()),
+                    query_parameters: (!params.is_empty()).then_some(params),
+                    ..Default::default()
+                }),
+                job_timeout_ms: timeout.map(|timeout| timeout.as_millis().to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let inserted = self
+            .client
+            .job()
+            .insert(&self.project, job)
+            .await
+            .map_err(query_error)?;
+        // The server says where the job runs, which its pages are read by.
+        let reference = inserted
+            .job_reference
+            .expect("a job answers with its reference");
+        if let Ok(mut running) = self.running.lock()
+            && let Some(current) = running.as_mut()
+            && current.0 == reference.job_id.clone().unwrap_or_default()
+        {
+            current.1 = reference.location.clone();
+        }
         let mut columns = Vec::new();
         let mut rows: Vec<Vec<Value>> = Vec::new();
-        // A job still running when the wait ran out answers with neither
-        // rows nor a page token: its results are asked for by the job's
-        // id, page by page once it completes.
+        let mut token = None;
         loop {
+            let page = GetQueryResultsParameters {
+                page_token: token,
+                max_results: Some(clamped - i32::try_from(rows.len()).unwrap_or(clamped)),
+                location: reference.location.clone(),
+                timeout_ms: Some(JOB_WAIT.as_millis() as i32),
+                ..Default::default()
+            };
+            let job_id = reference.job_id.clone().expect("noted above");
+            let mut response: gcp_bigquery_client::model::query_response::QueryResponse = self
+                .client
+                .job()
+                .get_query_results(&self.project, &job_id, page)
+                .await
+                .map_err(query_error)?
+                .into();
             let complete = response.job_complete.unwrap_or(true);
             if let Some(schema) = response.schema.as_ref()
                 && let Some(fields) = schema.fields.as_ref()
@@ -276,26 +352,10 @@ impl Conn {
                 rows.truncate(limit);
                 return Ok((columns, rows));
             }
-            let token = response.page_token.take();
+            token = response.page_token.take();
             if complete && token.is_none() {
                 return Ok((columns, rows));
             }
-            let Some(job_id) = job.as_ref().and_then(|job| job.job_id.clone()) else {
-                return Ok((columns, rows));
-            };
-            let page = GetQueryResultsParameters {
-                page_token: token,
-                max_results: Some((limit - rows.len()) as i32),
-                location: job.as_ref().and_then(|job| job.location.clone()),
-                ..Default::default()
-            };
-            response = self
-                .client
-                .job()
-                .get_query_results(&self.project, &job_id, page)
-                .await
-                .map_err(query_error)?
-                .into();
         }
     }
 
@@ -466,7 +526,7 @@ impl Adapter for Conn {
         let sql = Dialect::BigQuery.select_rows(query, &[], &binary);
         debug_assert!(sql.params.is_empty());
         let limit = query.limit as usize;
-        let (columns, mut rows, elapsed) = self.query(&sql.text, limit + 1, Vec::new()).await?;
+        let (columns, mut rows, elapsed) = self.query(&sql.text, &[], limit + 1, None).await?;
         let has_more = rows.len() > limit;
         rows.truncate(limit);
         Ok(RowPage {
@@ -481,7 +541,7 @@ impl Adapter for Conn {
     async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
         let binary = self.binary_columns(query).await?;
         let sql = Dialect::BigQuery.count_rows(query, &binary);
-        let (_, rows, _) = self.query(&sql.text, 1, Vec::new()).await?;
+        let (_, rows, _) = self.query(&sql.text, &[], 1, None).await?;
         rows.first()
             .and_then(|row| row.first())
             .and_then(|value| match value {
@@ -494,7 +554,7 @@ impl Adapter for Conn {
 
     async fn lookup(&self, lookup: &Lookup) -> Result<LookupPage> {
         let sql = Dialect::BigQuery.lookup(lookup);
-        let (_, rows, _) = self.query(&sql.text, lookup.limit as usize + 1, Vec::new()).await?;
+        let (_, rows, _) = self.query(&sql.text, &[], lookup.limit as usize + 1, None).await?;
         crate::lookup::page(rows, lookup)
     }
 
@@ -523,10 +583,7 @@ impl Adapter for Conn {
             }
             let started = Instant::now();
             let run = async {
-                let read = crate::agent::check_read(Dialect::BigQuery, &text, &[])
-                    .map_err(Error::Agent)?;
-                let (columns, rows, _) =
-                    self.query(read.text(), limit as usize + 1, Vec::new()).await?;
+                let (columns, rows, _) = self.query(&text, &[], limit as usize + 1, None).await?;
                 Ok((columns, rows))
             };
             match run.await {
@@ -555,6 +612,7 @@ impl Adapter for Conn {
         Ok(outcome)
     }
 
+
     /// The checked statement runs as a read-only script of one does, its
     /// values bound by the API as typed parameters. BigQuery keeps no
     /// maskable columns here: `agents_catalog` is unsupported, so a
@@ -566,30 +624,6 @@ impl Adapter for Conn {
         _sources: &Sources,
         stop: &StopFlag,
     ) -> Result<(ScriptOutcome, Vec<bool>)> {
-        let params = read
-            .params()
-            .iter()
-            .map(|param| {
-                let (kind, value) = match param {
-                    Param::Null => ("STRING", None),
-                    Param::Bool(flag) => ("BOOL", Some(flag.to_string())),
-                    Param::Int(number) => ("INT64", Some(number.to_string())),
-                    Param::Float(number) => ("FLOAT64", Some(number.to_string())),
-                    Param::Text(text) => ("STRING", Some(text.clone())),
-                };
-                QueryParameter {
-                    name: None,
-                    parameter_type: Some(QueryParameterType {
-                        r#type: kind.to_owned(),
-                        ..Default::default()
-                    }),
-                    parameter_value: Some(QueryParameterValue {
-                        value,
-                        ..Default::default()
-                    }),
-                }
-            })
-            .collect();
         let mut outcome = ScriptOutcome::default();
         if stop.is_stopped() {
             outcome.stopped = true;
@@ -601,7 +635,12 @@ impl Adapter for Conn {
         }
         let started = Instant::now();
         match self
-            .query(read.text(), limits.rows as usize + 1, params)
+            .query(
+                read.text(),
+                read.params(),
+                limits.rows as usize + 1,
+                Some(limits.timeout),
+            )
             .await
         {
             Ok((columns, mut rows, _)) => {
@@ -712,6 +751,20 @@ mod tests {
     }
 
     #[test]
+    fn a_raw_where_cannot_smuggle_a_second_statement() {
+        // What fetch_rows and count_rows build with a hostile raw WHERE,
+        // then send through query()'s check.
+        let mut q = crate::RowQuery::new(crate::ObjectRef::new("d", "t"), 100);
+        q.raw_where = Some("1 = 1\n) ; DELETE FROM d.t WHERE true; --".into());
+        let sql = Dialect::BigQuery.select_rows(&q, &[], &[]);
+        assert!(
+            crate::agent::check_read(crate::Dialect::BigQuery, &sql.text, &[]).is_err(),
+            "{}",
+            sql.text
+        );
+    }
+
+    #[test]
     fn a_script_only_runs_what_proves_a_read() {
         // The guard the adapter's run_script stands on.
         assert!(crate::agent::check_read(crate::Dialect::BigQuery, "SELECT 1", &[]).is_ok());
@@ -729,6 +782,7 @@ mod tests {
             "EXECUTE IMMEDIATE 'SELECT 1'",
             "BEGIN TRANSACTION",
             "SELECT 1; SELECT 2",
+            "SELECT 1; DELETE FROM d.t WHERE true",
         ] {
             assert!(
                 crate::agent::check_read(crate::Dialect::BigQuery, text, &[]).is_err(),

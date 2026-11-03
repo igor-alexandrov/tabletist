@@ -160,11 +160,11 @@ impl Dialect {
         }
     }
 
-    /// `#` starts a line comment.
+    /// `#` starts a line comment (GoogleSQL's too).
     fn hash_comments(self) -> bool {
         match self {
-            Self::MySql => true,
-            Self::Postgres | Self::Sqlite | Self::BigQuery => false,
+            Self::MySql | Self::BigQuery => true,
+            Self::Postgres | Self::Sqlite => false,
         }
     }
 

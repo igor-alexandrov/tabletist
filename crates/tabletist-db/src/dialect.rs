@@ -333,20 +333,19 @@ impl Dialect {
     /// with this engine's sense of case.
     fn matches(self, column: &str, pattern: String, params: &mut Binds) -> String {
         let placeholder = self.bind(params, pattern);
-        // GoogleSQL's LIKE is case-sensitive and has no ILIKE: lower both
-        // sides for the case-insensitive match the other dialects give.
-        if self == Self::BigQuery {
-            return format!(
-                "LOWER({}) LIKE LOWER({placeholder})",
-                self.as_text(column)
-            );
+        match self {
+            // GoogleSQL's LIKE is case-sensitive and has no ILIKE: lower
+            // both sides for the case-insensitive match the others give.
+            Self::BigQuery => {
+                format!("LOWER({}) LIKE LOWER({placeholder})", self.as_text(column))
+            }
+            Self::Postgres | Self::MySql | Self::Sqlite => format!(
+                "{} {} {placeholder}{}",
+                self.as_text(column),
+                self.like(),
+                self.like_escape()
+            ),
         }
-        format!(
-            "{} {} {placeholder}{}",
-            self.as_text(column),
-            self.like(),
-            self.like_escape()
-        )
     }
 
     /// A filter value in SQL. PostgreSQL rows are read through the
@@ -482,10 +481,16 @@ impl Dialect {
             Self::Postgres if text.contains('\\') => quote_literal(text),
             Self::Postgres | Self::Sqlite => format!("'{}'", text.replace('\'', "''")),
             // GoogleSQL's strings read a backslash as an escape in every
-            // one, so it is doubled there, and the quote itself escaped.
+            // one, so it is doubled there, and the quote itself escaped;
+            // a raw line break or NUL is no string's, so they are escapes.
             Self::BigQuery => format!(
                 "'{}'",
-                text.replace('\\', "\\\\").replace('\'', "\\'")
+                text.replace('\\', "\\\\")
+                    .replace('\n', "\\n")
+                    .replace('\r', "\\r")
+                    .replace('\t', "\\t")
+                    .replace('\0', "\\000")
+                    .replace('\'', "\\'")
             ),
             Self::MySql => format!(
                 "'{}'",
@@ -570,8 +575,9 @@ impl Dialect {
     /// PostgreSQL, whose rows go through the simple-query protocol, and a
     /// bound value elsewhere. NULL is written out in both.
     fn sent(self, operand: &Operand, params: &mut Vec<Value>) -> String {
-        if matches!(self, Self::Postgres | Self::BigQuery) {
-            return self.shown(operand);
+        match self {
+            Self::Postgres | Self::BigQuery => return self.shown(operand),
+            Self::MySql | Self::Sqlite => {}
         }
         params.push(match operand {
             Operand::Null => return "NULL".to_owned(),
@@ -1131,11 +1137,12 @@ impl Dialect {
     pub fn select_row(self, object: &ObjectRef, key: &[(String, Value)], lock: bool) -> Sql {
         let mut params = Vec::new();
         let clause = self.key_clause(key, &mut params).sent;
-        let lock = if lock && !matches!(self, Self::Sqlite | Self::BigQuery) {
-            " FOR UPDATE"
-        } else {
-            ""
+        let locks = match self {
+            Self::Postgres | Self::MySql => true,
+            // SQLite has no row locks to take; BigQuery has none at all.
+            Self::Sqlite | Self::BigQuery => false,
         };
+        let lock = if lock && locks { " FOR UPDATE" } else { "" };
         Sql {
             text: format!(
                 "SELECT * FROM {}{clause} LIMIT 2{lock}",
@@ -1527,6 +1534,10 @@ mod tests {
         assert_eq!(Dialect::Sqlite.quote_ident("select"), r#""select""#);
         assert_eq!(Dialect::MySql.quote_ident("a`b"), "`a``b`");
         assert_eq!(Dialect::BigQuery.quote_ident("a`b\\c"), "`a\\`b\\\\c`");
+        assert_eq!(
+            Dialect::BigQuery.literal("a'b\nc\td\\e\0f"),
+            "'a\\'b\\nc\\td\\\\e\\000f'"
+        );
         assert_eq!(
             Dialect::MySql.qualified(&ObjectRef::new("shop", "orders")),
             "`shop`.`orders`"
