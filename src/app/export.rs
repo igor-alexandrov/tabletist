@@ -82,16 +82,19 @@ impl App {
 
     /// The sheet's columns: the page's, or the structure's before a page.
     fn export_columns(object: &ObjectTab) -> Vec<ColumnPick> {
-        let pick = |name: &str, type_name: &str| ColumnPick {
+        let pick = |(at, (name, type_name)): (usize, (&str, &str))| ColumnPick {
             name: name.to_owned(),
             type_name: type_name.to_owned(),
             included: true,
+            at,
         };
         if let Some(page) = object.page() {
             return page
                 .columns
                 .iter()
-                .map(|column| pick(&column.name, &column.type_name))
+                .map(|column| (column.name.as_str(), column.type_name.as_str()))
+                .enumerate()
+                .map(pick)
                 .collect();
         }
         object
@@ -102,7 +105,9 @@ impl App {
                 structure
                     .columns
                     .iter()
-                    .map(|column| pick(&column.name, &column.type_name))
+                    .map(|column| (column.name.as_str(), column.type_name.as_str()))
+                    .enumerate()
+                    .map(pick)
                     .collect()
             })
             .unwrap_or_default()
@@ -307,7 +312,7 @@ impl App {
             self.said = Some(words.replace("{key}", save.as_str()));
             return;
         }
-        let rows = crate::export_sheet::first_rows(selected);
+        let rows = crate::export_sheet::first_rows(selected, false);
         let destination = match self.export_clipboard.contains(&format) {
             true => DestinationChoice::Clipboard,
             false => DestinationChoice::File,
@@ -321,6 +326,7 @@ impl App {
         let mut sheet = ExportSheet {
             tab,
             id,
+            result: None,
             asked,
             format,
             options: self.export.clone(),
@@ -334,6 +340,7 @@ impl App {
             review: false,
             asking: false,
             cursor_row: selection,
+            row_only: false,
         };
         // Clipboard only where the rows fit.
         if sheet.destination == DestinationChoice::Clipboard
@@ -484,6 +491,8 @@ impl App {
             }),
             RowsChoice::Matching => matching,
             RowsChoice::Whole => whole,
+            // A result's: not on a table's sheet.
+            RowsChoice::Loaded | RowsChoice::RunAgain => None,
         };
         let sort = query.sort.first().map(|sort| {
             let arrow = match sort.dir {
@@ -599,6 +608,8 @@ impl App {
             RowsChoice::Matching | RowsChoice::Whole => {
                 ExportRows::Query(Self::export_query(sheet, object))
             }
+            // A result's: not on a table's sheet.
+            RowsChoice::Loaded | RowsChoice::RunAgain => return None,
             RowsChoice::Selected | RowsChoice::Page => {
                 let page = object.page()?;
                 let at: Vec<usize> = names
@@ -649,7 +660,7 @@ impl App {
             masked,
             format: sheet.format,
             options: sheet.options.clone(),
-            object: object.object.clone(),
+            object: Some(object.object.clone()),
             dialect,
             destination: destination.clone(),
         };
@@ -829,6 +840,7 @@ impl App {
         let sheet = ExportSheet {
             tab,
             id: object.id,
+            result: None,
             asked,
             format,
             options: self.export.clone(),
@@ -842,6 +854,7 @@ impl App {
             review: false,
             asking: false,
             cursor_row: false,
+            row_only: false,
         };
         self.run_export(&sheet, Destination::File { path, replace });
     }

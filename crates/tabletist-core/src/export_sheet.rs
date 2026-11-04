@@ -1,6 +1,7 @@
-//! The Export sheet (macOS) and float (Omarchy) of a table, and the export
-//! it starts while that runs: what each holds and the words they say
-//! (spec `2026-11-03-export-copy-as-3-table-design.md`). No drawing.
+//! The Export sheet (macOS) and float (Omarchy) of a table or a SQL
+//! result, and the export it starts while that runs: what each holds and
+//! the words they say (specs `2026-11-03-export-copy-as-3-table-design.md`
+//! and `2026-11-04-export-copy-as-4-result-design.md`). No drawing.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -21,15 +22,51 @@ pub enum RowsChoice {
     Matching,
     /// Every row of the table, in its key's order.
     Whole,
+    /// A SQL result's rows as the editor loaded them.
+    Loaded,
+    /// A SQL result's statement run again without the editor's limit
+    /// (spec 4, S2).
+    RunAgain,
 }
 
 impl RowsChoice {
+    /// A table's choices, in the sheet's order.
     pub const ALL: [Self; 4] = [Self::Selected, Self::Page, Self::Matching, Self::Whole];
+    /// A SQL result's (spec 4, F1).
+    pub const RESULT: [Self; 3] = [Self::Selected, Self::Loaded, Self::RunAgain];
 
     /// Whether the rows are the tab's own, so nothing runs (spec, D7).
     pub fn loaded(self) -> bool {
-        matches!(self, Self::Selected | Self::Page)
+        matches!(self, Self::Selected | Self::Page | Self::Loaded)
     }
+}
+
+/// The SQL result a sheet exports: which statement of the editor's last
+/// run, and the editor's name ("Query 1").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResultOf {
+    /// The statement's place among the run's, from 0.
+    pub statement: usize,
+    /// The editor's number: "Query 1".
+    pub query: u32,
+    /// The answer whose rows these are: another run's are other rows, and
+    /// the sheet goes with them.
+    pub run: Option<crate::backend::RequestId>,
+}
+
+/// Why Run again without the limit is greyed (spec 4, F3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotAgain {
+    /// The run was sent to write.
+    ChangedData,
+    /// The limit did not cut the result: every row is loaded.
+    AllLoaded,
+    /// The editor's text is not the one that ran, a run is in flight, or
+    /// the tab is on another database since.
+    Edited,
+    /// The tab's session is not there to take a command (it dropped, or
+    /// it is connecting), as Show all is then not offered.
+    Disconnected,
 }
 
 /// Where an export writes.
@@ -46,6 +83,9 @@ pub struct ColumnPick {
     pub name: String,
     pub type_name: String,
     pub included: bool,
+    /// Its place among the columns the source returns: a SQL result's may
+    /// share a name.
+    pub at: usize,
 }
 
 /// A count the sheet shows: exact, or the planner's estimate (≈).
@@ -58,9 +98,12 @@ pub struct Count {
 /// The sheet, while it is open.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExportSheet {
-    /// The connection tab, and the table's tab in it.
+    /// The connection tab, and the table's (or the SQL editor's) tab in
+    /// it.
     pub tab: ConnTabId,
     pub id: TabId,
+    /// A SQL result's sheet: which statement's rows. `None` for a table.
+    pub result: Option<ResultOf>,
     /// From `App::next_id`: keys the sheet's state in egui.
     pub asked: u64,
     pub format: Format,
@@ -87,6 +130,9 @@ pub struct ExportSheet {
     /// Selected rows takes the cursor's row where no range stands: the
     /// sheet was asked for the selection (Export selection…).
     pub cursor_row: bool,
+    /// Selected rows is the cursor's row alone, whatever range stands: the
+    /// row panel's Export row… (spec 4, S8).
+    pub row_only: bool,
 }
 
 /// A change made in the sheet.
@@ -212,13 +258,19 @@ pub fn block_columns(columns: Vec<ColumnPick>, (first, last): (usize, usize)) ->
 }
 
 /// The rows a sheet starts on (prompt): Selected rows with a selection,
-/// else All rows matching the filter.
-pub fn first_rows(selected: usize) -> RowsChoice {
-    if selected > 0 {
-        RowsChoice::Selected
-    } else {
-        RowsChoice::Matching
+/// else All rows matching the filter, or a result's Rows already loaded
+/// (spec 4, S1).
+pub fn first_rows(selected: usize, result: bool) -> RowsChoice {
+    match (selected > 0, result) {
+        (true, _) => RowsChoice::Selected,
+        (false, false) => RowsChoice::Matching,
+        (false, true) => RowsChoice::Loaded,
     }
+}
+
+/// The file a result is suggested in: `query-1.csv` (spec 4, S4).
+pub fn result_file_stem(query: u32) -> String {
+    format!("query-{query}")
 }
 
 /// The folder files are suggested in (spec, Q19): `$XDG_DOWNLOAD_DIR`,
@@ -601,6 +653,7 @@ mod tests {
             name: name.into(),
             type_name: "text".into(),
             included: true,
+            at: 0,
         };
         ExportSheet {
             tab: ConnTabId(1),
@@ -618,6 +671,8 @@ mod tests {
             review: false,
             asking: false,
             cursor_row: false,
+            row_only: false,
+            result: None,
         }
     }
 
@@ -716,7 +771,7 @@ mod tests {
             masked: Vec::new(),
             format: Format::Csv,
             options: Options::default(),
-            object: tabletist_db::ObjectRef::new("main", "books"),
+            object: Some(tabletist_db::ObjectRef::new("main", "books")),
             dialect: tabletist_db::Dialect::Sqlite,
             destination: crate::backend::export::Destination::Clipboard,
         };
@@ -778,7 +833,11 @@ mod tests {
             "18,200 of ≈ 31,400 rows"
         );
         assert_eq!(of_total(4_000, None, en), "4,000 rows");
-        assert_eq!(first_rows(12), RowsChoice::Selected);
-        assert_eq!(first_rows(0), RowsChoice::Matching);
+        assert_eq!(first_rows(12, false), RowsChoice::Selected);
+        assert_eq!(first_rows(0, false), RowsChoice::Matching);
+        assert_eq!(first_rows(12, true), RowsChoice::Selected);
+        assert_eq!(first_rows(0, true), RowsChoice::Loaded);
+        assert_eq!(result_file_stem(2), "query-2");
+        assert!(RowsChoice::Loaded.loaded() && !RowsChoice::RunAgain.loaded());
     }
 }
