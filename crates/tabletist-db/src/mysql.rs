@@ -521,6 +521,44 @@ impl Adapter for Conn {
         })
     }
 
+    async fn export_statement(&self, query: &RowQuery, columns: &[String]) -> Result<String> {
+        let key = self.primary_key(&query.object).await?;
+        let binary = self.binary_columns(query).await?;
+        Ok(Dialect::MySql.shown_export(query, &key, &binary, columns))
+    }
+
+    /// An export's rows through a prepared statement inside a read-only
+    /// transaction, read from the server a row at a time (the driver does
+    /// not buffer a result), sent on a batch at a time.
+    async fn stream_rows(
+        &self,
+        query: &RowQuery,
+        columns: &[String],
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        let key = self.primary_key(&query.object).await?;
+        let binary = self.binary_columns(query).await?;
+        let sql = Dialect::MySql.export_rows(query, &key, &binary, columns);
+        let mut conn = self.conn.lock().await;
+        let mut transaction = conn
+            .start_transaction(read_only())
+            .await
+            .map_err(query_error)?;
+        match stream_into(&mut transaction, &sql, batch, to, stop).await {
+            Ok(sent) => {
+                stop.finish();
+                finish(transaction, Ok(sent)).await
+            }
+            // Rows the stream did not read are still on their way: a
+            // rollback now would read every one of them first. The
+            // export's connection is closed after a failure, which ends
+            // the transaction with it.
+            Err(error) => Err(crate::agent::over_its_time(error)),
+        }
+    }
+
     async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
         let binary = self.binary_columns(query).await?;
         let sql = Dialect::MySql.count_rows(query, &binary);
@@ -633,6 +671,41 @@ async fn read_page(
     }
     result.drop_result().await.map_err(query_error)?;
     Ok((columns, rows))
+}
+
+/// An export's rows, a batch at a time (see [`Conn::stream_rows`]).
+async fn stream_into(
+    transaction: &mut mysql_async::Transaction<'_>,
+    sql: &crate::dialect::Sql,
+    batch: usize,
+    to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+    stop: &StopFlag,
+) -> Result<u64> {
+    let statement = prepare(transaction, sql).await?;
+    let mut result = transaction
+        .exec_iter(&statement, params(&sql.params))
+        .await
+        .map_err(query_error)?;
+    let columns = column_metas(result.columns_ref());
+    crate::stream::send(to, crate::Streamed::Columns(columns.clone())).await?;
+    let mut sent = 0u64;
+    let mut rows = Vec::with_capacity(batch);
+    while let Some(row) = result.next().await.map_err(query_error)? {
+        rows.push(row_values(row, &columns));
+        if rows.len() == batch {
+            if stop.is_stopped() {
+                return Err(Error::Cancelled);
+            }
+            sent += rows.len() as u64;
+            let full = std::mem::replace(&mut rows, Vec::with_capacity(batch));
+            crate::stream::send(to, crate::Streamed::Rows(full)).await?;
+        }
+    }
+    if !rows.is_empty() {
+        sent += rows.len() as u64;
+        crate::stream::send(to, crate::Streamed::Rows(rows)).await?;
+    }
+    Ok(sent)
 }
 
 /// The row of a count.

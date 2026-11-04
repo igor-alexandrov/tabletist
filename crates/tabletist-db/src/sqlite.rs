@@ -1149,6 +1149,82 @@ impl Adapter for Conn {
         .await
     }
 
+    async fn export_statement(&self, query: &RowQuery, columns: &[String]) -> Result<String> {
+        let query = query.clone();
+        let columns = columns.to_vec();
+        self.run(move |connection| {
+            let key = ordering_key(connection, &query.object)?;
+            let binary = binary_columns(connection, &query)?;
+            Ok(Dialect::Sqlite.shown_export(&query, &key, &binary, &columns))
+        })
+        .await
+    }
+
+    /// An export's rows, stepped one at a time in one blocking job and
+    /// sent on a batch at a time: the job waits while the receiver holds
+    /// the batch before. The kinds of columns declared with no type come
+    /// from the first batch's values, as a page's do.
+    async fn stream_rows(
+        &self,
+        query: &RowQuery,
+        columns: &[String],
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        check_raw_where(query)?;
+        let query = query.clone();
+        let columns = columns.to_vec();
+        let fences = self.fences.clone();
+        let to = to.clone();
+        let stop = stop.clone();
+        self.browse(move |connection| {
+            let key = ordering_key(connection, &query.object)?;
+            let binary = binary_columns(connection, &query)?;
+            let sql = Dialect::Sqlite.export_rows(&query, &key, &binary, &columns);
+            // As in `fetch_rows`: only the text with the raw WHERE.
+            let _fenced = fences.fence(Fence::Filter);
+            let mut statement = connection.prepare(&sql.text).map_err(map_error)?;
+            let mut declared = Some(declared_columns(connection, &statement, &sql.text)?);
+            let width = declared.as_ref().map_or(0, Vec::len);
+            let mut rows = statement
+                .query(rusqlite::params_from_iter(sql.params.iter().map(to_sqlite)))
+                .map_err(map_error)?;
+            let mut sent = 0u64;
+            let mut values: Vec<Vec<Value>> = Vec::with_capacity(batch);
+            let mut flush =
+                |values: Vec<Vec<Value>>, declared: &mut Option<Vec<(String, String)>>| {
+                    if let Some(declared) = declared.take() {
+                        let metas = column_metas(declared, &values);
+                        crate::stream::send_blocking(&to, crate::Streamed::Columns(metas))?;
+                    }
+                    if values.is_empty() {
+                        return Ok(());
+                    }
+                    sent += values.len() as u64;
+                    crate::stream::send_blocking(&to, crate::Streamed::Rows(values))
+                };
+            while let Some(row) = rows.next().map_err(map_error)? {
+                let mut cells = Vec::with_capacity(width);
+                for index in 0..width {
+                    cells.push(from_sqlite(row.get_ref(index).map_err(map_error)?));
+                }
+                values.push(cells);
+                if values.len() == batch {
+                    if stop.is_stopped() {
+                        return Err(Error::Cancelled);
+                    }
+                    let full = std::mem::replace(&mut values, Vec::with_capacity(batch));
+                    flush(full, &mut declared)?;
+                }
+            }
+            flush(values, &mut declared)?;
+            stop.finish();
+            Ok(sent)
+        })
+        .await
+    }
+
     async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
         check_raw_where(query)?;
         let query = query.clone();

@@ -37,7 +37,7 @@ pub use hidden::{
 };
 pub(crate) use hidden::{calls_a_refused_function, named_relations, planned};
 pub use run::{Answer, Limits, MASKED};
-pub(crate) use run::{Sent, answer, count_mismatch, masked};
+pub(crate) use run::{Sent, answer, count_mismatch, masked, over_its_time};
 
 /// The longest statement that is read at all, in bytes.
 pub const MAX_SQL_BYTES: usize = 100_000;

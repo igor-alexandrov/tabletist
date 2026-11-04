@@ -185,6 +185,23 @@ fn session_setup(access: Access) -> String {
     format!("{read_only}SET standard_conforming_strings = on; {PRINTS_EXACTLY}")
 }
 
+/// The cursor an export reads through. One export per connection, so one
+/// name.
+const EXPORT_CURSOR: &str = "tabletist_export";
+
+/// [`query_error`], where the server's own `statement_timeout` (which
+/// PostgreSQL reports as a cancel) is [`Error::Timeout`]: an export sets no
+/// timeout of its own, so a cancel that names it was the server's.
+fn stream_error(error: tokio_postgres::Error) -> Error {
+    if let Some(db) = error.as_db_error()
+        && *db.code() == SqlState::QUERY_CANCELED
+        && db.message().contains("statement timeout")
+    {
+        return Error::Timeout;
+    }
+    query_error(error)
+}
+
 pub(crate) fn query_error(error: tokio_postgres::Error) -> Error {
     if error.is_closed() {
         return Error::ConnectionLost(describe(&error));
@@ -804,6 +821,73 @@ impl Adapter for Conn {
             ordered_by_key: !key.is_empty(),
             elapsed,
         })
+    }
+
+    async fn export_statement(&self, query: &RowQuery, columns: &[String]) -> Result<String> {
+        let key = self.primary_key(&query.object).await?;
+        let binary = self.binary_columns(query).await?;
+        Ok(Dialect::Postgres.shown_export(query, &key, &binary, columns))
+    }
+
+    /// An export's rows through a cursor in a read-only transaction:
+    /// prepared first (which types the columns and refuses a second
+    /// statement), declared, then fetched a batch at a time through the
+    /// simple-query protocol, so the server holds the rest.
+    async fn stream_rows(
+        &self,
+        query: &RowQuery,
+        columns: &[String],
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        let key = self.primary_key(&query.object).await?;
+        let binary = self.binary_columns(query).await?;
+        let sql = Dialect::Postgres.export_rows(query, &key, &binary, columns);
+        // Every value is a literal in the text, so there is nothing to bind.
+        debug_assert!(sql.params.is_empty());
+        let mut client = self.client.lock().await;
+        let transaction = client
+            .build_transaction()
+            .read_only(true)
+            .start()
+            .await
+            .map_err(stream_error)?;
+        let statement = transaction.prepare(&sql.text).await.map_err(stream_error)?;
+        let metas = column_metas(&statement);
+        crate::stream::send(to, crate::Streamed::Columns(metas.clone())).await?;
+        transaction
+            .simple_query(&format!(
+                "DECLARE {EXPORT_CURSOR} NO SCROLL CURSOR FOR {}",
+                sql.text
+            ))
+            .await
+            .map_err(stream_error)?;
+        let fetch = format!("FETCH {batch} FROM {EXPORT_CURSOR}");
+        let mut sent = 0u64;
+        loop {
+            if stop.is_stopped() {
+                return Err(Error::Cancelled);
+            }
+            let messages = transaction
+                .simple_query(&fetch)
+                .await
+                .map_err(stream_error)?;
+            let mut rows = Vec::with_capacity(batch);
+            for message in messages {
+                if let SimpleQueryMessage::Row(row) = message {
+                    rows.push(row_values(&row, &metas)?);
+                }
+            }
+            if rows.is_empty() {
+                break;
+            }
+            sent += rows.len() as u64;
+            crate::stream::send(to, crate::Streamed::Rows(rows)).await?;
+        }
+        stop.finish();
+        transaction.rollback().await.map_err(stream_error)?;
+        Ok(sent)
     }
 
     async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
