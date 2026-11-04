@@ -380,6 +380,265 @@ fn a_results_grid_menu_has_no_export() {
     assert!(!painted(&harness, "Export selection…"));
 }
 
+/// Opens quick open with its key in the harness's look, and types
+/// `query`.
+fn quick_open(harness: &mut Harness, query: &str) {
+    let held = match harness.app.look.terminal {
+        true => Modifiers::CTRL,
+        false => Modifiers::COMMAND,
+    };
+    harness.press(Key::P, held);
+    assert!(matches!(harness.app.dialog, Some(Dialog::QuickOpen(_))));
+    if !query.is_empty() {
+        harness.frame(vec![egui::Event::Text(query.into())]);
+        harness.settle();
+    }
+}
+
+/// ⇧⌘E, and the terminal look's `ctrl+e`.
+fn export_key(harness: &mut Harness) {
+    match harness.app.look.terminal {
+        true => harness.press(Key::E, Modifiers::CTRL),
+        false => harness.press(Key::E, Modifiers::COMMAND | Modifiers::SHIFT),
+    }
+    harness.settle();
+}
+
+fn quick_open_exporting(harness: &Harness) -> Option<bool> {
+    match &harness.app.dialog {
+        Some(Dialog::QuickOpen(open)) => Some(open.exporting),
+        _ => None,
+    }
+}
+
+/// Test 2: quick open lists Export book_covers… (the table in front) and
+/// Export a table…, each with what it is about; the first opens the sheet.
+#[test]
+fn quick_open_lists_the_export_rows() {
+    let (mut harness, tab, id) = bookshop_in(Look::macos());
+    quick_open(&mut harness, ">exp");
+    assert!(
+        painted(&harness, "Export book_covers…"),
+        "{:?}",
+        harness.painted
+    );
+    assert!(painted(&harness, "Export a table…"));
+    assert!(painted(&harness, "current table"), "{:?}", harness.painted);
+    assert!(painted(&harness, "pick one next"));
+    harness.click("Export book_covers…, command, current table, ⇧⌘E");
+    harness.settle();
+    let open = sheet(&harness).expect("the sheet");
+    assert_eq!((open.tab, open.id), (tab, id));
+}
+
+/// Test 2 and R3: Export a table… lists this connection's tables and
+/// views alone, and ↩ opens the picked one with its sheet.
+#[test]
+fn export_a_table_lists_tables_and_opens_the_picked_ones_sheet() {
+    let (mut harness, tab, _id) = bookshop_in(Look::macos());
+    quick_open(&mut harness, ">a table");
+    harness.click("Export a table…, command, pick one next");
+    harness.settle();
+    assert_eq!(
+        quick_open_exporting(&harness),
+        Some(true),
+        "quick open again"
+    );
+    assert!(
+        painted(&harness, "Pick a table to export"),
+        "{:?}",
+        harness.painted
+    );
+    // With nothing typed: the start list's tables, no SQL editor, no
+    // command.
+    assert!(picker_items(&harness).iter().all(Option::is_some));
+    harness.frame(vec![egui::Event::Text("rev".into())]);
+    harness.settle();
+    let listed = picker_items(&harness);
+    assert!(
+        !listed.is_empty() && listed.iter().all(Option::is_some),
+        "{listed:?}"
+    );
+    assert!(harness.has("reviews"));
+    assert!(
+        !painted(&harness, "Commands"),
+        "no commands: {:?}",
+        harness.painted
+    );
+    harness.press(Key::Enter, Modifiers::NONE);
+    harness.settle();
+    assert_eq!(front(&harness, tab).0, "reviews");
+    assert!(sheet(&harness).is_some(), "its sheet");
+}
+
+/// R2: while an export runs, Export's row is its cancel and Export a
+/// table… is not listed.
+#[test]
+fn the_export_rows_give_way_to_cancel_while_one_runs() {
+    let (mut harness, _tab, _id) = bookshop_in(Look::macos());
+    harness.press(Key::E, Modifiers::COMMAND | Modifiers::SHIFT);
+    harness.app.apply(Action::ChangeExport(
+        crate::export_sheet::ExportChange::Destination(
+            crate::export_sheet::DestinationChoice::Clipboard,
+        ),
+    ));
+    harness.app.apply(Action::StartExport);
+    harness.settle();
+    assert!(harness.app.exporting.is_some(), "it runs");
+    quick_open(&mut harness, ">exp");
+    assert!(painted(&harness, "Cancel export"), "{:?}", harness.painted);
+    assert!(!painted(&harness, "Export a table…"));
+    assert!(!painted(&harness, "Export book_covers…"));
+}
+
+/// Test 3: ⇧⌘E and `ctrl+e` on a picked table open it and its sheet.
+#[test]
+fn the_export_key_on_a_picked_table_opens_its_sheet() {
+    for look in [Look::macos(), Look::omarchy()] {
+        let (mut harness, tab, _id) = bookshop_in(look);
+        quick_open(&mut harness, "ratings");
+        export_key(&mut harness);
+        assert_eq!(front(&harness, tab).0, "ratings", "{}", look.name);
+        let open = sheet(&harness).expect("its sheet");
+        let front_id = harness
+            .app
+            .workspace(tab)
+            .unwrap()
+            .active_object_tab()
+            .unwrap()
+            .id;
+        assert_eq!(open.id, front_id, "{}", look.name);
+    }
+}
+
+/// Test 3: on a command's row the key does nothing; quick open stays.
+#[test]
+fn the_export_key_on_a_command_does_nothing() {
+    let (mut harness, tab, _id) = bookshop_in(Look::macos());
+    quick_open(&mut harness, ">new sql");
+    export_key(&mut harness);
+    assert_eq!(quick_open_exporting(&harness), Some(false), "still open");
+    assert!(sheet(&harness).is_none());
+    assert_eq!(front(&harness, tab).0, "book_covers");
+}
+
+/// Test 3: the footer names the key while a table is picked only.
+#[test]
+fn the_footer_names_the_export_key_on_a_table_only() {
+    for look in [Look::macos(), Look::omarchy()] {
+        let (mut harness, _tab, _id) = bookshop_in(look);
+        let words = match look.terminal {
+            true => "ctrl+e export the picked table",
+            false => "⇧⌘E export",
+        };
+        quick_open(&mut harness, "ratings");
+        assert!(
+            painted(&harness, words),
+            "{}: {:?}",
+            look.name,
+            harness.painted
+        );
+        harness.app.apply(Action::CloseDialog);
+        harness.settle();
+        if !look.terminal {
+            quick_open(&mut harness, ">new sql");
+            assert!(!painted(&harness, words), "{:?}", harness.painted);
+        }
+    }
+}
+
+/// What the picker lists: each result's table or view, `None` for
+/// anything else.
+fn picker_items(harness: &Harness) -> Vec<Option<(ConnTabId, ObjectRef, ObjectKind)>> {
+    let Some(Dialog::QuickOpen(open)) = &harness.app.dialog else {
+        panic!("quick open");
+    };
+    let list = harness.app.quick_open_list(open);
+    list.items()
+        .filter(|item| !matches!(item, crate::model::QuickItem::More { .. }))
+        .map(crate::app::picked_object)
+        .collect()
+}
+
+/// R3: in Export a table… a "more" row shows the rest, Tab keeps this
+/// connection, ⌥↩ exports as ↩ does, and Esc closes.
+#[test]
+fn the_picker_keeps_its_rows_and_its_connection() {
+    let (mut harness, tab, _id) = bookshop_in(Look::macos());
+    harness.app.apply(Action::PickTableToExport(tab));
+    harness.settle();
+    harness.frame(vec![egui::Event::Text("s".into())]);
+    harness.settle();
+    let more = {
+        let Some(Dialog::QuickOpen(open)) = &harness.app.dialog else {
+            panic!("quick open");
+        };
+        let list = harness.app.quick_open_list(open);
+        list.items()
+            .position(|item| matches!(item, crate::model::QuickItem::More { .. }))
+            .expect("a more row")
+    };
+    harness.app.apply(Action::QuickOpenPick {
+        index: Some(more),
+        in_editor: false,
+    });
+    harness.settle();
+    let Some(Dialog::QuickOpen(open)) = &harness.app.dialog else {
+        panic!("the more row keeps it open");
+    };
+    assert!(!open.expanded.is_empty(), "the group shows in full");
+    harness.app.apply(Action::QuickOpenScope);
+    let Some(Dialog::QuickOpen(open)) = &harness.app.dialog else {
+        panic!("quick open");
+    };
+    assert!(!open.everywhere, "this connection's tables alone");
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert!(harness.app.dialog.is_none(), "Esc closes it");
+    harness.app.apply(Action::PickTableToExport(tab));
+    harness.settle();
+    harness.frame(vec![egui::Event::Text("ratings".into())]);
+    harness.settle();
+    harness.app.apply(Action::QuickOpenPick {
+        index: None,
+        in_editor: true,
+    });
+    harness.settle();
+    assert_eq!(front(&harness, tab).0, "ratings");
+    assert!(sheet(&harness).is_some(), "⌥↩ exports too");
+}
+
+/// R4 and run 3's D5: while an export runs, quick open's key opens
+/// nothing, says why, and quick open stays.
+#[test]
+fn the_export_key_in_quick_open_waits_for_a_running_export() {
+    let (mut harness, tab, _id) = bookshop_in(Look::macos());
+    let dir = tempfile::tempdir().unwrap();
+    harness.app.apply(Action::ExportTo {
+        tab,
+        path: dir.path().join("book_covers.csv").display().to_string(),
+        replace: false,
+    });
+    quick_open(&mut harness, "ratings");
+    export_key(&mut harness);
+    assert_eq!(quick_open_exporting(&harness), Some(false), "it stays");
+    assert_eq!(
+        said(&harness).as_deref(),
+        Some("An export is running. Cancel it first, or wait for it.")
+    );
+    assert_eq!(front(&harness, tab).0, "book_covers");
+}
+
+/// File › Export a Table… opens the picker, as quick open's row does.
+#[test]
+fn the_file_menus_export_a_table_opens_the_picker() {
+    let (mut harness, _tab, _id) = bookshop_in(Look::macos());
+    let item = crate::menu::Item::Command(crate::keymap::Command::ExportTable);
+    assert!(harness.app.menu_state(item).enabled);
+    harness.app.choose(item);
+    harness.settle();
+    assert_eq!(quick_open_exporting(&harness), Some(true));
+}
+
 /// R1: the header's Export… on a block opens Choose with its columns, as
 /// ⇧⌘E does.
 #[test]

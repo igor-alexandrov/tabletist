@@ -142,6 +142,7 @@ keyboard.
 | Option+Return | Open a new SQL editor reading its first rows |
 | Tab | Search every open connection, or this one again |
 | `>` | Typed first: list the commands alone (and, with a word after it, the settings) |
+| Cmd+Shift+E | [Export]({% link _guide/browsing-data.md %}#exporting) the table or view picked: it opens, with the export over it |
 | Esc | Close |
 
 ### The picker

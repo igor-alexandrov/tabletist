@@ -596,6 +596,7 @@ commands! {
     ExportAllColumns = "export_all_columns",
     ExportNoColumns = "export_no_columns",
     DismissExport = "dismiss_export",
+    ExportTable = "export_table",
     Import = "import",
     PasteCells = "paste_cells",
     PasteNewRows = "paste_new_rows",
@@ -746,6 +747,7 @@ commands! {
     QuickOpenCommands = "quick_open_commands",
     QuickOpenNumber = "quick_open_number",
     QuickOpenClose = "quick_open_close",
+    QuickOpenExport = "quick_open_export",
     NextLabel = "next_label",
     PreviousLabel = "previous_label",
     ChooseLabel = "choose_label",
@@ -1007,6 +1009,7 @@ impl Command {
             C::ExportAllColumns => info("Include every column", "", Prompts),
             C::ExportNoColumns => info("Leave every column out", "", Prompts),
             C::DismissExport => info("Put away a failed export's line", "", Window),
+            C::ExportTable => info("Export a table…", "", Window),
             C::Import => info("Import…", "", Window).reserved(),
             C::PasteCells => info("Paste cell values", COPY, Editing).reserved(),
             C::PasteNewRows => info("Paste as new rows", "Paste as new rows", Editing).reserved(),
@@ -1210,6 +1213,7 @@ impl Command {
             C::QuickOpenCommands => info("List the commands alone", "", Prompts),
             C::QuickOpenNumber => info("Open a recent by its number", "", Prompts),
             C::QuickOpenClose => info("Close quick open", "", Prompts),
+            C::QuickOpenExport => info("Export the picked table", "", Prompts),
             C::NextLabel => info("Next line of the label chooser", "", Prompts),
             C::PreviousLabel => info("Previous line of the label chooser", "", Prompts),
             C::ChooseLabel => info("Choose the label column", "", Prompts),
@@ -1978,6 +1982,8 @@ pub const BINDINGS: &[Binding] = {
         bind(C::ExportAllColumns, PROMPT, NONE, keys(&[k("a")])).when(When::Export),
         bind(C::ExportNoColumns, PROMPT, NONE, keys(&[k("n")])).when(When::Export),
         bind(C::DismissExport, TREE_AND_GRID, NONE, keys(&[k("esc")])).when(When::ExportFailed),
+        // Quick open's Export a table…: a row to pick, no key.
+        bind(C::ExportTable, GLOBAL, NONE, NONE),
         // File › Import…, held for later: no key, and not built.
         bind(C::Import, GLOBAL, NONE, NONE),
         bind(C::PasteCells, GRID, keys(&[k("cmd+v")]), NONE),
@@ -2657,6 +2663,14 @@ pub const BINDINGS: &[Binding] = {
             PROMPT,
             keys(&[k("esc")]),
             keys(&[k("esc")]),
+        )
+        .when(When::QuickOpen),
+        // The picked table or view opens, and its export over it.
+        bind(
+            C::QuickOpenExport,
+            PROMPT,
+            keys(&[k("cmd+shift+e")]),
+            keys(&[k("ctrl+e")]),
         )
         .when(When::QuickOpen),
         // The chooser of a table's label column. It has no field: a letter

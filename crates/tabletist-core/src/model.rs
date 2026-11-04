@@ -1198,6 +1198,12 @@ pub enum Action {
     },
     /// Switch quick open between this connection and every open one.
     QuickOpenScope,
+    /// ⇧⌘E (`ctrl+e`) in quick open: the picked table or view opens, and
+    /// its Export sheet over it.
+    QuickOpenExport,
+    /// Quick open's Export a table…: it opens again on `tab`'s tables and
+    /// views alone, and the one picked opens with its sheet.
+    PickTableToExport(ConnTabId),
     /// Open the menu of the server's other databases under the connection
     /// bar's chip, as Switch database's key does.
     ShowDatabaseMenu(ConnTabId),
@@ -3060,6 +3066,9 @@ pub struct QuickOpen {
     /// typed): what Enter opens, wherever the list, which can change by
     /// itself (a run that ends, a list that comes in), has moved it.
     pub picked: Option<QuickItem>,
+    /// Export a table…: it lists the connection's tables and views alone,
+    /// and the one picked opens with its Export sheet.
+    pub exporting: bool,
 }
 
 /// Where quick open moves its field's caret.
@@ -3111,6 +3120,11 @@ pub enum About {
     Agents,
     /// The tab in front.
     Tab(TabName),
+    /// The table in front, which the command's name holds ("Export
+    /// reviews…"): "current table".
+    CurrentTable(String),
+    /// A table is picked next: "pick one next".
+    PickNext,
 }
 
 /// A tab as a command's row names it.
@@ -3144,6 +3158,18 @@ pub struct Runnable {
     pub command: crate::keymap::Command,
     pub name: &'static str,
     pub about: About,
+}
+
+impl Runnable {
+    /// Its name in `locale`, the table in front written into it where it
+    /// names one ("Export {table}…").
+    pub fn named(&self, locale: crate::i18n::Locale) -> String {
+        let name = crate::i18n::gettext(locale, self.name);
+        match &self.about {
+            About::CurrentTable(table) => name.replace("{table}", table),
+            _ => name.into_owned(),
+        }
+    }
 }
 
 /// A row of a window's start screen list, as quick open shows it with

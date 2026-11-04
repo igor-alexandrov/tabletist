@@ -47,7 +47,7 @@ mod updates;
 pub use commands::RUNNABLE;
 pub use keyboard::{CHEAT_SHEET, cheat_sheet, keys_list};
 pub use menu::ItemState;
-pub use quick_open::{GROUP_SHOWN, QuickHeading, QuickList, QuickRow, setting_path};
+pub use quick_open::{GROUP_SHOWN, QuickHeading, QuickList, QuickRow, picked_object, setting_path};
 pub use updates::{Pending, Work};
 
 /// What a keyring read is for; each names the exact request it serves, so
@@ -2890,6 +2890,8 @@ impl App {
             Action::QuickOpenMove(step) => self.quick_open_move(step),
             Action::QuickOpenPick { index, in_editor } => self.quick_open_pick(index, in_editor),
             Action::QuickOpenScope => self.quick_open_scope(),
+            Action::QuickOpenExport => self.quick_open_export(),
+            Action::PickTableToExport(tab) => self.pick_table_to_export(tab),
             Action::ShowDatabaseMenu(tab) => {
                 if let Some(workspace) = self.workspace_mut(tab) {
                     workspace.database_menu_asked = true;

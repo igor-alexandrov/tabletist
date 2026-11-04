@@ -850,6 +850,10 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         if in_workspace && on(input, Command::History, Scope::Global).count > 0 {
             actions.push(Action::ShowHistory(active));
         }
+        // No key of its own: one the person gives it in Settings.
+        if in_workspace && on(input, Command::ExportTable, Scope::Global).count > 0 {
+            actions.push(Action::PickTableToExport(active));
+        }
         if on(input, Command::Connections, Scope::Global).count > 0 {
             actions.push(Action::ShowConnections);
         }

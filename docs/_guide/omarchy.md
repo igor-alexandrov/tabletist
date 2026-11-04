@@ -65,6 +65,7 @@ numbered; once you type, it lists what matches. Its commands stay on `:`.
 | `Enter` | Open the one picked, or show its tab where it has one |
 | `1` to `9` | With nothing typed: open that recent. Once you type, digits are typed |
 | `Tab` | Search every open connection, or this one again |
+| `Ctrl+E` | [Export]({% link _guide/browsing-data.md %}#exporting) the table or view picked: it opens, with the export's float over it |
 | `Esc` | Close |
 
 ### The picker

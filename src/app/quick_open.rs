@@ -197,7 +197,7 @@ pub fn setting_path(locale: crate::i18n::Locale, run: &str, option: OptionId) ->
 /// [`setting_path`].
 fn name_of(locale: crate::i18n::Locale, run: &str, command: &QuickCommand) -> String {
     match command {
-        QuickCommand::Run(runnable) => crate::i18n::gettext(locale, runnable.name).into_owned(),
+        QuickCommand::Run(runnable) => runnable.named(locale),
         QuickCommand::Setting(option) => setting_path(locale, run, *option),
     }
 }
@@ -407,7 +407,11 @@ impl App {
         };
         for tab in windows {
             if query.is_empty() {
-                let (heading, rows) = self.start_rows(tab);
+                let (heading, mut rows) = self.start_rows(tab);
+                // Export a table… lists tables and views alone.
+                if open.exporting {
+                    rows.retain(|row| !matches!(row, StartRow::Recent(StartRecent::Sql { .. })));
+                }
                 if rows.is_empty() {
                     continue;
                 }
@@ -452,6 +456,9 @@ impl App {
                 }
                 list.group(group, found.into_iter().map(item).collect(), whole(group));
             }
+        }
+        if open.exporting {
+            return list;
         }
         let typed = search::folded(query);
         let commands = self.commands_found(open.tab, &typed, commands_only);
@@ -512,6 +519,7 @@ impl App {
                 scrolled_to: None,
                 scroll_offset: 0.0,
                 picked: None,
+                exporting: false,
             })));
             self.quick_open_hold();
         }
@@ -565,7 +573,8 @@ impl App {
 
     /// `QuickOpenScope`: this connection, or every open one.
     pub(super) fn quick_open_scope(&mut self) {
-        if let Some(open) = self.quick_open_mut() {
+        // Export a table… picks one of this connection's (spec 3b, R3).
+        if let Some(open) = self.quick_open_mut().filter(|open| !open.exporting) {
             open.everywhere = !open.everywhere;
             open.selected = 0;
             open.expanded.clear();
@@ -610,20 +619,28 @@ impl App {
     /// that result is no longer listed (a Cancel whose run ended), Enter
     /// opens nothing, and quick open stays.
     pub(super) fn quick_open_pick(&mut self, index: Option<usize>, in_editor: bool) {
-        let (here, at, item) = match &self.dialog {
+        let (here, at, item, exporting) = match &self.dialog {
             Some(Dialog::QuickOpen(open)) => {
                 let list = self.quick_open_list(open);
                 // A click and a digit name a row of the list drawn this
                 // frame; Enter, the result picked.
                 let picked = index.or_else(|| self.quick_open_picked(open, &list));
                 let item = picked.and_then(|at| list.items().nth(at).cloned());
-                (open.tab, picked, item)
+                (open.tab, picked, item, open.exporting)
             }
             _ => return,
         };
         let (Some(at), Some(item)) = (at, item) else {
             return;
         };
+        // Export a table…: the one picked opens with its sheet, Enter and
+        // ⌥↩ alike; its "more" row shows the rest, as anywhere.
+        if exporting && !matches!(item, QuickItem::More { .. }) {
+            if let Some((tab, object, kind)) = picked_object(&item) {
+                self.export_picked(here, tab, object, kind);
+            }
+            return;
+        }
         if let QuickItem::More { group, .. } = item {
             if let Some(open) = self.quick_open_mut() {
                 open.expanded.push(group);
@@ -678,5 +695,82 @@ impl App {
             },
             QuickItem::More { .. } => {}
         }
+    }
+
+    /// `QuickOpenExport` (⇧⌘E, `ctrl+e`): the picked table or view opens,
+    /// as Enter opens it, and its sheet over it (spec 3b, R4). On anything
+    /// else (a command, a SQL editor's recent) nothing happens.
+    pub(super) fn quick_open_export(&mut self) {
+        let (here, item) = match &self.dialog {
+            Some(Dialog::QuickOpen(open)) => {
+                let list = self.quick_open_list(open);
+                let at = self.quick_open_picked(open, &list);
+                (open.tab, at.and_then(|at| list.items().nth(at).cloned()))
+            }
+            _ => return,
+        };
+        let Some((tab, object, kind)) = item.as_ref().and_then(picked_object) else {
+            return;
+        };
+        self.export_picked(here, tab, object, kind);
+    }
+
+    /// The table or view picked in quick open opens in its window, and
+    /// its sheet over it. While an export runs quick open stays, and says
+    /// why nothing opens (run 3's D5).
+    fn export_picked(
+        &mut self,
+        here: ConnTabId,
+        tab: ConnTabId,
+        object: ObjectRef,
+        kind: ObjectKind,
+    ) {
+        if self.export_runs() {
+            return;
+        }
+        self.dialog = None;
+        if tab != here {
+            self.apply(Action::ActivateConnTab(tab));
+        }
+        self.export_object(tab, object, kind);
+    }
+
+    /// Export a table…: quick open again over `tab`, on its tables and
+    /// views alone (spec 3b, R3).
+    pub(super) fn pick_table_to_export(&mut self, tab: ConnTabId) {
+        if self.dialog.is_some() || self.workspace(tab).is_none() {
+            return;
+        }
+        self.dialog = Some(Dialog::QuickOpen(Box::new(QuickOpen {
+            tab,
+            query: String::new(),
+            selected: 0,
+            everywhere: false,
+            expanded: Vec::new(),
+            caret: None,
+            scrolled_to: None,
+            scroll_offset: 0.0,
+            picked: None,
+            exporting: true,
+        })));
+        self.quick_open_hold();
+    }
+}
+
+/// The table or view a result of quick open is, with its window: an
+/// object found, a recent one, one of the largest tables.
+pub fn picked_object(item: &QuickItem) -> Option<(ConnTabId, ObjectRef, ObjectKind)> {
+    match item {
+        QuickItem::Object { tab, found } => {
+            Some((*tab, ObjectRef::clone(&found.object), found.kind))
+        }
+        QuickItem::Start { tab, row, .. } => match row {
+            StartRow::Recent(StartRecent::Object { object, kind, .. }) => {
+                Some((*tab, object.clone(), *kind))
+            }
+            StartRow::Largest(object, _) => Some((*tab, object.clone(), ObjectKind::Table)),
+            StartRow::Recent(StartRecent::Sql { .. }) => None,
+        },
+        QuickItem::Command { .. } | QuickItem::More { .. } => None,
     }
 }

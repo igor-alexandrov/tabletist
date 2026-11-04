@@ -124,7 +124,7 @@ impl App {
     }
 
     /// Says that an export already runs (spec, D5).
-    fn export_runs(&mut self) -> bool {
+    pub(super) fn export_runs(&mut self) -> bool {
         if !self.exporting.as_ref().is_some_and(Exporting::running) {
             return false;
         }
