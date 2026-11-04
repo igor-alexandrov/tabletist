@@ -330,14 +330,22 @@ mod tests {
                     scale: Some(2),
                 },
             ),
-            ("BIGNUMERIC", Decimal {
-                precision: None,
-                scale: None,
-            }),
+            (
+                "BIGNUMERIC",
+                Decimal {
+                    precision: None,
+                    scale: None,
+                },
+            ),
             ("FLOAT64", ColumnClass::Float),
             ("BOOL", ColumnClass::Boolean),
             ("JSON", ColumnClass::Json),
-            ("STRING(255)", ColumnClass::Text { max_chars: Some(255) }),
+            (
+                "STRING(255)",
+                ColumnClass::Text {
+                    max_chars: Some(255),
+                },
+            ),
             ("STRING", ColumnClass::Text { max_chars: None }),
             ("BYTES", ColumnClass::Binary),
             ("ARRAY<STRING>", ColumnClass::Other),
@@ -346,8 +354,14 @@ mod tests {
         ] {
             assert_eq!(column_class(Dialect::BigQuery, name), class, "{name}");
         }
-        assert_eq!(crate::temporal("TIMESTAMP"), Some(crate::Temporal::Timestamp));
-        assert_eq!(crate::temporal("DATETIME"), Some(crate::Temporal::Timestamp));
+        assert_eq!(
+            crate::temporal("TIMESTAMP"),
+            Some(crate::Temporal::Timestamp)
+        );
+        assert_eq!(
+            crate::temporal("DATETIME"),
+            Some(crate::Temporal::Timestamp)
+        );
         assert_eq!(crate::temporal("TIME"), Some(crate::Temporal::Time));
         assert_eq!(crate::temporal("DATE"), Some(crate::Temporal::Date));
     }

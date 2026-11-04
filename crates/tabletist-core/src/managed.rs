@@ -411,9 +411,14 @@ impl MatchTable {
         }
         if let Some(driver) = &matches.driver
             && !driver.contains('*')
-            && ![Driver::Postgres, Driver::MySql, Driver::Sqlite, Driver::BigQuery]
-                .into_iter()
-                .any(|known| driver_key(known) == driver)
+            && ![
+                Driver::Postgres,
+                Driver::MySql,
+                Driver::Sqlite,
+                Driver::BigQuery,
+            ]
+            .into_iter()
+            .any(|known| driver_key(known) == driver)
         {
             return Err(
                 "its driver is none that Tabletist knows: postgres, mysql, sqlite or bigquery"

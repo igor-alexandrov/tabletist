@@ -198,7 +198,9 @@ impl ParsedUrl {
                     .filter(|host| !host.is_empty())
                     .unwrap_or_else(|| decode(parsed.path().trim_start_matches('/')));
                 if project.is_empty() {
-                    return Err(Error::InvalidSpec("the BigQuery URL names no project".into()));
+                    return Err(Error::InvalidSpec(
+                        "the BigQuery URL names no project".into(),
+                    ));
                 }
                 let mut key = None;
                 for (name, value) in parsed.query_pairs() {
