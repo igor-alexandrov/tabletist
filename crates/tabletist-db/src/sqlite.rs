@@ -1156,7 +1156,7 @@ impl Adapter for Conn {
         self.browse(move |connection| {
             let key = ordering_key(connection, &query.object)?;
             let binary = binary_columns(connection, &query)?;
-            let sql = Dialect::Sqlite.select_rows(&query, &key, &binary);
+            let sql = Dialect::Sqlite.select_rows(&query, &key, &binary)?;
             let ordered_by_key = !key.is_empty();
             let started = Instant::now();
             // The lookups above are the app's own, and the fence would
@@ -1201,7 +1201,7 @@ impl Adapter for Conn {
         self.run(move |connection| {
             let key = ordering_key(connection, &query.object)?;
             let binary = binary_columns(connection, &query)?;
-            Ok(Dialect::Sqlite.shown_export(&query, &key, &binary, &columns))
+            Dialect::Sqlite.shown_export(&query, &key, &binary, &columns)
         })
         .await
     }
@@ -1227,7 +1227,7 @@ impl Adapter for Conn {
         self.browse(move |connection| {
             let key = ordering_key(connection, &query.object)?;
             let binary = binary_columns(connection, &query)?;
-            let sql = Dialect::Sqlite.export_rows(&query, &key, &binary, &columns);
+            let sql = Dialect::Sqlite.export_rows(&query, &key, &binary, &columns)?;
             // As in `fetch_rows`: only the text with the raw WHERE.
             let _fenced = fences.fence(Fence::Filter);
             stream_stepped(connection, &sql, batch, &to, &stop)
@@ -1264,7 +1264,7 @@ impl Adapter for Conn {
         let fences = self.fences.clone();
         self.browse(move |connection| {
             let binary = binary_columns(connection, &query)?;
-            let sql = Dialect::Sqlite.count_rows(&query, &binary);
+            let sql = Dialect::Sqlite.count_rows(&query, &binary)?;
             // As in `fetch_rows`: only the text with the raw WHERE.
             let _fenced = fences.fence(Fence::Filter);
             let count: i64 = connection
@@ -1745,7 +1745,10 @@ fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
 /// keeps a blob in a column of any type, so besides the ones declared as
 /// blobs these are the ones whose type says nothing: none at all, or a name
 /// like `BINARY(16)` or `UUID` that SQLite gives no blob affinity.
-fn binary_columns(connection: &rusqlite::Connection, query: &RowQuery) -> Result<Vec<String>> {
+fn binary_columns(
+    connection: &rusqlite::Connection,
+    query: &RowQuery,
+) -> Result<Vec<(String, ColumnClass)>> {
     if !crate::dialect::reads_bytes(query) {
         return Ok(Vec::new());
     }
@@ -1757,7 +1760,7 @@ fn binary_columns(connection: &rusqlite::Connection, query: &RowQuery) -> Result
                 ValueKind::Binary | ValueKind::Other
             )
         })
-        .map(|column| column.name)
+        .map(|column| (column.name, ColumnClass::Binary))
         .collect())
 }
 

@@ -14,10 +14,11 @@ use tokio_postgres::{SimpleQueryMessage, Socket};
 use crate::adapter::Adapter;
 use crate::agent::{Catalog, ColumnName, Limits, Read, Sources};
 use crate::{
-    Access, CancelHandle, CancelInner, ChangeSet, ColumnInfo, ColumnMeta, ConnectSpec, Ddl,
-    Dialect, Error, ForeignKeyInfo, IndexInfo, Lookup, LookupPage, MAX_LISTED, Named, ObjectInfo,
-    ObjectKind, ObjectRef, ReferencingKey, Result, RowPage, RowQuery, ScriptMode, ScriptOutcome,
-    Secrets, Sql, StopFlag, Structure, Value, ValueKind, WriteOutcome, value_from_pg_text,
+    Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, ConnectSpec,
+    Ddl, Dialect, Error, ForeignKeyInfo, IndexInfo, Lookup, LookupPage, MAX_LISTED, Named,
+    ObjectInfo, ObjectKind, ObjectRef, ReferencingKey, Result, RowPage, RowQuery, ScriptMode,
+    ScriptOutcome, Secrets, Sql, StopFlag, Structure, Value, ValueKind, WriteOutcome,
+    value_from_pg_text,
 };
 use tokio_postgres::error::SqlState;
 use tokio_postgres_rustls::MakeRustlsConnect;
@@ -541,7 +542,7 @@ impl Conn {
     /// The `bytea` columns a filter of `query` compares as bytes when its
     /// value reads as bytes; empty, without asking, when no filter has such
     /// a value.
-    async fn binary_columns(&self, query: &RowQuery) -> Result<Vec<String>> {
+    async fn binary_columns(&self, query: &RowQuery) -> Result<Vec<(String, ColumnClass)>> {
         if !crate::dialect::reads_bytes(query) {
             return Ok(Vec::new());
         }
@@ -556,7 +557,9 @@ impl Conn {
                 &[&query.object.schema, &query.object.name],
             )
             .await?;
-        rows.iter().map(|row| column(row, 0)).collect()
+        rows.iter()
+            .map(|row| column(row, 0).map(|name| (name, ColumnClass::Binary)))
+            .collect()
     }
 }
 
@@ -863,7 +866,7 @@ impl Adapter for Conn {
     async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
         let key = self.primary_key(&query.object).await?;
         let binary = self.binary_columns(query).await?;
-        let sql = Dialect::Postgres.select_rows(query, &key, &binary);
+        let sql = Dialect::Postgres.select_rows(query, &key, &binary)?;
         let limit = query.limit as usize;
         let (columns, mut rows, elapsed) = self.read(&sql, limit).await?;
         let has_more = rows.len() > limit;
@@ -880,7 +883,7 @@ impl Adapter for Conn {
     async fn export_statement(&self, query: &RowQuery, columns: &[String]) -> Result<String> {
         let key = self.primary_key(&query.object).await?;
         let binary = self.binary_columns(query).await?;
-        Ok(Dialect::Postgres.shown_export(query, &key, &binary, columns))
+        Dialect::Postgres.shown_export(query, &key, &binary, columns)
     }
 
     /// An export's rows through a cursor in a read-only transaction:
@@ -897,7 +900,7 @@ impl Adapter for Conn {
     ) -> Result<u64> {
         let key = self.primary_key(&query.object).await?;
         let binary = self.binary_columns(query).await?;
-        let sql = Dialect::Postgres.export_rows(query, &key, &binary, columns);
+        let sql = Dialect::Postgres.export_rows(query, &key, &binary, columns)?;
         // Every value is a literal in the text, so there is nothing to bind.
         debug_assert!(sql.params.is_empty());
         self.stream_text(&sql.text, batch, to, stop).await
@@ -916,7 +919,7 @@ impl Adapter for Conn {
 
     async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
         let binary = self.binary_columns(query).await?;
-        let sql = Dialect::Postgres.count_rows(query, &binary);
+        let sql = Dialect::Postgres.count_rows(query, &binary)?;
         let mut client = self.client.lock().await;
         let transaction = client
             .build_transaction()

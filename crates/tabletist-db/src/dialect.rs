@@ -386,41 +386,129 @@ impl Dialect {
         }
     }
 
+    /// The filter's value for a column of `class`, as BigQuery runs it:
+    /// its server matches no string to a number or a boolean, so one is
+    /// written bare, and a non-finite FLOAT64 as its cast. A value that
+    /// is none is refused, naming the column. `None` where the value is
+    /// bound or written as text, as every dialect does.
+    fn comparison_operand(
+        self,
+        column: &str,
+        class: Option<&ColumnClass>,
+        value: &str,
+    ) -> Result<Option<String>> {
+        let typed = value.trim();
+        let operand = match (self, class) {
+            (Self::BigQuery, Some(ColumnClass::Integer { .. })) => match typed.parse::<i64>() {
+                Ok(number) => number.to_string(),
+                Err(_) => {
+                    return Err(Error::query(format!("{column}: not a whole number")));
+                }
+            },
+            (Self::BigQuery, Some(ColumnClass::Float)) => {
+                if crate::value::is_plain_number(typed) {
+                    // Bare, every digit kept.
+                    typed.to_owned()
+                } else {
+                    match typed.parse::<f64>() {
+                        Ok(number) if number.is_finite() => format!("{number:?}"),
+                        Ok(number) => {
+                            let word = if number.is_nan() {
+                                "nan"
+                            } else if number.is_sign_positive() {
+                                "inf"
+                            } else {
+                                "-inf"
+                            };
+                            format!("CAST('{word}' AS FLOAT64)")
+                        }
+                        Err(_) => {
+                            return Err(Error::query(format!("{column}: not a number")));
+                        }
+                    }
+                }
+            }
+            (Self::BigQuery, Some(ColumnClass::Decimal { .. })) => {
+                if crate::value::is_plain_number(typed) {
+                    typed.to_owned()
+                } else {
+                    return Err(Error::query(format!("{column}: not a number")));
+                }
+            }
+            (Self::BigQuery, Some(ColumnClass::Boolean)) => {
+                match typed.to_ascii_lowercase().as_str() {
+                    "true" => "TRUE".to_owned(),
+                    "false" => "FALSE".to_owned(),
+                    _ => {
+                        return Err(Error::query(format!("{column}: not true or false")));
+                    }
+                }
+            }
+            (Self::BigQuery, Some(_)) | (Self::BigQuery, None) => return Ok(None),
+            (Self::Postgres | Self::MySql | Self::Sqlite, _) => return Ok(None),
+        };
+        Ok(Some(operand))
+    }
+
     /// What an Eq, Ne or In filter compares its column with: the value as
     /// typed, and in a binary column first the bytes it reads as. A UUID or
     /// `0x` hex as text never equals the bytes the grid shows that way. The
     /// text stays, since such a column may hold the text itself.
-    fn operands(self, value: &str, binary: bool, params: &mut Binds) -> Vec<String> {
+    fn operands(
+        self,
+        column: &str,
+        value: &str,
+        class: Option<&ColumnClass>,
+        params: &mut Binds,
+    ) -> Result<Vec<String>> {
         let mut operands = Vec::with_capacity(2);
-        if binary && let Some(bytes) = bytes_from_text(value) {
+        if class == Some(&ColumnClass::Binary)
+            && let Some(bytes) = bytes_from_text(value)
+        {
             operands.push(self.bind_bytes(params, bytes));
         }
-        operands.push(self.bind(params, value.to_owned()));
-        operands
+        if let Some(bare) = self.comparison_operand(column, class, value)? {
+            operands.push(bare);
+        } else {
+            operands.push(self.bind(params, value.to_owned()));
+        }
+        Ok(operands)
     }
 
-    /// `binary` names the table's columns that hold bytes.
-    fn filter(self, filter: &Filter, binary: &[String], params: &mut Binds) -> String {
+    /// `classes` names the table's columns' classes: a binary column's
+    /// value reads as bytes, and BigQuery writes a number or a boolean
+    /// bare.
+    fn filter(
+        self,
+        filter: &Filter,
+        classes: &[(String, ColumnClass)],
+        params: &mut Binds,
+    ) -> Result<String> {
         let column = self.quote_ident(&filter.column);
-        let compare = |op: &str, params: &mut Binds| {
-            let placeholder = self.bind(params, filter.value.clone());
-            format!("{column} {op} {placeholder}")
+        let class = classes
+            .iter()
+            .find_map(|(name, class)| (name == &filter.column).then_some(class));
+        let compare = |op: &str, params: &mut Binds| -> Result<String> {
+            let operand = match self.comparison_operand(&filter.column, class, &filter.value)? {
+                Some(bare) => bare,
+                None => self.bind(params, filter.value.clone()),
+            };
+            Ok(format!("{column} {op} {operand}"))
         };
-        let binary = binary.contains(&filter.column);
-        let equals = |op: &str, list: &str, params: &mut Binds| {
-            let operands = self.operands(&filter.value, binary, params);
-            match operands.as_slice() {
+        let equals = |op: &str, list: &str, params: &mut Binds| -> Result<String> {
+            let operands = self.operands(&filter.column, &filter.value, class, params)?;
+            Ok(match operands.as_slice() {
                 [operand] => format!("{column} {op} {operand}"),
                 _ => format!("{column} {list} ({})", operands.join(", ")),
-            }
+            })
         };
-        match filter.op {
-            FilterOp::Eq => equals("=", "IN", params),
-            FilterOp::Ne => equals("<>", "NOT IN", params),
-            FilterOp::Lt => compare("<", params),
-            FilterOp::Gt => compare(">", params),
-            FilterOp::Le => compare("<=", params),
-            FilterOp::Ge => compare(">=", params),
+        Ok(match filter.op {
+            FilterOp::Eq => equals("=", "IN", params)?,
+            FilterOp::Ne => equals("<>", "NOT IN", params)?,
+            FilterOp::Lt => compare("<", params)?,
+            FilterOp::Gt => compare(">", params)?,
+            FilterOp::Le => compare("<=", params)?,
+            FilterOp::Ge => compare(">=", params)?,
             FilterOp::IsNull => format!("{column} IS NULL"),
             FilterOp::IsNotNull => format!("{column} IS NOT NULL"),
             FilterOp::Contains | FilterOp::StartsWith => {
@@ -433,23 +521,28 @@ impl Dialect {
                 self.matches(&column, pattern, params)
             }
             FilterOp::In => {
-                let placeholders: Vec<String> = in_values(&filter.value)
-                    .flat_map(|value| self.operands(value, binary, params))
-                    .collect();
+                let mut placeholders: Vec<String> = Vec::new();
+                for value in in_values(&filter.value) {
+                    placeholders.extend(self.operands(&filter.column, value, class, params)?);
+                }
                 if placeholders.is_empty() {
-                    return "1 = 0".into();
+                    return Ok("1 = 0".into());
                 }
                 format!("{column} IN ({})", placeholders.join(", "))
             }
-        }
+        })
     }
 
-    fn where_clause(self, query: &RowQuery, binary: &[String], params: &mut Binds) -> String {
-        let mut conditions: Vec<String> = query
-            .filters
-            .iter()
-            .map(|filter| self.filter(filter, binary, params))
-            .collect();
+    fn where_clause(
+        self,
+        query: &RowQuery,
+        classes: &[(String, ColumnClass)],
+        params: &mut Binds,
+    ) -> Result<String> {
+        let mut conditions: Vec<String> = Vec::with_capacity(query.filters.len() + 1);
+        for filter in &query.filters {
+            conditions.push(self.filter(filter, classes, params)?);
+        }
         if let Some(raw) = query.raw_where.as_deref().map(str::trim)
             && !raw.is_empty()
         {
@@ -461,9 +554,9 @@ impl Dialect {
             conditions.push(format!("(\n{raw}\n)"));
         }
         if conditions.is_empty() {
-            String::new()
+            Ok(String::new())
         } else {
-            format!(" WHERE {}", conditions.join(" AND "))
+            Ok(format!(" WHERE {}", conditions.join(" AND ")))
         }
     }
 
@@ -603,15 +696,23 @@ impl Dialect {
             (Self::Postgres | Self::MySql | Self::BigQuery, Value::Bool(flag)) => {
                 Operand::Raw(if *flag { "TRUE" } else { "FALSE" }.to_owned())
             }
-            // PostgreSQL reads its words for the numbers no digits write;
-            // BigQuery coerces the same words to a FLOAT64.
-            (Self::Postgres | Self::BigQuery, Value::Float(number)) if !number.is_finite() => {
+            // PostgreSQL reads its words for the numbers no digits write.
+            (Self::Postgres, Value::Float(number)) if !number.is_finite() => {
                 let word = match number {
                     number if number.is_nan() => "NaN",
                     number if number.is_sign_positive() => "Infinity",
                     _ => "-Infinity",
                 };
                 Operand::Text(word.to_owned())
+            }
+            // BigQuery needs the cast: a string alone is no FLOAT64 to it.
+            (Self::BigQuery, Value::Float(number)) if !number.is_finite() => {
+                let word = match number {
+                    number if number.is_nan() => "nan",
+                    number if number.is_sign_positive() => "inf",
+                    _ => "-inf",
+                };
+                Operand::Raw(format!("CAST('{word}' AS FLOAT64)"))
             }
             // SQLite keeps a NaN as NULL, and reads its infinities back
             // from a number too large for a REAL.
@@ -1154,56 +1255,69 @@ impl Dialect {
 
     /// One page plus one row (to learn whether there is a next page).
     /// `key` is the primary key, used for a stable default order and as a
-    /// tiebreaker after the user's sort. `binary` names the columns that
-    /// hold bytes: a filter value written as a UUID or as `0x` hex is
-    /// compared with them as those bytes.
-    pub fn select_rows(self, query: &RowQuery, key: &[String], binary: &[String]) -> Sql {
+    /// tiebreaker after the user's sort. `classes` names the columns'
+    /// classes: a filter value written as a UUID or as `0x` hex is
+    /// compared with a binary column as those bytes, and BigQuery writes
+    /// a number or a boolean bare. `Err` names a filter's column whose
+    /// value is none of its class.
+    pub fn select_rows(
+        self,
+        query: &RowQuery,
+        key: &[String],
+        classes: &[(String, ColumnClass)],
+    ) -> Result<Sql> {
         let mut binds = Binds::default();
-        let mut text = self.rows_statement(query, key, binary, &mut binds);
+        let mut text = self.rows_statement(query, key, classes, &mut binds)?;
         text.push_str(&format!(
             " LIMIT {} OFFSET {}",
             u64::from(query.limit) + 1,
             query.offset
         ));
-        Sql {
+        Ok(Sql {
             text,
             params: binds.params,
-        }
+        })
     }
 
     /// The statement [`Dialect::select_rows`] runs, as a person reads it:
     /// its values written in as literals, and the page it reads as its
     /// `LIMIT` (and `OFFSET`, past the first page). What the query history
     /// keeps of a filter or a sort set on a table.
-    pub fn shown_rows(self, query: &RowQuery, key: &[String], binary: &[String]) -> String {
+    pub fn shown_rows(
+        self,
+        query: &RowQuery,
+        key: &[String],
+        classes: &[(String, ColumnClass)],
+    ) -> Result<String> {
         let mut binds = Binds {
             inline: true,
             ..Binds::default()
         };
-        let mut text = self.rows_statement(query, key, binary, &mut binds);
+        let mut text = self.rows_statement(query, key, classes, &mut binds)?;
         text.push_str(&format!(" LIMIT {}", query.limit));
         if query.offset > 0 {
             text.push_str(&format!(" OFFSET {}", query.offset));
         }
-        text
+        Ok(text)
     }
 
     /// An export's statement: the `columns` named in their order (every
     /// column, `*`, when there are none), from the table, with the page's
     /// conditions and order and no `LIMIT`. What an export streams.
+    /// `classes` as for [`Dialect::select_rows`].
     pub fn export_rows(
         self,
         query: &RowQuery,
         key: &[String],
-        binary: &[String],
+        classes: &[(String, ColumnClass)],
         columns: &[String],
-    ) -> Sql {
+    ) -> Result<Sql> {
         let mut binds = Binds::default();
-        let text = self.select_statement(query, key, binary, columns, &mut binds);
-        Sql {
+        let text = self.select_statement(query, key, classes, columns, &mut binds)?;
+        Ok(Sql {
             text,
             params: binds.params,
-        }
+        })
     }
 
     /// The statement [`Dialect::export_rows`] runs, as a person reads it:
@@ -1213,14 +1327,14 @@ impl Dialect {
         self,
         query: &RowQuery,
         key: &[String],
-        binary: &[String],
+        classes: &[(String, ColumnClass)],
         columns: &[String],
-    ) -> String {
+    ) -> Result<String> {
         let mut binds = Binds {
             inline: true,
             ..Binds::default()
         };
-        self.select_statement(query, key, binary, columns, &mut binds)
+        self.select_statement(query, key, classes, columns, &mut binds)
     }
 
     /// `SELECT * FROM`, the conditions and the order of a page of rows.
@@ -1228,10 +1342,10 @@ impl Dialect {
         self,
         query: &RowQuery,
         key: &[String],
-        binary: &[String],
+        classes: &[(String, ColumnClass)],
         binds: &mut Binds,
-    ) -> String {
-        self.select_statement(query, key, binary, &[], binds)
+    ) -> Result<String> {
+        self.select_statement(query, key, classes, &[], binds)
     }
 
     /// `SELECT` the `columns` (or `*`) `FROM`, then the conditions and
@@ -1240,10 +1354,10 @@ impl Dialect {
         self,
         query: &RowQuery,
         key: &[String],
-        binary: &[String],
+        classes: &[(String, ColumnClass)],
         columns: &[String],
         binds: &mut Binds,
-    ) -> String {
+    ) -> Result<String> {
         let list = if columns.is_empty() {
             "*".to_owned()
         } else {
@@ -1254,7 +1368,7 @@ impl Dialect {
                 .join(", ")
         };
         let mut text = format!("SELECT {list} FROM {}", self.qualified(&query.object));
-        text.push_str(&self.where_clause(query, binary, binds));
+        text.push_str(&self.where_clause(query, classes, binds)?);
         let mut order: Vec<String> = query
             .sort
             .iter()
@@ -1275,18 +1389,18 @@ impl Dialect {
             text.push_str(" ORDER BY ");
             text.push_str(&order.join(", "));
         }
-        text
+        Ok(text)
     }
 
-    /// `binary` as for [`Dialect::select_rows`].
-    pub fn count_rows(self, query: &RowQuery, binary: &[String]) -> Sql {
+    /// `classes` as for [`Dialect::select_rows`].
+    pub fn count_rows(self, query: &RowQuery, classes: &[(String, ColumnClass)]) -> Result<Sql> {
         let mut binds = Binds::default();
         let mut text = format!("SELECT count(*) FROM {}", self.qualified(&query.object));
-        text.push_str(&self.where_clause(query, binary, &mut binds));
-        Sql {
+        text.push_str(&self.where_clause(query, classes, &mut binds)?);
+        Ok(Sql {
             text,
             params: binds.params,
-        }
+        })
     }
 
     /// The one statement of a [`Lookup`]. Its rows are the key, the label
@@ -1468,10 +1582,13 @@ mod tests {
         let bq = Dialect::BigQuery;
         assert_eq!(bq.value_literal(&Value::Bool(false), Text), "FALSE");
         assert_eq!(bq.value_literal(&Value::Float(4.5), Numeric), "4.5");
-        assert_eq!(bq.value_literal(&Value::Float(f64::NAN), Numeric), "'NaN'");
+        assert_eq!(
+            bq.value_literal(&Value::Float(f64::NAN), Numeric),
+            "CAST('nan' AS FLOAT64)"
+        );
         assert_eq!(
             bq.value_literal(&Value::Float(f64::INFINITY), Numeric),
-            "'Infinity'"
+            "CAST('inf' AS FLOAT64)"
         );
         assert_eq!(bq.value_literal(&bytes, Text), r"b'\x0a\xff'");
     }
@@ -1494,27 +1611,68 @@ mod tests {
                 op: FilterOp::Gt,
                 value: "41".into(),
             },
+            Filter {
+                column: "paid".into(),
+                op: FilterOp::Eq,
+                value: "true".into(),
+            },
         ];
         q.sort = vec![Sort {
             column: "id".into(),
             dir: SortDir::Desc,
         }];
-        let sql = Dialect::BigQuery.select_rows(&q, &["id".into()], &[]);
+        let classes = [
+            ("name".to_owned(), ColumnClass::Text { max_chars: None }),
+            (
+                "id".to_owned(),
+                ColumnClass::Integer {
+                    min: i64::MIN.into(),
+                    max: i64::MAX.into(),
+                },
+            ),
+            ("paid".to_owned(), ColumnClass::Boolean),
+            ("score".to_owned(), ColumnClass::Float),
+        ];
+        let sql = Dialect::BigQuery
+            .select_rows(&q, &["id".into()], &classes)
+            .expect("a test's filters read");
         // Every value is written in: nothing is bound over the REST API.
+        // The server matches no string to a number or a boolean, so those
+        // are bare.
         assert!(sql.params.is_empty());
         assert_eq!(
             sql.text,
             "SELECT * FROM `sales`.`orders` \
-             WHERE LOWER(CAST(`name` AS STRING)) LIKE LOWER('%o\\'s%') AND `id` > '41' \
-             ORDER BY `id` DESC LIMIT 101 OFFSET 0"
+             WHERE LOWER(CAST(`name` AS STRING)) LIKE LOWER('%o\\'s%') AND `id` > 41 \
+             AND `paid` = TRUE ORDER BY `id` DESC LIMIT 101 OFFSET 0"
         );
-        let count = Dialect::BigQuery.count_rows(&q, &[]);
+        let count = Dialect::BigQuery
+            .count_rows(&q, &classes)
+            .expect("a test's filters read");
         assert!(
             count
                 .text
                 .starts_with("SELECT count(*) FROM `sales`.`orders` WHERE ")
         );
         assert!(count.params.is_empty());
+        // A FLOAT64 that is no digits is its cast.
+        let nan = filtered("score", FilterOp::Eq, "NaN");
+        assert!(
+            Dialect::BigQuery
+                .select_rows(&nan, &[], &classes)
+                .expect("a test's filters read")
+                .text
+                .contains("`score` = CAST('nan' AS FLOAT64)")
+        );
+        // And a value that is none of its column's class is refused,
+        // naming the column.
+        for (column, value) in [("id", "abc"), ("score", "abc"), ("paid", "yes")] {
+            let bad = filtered(column, FilterOp::Gt, value);
+            let error = Dialect::BigQuery
+                .select_rows(&bad, &[], &classes)
+                .expect_err("{column} {value}");
+            assert!(error.to_string().contains(column), "{error}");
+        }
     }
 
     #[test]
@@ -1565,7 +1723,9 @@ mod tests {
 
     #[test]
     fn a_plain_page_orders_by_the_key_and_asks_for_one_extra_row() {
-        let sql = Dialect::Postgres.select_rows(&query(), &["id".into()], &[]);
+        let sql = Dialect::Postgres
+            .select_rows(&query(), &["id".into()], &[])
+            .expect("a test's filters read");
         assert_eq!(
             sql.text,
             r#"SELECT * FROM "public"."users" ORDER BY "id" ASC LIMIT 301 OFFSET 0"#
@@ -1577,7 +1737,9 @@ mod tests {
     fn without_a_key_there_is_no_order() {
         let mut q = query();
         q.offset = 600;
-        let sql = Dialect::Sqlite.select_rows(&q, &[], &[]);
+        let sql = Dialect::Sqlite
+            .select_rows(&q, &[], &[])
+            .expect("a test's filters read");
         assert_eq!(
             sql.text,
             r#"SELECT * FROM "public"."users" LIMIT 301 OFFSET 600"#
@@ -1591,7 +1753,9 @@ mod tests {
             column: "email".into(),
             dir: SortDir::Desc,
         }];
-        let sql = Dialect::MySql.select_rows(&q, &["id".into()], &[]);
+        let sql = Dialect::MySql
+            .select_rows(&q, &["id".into()], &[])
+            .expect("a test's filters read");
         assert_eq!(
             sql.text,
             "SELECT * FROM `public`.`users` ORDER BY `email` DESC, `id` ASC LIMIT 301 OFFSET 0"
@@ -1618,16 +1782,20 @@ mod tests {
             dir: SortDir::Asc,
         }];
         assert_eq!(
-            Dialect::Sqlite.shown_rows(&q, &["id".into()], &[]),
+            Dialect::Sqlite
+                .shown_rows(&q, &["id".into()], &[])
+                .expect("a test's filters read"),
             r#"SELECT * FROM "main"."book_covers" WHERE "kind" = 'print''s' AND CAST("alt_text" AS TEXT) LIKE '%?%' ESCAPE '\' ORDER BY "created_at" ASC, "id" ASC LIMIT 1000"#
         );
         // What runs still binds them.
-        let sent = Dialect::Sqlite.select_rows(&q, &["id".into()], &[]);
+        let sent = Dialect::Sqlite
+            .select_rows(&q, &["id".into()], &[])
+            .expect("a test's filters read");
         assert_eq!(sent.params, [text("print's"), text("%?%")]);
         q.offset = 2000;
         assert!(
             Dialect::MySql
-                .shown_rows(&q, &[], &[])
+                .shown_rows(&q, &[], &[]).expect("a test's filters read")
                 .ends_with("`kind` = 'print''s' AND CAST(`alt_text` AS CHAR) LIKE '%?%' ORDER BY `created_at` ASC LIMIT 1000 OFFSET 2000")
         );
     }
@@ -1651,17 +1819,23 @@ mod tests {
         let columns = ["title".to_owned(), "id".to_owned()];
         let key = ["id".to_owned()];
         assert_eq!(
-            Dialect::Postgres.shown_export(&q, &key, &[], &columns),
+            Dialect::Postgres
+                .shown_export(&q, &key, &[], &columns)
+                .expect("a test's filters read"),
             r#"SELECT "title", "id" FROM "public"."books" WHERE "title" = E'Small Rooms' ORDER BY "published" DESC, "id" ASC"#
         );
-        let sent = Dialect::MySql.export_rows(&q, &key, &[], &columns);
+        let sent = Dialect::MySql
+            .export_rows(&q, &key, &[], &columns)
+            .expect("a test's filters read");
         assert_eq!(
             sent.text,
             "SELECT `title`, `id` FROM `public`.`books` WHERE `title` = ? ORDER BY `published` DESC, `id` ASC"
         );
         assert_eq!(sent.params, [text("Small Rooms")]);
         // BigQuery writes its values in and has no key to order by.
-        let streamed = Dialect::BigQuery.export_rows(&q, &[], &[], &columns);
+        let streamed = Dialect::BigQuery
+            .export_rows(&q, &[], &[], &columns)
+            .expect("a test's filters read");
         assert!(streamed.params.is_empty());
         assert_eq!(
             streamed.text,
@@ -1676,6 +1850,7 @@ mod tests {
                     &[],
                     &[]
                 )
+                .expect("a test's filters read")
                 .starts_with(r#"SELECT * FROM "main"."books""#)
         );
     }
@@ -1695,13 +1870,17 @@ mod tests {
                 value: "bob".into(),
             },
         ];
-        let pg = Dialect::Postgres.select_rows(&q, &[], &[]);
+        let pg = Dialect::Postgres
+            .select_rows(&q, &[], &[])
+            .expect("a test's filters read");
         assert_eq!(
             pg.text,
             r#"SELECT * FROM "public"."users" WHERE "age" >= E'18' AND "name" <> E'bob' LIMIT 301 OFFSET 0"#
         );
         assert!(pg.params.is_empty());
-        let my = Dialect::MySql.select_rows(&q, &[], &[]);
+        let my = Dialect::MySql
+            .select_rows(&q, &[], &[])
+            .expect("a test's filters read");
         assert!(
             my.text.contains("WHERE `age` >= ? AND `name` <> ?"),
             "{}",
@@ -1725,7 +1904,9 @@ mod tests {
                 value: String::new(),
             },
         ];
-        let sql = Dialect::Sqlite.select_rows(&q, &[], &[]);
+        let sql = Dialect::Sqlite
+            .select_rows(&q, &[], &[])
+            .expect("a test's filters read");
         assert!(
             sql.text
                 .contains(r#"WHERE "deleted_at" IS NULL AND "email" IS NOT NULL"#)
@@ -1741,17 +1922,23 @@ mod tests {
             op: FilterOp::In,
             value: " 1, 2 ,,3 ".into(),
         }];
-        let sql = Dialect::Postgres.select_rows(&q, &[], &[]);
+        let sql = Dialect::Postgres
+            .select_rows(&q, &[], &[])
+            .expect("a test's filters read");
         assert!(
             sql.text.contains(r#""id" IN (E'1', E'2', E'3')"#),
             "{}",
             sql.text
         );
-        let lite = Dialect::Sqlite.select_rows(&q, &[], &[]);
+        let lite = Dialect::Sqlite
+            .select_rows(&q, &[], &[])
+            .expect("a test's filters read");
         assert!(lite.text.contains(r#""id" IN (?, ?, ?)"#), "{}", lite.text);
         assert_eq!(lite.params, vec![text("1"), text("2"), text("3")]);
         q.filters[0].value = " , ".into();
-        let sql = Dialect::Postgres.select_rows(&q, &[], &[]);
+        let sql = Dialect::Postgres
+            .select_rows(&q, &[], &[])
+            .expect("a test's filters read");
         assert!(sql.text.contains("WHERE 1 = 0"), "{}", sql.text);
     }
 
@@ -1819,10 +2006,12 @@ mod tests {
 
     #[test]
     fn a_binary_column_is_compared_with_the_bytes_and_the_text() {
-        let binary = ["id".to_owned()];
+        let binary = [("id".to_owned(), ColumnClass::Binary)];
         let q = filtered("id", FilterOp::Eq, UUID);
         for dialect in [Dialect::Sqlite, Dialect::MySql] {
-            let sql = dialect.select_rows(&q, &[], &binary);
+            let sql = dialect
+                .select_rows(&q, &[], &binary)
+                .expect("a test's filters read");
             let id = dialect.quote_ident("id");
             assert!(
                 sql.text.contains(&format!("WHERE {id} IN (?, ?) LIMIT")),
@@ -1831,11 +2020,15 @@ mod tests {
             );
             assert_eq!(sql.params, vec![bytes(&UUID_BYTES), text(UUID)]);
             // The count asks the same.
-            let count = dialect.count_rows(&q, &binary);
+            let count = dialect
+                .count_rows(&q, &binary)
+                .expect("a test's filters read");
             assert!(count.text.ends_with(&format!("WHERE {id} IN (?, ?)")));
             assert_eq!(count.params, sql.params);
         }
-        let pg = Dialect::Postgres.select_rows(&q, &[], &binary);
+        let pg = Dialect::Postgres
+            .select_rows(&q, &[], &binary)
+            .expect("a test's filters read");
         assert!(
             pg.text.contains(&format!(
                 r#"WHERE "id" IN (E'\\x0199a3f27c1e7abc8def0123456789ab', E'{UUID}') LIMIT"#
@@ -1846,14 +2039,18 @@ mod tests {
         assert!(pg.params.is_empty());
 
         let q = filtered("id", FilterOp::Ne, "0x00FF");
-        let sql = Dialect::Sqlite.select_rows(&q, &[], &binary);
+        let sql = Dialect::Sqlite
+            .select_rows(&q, &[], &binary)
+            .expect("a test's filters read");
         assert!(
             sql.text.contains(r#"WHERE "id" NOT IN (?, ?) LIMIT"#),
             "{}",
             sql.text
         );
         assert_eq!(sql.params, vec![bytes(&[0x00, 0xff]), text("0x00FF")]);
-        let pg = Dialect::Postgres.select_rows(&q, &[], &binary);
+        let pg = Dialect::Postgres
+            .select_rows(&q, &[], &binary)
+            .expect("a test's filters read");
         assert!(
             pg.text
                 .contains(r#"WHERE "id" NOT IN (E'\\x00ff', E'0x00FF') LIMIT"#),
@@ -1865,7 +2062,9 @@ mod tests {
     #[test]
     fn an_in_filter_on_a_binary_column_takes_each_value_both_ways() {
         let q = filtered("id", FilterOp::In, &format!("{UUID}, 7, 0xcafe"));
-        let sql = Dialect::MySql.select_rows(&q, &[], &["id".to_owned()]);
+        let sql = Dialect::MySql
+            .select_rows(&q, &[], &[("id".to_owned(), ColumnClass::Binary)])
+            .expect("a test's filters read");
         assert!(
             sql.text.contains("WHERE `id` IN (?, ?, ?, ?, ?) LIMIT"),
             "{}",
@@ -1885,17 +2084,21 @@ mod tests {
 
     #[test]
     fn only_binary_columns_and_equality_bind_bytes() {
-        let binary = ["id".to_owned()];
+        let binary = [("id".to_owned(), ColumnClass::Binary)];
         // A text column holding the UUID as a string matches as text.
         let q = filtered("token", FilterOp::Eq, UUID);
-        let sql = Dialect::Sqlite.select_rows(&q, &[], &binary);
+        let sql = Dialect::Sqlite
+            .select_rows(&q, &[], &binary)
+            .expect("a test's filters read");
         assert!(
             sql.text.contains(r#"WHERE "token" = ? LIMIT"#),
             "{}",
             sql.text
         );
         assert_eq!(sql.params, vec![text(UUID)]);
-        let pg = Dialect::Postgres.select_rows(&q, &[], &binary);
+        let pg = Dialect::Postgres
+            .select_rows(&q, &[], &binary)
+            .expect("a test's filters read");
         assert!(
             pg.text
                 .contains(&format!(r#"WHERE "token" = E'{UUID}' LIMIT"#)),
@@ -1904,7 +2107,9 @@ mod tests {
         );
         // So does a binary column's value that is not bytes.
         let q = filtered("id", FilterOp::Eq, "bob");
-        let sql = Dialect::Sqlite.select_rows(&q, &[], &binary);
+        let sql = Dialect::Sqlite
+            .select_rows(&q, &[], &binary)
+            .expect("a test's filters read");
         assert!(sql.text.contains(r#"WHERE "id" = ? LIMIT"#), "{}", sql.text);
         assert_eq!(sql.params, vec![text("bob")]);
         // Ordering and LIKE compare the text as typed.
@@ -1916,7 +2121,9 @@ mod tests {
             FilterOp::Contains,
             FilterOp::StartsWith,
         ] {
-            let sql = Dialect::Sqlite.select_rows(&filtered("id", op, UUID), &[], &binary);
+            let sql = Dialect::Sqlite
+                .select_rows(&filtered("id", op, UUID), &[], &binary)
+                .expect("a test's filters read");
             assert_eq!(sql.params.len(), 1, "{op:?}");
             assert!(matches!(sql.params[0], Value::Text(_)), "{op:?}");
         }
@@ -1956,13 +2163,17 @@ mod tests {
             op: FilterOp::Contains,
             value: "5%".into(),
         }];
-        let pg = Dialect::Postgres.select_rows(&q, &[], &[]);
+        let pg = Dialect::Postgres
+            .select_rows(&q, &[], &[])
+            .expect("a test's filters read");
         assert!(
             pg.text.contains(r#"CAST("id" AS TEXT) ILIKE E'%5\\%%'"#),
             "{}",
             pg.text
         );
-        let lite = Dialect::Sqlite.select_rows(&q, &[], &[]);
+        let lite = Dialect::Sqlite
+            .select_rows(&q, &[], &[])
+            .expect("a test's filters read");
         assert!(
             lite.text
                 .contains(r#"CAST("id" AS TEXT) LIKE ? ESCAPE '\'"#),
@@ -1970,12 +2181,15 @@ mod tests {
             lite.text
         );
         assert_eq!(lite.params, vec![text(r"%5\%%")]);
-        let my = Dialect::MySql.select_rows(&q, &[], &[]);
+        let my = Dialect::MySql
+            .select_rows(&q, &[], &[])
+            .expect("a test's filters read");
         assert!(my.text.contains("CAST(`id` AS CHAR) LIKE ?"), "{}", my.text);
         q.filters[0].op = FilterOp::StartsWith;
         assert!(
             Dialect::Postgres
                 .select_rows(&q, &[], &[])
+                .expect("a test's filters read")
                 .text
                 .contains(r"ILIKE E'5\\%%'")
         );
@@ -1990,7 +2204,9 @@ mod tests {
             value: "1".into(),
         }];
         q.raw_where = Some("b = 2 OR c = 3".into());
-        let sql = Dialect::Postgres.select_rows(&q, &[], &[]);
+        let sql = Dialect::Postgres
+            .select_rows(&q, &[], &[])
+            .expect("a test's filters read");
         assert!(
             sql.text
                 .contains("WHERE \"a\" = E'1' AND (\nb = 2 OR c = 3\n)"),
@@ -2001,6 +2217,7 @@ mod tests {
         assert!(
             !Dialect::Postgres
                 .select_rows(&q, &[], &[])
+                .expect("a test's filters read")
                 .text
                 .contains("AND (")
         );
@@ -2019,7 +2236,9 @@ mod tests {
             dir: SortDir::Asc,
         }];
         q.offset = 300;
-        let sql = Dialect::Sqlite.count_rows(&q, &[]);
+        let sql = Dialect::Sqlite
+            .count_rows(&q, &[])
+            .expect("a test's filters read");
         assert_eq!(
             sql.text,
             r#"SELECT count(*) FROM "public"."users" WHERE "a" = ?"#
@@ -2063,7 +2282,9 @@ mod tests {
             op: FilterOp::Eq,
             value: "x' OR '1'='1".into(),
         }];
-        let pg = Dialect::Postgres.select_rows(&q, &[], &[]);
+        let pg = Dialect::Postgres
+            .select_rows(&q, &[], &[])
+            .expect("a test's filters read");
         assert!(
             pg.text.contains(r#""name" = E'x'' OR ''1''=''1'"#),
             "{}",

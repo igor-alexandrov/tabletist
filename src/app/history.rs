@@ -245,7 +245,11 @@ pub(super) fn filtered(
     let started = object.rows.started.map(|started| started.elapsed());
     let mut entry = Entry {
         detail: object.object.name.clone(),
-        sql: Some(dialect.shown_rows(&object.query, &key, &[])),
+        sql: Some(
+            dialect
+                .shown_rows(&object.query, &key, &[])
+                .expect("with no classes named, no filter value is parsed"),
+        ),
         query: Some(crate::session::KeptTab::of(object)),
         at_ms: base.at_ms.saturating_sub(
             started.map_or(0, |took| i64::try_from(millis(took)).unwrap_or_default()),

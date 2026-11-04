@@ -828,7 +828,11 @@ impl App {
             .map(|column| column.name.clone())
             .collect();
         let query = Self::export_query(sheet, object);
-        Some(dialect.shown_export(&query, &key, &[], &names))
+        Some(
+            dialect
+                .shown_export(&query, &key, &[], &names)
+                .expect("with no classes named, no filter value is parsed"),
+        )
     }
 
     /// The columns agents see masked on `workspace`'s connection: the

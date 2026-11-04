@@ -22,14 +22,15 @@ use gcp_bigquery_client::model::query_parameter::QueryParameter;
 use gcp_bigquery_client::model::query_parameter_type::QueryParameterType;
 use gcp_bigquery_client::model::query_parameter_value::QueryParameterValue;
 use gcp_bigquery_client::model::table_field_schema::TableFieldSchema;
+use gcp_bigquery_client::model::table_row::TableRow;
 
 use crate::adapter::Adapter;
 use crate::agent::{Catalog, ColumnName, Limits, Param, Read, Sources};
 use crate::{
-    Access, CancelHandle, CancelInner, ChangeSet, ColumnInfo, ColumnMeta, ConnectSpec, Ddl,
-    Dialect, Error, Lookup, LookupPage, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Result,
-    RowPage, RowQuery, ScriptMode, ScriptOutcome, StatementOutcome, StatementResult, StopFlag,
-    Structure, Value, ValueKind, WriteOutcome,
+    Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, ConnectSpec,
+    Ddl, Dialect, Error, FilterOp, Lookup, LookupPage, MAX_LISTED, ObjectInfo, ObjectKind,
+    ObjectRef, Result, RowPage, RowQuery, ScriptMode, ScriptOutcome, StatementOutcome,
+    StatementResult, StopFlag, Structure, Value, ValueKind, WriteOutcome,
 };
 
 /// How long a query job may run before the API answers without the rows
@@ -188,6 +189,20 @@ fn cell(field: &TableFieldSchema, value: &serde_json::Value) -> Value {
     }
 }
 
+/// A result page's rows as values, typed by the schema's `fields`.
+fn rows_of(fields: &[TableFieldSchema], page: Vec<TableRow>) -> Vec<Vec<Value>> {
+    page.into_iter()
+        .map(|row| {
+            let cells = row.columns.unwrap_or_default();
+            fields
+                .iter()
+                .zip(cells.iter())
+                .map(|(field, c)| cell(field, c.value.as_ref().unwrap_or(&serde_json::Value::Null)))
+                .collect()
+        })
+        .collect()
+}
+
 impl Conn {
     /// Connects: a client from the spec's service-account key file, or
     /// from Google Cloud's application default credentials where none is
@@ -254,6 +269,47 @@ impl Conn {
         result
     }
 
+    /// Inserts a job of `query` (ended by `timeout` on the server where
+    /// one is given) and returns its reference, noting where the server
+    /// runs it in `running` so a cancel can reach it there.
+    async fn insert_job(
+        &self,
+        job_id: String,
+        query: JobConfigurationQuery,
+        timeout: Option<Duration>,
+    ) -> Result<JobReference> {
+        let job = Job {
+            job_reference: Some(JobReference {
+                job_id: Some(job_id),
+                project_id: Some(self.project.clone()),
+                location: None,
+            }),
+            configuration: Some(JobConfiguration {
+                query: Some(query),
+                job_timeout_ms: timeout.map(|timeout| timeout.as_millis().to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let inserted = self
+            .client
+            .job()
+            .insert(&self.project, job)
+            .await
+            .map_err(query_error)?;
+        // The server says where the job runs, which its pages are read by.
+        let reference = inserted
+            .job_reference
+            .expect("a job answers with its reference");
+        if let Ok(mut running) = self.running.lock()
+            && let Some(current) = running.as_mut()
+            && current.0 == reference.job_id.clone().unwrap_or_default()
+        {
+            current.1 = reference.location.clone();
+        }
+        Ok(reference)
+    }
+
     /// The job of a checked read, from its insert to its last page.
     async fn run_job(
         &self,
@@ -287,47 +343,25 @@ impl Conn {
                 }
             })
             .collect();
-        let job = Job {
-            job_reference: Some(JobReference {
-                job_id: Some(job_id),
-                project_id: Some(self.project.clone()),
-                location: None,
-            }),
-            configuration: Some(JobConfiguration {
-                query: Some(JobConfigurationQuery {
+        let reference = self
+            .insert_job(
+                job_id,
+                JobConfigurationQuery {
                     query: read.text().to_owned(),
                     use_legacy_sql: Some(false),
                     parameter_mode: (!params.is_empty()).then(|| "POSITIONAL".to_owned()),
                     query_parameters: (!params.is_empty()).then_some(params),
                     ..Default::default()
-                }),
-                job_timeout_ms: timeout.map(|timeout| timeout.as_millis().to_string()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let inserted = self
-            .client
-            .job()
-            .insert(&self.project, job)
-            .await
-            .map_err(query_error)?;
-        // The server says where the job runs, which its pages are read by.
-        let reference = inserted
-            .job_reference
-            .expect("a job answers with its reference");
-        if let Ok(mut running) = self.running.lock()
-            && let Some(current) = running.as_mut()
-            && current.0 == reference.job_id.clone().unwrap_or_default()
-        {
-            current.1 = reference.location.clone();
-        }
+                },
+                timeout,
+            )
+            .await?;
         let mut columns = Vec::new();
         let mut rows: Vec<Vec<Value>> = Vec::new();
         let mut token = None;
         loop {
             let page = GetQueryResultsParameters {
-                page_token: token,
+                page_token: token.clone(),
                 max_results: Some(clamped - i32::try_from(rows.len()).unwrap_or(clamped)),
                 location: reference.location.clone(),
                 timeout_ms: Some(JOB_WAIT.as_millis() as i32),
@@ -347,28 +381,20 @@ impl Conn {
             {
                 columns = column_metas(fields);
                 if let Some(page) = response.rows.take() {
-                    for row in page {
-                        let cells = row.columns.unwrap_or_default();
-                        rows.push(
-                            fields
-                                .iter()
-                                .zip(cells.iter())
-                                .map(|(field, c)| {
-                                    cell(
-                                        field,
-                                        c.value.as_ref().unwrap_or(&serde_json::Value::Null),
-                                    )
-                                })
-                                .collect(),
-                        );
-                    }
+                    rows.extend(rows_of(fields, page));
                 }
             }
             if rows.len() >= limit {
                 rows.truncate(limit);
                 return Ok((columns, rows));
             }
-            token = response.page_token.take();
+            let next = response.page_token.take();
+            // A token that does not advance would read the page again
+            // forever.
+            if next.is_some() && next == token {
+                return Err(Error::query("BigQuery returned the same page token twice"));
+            }
+            token = next;
             if complete && token.is_none() {
                 return Ok((columns, rows));
             }
@@ -388,37 +414,17 @@ impl Conn {
         job_id: String,
     ) -> Result<u64> {
         let page_size = i32::try_from(batch).unwrap_or(i32::MAX);
-        let job = Job {
-            job_reference: Some(JobReference {
-                job_id: Some(job_id),
-                project_id: Some(self.project.clone()),
-                location: None,
-            }),
-            configuration: Some(JobConfiguration {
-                query: Some(JobConfigurationQuery {
+        let reference = self
+            .insert_job(
+                job_id,
+                JobConfigurationQuery {
                     query: sql.to_owned(),
                     use_legacy_sql: Some(false),
                     ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let inserted = self
-            .client
-            .job()
-            .insert(&self.project, job)
-            .await
-            .map_err(query_error)?;
-        let reference = inserted
-            .job_reference
-            .expect("a job answers with its reference");
-        if let Ok(mut running) = self.running.lock()
-            && let Some(current) = running.as_mut()
-            && current.0 == reference.job_id.clone().unwrap_or_default()
-        {
-            current.1 = reference.location.clone();
-        }
+                },
+                None,
+            )
+            .await?;
         let mut columns_sent = false;
         let mut sent = 0u64;
         let mut token = None;
@@ -427,7 +433,7 @@ impl Conn {
                 return Err(Error::Cancelled);
             }
             let page = GetQueryResultsParameters {
-                page_token: token,
+                page_token: token.clone(),
                 max_results: Some(page_size),
                 location: reference.location.clone(),
                 timeout_ms: Some(JOB_WAIT.as_millis() as i32),
@@ -451,20 +457,8 @@ impl Conn {
                 }
                 if let Some(page) = response.rows.take() {
                     let mut values: Vec<Vec<Value>> = Vec::with_capacity(batch);
-                    for row in page {
-                        let cells = row.columns.unwrap_or_default();
-                        values.push(
-                            fields
-                                .iter()
-                                .zip(cells.iter())
-                                .map(|(field, c)| {
-                                    cell(
-                                        field,
-                                        c.value.as_ref().unwrap_or(&serde_json::Value::Null),
-                                    )
-                                })
-                                .collect(),
-                        );
+                    for row in rows_of(fields, page) {
+                        values.push(row);
                         if values.len() == batch {
                             sent += values.len() as u64;
                             crate::stream::send(
@@ -480,7 +474,13 @@ impl Conn {
                     }
                 }
             }
-            token = response.page_token.take();
+            let next = response.page_token.take();
+            // A token that does not advance would read the page again
+            // forever.
+            if next.is_some() && next == token {
+                return Err(Error::query("BigQuery returned the same page token twice"));
+            }
+            token = next;
             if complete && token.is_none() {
                 stop.finish();
                 return Ok(sent);
@@ -499,18 +499,37 @@ impl Conn {
         Ok(table.schema.fields.unwrap_or_default())
     }
 
-    /// The names of the table's BYTES columns, for a filter that compares
-    /// a value that reads as bytes: see [`Dialect::select_rows`].
-    async fn binary_columns(&self, query: &RowQuery) -> Result<Vec<String>> {
-        if !crate::dialect::reads_bytes(query) {
+    /// The classes of the table's columns, for a filter that compares a
+    /// value against them: bytes read as the bytes their text names, and
+    /// a number or a boolean written bare, since the server matches no
+    /// string to one. See [`Dialect::select_rows`]. Fetched only when a
+    /// filter compares.
+    async fn column_classes(&self, query: &RowQuery) -> Result<Vec<(String, ColumnClass)>> {
+        let compares = query.filters.iter().any(|filter| match filter.op {
+            FilterOp::Eq
+            | FilterOp::Ne
+            | FilterOp::In
+            | FilterOp::Lt
+            | FilterOp::Gt
+            | FilterOp::Le
+            | FilterOp::Ge => true,
+            FilterOp::Contains | FilterOp::StartsWith | FilterOp::IsNull | FilterOp::IsNotNull => {
+                false
+            }
+        });
+        if !compares {
             return Ok(Vec::new());
         }
         Ok(self
             .fields(&query.object)
             .await?
             .iter()
-            .filter(|field| type_name(field) == "BYTES")
-            .map(|field| field.name.clone())
+            .map(|field| {
+                (
+                    field.name.clone(),
+                    crate::column_class(Dialect::BigQuery, &type_name(field)),
+                )
+            })
             .collect())
     }
 }
@@ -549,11 +568,11 @@ impl Adapter for Conn {
     /// The project's datasets, as schemas.
     async fn list_schemas(&self) -> Result<Vec<String>> {
         let mut names = Vec::new();
-        let mut token = None;
+        let mut token: Option<String> = None;
         loop {
             let mut options = gcp_bigquery_client::dataset::ListOptions::default();
-            if let Some(token) = token {
-                options = options.page_token(token);
+            if let Some(token) = &token {
+                options = options.page_token(token.clone());
             }
             let page = self
                 .client
@@ -571,6 +590,9 @@ impl Adapter for Conn {
                 return Ok(names);
             }
             match page.next_page_token {
+                Some(next) if token.as_deref() == Some(next.as_str()) => {
+                    return Err(Error::query("BigQuery returned the same page token twice"));
+                }
                 Some(next) => token = Some(next),
                 None => return Ok(names),
             }
@@ -580,11 +602,11 @@ impl Adapter for Conn {
     /// The dataset's tables and views, as objects.
     async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>> {
         let mut objects = Vec::new();
-        let mut token = None;
+        let mut token: Option<String> = None;
         loop {
             let mut options = gcp_bigquery_client::table::ListOptions::default();
-            if let Some(token) = token {
-                options = options.page_token(token);
+            if let Some(token) = &token {
+                options = options.page_token(token.clone());
             }
             let page = self
                 .client
@@ -611,6 +633,9 @@ impl Adapter for Conn {
                 return Ok(objects);
             }
             match page.next_page_token {
+                Some(next) if token.as_deref() == Some(next.as_str()) => {
+                    return Err(Error::query("BigQuery returned the same page token twice"));
+                }
                 Some(next) => token = Some(next),
                 None => return Ok(objects),
             }
@@ -654,8 +679,8 @@ impl Adapter for Conn {
     }
 
     async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
-        let binary = self.binary_columns(query).await?;
-        let sql = Dialect::BigQuery.select_rows(query, &[], &binary);
+        let classes = self.column_classes(query).await?;
+        let sql = Dialect::BigQuery.select_rows(query, &[], &classes)?;
         debug_assert!(sql.params.is_empty());
         let limit = query.limit as usize;
         let (columns, mut rows, elapsed) = self.query(&sql.text, &[], limit + 1, None).await?;
@@ -671,8 +696,8 @@ impl Adapter for Conn {
     }
 
     async fn export_statement(&self, query: &RowQuery, columns: &[String]) -> Result<String> {
-        let binary = self.binary_columns(query).await?;
-        Ok(Dialect::BigQuery.shown_export(query, &[], &binary, columns))
+        let classes = self.column_classes(query).await?;
+        Dialect::BigQuery.shown_export(query, &[], &classes, columns)
     }
 
     /// An export's rows through the jobs API, a page (at most `batch`
@@ -686,8 +711,8 @@ impl Adapter for Conn {
         to: &tokio::sync::mpsc::Sender<crate::Streamed>,
         stop: &StopFlag,
     ) -> Result<u64> {
-        let binary = self.binary_columns(query).await?;
-        let sql = Dialect::BigQuery.export_rows(query, &[], &binary, columns);
+        let classes = self.column_classes(query).await?;
+        let sql = Dialect::BigQuery.export_rows(query, &[], &classes, columns)?;
         debug_assert!(sql.params.is_empty());
         let read =
             crate::agent::check_read(Dialect::BigQuery, &sql.text, &[]).map_err(Error::Agent)?;
@@ -699,8 +724,8 @@ impl Adapter for Conn {
     }
 
     async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
-        let binary = self.binary_columns(query).await?;
-        let sql = Dialect::BigQuery.count_rows(query, &binary);
+        let classes = self.column_classes(query).await?;
+        let sql = Dialect::BigQuery.count_rows(query, &classes)?;
         let (_, rows, _) = self.query(&sql.text, &[], 1, None).await?;
         rows.first()
             .and_then(|row| row.first())
@@ -933,7 +958,9 @@ mod tests {
         // then send through query()'s check.
         let mut q = crate::RowQuery::new(crate::ObjectRef::new("d", "t"), 100);
         q.raw_where = Some("1 = 1\n) ; DELETE FROM d.t WHERE true; --".into());
-        let sql = Dialect::BigQuery.select_rows(&q, &[], &[]);
+        let sql = Dialect::BigQuery
+            .select_rows(&q, &[], &[])
+            .expect("no filter, nothing to parse");
         assert!(
             crate::agent::check_read(crate::Dialect::BigQuery, &sql.text, &[]).is_err(),
             "{}",
