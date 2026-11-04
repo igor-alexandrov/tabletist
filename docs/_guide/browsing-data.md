@@ -214,6 +214,62 @@ toast says what was copied: "Copied 4 rows × 2 columns as Markdown".
 The clipboard takes up to 10,000 rows and 20 MB. A larger selection is not
 copied, and the toast says so. Copying records nothing in the history.
 
+## Exporting
+
+**Export…** writes a table to a file, or to the clipboard: in the table's
+header, in **File › Export…**, or with Cmd/Ctrl+Shift+E on the table in
+front or the one selected in the sidebar. In the Omarchy look press `E`
+on the rows or on a table in the sidebar, or type `:export`, or
+`:export json` to start in that format.
+
+The sheet asks for:
+
+- **Format:** CSV, TSV, JSON, JSON Lines, SQL INSERT or Markdown, with the
+  same options as Copy as. Each format keeps the options you last chose.
+- **Rows:** the selected rows, the current page, all rows matching the
+  filter (in the table's sort), or the whole table (in its key's order).
+  The selected rows and the page are written as the grid loaded them. The
+  others are read again from the database. **Count exactly** counts the
+  rows matching a filter, which have no estimate.
+- **Columns:** all of them, or **Choose** to leave some out and reorder
+  them. Space includes or leaves out a column, Alt+Up and Alt+Down move it
+  (`K` and `J` in the Omarchy look), and in the macOS look a drag on its
+  handle moves it too.
+- **Destination:** a file, or the clipboard (up to 10,000 rows and 20 MB).
+
+**Review SQL** shows the `SELECT` the export will run, before anything
+runs. The export only reads: it runs on a read-only connection of its
+own, so the table stays usable while it runs, and production and
+read-only connections can export too. A change not yet saved is not
+exported, and the sheet says so. Values are written as the database
+holds them, and a value the grid cuts off at 256 KiB is written whole.
+
+In the macOS look the system's save panel names the file (on Linux, the
+desktop's). In the Omarchy look the sheet's **save to** line does: your downloads folder
+first, and a name you type without a folder goes there too. Changing the
+format changes the name's ending, and typing a known ending changes the
+format. `:w ~/Downloads/reviews.csv` writes the table straight away, in
+the format of its ending, with the filter and the sort, and `:w!` replaces
+a file of that name. `:w` alone still saves your changes to the database.
+
+The file is written to a hidden temporary file beside it, then renamed
+into place, so a cancel or a failure never leaves half a file under its
+name. It is readable by your account only. While it runs the toast shows
+how far it is (hide it with ×; the pill at the bottom right brings it
+back), with **Cancel**; the Omarchy status line shows it too, and
+`:export cancel` stops it. When it is done the toast offers **Show in
+Finder** (**Show in folder** on Windows and Linux, `go` in the Omarchy
+look). A failure stays until you dismiss it,
+with what to do next: **Try again**, **Choose folder…** or **Review SQL**.
+In the Omarchy look `:export` does what the line offers: it tries again,
+shows the SQL after a timeout, or opens the float for another name, and
+Esc puts the line away. One export runs at a time: while it runs,
+Cmd/Ctrl+Shift+E and **File › Export…** cancel it.
+
+The history keeps the statement an export ran, as an **Export** entry,
+never its rows. Exporting the loaded rows runs nothing, and records
+nothing. **File › Import…** is there for later and does nothing yet.
+
 ## Next
 
 [Edit a table's values]({% link _guide/editing-data.md %}).

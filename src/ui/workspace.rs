@@ -2486,6 +2486,99 @@ struct StatusAsked {
     labels: bool,
     /// What editing asks of the app about the table in front.
     editing: EditingAsked,
+    /// The export's line, and its colour, while one runs or its end is
+    /// told.
+    export: Option<(String, egui::Color32)>,
+}
+
+/// The terminal look's line for the export, as the progress and states
+/// board writes it: its bar while it runs, its end for 4 s, a failure
+/// until Esc.
+pub fn export_line(app: &App) -> Option<(String, egui::Color32)> {
+    use crate::export_sheet::{ExportStatus, count_words, size_words, took_words};
+    let exporting = app.exporting.as_ref()?;
+    let (locale, palette) = (app.locale, &app.palette);
+    let layout = crate::keymap::Layout::Omarchy;
+    let key = |command| app.keymap.key(layout, command);
+    let name = match exporting.file.is_empty() {
+        true => exporting.table.clone(),
+        false => exporting.file.clone(),
+    };
+    let line = match &exporting.status {
+        ExportStatus::Asking | ExportStatus::Running { .. } => {
+            let rows = match exporting.status {
+                ExportStatus::Running { rows, .. } => rows,
+                _ => 0,
+            };
+            let cancel = key(crate::keymap::Command::CancelExport);
+            let done = crate::format::group_digits(rows);
+            let text = match (exporting.share(), exporting.total) {
+                (Some(share), Some(total)) => {
+                    let filled = ((share * 12.0).round() as usize).min(12);
+                    let bar = format!("{}{}", "█".repeat(filled), "░".repeat(12 - filled));
+                    gettext(
+                        locale,
+                        "export {name} [{bar}] {share}% · {done}/{total} · {cancel}",
+                    )
+                    .replace("{name}", &name)
+                    .replace("{bar}", &bar)
+                    .replace("{share}", &((share * 100.0).round() as u32).to_string())
+                    .replace("{done}", &done)
+                    .replace("{total}", &count_words(total))
+                    .replace("{cancel}", cancel.as_str())
+                }
+                _ => gettext(locale, "export {name} · {done} rows · {cancel}")
+                    .replace("{name}", &name)
+                    .replace("{done}", &done)
+                    .replace("{cancel}", cancel.as_str()),
+            };
+            (text, palette.text)
+        }
+        ExportStatus::Done {
+            rows, bytes, took, ..
+        } => {
+            let open = key(crate::keymap::Command::OpenExportFolder);
+            let rows = crate::format::group_digits(*rows);
+            let text = gettext(
+                locale,
+                "✓ exported {rows} rows → {path} · {size} · {time} · {key} open folder",
+            )
+            .replace("{rows}", &rows)
+            .replace("{path}", &exporting.shown_path)
+            .replace("{size}", &size_words(*bytes, locale).to_lowercase())
+            .replace("{time}", &took_words(*took))
+            .replace("{key}", open.as_str());
+            (text, palette.success)
+        }
+        ExportStatus::Cancelled { .. } => (
+            gettext(
+                locale,
+                "export cancelled · nothing saved, the partial file was removed",
+            )
+            .into_owned(),
+            palette.warning,
+        ),
+        ExportStatus::Failed {
+            failure,
+            rows,
+            bytes,
+            ..
+        } => {
+            let text = crate::export_sheet::failure_line(
+                exporting,
+                failure,
+                (*rows, *bytes),
+                app.dirs.home.as_deref(),
+                locale,
+            );
+            let color = match failure {
+                crate::backend::export::ExportFailure::Exists { .. } => palette.warning,
+                _ => palette.danger,
+            };
+            (text, color)
+        }
+    };
+    Some(line)
 }
 
 /// What the status line of `tab` asks of the app: none where the
@@ -2514,6 +2607,7 @@ fn status_asked(app: &App, tab: ConnTabId) -> Option<StatusAsked> {
         call_saved,
         labels,
         editing: editing_asked(app, tab),
+        export: export_line(app),
     })
 }
 
@@ -2606,6 +2700,7 @@ fn status_line(
         (key(Command::DeleteSelection), key(Command::LeaveVisual));
     let visual_copy_key = key(Command::CopySelection);
     let copy_as_key = key(Command::CopyAs);
+    let export_key = key(Command::Export);
     // The keys of a foreign key's list, while one is open under the field.
     let pick_keys = keymap.together(layout, &[Command::NextPick, Command::PreviousPick]);
     let (set_key, close_key) = (key(Command::CommitDown), key(Command::ClosePicker));
@@ -2772,6 +2867,19 @@ fn status_line(
             color: palette.text,
         });
     }
+    // Then the export: its progress, its end, a failure until Esc.
+    if editing.said.is_none()
+        && let Some((text, color)) = asked.export
+    {
+        editing.said = Some(Said {
+            mark: None,
+            text,
+            tail: None,
+            color,
+        });
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(500));
+    }
     egui::Panel::bottom(egui::Id::new(("status-line", tab.0)))
         .exact_size(STATUS_LINE)
         .resizable(false)
@@ -2824,6 +2932,8 @@ fn status_line(
             if reviewed {
                 table_hints.push((&review_key, &*review, true));
             }
+            // Export last: the first to give way where room runs out.
+            table_hints.push((&export_key, "export", true));
             // An editor's keys: a table's do nothing on it.
             let words = [
                 "run",

@@ -15,6 +15,7 @@ pub mod edit;
 pub mod endpoint;
 pub mod env;
 pub mod export;
+pub mod export_sheet;
 #[cfg(any(test, feature = "testing"))]
 pub mod fixtures;
 pub mod font_files;

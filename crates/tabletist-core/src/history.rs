@@ -60,10 +60,18 @@ pub enum Source {
     Filter,
     /// An agent's call, in the Agents Log.
     Agent,
+    /// The `SELECT` an export ran, never its rows.
+    Export,
 }
 
 impl Source {
-    pub const ALL: [Self; 4] = [Self::Sql, Self::Save, Self::Filter, Self::Agent];
+    pub const ALL: [Self; 5] = [
+        Self::Sql,
+        Self::Save,
+        Self::Filter,
+        Self::Agent,
+        Self::Export,
+    ];
 
     /// Its word in the file and in the terminal look's filter.
     pub fn word(self) -> &'static str {
@@ -72,6 +80,7 @@ impl Source {
             Self::Save => "save",
             Self::Filter => "filter",
             Self::Agent => "agent",
+            Self::Export => "export",
         }
     }
 
@@ -213,11 +222,12 @@ impl fmt::Debug for Entry {
 
 impl Entry {
     /// A statement that History runs again: a read of the SQL editor's, or
-    /// a filter's `SELECT`. Never a write, a save or an agent's call.
+    /// a filter's or an export's `SELECT`. Never a write, a save or an
+    /// agent's call.
     pub fn runs_again(&self) -> bool {
         match self.source {
             Source::Sql => self.kind == Kind::Read && self.sql.is_some(),
-            Source::Filter => self.sql.is_some(),
+            Source::Filter | Source::Export => self.sql.is_some(),
             Source::Save | Source::Agent => false,
         }
     }
@@ -228,7 +238,7 @@ impl Entry {
     pub fn searched(&self) -> String {
         match self.source {
             Source::Agent => self.tool.as_deref().unwrap_or_default().to_lowercase(),
-            Source::Sql | Source::Save | Source::Filter => {
+            Source::Sql | Source::Save | Source::Filter | Source::Export => {
                 self.sql.as_deref().unwrap_or_default().to_lowercase()
             }
         }

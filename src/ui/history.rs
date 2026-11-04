@@ -163,7 +163,7 @@ impl View<'_> {
     fn detail_of<'e>(&'e self, entry: &'e Entry) -> &'e str {
         match entry.source {
             Source::Agent => self.history.agent_of(entry).unwrap_or_default(),
-            Source::Sql | Source::Save | Source::Filter => &entry.detail,
+            Source::Sql | Source::Save | Source::Filter | Source::Export => &entry.detail,
         }
     }
 
@@ -1054,7 +1054,7 @@ impl View<'_> {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
                 let height = 30.0;
-                if entry.runs_again() && entry.source == Source::Sql {
+                if entry.runs_again() && matches!(entry.source, Source::Sql | Source::Export) {
                     let label = gettext(locale, "Run again");
                     let button = states::button(&label, look)
                         .primary()
@@ -1168,7 +1168,7 @@ impl View<'_> {
                 None => result,
             },
             (_, Outcome::Error) => result,
-            (Source::Sql, _) => match entry.read_only {
+            (Source::Sql | Source::Export, _) => match entry.read_only {
                 true => gettext(locale, "read-only transaction").into_owned(),
                 false => gettext(locale, "read-write").into_owned(),
             },
@@ -1215,6 +1215,7 @@ impl View<'_> {
             Source::Sql | Source::Filter | Source::Agent => {
                 facts.push((say("Rows"), rows(entry.rows)))
             }
+            Source::Export => facts.push((say("Rows exported"), rows(entry.rows))),
         }
         if let Some(took) = entry.took_ms {
             facts.push((
@@ -1308,6 +1309,7 @@ fn source_icon(source: Source) -> Icon {
         Source::Save => Icon::Table,
         Source::Filter => Icon::Funnel,
         Source::Agent => Icon::SquareTerminal,
+        Source::Export => Icon::Download,
     }
 }
 
@@ -1322,6 +1324,7 @@ fn source_words(entry: &Entry, detail: &str, locale: Locale, look: &Look) -> (St
         (Source::Save, true) => gettext(locale, "save"),
         (Source::Filter, _) => gettext(locale, "Filter"),
         (Source::Agent, _) => gettext(locale, "Agent"),
+        (Source::Export, _) => gettext(locale, "Export"),
     };
     let detail = match look.terminal {
         true => detail.to_lowercase(),
@@ -1346,6 +1349,7 @@ fn source_menu_word(source: Source, locale: Locale) -> String {
         Source::Save => gettext(locale, "Grid saves"),
         Source::Filter => gettext(locale, "Filters"),
         Source::Agent => gettext(locale, "Agents"),
+        Source::Export => gettext(locale, "Exports"),
     }
     .into_owned()
 }
@@ -1441,7 +1445,9 @@ fn statement_line(entry: &Entry, gone: bool, locale: Locale, look: &Look) -> Str
                 ),
             }
         }
-        Source::Sql | Source::Filter => one(entry.sql.as_deref().unwrap_or_default()),
+        Source::Sql | Source::Filter | Source::Export => {
+            one(entry.sql.as_deref().unwrap_or_default())
+        }
     }
 }
 

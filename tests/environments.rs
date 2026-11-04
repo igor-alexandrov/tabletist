@@ -194,6 +194,8 @@ fn only_the_environment_surfaces_ask_for_its_colours() {
         "src/ui/start.rs",
         "src/ui/start_tests.rs",
         "src/ui/quick_open.rs",
+        // The Export sheet's subtitle, and the float's head.
+        "src/ui/export.rs",
     ];
     let mut found = Vec::new();
     for (path, text) in sources() {

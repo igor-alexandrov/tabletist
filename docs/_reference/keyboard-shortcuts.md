@@ -160,6 +160,7 @@ These are the keys of the macOS and Windows looks. The Omarchy look has
 | Mod+A | Select every row loaded |
 | Mod+C, Mod+Shift+C | Copy the selection as tab-separated values, or its rows whole. One cell is copied as it is |
 | Mod+Alt+C | [Copy as]({% link _guide/browsing-data.md %}#copying): the selection in CSV (C), TSV (T), JSON (J), Markdown (M), SQL INSERT (S), or its column names (N). Up and Down move, Return picks, Esc closes |
+| Mod+Shift+E | [Export]({% link _guide/browsing-data.md %}#exporting) the table in front, or the one selected in the sidebar. In the sheet Return exports, Esc closes, and Alt+Up and Alt+Down move a chosen column |
 | Enter, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Alt+Enter | Open the large editor. In it, Mod+Enter applies and Esc cancels |
 | Esc | Cancel the edit |

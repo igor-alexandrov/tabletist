@@ -357,6 +357,39 @@ pub enum Action {
     },
     /// Move the Copy as menu's lit row.
     MoveInCopyAs(isize),
+    /// Open the Export sheet over the table in front of `tab`, its format
+    /// chosen where one is given (`:export json`).
+    OpenExport {
+        tab: ConnTabId,
+        format: Option<crate::export::Format>,
+    },
+    /// The terminal look's `E` on the tree: the table under the cursor
+    /// opens, and its export float over it.
+    ExportFromTree(ConnTabId),
+    /// A change made in the Export sheet.
+    ChangeExport(crate::export_sheet::ExportChange),
+    /// The sheet's Count exactly: the tab's count, as the footer's Count.
+    CountForExport,
+    /// The sheet's primary button: ask where the file goes (the macOS
+    /// look), or start the export.
+    StartExport,
+    /// `:w <path>` (`replace` for `:w!`): the table in front, written at
+    /// once (spec, Q13).
+    ExportTo {
+        tab: ConnTabId,
+        path: String,
+        replace: bool,
+    },
+    /// Stop the running export (the toast's Cancel, `:export cancel`).
+    CancelExport,
+    /// Hide the macOS progress toast to its pill, or show it again.
+    HideExport(bool),
+    /// Put away a failed export's toast or line.
+    DismissExport,
+    /// A failed export's action: Try again, Choose folder… or Review SQL.
+    ExportFailureAction,
+    /// Show the exported file in the file manager (Show in Finder, `go`).
+    RevealExport,
     /// Put `pick` of the grid in front on the clipboard, as `how` says,
     /// and say so. A visual selection is left, as `y` leaves it.
     CopyAs {
@@ -2775,6 +2808,8 @@ pub enum Dialog {
     AgentAccess(Box<AgentAccessBox>),
     /// The Copy as menu: ⌥⌘C, `gy`, or the row panel's Copy row ▾.
     CopyAs(Box<CopyAsMenu>),
+    /// The Export sheet (the terminal look's float) over a table's tab.
+    Export(Box<crate::export_sheet::ExportSheet>),
 }
 
 /// What a copy takes of a grid.

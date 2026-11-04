@@ -274,6 +274,10 @@ pub enum When {
     DeletingConnection,
     /// The Copy as menu is open: its letters pick a format.
     CopyAs,
+    /// The Export sheet (the terminal look's float) is open.
+    Export,
+    /// A failed export's line stands in the terminal look's status line.
+    ExportFailed,
     /// The start screen's search is on: its field has the keyboard. The
     /// keys that move among the matches, open one and clear the search are
     /// read then, and only then.
@@ -576,6 +580,23 @@ commands! {
     CopyAsPrevious = "copy_as_previous",
     CopyAsPick = "copy_as_pick",
     CloseCopyAs = "close_copy_as",
+    Export = "export",
+    ExportAs = "export_as",
+    ExportTo = "export_to",
+    ExportOver = "export_over",
+    CancelExport = "cancel_export",
+    OpenExportFolder = "open_export_folder",
+    ExportReviewSql = "export_review_sql",
+    ExportNow = "export_now",
+    ExportNext = "export_next",
+    ExportChoose = "export_choose",
+    CloseExport = "close_export",
+    ExportColumnUp = "export_column_up",
+    ExportColumnDown = "export_column_down",
+    ExportAllColumns = "export_all_columns",
+    ExportNoColumns = "export_no_columns",
+    DismissExport = "dismiss_export",
+    Import = "import",
     PasteCells = "paste_cells",
     PasteNewRows = "paste_new_rows",
     AddRow = "add_row",
@@ -970,6 +991,23 @@ impl Command {
             C::CopyAsPrevious => info("Previous format of Copy as", "", Prompts),
             C::CopyAsPick => info("Copy in the highlighted format", "", Prompts),
             C::CloseCopyAs => info("Close Copy as", "", Prompts),
+            C::Export => info("Export…", "", Window),
+            C::ExportAs => info("Export in a format", "", Window),
+            C::ExportTo => info("Export to a file now", "", Window),
+            C::ExportOver => info("Export to a file now, replacing it", "", Window),
+            C::CancelExport => info("Cancel the export", "", Window),
+            C::OpenExportFolder => info("Open the exported file's folder", "", Window),
+            C::ExportReviewSql => info("Review the export's SQL", "", Prompts),
+            C::ExportNow => info("Export, or copy", "", Prompts),
+            C::ExportNext => info("Next choice of the export", "", Prompts),
+            C::ExportChoose => info("Choose what has the keyboard", "", Prompts),
+            C::CloseExport => info("Close the export", "", Prompts),
+            C::ExportColumnUp => info("Move the column up", "", Prompts),
+            C::ExportColumnDown => info("Move the column down", "", Prompts),
+            C::ExportAllColumns => info("Include every column", "", Prompts),
+            C::ExportNoColumns => info("Leave every column out", "", Prompts),
+            C::DismissExport => info("Put away a failed export's line", "", Window),
+            C::Import => info("Import…", "", Window).reserved(),
             C::PasteCells => info("Paste cell values", COPY, Editing).reserved(),
             C::PasteNewRows => info("Paste as new rows", "Paste as new rows", Editing).reserved(),
             C::AddRow => info("Add row", "Add row", Editing),
@@ -1889,6 +1927,58 @@ pub const BINDINGS: &[Binding] = {
         )
         .when(When::CopyAs),
         bind(C::CloseCopyAs, PROMPT, keys(&[k("esc")]), keys(&[k("esc")])).when(When::CopyAs),
+        // Export: a table's, from its rows or from the tree.
+        bind(
+            C::Export,
+            TREE_AND_GRID,
+            keys(&[k("cmd+shift+e")]),
+            keys(&[k("E")]),
+        ),
+        bind(C::Export, GRID, NONE, keys(&[k(":export")])),
+        bind(C::ExportAs, GRID, NONE, keys(&[k(":export {format}")])),
+        bind(C::ExportTo, GRID, NONE, keys(&[k(":w {path}")])),
+        bind(C::ExportOver, GRID, NONE, keys(&[k(":w! {path}")])),
+        // The macOS look's Cancel is the toast's button.
+        bind(C::CancelExport, GRID, NONE, keys(&[k(":export cancel")])),
+        bind(C::OpenExportFolder, TREE_AND_GRID, NONE, keys(&[k("go")])),
+        bind(C::ExportReviewSql, PROMPT, NONE, keys(&[k("ctrl+r")])).when(When::Export),
+        // Enter exports from where it is read (the sheet says where); the
+        // rest is the dialog's own focus.
+        bind(
+            C::ExportNow,
+            PROMPT,
+            keys(&[k("enter")]),
+            keys(&[k("enter")]),
+        )
+        .when(When::Export),
+        bind(C::ExportNext, PROMPT, keys(&[k("tab")]), keys(&[k("tab")])).when(When::Export),
+        bind(
+            C::ExportChoose,
+            PROMPT,
+            keys(&[k("space")]),
+            keys(&[k("space")]),
+        )
+        .when(When::Export),
+        bind(C::CloseExport, PROMPT, keys(&[k("esc")]), keys(&[k("esc")])).when(When::Export),
+        bind(
+            C::ExportColumnUp,
+            PROMPT,
+            keys(&[k("alt+up")]),
+            keys(&[k("K")]),
+        )
+        .when(When::Export),
+        bind(
+            C::ExportColumnDown,
+            PROMPT,
+            keys(&[k("alt+down")]),
+            keys(&[k("J")]),
+        )
+        .when(When::Export),
+        bind(C::ExportAllColumns, PROMPT, NONE, keys(&[k("a")])).when(When::Export),
+        bind(C::ExportNoColumns, PROMPT, NONE, keys(&[k("n")])).when(When::Export),
+        bind(C::DismissExport, TREE_AND_GRID, NONE, keys(&[k("esc")])).when(When::ExportFailed),
+        // File › Import…, held for later: no key, and not built.
+        bind(C::Import, GLOBAL, NONE, NONE),
         bind(C::PasteCells, GRID, keys(&[k("cmd+v")]), NONE),
         bind(C::PasteCells, GRID, NONE, keys(&[k("p")]).shown("v p")).when(When::Visual),
         bind(

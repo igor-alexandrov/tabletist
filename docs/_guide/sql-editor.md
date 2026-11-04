@@ -191,6 +191,9 @@ It keeps every source, each marked as such:
   it ended, and **Show in Agents Log** opens its call there. The agent's
   name is read from the log while it holds the call. Once the log drops
   the call, the entry says it is no longer there.
+- **Export**: the `SELECT` a [table's export]({% link _guide/browsing-data.md %}#exporting)
+  ran, with the rows it wrote and how it ended. Never the rows, nor the
+  file's name.
 
 Tabletist's own reads of the schema, the row estimates and completion's
 are not kept, nor is a table read with no filter or sort of yours.

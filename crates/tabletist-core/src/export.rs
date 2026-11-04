@@ -69,6 +69,56 @@ impl Format {
             Self::Markdown => "Markdown",
         }
     }
+
+    /// The ending of a file it writes, without the dot: its key.
+    pub fn extension(self) -> &'static str {
+        self.key()
+    }
+
+    /// The format a file ending in `extension` (without the dot, in any
+    /// case) is written in, if any.
+    pub fn of_extension(extension: &str) -> Option<Format> {
+        Self::ALL
+            .into_iter()
+            .find(|format| format.extension().eq_ignore_ascii_case(extension))
+    }
+
+    /// The format of the file at `path`, by its ending.
+    pub fn of_path(path: &std::path::Path) -> Option<Format> {
+        Self::of_extension(path.extension()?.to_str()?)
+    }
+}
+
+/// The rows an export reads from the database at a time, and writes before
+/// it reads more.
+pub const BATCH: usize = 5_000;
+
+/// Whether an export writes a column that agents see masked as `•••`
+/// masked too. The one place the answer is given (spec, Q9): masking is a
+/// setting for agents, and the person exporting can already see the
+/// values, so files get the real ones.
+pub fn follows_masking() -> bool {
+    false
+}
+
+/// Which of `columns`, of the table `object`, an export writes as `•••`:
+/// none unless it `follow`s the masking ([`follows_masking`]), else each
+/// one `masked` names (the person's entries and the administrator's).
+pub fn masks(
+    follow: bool,
+    masked: &[tabletist_db::agent::ColumnName],
+    object: &ObjectRef,
+    columns: &[&str],
+) -> Vec<bool> {
+    columns
+        .iter()
+        .map(|column| {
+            follow
+                && masked
+                    .iter()
+                    .any(|entry| entry.names(Some(&object.schema), &object.name, column))
+        })
+        .collect()
 }
 
 /// What a NULL is written as.

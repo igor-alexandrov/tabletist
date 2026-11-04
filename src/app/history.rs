@@ -545,7 +545,7 @@ impl App {
                 // ends its own.
                 let sql = match entry.source {
                     Source::Save => unwrapped(&sql),
-                    Source::Sql | Source::Filter | Source::Agent => sql,
+                    Source::Sql | Source::Filter | Source::Agent | Source::Export => sql,
                 };
                 if let Some(editor) = self.sql_tab_mut(tab, id) {
                     editor.text = sql;

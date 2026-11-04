@@ -58,6 +58,10 @@ mod env_tests;
 pub mod every_row_prompt;
 #[cfg(test)]
 mod every_row_tests;
+pub mod export;
+#[cfg(test)]
+mod export_tests;
+pub mod export_toast;
 pub mod filter_bar;
 pub mod focus;
 #[cfg(test)]
@@ -269,6 +273,25 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     } else {
         copy_as::fold(ui.ctx());
     }
+    let said = app.export_said.take();
+    if let Some(Dialog::Export(sheet)) = &app.dialog {
+        let facts = app.export_facts();
+        let asked = export::show(
+            &ui.ctx().clone(),
+            paint,
+            sheet,
+            facts.as_ref(),
+            said.as_deref(),
+        );
+        app.actions.extend(asked);
+    }
+    let asked = export_toast::show(
+        &ui.ctx().clone(),
+        paint,
+        app.exporting.as_ref(),
+        app.dirs.home.as_deref(),
+    );
+    app.actions.extend(asked);
     // Last: it says what was done, whatever is on screen by now.
     toast::show(ui.ctx(), paint);
 }
