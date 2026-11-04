@@ -1047,6 +1047,40 @@ mod tests {
         assert!(left(dir.path()).is_empty(), "{:?}", left(dir.path()));
     }
 
+    /// A cancel that comes after the last batch copies nothing either: the
+    /// rows are all in, and the clipboard's text is never made.
+    #[tokio::test]
+    async fn a_cancel_after_the_last_batch_copies_nothing() {
+        let (_dir, mut job) = bookshop(0);
+        job.format = Format::Tsv;
+        job.destination = Destination::Clipboard;
+        // Three rows written, then finished with or without a cancel.
+        let copied = async |cancel: bool| {
+            let (to, from) = tokio::sync::mpsc::channel(1);
+            let producing = async move {
+                let columns = vec![ColumnMeta {
+                    name: "id".into(),
+                    type_name: "INTEGER".into(),
+                    kind: tabletist_db::ValueKind::Numeric,
+                }];
+                to.send(Streamed::Columns(columns)).await.unwrap();
+                to.send(Streamed::Rows(vec![vec![Value::Int(1)]; 3]))
+                    .await
+                    .unwrap();
+            };
+            let writing = write(&job, None, from, &|_| {});
+            let ((), written) = tokio::join!(producing, writing);
+            written.unwrap().finish(&|| cancel).map(|done| done.copied)
+        };
+        let cancelled = copied(true).await;
+        assert!(matches!(cancelled, Err(None)), "{cancelled:?}");
+        let kept = copied(false).await;
+        assert!(
+            matches!(&kept, Ok(Some(text)) if text.starts_with("id\n1")),
+            "without the cancel the rows are copied: {kept:?}"
+        );
+    }
+
     /// Test 10: past 20 MB the clipboard copies nothing, and stops reading
     /// there rather than at 10,000 rows.
     #[tokio::test]
