@@ -1415,3 +1415,55 @@ fn the_offer_exports_what_was_copied_after_the_selection_moved() {
     assert!(!open.choose, "the copy's block was every column");
     assert_eq!(harness.app.export_facts().unwrap().selected, 2);
 }
+
+/// R6: ⌘C over the limit offers Export… as Copy as's Copy does, in TSV.
+#[test]
+fn the_copy_key_over_the_limit_offers_export() {
+    let (mut harness, tab, id) = too_large_in(Look::macos());
+    harness.copied = None;
+    // The window's copy: ⌘C comes as one, with ⌘ held.
+    harness.frame(vec![
+        egui::Event::ModifiersChanged(Modifiers::COMMAND),
+        egui::Event::Copy,
+    ]);
+    harness.frame(vec![egui::Event::ModifiersChanged(Modifiers::NONE)]);
+    harness.settle();
+    assert_eq!(harness.copied, None, "nothing copied");
+    assert_eq!(
+        said(&harness).as_deref(),
+        Some("That's over 20 MB. Export to a file?")
+    );
+    let offer = crate::ui::toast::offered(&harness.ctx).expect("an offer");
+    assert_eq!((offer.tab, offer.table), (tab, Some(id)));
+    harness.app.apply(Action::ExportSelection(offer));
+    let open = sheet(&harness).expect("the sheet");
+    assert_eq!(open.format, crate::export::Format::Tsv, "⌘C's TSV");
+    assert_eq!(open.rows, RowsChoice::Selected);
+}
+
+/// R6: the terminal look's `y` over the limit keeps the visual selection
+/// and its line offers `E`.
+#[test]
+fn a_yank_over_the_limit_keeps_the_selection_and_offers_e() {
+    let (mut harness, tab, id) = too_large_in(Look::omarchy());
+    super::insert_audit_tests::type_key(&mut harness, Key::V, "v");
+    harness.app.apply(Action::ExtendTo {
+        tab,
+        id,
+        cell: crate::model::CellPos { row: 1, col: 4 },
+    });
+    harness.settle();
+    harness.copied = None;
+    super::insert_audit_tests::type_key(&mut harness, Key::Y, "y");
+    assert_eq!(harness.copied, None, "nothing copied");
+    assert_eq!(
+        said(&harness).as_deref(),
+        Some("That's over 20 MB. Export to a file? · E export")
+    );
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    assert!(object.visual(), "the selection waits for E");
+    super::insert_audit_tests::type_key(&mut harness, Key::E, "E");
+    let open = sheet(&harness).expect("the float");
+    assert_eq!(open.rows, RowsChoice::Selected);
+    assert_eq!(open.format, crate::export::Format::Tsv);
+}

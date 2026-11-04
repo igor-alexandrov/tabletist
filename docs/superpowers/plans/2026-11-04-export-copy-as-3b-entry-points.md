@@ -57,7 +57,7 @@ To put to Igor in the pull request (filled in as the code settles them):
 |---|---|---|---|
 | B1 | R1: a block opens Choose | Only a block that leaves a column out; one over every column opens All columns | The same columns either way. The other way: Choose always |
 | B2 | R1: Export selection…, ⇧⌘E and `E` | Every way into the sheet of the table in front (the header's Export…, File › Export…, quick open's row, the tree on a table already open) starts a block on its columns | One sheet, one start. The other way: only those three |
-| B3 | R1: the cursor's row | Only for Export selection… and the offer; ⇧⌘E, `E` and the header with no range keep 3a's All rows matching. On a new row Export selection… finds nothing saved and opens on All rows matching | 3a's start stays where nothing was asked for the selection |
+| B3 | R1: the cursor's row | Only for Export selection… and the offer; ⇧⌘E, `E` and the header with no range keep 3a's All rows matching. On new rows alone Export selection… opens no sheet (B20) | 3a's start stays where nothing was asked for the selection |
 | B4 | R6 | A refused copy keeps the terminal look's visual selection, for `E`; a copy made still leaves it | `E` exports what is selected |
 | B5 | R6 | The terminal look's line is the copy's words and ` · E export`, the key from the keymap; `E` opens the float on the copy's format, to a file, while the line says it | As the toast's Export… |
 | B6 | R6 | Copy rows as TSV's offer exports every column; the cursor's row alone (`yy`, the row panel's Copy row as) offers nothing | The row panel's Export row… is run 4's |
@@ -77,6 +77,8 @@ To put to Igor in the pull request (filled in as the code settles them):
 | B20 | R1 | Export selection… on new rows alone opens no sheet and says "New rows aren't exported. Export reads what is saved in the database. Save first ⌘S" (Omarchy: "new rows aren't exported · :w first to include them") | A sheet on All matching rows, or on Selected rows with none |
 | B21 | R6 | The offer keeps the cursor and the range the copy took; Export… (or Omarchy `E`) puts them back on the grid if the selection moved since | The selection as it is when Export… is clicked |
 | B22 | R3 | Where every recent row is a SQL editor, Export a table… lists the largest tables under their heading, as the start screen does with nothing recent; with no match it offers no other connection to search | An empty list |
+| B23 | R6 | ⌘C, ctrl+c and `y` over the limit offer Export… as Copy as's Copy does (TSV), and `y` keeps the visual selection for `E` | The words alone |
+| B24 | R2 | Export a Table… takes a key of the person's in either look (Keyboard settings and `settings.toml`) | No key at all |
 
 ## Files
 
@@ -183,7 +185,7 @@ with `CARGO_TARGET_DIR` the worktree's `target/`. No server test changes.
 ## After Task 3
 
 Push the branch and open the pull request: what each way in does, the
-keys added, E1–E6 and R1–R9 as approved, and B1–B22 from the table
+keys added, E1–E6 and R1–R9 as approved, and B1–B24 from the table
 above. Checked by hand only: ⌘⇧' as macOS and Windows send it (the tests
 send the bare key).
 No screenshot goes to GitHub unblurred.

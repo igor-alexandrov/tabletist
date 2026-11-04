@@ -232,7 +232,8 @@ There are other ways in:
   pick one, which opens with the export over it. With a table or view
   picked in quick open, Cmd/Ctrl+Shift+E (`Ctrl+E` in the Omarchy look)
   opens it with the export over it. **File › Export a Table…** is the
-  same as the second row.
+  same as the second row. It has no key of its own: give it one in
+  **Settings › Keyboard**.
 - **The grid:** right-click a table's rows for **Export selection…**. It
   starts on the selected rows (on a single cell, its row). A block of
   cells starts on its own columns too, ticked under **Choose**, so the

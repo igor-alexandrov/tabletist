@@ -3828,8 +3828,9 @@ const OWN: [Command; 2] = [Command::Help, Command::LeaveEditor];
 /// every look: there a chord can be given them. Any other row with no key
 /// in a look is read by that look's letters or prompt, or by the other
 /// look's handler alone, and nothing would answer a key given it.
-const ANY_LOOK: [(Command, Scope); 14] = [
+const ANY_LOOK: [(Command, Scope); 15] = [
     (Command::SwitchDatabase, Scope::Global),
+    (Command::ExportTable, Scope::Global),
     (Command::PaneLeft, Scope::Global),
     (Command::PaneRight, Scope::Global),
     (Command::PaneUp, Scope::Global),
@@ -4388,6 +4389,19 @@ mod tests {
         // given one, and not where nothing would read it.
         assert!(listed(Layout::Mac, row(Command::SwitchDatabase, global)));
         assert!(written(Layout::Mac, row(Command::SwitchDatabase, global)).is_empty());
+        // Export a Table… has no key in either look, and takes a chord in
+        // both: the key handler reads it in every look.
+        for layout in Layout::ALL {
+            assert!(
+                listed(layout, row(Command::ExportTable, global)),
+                "{layout:?}"
+            );
+            assert_eq!(
+                takes(layout, row(Command::ExportTable, global)),
+                [Press::Chord],
+                "{layout:?}"
+            );
+        }
         assert!(listed(
             Layout::Mac,
             row(Command::ComparePreviousRun, Scope::SqlEditor)
