@@ -84,7 +84,7 @@ request:
 | B25 | Q2: Review SQL shows what runs | The history keeps the statement the driver ran (`Connection::export_statement`, the same key and binary columns as the stream); Review SQL is the app's, from the tab's structure: the same text once the structure has loaded | Review SQL is shown before anything runs |
 | B26 | Q5: PostgreSQL's timeout | Told by its message ("statement timeout"): on a server whose messages are in another language it reads as a cancel | The code alone is a cancel's too. The other way: set `lc_messages` on the export's session, which needs a superuser |
 | B27 | `<table>.<ext>` | A name's `/ \ : * ? " < > \|` and controls are `_`; a name that is nothing but dots is `export` | A table may be named what a file may not |
-| B28 | Q6: the float checks the path when the export starts | No disk is read on the UI thread: the rename refuses a file that is there, and the float opens again with "! exists · enter again replaces it" (`:w` says `:w!`); the save panel's choice replaces, as the panel asked first | AGENTS.md keeps disk work off the UI thread (the PR review). The other way: a stat on the backend before the export |
+| B28 | Q6: the float checks the path when the export starts | No disk is read on the UI thread: the rename refuses a file that is there, and the float opens again with "! exists · enter again replaces it" (`:w` says `:w!`); the save panel's choice replaces a file that was there as it answered, as the panel asked about that one; a file made later is refused | AGENTS.md keeps disk work off the UI thread (the PR review). The other way: a stat on the backend before the export |
 
 ## Files
 

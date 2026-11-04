@@ -27,6 +27,11 @@ pub struct AppDirs {
     /// and the demo, so that neither reads the machine's. None where it is
     /// not read yet (Windows).
     pub managed: Option<PathBuf>,
+    /// The folder exports are suggested in
+    /// ([`crate::export_sheet::find_downloads`]). Found with the others, at
+    /// the start: on Linux it reads `~/.config/user-dirs.dirs`, which
+    /// belongs in no frame. Under the root in tests and the demo.
+    pub downloads: PathBuf,
 }
 
 impl AppDirs {
@@ -35,6 +40,7 @@ impl AppDirs {
     pub fn discover() -> Self {
         let home = BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
         let runtime = runtime_dir();
+        let downloads = crate::export_sheet::find_downloads();
         match ProjectDirs::from("dev", "tabletist", "Tabletist") {
             Some(project) => Self {
                 config: project.config_dir().to_path_buf(),
@@ -45,9 +51,11 @@ impl AppDirs {
                 home,
                 runtime,
                 managed: managed_file(),
+                downloads,
             },
             None => Self {
                 managed: managed_file(),
+                downloads,
                 ..Self::at(
                     &std::env::current_dir()
                         .unwrap_or_default()
@@ -66,6 +74,7 @@ impl AppDirs {
             home: None,
             runtime: None,
             managed: Some(root.join("managed.toml")),
+            downloads: root.join("downloads"),
         }
     }
 

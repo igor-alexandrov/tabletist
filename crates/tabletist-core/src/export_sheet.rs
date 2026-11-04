@@ -203,8 +203,10 @@ pub fn first_rows(selected: usize) -> RowsChoice {
 }
 
 /// The folder files are suggested in (spec, Q19): `$XDG_DOWNLOAD_DIR`,
-/// the system's Downloads folder, or the home folder.
-pub fn downloads() -> PathBuf {
+/// the system's Downloads folder, or the home folder. It reads the disk on
+/// Linux (`user-dirs.dirs`): found once, at the start, and kept in
+/// [`crate::paths::AppDirs::downloads`].
+pub fn find_downloads() -> PathBuf {
     let set = std::env::var_os("XDG_DOWNLOAD_DIR")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute());

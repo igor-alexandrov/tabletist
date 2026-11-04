@@ -394,10 +394,13 @@ pub enum Event {
         path: Option<PathBuf>,
     },
     /// Where the save panel says an export goes: `None` when it was
-    /// closed without a choice.
+    /// closed without a choice. `replace` when a file was there as the
+    /// panel answered, so the panel asked before it is replaced; a file
+    /// made later is refused, not replaced.
     ExportPath {
         job: export::ExportId,
         path: Option<PathBuf>,
+        replace: bool,
     },
     /// How an export stands, and its end.
     Export {
@@ -682,25 +685,53 @@ impl Backend {
     /// Asks where an export goes, in the system's save panel (the
     /// portal's on Linux), suggesting `suggested`: its folder and its
     /// name. The panel asks before a file of the name is replaced.
-    /// Answered with [`Event::ExportPath`].
+    /// Answered with [`Event::ExportPath`]. Whether the folder is there
+    /// is asked on the runtime, never in a frame: a sleeping or network
+    /// disk can take seconds to say. The panel is then opened from there,
+    /// which rfd allows in a windowed app.
     pub fn ask_export_path(&mut self, job: export::ExportId, title: &str, suggested: &Path) {
         #[cfg(any(test, feature = "testing"))]
         self.export_asks.push((job, suggested.to_path_buf()));
         let Some(runtime) = &self.runtime else {
             return;
         };
-        let mut dialog = rfd::AsyncFileDialog::new().set_title(title);
-        if let Some(folder) = suggested.parent().filter(|folder| folder.is_dir()) {
-            dialog = dialog.set_directory(folder);
-        }
-        if let Some(name) = suggested.file_name() {
-            dialog = dialog.set_file_name(name.to_string_lossy());
-        }
-        let dialog = dialog.save_file();
+        let title = title.to_owned();
+        let folder = suggested.parent().map(Path::to_path_buf);
+        let name = suggested
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
         let outbox = self.outbox.clone();
         runtime.spawn(async move {
-            let path = dialog.await.map(|file| file.path().to_path_buf());
-            outbox.emit(Event::ExportPath { job, path });
+            let folder = match folder {
+                Some(folder) => {
+                    tokio::task::spawn_blocking(move || folder.is_dir().then_some(folder))
+                        .await
+                        .ok()
+                        .flatten()
+                }
+                None => None,
+            };
+            let mut dialog = rfd::AsyncFileDialog::new().set_title(title);
+            if let Some(folder) = folder {
+                dialog = dialog.set_directory(folder);
+            }
+            if let Some(name) = name {
+                dialog = dialog.set_file_name(name);
+            }
+            let path = dialog
+                .save_file()
+                .await
+                .map(|file| file.path().to_path_buf());
+            let replace = match &path {
+                Some(path) => {
+                    let path = path.clone();
+                    tokio::task::spawn_blocking(move || path.exists())
+                        .await
+                        .unwrap_or(false)
+                }
+                None => false,
+            };
+            outbox.emit(Event::ExportPath { job, path, replace });
         });
     }
 

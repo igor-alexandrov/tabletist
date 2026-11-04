@@ -152,8 +152,10 @@ impl App {
             true => DestinationChoice::Clipboard,
             false => DestinationChoice::File,
         };
-        let suggested =
-            crate::export_sheet::downloads().join(file_name(&object.object.name, format));
+        let suggested = self
+            .dirs
+            .downloads
+            .join(file_name(&object.object.name, format));
         let path = crate::export_sheet::shown_path(&suggested, self.dirs.home.as_deref());
         let id = object.id;
         let mut sheet = ExportSheet {
@@ -491,7 +493,7 @@ impl App {
             DestinationChoice::File if self.look.terminal => {
                 let path = crate::export_sheet::typed_path(
                     &sheet.path,
-                    &crate::export_sheet::downloads(),
+                    &self.dirs.downloads,
                     self.dirs.home.as_deref(),
                 );
                 // A file that is there fails the rename, and the float
@@ -505,8 +507,10 @@ impl App {
             DestinationChoice::File => {
                 // The system's panel names the file, and asks before one
                 // is replaced.
-                let suggested =
-                    crate::export_sheet::downloads().join(file_name(&facts.table, sheet.format));
+                let suggested = self
+                    .dirs
+                    .downloads
+                    .join(file_name(&facts.table, sheet.format));
                 let rows = facts
                     .rows
                     .map(crate::export_sheet::count_words)
@@ -551,8 +555,14 @@ impl App {
         self.exporting = Some(exporting);
     }
 
-    /// The save panel's answer.
-    pub(super) fn export_path_answered(&mut self, job: ExportId, path: Option<PathBuf>) {
+    /// The save panel's answer. It replaces only a file that was there as
+    /// the panel answered: the panel asked about that one.
+    pub(super) fn export_path_answered(
+        &mut self,
+        job: ExportId,
+        path: Option<PathBuf>,
+        replace: bool,
+    ) {
         let Some(Dialog::Export(sheet)) = &mut self.dialog else {
             // Choose folder… from a failure's toast: its export again.
             if let Some(path) = path
@@ -561,8 +571,6 @@ impl App {
                     .as_ref()
                     .is_some_and(|exporting| exporting.job.id == job && !exporting.running())
             {
-                // The panel asked before a file was replaced.
-                let replace = true;
                 self.rerun_export(Some(Destination::File { path, replace }));
             }
             return;
@@ -575,8 +583,6 @@ impl App {
             return;
         };
         let sheet = sheet.clone();
-        // The panel asked before a file that was there was replaced.
-        let replace = true;
         self.run_export(&sheet, Destination::File { path, replace });
     }
 
@@ -587,11 +593,7 @@ impl App {
             return;
         }
         let home = self.dirs.home.clone();
-        let path = crate::export_sheet::typed_path(
-            typed,
-            &crate::export_sheet::downloads(),
-            home.as_deref(),
-        );
+        let path = crate::export_sheet::typed_path(typed, &self.dirs.downloads, home.as_deref());
         let Some(format) = crate::export::Format::of_path(&path) else {
             let extension = match path.extension() {
                 Some(extension) => format!(".{}", extension.to_string_lossy()),
@@ -659,7 +661,7 @@ impl App {
             ExportFailure::PermissionDenied { .. } | ExportFailure::Exists { .. }
                 if !self.look.terminal =>
             {
-                let suggested = crate::export_sheet::downloads().join(&exporting.file);
+                let suggested = self.dirs.downloads.join(&exporting.file);
                 let title = gettext(self.locale, "Export rows").into_owned();
                 let id = exporting.job.id;
                 self.backend.ask_export_path(id, &title, &suggested);

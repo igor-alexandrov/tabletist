@@ -4193,7 +4193,9 @@ impl App {
 
     fn apply_event(&mut self, event: Event) {
         match event {
-            Event::ExportPath { job, path } => self.export_path_answered(job, path),
+            Event::ExportPath { job, path, replace } => {
+                self.export_path_answered(job, path, replace)
+            }
             Event::Export { job, state } => self.export_state(job, state),
             Event::Connected {
                 session,

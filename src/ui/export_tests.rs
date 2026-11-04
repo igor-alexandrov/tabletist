@@ -143,9 +143,11 @@ fn the_save_panel_names_the_file_and_the_export_starts() {
     assert!(jobs(&harness).is_empty(), "nothing runs before the answer");
     // The panel closed without a choice: the sheet stays.
     let job = asks[0].0;
-    harness
-        .app
-        .apply(Action::Backend(Event::ExportPath { job, path: None }));
+    harness.app.apply(Action::Backend(Event::ExportPath {
+        job,
+        path: None,
+        replace: false,
+    }));
     assert!(sheet(&harness).is_some_and(|sheet| !sheet.asking));
     let (_dir, path) = folder();
     harness.press(Key::Enter, Modifiers::NONE);
@@ -153,18 +155,20 @@ fn the_save_panel_names_the_file_and_the_export_starts() {
     harness.app.apply(Action::Backend(Event::ExportPath {
         job,
         path: Some(path.clone()),
+        replace: false,
     }));
     harness.settle();
     assert!(sheet(&harness).is_none());
     let sent = jobs(&harness);
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].format, Format::Json);
-    // The panel asked before it replaced a file.
+    // No file was there as the panel answered: one made since is
+    // refused, not replaced.
     assert_eq!(
         sent[0].destination,
         Destination::File {
             path,
-            replace: true
+            replace: false
         }
     );
     assert!(matches!(sent[0].rows, ExportRows::Query(_)));
@@ -187,6 +191,30 @@ fn the_save_panel_names_the_file_and_the_export_starts() {
         )
     });
     assert!(saved, "the options are written to export_options.json");
+}
+
+/// The panel asks before it replaces a file that is there as it answers:
+/// that file is replaced, and only that one.
+#[test]
+fn a_file_there_as_the_panel_answers_is_replaced() {
+    let (mut harness, _tab, _id) = covers_in(Look::macos());
+    export_chord(&mut harness);
+    harness.press(Key::Enter, Modifiers::NONE);
+    let job = harness.app.backend.export_asks[0].0;
+    let (_dir, path) = folder();
+    harness.app.apply(Action::Backend(Event::ExportPath {
+        job,
+        path: Some(path.clone()),
+        replace: true,
+    }));
+    harness.settle();
+    assert_eq!(
+        jobs(&harness)[0].destination,
+        Destination::File {
+            path,
+            replace: true
+        }
+    );
 }
 
 /// Test 7: chosen and reordered columns are the job's, in that order; the
@@ -332,6 +360,7 @@ fn unsaved_changes_are_said_and_not_exported() {
     harness.app.apply(Action::Backend(Event::ExportPath {
         job,
         path: Some(path),
+        replace: false,
     }));
     let ExportRows::Query(query) = &jobs(&harness)[0].rows else {
         panic!()
@@ -351,6 +380,7 @@ fn the_toasts_follow_an_export_to_its_end() {
     harness.app.apply(Action::Backend(Event::ExportPath {
         job,
         path: Some(path.clone()),
+        replace: false,
     }));
     harness.settle();
     tell(&mut harness, ExportState::Started { statement: None });
