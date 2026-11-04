@@ -191,6 +191,19 @@ pub fn part_beside(target: &Path) -> std::io::Result<tempfile::NamedTempFile> {
         .tempfile_in(folder_of(target))
 }
 
+/// Runs a file step (making the temporary file, a batch's write, the
+/// fsync and the rename) where it holds up no other task: the backend's
+/// runtime has two workers, and a slow or network disk would keep one for
+/// as long as it takes, the other sessions' queries left the one. Its other
+/// tasks move to a new worker meanwhile. On a runtime of one thread there
+/// is nowhere to move them, and it just runs.
+fn on_disk<T>(step: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current().map(|handle| handle.runtime_flavor()) {
+        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(step),
+        _ => step(),
+    }
+}
+
 /// The folder `path` is in: `.` for a bare name.
 fn folder_of(path: &Path) -> &Path {
     match path.parent() {
@@ -269,7 +282,7 @@ pub async fn run(job: ExportJob, stopper: Stopper, report: impl Fn(ExportState))
         (Err(error), Ok(written)) => state_of_error(error, written.rows, started, &stopper),
         // A cancel that comes after the last batch still keeps the file
         // out, up to its rename; after that the file is the export's.
-        (Ok(_), Ok(written)) => match written.finish(&|| stopper.asked()) {
+        (Ok(_), Ok(written)) => match on_disk(|| written.finish(&|| stopper.asked())) {
             Ok(done) => ExportState::Done {
                 rows: done.rows,
                 bytes: done.bytes,
@@ -587,7 +600,7 @@ async fn write<'a>(
     written.columns = columns;
     written.sink = Some(match &job.destination {
         Destination::File { path, replace } => Sink::File {
-            part: part_beside(path).map_err(|error| io_failure(error, path, 0))?,
+            part: on_disk(|| part_beside(path)).map_err(|error| io_failure(error, path, 0))?,
             target: path.clone(),
             replace: *replace,
             bytes: 0,
@@ -648,7 +661,7 @@ async fn write<'a>(
                 let full_after = *full_after;
                 #[cfg(not(test))]
                 let full_after = None;
-                put(part, &text, bytes, full_after, target)?;
+                on_disk(|| put(part, &text, bytes, full_after, target))?;
                 text.clear();
                 if said.elapsed() >= PROGRESS_EVERY {
                     said = Instant::now();
@@ -763,7 +776,7 @@ mod tests {
         names
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_books_are_written_to_the_file_and_nothing_else_is_left() {
         let (dir, job) = bookshop(0);
         let (last, told) = ran(job).await;
@@ -792,7 +805,7 @@ mod tests {
 
     /// Test 5 of the spec: the file is the user's alone.
     #[cfg(unix)]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_file_is_readable_by_its_owner_only() {
         use std::os::unix::fs::PermissionsExt;
         let (dir, job) = bookshop(0);
@@ -806,7 +819,7 @@ mod tests {
 
     /// Test 4: a file that is there is replaced only when asked, and the
     /// one that was there is kept otherwise.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_existing_file_is_replaced_only_when_asked() {
         let (dir, mut job) = bookshop(0);
         let target = dir.path().join("books.csv");
@@ -833,7 +846,7 @@ mod tests {
     }
 
     /// Test 4: a disk that fills up leaves no file and no temporary file.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_full_disk_leaves_nothing() {
         let (dir, mut job) = bookshop(0);
         job.destination = Destination::File {
@@ -850,7 +863,7 @@ mod tests {
 
     /// Test 4: a folder that may not be written is told by its name.
     #[cfg(unix)]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_folder_that_may_not_be_written_is_named() {
         use std::os::unix::fs::PermissionsExt;
         let (dir, mut job) = bookshop(0);
@@ -896,7 +909,7 @@ mod tests {
 
     /// Test 4: the connection going midway is told with the rows read,
     /// and leaves nothing.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_lost_connection_leaves_nothing() {
         let (dir, job) = bookshop(0);
         let (to, from) = tokio::sync::mpsc::channel(1);
@@ -952,7 +965,7 @@ mod tests {
 
     /// The loaded rows of a tab (spec, D7) are written without a
     /// connection, and to the clipboard within its limit.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn loaded_rows_go_to_the_clipboard_without_a_connection() {
         let (_dir, mut job) = bookshop(0);
         job.open.spec = ConnectSpec::sqlite("/nowhere/at/all.db");
@@ -988,7 +1001,7 @@ mod tests {
 
     /// Test 15: a masked column is written as `•••` when the decision
     /// says so, and as it is otherwise; NULL stays NULL.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn masked_columns_follow_the_decision() {
         let (dir, mut job) = bookshop(0);
         let masked: Vec<tabletist_db::agent::ColumnName> = vec!["books.title".parse().unwrap()];
@@ -1008,7 +1021,7 @@ mod tests {
 
     /// SQL INSERT with Start with CREATE TABLE reads the table's
     /// definition on the export's connection.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sql_insert_starts_with_the_create_table_when_asked() {
         let (dir, mut job) = bookshop(0);
         job.format = Format::SqlInsert;
@@ -1025,7 +1038,7 @@ mod tests {
 
     /// A cancel that comes after the last batch, before the rename, keeps
     /// the file out: what the toast says ("Nothing was saved") holds.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_cancel_after_the_last_batch_keeps_the_file_out() {
         let (dir, job) = bookshop(0);
         let (to, from) = tokio::sync::mpsc::channel(1);
@@ -1047,9 +1060,33 @@ mod tests {
         assert!(left(dir.path()).is_empty(), "{:?}", left(dir.path()));
     }
 
+    /// A file step that blocks leaves the runtime's worker to the other
+    /// tasks: with one worker, another task runs while it waits.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_slow_disk_holds_up_no_other_task() {
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let told = ran.clone();
+        let blocked = tokio::spawn(async move {
+            let other = tokio::spawn(async move {
+                told.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+            // The slow disk: it waits on the other task, up to 5 s.
+            let waited = on_disk(|| {
+                let until = Instant::now() + std::time::Duration::from_secs(5);
+                while !ran.load(std::sync::atomic::Ordering::SeqCst) && Instant::now() < until {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                ran.load(std::sync::atomic::Ordering::SeqCst)
+            });
+            other.await.unwrap();
+            waited
+        });
+        assert!(blocked.await.unwrap(), "the other task ran meanwhile");
+    }
+
     /// A cancel that comes after the last batch copies nothing either: the
     /// rows are all in, and the clipboard's text is never made.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_cancel_after_the_last_batch_copies_nothing() {
         let (_dir, mut job) = bookshop(0);
         job.format = Format::Tsv;
@@ -1083,7 +1120,7 @@ mod tests {
 
     /// Test 10: past 20 MB the clipboard copies nothing, and stops reading
     /// there rather than at 10,000 rows.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_clipboard_stops_at_twenty_megabytes() {
         let (_dir, mut job) = bookshop(0);
         let wide = "x".repeat(1024 * 1024);
