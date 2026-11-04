@@ -678,6 +678,52 @@ impl Drop for StopOnDrop {
     }
 }
 
+/// `sql`'s rows, stepped a row at a time and sent on a batch at a time.
+fn stream_stepped(
+    connection: &rusqlite::Connection,
+    sql: &crate::dialect::Sql,
+    batch: usize,
+    to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+    stop: &StopFlag,
+) -> Result<u64> {
+    let mut statement = connection.prepare(&sql.text).map_err(map_error)?;
+    let mut declared = Some(declared_columns(connection, &statement, &sql.text)?);
+    let width = declared.as_ref().map_or(0, Vec::len);
+    let mut rows = statement
+        .query(rusqlite::params_from_iter(sql.params.iter().map(to_sqlite)))
+        .map_err(map_error)?;
+    let mut sent = 0u64;
+    let mut values: Vec<Vec<Value>> = Vec::with_capacity(batch);
+    let mut flush = |values: Vec<Vec<Value>>, declared: &mut Option<Vec<(String, String)>>| {
+        if let Some(declared) = declared.take() {
+            let metas = column_metas(declared, &values);
+            crate::stream::send_blocking(to, crate::Streamed::Columns(metas))?;
+        }
+        if values.is_empty() {
+            return Ok(());
+        }
+        sent += values.len() as u64;
+        crate::stream::send_blocking(to, crate::Streamed::Rows(values))
+    };
+    while let Some(row) = rows.next().map_err(map_error)? {
+        let mut cells = Vec::with_capacity(width);
+        for index in 0..width {
+            cells.push(from_sqlite(row.get_ref(index).map_err(map_error)?));
+        }
+        values.push(cells);
+        if values.len() == batch {
+            if stop.is_stopped() {
+                return Err(Error::Cancelled);
+            }
+            let full = std::mem::replace(&mut values, Vec::with_capacity(batch));
+            flush(full, &mut declared)?;
+        }
+    }
+    flush(values, &mut declared)?;
+    stop.finish();
+    Ok(sent)
+}
+
 /// Result columns from their declared types; a column without one takes
 /// its kind from the first value that is not NULL.
 fn column_metas(declared: Vec<(String, String)>, rows: &[Vec<Value>]) -> Vec<ColumnMeta> {
@@ -1184,43 +1230,30 @@ impl Adapter for Conn {
             let sql = Dialect::Sqlite.export_rows(&query, &key, &binary, &columns);
             // As in `fetch_rows`: only the text with the raw WHERE.
             let _fenced = fences.fence(Fence::Filter);
-            let mut statement = connection.prepare(&sql.text).map_err(map_error)?;
-            let mut declared = Some(declared_columns(connection, &statement, &sql.text)?);
-            let width = declared.as_ref().map_or(0, Vec::len);
-            let mut rows = statement
-                .query(rusqlite::params_from_iter(sql.params.iter().map(to_sqlite)))
-                .map_err(map_error)?;
-            let mut sent = 0u64;
-            let mut values: Vec<Vec<Value>> = Vec::with_capacity(batch);
-            let mut flush =
-                |values: Vec<Vec<Value>>, declared: &mut Option<Vec<(String, String)>>| {
-                    if let Some(declared) = declared.take() {
-                        let metas = column_metas(declared, &values);
-                        crate::stream::send_blocking(&to, crate::Streamed::Columns(metas))?;
-                    }
-                    if values.is_empty() {
-                        return Ok(());
-                    }
-                    sent += values.len() as u64;
-                    crate::stream::send_blocking(&to, crate::Streamed::Rows(values))
-                };
-            while let Some(row) = rows.next().map_err(map_error)? {
-                let mut cells = Vec::with_capacity(width);
-                for index in 0..width {
-                    cells.push(from_sqlite(row.get_ref(index).map_err(map_error)?));
-                }
-                values.push(cells);
-                if values.len() == batch {
-                    if stop.is_stopped() {
-                        return Err(Error::Cancelled);
-                    }
-                    let full = std::mem::replace(&mut values, Vec::with_capacity(batch));
-                    flush(full, &mut declared)?;
-                }
-            }
-            flush(values, &mut declared)?;
-            stop.finish();
-            Ok(sent)
+            stream_stepped(connection, &sql, batch, &to, &stop)
+        })
+        .await
+    }
+
+    /// A statement of the person's, as `stream_rows` streams a table's,
+    /// behind the fence a script's statement has.
+    async fn stream_statement(
+        &self,
+        text: &str,
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        let sql = crate::dialect::Sql {
+            text: text.to_owned(),
+            params: Vec::new(),
+        };
+        let fences = self.fences.clone();
+        let to = to.clone();
+        let stop = stop.clone();
+        self.browse(move |connection| {
+            let _fenced = fences.fence(Fence::Script);
+            stream_stepped(connection, &sql, batch, &to, &stop)
         })
         .await
     }
