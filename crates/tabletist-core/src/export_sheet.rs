@@ -300,6 +300,9 @@ pub struct Exporting {
     pub started: Instant,
     /// When a screen reader was last told how far it is.
     pub announced: Option<Instant>,
+    /// It came from the terminal look's float: a file that is there
+    /// opens the float again, which Enter then replaces.
+    pub reopens: bool,
     /// Its history entry as it starts (its connection, its database):
     /// filled in and recorded when it ends, the tab gone or not. `None`
     /// where nothing runs (D7).
@@ -639,23 +642,26 @@ mod tests {
 
     #[test]
     fn a_typed_path_is_in_the_downloads_folder_unless_it_says_otherwise() {
-        let home = Path::new("/home/reader");
-        let downloads = Path::new("/home/reader/Downloads");
+        // Absolute on every system: Windows' have a drive.
+        let home = std::env::temp_dir().join("reader");
+        let downloads = home.join("Downloads");
+        let elsewhere = std::env::temp_dir().join("reviews.csv");
         assert_eq!(
-            typed_path("reviews.csv", downloads, Some(home)),
-            Path::new("/home/reader/Downloads/reviews.csv")
+            typed_path("reviews.csv", &downloads, Some(&home)),
+            downloads.join("reviews.csv")
         );
         assert_eq!(
-            typed_path("~/exports/reviews.csv", downloads, Some(home)),
-            Path::new("/home/reader/exports/reviews.csv")
+            typed_path("~/exports/reviews.csv", &downloads, Some(&home)),
+            home.join("exports").join("reviews.csv")
         );
         assert_eq!(
-            typed_path("/tmp/reviews.csv", downloads, Some(home)),
-            Path::new("/tmp/reviews.csv")
+            typed_path(&elsewhere.display().to_string(), &downloads, Some(&home)),
+            elsewhere
         );
+        let separator = std::path::MAIN_SEPARATOR;
         assert_eq!(
-            shown_path(Path::new("/home/reader/Downloads/reviews.csv"), Some(home)),
-            "~/Downloads/reviews.csv"
+            shown_path(&downloads.join("reviews.csv"), Some(&home)),
+            format!("~{separator}Downloads{separator}reviews.csv")
         );
     }
 
@@ -704,6 +710,7 @@ mod tests {
             hidden: false,
             started: Instant::now(),
             announced: None,
+            reopens: false,
             history: None,
         };
         let (words, action) =

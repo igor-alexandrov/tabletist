@@ -473,6 +473,10 @@ impl Written<'_> {
                 })
             }
             Some(Sink::Clipboard { rows }) => {
+                // A cancel after the last batch copies nothing.
+                if cancelled() {
+                    return Err(None);
+                }
                 let names: Vec<&str> = self
                     .columns
                     .iter()

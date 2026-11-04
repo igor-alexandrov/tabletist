@@ -1938,8 +1938,9 @@ pub const BINDINGS: &[Binding] = {
         bind(C::ExportAs, GRID, NONE, keys(&[k(":export {format}")])),
         bind(C::ExportTo, GRID, NONE, keys(&[k(":w {path}")])),
         bind(C::ExportOver, GRID, NONE, keys(&[k(":w! {path}")])),
-        // The macOS look's Cancel is the toast's button.
-        bind(C::CancelExport, GRID, NONE, keys(&[k(":export cancel")])),
+        // The macOS look's Cancel is the toast's button. Read from any tab:
+        // the export is the window's, and its line names this.
+        bind(C::CancelExport, GLOBAL, NONE, keys(&[k(":export cancel")])),
         bind(C::OpenExportFolder, TREE_AND_GRID, NONE, keys(&[k("go")])),
         bind(C::ExportReviewSql, PROMPT, NONE, keys(&[k("ctrl+r")])).when(When::Export),
         // Enter exports from where it is read (the sheet says where); the

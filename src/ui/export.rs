@@ -758,9 +758,12 @@ fn rows_list(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec
         let ink = if enabled { palette.text } else { palette.dim };
         let body = widgets::body(look);
         let y = rect.top() + 12.0;
-        if response.has_focus() {
-            ui.painter().rect_filled(rect, 3, palette.selection);
-        }
+        crate::ui::focus::hint(
+            ui,
+            &response,
+            rect,
+            crate::ui::focus::Ring::Inset { radius: 3 },
+        );
         let mut x = rect.left() + 2.0;
         if look.terminal {
             let mark = if chosen { "(•)" } else { "( )" };
@@ -875,8 +878,14 @@ fn column_list(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut V
                 if response.gained_focus() && at != sheet.column {
                     actions.push(Action::ChangeExport(ExportChange::Cursor(at)));
                 }
-                let lit = response.has_focus() || (look.terminal && at == sheet.column);
-                if lit {
+                crate::ui::focus::hint(
+                    ui,
+                    &response,
+                    rect,
+                    crate::ui::focus::Ring::Inset { radius: 0 },
+                );
+                // The terminal look's cursor, as its lists draw one.
+                if look.terminal && at == sheet.column {
                     ui.painter().rect_filled(rect, 0, palette.selection);
                     if look.terminal {
                         ui.painter().rect_filled(

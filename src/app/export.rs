@@ -466,6 +466,7 @@ impl App {
             hidden: false,
             started: Instant::now(),
             announced: None,
+            reopens: false,
             history: facts.statement.is_some().then(|| {
                 super::history::entry_on(workspace, Source::Export, object.object.name.clone())
             }),
@@ -493,12 +494,9 @@ impl App {
                     &crate::export_sheet::downloads(),
                     self.dirs.home.as_deref(),
                 );
-                if path.exists() && !sheet.exists {
-                    if let Some(Dialog::Export(sheet)) = &mut self.dialog {
-                        sheet.exists = true;
-                    }
-                    return;
-                }
+                // A file that is there fails the rename, and the float
+                // opens again saying so (`export_state`): no disk is read
+                // here.
                 Destination::File {
                     path,
                     replace: sheet.exists,
@@ -522,7 +520,11 @@ impl App {
                 return;
             }
         };
+        let reopens = self.look.terminal && matches!(destination, Destination::File { .. });
         self.run_export(&sheet, destination);
+        if let Some(exporting) = &mut self.exporting {
+            exporting.reopens = reopens;
+        }
     }
 
     /// Starts `sheet`'s export to `destination`, and closes the sheet.
@@ -559,7 +561,8 @@ impl App {
                     .as_ref()
                     .is_some_and(|exporting| exporting.job.id == job && !exporting.running())
             {
-                let replace = path.exists();
+                // The panel asked before a file was replaced.
+                let replace = true;
                 self.rerun_export(Some(Destination::File { path, replace }));
             }
             return;
@@ -572,9 +575,8 @@ impl App {
             return;
         };
         let sheet = sheet.clone();
-        // The panel asked before a file that was there was replaced; one
-        // made since is not (spec, Q6).
-        let replace = path.exists();
+        // The panel asked before a file that was there was replaced.
+        let replace = true;
         self.run_export(&sheet, Destination::File { path, replace });
     }
 
@@ -606,18 +608,8 @@ impl App {
             self.said = Some(said);
             return;
         };
-        if path.exists() && !replace {
-            let said = gettext(
-                self.locale,
-                "! {path} exists · :w! to replace, or another name",
-            )
-            .replace(
-                "{path}",
-                &crate::export_sheet::shown_path(&path, home.as_deref()),
-            );
-            self.said = Some(said);
-            return;
-        }
+        // A file that is there fails the rename, off this thread, and its
+        // line says `:w!` (spec, Q6).
         let asked = self.next_id();
         let Some((_, object)) = self.export_table(tab) else {
             return;
@@ -792,6 +784,26 @@ impl App {
         };
         if !exporting.running() {
             self.export_ended(copied_text);
+        }
+        // The float's file is there: it opens again, and Enter replaces it.
+        let reopen = match &self.exporting {
+            Some(exporting) if self.look.terminal && exporting.reopens => matches!(
+                exporting.status,
+                ExportStatus::Failed {
+                    failure: ExportFailure::Exists { .. },
+                    ..
+                }
+            ),
+            _ => false,
+        };
+        if reopen && self.dialog.is_none() {
+            let asked = self.next_id();
+            if let Some(exporting) = self.exporting.take() {
+                let mut sheet = exporting.sheet;
+                sheet.exists = true;
+                sheet.asked = asked;
+                self.dialog = Some(Dialog::Export(sheet));
+            }
         }
     }
 

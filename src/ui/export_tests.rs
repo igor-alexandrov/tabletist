@@ -159,12 +159,12 @@ fn the_save_panel_names_the_file_and_the_export_starts() {
     let sent = jobs(&harness);
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].format, Format::Json);
-    // A file the panel did not see is never replaced (Q6).
+    // The panel asked before it replaced a file.
     assert_eq!(
         sent[0].destination,
         Destination::File {
             path,
-            replace: false
+            replace: true
         }
     );
     assert!(matches!(sent[0].rows, ExportRows::Query(_)));
@@ -491,10 +491,29 @@ fn the_terminal_looks_lines_export() {
     let there = dir.path().join("covers.md");
     std::fs::write(&there, "kept").unwrap();
     run_line(&mut harness, tab, &format!(":w {}", there.display()));
-    assert!(said(&harness).unwrap().contains("exists · :w! to replace"));
-    assert!(jobs(&harness).is_empty());
+    // No disk is read on the way: the rename refuses the file, and the
+    // line says so.
+    assert_eq!(
+        jobs(&harness)[0].destination,
+        Destination::File {
+            path: there.clone(),
+            replace: false
+        }
+    );
+    tell(
+        &mut harness,
+        ExportState::Failed(ExportFailure::Exists {
+            path: there.clone(),
+        }),
+    );
+    // The line the status line shows once the last toast has gone.
+    let (line, _) = crate::ui::workspace::export_line(&harness.app).unwrap();
+    assert!(
+        line.ends_with("exists · :w! to replace, or another name"),
+        "{line}"
+    );
     run_line(&mut harness, tab, &format!(":w! {}", there.display()));
-    let job = jobs(&harness)[0].clone();
+    let job = jobs(&harness)[1].clone();
     assert_eq!(job.format, Format::Markdown);
     assert_eq!(
         job.destination,
@@ -538,13 +557,37 @@ fn the_float_writes_where_its_path_line_says() {
     change(&mut harness, ExportChange::Path(path.display().to_string()));
     harness.app.apply(Action::StartExport);
     harness.settle();
+    assert_eq!(
+        jobs(&harness)[0].destination,
+        Destination::File {
+            path: path.clone(),
+            replace: false
+        }
+    );
+    // The rename finds the file: the float opens again, and says so.
+    tell(
+        &mut harness,
+        ExportState::Failed(ExportFailure::Exists { path: path.clone() }),
+    );
+    harness.frame(Vec::new());
+    harness.settle();
     assert!(sheet(&harness).unwrap().exists);
-    assert!(painted(&harness, "! exists · enter again replaces it"));
-    assert!(jobs(&harness).is_empty());
+    assert!(
+        painted(&harness, "! exists · enter again replaces it"),
+        "{:?}",
+        harness
+            .painted
+            .iter()
+            .filter(|(text, _)| text.contains("exist")
+                || text.contains("save")
+                || text.contains("export")
+                || text.contains("covers.csv"))
+            .collect::<Vec<_>>()
+    );
     harness.app.apply(Action::StartExport);
     harness.settle();
     assert_eq!(
-        jobs(&harness)[0].destination,
+        jobs(&harness)[1].destination,
         Destination::File {
             path,
             replace: true
