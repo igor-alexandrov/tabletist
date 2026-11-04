@@ -160,7 +160,13 @@ impl App {
             crate::model::CopyHow::As(format) => format,
             crate::model::CopyHow::Plain | crate::model::CopyHow::ColumnNames => Format::Tsv,
         };
-        let copied = object.and_then(|object| Some((object.selection?, object.range.clone())));
+        let copied = object.and_then(|object| {
+            Some(crate::model::CopiedSelection {
+                page: object.rows.loaded,
+                cursor: object.selection?,
+                range: object.range.clone(),
+            })
+        });
         self.offer = Some(crate::model::ExportOffer {
             tab,
             table: Some(table),
@@ -182,6 +188,22 @@ impl App {
         true
     }
 
+    /// Whether `offer` still stands: the table it was of is open, on the
+    /// page the copy was of. Another page's rows are other rows.
+    pub fn offer_holds(&self, offer: &crate::model::ExportOffer) -> bool {
+        let Some(id) = offer.table else {
+            return true;
+        };
+        let object = self
+            .workspace(offer.tab)
+            .and_then(|workspace| workspace.object_tab(id));
+        match (object, &offer.copied) {
+            (None, _) => false,
+            (Some(_), None) => true,
+            (Some(object), Some(copied)) => object.rows.loaded == copied.page,
+        }
+    }
+
     /// Opens the sheet over the table in front of `tab`.
     pub(super) fn open_export(&mut self, tab: ConnTabId, format: Option<Format>) {
         self.open_export_on(tab, format, (false, false));
@@ -192,7 +214,8 @@ impl App {
     /// format given goes to a file, as the clipboard could not take it
     /// (spec 3b, R1 and R6).
     pub(super) fn export_selection(&mut self, offer: crate::model::ExportOffer) {
-        if self.dialog.is_some() {
+        // Nothing moves where no sheet would open.
+        if self.dialog.is_some() || !self.offer_holds(&offer) || self.export_runs() {
             return;
         }
         let crate::model::ExportOffer {
@@ -219,11 +242,11 @@ impl App {
                 None => return,
             }
             // What was copied, though the selection moved since.
-            if let Some((cursor, range)) = copied
+            if let Some(copied) = copied
                 && let Some(object) = self.object_tab_mut(tab, id)
             {
-                object.set_cursor(Some(cursor), crate::model::Reach::End);
-                object.range = range;
+                object.set_cursor(Some(copied.cursor), crate::model::Reach::End);
+                object.range = copied.range;
             }
         }
         self.open_export_on(tab, format, (true, whole_rows));

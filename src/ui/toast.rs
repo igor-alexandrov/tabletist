@@ -73,6 +73,18 @@ pub fn offered(ctx: &egui::Context) -> Option<ExportOffer> {
     kept(ctx)?.offer
 }
 
+/// Takes the offer off the toast where `holds` says it no longer stands:
+/// the words stay, Export… goes.
+pub fn keep_offer_if(ctx: &egui::Context, holds: impl FnOnce(&ExportOffer) -> bool) {
+    let Some(mut said) = kept(ctx) else {
+        return;
+    };
+    if said.offer.as_ref().is_some_and(|offer| !holds(offer)) {
+        said.offer = None;
+        ctx.data_mut(|data| data.insert_temp(id(), said));
+    }
+}
+
 fn kept(ctx: &egui::Context) -> Option<Said> {
     ctx.data(|data| data.get_temp(id()))
 }

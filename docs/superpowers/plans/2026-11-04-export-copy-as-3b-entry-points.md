@@ -79,6 +79,7 @@ To put to Igor in the pull request (filled in as the code settles them):
 | B22 | R3 | Where every recent row is a SQL editor, Export a table… lists the largest tables under their heading, as the start screen does with nothing recent; with no match it offers no other connection to search | An empty list |
 | B23 | R6 | ⌘C, ctrl+c and `y` over the limit offer Export… as Copy as's Copy does (TSV), and `y` keeps the visual selection for `E` | The words alone |
 | B24 | R2 | Export a Table… takes a key of the person's in either look (Keyboard settings and `settings.toml`) | No key at all |
+| B25 | R6 | The offer is tied to the page the copy was of: once the grid shows another page (a reload, a page turned, a filter), the toast keeps its words and drops Export…; an offer taken while an export runs says so and moves neither the selection nor the tab | The copied rows put back on whatever page shows |
 
 ## Files
 
@@ -185,7 +186,7 @@ with `CARGO_TARGET_DIR` the worktree's `target/`. No server test changes.
 ## After Task 3
 
 Push the branch and open the pull request: what each way in does, the
-keys added, E1–E6 and R1–R9 as approved, and B1–B24 from the table
+keys added, E1–E6 and R1–R9 as approved, and B1–B25 from the table
 above. Checked by hand only: ⌘⇧' as macOS and Windows send it (the tests
 send the bare key).
 No screenshot goes to GitHub unblurred.

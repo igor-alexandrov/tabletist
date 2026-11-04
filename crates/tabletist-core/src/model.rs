@@ -3775,9 +3775,19 @@ pub struct ExportOffer {
     pub table: Option<TabId>,
     pub format: Option<crate::export::Format>,
     pub whole_rows: bool,
-    /// The cursor and the range the copy took: a selection moved since is
-    /// put back, so the sheet exports what was copied.
-    pub copied: Option<(CellPos, Option<Range>)>,
+    /// What the copy took: a selection moved since is put back, so the
+    /// sheet exports what was copied.
+    pub copied: Option<CopiedSelection>,
+}
+
+/// The selection a refused copy took, on the page it was of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopiedSelection {
+    /// The read whose page the rows are of: once another page is shown
+    /// the rows are other rows, and the offer goes.
+    pub page: Option<RequestId>,
+    pub cursor: CellPos,
+    pub range: Option<Range>,
 }
 
 /// What a row of the sidebar's menu on a table or view does.

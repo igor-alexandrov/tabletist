@@ -8500,6 +8500,8 @@ impl App {
         crate::ui::keys::text_size(self, ui.ctx());
         // A dialog takes the keyboard: no shortcut acts behind it, and a
         // first key that waited for its second (`cc`) waits no longer.
+        // An offer of rows the grid no longer shows goes first.
+        crate::ui::toast::keep_offer_if(ui.ctx(), |offer| self.offer_holds(offer));
         // The toasts' keys come first: Esc on a toast's button is its own.
         crate::ui::toast::keys(ui.ctx(), &self.keymap, self.layout(), self.dialog.is_some());
         if self.dialog.is_none() {

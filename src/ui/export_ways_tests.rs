@@ -1467,3 +1467,59 @@ fn a_yank_over_the_limit_keeps_the_selection_and_offers_e() {
     assert_eq!(open.rows, RowsChoice::Selected);
     assert_eq!(open.format, crate::export::Format::Tsv);
 }
+
+/// R6: once the grid shows another page, the copy's rows are not on it:
+/// the toast keeps its words and drops Export…, and an offer taken then
+/// opens nothing and leaves the selection.
+#[test]
+fn the_offer_goes_once_the_page_changes() {
+    let (mut harness, tab, id) = too_large_in(Look::macos());
+    copy_as_markdown(&mut harness, tab);
+    let offer = crate::ui::toast::offered(&harness.ctx).expect("an offer");
+    harness.app.apply(Action::Refresh(tab));
+    harness.answer_rows(crate::testing::book_covers_page(3));
+    harness.settle();
+    assert_eq!(
+        said(&harness).as_deref(),
+        Some("That's over 20 MB. Export to a file?"),
+        "the words stay"
+    );
+    assert_eq!(crate::ui::toast::offered(&harness.ctx), None, "no offer");
+    select(&mut harness, tab, id, (2, 0));
+    harness.app.apply(Action::ExportSelection(offer));
+    assert!(sheet(&harness).is_none(), "no sheet");
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    assert_eq!(
+        object.selection,
+        Some(crate::model::CellPos { row: 2, col: 0 })
+    );
+}
+
+/// R6 and run 3's D5: the offer taken while an export runs says so and
+/// moves neither the selection nor the tab in front.
+#[test]
+fn the_offer_taken_while_an_export_runs_moves_nothing() {
+    let (mut harness, tab, id) = too_large_in(Look::macos());
+    copy_as_markdown(&mut harness, tab);
+    let offer = crate::ui::toast::offered(&harness.ctx).expect("an offer");
+    let dir = tempfile::tempdir().unwrap();
+    harness.app.apply(Action::ExportTo {
+        tab,
+        path: dir.path().join("book_covers.csv").display().to_string(),
+        replace: false,
+    });
+    harness.settle();
+    select(&mut harness, tab, id, (0, 1));
+    harness.app.apply(Action::ExportSelection(offer));
+    assert_eq!(
+        harness.app.said.as_deref(),
+        Some("An export is running. Cancel it first, or wait for it.")
+    );
+    assert!(sheet(&harness).is_none());
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    assert_eq!(
+        object.selection,
+        Some(crate::model::CellPos { row: 0, col: 1 })
+    );
+    assert_eq!(object.range, None, "the selection where it was moved to");
+}
