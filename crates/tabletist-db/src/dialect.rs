@@ -600,11 +600,12 @@ impl Dialect {
             (_, Value::Null) => Operand::Null,
             (_, Value::Int(number)) => Operand::Int(*number),
             (Self::Sqlite, Value::Bool(flag)) => Operand::Int(i64::from(*flag)),
-            (Self::Postgres | Self::MySql, Value::Bool(flag)) => {
+            (Self::Postgres | Self::MySql | Self::BigQuery, Value::Bool(flag)) => {
                 Operand::Raw(if *flag { "TRUE" } else { "FALSE" }.to_owned())
             }
-            // PostgreSQL reads its words for the numbers no digits write.
-            (Self::Postgres, Value::Float(number)) if !number.is_finite() => {
+            // PostgreSQL reads its words for the numbers no digits write;
+            // BigQuery coerces the same words to a FLOAT64.
+            (Self::Postgres | Self::BigQuery, Value::Float(number)) if !number.is_finite() => {
                 let word = match number {
                     number if number.is_nan() => "NaN",
                     number if number.is_sign_positive() => "Infinity",
@@ -621,9 +622,10 @@ impl Dialect {
             }
             // MySQL keeps neither a NaN nor an infinity.
             (Self::MySql, Value::Float(number)) if !number.is_finite() => Operand::Null,
-            (Self::Postgres | Self::MySql | Self::Sqlite, Value::Float(number)) => {
-                Operand::Float(*number)
-            }
+            (
+                Self::Postgres | Self::MySql | Self::Sqlite | Self::BigQuery,
+                Value::Float(number),
+            ) => Operand::Float(*number),
             (_, Value::Text(text))
                 if kind == crate::ValueKind::Numeric && crate::value::is_plain_number(text) =>
             {
@@ -643,7 +645,7 @@ impl Dialect {
             NewValue::Null | NewValue::Text(_) => return None,
             // As `new_operand` writes it: SQLite has no DEFAULT among VALUES.
             NewValue::Default { expression } => Operand::Raw(match (self, expression) {
-                (Self::Postgres | Self::MySql, _) => "DEFAULT".to_owned(),
+                (Self::Postgres | Self::MySql | Self::BigQuery, _) => "DEFAULT".to_owned(),
                 (Self::Sqlite, Some(expression)) => format!("({expression})"),
                 (Self::Sqlite, None) => "NULL".to_owned(),
             }),
@@ -664,9 +666,7 @@ impl Dialect {
             (_, Value::Int(number)) => Operand::Int(*number),
             (_, Value::Text(text)) => Operand::Text(text.to_string()),
             (_, Value::Bytes(bytes)) => Operand::Bytes(bytes.to_vec()),
-            (Self::Postgres | Self::BigQuery, Value::Bool(flag)) => {
-                Operand::Text(flag.to_string())
-            }
+            (Self::Postgres | Self::BigQuery, Value::Bool(flag)) => Operand::Text(flag.to_string()),
             (Self::Postgres | Self::BigQuery, Value::Float(number)) => {
                 Operand::Text(number.to_string())
             }
@@ -1391,6 +1391,12 @@ mod tests {
             Some("('print')")
         );
         assert_eq!(
+            Dialect::BigQuery
+                .pending_literal(&default, "STRING")
+                .as_deref(),
+            Some("DEFAULT")
+        );
+        assert_eq!(
             pg.pending_literal(&NewValue::Now, "timestamptz").as_deref(),
             Some("now()")
         );
@@ -1459,6 +1465,15 @@ mod tests {
         let bytes = Value::Bytes(vec![0x0a, 0xff].into());
         assert_eq!(pg.value_literal(&bytes, Text), "E'\\\\x0aff'");
         assert_eq!(Dialect::MySql.value_literal(&bytes, Text), "x'0aff'");
+        let bq = Dialect::BigQuery;
+        assert_eq!(bq.value_literal(&Value::Bool(false), Text), "FALSE");
+        assert_eq!(bq.value_literal(&Value::Float(4.5), Numeric), "4.5");
+        assert_eq!(bq.value_literal(&Value::Float(f64::NAN), Numeric), "'NaN'");
+        assert_eq!(
+            bq.value_literal(&Value::Float(f64::INFINITY), Numeric),
+            "'Infinity'"
+        );
+        assert_eq!(bq.value_literal(&bytes, Text), r"b'\x0a\xff'");
     }
 
     fn query() -> RowQuery {
@@ -1494,7 +1509,11 @@ mod tests {
              ORDER BY `id` DESC LIMIT 101 OFFSET 0"
         );
         let count = Dialect::BigQuery.count_rows(&q, &[]);
-        assert!(count.text.starts_with("SELECT count(*) FROM `sales`.`orders` WHERE "));
+        assert!(
+            count
+                .text
+                .starts_with("SELECT count(*) FROM `sales`.`orders` WHERE ")
+        );
         assert!(count.params.is_empty());
     }
 
@@ -1641,6 +1660,13 @@ mod tests {
             "SELECT `title`, `id` FROM `public`.`books` WHERE `title` = ? ORDER BY `published` DESC, `id` ASC"
         );
         assert_eq!(sent.params, [text("Small Rooms")]);
+        // BigQuery writes its values in and has no key to order by.
+        let streamed = Dialect::BigQuery.export_rows(&q, &[], &[], &columns);
+        assert!(streamed.params.is_empty());
+        assert_eq!(
+            streamed.text,
+            "SELECT `title`, `id` FROM `public`.`books` WHERE `title` = 'Small Rooms' ORDER BY `published` DESC"
+        );
         // No columns: every one of them.
         assert!(
             Dialect::Sqlite

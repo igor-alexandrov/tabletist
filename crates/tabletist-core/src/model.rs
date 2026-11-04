@@ -3946,8 +3946,9 @@ pub fn is_system_schema(driver: Driver, name: &str) -> bool {
             "mysql" | "sys" | "performance_schema" | "information_schema"
         ),
         Driver::Sqlite => false,
-        // A dataset's INFORMATION_SCHEMA is its own views'.
-        Driver::BigQuery => name.eq_ignore_ascii_case("information_schema"),
+        // BigQuery lists dataset IDs here; a dataset's INFORMATION_SCHEMA
+        // is views inside it, never a dataset of its own.
+        Driver::BigQuery => false,
     }
 }
 
@@ -7843,6 +7844,9 @@ mod tests {
         assert!(is_system_schema(Driver::MySql, "performance_schema"));
         assert!(!is_system_schema(Driver::Sqlite, "main"));
         assert!(!is_system_schema(Driver::Postgres, "public"));
+        // A dataset of that name is a user's own: INFORMATION_SCHEMA is
+        // views within a dataset, never one itself.
+        assert!(!is_system_schema(Driver::BigQuery, "information_schema"));
     }
 
     #[test]

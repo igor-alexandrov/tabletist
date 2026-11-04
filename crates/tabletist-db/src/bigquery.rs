@@ -6,9 +6,9 @@
 //! `INSERT` would really write here, where another engine's read-only
 //! transaction would refuse it.
 
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use gcp_bigquery_client::Client;
@@ -71,6 +71,24 @@ impl Cancel {
             .map_err(|error| Error::Connect(format!("could not cancel: {error}")))?;
         Ok(())
     }
+}
+
+/// A unique id of this process's own: job ids are letters, digits,
+/// dashes and underscores. The run's start is in it: a pid the system
+/// hands out again would repeat an earlier process's ids without it.
+fn next_job_id() -> String {
+    static RUN: LazyLock<u128> = LazyLock::new(|| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos())
+    });
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "tabletist-{}-{:x}-{}",
+        std::process::id(),
+        *RUN,
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 /// `error` as the crate's: a cancelled job is [`Error::Cancelled`], a
@@ -145,7 +163,10 @@ fn cell(field: &TableFieldSchema, value: &serde_json::Value) -> Value {
     }
     let shown = text(value);
     match type_name(field).as_str() {
-        "INT64" | "INTEGER" => shown.parse().map(Value::Int).unwrap_or_else(|_| Value::Text(shown.into())),
+        "INT64" | "INTEGER" => shown
+            .parse()
+            .map(Value::Int)
+            .unwrap_or_else(|_| Value::Text(shown.into())),
         "FLOAT64" | "FLOAT" => shown
             .parse()
             .map(Value::Float)
@@ -178,9 +199,7 @@ impl Conn {
             return Err(Error::InvalidSpec("enter a GCP project".into()));
         }
         let client = match &spec.bigquery_key {
-            Some(path) => {
-                Client::from_service_account_key_file(&path.to_string_lossy()).await
-            }
+            Some(path) => Client::from_service_account_key_file(&path.to_string_lossy()).await,
             None => Client::from_application_default_credentials().await,
         }
         .map_err(|error| Error::Auth(error.to_string()))?;
@@ -222,16 +241,10 @@ impl Conn {
         limit: usize,
         timeout: Option<Duration>,
     ) -> Result<(Vec<ColumnMeta>, Vec<Vec<Value>>, Duration)> {
-        let read = crate::agent::check_read(Dialect::BigQuery, sql, params).map_err(Error::Agent)?;
+        let read =
+            crate::agent::check_read(Dialect::BigQuery, sql, params).map_err(Error::Agent)?;
         let started = Instant::now();
-        // A unique id of this process's own: job ids are letters, digits,
-        // dashes and underscores.
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let job_id = format!(
-            "tabletist-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        );
+        let job_id = next_job_id();
         *self.running.lock().expect("running-job lock") = Some((job_id.clone(), None));
         let result = self
             .run_job(&read, limit, timeout, job_id)
@@ -341,7 +354,10 @@ impl Conn {
                                 .iter()
                                 .zip(cells.iter())
                                 .map(|(field, c)| {
-                                    cell(field, c.value.as_ref().unwrap_or(&serde_json::Value::Null))
+                                    cell(
+                                        field,
+                                        c.value.as_ref().unwrap_or(&serde_json::Value::Null),
+                                    )
                                 })
                                 .collect(),
                         );
@@ -355,6 +371,119 @@ impl Conn {
             token = response.page_token.take();
             if complete && token.is_none() {
                 return Ok((columns, rows));
+            }
+        }
+    }
+
+    /// The job of an export's checked read, a page at a time: the columns
+    /// once, then batches of up to `batch` rows, so no more than a page is
+    /// held at once. There are no parameters: an export's statement has
+    /// its values written in. Returns the rows sent.
+    async fn stream_job(
+        &self,
+        sql: &str,
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+        job_id: String,
+    ) -> Result<u64> {
+        let page_size = i32::try_from(batch).unwrap_or(i32::MAX);
+        let job = Job {
+            job_reference: Some(JobReference {
+                job_id: Some(job_id),
+                project_id: Some(self.project.clone()),
+                location: None,
+            }),
+            configuration: Some(JobConfiguration {
+                query: Some(JobConfigurationQuery {
+                    query: sql.to_owned(),
+                    use_legacy_sql: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let inserted = self
+            .client
+            .job()
+            .insert(&self.project, job)
+            .await
+            .map_err(query_error)?;
+        let reference = inserted
+            .job_reference
+            .expect("a job answers with its reference");
+        if let Ok(mut running) = self.running.lock()
+            && let Some(current) = running.as_mut()
+            && current.0 == reference.job_id.clone().unwrap_or_default()
+        {
+            current.1 = reference.location.clone();
+        }
+        let mut columns_sent = false;
+        let mut sent = 0u64;
+        let mut token = None;
+        loop {
+            if stop.is_stopped() {
+                return Err(Error::Cancelled);
+            }
+            let page = GetQueryResultsParameters {
+                page_token: token,
+                max_results: Some(page_size),
+                location: reference.location.clone(),
+                timeout_ms: Some(JOB_WAIT.as_millis() as i32),
+                ..Default::default()
+            };
+            let job_id = reference.job_id.clone().expect("noted above");
+            let mut response: gcp_bigquery_client::model::query_response::QueryResponse = self
+                .client
+                .job()
+                .get_query_results(&self.project, &job_id, page)
+                .await
+                .map_err(query_error)?
+                .into();
+            let complete = response.job_complete.unwrap_or(true);
+            if let Some(schema) = response.schema.as_ref()
+                && let Some(fields) = schema.fields.as_ref()
+            {
+                if !columns_sent {
+                    crate::stream::send(to, crate::Streamed::Columns(column_metas(fields))).await?;
+                    columns_sent = true;
+                }
+                if let Some(page) = response.rows.take() {
+                    let mut values: Vec<Vec<Value>> = Vec::with_capacity(batch);
+                    for row in page {
+                        let cells = row.columns.unwrap_or_default();
+                        values.push(
+                            fields
+                                .iter()
+                                .zip(cells.iter())
+                                .map(|(field, c)| {
+                                    cell(
+                                        field,
+                                        c.value.as_ref().unwrap_or(&serde_json::Value::Null),
+                                    )
+                                })
+                                .collect(),
+                        );
+                        if values.len() == batch {
+                            sent += values.len() as u64;
+                            crate::stream::send(
+                                to,
+                                crate::Streamed::Rows(std::mem::take(&mut values)),
+                            )
+                            .await?;
+                        }
+                    }
+                    if !values.is_empty() {
+                        sent += values.len() as u64;
+                        crate::stream::send(to, crate::Streamed::Rows(values)).await?;
+                    }
+                }
+            }
+            token = response.page_token.take();
+            if complete && token.is_none() {
+                stop.finish();
+                return Ok(sent);
             }
         }
     }
@@ -463,17 +592,20 @@ impl Adapter for Conn {
                 .list(&self.project, schema, options)
                 .await
                 .map_err(query_error)?;
-            objects.extend(page.tables.unwrap_or_default().into_iter().map(|table| {
-                ObjectInfo {
-                    name: table.table_reference.table_id,
-                    kind: match table.r#type.as_deref() {
-                        Some("VIEW") => ObjectKind::View,
-                        Some("MATERIALIZED_VIEW") => ObjectKind::MaterializedView,
-                        _ => ObjectKind::Table,
-                    },
-                    estimated_rows: None,
-                }
-            }));
+            objects.extend(
+                page.tables
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|table| ObjectInfo {
+                        name: table.table_reference.table_id,
+                        kind: match table.r#type.as_deref() {
+                            Some("VIEW") => ObjectKind::View,
+                            Some("MATERIALIZED_VIEW") => ObjectKind::MaterializedView,
+                            _ => ObjectKind::Table,
+                        },
+                        estimated_rows: None,
+                    }),
+            );
             if objects.len() >= MAX_LISTED as usize {
                 objects.truncate(MAX_LISTED as usize);
                 return Ok(objects);
@@ -538,6 +670,34 @@ impl Adapter for Conn {
         })
     }
 
+    async fn export_statement(&self, query: &RowQuery, columns: &[String]) -> Result<String> {
+        let binary = self.binary_columns(query).await?;
+        Ok(Dialect::BigQuery.shown_export(query, &[], &binary, columns))
+    }
+
+    /// An export's rows through the jobs API, a page (at most `batch`
+    /// rows) held at a time: there is no cursor, so the API's own paging
+    /// is the stream.
+    async fn stream_rows(
+        &self,
+        query: &RowQuery,
+        columns: &[String],
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        let binary = self.binary_columns(query).await?;
+        let sql = Dialect::BigQuery.export_rows(query, &[], &binary, columns);
+        debug_assert!(sql.params.is_empty());
+        let read =
+            crate::agent::check_read(Dialect::BigQuery, &sql.text, &[]).map_err(Error::Agent)?;
+        let job_id = next_job_id();
+        *self.running.lock().expect("running-job lock") = Some((job_id.clone(), None));
+        let result = self.stream_job(read.text(), batch, to, stop, job_id).await;
+        *self.running.lock().expect("running-job lock") = None;
+        result
+    }
+
     async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
         let binary = self.binary_columns(query).await?;
         let sql = Dialect::BigQuery.count_rows(query, &binary);
@@ -554,7 +714,9 @@ impl Adapter for Conn {
 
     async fn lookup(&self, lookup: &Lookup) -> Result<LookupPage> {
         let sql = Dialect::BigQuery.lookup(lookup);
-        let (_, rows, _) = self.query(&sql.text, &[], lookup.limit as usize + 1, None).await?;
+        let (_, rows, _) = self
+            .query(&sql.text, &[], lookup.limit as usize + 1, None)
+            .await?;
         crate::lookup::page(rows, lookup)
     }
 
@@ -611,7 +773,6 @@ impl Adapter for Conn {
         }
         Ok(outcome)
     }
-
 
     /// The checked statement runs as a read-only script of one does, its
     /// values bound by the API as typed parameters. BigQuery keeps no
@@ -698,6 +859,16 @@ mod tests {
     }
 
     #[test]
+    fn job_ids_carry_the_process_and_its_run() {
+        let one = next_job_id();
+        let another = next_job_id();
+        assert_ne!(one, another);
+        // tabletist-{pid}-{run as hex}-{counter}
+        assert_eq!(one.split('-').count(), 4);
+        assert!(one.starts_with(&format!("tabletist-{}-", std::process::id())));
+    }
+
+    #[test]
     fn cells_read_by_their_fields_type() {
         assert_eq!(
             cell(&field(FieldType::Int64, None), &json("42")),
@@ -737,7 +908,10 @@ mod tests {
         );
         // A DATETIME's T is the app's own middle of a moment.
         assert_eq!(
-            cell(&field(FieldType::Datetime, None), &json("2024-02-03T04:05:06")),
+            cell(
+                &field(FieldType::Datetime, None),
+                &json("2024-02-03T04:05:06")
+            ),
             Value::Text("2024-02-03 04:05:06".into())
         );
         // Repeated and nested values show as the JSON the API gives.
@@ -746,7 +920,10 @@ mod tests {
             cell(&field(FieldType::String, Some("REPEATED")), &array),
             Value::Text(r#"["a","b"]"#.into())
         );
-        assert_eq!(type_name(&field(FieldType::String, Some("REPEATED"))), "ARRAY<STRING>");
+        assert_eq!(
+            type_name(&field(FieldType::String, Some("REPEATED"))),
+            "ARRAY<STRING>"
+        );
         assert_eq!(type_name(&field(FieldType::Int64, None)), "INT64");
     }
 

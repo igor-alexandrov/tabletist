@@ -193,6 +193,11 @@ pub fn refusal_text(refusal: &Refusal, type_name: &str, locale: Locale) -> Strin
             Range::MySqlTimestamp => say("MySQL TIMESTAMP holds 1970-01-01 to 2038-01-19 UTC."),
             Range::MySqlTime => say("MySQL TIME holds -838:59:59 to 838:59:59."),
             Range::PgOffset => say("PostgreSQL keeps offsets from -15:59:59 to +15:59:59."),
+            Range::BigQueryDate => say("BigQuery DATE and DATETIME hold 0001-01-01 to 9999-12-31."),
+            Range::BigQueryTimestamp => {
+                say("BigQuery TIMESTAMP holds 0001-01-01 to 9999-12-31 UTC.")
+            }
+            Range::BigQueryTime => say("BigQuery TIME holds 00:00:00 to 23:59:59."),
         },
         Refusal::Years => say("Tabletist reads years up to 9999."),
         Refusal::YearZero => say("There is no year 0: 1 BC comes just before 1 AD."),

@@ -243,7 +243,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.run_script(texts, limit, mode, stop).await,
             Inner::Postgres(conn) => conn.run_script(texts, limit, mode, stop).await,
             Inner::MySql(conn) => conn.run_script(texts, limit, mode, stop).await,
-            Inner::BigQuery(conn) => conn.run_script(texts, limit, mode, stop).await
+            Inner::BigQuery(conn) => conn.run_script(texts, limit, mode, stop).await,
         }
     }
 
@@ -299,7 +299,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.run_read(read, limits, sources, stop).await,
             Inner::Postgres(conn) => conn.run_read(read, limits, sources, stop).await,
             Inner::MySql(conn) => conn.run_read(read, limits, sources, stop).await,
-            Inner::BigQuery(conn) => conn.run_read(read, limits, sources, stop).await
+            Inner::BigQuery(conn) => conn.run_read(read, limits, sources, stop).await,
         }?;
         agent::answer(outcome, stop).map(|answer| agent::masked(answer, masked))
     }
@@ -331,7 +331,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.server_version().await,
             Inner::Postgres(conn) => conn.server_version().await,
             Inner::MySql(conn) => conn.server_version().await,
-            Inner::BigQuery(conn) => conn.server_version().await
+            Inner::BigQuery(conn) => conn.server_version().await,
         }
     }
 
@@ -344,7 +344,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.session_zone().await,
             Inner::Postgres(conn) => conn.session_zone().await,
             Inner::MySql(conn) => conn.session_zone().await,
-            Inner::BigQuery(conn) => conn.session_zone().await
+            Inner::BigQuery(conn) => conn.session_zone().await,
         }
     }
 
@@ -355,7 +355,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.list_databases().await,
             Inner::Postgres(conn) => conn.list_databases().await,
             Inner::MySql(conn) => conn.list_databases().await,
-            Inner::BigQuery(conn) => conn.list_databases().await
+            Inner::BigQuery(conn) => conn.list_databases().await,
         }
     }
 
@@ -365,7 +365,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.list_schemas().await,
             Inner::Postgres(conn) => conn.list_schemas().await,
             Inner::MySql(conn) => conn.list_schemas().await,
-            Inner::BigQuery(conn) => conn.list_schemas().await
+            Inner::BigQuery(conn) => conn.list_schemas().await,
         }
     }
 
@@ -375,7 +375,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.list_objects(schema).await,
             Inner::Postgres(conn) => conn.list_objects(schema).await,
             Inner::MySql(conn) => conn.list_objects(schema).await,
-            Inner::BigQuery(conn) => conn.list_objects(schema).await
+            Inner::BigQuery(conn) => conn.list_objects(schema).await,
         }
     }
 
@@ -384,7 +384,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.describe(object).await,
             Inner::Postgres(conn) => conn.describe(object).await,
             Inner::MySql(conn) => conn.describe(object).await,
-            Inner::BigQuery(conn) => conn.describe(object).await
+            Inner::BigQuery(conn) => conn.describe(object).await,
         }
     }
 
@@ -399,7 +399,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.ddl(object).await,
             Inner::Postgres(conn) => conn.ddl(object).await,
             Inner::MySql(conn) => conn.ddl(object).await,
-            Inner::BigQuery(conn) => conn.ddl(object).await
+            Inner::BigQuery(conn) => conn.ddl(object).await,
         }
     }
 
@@ -412,7 +412,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.fetch_rows(query).await,
             Inner::Postgres(conn) => conn.fetch_rows(query).await,
             Inner::MySql(conn) => conn.fetch_rows(query).await,
-            Inner::BigQuery(conn) => conn.fetch_rows(query).await
+            Inner::BigQuery(conn) => conn.fetch_rows(query).await,
         }
     }
 
@@ -424,6 +424,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.export_statement(query, columns).await,
             Inner::Postgres(conn) => conn.export_statement(query, columns).await,
             Inner::MySql(conn) => conn.export_statement(query, columns).await,
+            Inner::BigQuery(conn) => conn.export_statement(query, columns).await,
         }
     }
 
@@ -448,6 +449,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.stream_rows(query, columns, batch, to, stop).await,
             Inner::Postgres(conn) => conn.stream_rows(query, columns, batch, to, stop).await,
             Inner::MySql(conn) => conn.stream_rows(query, columns, batch, to, stop).await,
+            Inner::BigQuery(conn) => conn.stream_rows(query, columns, batch, to, stop).await,
         }
     }
 
@@ -497,7 +499,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.count_rows(query).await,
             Inner::Postgres(conn) => conn.count_rows(query).await,
             Inner::MySql(conn) => conn.count_rows(query).await,
-            Inner::BigQuery(conn) => conn.count_rows(query).await
+            Inner::BigQuery(conn) => conn.count_rows(query).await,
         }
     }
 
@@ -511,7 +513,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.lookup(lookup).await,
             Inner::Postgres(conn) => conn.lookup(lookup).await,
             Inner::MySql(conn) => conn.lookup(lookup).await,
-            Inner::BigQuery(conn) => conn.lookup(lookup).await
+            Inner::BigQuery(conn) => conn.lookup(lookup).await,
         }
     }
 
@@ -558,7 +560,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.write(changes, stop).await,
             Inner::Postgres(conn) => conn.write(changes, stop).await,
             Inner::MySql(conn) => conn.write(changes, stop).await,
-            Inner::BigQuery(conn) => conn.write(changes, stop).await
+            Inner::BigQuery(conn) => conn.write(changes, stop).await,
         }
     }
 

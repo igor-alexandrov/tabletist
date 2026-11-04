@@ -1376,9 +1376,11 @@ fn format_options(ui: &mut Ui, format: Format, options: &mut Options, skin: Skin
                 tabletist_db::Dialect::Postgres => "PostgreSQL",
                 tabletist_db::Dialect::MySql => "MySQL",
                 tabletist_db::Dialect::Sqlite => "SQLite",
+                tabletist_db::Dialect::BigQuery => "BigQuery",
             };
             let literal = match facts.dialect {
                 tabletist_db::Dialect::Postgres => r"'\x…'",
+                tabletist_db::Dialect::BigQuery => r"b'\x…'",
                 tabletist_db::Dialect::MySql | tabletist_db::Dialect::Sqlite => "x'…'",
             };
             note(
