@@ -366,6 +366,17 @@ pub enum Action {
     /// The terminal look's `E` on the tree: the table under the cursor
     /// opens, and its export float over it.
     ExportFromTree(ConnTabId),
+    /// The grid's Export selection…, and Copy as's Export… over the
+    /// clipboard's limit: the sheet over the table in front, on its
+    /// selection.
+    ExportSelection(ExportOffer),
+    /// A row of the sidebar's menu on a table or view.
+    FromTree {
+        tab: ConnTabId,
+        object: ObjectRef,
+        kind: ObjectKind,
+        pick: TreePick,
+    },
     /// A change made in the Export sheet.
     ChangeExport(crate::export_sheet::ExportChange),
     /// The sheet's Count exactly: the tab's count, as the footer's Count.
@@ -3725,6 +3736,34 @@ pub struct SchemaNode {
     pub objects: Fetch<Vec<ObjectInfo>>,
     /// Prefix groups the user unfolded (`book_`).
     pub open_groups: HashSet<String>,
+}
+
+/// The sheet Export selection… opens (spec 3b, R1 and R6): over the table
+/// in front of `tab`, on its selection (the cursor's row where no range
+/// stands), every column where `whole_rows` (a refused Copy rows as TSV),
+/// else a block's own. A format given is the copy's, to a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExportOffer {
+    pub tab: ConnTabId,
+    /// The table's tab the copy was of: it comes to the front first.
+    pub table: Option<TabId>,
+    pub format: Option<crate::export::Format>,
+    pub whole_rows: bool,
+}
+
+/// What a row of the sidebar's menu on a table or view does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreePick {
+    /// Open it pinned, as a double click.
+    Open,
+    /// Open it in its Structure view.
+    Structure,
+    /// Open it in its DDL view.
+    Ddl,
+    /// Put its name on the clipboard, and say so.
+    CopyName,
+    /// Open it, and its Export sheet over it.
+    Export,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

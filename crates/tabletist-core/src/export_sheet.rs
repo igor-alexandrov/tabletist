@@ -84,6 +84,9 @@ pub struct ExportSheet {
     pub review: bool,
     /// The save panel is up: the sheet waits for its answer.
     pub asking: bool,
+    /// Selected rows takes the cursor's row where no range stands: the
+    /// sheet was asked for the selection (Export selection…).
+    pub cursor_row: bool,
 }
 
 /// A change made in the sheet.
@@ -190,6 +193,22 @@ pub fn with_extension(path: &str, format: Format) -> String {
         _ => path,
     };
     format!("{stem}.{}", format.extension())
+}
+
+/// The columns a block of cells from column `first` to `last` exports
+/// (spec 3b, R1): those, ticked, in the grid's order, then the others,
+/// left out.
+pub fn block_columns(columns: Vec<ColumnPick>, (first, last): (usize, usize)) -> Vec<ColumnPick> {
+    let (mut inside, mut outside) = (Vec::new(), Vec::new());
+    for (at, mut column) in columns.into_iter().enumerate() {
+        column.included = (first..=last).contains(&at);
+        match column.included {
+            true => inside.push(column),
+            false => outside.push(column),
+        }
+    }
+    inside.extend(outside);
+    inside
 }
 
 /// The rows a sheet starts on (prompt): Selected rows with a selection,
@@ -598,7 +617,19 @@ mod tests {
             exists: false,
             review: false,
             asking: false,
+            cursor_row: false,
         }
+    }
+
+    #[test]
+    fn a_blocks_columns_come_first_and_the_rest_are_left_out() {
+        let columns = sheet().columns;
+        let picked = block_columns(columns, (1, 2));
+        let shown: Vec<(&str, bool)> = picked
+            .iter()
+            .map(|column| (column.name.as_str(), column.included))
+            .collect();
+        assert_eq!(shown, [("rating", true), ("title", true), ("id", false)]);
     }
 
     #[test]

@@ -62,6 +62,8 @@ pub mod export;
 #[cfg(test)]
 mod export_tests;
 pub mod export_toast;
+#[cfg(test)]
+mod export_ways_tests;
 pub mod filter_bar;
 pub mod focus;
 #[cfg(test)]

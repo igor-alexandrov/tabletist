@@ -177,6 +177,7 @@ keyboard.
 | Cmd+Up, Cmd+Down | The top and the bottom, as Home and End |
 | Return | Open the table or view |
 | Cmd+R | Reload the list |
+| Right-click | A table's or view's menu: Open, Structure, DDL, Copy name, Export… |
 
 ### A table
 
@@ -190,7 +191,7 @@ keyboard.
 | Cmd+C | Copy the selection, or the cell |
 | Cmd+Shift+C | Copy the selected rows |
 | Cmd+Option+C | [Copy as]({% link _guide/browsing-data.md %}#copying): the selection in a format, one letter each |
-| Cmd+Shift+E | [Export]({% link _guide/browsing-data.md %}#exporting) the table, or the one selected in the sidebar |
+| Cmd+Shift+E | [Export]({% link _guide/browsing-data.md %}#exporting) the table, or the one selected in the sidebar. With a selection it starts on the selected rows, and a block on its columns |
 | Shift+arrows, Shift-click, drag | Select cells |
 | Click a row's number | Select the row. Shift-click selects through to another, Cmd-click adds or takes out one |
 | Shift+Space | Select the rows of the selected cells |

@@ -110,6 +110,7 @@ numbered; once you type, it lists what matches. Its commands stay on `:`.
 | `R` | Reload the list |
 | `ga` | Show the Agents tab |
 | `E` | [Export]({% link _guide/browsing-data.md %}#exporting) the table under the cursor: it opens, with the export's float over it |
+| Right-click | A table's or view's menu: open, structure, ddl, copy name, export… |
 | Ctrl+B | Hide the sidebar |
 
 ### The start screen
@@ -159,7 +160,7 @@ With the search open, the matches replace the start lists:
 | Ctrl+C | Cancel the running query |
 | `r`, `s`, `S` | Show the rows, the structure or the DDL, from any of them |
 | `:ddl` | The DDL view of the table under the sidebar's cursor (with the keyboard in the sidebar), or else of the table in front |
-| `E`, `:export` | [Export]({% link _guide/browsing-data.md %}#exporting) the table: the float. Tab moves, Space or Enter chooses, Enter on the save to line exports, Ctrl+R shows the SQL it runs, Esc closes. In its column list Space includes, `K` and `J` move, `a` takes all and `n` none. After a failure `:export` does what its line offers: tries again, shows the SQL after a timeout, or the float for another name |
+| `E`, `:export` | [Export]({% link _guide/browsing-data.md %}#exporting) the table: the float. With a selection it starts on the selected rows, and a block on its columns. Tab moves, Space or Enter chooses, Enter on the save to line exports, Ctrl+R shows the SQL it runs, Esc closes. In its column list Space includes, `K` and `J` move, `a` takes all and `n` none. After a failure `:export` does what its line offers: tries again, shows the SQL after a timeout, or the float for another name. A right-click on the rows offers export selection… too |
 | `:export json` | The float, in that format: `csv`, `tsv`, `json`, `jsonl`, `sql` or `md` |
 | `:w ~/Downloads/reviews.csv` | Export the table now, in the format of the ending, with its filter and sort. A name without a folder goes to your downloads folder. `:w!` replaces a file that is there |
 | `:export cancel` | Stop the running export: nothing is saved |
@@ -258,7 +259,7 @@ cursor is on.
 | `v`, Ctrl+V | Start a selection of cells, or a block, on the cursor's cell. The moves stretch it. The status line reads `-- VISUAL --` or `-- VISUAL BLOCK --` and its size |
 | `V` | Start a selection of rows on the cursor's row. `j`, `k` and the other moves extend it. The status line reads `-- VISUAL LINE --` and counts its rows |
 | `y` | In a selection: copy it, with tabs between the values, and leave it |
-| `gy` | [Copy as]({% link _guide/browsing-data.md %}#copying): the selection, or the cursor's row, in a format. One letter picks: `c` csv, `t` tsv, `j` json, `m` markdown, `s` sql insert, `n` column names. Ctrl+N and Ctrl+P move, Enter picks, Esc closes. In the row panel it copies the row, but not a new one |
+| `gy` | [Copy as]({% link _guide/browsing-data.md %}#copying): the selection, or the cursor's row, in a format. One letter picks: `c` csv, `t` tsv, `j` json, `m` markdown, `s` sql insert, `n` column names. Ctrl+N and Ctrl+P move, Enter picks, Esc closes. In the row panel it copies the row, but not a new one. |
 | `d` | In a selection of rows: delete its rows, or restore them where all are marked. New rows among them are dropped |
 | Esc, or the key that started it | Leave the selection |
 | Enter, Tab, Shift+Tab | Keep the edit and move down, right or left |

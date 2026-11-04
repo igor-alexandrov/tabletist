@@ -222,6 +222,18 @@ front or the one selected in the sidebar. In the Omarchy look press `E`
 on the rows or on a table in the sidebar, or type `:export`, or
 `:export json` to start in that format.
 
+There are other ways in:
+
+- **The sidebar:** right-click a table or view for **Open**,
+  **Structure**, **DDL**, **Copy name** and **Export…**. **Import…** is
+  there for later.
+- **The grid:** right-click a table's rows for **Export selection…**. It
+  starts on the selected rows (on a single cell, its row). A block of
+  cells starts on its own columns too, ticked under **Choose**, so the
+  export holds just what you selected. With a range selected,
+  Cmd/Ctrl+Shift+E, `E` and the header's **Export…** start the same way;
+  with none they start on all the rows matching the filter.
+
 The sheet asks for:
 
 - **Format:** CSV, TSV, JSON, JSON Lines, SQL INSERT or Markdown, with the

@@ -2212,6 +2212,13 @@ impl App {
             }
             Action::OpenExport { tab, format } => self.open_export(tab, format),
             Action::ExportFromTree(tab) => self.export_from_tree(tab),
+            Action::ExportSelection(offer) => self.export_selection(offer),
+            Action::FromTree {
+                tab,
+                object,
+                kind,
+                pick,
+            } => self.tree_pick(tab, object, kind, pick),
             Action::ChangeExport(change) => self.change_export(change),
             Action::CountForExport => self.count_for_export(),
             Action::StartExport => self.start_export(),

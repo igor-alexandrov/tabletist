@@ -21,6 +21,8 @@ pub enum Chosen {
     CopyRows,
     /// A row of Copy as ›.
     As(CopyHow),
+    /// Export selection…: a table's grid only (spec 3b, E3).
+    Export,
 }
 
 impl Chosen {
@@ -30,6 +32,14 @@ impl Chosen {
             Self::Copy => (CopyPick::Selection, CopyHow::Plain),
             Self::CopyRows => (CopyPick::Rows, CopyHow::Plain),
             Self::As(how) => (CopyPick::Selection, how),
+            Self::Export => {
+                return Action::ExportSelection(crate::model::ExportOffer {
+                    tab,
+                    table: None,
+                    format: None,
+                    whole_rows: false,
+                });
+            }
         };
         Action::CopyAs { tab, pick, how }
     }
@@ -268,9 +278,10 @@ fn foot_line(ui: &mut Ui, paint: Paint) {
     widgets::key_hints(ui, (x + width + 14.0, y), &hints, 14.0, &look, &palette);
 }
 
-/// The grid's menu: Copy, Copy as › (its rows, with their letters), and
-/// Copy rows as TSV. Returns what was picked.
-pub fn context_rows(ui: &mut Ui, paint: Paint) -> Option<Chosen> {
+/// The grid's menu: Copy, Copy as › (its rows, with their letters), Copy
+/// rows as TSV, and in a table's grid (`export`) Export selection…. Returns
+/// what was picked.
+pub fn context_rows(ui: &mut Ui, paint: Paint, export: bool) -> Option<Chosen> {
     let Paint {
         locale,
         palette,
@@ -318,6 +329,18 @@ pub fn context_rows(ui: &mut Ui, paint: Paint) -> Option<Chosen> {
     }
     if item.show(ui, &look, &palette).clicked() {
         chosen = Some(Chosen::CopyRows);
+    }
+    if export {
+        menu::separator(ui, &palette);
+        let words = label("Export selection…");
+        let key = crate::ui::keys::written_in(&ctx, &look, Command::Export, Scope::Grid);
+        let mut item = menu::Item::action(&words);
+        if !look.terminal && !key.as_str().is_empty() {
+            item = item.detail(key.as_str());
+        }
+        if item.show(ui, &look, &palette).clicked() {
+            chosen = Some(Chosen::Export);
+        }
     }
     chosen
 }

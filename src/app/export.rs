@@ -109,10 +109,11 @@ impl App {
     }
 
     /// The rows a range selects, saved ones only (a new row is not in the
-    /// database yet), in the grid's order.
-    fn export_selected(object: &ObjectTab) -> Vec<usize> {
+    /// database yet), in the grid's order. With no range, the cursor's row
+    /// where `cursor_row` asks for it (Export selection…), else none.
+    fn export_selected(object: &ObjectTab, cursor_row: bool) -> Vec<usize> {
         let height = object.page().map_or(0, |page| page.rows.len());
-        if object.range.is_none() {
+        if object.range.is_none() && !cursor_row {
             return Vec::new();
         }
         object
@@ -137,6 +138,58 @@ impl App {
 
     /// Opens the sheet over the table in front of `tab`.
     pub(super) fn open_export(&mut self, tab: ConnTabId, format: Option<Format>) {
+        self.open_export_on(tab, format, (false, false));
+    }
+
+    /// Export selection…, and Copy as's Export… (`format` given): the
+    /// sheet on the selection, the cursor's row where no range stands; a
+    /// format given goes to a file, as the clipboard could not take it
+    /// (spec 3b, R1 and R6).
+    pub(super) fn export_selection(&mut self, offer: crate::model::ExportOffer) {
+        if self.dialog.is_some() {
+            return;
+        }
+        let crate::model::ExportOffer {
+            tab,
+            table,
+            format,
+            whole_rows,
+        } = offer;
+        // The table copied, though another came to the front since.
+        if let Some(id) = table {
+            let front = self
+                .workspace(tab)
+                .and_then(Workspace::active_object_tab)
+                .map(|object| object.id);
+            match self
+                .workspace(tab)
+                .and_then(|workspace| workspace.object_tab(id))
+            {
+                Some(_) if front != Some(id) => {
+                    self.apply(crate::model::Action::ActivateTab { tab, id });
+                }
+                Some(_) => {}
+                None => return,
+            }
+        }
+        self.open_export_on(tab, format, (true, whole_rows));
+        if format.is_some()
+            && let Some(Dialog::Export(sheet)) = &mut self.dialog
+        {
+            sheet.destination = DestinationChoice::File;
+        }
+    }
+
+    /// Opens the sheet over the table in front of `tab`; on its selection
+    /// alone (the cursor's row with no range) where `selection` asks for
+    /// it. A block of cells opens Choose with its columns, unless
+    /// `whole_rows` asks for every column (spec 3b, R1).
+    fn open_export_on(
+        &mut self,
+        tab: ConnTabId,
+        format: Option<Format>,
+        (selection, whole_rows): (bool, bool),
+    ) {
         if self.dialog.is_some() || self.export_runs() {
             return;
         }
@@ -146,8 +199,17 @@ impl App {
         };
         // The format of the last export, or CSV.
         let format = format.or(self.export_format).unwrap_or(Format::Csv);
-        let columns = Self::export_columns(object);
-        let rows = crate::export_sheet::first_rows(Self::export_selected(object).len());
+        let mut columns = Self::export_columns(object);
+        let block = match object.range {
+            Some(crate::selection::Range::Cells { .. }) if !whole_rows => object.selected_cols(),
+            _ => None,
+        };
+        let choose = block.is_some_and(|(first, last)| first > 0 || last + 1 < columns.len());
+        if choose && let Some(block) = block {
+            columns = crate::export_sheet::block_columns(columns, block);
+        }
+        let selected = Self::export_selected(object, selection).len();
+        let rows = crate::export_sheet::first_rows(selected);
         let destination = match self.export_clipboard.contains(&format) {
             true => DestinationChoice::Clipboard,
             false => DestinationChoice::File,
@@ -165,7 +227,7 @@ impl App {
             format,
             options: self.export.clone(),
             rows,
-            choose: false,
+            choose,
             columns,
             column: 0,
             destination,
@@ -173,6 +235,7 @@ impl App {
             exists: false,
             review: false,
             asking: false,
+            cursor_row: selection,
         };
         // Clipboard only where the rows fit.
         if sheet.destination == DestinationChoice::Clipboard
@@ -199,10 +262,59 @@ impl App {
         let Some((object, kind)) = under else {
             return;
         };
+        self.export_object(tab, object, kind);
+    }
+
+    /// Opens `object` as Enter opens it, then its sheet over it: the tree's
+    /// `E` and menu, quick open's picked table.
+    pub(super) fn export_object(
+        &mut self,
+        tab: ConnTabId,
+        object: tabletist_db::ObjectRef,
+        kind: tabletist_db::ObjectKind,
+    ) {
+        if self.dialog.is_some() || self.export_runs() {
+            return;
+        }
         self.open_object(tab, object, kind, true);
         // Its columns come with its first page: the sheet takes them then
         // (`tick_export`).
         self.open_export(tab, None);
+    }
+
+    /// A row of the sidebar's menu on a table or view (spec 3b, R5).
+    pub(super) fn tree_pick(
+        &mut self,
+        tab: ConnTabId,
+        object: tabletist_db::ObjectRef,
+        kind: tabletist_db::ObjectKind,
+        pick: crate::model::TreePick,
+    ) {
+        use crate::model::{ObjectView, TreePick};
+        let view = match pick {
+            TreePick::Export => return self.export_object(tab, object, kind),
+            TreePick::CopyName => {
+                let said = gettext(self.locale, "Copied {name}").replace("{name}", &object.name);
+                self.said = Some(self.look.label(&said));
+                self.to_clipboard = Some(object.name);
+                return;
+            }
+            TreePick::Open => None,
+            TreePick::Structure => Some(ObjectView::Structure),
+            TreePick::Ddl => Some(ObjectView::Ddl),
+        };
+        self.open_object(tab, object, kind, true);
+        let front = self
+            .workspace(tab)
+            .and_then(Workspace::active_object_tab)
+            .map(|object| object.id);
+        if let (Some(view), Some(object_tab)) = (view, front) {
+            self.apply(crate::model::Action::SetView {
+                tab,
+                object_tab,
+                view,
+            });
+        }
     }
 
     pub(super) fn change_export(&mut self, change: ExportChange) {
@@ -262,7 +374,7 @@ impl App {
         };
         let page_rows = object.page().map_or(0, |page| page.rows.len()) as u64;
         let first = query.offset + u64::from(page_rows > 0);
-        let selected = Self::export_selected(object).len();
+        let selected = Self::export_selected(object, sheet.cursor_row).len();
         let rows = match sheet.rows {
             RowsChoice::Selected => Some(Count {
                 rows: selected as u64,
@@ -396,7 +508,7 @@ impl App {
                     .filter_map(|name| page.columns.iter().position(|column| column.name == *name))
                     .collect();
                 let picked: Vec<usize> = match sheet.rows {
-                    RowsChoice::Selected => Self::export_selected(object),
+                    RowsChoice::Selected => Self::export_selected(object, sheet.cursor_row),
                     _ => (0..page.rows.len()).collect(),
                 };
                 ExportRows::Loaded {
@@ -631,6 +743,7 @@ impl App {
             exists: replace,
             review: false,
             asking: false,
+            cursor_row: false,
         };
         self.run_export(&sheet, Destination::File { path, replace });
     }
