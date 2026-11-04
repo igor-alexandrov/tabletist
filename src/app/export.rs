@@ -828,11 +828,17 @@ impl App {
             .map(|column| column.name.clone())
             .collect();
         let query = Self::export_query(sheet, object);
-        Some(
-            dialect
-                .shown_export(&query, &key, &[], &names)
-                .expect("with no classes named, no filter value is parsed"),
-        )
+        // The classes the streamed statement is built with, so what is
+        // reviewed is what runs (BigQuery writes a number or a boolean
+        // bare). None where a filter's value is none of its column's
+        // class: the run names it then.
+        let classes = object
+            .structure
+            .value
+            .as_ref()
+            .map(|structure| structure.classes(dialect))
+            .unwrap_or_default();
+        dialect.shown_export(&query, &key, &classes, &names).ok()
     }
 
     /// The columns agents see masked on `workspace`'s connection: the

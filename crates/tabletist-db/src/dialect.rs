@@ -444,6 +444,16 @@ impl Dialect {
                     }
                 }
             }
+            // GoogleSQL compares BYTES with bytes alone: no STRING of
+            // theirs. A value that reads as none is refused.
+            (Self::BigQuery, Some(ColumnClass::Binary)) => {
+                return match bytes_from_text(typed) {
+                    Some(bytes) => Ok(Some(self.bytes_literal(&bytes))),
+                    None => Err(Error::query(format!(
+                        "{column}: not bytes (a UUID or 0x hex)"
+                    ))),
+                };
+            }
             (Self::BigQuery, Some(_)) | (Self::BigQuery, None) => return Ok(None),
             (Self::Postgres | Self::MySql | Self::Sqlite, _) => return Ok(None),
         };
@@ -461,17 +471,18 @@ impl Dialect {
         class: Option<&ColumnClass>,
         params: &mut Binds,
     ) -> Result<Vec<String>> {
+        // Where the class decides the value's form (BigQuery's), the text
+        // is not tried too: its BYTES compare with no STRING.
+        if let Some(bare) = self.comparison_operand(column, class, value)? {
+            return Ok(vec![bare]);
+        }
         let mut operands = Vec::with_capacity(2);
         if class == Some(&ColumnClass::Binary)
             && let Some(bytes) = bytes_from_text(value)
         {
             operands.push(self.bind_bytes(params, bytes));
         }
-        if let Some(bare) = self.comparison_operand(column, class, value)? {
-            operands.push(bare);
-        } else {
-            operands.push(self.bind(params, value.to_owned()));
-        }
+        operands.push(self.bind(params, value.to_owned()));
         Ok(operands)
     }
 
@@ -1632,6 +1643,7 @@ mod tests {
             ),
             ("paid".to_owned(), ColumnClass::Boolean),
             ("score".to_owned(), ColumnClass::Float),
+            ("hash".to_owned(), ColumnClass::Binary),
         ];
         let sql = Dialect::BigQuery
             .select_rows(&q, &["id".into()], &classes)
@@ -1673,6 +1685,18 @@ mod tests {
                 .expect_err("{column} {value}");
             assert!(error.to_string().contains(column), "{error}");
         }
+        // A BYTES column compares with the bytes alone: no STRING operand
+        // joins them (GoogleSQL compares BYTES with no STRING).
+        let bytes = filtered("hash", FilterOp::Eq, "0x0a0b");
+        let sql = Dialect::BigQuery
+            .select_rows(&bytes, &[], &classes)
+            .expect("a test's filters read");
+        assert!(sql.text.contains(r"`hash` = b'\x0a\x0b'"), "{}", sql.text);
+        let text = filtered("hash", FilterOp::Eq, "bob");
+        let error = Dialect::BigQuery
+            .select_rows(&text, &[], &classes)
+            .expect_err("a BYTES column compares with no text");
+        assert!(error.to_string().contains("hash"), "{error}");
     }
 
     #[test]
