@@ -101,15 +101,16 @@ pub fn show(ctx: &egui::Context, paint: Paint, dialog: bool) -> Option<ExportOff
     }
     let text = said(ctx)?;
     let offer = kept(ctx).and_then(|said| said.offer);
+    let offering = offer.is_some();
     let (look, palette) = (&paint.look, &paint.palette);
     let mut clicked = None;
     let shown = Area::new(id())
-        .order(match offer {
-            Some(_) => Order::Foreground,
-            None => Order::Tooltip,
+        .order(match offering {
+            true => Order::Foreground,
+            false => Order::Tooltip,
         })
         .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -LIFT))
-        .interactable(offer.is_some())
+        .interactable(offering)
         .show(ctx, |ui| {
             Frame::new()
                 .fill(palette.text)
@@ -150,7 +151,7 @@ pub fn show(ctx: &egui::Context, paint: Paint, dialog: bool) -> Option<ExportOff
     // Under the pointer or with the keyboard, the offer waits; once
     // asked, it goes.
     let waits = shown.response.contains_pointer() || shown.inner || clicked.is_some();
-    if offer.is_some()
+    if offering
         && waits
         && let Some(mut said) = kept(ctx)
     {

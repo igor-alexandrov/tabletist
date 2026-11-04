@@ -38,6 +38,7 @@ impl Chosen {
                     table: None,
                     format: None,
                     whole_rows: false,
+                    copied: None,
                 });
             }
         };

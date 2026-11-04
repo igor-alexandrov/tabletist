@@ -3768,13 +3768,16 @@ pub struct SchemaNode {
 /// in front of `tab`, on its selection (the cursor's row where no range
 /// stands), every column where `whole_rows` (a refused Copy rows as TSV),
 /// else a block's own. A format given is the copy's, to a file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportOffer {
     pub tab: ConnTabId,
     /// The table's tab the copy was of: it comes to the front first.
     pub table: Option<TabId>,
     pub format: Option<crate::export::Format>,
     pub whole_rows: bool,
+    /// The cursor and the range the copy took: a selection moved since is
+    /// put back, so the sheet exports what was copied.
+    pub copied: Option<(CellPos, Option<Range>)>,
 }
 
 /// What a row of the sidebar's menu on a table or view does.

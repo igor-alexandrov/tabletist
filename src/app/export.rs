@@ -160,11 +160,13 @@ impl App {
             crate::model::CopyHow::As(format) => format,
             crate::model::CopyHow::Plain | crate::model::CopyHow::ColumnNames => Format::Tsv,
         };
+        let copied = object.and_then(|object| Some((object.selection?, object.range.clone())));
         self.offer = Some(crate::model::ExportOffer {
             tab,
             table: Some(table),
             format: Some(format),
             whole_rows: pick == crate::model::CopyPick::Rows,
+            copied,
         });
         if self.look.terminal {
             let key = self.keymap.key_in(
@@ -198,6 +200,7 @@ impl App {
             table,
             format,
             whole_rows,
+            copied,
         } = offer;
         // The table copied, though another came to the front since.
         if let Some(id) = table {
@@ -214,6 +217,13 @@ impl App {
                 }
                 Some(_) => {}
                 None => return,
+            }
+            // What was copied, though the selection moved since.
+            if let Some((cursor, range)) = copied
+                && let Some(object) = self.object_tab_mut(tab, id)
+            {
+                object.set_cursor(Some(cursor), crate::model::Reach::End);
+                object.range = range;
             }
         }
         self.open_export_on(tab, format, (true, whole_rows));
@@ -253,6 +263,27 @@ impl App {
             columns = crate::export_sheet::block_columns(columns, block);
         }
         let selected = Self::export_selected(object, selection).len();
+        // Export selection… on new rows alone: they are not in the
+        // database yet, and all of the table is not what was asked for.
+        if selection && selected == 0 {
+            let save = self.keymap.key_in(
+                self.layout(),
+                crate::keymap::Command::SaveChanges,
+                crate::keymap::Scope::Grid,
+            );
+            let words = match self.look.terminal {
+                true => gettext(
+                    self.locale,
+                    "new rows aren't exported · :w first to include them",
+                ),
+                false => gettext(
+                    self.locale,
+                    "New rows aren't exported. Export reads what is saved in the database. Save first {key}",
+                ),
+            };
+            self.said = Some(words.replace("{key}", save.as_str()));
+            return;
+        }
         let rows = crate::export_sheet::first_rows(selected);
         let destination = match self.export_clipboard.contains(&format) {
             true => DestinationChoice::Clipboard,

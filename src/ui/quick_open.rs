@@ -272,6 +272,7 @@ pub fn show(
                 no_match(
                     ui,
                     (&open.query, open.everywhere, commands_query.as_deref()),
+                    open.exporting,
                     &keys,
                     &skin,
                     &mut actions,
@@ -1105,12 +1106,13 @@ fn full_on_hover(response: &egui::Response, laid: &crate::typography::Laid, name
 }
 
 /// What the panel says when nothing matches: where it looked, and in this
-/// connection's scope a way to look in every open one. Where the commands
-/// alone are listed (`>`, `commands_query` what follows it), that no
-/// command matches.
+/// connection's scope a way to look in every open one (not while picking
+/// a table to export). Where the commands alone are listed (`>`,
+/// `commands_query` what follows it), that no command matches.
 fn no_match(
     ui: &mut egui::Ui,
     (query, everywhere, commands_query): (&str, bool, Option<&str>),
+    picking: bool,
     keys: &Keys,
     skin: &Skin<'_>,
     actions: &mut Vec<Action>,
@@ -1142,6 +1144,8 @@ fn no_match(
         .replace("{place}", &place);
     let said = look.label(&said);
     let link = gettext(locale, "Search all open connections");
+    // Export a table… picks one of this connection's: no other to search.
+    let widen = !everywhere && !picking;
     let height = if look.terminal { 52.0 } else { 96.0 };
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
     if look.terminal {
@@ -1149,7 +1153,7 @@ fn no_match(
         let x = rect.left() + 10.0;
         let text = Text::one(look, TextRole::OBody, &said, palette.secondary);
         let width = widgets::paint_label(ui, x, y, text);
-        if !everywhere {
+        if widen {
             let key = Text::one(look, TextRole::OBody, keys.scope.as_str(), palette.accent);
             let x = x + width + 24.0;
             let key_width = widgets::paint_text(ui, x, y, key);
@@ -1164,7 +1168,7 @@ fn no_match(
     let y = rect.top() + 36.0;
     laid.paint_left(ui.painter(), rect.center().x - laid.width() / 2.0, y);
     widgets::announce(ui, rect, &said);
-    if !everywhere {
+    if widen {
         let words = format!("{link} {}", keys.scope.as_str());
         let words = words.trim();
         let button = ButtonSpec::new(words).link();

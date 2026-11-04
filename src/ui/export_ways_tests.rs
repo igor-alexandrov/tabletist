@@ -777,6 +777,17 @@ fn the_clipboards_failure_offers_the_file() {
 
 /// Runs an export of `book_covers` to a file and has it end.
 fn export_ends(harness: &mut Harness, tab: ConnTabId, state: crate::backend::export::ExportState) {
+    export_ends_unseen(harness, tab, state);
+    harness.settle();
+}
+
+/// The export's end reaches the app, and no frame has drawn it yet: what
+/// the app asks of the window is still in `window_asks`.
+fn export_ends_unseen(
+    harness: &mut Harness,
+    tab: ConnTabId,
+    state: crate::backend::export::ExportState,
+) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("book_covers.csv");
     harness.app.apply(Action::ExportTo {
@@ -792,7 +803,6 @@ fn export_ends(harness: &mut Harness, tab: ConnTabId, state: crate::backend::exp
             job,
             state,
         }));
-    harness.settle();
 }
 
 /// The notices sent to the backend so far.
@@ -828,7 +838,8 @@ fn a_finished_export_behind_other_windows_is_told() {
     let (mut harness, tab, _id) = bookshop_in(Look::omarchy());
     harness.app.settings.group_digits = Some(true);
     harness.window_focus(false);
-    export_ends(&mut harness, tab, done());
+    // The frame sends the window's asks on and empties the list.
+    export_ends_unseen(&mut harness, tab, done());
     assert_eq!(
         notices(&harness),
         [(
@@ -1252,4 +1263,155 @@ fn a_done_said_twice_is_told_once() {
             }));
     }
     assert_eq!(notices(&harness).len(), 1);
+}
+
+/// R3: where every recent row is a SQL editor, Export a table… lists the
+/// largest tables, as the start screen does with nothing recent.
+#[test]
+fn a_picker_with_only_sql_recents_lists_the_largest_tables() {
+    let (mut harness, tab, _id) = bookshop_in(Look::macos());
+    let conn = harness.app.workspace(tab).unwrap().conn_id.0.clone();
+    harness.app.recents.clear(&conn);
+    harness
+        .app
+        .workspace_mut(tab)
+        .unwrap()
+        .recent_sql
+        .push(crate::model::ClosedSql {
+            number: 1,
+            text: "select 1".into(),
+            mode: crate::model::RunMode::default(),
+            opened: 0,
+        });
+    assert!(
+        harness
+            .app
+            .start_recents(tab)
+            .iter()
+            .all(|recent| matches!(recent, crate::model::StartRecent::Sql { .. })),
+        "SQL editors alone are recent"
+    );
+    harness.app.apply(Action::PickTableToExport(tab));
+    harness.settle();
+    let listed = picker_items(&harness);
+    assert!(
+        !listed.is_empty() && listed.iter().all(Option::is_some),
+        "{listed:?}"
+    );
+    let Some(Dialog::QuickOpen(open)) = &harness.app.dialog else {
+        panic!("quick open");
+    };
+    let list = harness.app.quick_open_list(open);
+    assert!(
+        list.rows.iter().any(|row| matches!(
+            row,
+            crate::app::QuickRow::Heading(crate::app::QuickHeading::Largest)
+        )),
+        "under the largest's heading"
+    );
+}
+
+/// R3: nothing matching in Export a table… offers no other connection to
+/// search: the picker keeps to this one.
+#[test]
+fn a_picker_with_no_match_offers_no_other_connection() {
+    for look in [Look::macos(), Look::omarchy()] {
+        let (mut harness, tab, _id) = bookshop_in(look);
+        harness.app.apply(Action::PickTableToExport(tab));
+        harness.settle();
+        harness.frame(vec![egui::Event::Text("zzzz".into())]);
+        harness.settle();
+        assert!(picker_items(&harness).is_empty());
+        assert!(
+            harness
+                .painted
+                .iter()
+                .any(|text| text.0.to_lowercase().contains("no objects match")),
+            "{}: {:?}",
+            look.name,
+            harness.painted
+        );
+        assert!(
+            !harness.painted.iter().any(|text| text
+                .0
+                .to_lowercase()
+                .contains("search all open connections")),
+            "{}: {:?}",
+            look.name,
+            harness.painted
+        );
+        harness.press(Key::Escape, Modifiers::NONE);
+        quick_open(&mut harness, "zzzz");
+        assert!(
+            harness.painted.iter().any(|text| text
+                .0
+                .to_lowercase()
+                .contains("search all open connections")),
+            "{}: quick open itself still offers it",
+            look.name
+        );
+    }
+}
+
+/// R1: Export selection… on new rows alone says they are not saved and
+/// opens no sheet: all of the table is not what was asked for.
+#[test]
+fn export_selection_on_new_rows_alone_opens_no_sheet() {
+    for (look, words) in [
+        (
+            Look::macos(),
+            "New rows aren't exported. Export reads what is saved in the database. Save first ⌘S",
+        ),
+        (
+            Look::omarchy(),
+            "new rows aren't exported · :w first to include them",
+        ),
+    ] {
+        let (mut harness, tab, id) = bookshop_in(look);
+        let added = super::insert_audit_tests::add(&mut harness, tab, id);
+        let row = crate::edit::new_row(added);
+        harness.app.apply(Action::RowNumberClicked {
+            tab,
+            id,
+            row,
+            click: crate::selection::RowClick::Only,
+        });
+        harness.settle();
+        harness
+            .app
+            .apply(Action::ExportSelection(crate::model::ExportOffer {
+                tab,
+                table: None,
+                format: None,
+                whole_rows: false,
+                copied: None,
+            }));
+        // Before a frame hands the words on.
+        assert_eq!(harness.app.said.as_deref(), Some(words), "{}", look.name);
+        harness.settle();
+        assert!(sheet(&harness).is_none(), "{}: no sheet", look.name);
+    }
+}
+
+/// R6: the offer exports what was copied, though the selection moved
+/// since the copy.
+#[test]
+fn the_offer_exports_what_was_copied_after_the_selection_moved() {
+    let (mut harness, tab, id) = too_large_in(Look::omarchy());
+    copy_as_markdown(&mut harness, tab);
+    let offer = crate::ui::toast::offered(&harness.ctx).expect("an offer");
+    let copied = {
+        let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+        (object.selection, object.range.clone())
+    };
+    select(&mut harness, tab, id, (0, 1));
+    let moved = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    assert_ne!((moved.selection, moved.range.clone()), copied, "moved");
+    harness.app.apply(Action::ExportSelection(offer));
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    assert_eq!((object.selection, object.range.clone()), copied);
+    let open = sheet(&harness).expect("the sheet");
+    assert_eq!(open.rows, RowsChoice::Selected);
+    assert!(!open.choose, "the copy's block was every column");
+    assert_eq!(harness.app.export_facts().unwrap().selected, 2);
 }

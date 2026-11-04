@@ -308,13 +308,19 @@ impl App {
     fn start_rows(&self, tab: ConnTabId) -> (QuickHeading, Vec<StartRow>) {
         let recents = self.start_recents(tab);
         if recents.is_empty() {
-            let largest = self.start_largest(tab).into_iter();
-            let rows = largest.map(|(object, estimate)| StartRow::Largest(object, estimate));
-            (QuickHeading::Largest, rows.collect())
+            self.start_largest_rows(tab)
         } else {
             let rows = recents.into_iter().map(StartRow::Recent);
             (QuickHeading::Recent, rows.collect())
         }
+    }
+
+    /// The largest tables, as the start screen lists them with nothing
+    /// recent.
+    fn start_largest_rows(&self, tab: ConnTabId) -> (QuickHeading, Vec<StartRow>) {
+        let largest = self.start_largest(tab).into_iter();
+        let rows = largest.map(|(object, estimate)| StartRow::Largest(object, estimate));
+        (QuickHeading::Largest, rows.collect())
     }
 
     /// The windows quick open searches: its own, then where every open
@@ -407,10 +413,14 @@ impl App {
         };
         for tab in windows {
             if query.is_empty() {
-                let (heading, mut rows) = self.start_rows(tab);
-                // Export a table… lists tables and views alone.
+                let (mut heading, mut rows) = self.start_rows(tab);
+                // Export a table… lists tables and views alone: the
+                // largest where every recent one is a SQL editor.
                 if open.exporting {
                     rows.retain(|row| !matches!(row, StartRow::Recent(StartRecent::Sql { .. })));
+                    if rows.is_empty() {
+                        (heading, rows) = self.start_largest_rows(tab);
+                    }
                 }
                 if rows.is_empty() {
                     continue;

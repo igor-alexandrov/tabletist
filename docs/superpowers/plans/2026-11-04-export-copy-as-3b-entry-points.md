@@ -74,6 +74,9 @@ To put to Igor in the pull request (filled in as the code settles them):
 | B17 | R9 | ⇥ goes round the buttons of the toast that has the keyboard only; with the export's toast and the offer both up, ⌘⇧' goes to the export's; a ⌘⇧' whose toast went in that frame asks nothing later; Esc with nothing to give back takes the keyboard off the toast; when the progress toast becomes the done toast the keyboard is not moved | One toast at a time |
 | B18 | E5 | The notice's app name and summary are "Tabletist", its body "Exported 31,400 rows to reviews.csv"; no action and no setting; `:w` exports are told; told once per end | The board's words |
 | B19 | E4 | The pill is a widget of its own over its frame | A frame's response cannot keep the keyboard |
+| B20 | R1 | Export selection… on new rows alone opens no sheet and says "New rows aren't exported. Export reads what is saved in the database. Save first ⌘S" (Omarchy: "new rows aren't exported · :w first to include them") | A sheet on All matching rows, or on Selected rows with none |
+| B21 | R6 | The offer keeps the cursor and the range the copy took; Export… (or Omarchy `E`) puts them back on the grid if the selection moved since | The selection as it is when Export… is clicked |
+| B22 | R3 | Where every recent row is a SQL editor, Export a table… lists the largest tables under their heading, as the start screen does with nothing recent; with no match it offers no other connection to search | An empty list |
 
 ## Files
 
@@ -180,7 +183,7 @@ with `CARGO_TARGET_DIR` the worktree's `target/`. No server test changes.
 ## After Task 3
 
 Push the branch and open the pull request: what each way in does, the
-keys added, E1–E6 and R1–R9 as approved, and B1–B19 from the table
+keys added, E1–E6 and R1–R9 as approved, and B1–B22 from the table
 above. Checked by hand only: ⌘⇧' as macOS and Windows send it (the tests
 send the bare key).
 No screenshot goes to GitHub unblurred.
