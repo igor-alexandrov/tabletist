@@ -349,6 +349,21 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
+    /// Open the Copy as menu on the grid in front: over its selection, or
+    /// the row panel's row.
+    OpenCopyAs {
+        tab: ConnTabId,
+        pick: CopyPick,
+    },
+    /// Move the Copy as menu's lit row.
+    MoveInCopyAs(isize),
+    /// Put `pick` of the grid in front on the clipboard, as `how` says,
+    /// and say so. A visual selection is left, as `y` leaves it.
+    CopyAs {
+        tab: ConnTabId,
+        pick: CopyPick,
+        how: CopyHow,
+    },
     /// Open the editor on a cell of a table's grid, or say why it cannot
     /// be edited.
     EditCell {
@@ -2758,6 +2773,78 @@ pub enum Dialog {
     Conflict(Box<ConflictPrompt>),
     /// What agents may do on a connection, in the terminal look's box.
     AgentAccess(Box<AgentAccessBox>),
+    /// The Copy as menu: ⌥⌘C, `gy`, or the row panel's Copy row ▾.
+    CopyAs(Box<CopyAsMenu>),
+}
+
+/// What a copy takes of a grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyPick {
+    /// The selection: a rectangle's cells, or whole rows.
+    Selection,
+    /// Every column of the rows the selection covers.
+    Rows,
+    /// The cursor's row alone, whole: `yy`, and the row panel's.
+    CursorRow,
+}
+
+/// How a copy writes what it takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyHow {
+    /// As ⌘C: TSV with its remembered options and no header row, and one
+    /// cell alone as its text.
+    Plain,
+    /// In a format, with its remembered options.
+    As(crate::export::Format),
+    /// The columns' names, for a `SELECT` list.
+    ColumnNames,
+}
+
+impl CopyHow {
+    /// The rows the Copy as menu offers over `pick`: the row panel's row
+    /// takes no column names, and its TSV is as ⇧⌘C copies it.
+    pub fn menu(pick: CopyPick) -> Vec<(CopyHow, crate::keymap::Command)> {
+        match pick {
+            CopyPick::CursorRow => Self::MENU[..5]
+                .iter()
+                .map(|(how, letter)| (how.of_row(), *letter))
+                .collect(),
+            CopyPick::Selection | CopyPick::Rows => Self::MENU.to_vec(),
+        }
+    }
+
+    /// The copy of a row whole that this is: TSV with no header row, as
+    /// ⇧⌘C copies it.
+    pub fn of_row(self) -> CopyHow {
+        match self {
+            CopyHow::As(crate::export::Format::Tsv) => CopyHow::Plain,
+            other => other,
+        }
+    }
+
+    /// The Copy as menu's rows, in order, with their letters' commands.
+    pub const MENU: [(CopyHow, crate::keymap::Command); 6] = {
+        use crate::export::Format;
+        use crate::keymap::Command;
+        [
+            (CopyHow::As(Format::Csv), Command::CopyAsCsv),
+            (CopyHow::As(Format::Tsv), Command::CopyAsTsv),
+            (CopyHow::As(Format::Json), Command::CopyAsJson),
+            (CopyHow::As(Format::Markdown), Command::CopyAsMarkdown),
+            (CopyHow::As(Format::SqlInsert), Command::CopyAsSql),
+            (CopyHow::ColumnNames, Command::CopyColumnNames),
+        ]
+    };
+}
+
+/// The Copy as menu, while it is open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopyAsMenu {
+    /// The connection tab whose grid it copies from.
+    pub tab: ConnTabId,
+    pub pick: CopyPick,
+    /// The row the keyboard is on, of [`CopyHow::MENU`].
+    pub lit: usize,
 }
 
 /// The terminal look's box of what agents may do on a saved connection.

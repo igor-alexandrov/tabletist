@@ -189,6 +189,7 @@ keyboard.
 | Cmd+F | Filter bar |
 | Cmd+C | Copy the selection, or the cell |
 | Cmd+Shift+C | Copy the selected rows |
+| Cmd+Option+C | [Copy as]({% link _guide/browsing-data.md %}#copying): the selection in a format, one letter each |
 | Shift+arrows, Shift-click, drag | Select cells |
 | Click a row's number | Select the row. Shift-click selects through to another, Cmd-click adds or takes out one |
 | Shift+Space | Select the rows of the selected cells |

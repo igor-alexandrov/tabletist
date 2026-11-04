@@ -152,6 +152,15 @@ pub struct App {
     /// id, as the file had them: a newer version may have written them,
     /// and they are written back with the others.
     table_lists_unread: std::collections::BTreeMap<String, serde_json::Value>,
+    /// The options last chosen for each format of an export and of Copy
+    /// as, from export_options.json.
+    pub export: crate::export::Options,
+    /// What a copy the app made puts on the clipboard: the frame takes it
+    /// there (`ui::show`), as it has the clipboard.
+    pub to_clipboard: Option<String>,
+    /// What the toast, or the terminal look's status line, says next: the
+    /// frame says it (`ui::show`).
+    pub said: Option<String>,
     /// What was open at the last quit, and each connection's tables as
     /// its window last had them, from session.json.
     pub session: crate::session::Session,
@@ -386,6 +395,7 @@ impl App {
         };
         let (table_lists, table_lists_unread) = load_table_lists(&dirs.table_lists_file());
         let session = crate::session::Session::load(&dirs.session_file());
+        let export = crate::export::Options::load(&dirs.export_options_file());
         let recents = crate::recents::Recents::load(&dirs.recents_file());
         let updates = crate::update::Updates {
             seen: crate::update::Seen::load(&dirs.updates_file()),
@@ -420,6 +430,9 @@ impl App {
             labels,
             table_lists,
             table_lists_unread,
+            export,
+            to_clipboard: None,
+            said: None,
             session,
             writes_session,
             recents,
@@ -2170,6 +2183,52 @@ impl App {
                     && sql.visual_mode().is_some()
                 {
                     sql.range = None;
+                }
+            }
+            Action::OpenCopyAs { tab, pick } => {
+                // Over a grid with a cell to copy, and no other dialog.
+                if self.dialog.is_none() && self.copy_in(tab, pick, How::ColumnNames).is_some() {
+                    self.dialog = Some(Dialog::CopyAs(Box::new(crate::model::CopyAsMenu {
+                        tab,
+                        pick,
+                        lit: 0,
+                    })));
+                }
+            }
+            Action::MoveInCopyAs(step) => {
+                if let Some(Dialog::CopyAs(menu)) = &mut self.dialog {
+                    let last = crate::model::CopyHow::menu(menu.pick).len() - 1;
+                    menu.lit = menu.lit.saturating_add_signed(step).min(last);
+                }
+            }
+            Action::CopyAs { tab, pick, how } => {
+                if let Some(copying) = self.copy_in(tab, pick, how) {
+                    // The grid menu's Copy and Copy rows as TSV are ⌘C's
+                    // and ⇧⌘C's, which say nothing of a copy made.
+                    let silent = how == How::Plain && pick != Pick::CursorRow;
+                    let copied = matches!(copying.copied, crate::export::Copied::Text { .. });
+                    if let crate::export::Copied::Text { ref text, .. } = copying.copied {
+                        self.to_clipboard = Some(text.clone());
+                    }
+                    if !(copied && silent) {
+                        self.said = Some(copy_said(self.locale, &copying, how));
+                        // What the copy came to is what the terminal's
+                        // line says next, not why the last save was not
+                        // made.
+                        if let Some(workspace) = self.workspace_mut(tab) {
+                            workspace.save_refused = false;
+                            workspace.review_refused = false;
+                        }
+                    }
+                }
+                // As `y` leaves a visual selection.
+                let workspace = self.workspace(tab);
+                let shown = workspace.and_then(|workspace| {
+                    let object = workspace.active_object_tab().map(|object| object.id);
+                    object.or_else(|| workspace.active_sql_tab().map(|sql| sql.id))
+                });
+                if let Some(id) = shown {
+                    self.apply(Action::LeaveVisual { tab, id });
                 }
             }
             Action::ToggleRowPanel(tab) => {
@@ -5036,6 +5095,14 @@ impl App {
         });
     }
 
+    /// Saves the options last chosen for each format, on the backend.
+    pub fn save_export_options(&mut self) {
+        self.backend.send(Command::Save {
+            path: self.dirs.export_options_file(),
+            file: StateFile::ExportOptions(self.export.to_file()),
+        });
+    }
+
     /// Saves what was opened lately on each connection, on the backend.
     fn save_recents(&mut self) {
         self.backend.send(Command::Save {
@@ -7786,47 +7853,104 @@ impl App {
     /// What a copy takes of the active tab's grid, a table's or a SQL
     /// result's: with a range, the cells it covers as TSV, a line for each
     /// row; with none, or one cell held by `v`, the cursor's cell's text as
-    /// it is. `whole_row` takes every
-    /// column of the rows the selection covers. What is pending reads as
-    /// its new value, and a new row's cell nothing is set in as empty.
+    /// it is. `whole_row` takes every column of the rows the selection
+    /// covers. What is pending reads as its new value, and a new row's cell
+    /// nothing is set in as a NULL. `None` where nothing is copied: no
+    /// cell, or more than the clipboard takes ([`copy_said`] says which).
     pub fn copy_text(&self, whole_row: bool) -> Option<String> {
-        self.copy_of(whole_row, false)
+        let pick = if whole_row {
+            Pick::Rows
+        } else {
+            Pick::Selection
+        };
+        self.copy(pick, How::Plain)?.text()
     }
 
     /// The cursor's row alone, whole, as `yy` yanks it: a range that
     /// stands is not what it puts.
     pub fn yank_text(&self) -> Option<String> {
-        self.copy_of(true, true)
+        self.copy(Pick::CursorRow, How::Plain)?.text()
     }
 
-    fn copy_of(&self, whole_row: bool, cursor_alone: bool) -> Option<String> {
-        use tabletist_db::Value;
-        let workspace = self.workspace(self.active_tab_id())?;
+    /// A copy of `pick` in the active tab's grid, a table's or a SQL
+    /// result's, `how` says: as ⌘C copies it (TSV with its remembered
+    /// options and no header row), in a format with its remembered
+    /// options, or the columns' names. A copy in a format of no range is
+    /// the cursor's row whole. `None` where the grid has no cell to copy.
+    pub fn copy(&self, pick: Pick, how: How) -> Option<Copying> {
+        self.copy_in(self.active_tab_id(), pick, how)
+    }
+
+    /// [`App::copy`], of the grid in front in `tab`.
+    pub fn copy_in(&self, tab: ConnTabId, pick: Pick, how: How) -> Option<Copying> {
+        let workspace = self.workspace(tab)?;
+        let dialect = workspace.driver.dialect();
         if let Some(object) = workspace.active_object_tab() {
             let mut selected = object.selected()?;
-            if cursor_alone {
+            if pick == Pick::CursorRow {
                 selected.range = None;
             }
             let page = object.page()?;
-            // The cursor's cell or row alone is copied from the page's
-            // rows: a new row is none of them.
-            if selected.range.is_none() && crate::edit::new_id(selected.cursor.row).is_some() {
+            // As ⌘C, the cursor's cell or row alone is copied from the
+            // page's rows: a new row is none of them. A copy in a format
+            // takes a new row too, what is not set in it NULL, and in SQL
+            // INSERT its column's default, as a save leaves it.
+            let new = crate::edit::new_id(selected.cursor.row).is_some();
+            if how == How::Plain && selected.range.is_none() && new {
                 return None;
             }
-            let value = |row: usize, col: usize| match object.edits.cells.get(&(row, col)) {
-                Some(pending) => Some(crate::edit::shown_value(&pending.new)),
-                None => page.rows.get(row)?.get(col).cloned(),
+            let table = crate::edit::Table::of(workspace, object);
+            // What is pending reads as what it shows; a pending DEFAULT or
+            // time of the save is written in SQL INSERT as a save sends it.
+            let value = |row: usize, col: usize| {
+                let type_name = page.columns.get(col).map_or("", |column| &column.type_name);
+                match object.edits.cells.get(&(row, col)) {
+                    Some(pending) => crate::export::Pending {
+                        value: Some(crate::edit::shown_value(&pending.new)),
+                        sql: dialect.pending_literal(&pending.new, type_name),
+                    },
+                    None if crate::edit::new_id(row).is_some() => {
+                        let column = table.as_ref().and_then(|table| table.column(col));
+                        let expression = column.and_then(|column| column.default.clone());
+                        let default = tabletist_db::NewValue::Default { expression };
+                        crate::export::Pending {
+                            value: None,
+                            sql: dialect.pending_literal(&default, type_name),
+                        }
+                    }
+                    None => crate::export::Pending {
+                        value: page.rows.get(row).and_then(|row| row.get(col)).cloned(),
+                        sql: None,
+                    },
+                }
             };
-            return copied(&selected, page.columns.len(), whole_row, value);
+            let target = crate::export::Target::Table {
+                object: &object.object,
+                create: None,
+            };
+            let source = CopySource {
+                columns: &page.columns,
+                dialect,
+                target,
+            };
+            return copying(&selected, source, pick, how, &self.export, value);
         }
         let sql = workspace.active_sql_tab()?;
         let mut selected = sql.selected()?;
-        if cursor_alone {
+        if pick == Pick::CursorRow {
             selected.range = None;
         }
         let (columns, rows, _) = sql.shown_rows()?;
-        let value = |row: usize, col: usize| -> Option<Value> { rows.get(row)?.get(col).cloned() };
-        copied(&selected, columns.len(), whole_row, value)
+        let value = |row: usize, col: usize| crate::export::Pending {
+            value: rows.get(row).and_then(|row| row.get(col)).cloned(),
+            sql: None,
+        };
+        let source = CopySource {
+            columns,
+            dialect,
+            target: crate::export::Target::Named("result"),
+        };
+        copying(&selected, source, pick, how, &self.export, value)
     }
 
     /// The palette and the look, applied to egui's style, with the caret
@@ -8505,35 +8629,159 @@ fn step(index: usize, delta: isize, len: usize) -> usize {
     moved as usize
 }
 
-/// What [`App::copy_text`] copies of `selected`, in a grid `width` wide
-/// whose cells `value` reads.
-fn copied(
+pub use crate::model::{CopyHow as How, CopyPick as Pick};
+
+/// What a copy put together, and of how much.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Copying {
+    pub copied: crate::export::Copied,
+    pub rows: usize,
+    pub cols: usize,
+    /// Whether it took whole rows.
+    pub whole_rows: bool,
+}
+
+impl Copying {
+    /// The text for the clipboard, where there is one.
+    pub fn text(self) -> Option<String> {
+        match self.copied {
+            crate::export::Copied::Text { text, .. } => Some(text),
+            _ => None,
+        }
+    }
+}
+
+/// What the toast says of `copying`, made as `how` says: "Copied 4 rows ×
+/// 2 columns as Markdown", "Copied 12 rows as CSV · 1 statement", or, past
+/// the clipboard's limits, why nothing was copied.
+pub fn copy_said(locale: crate::i18n::Locale, copying: &Copying, how: How) -> String {
+    use crate::export::Copied;
+    use crate::i18n::{counted, gettext};
+    match &copying.copied {
+        Copied::TooManyRows(rows) => gettext(locale, "That's {rows} rows. Export to a file?")
+            .replace("{rows}", &crate::format::group_digits(*rows as u64)),
+        Copied::TooLarge => gettext(locale, "That's over 20 MB. Export to a file?").into_owned(),
+        Copied::Text { statements, .. } => {
+            let size = (copying.rows, copying.cols);
+            let what = crate::selection::size_words(locale, size, copying.whole_rows);
+            let copied = gettext(locale, "Copied");
+            match how {
+                How::ColumnNames => {
+                    let names = counted(locale, copying.cols, "column name", "column names");
+                    format!("{copied} {names}")
+                }
+                How::Plain => format!("{copied} {what} {} TSV", gettext(locale, "as")),
+                How::As(format) => {
+                    let said = format!(
+                        "{copied} {what} {} {}",
+                        gettext(locale, "as"),
+                        format.name()
+                    );
+                    if format == crate::export::Format::SqlInsert {
+                        let made = counted(locale, *statements, "statement", "statements");
+                        format!("{said} · {made}")
+                    } else {
+                        said
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The grid a copy reads: its columns, its connection's dialect, and the
+/// table SQL INSERT writes into.
+struct CopySource<'a> {
+    columns: &'a [tabletist_db::ColumnMeta],
+    dialect: tabletist_db::Dialect,
+    target: crate::export::Target<'a>,
+}
+
+/// What [`App::copy`] copies of `selected`, in a grid whose cells `value`
+/// reads.
+fn copying(
     selected: &crate::selection::Selection<'_>,
-    width: usize,
-    whole_row: bool,
-    value: impl Fn(usize, usize) -> Option<tabletist_db::Value>,
-) -> Option<String> {
+    source: CopySource<'_>,
+    pick: Pick,
+    how: How,
+    options: &crate::export::Options,
+    value: impl Fn(usize, usize) -> crate::export::Pending,
+) -> Option<Copying> {
+    use crate::export::{Copied, Format};
+    let width = source.columns.len();
     let cursor = selected.cursor;
     // One cell, alone or held by `v`: its text as it is, tabs and lines in
     // it kept.
-    if !whole_row && selected.size(width).is_none_or(|size| size == (1, 1)) {
-        let value = value(cursor.row, cursor.col)?;
-        return Some(crate::format::plain_text(&value));
+    let one = selected.range.is_none_or(|range| !range.rows())
+        && selected.size(width).is_none_or(|size| size == (1, 1));
+    // A new row's cell nothing is set in is a NULL, and past the
+    // clipboard's limit nothing is copied.
+    if how == How::Plain && pick == Pick::Selection && one {
+        let value = value(cursor.row, cursor.col).value;
+        let text = crate::format::plain_text(&value.unwrap_or(tabletist_db::Value::Null));
+        let copied = if text.len() > crate::export::CLIPBOARD_BYTES {
+            Copied::TooLarge
+        } else {
+            Copied::Text {
+                text,
+                statements: 0,
+            }
+        };
+        return Some(Copying {
+            copied,
+            rows: 1,
+            cols: 1,
+            whole_rows: false,
+        });
     }
-    let (first, last) = if whole_row {
+    let whole_rows = pick != Pick::Selection || selected.range.is_none_or(|range| range.rows());
+    let (first, last) = if whole_rows {
         (0, width.checked_sub(1)?)
     } else {
         selected.cols(width)?
     };
-    let lines: Vec<String> = selected
-        .rows()
-        .into_iter()
-        .map(|row| {
-            let cells = (first..=last).map(|col| value(row, col));
-            crate::format::tsv_cells(cells)
+    let columns = &source.columns[first..=last];
+    let names: Vec<&str> = columns.iter().map(|column| column.name.as_str()).collect();
+    let rows = selected.rows();
+    let (count, cols) = (rows.len(), names.len());
+    let done = |copied| {
+        Some(Copying {
+            copied,
+            rows: count,
+            cols,
+            whole_rows,
         })
-        .collect();
-    Some(lines.join("\n"))
+    };
+    let (format, options) = match how {
+        How::ColumnNames => {
+            let text = crate::export::column_names(&names, source.dialect);
+            if text.len() > crate::export::CLIPBOARD_BYTES {
+                return done(Copied::TooLarge);
+            }
+            return done(Copied::Text {
+                text,
+                statements: 0,
+            });
+        }
+        How::As(format) => (format, std::borrow::Cow::Borrowed(options)),
+        How::Plain => {
+            let mut plain = options.clone();
+            plain.tsv.header = false;
+            (Format::Tsv, std::borrow::Cow::Owned(plain))
+        }
+    };
+    let written = crate::export::Columns {
+        names,
+        kinds: columns.iter().map(|column| column.kind).collect(),
+        dialect: source.dialect,
+    };
+    let cells = rows.into_iter().map(|row| {
+        (first..=last)
+            .map(|col| value(row, col))
+            .collect::<Vec<_>>()
+    });
+    let copied = crate::export::clipboard(format, &options, written, source.target, count, cells);
+    done(copied)
 }
 
 /// Where a move by `rows` and `cols` puts the cursor of a SQL result's
@@ -8671,6 +8919,87 @@ fn logged_statement(driver: Driver, sql: &str, params: Option<&str>) -> String {
 mod tests {
     use super::*;
     use crate::model::{Action, ConnTabContent};
+
+    /// A whole row of one column is a row, not one cell: ⌘C writes it as
+    /// TSV, its NULL empty, where one cell alone is written `NULL`.
+    #[test]
+    fn a_whole_row_of_one_column_copies_as_tsv() {
+        use crate::edit::Order;
+        use crate::selection::{Range, Selection};
+        let mut columns = crate::testing::page(1, false).columns;
+        columns.truncate(1);
+        let source = || CopySource {
+            columns: &columns,
+            dialect: tabletist_db::Dialect::Postgres,
+            target: crate::export::Target::Named("result"),
+        };
+        let null = |_: usize, _: usize| crate::export::Pending {
+            value: Some(tabletist_db::Value::Null),
+            sql: None,
+        };
+        let options = crate::export::Options::default();
+        let cursor = CellPos { row: 0, col: 0 };
+        let row = Range::Rows {
+            anchor: Some(0),
+            picked: Default::default(),
+            held: false,
+        };
+        let copied = |range| {
+            let selected = Selection {
+                cursor,
+                range,
+                order: Order::of(&[], 1),
+            };
+            copying(
+                &selected,
+                source(),
+                Pick::Selection,
+                How::Plain,
+                &options,
+                null,
+            )
+            .and_then(Copying::text)
+        };
+        assert_eq!(copied(Some(&row)).as_deref(), Some(""));
+        assert_eq!(copied(None).as_deref(), Some("NULL"));
+    }
+
+    /// Column names are held to the clipboard's limit too.
+    #[test]
+    fn column_names_past_twenty_megabytes_copy_nothing() {
+        use crate::edit::Order;
+        use crate::selection::Selection;
+        let mut columns = crate::testing::page(1, false).columns;
+        columns.truncate(1);
+        columns[0].name = "w".repeat(crate::export::CLIPBOARD_BYTES + 1);
+        let source = CopySource {
+            columns: &columns,
+            dialect: tabletist_db::Dialect::Postgres,
+            target: crate::export::Target::Named("result"),
+        };
+        let selected = Selection {
+            cursor: CellPos { row: 0, col: 0 },
+            range: None,
+            order: Order::of(&[], 1),
+        };
+        let options = crate::export::Options::default();
+        let none = |_: usize, _: usize| crate::export::Pending {
+            value: None,
+            sql: None,
+        };
+        let copying = copying(
+            &selected,
+            source,
+            Pick::Selection,
+            How::ColumnNames,
+            &options,
+            none,
+        );
+        assert!(matches!(
+            copying.map(|copying| copying.copied),
+            Some(crate::export::Copied::TooLarge)
+        ));
+    }
 
     fn app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -22630,9 +22959,10 @@ masked = ["orders.email"]
             });
             harness.app.apply(Action::SetNull { tab, id });
             assert_eq!(harness.app.copy_text(false), null);
+            // In a row, as TSV writes a NULL: empty, as a loaded one.
             assert_eq!(
-                harness.app.copy_text(true),
-                null.map(|null| format!("1\tada@example.com\t{null}"))
+                harness.app.copy_text(true).as_deref(),
+                Some("1\tada@example.com\t")
             );
             // Another row's changes are not this row's.
             harness.app.apply(Action::SelectCell {

@@ -180,7 +180,7 @@ fn the_visual_modes_are_said_and_copy() {
     type_key(&mut harness, Key::V, "v");
     assert!(painted(&harness, "-- VISUAL --"), "{:?}", harness.painted);
     assert!(painted(&harness, "1 row × 1 column"));
-    assert!(painted(&harness, "y copy · esc normal"));
+    assert!(painted(&harness, "y copy tsv · gy copy as · esc normal"));
     type_key(&mut harness, Key::J, "j");
     type_key(&mut harness, Key::L, "l");
     type_key(&mut harness, Key::L, "l");
@@ -212,7 +212,7 @@ fn the_visual_modes_are_said_and_copy() {
     type_key(&mut harness, Key::V, "V");
     assert!(painted(&harness, "-- VISUAL LINE --"));
     assert!(painted(&harness, "1 row"));
-    assert!(painted(&harness, "d delete · esc normal"));
+    assert!(painted(&harness, "d delete · gy copy as · esc normal"));
     type_key(&mut harness, Key::J, "j");
     assert!(painted(&harness, "2 rows"));
     type_key(&mut harness, Key::D, "d");
@@ -391,7 +391,7 @@ fn a_results_visual_selection_is_said_with_its_keys() {
     assert!(painted(&harness, "-- VISUAL --"), "{:?}", harness.painted);
     assert!(painted(&harness, "1 row × 1 column"));
     assert!(
-        painted(&harness, "y copy · esc normal"),
+        painted(&harness, "y copy tsv · gy copy as · esc normal"),
         "{:?}",
         harness.painted
     );

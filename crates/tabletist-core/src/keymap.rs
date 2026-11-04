@@ -272,6 +272,8 @@ pub enum When {
     ClearingHistory,
     /// The Connections list asks whether to delete a connection.
     DeletingConnection,
+    /// The Copy as menu is open: its letters pick a format.
+    CopyAs,
     /// The start screen's search is on: its field has the keyboard. The
     /// keys that move among the matches, open one and clear the search are
     /// read then, and only then.
@@ -562,6 +564,18 @@ commands! {
     CopyCells = "copy_cells",
     CopySelection = "copy_selection",
     CopyRow = "copy_row",
+    CopyAs = "copy_as",
+    CopyRowAs = "copy_row_as",
+    CopyAsCsv = "copy_as_csv",
+    CopyAsTsv = "copy_as_tsv",
+    CopyAsJson = "copy_as_json",
+    CopyAsMarkdown = "copy_as_markdown",
+    CopyAsSql = "copy_as_sql",
+    CopyColumnNames = "copy_column_names",
+    CopyAsNext = "copy_as_next",
+    CopyAsPrevious = "copy_as_previous",
+    CopyAsPick = "copy_as_pick",
+    CloseCopyAs = "close_copy_as",
     PasteCells = "paste_cells",
     PasteNewRows = "paste_new_rows",
     AddRow = "add_row",
@@ -944,6 +958,18 @@ impl Command {
             C::CopyCells => info("Copy cell values", COPY, Editing),
             C::CopySelection => info("Copy the selection", COPY, Editing),
             C::CopyRow => info("Copy row", "", Editing),
+            C::CopyAs => info("Copy as…", "", Editing),
+            C::CopyRowAs => info("Copy row as…", "", Editing),
+            C::CopyAsCsv => info("Copy as CSV", "", Prompts),
+            C::CopyAsTsv => info("Copy as TSV", "", Prompts),
+            C::CopyAsJson => info("Copy as JSON", "", Prompts),
+            C::CopyAsMarkdown => info("Copy as Markdown", "", Prompts),
+            C::CopyAsSql => info("Copy as SQL INSERT", "", Prompts),
+            C::CopyColumnNames => info("Copy column names", "", Prompts),
+            C::CopyAsNext => info("Next format of Copy as", "", Prompts),
+            C::CopyAsPrevious => info("Previous format of Copy as", "", Prompts),
+            C::CopyAsPick => info("Copy in the highlighted format", "", Prompts),
+            C::CloseCopyAs => info("Close Copy as", "", Prompts),
             C::PasteCells => info("Paste cell values", COPY, Editing).reserved(),
             C::PasteNewRows => info("Paste as new rows", "Paste as new rows", Editing).reserved(),
             C::AddRow => info("Add row", "Add row", Editing),
@@ -1830,6 +1856,39 @@ pub const BINDINGS: &[Binding] = {
         ),
         bind(C::CopySelection, ROWS, NONE, keys(&[k("y")])).when(When::Visual),
         bind(C::CopyRow, ROWS, keys(&[k("cmd+shift+c")]), NONE),
+        // Alt with the copy: the window's copy, as Cmd+Shift+C is.
+        bind(C::CopyAs, ROWS, keys(&[k("cmd+alt+c")]), keys(&[k("gy")])),
+        // The macOS look's Copy row ▾ is a button.
+        bind(C::CopyRowAs, INSPECTOR, NONE, keys(&[k("gy")])),
+        // The menu's letters, one a format.
+        bind(C::CopyAsCsv, PROMPT, keys(&[k("c")]), keys(&[k("c")])).when(When::CopyAs),
+        bind(C::CopyAsTsv, PROMPT, keys(&[k("t")]), keys(&[k("t")])).when(When::CopyAs),
+        bind(C::CopyAsJson, PROMPT, keys(&[k("j")]), keys(&[k("j")])).when(When::CopyAs),
+        bind(C::CopyAsMarkdown, PROMPT, keys(&[k("m")]), keys(&[k("m")])).when(When::CopyAs),
+        bind(C::CopyAsSql, PROMPT, keys(&[k("s")]), keys(&[k("s")])).when(When::CopyAs),
+        bind(C::CopyColumnNames, PROMPT, keys(&[k("n")]), keys(&[k("n")])).when(When::CopyAs),
+        bind(
+            C::CopyAsNext,
+            PROMPT,
+            keys(&[k("down")]),
+            keys(&[k("ctrl+n"), k("down")]),
+        )
+        .when(When::CopyAs),
+        bind(
+            C::CopyAsPrevious,
+            PROMPT,
+            keys(&[k("up")]),
+            keys(&[k("ctrl+p"), k("up")]),
+        )
+        .when(When::CopyAs),
+        bind(
+            C::CopyAsPick,
+            PROMPT,
+            keys(&[k("enter")]),
+            keys(&[k("enter")]),
+        )
+        .when(When::CopyAs),
+        bind(C::CloseCopyAs, PROMPT, keys(&[k("esc")]), keys(&[k("esc")])).when(When::CopyAs),
         bind(C::PasteCells, GRID, keys(&[k("cmd+v")]), NONE),
         bind(C::PasteCells, GRID, NONE, keys(&[k("p")]).shown("v p")).when(When::Visual),
         bind(

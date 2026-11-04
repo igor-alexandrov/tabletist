@@ -112,6 +112,19 @@ pub struct Picked<'a> {
     /// What a screen reader is told of the range: "4 rows by 2 columns
     /// selected".
     pub said: Option<&'a str>,
+    /// The rows of the menu a secondary click on a cell opens, and what
+    /// was picked in them.
+    pub menu: Option<Menu<'a>>,
+}
+
+/// The rows of a grid's menu: drawn while it is open, and what was picked.
+#[derive(Clone, Copy)]
+pub struct Menu<'a>(pub &'a dyn Fn(&mut Ui) -> Option<crate::ui::copy_as::Chosen>);
+
+impl std::fmt::Debug for Menu<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Menu")
+    }
 }
 
 /// How a cell draws its text.
@@ -204,6 +217,11 @@ pub struct GridOutput {
     pub shift: bool,
     /// The cell a second click landed on, soon after the first.
     pub double_clicked: Option<CellPos>,
+    /// A cell outside the selection had a secondary click: it is selected
+    /// before its menu acts.
+    pub context_clicked: Option<CellPos>,
+    /// What was picked in the grid's menu.
+    pub chosen: Option<crate::ui::copy_as::Chosen>,
     /// Where the cell being edited is, in view or not: what an editor that
     /// does not sit on the cell is anchored to.
     pub editing_rect: Option<Rect>,
@@ -948,6 +966,32 @@ pub fn show<'a>(
                     output.double_clicked = cell;
                 }
             }
+            // A secondary click on a cell keeps a selection it falls in,
+            // and selects the cell otherwise; on a row's number, the row.
+            // Then the menu opens, over what is selected.
+            if response.secondary_clicked()
+                && let Some(pointer) = pressed
+            {
+                if on_number(pointer) {
+                    if !ranged {
+                        output.row_clicked = Some((row, crate::selection::RowClick::Only));
+                    }
+                } else {
+                    let col = under(pointer).col;
+                    let covered = picked.block.is_some_and(|block| block.covers(row, col))
+                        || ranged
+                        || selection == Some(CellPos { row, col });
+                    if !covered {
+                        output.context_clicked = Some(CellPos { row, col });
+                    }
+                }
+            }
+            if let Some(menu) = picked.menu
+                && let Some(chosen) =
+                    crate::ui::menu::context(&response, look, palette, menu.0).flatten()
+            {
+                output.chosen = Some(chosen);
+            }
             // A drag from a cell: the press is its click, and the cell the
             // pointer is over the other end of the range.
             let origin_press = ui.input(|input| input.pointer.press_origin());
@@ -1120,6 +1164,10 @@ pub fn show<'a>(
                 }
                 let content = cell(row, col);
                 let here = selection == Some(CellPos { row, col });
+                // Where Copy as opens from the keyboard.
+                if here {
+                    crate::ui::copy_as::keep_anchor(ui.ctx(), cell_rect);
+                }
                 let block = picked.block.filter(|block| block.covers(row, col));
                 let in_block = block.is_some();
                 // A range of cells: the accent's faint tint on macOS, the

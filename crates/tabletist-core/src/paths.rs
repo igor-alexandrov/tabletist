@@ -144,6 +144,12 @@ impl AppDirs {
         self.state.join("last_used.json")
     }
 
+    /// The options last chosen for each format of an export and of Copy
+    /// as. Of this computer, and no setting: written when they change.
+    pub fn export_options_file(&self) -> PathBuf {
+        self.state.join("export_options.json")
+    }
+
     /// The connection tabs open at the last quit, and each connection's
     /// tables as its window last had them. Of this computer, and written
     /// at quit, when a connection's window closes or has another

@@ -251,6 +251,7 @@ cursor is on.
 | `v`, Ctrl+V | Start a selection of cells, or a block, on the cursor's cell. The moves stretch it. The status line reads `-- VISUAL --` or `-- VISUAL BLOCK --` and its size |
 | `V` | Start a selection of rows on the cursor's row. `j`, `k` and the other moves extend it. The status line reads `-- VISUAL LINE --` and counts its rows |
 | `y` | In a selection: copy it, with tabs between the values, and leave it |
+| `gy` | [Copy as]({% link _guide/browsing-data.md %}#copying): the selection, or the cursor's row, in a format. One letter picks: `c` csv, `t` tsv, `j` json, `m` markdown, `s` sql insert, `n` column names. Ctrl+N and Ctrl+P move, Enter picks, Esc closes. In the row panel it copies the row, but not a new one |
 | `d` | In a selection of rows: delete its rows, or restore them where all are marked. New rows among them are dropped |
 | Esc, or the key that started it | Leave the selection |
 | Enter, Tab, Shift+Tab | Keep the edit and move down, right or left |
