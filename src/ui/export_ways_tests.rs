@@ -364,9 +364,10 @@ fn a_single_cell_exports_its_row() {
     assert_eq!(rows[0][0], tabletist_db::Value::Int(2), "the cursor's row");
 }
 
-/// E3: a SQL result's grid keeps run 2's menu, with no Export selection….
+/// E3, as run 4 finished it: a SQL result's grid menu has Export
+/// selection… too, which opens the result's sheet on the row clicked.
 #[test]
-fn a_results_grid_menu_has_no_export() {
+fn a_results_grid_menu_exports_the_selection() {
     let mut harness = Harness::new();
     harness.set_look(Look::macos());
     let tab = harness.connect_fake();
@@ -377,7 +378,11 @@ fn a_results_grid_menu_has_no_export() {
         "{:?}",
         harness.painted
     );
-    assert!(!painted(&harness, "Export selection…"));
+    assert!(painted(&harness, "Export selection…"));
+    harness.click("Export selection…");
+    let open = sheet(&harness).expect("the result's sheet");
+    assert!(open.result.is_some(), "{open:?}");
+    assert_eq!(open.rows, crate::export_sheet::RowsChoice::Selected);
 }
 
 /// Opens quick open with its key in the harness's look, and types
@@ -687,7 +692,7 @@ fn the_offer_stays_while_the_pointer_or_the_keyboard_is_on_it() {
 }
 
 /// R6: a refused Copy rows as TSV on a block offers every column; a SQL
-/// result's copy offers nothing (run 4).
+/// result's copy offers its sheet too (run 4).
 #[test]
 fn the_offer_follows_what_was_copied() {
     let (mut harness, tab, id) = too_large_in(Look::macos());
@@ -727,7 +732,15 @@ fn the_offer_follows_what_was_copied() {
     harness.press(Key::A, Modifiers::COMMAND);
     copy_as_markdown(&mut harness, tab);
     assert!(said(&harness).is_some_and(|said| said.ends_with("Export to a file?")));
-    assert_eq!(crate::ui::toast::offered(&harness.ctx), None, "no offer");
+    let offer = crate::ui::toast::offered(&harness.ctx).expect("a result's offer");
+    harness.app.apply(Action::ExportSelection(offer));
+    let open = sheet(&harness).expect("the result's sheet");
+    assert!(open.result.is_some());
+    assert_eq!(open.format, crate::export::Format::Markdown);
+    assert_eq!(
+        open.destination,
+        crate::export_sheet::DestinationChoice::File
+    );
 }
 
 /// Test 6 and R7: the export's own clipboard failure offers the file, in
@@ -1385,6 +1398,7 @@ fn export_selection_on_new_rows_alone_opens_no_sheet() {
                 format: None,
                 whole_rows: false,
                 copied: None,
+                row_only: false,
             }));
         // Before a frame hands the words on.
         assert_eq!(harness.app.said.as_deref(), Some(words), "{}", look.name);

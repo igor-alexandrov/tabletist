@@ -50,7 +50,13 @@ pub fn primary_words(
     locale: crate::i18n::Locale,
 ) -> String {
     let plural = |count: crate::export_sheet::Count| u32::try_from(count.rows).unwrap_or(u32::MAX);
+    let again = sheet.rows == RowsChoice::RunAgain;
     let words = match (sheet.destination, facts.rows) {
+        // A result run again: counted as it runs (spec 4).
+        (DestinationChoice::File, None) if again && look.terminal => {
+            gettext(locale, "Run and export").into_owned()
+        }
+        (DestinationChoice::File, None) if again => gettext(locale, "Run and export…").into_owned(),
         (DestinationChoice::Clipboard, Some(rows)) => {
             ngettext(locale, "Copy {rows} row", "Copy {rows} rows", plural(rows))
                 .replace("{rows}", &count_words(rows))
@@ -78,7 +84,10 @@ pub fn primary_words(
 
 /// The sheet's title: "Export reviews".
 pub fn title(facts: &ExportFacts, look: &Look, locale: crate::i18n::Locale) -> String {
-    let title = gettext(locale, "Export {table}").replace("{table}", &facts.table);
+    let title = match facts.result {
+        Some(_) => gettext(locale, "Export result").into_owned(),
+        None => gettext(locale, "Export {table}").replace("{table}", &facts.table),
+    };
     match look.terminal {
         true => title.to_lowercase(),
         false => title,
@@ -219,6 +228,9 @@ fn keys(ctx: &egui::Context, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut 
 /// "dev Bookshop · public.reviews · 1 filter · sorted by created_at ↓".
 fn subtitle(skin: Skin<'_>, sheet: &ExportSheet) -> String {
     let facts = skin.facts;
+    if let Some(result) = &facts.result {
+        return result_subtitle(skin, result);
+    }
     // The float's head: `bookshop · dev · csv` (its badge says PROD).
     if skin.look.terminal {
         let platform = crate::env::Platform::Omarchy;
@@ -250,6 +262,36 @@ fn subtitle(skin: Skin<'_>, sheet: &ExportSheet) -> String {
         parts.push(gettext(skin.locale, "read-only connection").into_owned());
     }
     parts.join(" · ")
+}
+
+/// A result's: "Bookshop · result of Query 1, statement 2 · read-only
+/// transaction"; the float's `bookshop · dev · query 1, statement 2`.
+fn result_subtitle(skin: Skin<'_>, result: &crate::app::ResultFacts) -> String {
+    let facts = skin.facts;
+    let (query, statement) = (result.query.to_string(), result.statement.to_string());
+    if skin.look.terminal {
+        let platform = crate::env::Platform::Omarchy;
+        let mut parts = vec![facts.connection.clone()];
+        if !facts.environment.is_production()
+            && let Some(named) = facts.environment.named(platform)
+        {
+            parts.push(named);
+        }
+        parts.push(
+            gettext(skin.locale, "query {query}, statement {statement}")
+                .replace("{query}", &query)
+                .replace("{statement}", &statement),
+        );
+        return parts.join(" · ").to_lowercase();
+    }
+    let of = gettext(
+        skin.locale,
+        "result of Query {query}, statement {statement}",
+    )
+    .replace("{query}", &query)
+    .replace("{statement}", &statement);
+    let transaction = gettext(skin.locale, "read-only transaction").into_owned();
+    [facts.connection.clone(), of, transaction].join(" · ")
 }
 
 /// macOS: title, subtitle, the rows of choices, the notes and the footer;
@@ -612,6 +654,22 @@ fn notes(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>) {
         facts,
     } = skin;
     ui.add_space(4.0);
+    // The float's note after a write (the board's).
+    let after_write = facts
+        .result
+        .as_ref()
+        .is_some_and(|result| result.again == Err(crate::export_sheet::NotAgain::ChangedData));
+    if look.terminal && after_write {
+        let note = gettext(
+            locale,
+            "after a read-write run only \"rows already loaded\" is offered",
+        );
+        Text::one(look, widgets::secondary(look), &note, palette.dim)
+            .wrap(ui.available_width())
+            .layout(ui.ctx())
+            .label(ui);
+        ui.add_space(4.0);
+    }
     if facts.pending > 0 {
         let save = crate::ui::keys::written_in(ui.ctx(), look, Command::SaveChanges, Scope::Grid);
         let pending =
@@ -688,46 +746,54 @@ fn rows_list(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec
         false => gettext(locale, "no filter, primary key order").into_owned(),
     };
     let known = |count: Option<crate::export_sheet::Count>| count.map(count_words);
-    let rows: [(RowsChoice, String, String, Option<String>, bool); 4] = [
-        (
-            RowsChoice::Selected,
-            say("Selected rows"),
-            String::new(),
-            Some(crate::format::group_digits(facts.selected as u64)),
-            facts.selected > 0,
-        ),
-        (
-            RowsChoice::Page,
-            say("Current page"),
-            page_line,
-            Some(crate::format::group_digits(
-                last.saturating_sub(first.saturating_sub(1)),
-            )),
-            true,
-        ),
-        (
-            RowsChoice::Matching,
-            say(if look.terminal {
-                "matching the filter"
-            } else {
-                "All rows matching the filter"
-            }),
-            matching_line,
-            known(facts.matching),
-            true,
-        ),
-        (
-            RowsChoice::Whole,
-            say("Whole table"),
-            whole_line,
-            known(facts.whole),
-            true,
-        ),
-    ];
+    let rows: Vec<(RowsChoice, String, String, Option<String>, bool)> = match &facts.result {
+        Some(result) => result_rows(skin, result),
+        None => vec![
+            (
+                RowsChoice::Selected,
+                say("Selected rows"),
+                String::new(),
+                Some(crate::format::group_digits(facts.selected as u64)),
+                facts.selected > 0,
+            ),
+            (
+                RowsChoice::Page,
+                say("Current page"),
+                page_line,
+                Some(crate::format::group_digits(
+                    last.saturating_sub(first.saturating_sub(1)),
+                )),
+                true,
+            ),
+            (
+                RowsChoice::Matching,
+                say(if look.terminal {
+                    "matching the filter"
+                } else {
+                    "All rows matching the filter"
+                }),
+                matching_line,
+                known(facts.matching),
+                true,
+            ),
+            (
+                RowsChoice::Whole,
+                say("Whole table"),
+                whole_line,
+                known(facts.whole),
+                true,
+            ),
+        ],
+    };
     let width = ui
         .available_width()
         .min(if look.terminal { 560.0 } else { 440.0 });
     for (choice, name, line, count, enabled) in rows {
+        // Run again's count is "counted as it runs" (spec 4, S5).
+        let count = match (choice, count) {
+            (RowsChoice::RunAgain, None) => Some(say("counted as it runs")),
+            (_, count) => count,
+        };
         let chosen = sheet.rows == choice;
         let height = if look.terminal || line.is_empty() {
             24.0
@@ -840,6 +906,62 @@ fn rows_list(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec
             }
         }
     }
+}
+
+/// A result's rows (spec 4, F1 and F3): Selected rows, Rows already
+/// loaded, and Run again without the limit or why it is greyed.
+fn result_rows(
+    skin: Skin<'_>,
+    result: &crate::app::ResultFacts,
+) -> Vec<(RowsChoice, String, String, Option<String>, bool)> {
+    use crate::export_sheet::NotAgain;
+    let (look, locale, facts) = (skin.look, skin.locale, skin.facts);
+    let say = |text: &'static str| skin.say(text);
+    let loaded_line = match (look.terminal, result.cut) {
+        (true, true) => say("limit reached"),
+        (true, false) => String::new(),
+        (false, true) => say("the result as shown · limit reached"),
+        (false, false) => say("the result as shown"),
+    };
+    let again_line = match (result.again, look.terminal) {
+        (Ok(()), true) => say("reads only"),
+        (Ok(()), false) => gettext(
+            locale,
+            "reads only · same statement, no LIMIT, no timeout from Settings › Editor",
+        )
+        .into_owned(),
+        (Err(NotAgain::ChangedData), true) => say("not after a write"),
+        (Err(NotAgain::ChangedData), false) => say("Not offered: this run changed data"),
+        (Err(NotAgain::AllLoaded), true) => say("every row is loaded"),
+        (Err(NotAgain::AllLoaded), false) => say("Not needed: every row is loaded"),
+        (Err(NotAgain::Edited), true) => say("edited since it ran"),
+        (Err(NotAgain::Edited), false) => say("Not offered: the statement was edited since it ran"),
+        (Err(NotAgain::Disconnected), true) => say("not connected"),
+        (Err(NotAgain::Disconnected), false) => say("Not offered: the connection is not ready"),
+    };
+    vec![
+        (
+            RowsChoice::Selected,
+            say("Selected rows"),
+            String::new(),
+            Some(crate::format::group_digits(facts.selected as u64)),
+            facts.selected > 0,
+        ),
+        (
+            RowsChoice::Loaded,
+            say("Rows already loaded"),
+            loaded_line,
+            Some(crate::format::group_digits(result.loaded)),
+            true,
+        ),
+        (
+            RowsChoice::RunAgain,
+            say("Run again without the limit"),
+            again_line,
+            None,
+            result.again.is_ok(),
+        ),
+    ]
 }
 
 /// The column list: a row a column, its box, its name, its type and its
@@ -1220,11 +1342,35 @@ fn format_options(ui: &mut Ui, format: Format, options: &mut Options, skin: Skin
                 }
             });
             row(ui, &say("Table definition"), skin, |ui| {
-                checkbox(
-                    ui,
-                    &mut sql.create_table,
-                    &say("Start with CREATE TABLE from the DDL view"),
-                );
+                match facts.result {
+                    // Greyed, with why: no table to read a definition of
+                    // (spec 4, S4). The remembered choice stays as it is.
+                    Some(_) => {
+                        let why = gettext(locale, "Not for a result: no table to read");
+                        let mut off = false;
+                        ui.add_enabled_ui(false, |ui| {
+                            checkbox(
+                                ui,
+                                &mut off,
+                                &say("Start with CREATE TABLE from the DDL view"),
+                            );
+                        })
+                        .response
+                        .on_disabled_hover_text(why.as_ref());
+                        widgets::label(
+                            ui,
+                            widgets::secondary(look),
+                            &look.label(&why),
+                            palette.secondary,
+                            look,
+                        );
+                    }
+                    None => checkbox(
+                        ui,
+                        &mut sql.create_table,
+                        &say("Start with CREATE TABLE from the DDL view"),
+                    ),
+                }
             });
             let dialect = match facts.dialect {
                 tabletist_db::Dialect::Postgres => "PostgreSQL",

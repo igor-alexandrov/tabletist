@@ -193,7 +193,7 @@ keyboard.
 | Cmd+C | Copy the selection, or the cell |
 | Cmd+Shift+C | Copy the selected rows |
 | Cmd+Option+C | [Copy as]({% link _guide/browsing-data.md %}#copying): the selection in a format, one letter each |
-| Cmd+Shift+E | [Export]({% link _guide/browsing-data.md %}#exporting) the table, or the one selected in the sidebar. With a selection it starts on the selected rows, and a block on its columns |
+| Cmd+Shift+E | [Export]({% link _guide/browsing-data.md %}#exporting) the table, or the one selected in the sidebar. With a selection it starts on the selected rows, and a block on its columns. On the row panel, its row alone |
 | Shift+arrows, Shift-click, drag | Select cells |
 | Click a row's number | Select the row. Shift-click selects through to another, Cmd-click adds or takes out one |
 | Shift+Space | Select the rows of the selected cells |
@@ -256,6 +256,8 @@ In its DDL view:
 | Cmd+Shift+F | Format |
 | Tab, Shift+Tab | Indent, outdent: at the cursor, or every line of the selection |
 | Cmd+Shift+M | Switch between read-only and read-write runs |
+| Cmd+Option+C | [Copy as]({% link _guide/browsing-data.md %}#copying): the cells picked in the result, in a format |
+| Cmd+Shift+E | [Export the result]({% link _guide/browsing-data.md %}#exporting-a-sql-result), from the script or its rows. With a selection it starts on the selected rows |
 | Cmd+Option+Down, Cmd+Option+Up | Put the cursor where the last run's error is, while the script is the one that ran |
 | Cmd+I, Ctrl+Space | Complete |
 | Esc, Return | Cancel, when a run that changes every row of a table asks first. Return runs only from Run anyway, with the keyboard on it |

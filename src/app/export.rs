@@ -1,6 +1,7 @@
-//! Exporting a table: the sheet's reducers, the export they start, and
-//! what the backend says of it (spec
-//! `docs/superpowers/specs/2026-11-03-export-copy-as-3-table-design.md`).
+//! Exporting a table or a SQL result: the sheet's reducers, the export
+//! they start, and what the backend says of it (specs
+//! `docs/superpowers/specs/2026-11-03-export-copy-as-3-table-design.md`
+//! and `2026-11-04-export-copy-as-4-result-design.md`).
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -13,11 +14,11 @@ use crate::backend::export::{
 use crate::export::Format;
 use crate::export_sheet::{
     ColumnPick, Count, DestinationChoice, ExportChange, ExportSheet, ExportStatus, Exporting,
-    RowsChoice,
+    NotAgain, ResultOf, RowsChoice,
 };
 use crate::history::{Outcome, Source};
 use crate::i18n::gettext;
-use crate::model::{ConnTabId, Dialog, ObjectTab, Workspace};
+use crate::model::{ConnTabId, Dialog, ObjectTab, SqlTab, Workspace};
 
 /// What the sheet shows that the app works out: the counts, the
 /// statement, the notes. The view draws it with the sheet.
@@ -55,6 +56,23 @@ pub struct ExportFacts {
     pub clipboard_refused: bool,
     /// The connection's dialect, for SQL INSERT's line.
     pub dialect: tabletist_db::Dialect,
+    /// A SQL result's sheet: what it says of the result. `None` for a
+    /// table.
+    pub result: Option<ResultFacts>,
+}
+
+/// What a SQL result's sheet shows of it (spec 4).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResultFacts {
+    /// The editor's number ("Query 1"), and the statement's among the
+    /// run's, from 1.
+    pub query: u32,
+    pub statement: usize,
+    /// The rows the editor loaded, and whether its limit cut them.
+    pub loaded: u64,
+    pub cut: bool,
+    /// Run again without the limit, or why it is greyed (spec 4, F3).
+    pub again: Result<(), NotAgain>,
 }
 
 /// A file name for `table` exported as `format`: what a name may not
@@ -78,6 +96,14 @@ impl App {
     fn export_table(&self, tab: ConnTabId) -> Option<(&Workspace, &ObjectTab)> {
         let workspace = self.workspace(tab)?;
         Some((workspace, workspace.active_object_tab()?))
+    }
+
+    /// The SQL editor in front of `tab` whose result can be exported
+    /// ([`SqlTab::exports`]), with its connection.
+    fn export_result(&self, tab: ConnTabId) -> Option<(&Workspace, &SqlTab)> {
+        let workspace = self.workspace(tab)?;
+        let sql = workspace.active_sql_tab().filter(|sql| sql.exports())?;
+        Some((workspace, sql))
     }
 
     /// The sheet's columns: the page's, or the structure's before a page.
@@ -113,11 +139,73 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// A result's columns, as the editor shows them.
+    fn result_columns(sql: &SqlTab) -> Vec<ColumnPick> {
+        let Some((columns, _, _)) = sql.shown_rows() else {
+            return Vec::new();
+        };
+        columns
+            .iter()
+            .enumerate()
+            .map(|(at, column)| ColumnPick {
+                name: column.name.clone(),
+                type_name: column.type_name.clone(),
+                included: true,
+                at,
+            })
+            .collect()
+    }
+
+    /// The rows of a result a sheet's Selected rows takes, in the grid's
+    /// order: the range's, the cursor's where no range stands and
+    /// `cursor_row` asks, or the cursor's alone for Export row….
+    fn result_selected(sql: &SqlTab, cursor_row: bool, row_only: bool) -> Vec<usize> {
+        let Some(selected) = sql.selected() else {
+            return Vec::new();
+        };
+        if row_only {
+            return vec![selected.cursor.row];
+        }
+        if sql.range.is_none() && !cursor_row {
+            return Vec::new();
+        }
+        selected.rows()
+    }
+
+    /// Whether Run again without the limit is offered for `sql`'s shown
+    /// result, or why not (spec 4, F2 and F3): Show all's rule.
+    fn run_again(workspace: &Workspace, sql: &SqlTab) -> Result<(), NotAgain> {
+        let Some(run) = sql.last_run() else {
+            return Err(NotAgain::Edited);
+        };
+        if run.mode != tabletist_db::ScriptMode::ReadOnly {
+            return Err(NotAgain::ChangedData);
+        }
+        if !workspace.takes_commands() {
+            return Err(NotAgain::Disconnected);
+        }
+        if !sql.ran_this_text() || !run.ran_on(&workspace.spec) {
+            return Err(NotAgain::Edited);
+        }
+        match sql.cut_statement(&workspace.spec) {
+            Some(_) => Ok(()),
+            None => Err(NotAgain::AllLoaded),
+        }
+    }
+
     /// The rows a range selects, saved ones only (a new row is not in the
     /// database yet), in the grid's order. With no range, the cursor's row
     /// where `cursor_row` asks for it (Export selection…), else none.
-    fn export_selected(object: &ObjectTab, cursor_row: bool) -> Vec<usize> {
+    fn export_selected(object: &ObjectTab, cursor_row: bool, row_only: bool) -> Vec<usize> {
         let height = object.page().map_or(0, |page| page.rows.len());
+        if row_only {
+            return object
+                .selection
+                .map(|cell| cell.row)
+                .filter(|row| crate::edit::new_id(*row).is_none() && *row < height)
+                .into_iter()
+                .collect();
+        }
         if object.range.is_none() && !cursor_row {
             return Vec::new();
         }
@@ -143,41 +231,56 @@ impl App {
 
     /// A copy over the clipboard's limit offers the file (spec 3b, R6):
     /// the toast's Export… on the selection in the copy's format, or in
-    /// the terminal look `E` on its line. Only a table's grid: a SQL
-    /// result's export is run 4's. Returns whether it offered.
+    /// the terminal look `E` on its line; of a table's grid or a SQL
+    /// result's (spec 4). Returns whether it offered.
     pub(super) fn offer_export(
         &mut self,
         tab: ConnTabId,
         pick: crate::model::CopyPick,
         how: crate::model::CopyHow,
     ) -> bool {
-        // A table's selection: the row panel's row (its Export row…) and
-        // a SQL result's are run 4's. Copy rows as TSV's whole rows export
-        // every column: the block's range is the rows' too.
-        let object = self.workspace(tab).and_then(Workspace::active_object_tab);
-        let Some(table) = object.map(|object| object.id) else {
-            return false;
-        };
+        // The row panel's row has Export row… of its own. Copy rows as
+        // TSV's whole rows export every column: the block's range is the
+        // rows' too.
         if pick == crate::model::CopyPick::CursorRow {
             return false;
         }
+        let Some(workspace) = self.workspace(tab) else {
+            return false;
+        };
+        let copied = match (workspace.active_object_tab(), workspace.active_sql_tab()) {
+            (Some(object), _) => object.selection.map(|cursor| {
+                let copied = crate::model::CopiedSelection {
+                    page: object.rows.loaded,
+                    cursor,
+                    range: object.range.clone(),
+                };
+                (object.id, copied)
+            }),
+            (None, Some(sql)) if sql.exports() => sql.selection.map(|cursor| {
+                let copied = crate::model::CopiedSelection {
+                    page: sql.run.loaded,
+                    cursor,
+                    range: sql.range.clone(),
+                };
+                (sql.id, copied)
+            }),
+            _ => None,
+        };
+        let Some((table, copied)) = copied else {
+            return false;
+        };
         let format = match how {
             crate::model::CopyHow::As(format) => format,
             crate::model::CopyHow::Plain | crate::model::CopyHow::ColumnNames => Format::Tsv,
         };
-        let copied = object.and_then(|object| {
-            Some(crate::model::CopiedSelection {
-                page: object.rows.loaded,
-                cursor: object.selection?,
-                range: object.range.clone(),
-            })
-        });
         self.offer = Some(crate::model::ExportOffer {
             tab,
             table: Some(table),
             format: Some(format),
             whole_rows: pick == crate::model::CopyPick::Rows,
-            copied,
+            copied: Some(copied),
+            row_only: false,
         });
         if self.look.terminal {
             let key = self.keymap.key_in(
@@ -193,25 +296,30 @@ impl App {
         true
     }
 
-    /// Whether `offer` still stands: the table it was of is open, on the
-    /// page the copy was of. Another page's rows are other rows.
+    /// Whether `offer` still stands: the table (or the SQL editor) it was
+    /// of is open, on the page (the run) the copy was of. Another page's
+    /// rows are other rows.
     pub fn offer_holds(&self, offer: &crate::model::ExportOffer) -> bool {
         let Some(id) = offer.table else {
             return true;
         };
-        let object = self
-            .workspace(offer.tab)
-            .and_then(|workspace| workspace.object_tab(id));
-        match (object, &offer.copied) {
-            (None, _) => false,
-            (Some(_), None) => true,
-            (Some(object), Some(copied)) => object.rows.loaded == copied.page,
-        }
+        let Some(workspace) = self.workspace(offer.tab) else {
+            return false;
+        };
+        let loaded = match (workspace.object_tab(id), workspace.sql_tab(id)) {
+            (Some(object), _) => object.rows.loaded,
+            (None, Some(sql)) => sql.run.loaded,
+            (None, None) => return false,
+        };
+        offer
+            .copied
+            .as_ref()
+            .is_none_or(|copied| loaded == copied.page)
     }
 
     /// Opens the sheet over the table in front of `tab`.
     pub(super) fn open_export(&mut self, tab: ConnTabId, format: Option<Format>) {
-        self.open_export_on(tab, format, (false, false));
+        self.open_export_on(tab, format, (false, false, false));
     }
 
     /// Export selection…, and Copy as's Export… (`format` given): the
@@ -229,17 +337,15 @@ impl App {
             format,
             whole_rows,
             copied,
+            row_only,
         } = offer;
-        // The table copied, though another came to the front since.
+        // The table (or the editor) copied, though another came to the
+        // front since.
         if let Some(id) = table {
             let front = self
                 .workspace(tab)
-                .and_then(Workspace::active_object_tab)
-                .map(|object| object.id);
-            match self
-                .workspace(tab)
-                .and_then(|workspace| workspace.object_tab(id))
-            {
+                .and_then(|workspace| workspace.active_tab);
+            match self.workspace(tab).and_then(|workspace| workspace.tab(id)) {
                 Some(_) if front != Some(id) => {
                     self.apply(crate::model::Action::ActivateTab { tab, id });
                 }
@@ -247,14 +353,17 @@ impl App {
                 None => return,
             }
             // What was copied, though the selection moved since.
-            if let Some(copied) = copied
-                && let Some(object) = self.object_tab_mut(tab, id)
-            {
-                object.set_cursor(Some(copied.cursor), crate::model::Reach::End);
-                object.range = copied.range;
+            if let Some(copied) = copied {
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.set_cursor(Some(copied.cursor), crate::model::Reach::End);
+                    object.range = copied.range;
+                } else if let Some(sql) = self.sql_tab_mut(tab, id) {
+                    sql.set_cursor(Some(copied.cursor), crate::model::Reach::End);
+                    sql.range = copied.range;
+                }
             }
         }
-        self.open_export_on(tab, format, (true, whole_rows));
+        self.open_export_on(tab, format, (true, whole_rows, row_only));
         if format.is_some()
             && let Some(Dialog::Export(sheet)) = &mut self.dialog
         {
@@ -262,35 +371,42 @@ impl App {
         }
     }
 
-    /// Opens the sheet over the table in front of `tab`; on its selection
-    /// alone (the cursor's row with no range) where `selection` asks for
-    /// it. A block of cells opens Choose with its columns, unless
-    /// `whole_rows` asks for every column (spec 3b, R1).
+    /// Opens the sheet over the table (or the SQL result) in front of
+    /// `tab`; on its selection alone (the cursor's row with no range)
+    /// where `selection` asks for it, or on the cursor's row alone where
+    /// `row_only` does (Export row…). A block of cells opens Choose with
+    /// its columns, unless `whole_rows` asks for every column (spec 3b,
+    /// R1).
     fn open_export_on(
         &mut self,
         tab: ConnTabId,
         format: Option<Format>,
-        (selection, whole_rows): (bool, bool),
+        (selection, whole_rows, row_only): (bool, bool, bool),
     ) {
         if self.dialog.is_some() || self.export_runs() {
             return;
         }
         let asked = self.next_id();
+        // The format of the last export, or CSV.
+        let format = format.or(self.export_format).unwrap_or(Format::Csv);
+        if self.export_table(tab).is_none() {
+            return self.open_result_export(tab, asked, format, (selection, whole_rows, row_only));
+        }
         let Some((_, object)) = self.export_table(tab) else {
             return;
         };
-        // The format of the last export, or CSV.
-        let format = format.or(self.export_format).unwrap_or(Format::Csv);
         let mut columns = Self::export_columns(object);
         let block = match object.range {
-            Some(crate::selection::Range::Cells { .. }) if !whole_rows => object.selected_cols(),
+            Some(crate::selection::Range::Cells { .. }) if !whole_rows && !row_only => {
+                object.selected_cols()
+            }
             _ => None,
         };
         let choose = block.is_some_and(|(first, last)| first > 0 || last + 1 < columns.len());
         if choose && let Some(block) = block {
             columns = crate::export_sheet::block_columns(columns, block);
         }
-        let selected = Self::export_selected(object, selection).len();
+        let selected = Self::export_selected(object, selection, row_only).len();
         // Export selection… on new rows alone: they are not in the
         // database yet, and all of the table is not what was asked for.
         if selection && selected == 0 {
@@ -323,7 +439,7 @@ impl App {
             .join(file_name(&object.object.name, format));
         let path = crate::export_sheet::shown_path(&suggested, self.dirs.home.as_deref());
         let id = object.id;
-        let mut sheet = ExportSheet {
+        let sheet = ExportSheet {
             tab,
             id,
             result: None,
@@ -340,8 +456,77 @@ impl App {
             review: false,
             asking: false,
             cursor_row: selection,
-            row_only: false,
+            row_only,
         };
+        self.open_sheet(sheet);
+    }
+
+    /// The sheet over the SQL result in front of `tab` (spec 4): on its
+    /// selection as a table's is, else on Rows already loaded.
+    fn open_result_export(
+        &mut self,
+        tab: ConnTabId,
+        asked: u64,
+        format: Format,
+        (selection, whole_rows, row_only): (bool, bool, bool),
+    ) {
+        let Some((_, sql)) = self.export_result(tab) else {
+            return;
+        };
+        let Some((index, _)) = sql.shown() else {
+            return;
+        };
+        let mut columns = Self::result_columns(sql);
+        let block = match (&sql.range, sql.selected()) {
+            (Some(crate::selection::Range::Cells { .. }), Some(selected))
+                if !whole_rows && !row_only =>
+            {
+                selected.cols(columns.len())
+            }
+            _ => None,
+        };
+        let choose = block.is_some_and(|(first, last)| first > 0 || last + 1 < columns.len());
+        if choose && let Some(block) = block {
+            columns = crate::export_sheet::block_columns(columns, block);
+        }
+        let selected = Self::result_selected(sql, selection, row_only).len();
+        let rows = crate::export_sheet::first_rows(selected, true);
+        let destination = match self.export_clipboard.contains(&format) {
+            true => DestinationChoice::Clipboard,
+            false => DestinationChoice::File,
+        };
+        let stem = crate::export_sheet::result_file_stem(sql.number);
+        let suggested = self.dirs.downloads.join(file_name(&stem, format));
+        let path = crate::export_sheet::shown_path(&suggested, self.dirs.home.as_deref());
+        let sheet = ExportSheet {
+            tab,
+            id: sql.id,
+            result: Some(ResultOf {
+                statement: index,
+                query: sql.number,
+                run: sql.run.loaded,
+            }),
+            asked,
+            format,
+            options: self.export.clone(),
+            rows,
+            choose,
+            columns,
+            column: 0,
+            destination,
+            path,
+            exists: false,
+            review: false,
+            asking: false,
+            cursor_row: selection,
+            row_only,
+        };
+        self.open_sheet(sheet);
+    }
+
+    /// Opens `sheet`, its destination the file where the clipboard would
+    /// refuse its rows.
+    fn open_sheet(&mut self, mut sheet: ExportSheet) {
         // Clipboard only where the rows fit.
         if sheet.destination == DestinationChoice::Clipboard
             && self
@@ -447,6 +632,10 @@ impl App {
         let Some(Dialog::Export(sheet)) = &self.dialog else {
             return;
         };
+        // A result's rows are counted as they are loaded, or as they run.
+        if sheet.result.is_some() {
+            return;
+        }
         let (tab, id) = (sheet.tab, sheet.id);
         self.count_rows(tab, id);
     }
@@ -461,6 +650,9 @@ impl App {
 
     fn export_facts_of(&self, sheet: &ExportSheet) -> Option<ExportFacts> {
         let workspace = self.workspace(sheet.tab)?;
+        if let Some(result) = sheet.result {
+            return Self::result_facts(workspace, sheet, result);
+        }
         let object = workspace.object_tab(sheet.id)?;
         let dialect = workspace.driver.dialect();
         let query = &object.query;
@@ -479,7 +671,7 @@ impl App {
         };
         let page_rows = object.page().map_or(0, |page| page.rows.len()) as u64;
         let first = query.offset + u64::from(page_rows > 0);
-        let selected = Self::export_selected(object, sheet.cursor_row).len();
+        let selected = Self::export_selected(object, sheet.cursor_row, sheet.row_only).len();
         let rows = match sheet.rows {
             RowsChoice::Selected => Some(Count {
                 rows: selected as u64,
@@ -536,6 +728,68 @@ impl App {
             clipboard_refused: rows
                 .is_some_and(|rows| rows.rows > crate::export::CLIPBOARD_ROWS as u64),
             dialect,
+            result: None,
+        })
+    }
+
+    /// What a SQL result's sheet shows: `None` once the editor shows
+    /// another statement's rows (it ran again), which closes the sheet.
+    fn result_facts(
+        workspace: &Workspace,
+        sheet: &ExportSheet,
+        result: ResultOf,
+    ) -> Option<ExportFacts> {
+        let sql = workspace.sql_tab(sheet.id)?;
+        let (index, _) = sql.shown()?;
+        // Another statement's rows, or another run's (one in flight will
+        // replace them): the sheet goes.
+        if index != result.statement || sql.is_running() || sql.run.loaded != result.run {
+            return None;
+        }
+        let (_, loaded, cut) = sql.shown_rows()?;
+        let loaded = loaded.len() as u64;
+        let again = Self::run_again(workspace, sql);
+        let selected = Self::result_selected(sql, sheet.cursor_row, sheet.row_only).len();
+        let exact = |rows: u64| Some(Count { rows, exact: true });
+        let rows = match sheet.rows {
+            RowsChoice::Selected => exact(selected as u64),
+            RowsChoice::Loaded => exact(loaded),
+            // Counted as it runs (spec 4, S5).
+            _ => None,
+        };
+        let statement = match (sheet.rows, again) {
+            (RowsChoice::RunAgain, Ok(())) => sql
+                .cut_statement(&workspace.spec)
+                .map(|statement| statement.text.clone()),
+            _ => None,
+        };
+        Some(ExportFacts {
+            table: "result".to_owned(),
+            connection: workspace.name.clone(),
+            environment: workspace.environment,
+            qualified: "result".to_owned(),
+            read_only: workspace.access == tabletist_db::Access::ReadOnly,
+            filters: 0,
+            sort: None,
+            filter_text: None,
+            selected,
+            page: (u64::from(loaded > 0), loaded),
+            matching: None,
+            whole: None,
+            counting: false,
+            pending: 0,
+            statement,
+            rows,
+            clipboard_refused: rows
+                .is_some_and(|rows| rows.rows > crate::export::CLIPBOARD_ROWS as u64),
+            dialect: workspace.driver.dialect(),
+            result: Some(ResultFacts {
+                query: result.query,
+                statement: result.statement + 1,
+                loaded,
+                cut,
+                again,
+            }),
         })
     }
 
@@ -597,6 +851,9 @@ impl App {
     /// The export the sheet asks for, to `destination`.
     fn export_job(&self, sheet: &ExportSheet, destination: Destination) -> Option<Exporting> {
         let workspace = self.workspace(sheet.tab)?;
+        if let Some(result) = sheet.result {
+            return self.result_job(workspace, sheet, result, destination);
+        }
         let object = workspace.object_tab(sheet.id)?;
         let dialect = workspace.driver.dialect();
         let chosen = sheet.chosen();
@@ -617,7 +874,9 @@ impl App {
                     .filter_map(|name| page.columns.iter().position(|column| column.name == *name))
                     .collect();
                 let picked: Vec<usize> = match sheet.rows {
-                    RowsChoice::Selected => Self::export_selected(object, sheet.cursor_row),
+                    RowsChoice::Selected => {
+                        Self::export_selected(object, sheet.cursor_row, sheet.row_only)
+                    }
                     _ => (0..page.rows.len()).collect(),
                 };
                 ExportRows::Loaded {
@@ -637,24 +896,9 @@ impl App {
             &object.object,
             &name_refs,
         );
-        // A blank answer means "no password" to the server, as at connect.
-        let mut secrets = workspace.secrets.clone();
-        for slot in [
-            &mut secrets.password,
-            &mut secrets.ssh_password,
-            &mut secrets.ssh_passphrase,
-        ] {
-            if slot.as_deref() == Some("") {
-                *slot = None;
-            }
-        }
         let job = ExportJob {
             id: ExportId(sheet.asked),
-            open: Opener {
-                spec: workspace.spec.clone(),
-                secrets,
-                host_keys: self.host_keys.clone(),
-            },
+            open: self.export_opener(workspace),
             rows,
             columns: names,
             masked,
@@ -665,16 +909,7 @@ impl App {
             destination: destination.clone(),
         };
         let facts = self.export_facts_of(sheet)?;
-        let home = self.dirs.home.as_deref();
-        let (file, shown_path) = match &destination {
-            Destination::File { path, .. } => (
-                path.file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-                crate::export_sheet::shown_path(path, home),
-            ),
-            Destination::Clipboard => (String::new(), String::new()),
-        };
+        let (file, shown_path) = self.export_file(&destination);
         Some(Exporting {
             job,
             tab: sheet.tab,
@@ -693,6 +928,128 @@ impl App {
             history: facts.statement.is_some().then(|| {
                 super::history::entry_on(workspace, Source::Export, object.object.name.clone())
             }),
+        })
+    }
+
+    /// How the export's own connection opens: the tab's details, and the
+    /// secrets it connected with.
+    fn export_opener(&self, workspace: &Workspace) -> Opener {
+        // A blank answer means "no password" to the server, as at connect.
+        let mut secrets = workspace.secrets.clone();
+        for slot in [
+            &mut secrets.password,
+            &mut secrets.ssh_password,
+            &mut secrets.ssh_passphrase,
+        ] {
+            if slot.as_deref() == Some("") {
+                *slot = None;
+            }
+        }
+        Opener {
+            spec: workspace.spec.clone(),
+            secrets,
+            host_keys: self.host_keys.clone(),
+        }
+    }
+
+    /// The file's name and its path as the person reads it; empty for the
+    /// clipboard.
+    fn export_file(&self, destination: &Destination) -> (String, String) {
+        match destination {
+            Destination::File { path, .. } => (
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                crate::export_sheet::shown_path(path, self.dirs.home.as_deref()),
+            ),
+            Destination::Clipboard => (String::new(), String::new()),
+        }
+    }
+
+    /// A SQL result's export (spec 4): its loaded rows (nothing runs), or
+    /// its statement run again, which the history records.
+    fn result_job(
+        &self,
+        workspace: &Workspace,
+        sheet: &ExportSheet,
+        result: ResultOf,
+        destination: Destination,
+    ) -> Option<Exporting> {
+        let sql = workspace.sql_tab(sheet.id)?;
+        let facts = Self::result_facts(workspace, sheet, result)?;
+        let chosen = sheet.chosen();
+        if chosen.is_empty() {
+            return None;
+        }
+        let names: Vec<String> = chosen.iter().map(|column| column.name.clone()).collect();
+        let at: Vec<usize> = chosen.iter().map(|column| column.at).collect();
+        let rows = match sheet.rows {
+            RowsChoice::RunAgain => {
+                let statement = sql.cut_statement(&workspace.spec)?.clone();
+                // Every column as it comes needs no picking.
+                let whole = at.iter().copied().eq(0..sheet.columns.len());
+                ExportRows::Statement {
+                    statement,
+                    pick: (!whole).then_some(at),
+                }
+            }
+            RowsChoice::Selected | RowsChoice::Loaded => {
+                let (columns, loaded, _) = sql.shown_rows()?;
+                let picked: Vec<usize> = match sheet.rows {
+                    RowsChoice::Selected => {
+                        Self::result_selected(sql, sheet.cursor_row, sheet.row_only)
+                    }
+                    _ => (0..loaded.len()).collect(),
+                };
+                ExportRows::Loaded {
+                    columns: at
+                        .iter()
+                        .filter_map(|&col| columns.get(col).cloned())
+                        .collect(),
+                    rows: picked
+                        .iter()
+                        .filter_map(|&row| loaded.get(row))
+                        .map(|row| at.iter().filter_map(|&col| row.get(col).cloned()).collect())
+                        .collect(),
+                }
+            }
+            // A table's: not on a result's sheet.
+            RowsChoice::Page | RowsChoice::Matching | RowsChoice::Whole => return None,
+        };
+        let job = ExportJob {
+            id: ExportId(sheet.asked),
+            open: self.export_opener(workspace),
+            rows,
+            masked: vec![false; names.len()],
+            columns: names,
+            format: sheet.format,
+            options: sheet.options.clone(),
+            // A result's columns name no table (spec 4, F9 and S4).
+            object: None,
+            dialect: workspace.driver.dialect(),
+            destination: destination.clone(),
+        };
+        let (file, shown_path) = self.export_file(&destination);
+        let query = gettext(self.locale, "Query {n}").replace("{n}", &result.query.to_string());
+        Some(Exporting {
+            job,
+            tab: sheet.tab,
+            table: facts.table.clone(),
+            file,
+            shown_path,
+            connection: self.history_name(sheet.tab),
+            total: facts.rows,
+            statement: facts.statement.clone(),
+            sheet: Box::new(sheet.clone()),
+            status: ExportStatus::Running { rows: 0, bytes: 0 },
+            hidden: false,
+            started: Instant::now(),
+            announced: None,
+            reopens: false,
+            history: facts
+                .statement
+                .is_some()
+                .then(|| super::history::entry_on(workspace, Source::Export, query)),
         })
     }
 
@@ -728,10 +1085,11 @@ impl App {
             DestinationChoice::File => {
                 // The system's panel names the file, and asks before one
                 // is replaced.
-                let suggested = self
-                    .dirs
-                    .downloads
-                    .join(file_name(&facts.table, sheet.format));
+                let stem = match &facts.result {
+                    Some(result) => crate::export_sheet::result_file_stem(result.query),
+                    None => facts.table.clone(),
+                };
+                let suggested = self.dirs.downloads.join(file_name(&stem, sheet.format));
                 let rows = facts
                     .rows
                     .map(crate::export_sheet::count_words)
@@ -808,7 +1166,8 @@ impl App {
     }
 
     /// `:w <path>`, `:w! <path>`: the rows matching the filter, every
-    /// column, at once (spec, Q13).
+    /// column, at once (spec, Q13); of a SQL result, the rows already
+    /// loaded (spec 4, S6).
     pub(super) fn export_to(&mut self, tab: ConnTabId, typed: &str, replace: bool) {
         if self.export_runs() {
             return;
@@ -834,6 +1193,38 @@ impl App {
         // A file that is there fails the rename, off this thread, and its
         // line says `:w!` (spec, Q6).
         let asked = self.next_id();
+        if self.export_table(tab).is_none() {
+            let Some((_, sql)) = self.export_result(tab) else {
+                return;
+            };
+            let Some((index, _)) = sql.shown() else {
+                return;
+            };
+            let sheet = ExportSheet {
+                tab,
+                id: sql.id,
+                result: Some(ResultOf {
+                    statement: index,
+                    query: sql.number,
+                    run: sql.run.loaded,
+                }),
+                asked,
+                format,
+                options: self.export.clone(),
+                rows: RowsChoice::Loaded,
+                choose: false,
+                columns: Self::result_columns(sql),
+                column: 0,
+                destination: DestinationChoice::File,
+                path: typed.to_owned(),
+                exists: replace,
+                review: false,
+                asking: false,
+                cursor_row: false,
+                row_only: false,
+            };
+            return self.run_export(&sheet, Destination::File { path, replace });
+        }
         let Some((_, object)) = self.export_table(tab) else {
             return;
         };

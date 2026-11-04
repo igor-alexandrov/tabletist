@@ -1343,6 +1343,12 @@ const ROWS: &[Scope] = &[Scope::Grid, Scope::Results];
 const AGENTS: &[Scope] = &[Scope::Agents];
 const HISTORY: &[Scope] = &[Scope::History];
 const TREE_AND_GRID: &[Scope] = &[Scope::Sidebar, Scope::Grid];
+/// Where a SQL result's rows are, and the row panel's row.
+const RESULTS_AND_INSPECTOR: &[Scope] = &[Scope::Results, Scope::Inspector];
+/// A table's `:` lines, and a SQL editor's (its result's).
+const GRID_AND_EDITOR: &[Scope] = &[Scope::Grid, Scope::SqlEditor];
+/// Where an export's end shows: a table's, the tree, a result's rows.
+const EXPORTS_END: &[Scope] = &[Scope::Sidebar, Scope::Grid, Scope::Results];
 const START: &[Scope] = &[Scope::Start];
 const CELLS: &[Scope] = &[Scope::Grid, Scope::Inspector];
 
@@ -1948,14 +1954,34 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("cmd+shift+e")]),
             keys(&[k("E")]),
         ),
-        bind(C::Export, GRID, NONE, keys(&[k(":export")])),
-        bind(C::ExportAs, GRID, NONE, keys(&[k(":export {format}")])),
-        bind(C::ExportTo, GRID, NONE, keys(&[k(":w {path}")])),
-        bind(C::ExportOver, GRID, NONE, keys(&[k(":w! {path}")])),
+        // A SQL result's (spec 4), and the row panel's Export row….
+        bind(
+            C::Export,
+            RESULTS_AND_INSPECTOR,
+            keys(&[k("cmd+shift+e")]),
+            keys(&[k("E")]),
+        ),
+        // The editor's text holds the keyboard: the chord exports its
+        // result there too (the board's "Editor"); `E` is typed.
+        bind(C::Export, SQL_EDITOR, keys(&[k("cmd+shift+e")]), NONE),
+        bind(C::Export, GRID_AND_EDITOR, NONE, keys(&[k(":export")])),
+        bind(
+            C::ExportAs,
+            GRID_AND_EDITOR,
+            NONE,
+            keys(&[k(":export {format}")]),
+        ),
+        bind(C::ExportTo, GRID_AND_EDITOR, NONE, keys(&[k(":w {path}")])),
+        bind(
+            C::ExportOver,
+            GRID_AND_EDITOR,
+            NONE,
+            keys(&[k(":w! {path}")]),
+        ),
         // The macOS look's Cancel is the toast's button. Read from any tab:
         // the export is the window's, and its line names this.
         bind(C::CancelExport, GLOBAL, NONE, keys(&[k(":export cancel")])),
-        bind(C::OpenExportFolder, TREE_AND_GRID, NONE, keys(&[k("go")])),
+        bind(C::OpenExportFolder, EXPORTS_END, NONE, keys(&[k("go")])),
         bind(C::ExportReviewSql, PROMPT, NONE, keys(&[k("ctrl+r")])).when(When::Export),
         // Enter exports from where it is read (the sheet says where); the
         // rest is the dialog's own focus.
@@ -1991,7 +2017,7 @@ pub const BINDINGS: &[Binding] = {
         .when(When::Export),
         bind(C::ExportAllColumns, PROMPT, NONE, keys(&[k("a")])).when(When::Export),
         bind(C::ExportNoColumns, PROMPT, NONE, keys(&[k("n")])).when(When::Export),
-        bind(C::DismissExport, TREE_AND_GRID, NONE, keys(&[k("esc")])).when(When::ExportFailed),
+        bind(C::DismissExport, EXPORTS_END, NONE, keys(&[k("esc")])).when(When::ExportFailed),
         // Quick open's Export a table…: a row to pick, no key.
         bind(C::ExportTable, GLOBAL, NONE, NONE),
         // File › Import…, held for later: no key, and not built.

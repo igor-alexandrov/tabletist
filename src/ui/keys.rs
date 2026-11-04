@@ -407,6 +407,8 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             .and_then(|workspace| workspace.object_tab(id))
             .is_some_and(|object| object.selection.is_some())
     });
+    // A field of a SQL result's row panel has the keyboard: Export row….
+    let on_result_field = result_field(ctx, app);
     // The row panel's field that has the keyboard, of the table on screen:
     // its keys are read here with the grid's, so one key is never both's.
     let field = object.filter(|_| grid).and_then(|(tab, id)| {
@@ -1052,24 +1054,45 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 }
             }
         }
-        // Export…: of the table in front, or of the one the tree's
-        // selection is on. While one runs it cancels, as File › Export…
-        // does then (spec, D11).
+        // Export…: of the table in front, of the one the tree's selection
+        // is on, of the SQL result in front, or the row panel's row
+        // (spec 4, S8 and S10). While one runs it cancels, as File ›
+        // Export… does then (spec, D11).
         if !terminal && app.dialog.is_none() {
             let running = app
                 .exporting
                 .as_ref()
                 .is_some_and(crate::export_sheet::Exporting::running);
+            let result_front = object.is_none()
+                && app
+                    .workspace(active)
+                    .and_then(crate::model::Workspace::active_sql_tab)
+                    .is_some_and(crate::model::SqlTab::exports);
             let tree_asked = tree_arrows && on(input, Command::Export, Scope::Sidebar).fresh;
-            let grid_asked =
-                !tree_asked && object.is_some() && on(input, Command::Export, Scope::Grid).fresh;
-            match (running, tree_asked, grid_asked, object) {
-                (true, true, _, _) | (true, _, true, _) => actions.push(Action::CancelExport),
-                (false, true, _, _) => actions.push(Action::ExportFromTree(active)),
-                (false, false, true, Some((tab, _))) => {
-                    actions.push(Action::OpenExport { tab, format: None });
-                }
-                _ => {}
+            let row_asked = !tree_asked
+                && (field.is_some() || on_result_field)
+                && on(input, Command::Export, Scope::Inspector).fresh;
+            let grid_asked = !tree_asked
+                && !row_asked
+                && object.is_some()
+                && on(input, Command::Export, Scope::Grid).fresh;
+            let result_asked = !tree_asked
+                && !row_asked
+                && result_front
+                && (on(input, Command::Export, Scope::Results).fresh
+                    || on(input, Command::Export, Scope::SqlEditor).fresh);
+            let asked = tree_asked || row_asked || grid_asked || result_asked;
+            if running && asked {
+                actions.push(Action::CancelExport);
+            } else if tree_asked {
+                actions.push(Action::ExportFromTree(active));
+            } else if row_asked {
+                actions.push(Action::ExportSelection(export_row(active)));
+            } else if grid_asked || result_asked {
+                actions.push(Action::OpenExport {
+                    tab: active,
+                    format: None,
+                });
             }
         }
         // The DDL view's chords, in its text too.
@@ -2426,6 +2449,32 @@ pub fn after_frame(ctx: &egui::Context) {
 /// takes a key: [`letters`] takes such a character from the frame.
 const WINDOW_LETTERS: [Command; 4] = crate::keymap::ONE_LETTER;
 
+/// Whether a field of the row panel of the SQL result in front has the
+/// keyboard: its Export row… is the panel's row (spec 4, S8).
+fn result_field(ctx: &egui::Context, app: &App) -> bool {
+    let tab = app.active_tab_id();
+    app.workspace(tab)
+        .and_then(crate::model::Workspace::active_sql_tab)
+        .and_then(|sql| {
+            let (columns, _, _) = sql.shown_rows()?;
+            crate::ui::row_panel::focused_field(ctx, tab, sql.id, columns.len())
+        })
+        .is_some()
+}
+
+/// Export row…: the sheet on the cursor's row alone, of the table or the
+/// SQL result in front of `tab` (spec 4, S8).
+pub fn export_row(tab: crate::model::ConnTabId) -> crate::model::ExportOffer {
+    crate::model::ExportOffer {
+        tab,
+        table: None,
+        format: None,
+        whole_rows: false,
+        copied: None,
+        row_only: true,
+    }
+}
+
 /// The command `char`, typed this frame, stands for among
 /// [`WINDOW_LETTERS`], in the first of `scopes` that reads it (the global
 /// scope's keys with each, so `?` is Help's everywhere).
@@ -2729,7 +2778,7 @@ fn letters(
             crate::export_sheet::ExportStatus::Failed { .. }
         )
     });
-    let here = if tree { Scope::Sidebar } else { Scope::Grid };
+    let here = if tree { Scope::Sidebar } else { rows };
     if export_failed && quiet && on(Command::DismissExport, here).fresh {
         actions.push(Action::DismissExport);
     }
@@ -3069,14 +3118,22 @@ fn letters(
         waiting.clear();
         let command = command.filter(|command| !(visual && held_back(*command)));
         match (command, active) {
-            // Export: the table under the tree's cursor, or the rows'.
+            // Export: the table under the tree's cursor, the row panel's
+            // row (spec 4, S8), or the rows' (a table's or a result's).
             (Some(Command::Export), _) if tree => actions.push(Action::ExportFromTree(tab)),
+            (Some(Command::Export), _) if field.is_some() || result_field(ctx, app) => {
+                actions.push(Action::ExportSelection(export_row(tab)));
+            }
             // While the line offers the file for a copy refused, on the
             // copy's selection and format (spec 3b, R6).
-            (Some(Command::Export), Some(_)) if rows_show => match crate::ui::toast::offered(ctx) {
-                Some(offer) if offer.tab == tab => actions.push(Action::ExportSelection(offer)),
-                _ => actions.push(Action::OpenExport { tab, format: None }),
-            },
+            (Some(Command::Export), _) if rows_show || (active.is_none() && sql_grid.is_some()) => {
+                match crate::ui::toast::offered(ctx) {
+                    Some(offer) if offer.tab == tab => {
+                        actions.push(Action::ExportSelection(offer));
+                    }
+                    _ => actions.push(Action::OpenExport { tab, format: None }),
+                }
+            }
             (Some(Command::OpenExportFolder), _) => actions.push(Action::RevealExport),
             (Some(Command::ShowAgents), _) if crate::endpoint::AVAILABLE => {
                 actions.push(Action::ShowAgents(tab));

@@ -216,11 +216,11 @@ copied, and the toast says so. Copying records nothing in the history.
 
 ## Exporting
 
-**Export…** writes a table to a file, or to the clipboard: in the table's
-header, in **File › Export…**, or with Cmd/Ctrl+Shift+E on the table in
-front or the one selected in the sidebar. In the Omarchy look press `E`
-on the rows or on a table in the sidebar, or type `:export`, or
-`:export json` to start in that format.
+**Export…** writes a table, or a SQL editor's result, to a file or to
+the clipboard: in the table's header, in **File › Export…**, or with
+Cmd/Ctrl+Shift+E on the table in front or the one selected in the
+sidebar. In the Omarchy look press `E` on the rows or on a table in the
+sidebar, or type `:export`, or `:export json` to start in that format.
 
 There are other ways in:
 
@@ -234,7 +234,7 @@ There are other ways in:
   opens it with the export over it. **File › Export a Table…** is the
   same as the second row. It has no key of its own: give it one in
   **Settings › Keyboard**.
-- **The grid:** right-click a table's rows for **Export selection…**. It
+- **The grid:** right-click a table's or a result's rows for **Export selection…**. It
   starts on the selected rows (on a single cell, its row). A block of
   cells starts on its own columns too, ticked under **Choose**, so the
   export holds just what you selected. With a range selected,
@@ -244,7 +244,10 @@ There are other ways in:
   the toast offers **Export…**, which opens the export of that selection
   in the same format, to a file (Copy rows as TSV's, with every column).
   In the Omarchy look the status line says `E export`, and the selection
-  stays for `E`. A SQL result's copy only says why nothing was copied.
+  stays for `E`. A SQL result's copy offers the same.
+- **The row panel:** **Copy row ▾** ends with **Export row…**
+  (Cmd/Ctrl+Shift+E on the panel, `E` in the Omarchy look), which exports
+  the panel's row alone, whatever else is selected.
 
 The sheet asks for:
 
@@ -305,6 +308,40 @@ bounce on macOS, and the taskbar button's flash on Windows.
 The history keeps the statement an export ran, as an **Export** entry,
 never its rows. Exporting the loaded rows runs nothing, and records
 nothing. **File › Import…** is there for later and does nothing yet.
+
+### Exporting a SQL result
+
+A [SQL editor's]({% link _guide/sql-editor.md %}) result exports as a table
+does: **Export…** at the right of the results bar (on Results and on
+Messages), Cmd/Ctrl+Shift+E, `E` on the result's rows or `:export` in the
+Omarchy look, **Export selection…** on the rows' right-click menu, and
+`> Export result of Query 1…` in quick open, and **File › Export…** with
+the editor in front. **Copy as** beside it opens
+the [Copy as](#copying) menu on the cells you picked. The sheet is
+**Export result**, and its file is named `query-1.csv` (for Query 1).
+
+Its rows are:
+
+- **Selected rows:** the cells or rows you selected, as loaded.
+- **Rows already loaded:** the result as the editor shows it, up to its
+  row limit ("limit reached" when the limit cut it). Nothing runs.
+- **Run again without the limit:** the statement runs again as you wrote
+  it, with no row limit and no timeout from **Settings › Editor**, on the
+  export's own read-only connection, and every row it returns is
+  streamed to the file. The rows are counted as they come. It is offered
+  just where **Show all** is: for a result the limit cut, of a run that
+  only read, while the editor still holds the statement as it ran.
+  Otherwise it is greyed and says why ("this run changed data", "every
+  row is loaded", or "the statement was edited since it ran"). A
+  statement that writes is never run again, whatever it looks like: the
+  export refuses it.
+
+SQL INSERT writes into a table named `result`, with no `CREATE TABLE`
+(there is no table to read one from). Nothing exports while the editor
+runs, nor a result with no rows. `:w ~/Downloads/query-1.csv`
+writes the rows already loaded, at once. Running it again is recorded in
+the history as an **Export** of the editor ("Query 1"); exporting the
+loaded or selected rows records nothing.
 
 ## Next
 

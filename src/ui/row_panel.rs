@@ -940,23 +940,60 @@ fn draw(
                             As(Format::SqlInsert),
                         ]
                     };
-                    let rows = || {
-                        order
-                            .iter()
-                            .map(|how| crate::ui::menu::Choice {
-                                text: crate::ui::copy_as::row_name(*how, true, locale),
-                                name: None,
-                                selected: false,
-                                disabled: None,
-                            })
-                            .collect()
-                    };
-                    if let Some(picked) =
-                        crate::ui::menu::actions(&response, 0.0, &look, &palette, rows)
+                    // Then, under a rule, Export row… with its key (spec
+                    // 4, S8).
+                    let export_keys = crate::ui::keys::written_in(
+                        ui.ctx(),
+                        &look,
+                        Command::Export,
+                        crate::keymap::Scope::Inspector,
+                    );
+                    let export_row = gettext(locale, "Export row…");
+                    let picked = crate::ui::menu::under(&response, 0.0, &look, &palette, |ui| {
+                        let mut picked = None;
+                        for (index, how) in order.iter().enumerate() {
+                            let text = crate::ui::copy_as::row_name(*how, true, locale);
+                            if crate::ui::menu::Item::action(&text)
+                                .show(ui, &look, &palette)
+                                .clicked()
+                            {
+                                picked = Some(Some(index));
+                            }
+                        }
+                        crate::ui::menu::separator(ui, &palette);
+                        // Its key where the panel takes the keyboard: a
+                        // table's (a result's fields take none; plan, B15).
+                        let item = crate::ui::menu::Item::action(&export_row);
+                        let item = match source.table {
+                            true => item.detail(export_keys.as_str()),
+                            false => item,
+                        };
+                        if item.show(ui, &look, &palette).clicked() {
+                            picked = Some(None);
+                        }
+                        if picked.is_some() {
+                            ui.close();
+                        }
+                        picked
+                    });
+                    // The keyboard goes back to the button, as the
+                    // other menus give it.
+                    let escaped = || ui.input(|input| input.key_pressed(egui::Key::Escape));
+                    if picked.is_some_and(|picked| picked.is_some())
+                        || (picked.is_some() && escaped())
                     {
-                        let pick = crate::model::CopyPick::CursorRow;
-                        let how = order[picked];
-                        actions.push(Action::CopyAs { tab, pick, how });
+                        response.request_focus();
+                    }
+                    match picked.flatten() {
+                        Some(Some(index)) => {
+                            let pick = crate::model::CopyPick::CursorRow;
+                            let how = order[index];
+                            actions.push(Action::CopyAs { tab, pick, how });
+                        }
+                        Some(None) => {
+                            actions.push(Action::ExportSelection(crate::ui::keys::export_row(tab)));
+                        }
+                        None => {}
                     }
                 }
             }
