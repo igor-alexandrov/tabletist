@@ -1,6 +1,7 @@
 //! A notification on the Linux desktop, over D-Bus
-//! (`org.freedesktop.Notifications`): what mako shows on Omarchy. One
-//! action, Review, which the app answers by showing the Agents tab.
+//! (`org.freedesktop.Notifications`): what mako shows on Omarchy. An
+//! agent's has one action, Review, which the app answers by showing the
+//! Agents tab; a finished export's has none.
 
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -28,15 +29,51 @@ pub(super) async fn notify(summary: String, body: String, outbox: Outbox) {
     }
 }
 
-async fn shown(summary: &str, body: &str, outbox: &Outbox) -> zbus::Result<()> {
-    let connection = zbus::Connection::session().await?;
-    let proxy = zbus::Proxy::new(
-        &connection,
+/// Shows `summary` and `body` with no action: a click puts it away.
+/// Nothing where no notification server answers.
+pub(in crate::backend) async fn plain(summary: String, body: String) {
+    let shown = async {
+        let connection = zbus::Connection::session().await?;
+        let hints: HashMap<&str, zbus::zvariant::Value<'_>> = HashMap::new();
+        let actions: [&str; 0] = [];
+        let _: u32 = proxy(&connection)
+            .await?
+            .call(
+                "Notify",
+                &(
+                    "Tabletist",
+                    0u32,
+                    "",
+                    &summary,
+                    &body,
+                    &actions[..],
+                    hints,
+                    -1i32,
+                ),
+            )
+            .await?;
+        zbus::Result::Ok(())
+    };
+    if let Err(error) = shown.await {
+        // Not its words: they name a table.
+        log::warn!("a notification could not be shown: {error}");
+    }
+}
+
+/// The notification server's object.
+async fn proxy(connection: &zbus::Connection) -> zbus::Result<zbus::Proxy<'static>> {
+    zbus::Proxy::new(
+        connection,
         "org.freedesktop.Notifications",
         "/org/freedesktop/Notifications",
         "org.freedesktop.Notifications",
     )
-    .await?;
+    .await
+}
+
+async fn shown(summary: &str, body: &str, outbox: &Outbox) -> zbus::Result<()> {
+    let connection = zbus::Connection::session().await?;
+    let proxy = proxy(&connection).await?;
     // Before it is shown: a click that comes at once is not missed.
     let mut signals = zbus::MessageStream::for_match_rule(
         zbus::MatchRule::builder()

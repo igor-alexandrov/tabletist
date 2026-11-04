@@ -278,6 +278,8 @@ pub enum When {
     Export,
     /// A failed export's line stands in the terminal look's status line.
     ExportFailed,
+    /// A button of a toast has the keyboard (⌘⇧' put it there).
+    ToastFocused,
     /// The start screen's search is on: its field has the keyboard. The
     /// keys that move among the matches, open one and clear the search are
     /// read then, and only then.
@@ -596,7 +598,12 @@ commands! {
     ExportAllColumns = "export_all_columns",
     ExportNoColumns = "export_no_columns",
     DismissExport = "dismiss_export",
+    ExportTable = "export_table",
     Import = "import",
+    FocusToast = "focus_toast",
+    LeaveToast = "leave_toast",
+    ToastNext = "toast_next",
+    ToastPrevious = "toast_previous",
     PasteCells = "paste_cells",
     PasteNewRows = "paste_new_rows",
     AddRow = "add_row",
@@ -746,6 +753,7 @@ commands! {
     QuickOpenCommands = "quick_open_commands",
     QuickOpenNumber = "quick_open_number",
     QuickOpenClose = "quick_open_close",
+    QuickOpenExport = "quick_open_export",
     NextLabel = "next_label",
     PreviousLabel = "previous_label",
     ChooseLabel = "choose_label",
@@ -1007,7 +1015,12 @@ impl Command {
             C::ExportAllColumns => info("Include every column", "", Prompts),
             C::ExportNoColumns => info("Leave every column out", "", Prompts),
             C::DismissExport => info("Put away a failed export's line", "", Window),
+            C::ExportTable => info("Export a table…", "", Window),
             C::Import => info("Import…", "", Window).reserved(),
+            C::FocusToast => info("Move to the toast", "", Window),
+            C::LeaveToast => info("Give the keyboard back from the toast", "", Prompts),
+            C::ToastNext => info("Next button of the toast", "", Prompts),
+            C::ToastPrevious => info("Previous button of the toast", "", Prompts),
             C::PasteCells => info("Paste cell values", COPY, Editing).reserved(),
             C::PasteNewRows => info("Paste as new rows", "Paste as new rows", Editing).reserved(),
             C::AddRow => info("Add row", "Add row", Editing),
@@ -1210,6 +1223,7 @@ impl Command {
             C::QuickOpenCommands => info("List the commands alone", "", Prompts),
             C::QuickOpenNumber => info("Open a recent by its number", "", Prompts),
             C::QuickOpenClose => info("Close quick open", "", Prompts),
+            C::QuickOpenExport => info("Export the picked table", "", Prompts),
             C::NextLabel => info("Next line of the label chooser", "", Prompts),
             C::PreviousLabel => info("Previous line of the label chooser", "", Prompts),
             C::ChooseLabel => info("Choose the label column", "", Prompts),
@@ -1978,8 +1992,16 @@ pub const BINDINGS: &[Binding] = {
         bind(C::ExportAllColumns, PROMPT, NONE, keys(&[k("a")])).when(When::Export),
         bind(C::ExportNoColumns, PROMPT, NONE, keys(&[k("n")])).when(When::Export),
         bind(C::DismissExport, TREE_AND_GRID, NONE, keys(&[k("esc")])).when(When::ExportFailed),
+        // Quick open's Export a table…: a row to pick, no key.
+        bind(C::ExportTable, GLOBAL, NONE, NONE),
         // File › Import…, held for later: no key, and not built.
         bind(C::Import, GLOBAL, NONE, NONE),
+        // The toast's buttons take the keyboard; the terminal look's
+        // status line has none.
+        bind(C::FocusToast, GLOBAL, keys(&[k("cmd+shift+'")]), NONE),
+        bind(C::LeaveToast, PROMPT, keys(&[k("esc")]), NONE).when(When::ToastFocused),
+        bind(C::ToastNext, PROMPT, keys(&[k("tab")]), NONE).when(When::ToastFocused),
+        bind(C::ToastPrevious, PROMPT, keys(&[k("shift+tab")]), NONE).when(When::ToastFocused),
         bind(C::PasteCells, GRID, keys(&[k("cmd+v")]), NONE),
         bind(C::PasteCells, GRID, NONE, keys(&[k("p")]).shown("v p")).when(When::Visual),
         bind(
@@ -2657,6 +2679,14 @@ pub const BINDINGS: &[Binding] = {
             PROMPT,
             keys(&[k("esc")]),
             keys(&[k("esc")]),
+        )
+        .when(When::QuickOpen),
+        // The picked table or view opens, and its export over it.
+        bind(
+            C::QuickOpenExport,
+            PROMPT,
+            keys(&[k("cmd+shift+e")]),
+            keys(&[k("ctrl+e")]),
         )
         .when(When::QuickOpen),
         // The chooser of a table's label column. It has no field: a letter
@@ -3798,8 +3828,9 @@ const OWN: [Command; 2] = [Command::Help, Command::LeaveEditor];
 /// every look: there a chord can be given them. Any other row with no key
 /// in a look is read by that look's letters or prompt, or by the other
 /// look's handler alone, and nothing would answer a key given it.
-const ANY_LOOK: [(Command, Scope); 14] = [
+const ANY_LOOK: [(Command, Scope); 15] = [
     (Command::SwitchDatabase, Scope::Global),
+    (Command::ExportTable, Scope::Global),
     (Command::PaneLeft, Scope::Global),
     (Command::PaneRight, Scope::Global),
     (Command::PaneUp, Scope::Global),
@@ -4358,6 +4389,19 @@ mod tests {
         // given one, and not where nothing would read it.
         assert!(listed(Layout::Mac, row(Command::SwitchDatabase, global)));
         assert!(written(Layout::Mac, row(Command::SwitchDatabase, global)).is_empty());
+        // Export a Table… has no key in either look, and takes a chord in
+        // both: the key handler reads it in every look.
+        for layout in Layout::ALL {
+            assert!(
+                listed(layout, row(Command::ExportTable, global)),
+                "{layout:?}"
+            );
+            assert_eq!(
+                takes(layout, row(Command::ExportTable, global)),
+                [Press::Chord],
+                "{layout:?}"
+            );
+        }
         assert!(listed(
             Layout::Mac,
             row(Command::ComparePreviousRun, Scope::SqlEditor)

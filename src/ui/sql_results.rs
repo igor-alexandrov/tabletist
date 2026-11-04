@@ -1996,7 +1996,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         palette: *palette,
         look: *look,
     };
-    let menu_rows = |ui: &mut egui::Ui| crate::ui::copy_as::context_rows(ui, paint);
+    let menu_rows = |ui: &mut egui::Ui| crate::ui::copy_as::context_rows(ui, paint, false);
     let output = grid::show(
         &mut child,
         id,

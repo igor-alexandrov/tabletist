@@ -136,19 +136,23 @@ pub fn show(
             .order(Order::Foreground)
             .anchor(Align2::RIGHT_BOTTOM, vec2(-16.0, -16.0))
             .show(ctx, |ui| {
-                let response = Frame::new()
+                let drawn = Frame::new()
                     .fill(palette.text)
                     .corner_radius(14)
                     .inner_margin(Margin::symmetric(12, 6))
                     .show(ui, |ui| {
                         widgets::label(ui, small, &text, palette.window, &look);
                     })
-                    .response
-                    .interact(Sense::click());
+                    .response;
+                // A widget of its own over the frame, which takes the
+                // keyboard as a button does.
+                let response =
+                    ui.interact(drawn.rect, Id::new("export-pill-button"), Sense::click());
                 let spoken = spoken(ui.ctx(), exporting, locale);
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &spoken)
                 });
+                toast::button(ui.ctx(), &response, true);
                 if response.clicked() {
                     actions.push(Action::HideExport(false));
                 }
@@ -205,24 +209,26 @@ pub fn show(
                             &look,
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // Right to left: Cancel is drawn after ×, and
+                            // is the first the keyboard comes to.
                             let hide = gettext(locale, "Hide");
-                            if widgets::icon_button_tipped(
+                            let hidden = widgets::icon_button_tipped(
                                 ui,
                                 crate::style::Icon::X,
                                 (&hide, &hide),
                                 &look,
                                 &palette,
-                            )
-                            .clicked()
-                            {
+                            );
+                            toast::button(ui.ctx(), &hidden, false);
+                            if hidden.clicked() {
                                 actions.push(Action::HideExport(true));
                             }
                             let cancel = gettext(locale, "Cancel");
-                            if ButtonSpec::new(&cancel)
+                            let cancelled = ButtonSpec::new(&cancel)
                                 .link()
-                                .show(ui, 22.0, &look, &palette)
-                                .clicked()
-                            {
+                                .show(ui, 22.0, &look, &palette);
+                            toast::button(ui.ctx(), &cancelled, true);
+                            if cancelled.clicked() {
                                 actions.push(Action::CancelExport);
                             }
                         });
@@ -266,11 +272,11 @@ pub fn show(
                             node.set_live(egui::accesskit::Live::Polite);
                         });
                         let reveal = reveal_words(locale);
-                        if ButtonSpec::new(&reveal)
+                        let shown = ButtonSpec::new(&reveal)
                             .link()
-                            .show(ui, 22.0, &look, &palette)
-                            .clicked()
-                        {
+                            .show(ui, 22.0, &look, &palette);
+                        toast::button(ui.ctx(), &shown, true);
+                        if shown.clicked() {
                             actions.push(Action::RevealExport);
                         }
                     });
@@ -304,23 +310,23 @@ pub fn show(
                         ui.ctx().accesskit_node_builder(said.id, |node| {
                             node.set_live(egui::accesskit::Live::Assertive);
                         });
-                        if let Some(action) = &action
-                            && ButtonSpec::new(action)
-                                .show(ui, 24.0, &look, &palette)
-                                .clicked()
-                        {
-                            actions.push(Action::ExportFailureAction);
+                        if let Some(action) = &action {
+                            let acted = ButtonSpec::new(action).show(ui, 24.0, &look, &palette);
+                            toast::button(ui.ctx(), &acted, true);
+                            if acted.clicked() {
+                                actions.push(Action::ExportFailureAction);
+                            }
                         }
                         let dismiss = gettext(locale, "Dismiss");
-                        if widgets::icon_button_tipped(
+                        let dismissed = widgets::icon_button_tipped(
                             ui,
                             crate::style::Icon::X,
                             (&dismiss, &dismiss),
                             &look,
                             &palette,
-                        )
-                        .clicked()
-                        {
+                        );
+                        toast::button(ui.ctx(), &dismissed, action.is_none());
+                        if dismissed.clicked() {
                             actions.push(Action::DismissExport);
                         }
                     });

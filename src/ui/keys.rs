@@ -850,6 +850,10 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         if in_workspace && on(input, Command::History, Scope::Global).count > 0 {
             actions.push(Action::ShowHistory(active));
         }
+        // No key of its own: one the person gives it in Settings.
+        if in_workspace && on(input, Command::ExportTable, Scope::Global).count > 0 {
+            actions.push(Action::PickTableToExport(active));
+        }
         if on(input, Command::Connections, Scope::Global).count > 0 {
             actions.push(Action::ShowConnections);
         }
@@ -1358,7 +1362,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 } else {
                     crate::model::CopyPick::Selection
                 };
-                copy_plain(ctx, app, pick);
+                copy_plain(ctx, app, pick, &mut actions);
             }
             None => {}
         }
@@ -2143,16 +2147,27 @@ fn on_last_row(object: &ObjectTab) -> bool {
 
 /// Copies `pick` of the grid in front as ⌘C does, saying nothing: past the
 /// clipboard's limits it copies nothing and says why.
-fn copy_plain(ctx: &egui::Context, app: &App, pick: crate::model::CopyPick) {
+/// A copy too large for the clipboard is the app's to refuse: it says
+/// why and offers the file (spec 3b, R6). Says whether it was refused.
+fn copy_plain(
+    ctx: &egui::Context,
+    app: &App,
+    pick: crate::model::CopyPick,
+    actions: &mut Vec<Action>,
+) -> bool {
     let how = crate::model::CopyHow::Plain;
     let Some(copying) = app.copy(pick, how) else {
-        return;
+        return false;
     };
     match copying.copied {
-        crate::export::Copied::Text { text, .. } => ctx.copy_text(text),
+        crate::export::Copied::Text { text, .. } => {
+            ctx.copy_text(text);
+            false
+        }
         _ => {
-            let said = crate::app::copy_said(app.locale, &copying, how);
-            crate::ui::toast::say(ctx, &said);
+            let tab = app.active_tab_id();
+            actions.push(Action::CopyAs { tab, pick, how });
+            true
         }
     }
 }
@@ -3056,9 +3071,12 @@ fn letters(
         match (command, active) {
             // Export: the table under the tree's cursor, or the rows'.
             (Some(Command::Export), _) if tree => actions.push(Action::ExportFromTree(tab)),
-            (Some(Command::Export), Some(_)) if rows_show => {
-                actions.push(Action::OpenExport { tab, format: None });
-            }
+            // While the line offers the file for a copy refused, on the
+            // copy's selection and format (spec 3b, R6).
+            (Some(Command::Export), Some(_)) if rows_show => match crate::ui::toast::offered(ctx) {
+                Some(offer) if offer.tab == tab => actions.push(Action::ExportSelection(offer)),
+                _ => actions.push(Action::OpenExport { tab, format: None }),
+            },
             (Some(Command::OpenExportFolder), _) => actions.push(Action::RevealExport),
             (Some(Command::ShowAgents), _) if crate::endpoint::AVAILABLE => {
                 actions.push(Action::ShowAgents(tab));
@@ -3398,8 +3416,9 @@ fn letters(
             // A visual selection's cells, of the rows or a result, and as
             // vim's `y` does the selection is left.
             (Some(Command::CopySelection), _) if active.is_none() || rows_show => {
-                copy_plain(ctx, app, crate::model::CopyPick::Selection);
-                if let Some(id) = active.or(sql_grid).filter(|_| visual) {
+                // A refused copy keeps the selection, for `E` to export.
+                let refused = copy_plain(ctx, app, crate::model::CopyPick::Selection, actions);
+                if let Some(id) = active.or(sql_grid).filter(|_| visual && !refused) {
                     actions.push(Action::LeaveVisual { tab, id });
                 }
             }

@@ -79,7 +79,7 @@ impl Scripts {
 /// review, which the key shows and hides by turns; and its Agents shows
 /// the Agents tab, which the key does but where History has an agent's
 /// statement picked (there it shows that call).
-pub const RUNNABLE: [Command; 31] = [
+pub const RUNNABLE: [Command; 32] = [
     Command::NewSqlTab,
     Command::SwitchDatabase,
     Command::ShowAgents,
@@ -111,6 +111,7 @@ pub const RUNNABLE: [Command; 31] = [
     Command::ToggleSqlMode,
     Command::CancelQuery,
     Command::Export,
+    Command::ExportTable,
 ];
 
 impl App {
@@ -230,10 +231,23 @@ impl App {
                 {
                     ("Cancel export", About::Nothing, vec![Action::CancelExport])
                 } else {
-                    object?;
+                    let table = object?.object.name.clone();
                     let open = Action::OpenExport { tab, format: None };
-                    ("Export…", in_front()?, vec![open])
+                    ("Export {table}…", About::CurrentTable(table), vec![open])
                 }
+            }
+            // A table of the connection, picked next; not while one runs,
+            // where Export's row is its cancel.
+            Command::ExportTable => {
+                if self
+                    .exporting
+                    .as_ref()
+                    .is_some_and(crate::export_sheet::Exporting::running)
+                {
+                    return None;
+                }
+                let pick = Action::PickTableToExport(tab);
+                ("Export a table…", About::PickNext, vec![pick])
             }
             // The tab in front's.
             Command::CloseTab => {

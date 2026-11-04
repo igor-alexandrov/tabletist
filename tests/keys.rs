@@ -25,7 +25,7 @@ const MAY: [&str; 3] = [
 
 /// The files that are tests and nothing else, or scenes for screenshots: a
 /// test says what the user presses and sees, in its own words.
-const TESTS: [&str; 14] = [
+const TESTS: [&str; 15] = [
     "src/app/keyboard_tests.rs",
     "src/testing.rs",
     "src/shots.rs",
@@ -35,6 +35,7 @@ const TESTS: [&str; 14] = [
     "src/ui/duplicate_tests.rs",
     "src/ui/env_tests.rs",
     "src/ui/export_tests.rs",
+    "src/ui/export_ways_tests.rs",
     "src/ui/insert_audit_tests.rs",
     "src/ui/key_picker_tests.rs",
     "src/ui/keyboard_tests.rs",

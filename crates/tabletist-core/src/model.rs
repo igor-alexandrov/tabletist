@@ -366,6 +366,17 @@ pub enum Action {
     /// The terminal look's `E` on the tree: the table under the cursor
     /// opens, and its export float over it.
     ExportFromTree(ConnTabId),
+    /// The grid's Export selection…, and Copy as's Export… over the
+    /// clipboard's limit: the sheet over the table in front, on its
+    /// selection.
+    ExportSelection(ExportOffer),
+    /// A row of the sidebar's menu on a table or view.
+    FromTree {
+        tab: ConnTabId,
+        object: ObjectRef,
+        kind: ObjectKind,
+        pick: TreePick,
+    },
     /// A change made in the Export sheet.
     ChangeExport(crate::export_sheet::ExportChange),
     /// The sheet's Count exactly: the tab's count, as the footer's Count.
@@ -1187,6 +1198,12 @@ pub enum Action {
     },
     /// Switch quick open between this connection and every open one.
     QuickOpenScope,
+    /// ⇧⌘E (`ctrl+e`) in quick open: the picked table or view opens, and
+    /// its Export sheet over it.
+    QuickOpenExport,
+    /// Quick open's Export a table…: it opens again on `tab`'s tables and
+    /// views alone, and the one picked opens with its sheet.
+    PickTableToExport(ConnTabId),
     /// Open the menu of the server's other databases under the connection
     /// bar's chip, as Switch database's key does.
     ShowDatabaseMenu(ConnTabId),
@@ -3049,6 +3066,9 @@ pub struct QuickOpen {
     /// typed): what Enter opens, wherever the list, which can change by
     /// itself (a run that ends, a list that comes in), has moved it.
     pub picked: Option<QuickItem>,
+    /// Export a table…: it lists the connection's tables and views alone,
+    /// and the one picked opens with its Export sheet.
+    pub exporting: bool,
 }
 
 /// Where quick open moves its field's caret.
@@ -3100,6 +3120,11 @@ pub enum About {
     Agents,
     /// The tab in front.
     Tab(TabName),
+    /// The table in front, which the command's name holds ("Export
+    /// reviews…"): "current table".
+    CurrentTable(String),
+    /// A table is picked next: "pick one next".
+    PickNext,
 }
 
 /// A tab as a command's row names it.
@@ -3133,6 +3158,18 @@ pub struct Runnable {
     pub command: crate::keymap::Command,
     pub name: &'static str,
     pub about: About,
+}
+
+impl Runnable {
+    /// Its name in `locale`, the table in front written into it where it
+    /// names one ("Export {table}…").
+    pub fn named(&self, locale: crate::i18n::Locale) -> String {
+        let name = crate::i18n::gettext(locale, self.name);
+        match &self.about {
+            About::CurrentTable(table) => name.replace("{table}", table),
+            _ => name.into_owned(),
+        }
+    }
 }
 
 /// A row of a window's start screen list, as quick open shows it with
@@ -3725,6 +3762,47 @@ pub struct SchemaNode {
     pub objects: Fetch<Vec<ObjectInfo>>,
     /// Prefix groups the user unfolded (`book_`).
     pub open_groups: HashSet<String>,
+}
+
+/// The sheet Export selection… opens (spec 3b, R1 and R6): over the table
+/// in front of `tab`, on its selection (the cursor's row where no range
+/// stands), every column where `whole_rows` (a refused Copy rows as TSV),
+/// else a block's own. A format given is the copy's, to a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportOffer {
+    pub tab: ConnTabId,
+    /// The table's tab the copy was of: it comes to the front first.
+    pub table: Option<TabId>,
+    pub format: Option<crate::export::Format>,
+    pub whole_rows: bool,
+    /// What the copy took: a selection moved since is put back, so the
+    /// sheet exports what was copied.
+    pub copied: Option<CopiedSelection>,
+}
+
+/// The selection a refused copy took, on the page it was of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopiedSelection {
+    /// The read whose page the rows are of: once another page is shown
+    /// the rows are other rows, and the offer goes.
+    pub page: Option<RequestId>,
+    pub cursor: CellPos,
+    pub range: Option<Range>,
+}
+
+/// What a row of the sidebar's menu on a table or view does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreePick {
+    /// Open it pinned, as a double click.
+    Open,
+    /// Open it in its Structure view.
+    Structure,
+    /// Open it in its DDL view.
+    Ddl,
+    /// Put its name on the clipboard, and say so.
+    CopyName,
+    /// Open it, and its Export sheet over it.
+    Export,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

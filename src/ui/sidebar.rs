@@ -7,7 +7,7 @@ use tabletist_db::{ObjectKind, ObjectRef};
 
 use crate::format::display_safe;
 use crate::i18n::{Locale, gettext};
-use crate::keymap::{Command, Keymap, Written};
+use crate::keymap::{Command, Keymap, Scope, Written};
 use crate::model::{Action, AgentsHere, ConnTabId, TreeNode, TreeRow, Workspace};
 use crate::style::Icon;
 use crate::theme::{Look, Palette};
@@ -1223,10 +1223,75 @@ fn tree_row(
     }
     // A click also puts the keyboard cursor here and gives the tree the
     // arrows (after the row's own action, which may give them to the grid).
-    if response.clicked() {
+    // A secondary click too: its menu is about this row.
+    if response.clicked() || response.secondary_clicked() {
         actions.push(Action::SetTreeCursor {
             tab,
             node: row.node.clone(),
         });
     }
+    if let TreeNode::Object(object, kind) = &row.node {
+        object_menu(&response, (tab, object, *kind), locale, skin, actions);
+    }
+}
+
+/// The menu a secondary click on a table's or view's row opens (spec 3b,
+/// R5): Open, Structure, DDL, Copy name, Export…, and Import… greyed.
+fn object_menu(
+    response: &egui::Response,
+    (tab, object, kind): (ConnTabId, &ObjectRef, ObjectKind),
+    locale: Locale,
+    skin: Skin<'_>,
+    actions: &mut Vec<Action>,
+) {
+    use crate::model::TreePick;
+    let Skin { look, palette } = skin;
+    menu::context(response, look, palette, |ui| {
+        let ctx = ui.ctx().clone();
+        let word = |text: &'static str| look.label(&gettext(locale, text));
+        let key = |command| crate::ui::keys::written_in(&ctx, look, command, Scope::Sidebar);
+        let rows = [
+            (TreePick::Open, word("Open"), key(Command::OpenObject)),
+            (TreePick::Structure, word("Structure"), Written::default()),
+            (TreePick::Ddl, word("DDL"), Written::default()),
+        ];
+        let mut picked = None;
+        let row = |ui: &mut egui::Ui, words: &str, key: &Written| {
+            let mut item = menu::Item::action(words);
+            if !look.terminal && !key.as_str().is_empty() {
+                item = item.detail(key.as_str());
+            }
+            item.show(ui, look, palette).clicked()
+        };
+        for (pick, words, key) in &rows {
+            if row(ui, words, key) {
+                picked = Some(*pick);
+            }
+        }
+        let copy = word("Copy name");
+        if row(ui, &copy, &Written::default()) {
+            picked = Some(TreePick::CopyName);
+        }
+        menu::separator(ui, palette);
+        let export = word("Export…");
+        if row(ui, &export, &key(Command::Export)) {
+            picked = Some(TreePick::Export);
+        }
+        let import = word("Import…");
+        let later = word("later");
+        let why = gettext(locale, "Import comes after Export");
+        menu::Item::action(&import)
+            .detail(&later)
+            .disabled(&why)
+            .show(ui, look, palette);
+        if let Some(pick) = picked {
+            actions.push(Action::FromTree {
+                tab,
+                object: object.clone(),
+                kind,
+                pick,
+            });
+            ui.close();
+        }
+    });
 }

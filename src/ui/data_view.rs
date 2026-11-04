@@ -1886,8 +1886,9 @@ pub fn show(
         // grid of the fit before kept goes when this one is drawn.
         let id = grid_id(tab, object_tab, fit);
         grid::keep(ui.ctx(), table_id(tab, object_tab), id);
-        // A secondary click's menu: Copy, Copy as ›, Copy rows as TSV.
-        let menu_rows = |ui: &mut egui::Ui| crate::ui::copy_as::context_rows(ui, paint);
+        // A secondary click's menu: Copy, Copy as ›, Copy rows as TSV,
+        // Export selection….
+        let menu_rows = |ui: &mut egui::Ui| crate::ui::copy_as::context_rows(ui, paint, true);
         let output = grid::show(
             ui,
             id,
