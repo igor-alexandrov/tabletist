@@ -1985,6 +1985,50 @@ impl App {
                 }
             }
             (Typed::Command(Command::SaveChanges), Some((id, _))) => Action::WriteEdits { tab, id },
+            // Export: the float, in a format, or at once to a path. Bare
+            // `:w` is the line above, and never reaches these.
+            (Typed::Command(Command::Export), Some(_)) => {
+                // After a failure, the same export again.
+                if self.exporting.as_ref().is_some_and(|exporting| {
+                    matches!(
+                        exporting.status,
+                        crate::export_sheet::ExportStatus::Failed { .. }
+                    )
+                }) {
+                    return self.export_failure_action();
+                }
+                Action::OpenExport { tab, format: None }
+            }
+            (Typed::Command(Command::ExportAs), Some(_)) => {
+                let named =
+                    self.keymap
+                        .ex_argument(Layout::Omarchy, Command::ExportAs, scope, line);
+                let format = named.and_then(|named| {
+                    crate::export::Format::of_extension(named).or_else(|| {
+                        crate::export::Format::ALL
+                            .into_iter()
+                            .find(|format| format.name().eq_ignore_ascii_case(named))
+                    })
+                });
+                let Some(format) = format else {
+                    return refused(self);
+                };
+                Action::OpenExport {
+                    tab,
+                    format: Some(format),
+                }
+            }
+            (Typed::Command(command @ (Command::ExportTo | Command::ExportOver)), Some(_)) => {
+                let named = self
+                    .keymap
+                    .ex_argument(Layout::Omarchy, command, scope, line);
+                let Some(path) = named.map(str::to_owned) else {
+                    return refused(self);
+                };
+                let replace = command == Command::ExportOver;
+                Action::ExportTo { tab, path, replace }
+            }
+            (Typed::Command(Command::CancelExport), _) => Action::CancelExport,
             (Typed::Command(Command::DiscardChanges), Some((id, _))) => {
                 Action::DiscardEdits { tab, id }
             }

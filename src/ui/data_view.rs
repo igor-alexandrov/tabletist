@@ -413,6 +413,22 @@ pub fn header(
                 };
                 if short { button.gap(0.0) } else { button }
             };
+            // Export… stands before Add row, and folds with it (spec,
+            // Entry points).
+            let export_label = gettext(locale, "Export…");
+            let export_keys =
+                crate::ui::keys::written(ui.ctx(), &look, crate::keymap::Command::Export);
+            let export = |short: bool| {
+                let button = widgets::ButtonSpec::new(if short { "" } else { &export_label })
+                    .label(&export_label)
+                    .icon(Icon::Download)
+                    .role(TextRole::UiBodyStrong);
+                if short {
+                    button.gap(0.0)
+                } else {
+                    button.shortcut(&export_keys)
+                }
+            };
             // In the DDL view, what it says while it reads stands where
             // Add row would.
             // Its Copy and Open in SQL editor stand there once its text
@@ -447,15 +463,28 @@ pub fn header(
                 .find(|form| free - wait(Some(*form)) >= title_width)
                 .or_else(|| (free - wait(Some(Buttons::Icons)) >= cut).then_some(Buttons::Icons));
             let wait = wait(form);
-            let stack = |button: Option<bool>| {
-                let button = button.map_or(0.0, |short| 12.0 + add_row(short).width(ui, &look));
+            // The buttons as room allows: Export… (whole, its icon, or
+            // gone) and Add row (whole or its icon). Export… folds and goes
+            // first.
+            let stack = |button: Option<(Option<bool>, bool)>| {
+                let button = button.map_or(0.0, |(exported, short)| {
+                    let export_width =
+                        exported.map_or(0.0, |short| 8.0 + export(short).width(ui, &look));
+                    12.0 + add_row(short).width(ui, &look) + export_width
+                });
                 free - button - wait
             };
             // The DDL view has no Add row.
             let rows = if view == ObjectView::Ddl {
                 &[None][..]
             } else {
-                &[Some(false), Some(true), None][..]
+                &[
+                    Some((Some(false), false)),
+                    Some((Some(true), false)),
+                    Some((None, false)),
+                    Some((None, true)),
+                    None,
+                ][..]
             };
             let button = rows
                 .iter()
@@ -572,7 +601,18 @@ pub fn header(
                 } else {
                     super::ddl::header_wait(ui, reading, right, center, skin);
                 }
-            } else if let Some(short) = button {
+            } else if let Some((exported, short)) = button {
+                if let Some(export_short) = exported {
+                    let exporting = export(export_short);
+                    let export_width = exporting.width(ui, &look);
+                    let add_width = add_row(short).width(ui, &look);
+                    let at = right - add_width - 8.0 - export_width;
+                    let place =
+                        Rect::from_min_size(pos2(at, center - 16.0), vec2(export_width, 32.0));
+                    if exporting.show_at(ui, place, &look, &palette).clicked() {
+                        actions.push(Action::OpenExport { tab, format: None });
+                    }
+                }
                 let button = add_row(short);
                 let width = button.width(ui, &look);
                 let place =

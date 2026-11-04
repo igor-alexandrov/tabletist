@@ -1048,6 +1048,26 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 }
             }
         }
+        // Export…: of the table in front, or of the one the tree's
+        // selection is on. While one runs it cancels, as File › Export…
+        // does then (spec, D11).
+        if !terminal && app.dialog.is_none() {
+            let running = app
+                .exporting
+                .as_ref()
+                .is_some_and(crate::export_sheet::Exporting::running);
+            let tree_asked = tree_arrows && on(input, Command::Export, Scope::Sidebar).fresh;
+            let grid_asked =
+                !tree_asked && object.is_some() && on(input, Command::Export, Scope::Grid).fresh;
+            match (running, tree_asked, grid_asked, object) {
+                (true, true, _, _) | (true, _, true, _) => actions.push(Action::CancelExport),
+                (false, true, _, _) => actions.push(Action::ExportFromTree(active)),
+                (false, false, true, Some((tab, _))) => {
+                    actions.push(Action::OpenExport { tab, format: None });
+                }
+                _ => {}
+            }
+        }
         // The DDL view's chords, in its text too.
         if !terminal
             && app.dialog.is_none()
@@ -2687,6 +2707,17 @@ fn letters(
     {
         actions.push(Action::DismissNote { tab, id });
     }
+    // A failed export's line, which stays until Esc.
+    let export_failed = app.exporting.as_ref().is_some_and(|exporting| {
+        matches!(
+            exporting.status,
+            crate::export_sheet::ExportStatus::Failed { .. }
+        )
+    });
+    let here = if tree { Scope::Sidebar } else { Scope::Grid };
+    if export_failed && quiet && on(Command::DismissExport, here).fresh {
+        actions.push(Action::DismissExport);
+    }
     // The row panel's keys: an object tab's, or a SQL result's while a row
     // of it is selected (with none its panel has nothing to show).
     let panel_tab = active.or(sql_row);
@@ -3023,6 +3054,12 @@ fn letters(
         waiting.clear();
         let command = command.filter(|command| !(visual && held_back(*command)));
         match (command, active) {
+            // Export: the table under the tree's cursor, or the rows'.
+            (Some(Command::Export), _) if tree => actions.push(Action::ExportFromTree(tab)),
+            (Some(Command::Export), Some(_)) if rows_show => {
+                actions.push(Action::OpenExport { tab, format: None });
+            }
+            (Some(Command::OpenExportFolder), _) => actions.push(Action::RevealExport),
             (Some(Command::ShowAgents), _) if crate::endpoint::AVAILABLE => {
                 actions.push(Action::ShowAgents(tab));
             }

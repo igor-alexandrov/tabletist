@@ -30,6 +30,7 @@ pub mod sql;
 mod sqlite;
 mod ssh;
 pub mod ssh_config;
+mod stream;
 mod tls;
 mod value;
 mod write;
@@ -56,6 +57,7 @@ pub use script::{
 };
 pub use spec::{ConnectSpec, Driver, ParsedUrl, Secrets, SshAuth, SshSpec, TlsMode};
 pub use ssh::HostKeys;
+pub use stream::Streamed;
 pub use value::{ColumnMeta, Value, ValueKind, is_plain_number, value_from_pg_text};
 pub use write::{
     CellChange, ChangeSet, Conflict, InsertValue, MAX_RUN, NewValue, RowChange, RowDelete,
@@ -385,6 +387,41 @@ impl Connection {
             Inner::Sqlite(conn) => conn.fetch_rows(query).await,
             Inner::Postgres(conn) => conn.fetch_rows(query).await,
             Inner::MySql(conn) => conn.fetch_rows(query).await,
+        }
+    }
+
+    /// The statement [`Connection::stream_rows`] runs for `query` and
+    /// `columns`, its values written in, as a person reads it: built from
+    /// the same key and binary columns, for the history to keep.
+    pub async fn export_statement(&self, query: &RowQuery, columns: &[String]) -> Result<String> {
+        match &self.inner {
+            Inner::Sqlite(conn) => conn.export_statement(query, columns).await,
+            Inner::Postgres(conn) => conn.export_statement(query, columns).await,
+            Inner::MySql(conn) => conn.export_statement(query, columns).await,
+        }
+    }
+
+    /// Every row of `query`'s table that its filters keep, in its order
+    /// (no `LIMIT`, no `OFFSET`): the `columns` named, in their order, or
+    /// all of them when there are none. Sent to `to` as the columns, then
+    /// batches of up to `batch` rows, read-only: through a cursor on
+    /// PostgreSQL, unbuffered on MySQL, stepped on SQLite, so no more than
+    /// a batch is read ahead of what `to` has taken. Returns the rows sent.
+    /// `stop`, or `to` closing, ends it as [`Error::Cancelled`]; a
+    /// statement the server's own timeout ended is [`Error::Timeout`].
+    pub async fn stream_rows(
+        &self,
+        query: &RowQuery,
+        columns: &[String],
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        let batch = batch.max(1);
+        match &self.inner {
+            Inner::Sqlite(conn) => conn.stream_rows(query, columns, batch, to, stop).await,
+            Inner::Postgres(conn) => conn.stream_rows(query, columns, batch, to, stop).await,
+            Inner::MySql(conn) => conn.stream_rows(query, columns, batch, to, stop).await,
         }
     }
 

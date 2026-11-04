@@ -79,7 +79,7 @@ impl Scripts {
 /// review, which the key shows and hides by turns; and its Agents shows
 /// the Agents tab, which the key does but where History has an agent's
 /// statement picked (there it shows that call).
-pub const RUNNABLE: [Command; 30] = [
+pub const RUNNABLE: [Command; 31] = [
     Command::NewSqlTab,
     Command::SwitchDatabase,
     Command::ShowAgents,
@@ -110,6 +110,7 @@ pub const RUNNABLE: [Command; 30] = [
     Command::Format,
     Command::ToggleSqlMode,
     Command::CancelQuery,
+    Command::Export,
 ];
 
 impl App {
@@ -219,6 +220,20 @@ impl App {
                     "Hide sidebar"
                 };
                 (name, About::Nothing, vec![Action::ToggleSidebar(tab)])
+            }
+            // The table in front's; while one runs, its cancel.
+            Command::Export => {
+                if self
+                    .exporting
+                    .as_ref()
+                    .is_some_and(crate::export_sheet::Exporting::running)
+                {
+                    ("Cancel export", About::Nothing, vec![Action::CancelExport])
+                } else {
+                    object?;
+                    let open = Action::OpenExport { tab, format: None };
+                    ("Export…", in_front()?, vec![open])
+                }
             }
             // The tab in front's.
             Command::CloseTab => {

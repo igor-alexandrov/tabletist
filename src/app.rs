@@ -30,7 +30,9 @@ use crate::theme::{self, Catalog, Palette};
 
 mod commands;
 mod editing;
+mod export;
 mod history;
+pub use export::ExportFacts;
 mod key_picker;
 mod keyboard;
 #[cfg(test)]
@@ -155,6 +157,15 @@ pub struct App {
     /// The options last chosen for each format of an export and of Copy
     /// as, from export_options.json.
     pub export: crate::export::Options,
+    /// The export running, or the last one while its end is told.
+    pub exporting: Option<crate::export_sheet::Exporting>,
+    /// The formats whose last export went to the clipboard: the sheet
+    /// starts there for them (spec, Q12).
+    export_clipboard: std::collections::HashSet<crate::export::Format>,
+    /// The format of the last export: the next sheet opens on it.
+    export_format: Option<crate::export::Format>,
+    /// What the Export sheet says to a screen reader next: a column moved.
+    pub export_said: Option<String>,
     /// What a copy the app made puts on the clipboard: the frame takes it
     /// there (`ui::show`), as it has the clipboard.
     pub to_clipboard: Option<String>,
@@ -431,6 +442,10 @@ impl App {
             table_lists,
             table_lists_unread,
             export,
+            exporting: None,
+            export_clipboard: Default::default(),
+            export_format: None,
+            export_said: None,
             to_clipboard: None,
             said: None,
             session,
@@ -2195,6 +2210,17 @@ impl App {
                     })));
                 }
             }
+            Action::OpenExport { tab, format } => self.open_export(tab, format),
+            Action::ExportFromTree(tab) => self.export_from_tree(tab),
+            Action::ChangeExport(change) => self.change_export(change),
+            Action::CountForExport => self.count_for_export(),
+            Action::StartExport => self.start_export(),
+            Action::ExportTo { tab, path, replace } => self.export_to(tab, &path, replace),
+            Action::CancelExport => self.cancel_export(),
+            Action::HideExport(hidden) => self.hide_export(hidden),
+            Action::DismissExport => self.dismiss_export(),
+            Action::ExportFailureAction => self.export_failure_action(),
+            Action::RevealExport => self.reveal_export(),
             Action::MoveInCopyAs(step) => {
                 if let Some(Dialog::CopyAs(menu)) = &mut self.dialog {
                     let last = crate::model::CopyHow::menu(menu.pick).len() - 1;
@@ -4167,6 +4193,10 @@ impl App {
 
     fn apply_event(&mut self, event: Event) {
         match event {
+            Event::ExportPath { job, path, replace } => {
+                self.export_path_answered(job, path, replace)
+            }
+            Event::Export { job, state } => self.export_state(job, state),
             Event::Connected {
                 session,
                 request,
@@ -8423,6 +8453,7 @@ impl App {
         self.poll_backend();
         self.apply_actions();
         self.tick_lookups(ui.ctx());
+        self.tick_export();
         // Before anything is drawn: a close request that pending changes
         // hold back is asked about in this frame.
         self.hold_close(ui.ctx());

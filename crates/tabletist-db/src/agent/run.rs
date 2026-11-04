@@ -154,6 +154,16 @@ pub(crate) fn masked(mut answer: Answer, masked: Vec<bool>) -> Answer {
 /// timeout ended. Only they number an error: see [`crate::Named`].
 const OVER_ITS_TIME: [u32; 2] = [3024, 1969];
 
+/// `error`, or [`Error::Timeout`] where it is MySQL's or MariaDB's word
+/// for a statement their own timeout ended.
+pub(crate) fn over_its_time(error: Error) -> Error {
+    if timed_out(&error) {
+        Error::Timeout
+    } else {
+        error
+    }
+}
+
 /// Whether `error` is a database's word for a statement that ran over the
 /// time the run set.
 fn timed_out(error: &Error) -> bool {

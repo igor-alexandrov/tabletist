@@ -1131,6 +1131,41 @@ impl Dialect {
         text
     }
 
+    /// An export's statement: the `columns` named in their order (every
+    /// column, `*`, when there are none), from the table, with the page's
+    /// conditions and order and no `LIMIT`. What an export streams.
+    pub fn export_rows(
+        self,
+        query: &RowQuery,
+        key: &[String],
+        binary: &[String],
+        columns: &[String],
+    ) -> Sql {
+        let mut binds = Binds::default();
+        let text = self.select_statement(query, key, binary, columns, &mut binds);
+        Sql {
+            text,
+            params: binds.params,
+        }
+    }
+
+    /// The statement [`Dialect::export_rows`] runs, as a person reads it:
+    /// its values written in as literals. What an export's Review SQL
+    /// shows and its history entry keeps.
+    pub fn shown_export(
+        self,
+        query: &RowQuery,
+        key: &[String],
+        binary: &[String],
+        columns: &[String],
+    ) -> String {
+        let mut binds = Binds {
+            inline: true,
+            ..Binds::default()
+        };
+        self.select_statement(query, key, binary, columns, &mut binds)
+    }
+
     /// `SELECT * FROM`, the conditions and the order of a page of rows.
     fn rows_statement(
         self,
@@ -1139,7 +1174,29 @@ impl Dialect {
         binary: &[String],
         binds: &mut Binds,
     ) -> String {
-        let mut text = format!("SELECT * FROM {}", self.qualified(&query.object));
+        self.select_statement(query, key, binary, &[], binds)
+    }
+
+    /// `SELECT` the `columns` (or `*`) `FROM`, then the conditions and
+    /// the order of a page of rows.
+    fn select_statement(
+        self,
+        query: &RowQuery,
+        key: &[String],
+        binary: &[String],
+        columns: &[String],
+        binds: &mut Binds,
+    ) -> String {
+        let list = if columns.is_empty() {
+            "*".to_owned()
+        } else {
+            columns
+                .iter()
+                .map(|column| self.quote_ident(column))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut text = format!("SELECT {list} FROM {}", self.qualified(&query.object));
         text.push_str(&self.where_clause(query, binary, binds));
         let mut order: Vec<String> = query
             .sort
@@ -1435,6 +1492,47 @@ mod tests {
             Dialect::MySql
                 .shown_rows(&q, &[], &[])
                 .ends_with("`kind` = 'print''s' AND CAST(`alt_text` AS CHAR) LIKE '%?%' ORDER BY `created_at` ASC LIMIT 1000 OFFSET 2000")
+        );
+    }
+
+    /// An export's statement: the columns chosen, in their order, the
+    /// page's conditions and order, and no `LIMIT`; shown with its values
+    /// written in, run with them bound (spec, Test 1).
+    #[test]
+    fn an_export_names_its_columns_and_reads_every_row() {
+        let mut q = RowQuery::new(ObjectRef::new("public", "books"), 1000);
+        q.offset = 2000;
+        q.filters = vec![Filter {
+            column: "title".into(),
+            op: FilterOp::Eq,
+            value: "Small Rooms".into(),
+        }];
+        q.sort = vec![Sort {
+            column: "published".into(),
+            dir: SortDir::Desc,
+        }];
+        let columns = ["title".to_owned(), "id".to_owned()];
+        let key = ["id".to_owned()];
+        assert_eq!(
+            Dialect::Postgres.shown_export(&q, &key, &[], &columns),
+            r#"SELECT "title", "id" FROM "public"."books" WHERE "title" = E'Small Rooms' ORDER BY "published" DESC, "id" ASC"#
+        );
+        let sent = Dialect::MySql.export_rows(&q, &key, &[], &columns);
+        assert_eq!(
+            sent.text,
+            "SELECT `title`, `id` FROM `public`.`books` WHERE `title` = ? ORDER BY `published` DESC, `id` ASC"
+        );
+        assert_eq!(sent.params, [text("Small Rooms")]);
+        // No columns: every one of them.
+        assert!(
+            Dialect::Sqlite
+                .shown_export(
+                    &RowQuery::new(ObjectRef::new("main", "books"), 1),
+                    &[],
+                    &[],
+                    &[]
+                )
+                .starts_with(r#"SELECT * FROM "main"."books""#)
         );
     }
 

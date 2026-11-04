@@ -492,10 +492,11 @@ pub fn show(
 
 /// The terminal look's key hints under the tree: what each key does, and
 /// the command whose key it is.
-const HINTS: [(Command, &str); 3] = [
+const HINTS: [(Command, &str); 4] = [
     (Command::ToggleSidebar, "hide"),
     (Command::ToggleTree, "tree"),
     (Command::OpenObject, "open"),
+    (Command::Export, "export table"),
 ];
 
 /// The terminal footer's padding (8 above and below, 12 at the sides), and
@@ -507,7 +508,7 @@ const FOOTER: f32 = 8.0 + 2.0 * 15.0 + 8.0 + 1.0;
 fn terminal_footer(
     ui: &mut egui::Ui,
     full: Rect,
-    hints: &[(Written, &str); 3],
+    hints: &[(Written, &str); 4],
     look: &Look,
     palette: &Palette,
 ) {

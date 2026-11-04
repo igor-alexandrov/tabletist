@@ -69,7 +69,7 @@ impl std::str::FromStr for ColumnName {
 impl ColumnName {
     /// Whether this names the column `column` of the relation `table` of
     /// `schema`.
-    pub(crate) fn names(&self, schema: Option<&str>, table: &str, column: &str) -> bool {
+    pub fn names(&self, schema: Option<&str>, table: &str, column: &str) -> bool {
         same(&self.column, column) && self.names_table(schema, table)
     }
 

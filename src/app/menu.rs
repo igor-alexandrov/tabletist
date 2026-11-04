@@ -58,6 +58,11 @@ impl App {
                 enabled: false,
                 title: "",
             },
+            // Held for later (spec, Entry points).
+            Item::Import => ItemState {
+                enabled: false,
+                title: title(item, false),
+            },
         }
     }
 
@@ -98,6 +103,10 @@ impl App {
         };
         match command {
             Command::ToggleSidebar => !workspace.sidebar_hidden,
+            Command::Export => self
+                .exporting
+                .as_ref()
+                .is_some_and(crate::export_sheet::Exporting::running),
             Command::ToggleInspector => workspace.row_panel,
             Command::ToggleSqlMode => workspace
                 .active_tab
@@ -123,7 +132,7 @@ impl App {
             }
             Item::About => self.actions.push(Action::ShowAbout),
             Item::QuickOpen => self.actions.push(Action::OpenQuickOpen),
-            Item::Exit | Item::Edit(_) | Item::Native(_) | Item::Separator => {}
+            Item::Import | Item::Exit | Item::Edit(_) | Item::Native(_) | Item::Separator => {}
         }
     }
 }

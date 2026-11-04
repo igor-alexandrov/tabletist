@@ -109,6 +109,7 @@ numbered; once you type, it lists what matches. Its commands stay on `:`.
 | `t` | Switch between tree and flat. The connection keeps its choice; Settings › Appearance sets the default |
 | `R` | Reload the list |
 | `ga` | Show the Agents tab |
+| `E` | [Export]({% link _guide/browsing-data.md %}#exporting) the table under the cursor: it opens, with the export's float over it |
 | Ctrl+B | Hide the sidebar |
 
 ### The start screen
@@ -158,6 +159,12 @@ With the search open, the matches replace the start lists:
 | Ctrl+C | Cancel the running query |
 | `r`, `s`, `S` | Show the rows, the structure or the DDL, from any of them |
 | `:ddl` | The DDL view of the table under the sidebar's cursor (with the keyboard in the sidebar), or else of the table in front |
+| `E`, `:export` | [Export]({% link _guide/browsing-data.md %}#exporting) the table: the float. Tab moves, Space or Enter chooses, Enter on the save to line exports, Ctrl+R shows the SQL it runs, Esc closes. In its column list Space includes, `K` and `J` move, `a` takes all and `n` none. After a failure `:export` does what its line offers: tries again, shows the SQL after a timeout, or the float for another name |
+| `:export json` | The float, in that format: `csv`, `tsv`, `json`, `jsonl`, `sql` or `md` |
+| `:w ~/Downloads/reviews.csv` | Export the table now, in the format of the ending, with its filter and sort. A name without a folder goes to your downloads folder. `:w!` replaces a file that is there |
+| `:export cancel` | Stop the running export: nothing is saved |
+| `go` | While the status line says an export is done: open its folder |
+| Esc | While the status line says an export failed: put it away |
 
 `V` then `y` copies whole rows, with tabs between the values.
 
@@ -352,7 +359,7 @@ stopped a run, `t` runs it again without one. Times read "45s", "1m" and
 | `a` | On an agent's statement: open its call in the Agents tab's log |
 | `f` | On a filter's: open its table with that filter and sort |
 | `y` | Copy the selected statement |
-| `/` | The filter line: plain words search the SQL; `source:sql`, `source:save`, `source:filter`, `source:agent`, `result:ok`, `result:error`, `result:cancelled` and `result:saved` choose. A token it does not know shows in red and is left out. Esc closes the line and keeps it |
+| `/` | The filter line: plain words search the SQL; `source:sql`, `source:save`, `source:filter`, `source:agent`, `source:export`, `result:ok`, `result:error`, `result:cancelled` and `result:saved` choose. A token it does not know shows in red and is left out. Esc closes the line and keeps it |
 | `y`, `n` or Esc | Clear the history, or keep it, when `:history clear` asks |
 
 ### Settings
