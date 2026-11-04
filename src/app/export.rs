@@ -136,6 +136,50 @@ impl App {
         true
     }
 
+    /// A copy over the clipboard's limit offers the file (spec 3b, R6):
+    /// the toast's Export… on the selection in the copy's format, or in
+    /// the terminal look `E` on its line. Only a table's grid: a SQL
+    /// result's export is run 4's. Returns whether it offered.
+    pub(super) fn offer_export(
+        &mut self,
+        tab: ConnTabId,
+        pick: crate::model::CopyPick,
+        how: crate::model::CopyHow,
+    ) -> bool {
+        // A table's selection: the row panel's row (its Export row…) and
+        // a SQL result's are run 4's. Copy rows as TSV's whole rows export
+        // every column: the block's range is the rows' too.
+        let object = self.workspace(tab).and_then(Workspace::active_object_tab);
+        let Some(table) = object.map(|object| object.id) else {
+            return false;
+        };
+        if pick == crate::model::CopyPick::CursorRow {
+            return false;
+        }
+        let format = match how {
+            crate::model::CopyHow::As(format) => format,
+            crate::model::CopyHow::Plain | crate::model::CopyHow::ColumnNames => Format::Tsv,
+        };
+        self.offer = Some(crate::model::ExportOffer {
+            tab,
+            table: Some(table),
+            format: Some(format),
+            whole_rows: pick == crate::model::CopyPick::Rows,
+        });
+        if self.look.terminal {
+            let key = self.keymap.key_in(
+                self.layout(),
+                crate::keymap::Command::Export,
+                crate::keymap::Scope::Grid,
+            );
+            if let Some(said) = &mut self.said {
+                let export = gettext(self.locale, "export");
+                *said = format!("{said} · {key} {export}");
+            }
+        }
+        true
+    }
+
     /// Opens the sheet over the table in front of `tab`.
     pub(super) fn open_export(&mut self, tab: ConnTabId, format: Option<Format>) {
         self.open_export_on(tab, format, (false, false));
@@ -789,7 +833,19 @@ impl App {
                     self.dialog = Some(Dialog::Export(sheet));
                 }
             }
-            ExportFailure::TooManyRows | ExportFailure::TooLarge => self.exporting = None,
+            // Over the clipboard's limit: the sheet again, to a file (spec
+            // 3b, R7).
+            ExportFailure::TooManyRows | ExportFailure::TooLarge => {
+                if self.dialog.is_none() {
+                    let mut sheet = exporting.sheet.clone();
+                    sheet.destination = DestinationChoice::File;
+                    sheet.review = false;
+                    sheet.asking = false;
+                    sheet.asked = self.next_id();
+                    self.exporting = None;
+                    self.dialog = Some(Dialog::Export(sheet));
+                }
+            }
             // The terminal look: another name, from the float.
             ExportFailure::Exists { .. } | ExportFailure::PermissionDenied { .. } => {
                 let tab = exporting.tab;
@@ -864,6 +920,7 @@ impl App {
             ExportStatus::Running { rows, bytes } => (rows, bytes),
             _ => (0, 0),
         };
+        let was_running = exporting.running();
         let mut copied_text = None;
         exporting.status = match state {
             ExportState::Started { statement } => {
@@ -897,7 +954,16 @@ impl App {
                 at,
             },
         };
-        if !exporting.running() {
+        // A file written while the window is behind is told (spec 3b, E4).
+        let told = was_running
+            && matches!(exporting.status, ExportStatus::Done { .. })
+            && matches!(exporting.job.destination, Destination::File { .. })
+            && !self.focused;
+        let ended = !exporting.running();
+        if told {
+            self.tell_export_done();
+        }
+        if ended {
             self.export_ended(copied_text);
         }
         // The float's file is there: it opens again, and Enter replaces it.
@@ -920,6 +986,36 @@ impl App {
                 self.dialog = Some(Dialog::Export(sheet));
             }
         }
+    }
+
+    /// Tells of a finished export behind other windows: a desktop
+    /// notification on Linux, the Dock's bounce on macOS, the taskbar
+    /// button's flash on Windows (spec 3b, E4 and E5).
+    fn tell_export_done(&mut self) {
+        let Some(exporting) = &self.exporting else {
+            return;
+        };
+        let ExportStatus::Done { rows, .. } = exporting.status else {
+            return;
+        };
+        let body = crate::i18n::ngettext(
+            self.locale,
+            "Exported {n} row to {file}",
+            "Exported {n} rows to {file}",
+            u32::try_from(rows).unwrap_or(u32::MAX),
+        )
+        .replace("{n}", &crate::format::group_digits(rows))
+        .replace("{file}", &exporting.file);
+        if cfg!(any(target_os = "macos", windows)) {
+            self.window_asks
+                .push(egui::ViewportCommand::RequestUserAttention(
+                    egui::UserAttentionType::Informational,
+                ));
+        }
+        self.backend.send(Command::Notify {
+            summary: "Tabletist".into(),
+            body,
+        });
     }
 
     /// The end of an export: its history entry, and the clipboard's text.

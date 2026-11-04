@@ -3060,9 +3060,12 @@ fn letters(
         match (command, active) {
             // Export: the table under the tree's cursor, or the rows'.
             (Some(Command::Export), _) if tree => actions.push(Action::ExportFromTree(tab)),
-            (Some(Command::Export), Some(_)) if rows_show => {
-                actions.push(Action::OpenExport { tab, format: None });
-            }
+            // While the line offers the file for a copy refused, on the
+            // copy's selection and format (spec 3b, R6).
+            (Some(Command::Export), Some(_)) if rows_show => match crate::ui::toast::offered(ctx) {
+                Some(offer) if offer.tab == tab => actions.push(Action::ExportSelection(offer)),
+                _ => actions.push(Action::OpenExport { tab, format: None }),
+            },
             (Some(Command::OpenExportFolder), _) => actions.push(Action::RevealExport),
             (Some(Command::ShowAgents), _) if crate::endpoint::AVAILABLE => {
                 actions.push(Action::ShowAgents(tab));

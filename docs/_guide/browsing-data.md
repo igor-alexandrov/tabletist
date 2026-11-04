@@ -239,6 +239,11 @@ There are other ways in:
   export holds just what you selected. With a range selected,
   Cmd/Ctrl+Shift+E, `E` and the header's **Export…** start the same way;
   with none they start on all the rows matching the filter.
+- **Copy as:** when a table's selection is more than the clipboard takes,
+  the toast offers **Export…**, which opens the export of that selection
+  in the same format, to a file (Copy rows as TSV's, with every column).
+  In the Omarchy look the status line says `E export`, and the selection
+  stays for `E`. A SQL result's copy only says why nothing was copied.
 
 The sheet asks for:
 
@@ -282,7 +287,19 @@ with what to do next: **Try again**, **Choose folder…** or **Review SQL**.
 In the Omarchy look `:export` does what the line offers: it tries again,
 shows the SQL after a timeout, or opens the float for another name, and
 Esc puts the line away. One export runs at a time: while it runs,
-Cmd/Ctrl+Shift+E and **File › Export…** cancel it.
+Cmd/Ctrl+Shift+E and **File › Export…** cancel it. An export to the
+clipboard that turns out larger than the clipboard takes offers
+**Export…** to a file instead (`:export` in the Omarchy look).
+
+In the macOS and Windows looks Cmd/Ctrl+Shift+' moves the keyboard to
+the export's toast (or to Copy as's offer): Tab and Shift+Tab go round
+its buttons, Return or Space presses one, and Esc gives the keyboard back
+to where it was.
+
+When an export to a file finishes while Tabletist is not the window in
+front, it tells you: a desktop notification on Linux ("Exported 31,400
+rows to reviews.csv", which mako shows on Omarchy), the Dock icon's
+bounce on macOS, and the taskbar button's flash on Windows.
 
 The history keeps the statement an export ran, as an **Export** entry,
 never its rows. Exporting the loaded rows runs nothing, and records

@@ -177,7 +177,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         ui.ctx().copy_text(text);
     }
     if let Some(said) = app.said.take() {
-        toast::say(ui.ctx(), &said);
+        // Copy as over the clipboard's limit: its toast offers the file.
+        match app.offer.take() {
+            Some(offer) => toast::offer(ui.ctx(), &said, offer),
+            None => toast::say(ui.ctx(), &said),
+        }
     }
     // The Copy as menu's keys, before any view reads them.
     if let Some(Dialog::CopyAs(open)) = &app.dialog {
@@ -295,7 +299,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     );
     app.actions.extend(asked);
     // Last: it says what was done, whatever is on screen by now.
-    toast::show(ui.ctx(), paint);
+    if let Some(offer) = toast::show(ui.ctx(), paint, app.dialog.is_some()) {
+        app.actions.push(Action::ExportSelection(offer));
+    }
 }
 
 /// What the Copy as menu copies, in words: "4 rows × 2 columns".

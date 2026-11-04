@@ -420,7 +420,8 @@ fn a_copy_past_the_limit_takes_the_line_from_a_refused_save() {
     harness.settle();
     assert_eq!(harness.copied, None);
     assert!(!harness.app.workspace(tab).unwrap().save_refused);
-    let words = "That's over 20 MB. Export to a file?";
+    // The line names the key that exports (run 3b's R6).
+    let words = "That's over 20 MB. Export to a file? · E export";
     assert_eq!(said(&harness).as_deref(), Some(words));
 }
 

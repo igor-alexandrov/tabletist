@@ -278,6 +278,8 @@ pub enum When {
     Export,
     /// A failed export's line stands in the terminal look's status line.
     ExportFailed,
+    /// A button of a toast has the keyboard (⌘⇧' put it there).
+    ToastFocused,
     /// The start screen's search is on: its field has the keyboard. The
     /// keys that move among the matches, open one and clear the search are
     /// read then, and only then.
@@ -598,6 +600,10 @@ commands! {
     DismissExport = "dismiss_export",
     ExportTable = "export_table",
     Import = "import",
+    FocusToast = "focus_toast",
+    LeaveToast = "leave_toast",
+    ToastNext = "toast_next",
+    ToastPrevious = "toast_previous",
     PasteCells = "paste_cells",
     PasteNewRows = "paste_new_rows",
     AddRow = "add_row",
@@ -1011,6 +1017,10 @@ impl Command {
             C::DismissExport => info("Put away a failed export's line", "", Window),
             C::ExportTable => info("Export a table…", "", Window),
             C::Import => info("Import…", "", Window).reserved(),
+            C::FocusToast => info("Move to the toast", "", Window),
+            C::LeaveToast => info("Give the keyboard back from the toast", "", Prompts),
+            C::ToastNext => info("Next button of the toast", "", Prompts),
+            C::ToastPrevious => info("Previous button of the toast", "", Prompts),
             C::PasteCells => info("Paste cell values", COPY, Editing).reserved(),
             C::PasteNewRows => info("Paste as new rows", "Paste as new rows", Editing).reserved(),
             C::AddRow => info("Add row", "Add row", Editing),
@@ -1986,6 +1996,12 @@ pub const BINDINGS: &[Binding] = {
         bind(C::ExportTable, GLOBAL, NONE, NONE),
         // File › Import…, held for later: no key, and not built.
         bind(C::Import, GLOBAL, NONE, NONE),
+        // The toast's buttons take the keyboard; the terminal look's
+        // status line has none.
+        bind(C::FocusToast, GLOBAL, keys(&[k("cmd+shift+'")]), NONE),
+        bind(C::LeaveToast, PROMPT, keys(&[k("esc")]), NONE).when(When::ToastFocused),
+        bind(C::ToastNext, PROMPT, keys(&[k("tab")]), NONE).when(When::ToastFocused),
+        bind(C::ToastPrevious, PROMPT, keys(&[k("shift+tab")]), NONE).when(When::ToastFocused),
         bind(C::PasteCells, GRID, keys(&[k("cmd+v")]), NONE),
         bind(C::PasteCells, GRID, NONE, keys(&[k("p")]).shown("v p")).when(When::Visual),
         bind(

@@ -502,11 +502,11 @@ pub fn failure_words(
         ),
         ExportFailure::TooManyRows => (
             gettext(locale, "That's more than 10,000 rows. Export to a file?").into_owned(),
-            None,
+            Some(gettext(locale, "Export…").into_owned()),
         ),
         ExportFailure::TooLarge => (
             gettext(locale, "That's over 20 MB. Export to a file?").into_owned(),
-            None,
+            Some(gettext(locale, "Export…").into_owned()),
         ),
         ExportFailure::Other(why) => (
             gettext(locale, "Couldn't export {table}: {why}.")
@@ -576,10 +576,10 @@ pub fn failure_line(
                 .replace("{path}", &shown_path(path, home))
         }
         ExportFailure::TooManyRows => {
-            gettext(locale, "that's more than 10,000 rows · export to a file").into_owned()
+            gettext(locale, "✗ that's more than 10,000 rows · :export to a file").into_owned()
         }
         ExportFailure::TooLarge => {
-            gettext(locale, "that's over 20 mb · export to a file").into_owned()
+            gettext(locale, "✗ that's over 20 mb · :export to a file").into_owned()
         }
         ExportFailure::Other(why) => gettext(
             locale,

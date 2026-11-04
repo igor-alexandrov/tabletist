@@ -172,6 +172,13 @@ pub struct App {
     /// What the toast, or the terminal look's status line, says next: the
     /// frame says it (`ui::show`).
     pub said: Option<String>,
+    /// The sheet the toast's Export… opens, said with `said` when a copy is
+    /// over the clipboard's limit (spec 3b, R6): the frame hands both to
+    /// the toast.
+    pub offer: Option<crate::model::ExportOffer>,
+    /// Whether the window has the keyboard: as the last frame began. A
+    /// finished export behind other windows is told (spec 3b, R8).
+    pub focused: bool,
     /// What was open at the last quit, and each connection's tables as
     /// its window last had them, from session.json.
     pub session: crate::session::Session,
@@ -448,6 +455,8 @@ impl App {
             export_said: None,
             to_clipboard: None,
             said: None,
+            offer: None,
+            focused: true,
             session,
             writes_session,
             recents,
@@ -2235,6 +2244,7 @@ impl App {
                 }
             }
             Action::CopyAs { tab, pick, how } => {
+                let mut refused = false;
                 if let Some(copying) = self.copy_in(tab, pick, how) {
                     // The grid menu's Copy and Copy rows as TSV are ⌘C's
                     // and ⇧⌘C's, which say nothing of a copy made.
@@ -2245,6 +2255,10 @@ impl App {
                     }
                     if !(copied && silent) {
                         self.said = Some(copy_said(self.locale, &copying, how));
+                        self.offer = None;
+                        if !copied {
+                            refused = self.offer_export(tab, pick, how);
+                        }
                         // What the copy came to is what the terminal's
                         // line says next, not why the last save was not
                         // made.
@@ -2254,8 +2268,9 @@ impl App {
                         }
                     }
                 }
-                // As `y` leaves a visual selection.
-                let workspace = self.workspace(tab);
+                // As `y` leaves a visual selection; a copy refused keeps it,
+                // for `E` to export (spec 3b, R6).
+                let workspace = self.workspace(tab).filter(|_| !refused);
                 let shown = workspace.and_then(|workspace| {
                     let object = workspace.active_object_tab().map(|object| object.id);
                     object.or_else(|| workspace.active_sql_tab().map(|sql| sql.id))
@@ -8458,6 +8473,7 @@ impl App {
 
     /// Draws one frame, then applies what the frame asked for.
     pub fn frame_ui(&mut self, ui: &mut egui::Ui) {
+        self.focused = ui.ctx().input(|input| input.focused);
         self.note_use(ui.ctx());
         self.poll_backend();
         self.apply_actions();
@@ -8484,6 +8500,8 @@ impl App {
         crate::ui::keys::text_size(self, ui.ctx());
         // A dialog takes the keyboard: no shortcut acts behind it, and a
         // first key that waited for its second (`cc`) waits no longer.
+        // The toasts' keys come first: Esc on a toast's button is its own.
+        crate::ui::toast::keys(ui.ctx(), &self.keymap, self.layout(), self.dialog.is_some());
         if self.dialog.is_none() {
             crate::ui::keys::handle(self, ui.ctx());
         } else {

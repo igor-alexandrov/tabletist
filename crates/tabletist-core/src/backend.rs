@@ -248,6 +248,13 @@ pub enum Command {
     Reveal {
         path: PathBuf,
     },
+    /// A desktop notification of `summary` over `body`, with no action:
+    /// on Linux over D-Bus (what mako shows on Omarchy); nothing elsewhere,
+    /// where the window asks for attention instead. Nothing is answered.
+    Notify {
+        summary: String,
+        body: String,
+    },
     /// Signals `done` once every save sent before it is on disk.
     Flush {
         done: mpsc::Sender<()>,
@@ -2232,6 +2239,12 @@ impl Worker {
                     }
                 });
             }
+            Command::Notify { summary, body } => {
+                #[cfg(target_os = "linux")]
+                tokio::spawn(agents::notify::plain(summary, body));
+                #[cfg(not(target_os = "linux"))]
+                let _ = (summary, body);
+            }
             Command::CancelExport(id) => {
                 if let Some(stopper) = lock(&self.exports).get(&id).cloned() {
                     tokio::spawn(async move { stopper.stop().await });
@@ -2304,6 +2317,7 @@ fn session_of(command: &Command) -> SessionId {
         | Command::Export(_)
         | Command::CancelExport(_)
         | Command::Reveal { .. }
+        | Command::Notify { .. }
         | Command::Agents(_)
         | Command::History(_)
         | Command::Updates(_) => SessionId(0),
@@ -2344,6 +2358,7 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::Export(_)
         | Command::CancelExport(_)
         | Command::Reveal { .. }
+        | Command::Notify { .. }
         | Command::Agents(_)
         | Command::History(_)
         | Command::Updates(_) => None,
@@ -2452,6 +2467,7 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         | Command::Export(_)
         | Command::CancelExport(_)
         | Command::Reveal { .. }
+        | Command::Notify { .. }
         | Command::Agents(_)
         | Command::History(_)
         | Command::Updates(_) => return,
@@ -2770,6 +2786,7 @@ async fn run_session(
             | Command::Export(_)
             | Command::CancelExport(_)
             | Command::Reveal { .. }
+            | Command::Notify { .. }
             | Command::Agents(_)
             | Command::History(_)
             | Command::Updates(_) => None,
