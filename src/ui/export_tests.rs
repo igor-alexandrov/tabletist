@@ -78,7 +78,7 @@ fn run_line(harness: &mut Harness, tab: ConnTabId, line: &str) {
 
 /// What the backend says of the running export.
 fn tell(harness: &mut Harness, state: ExportState) {
-    let job = harness.app.exporting.as_ref().unwrap().job.id;
+    let job = harness.app.exports.last().unwrap().job.id;
     harness
         .app
         .apply(Action::Backend(Event::Export { job, state }));
@@ -282,7 +282,7 @@ fn selected_rows_go_to_the_clipboard_and_nothing_is_recorded() {
     );
     assert_eq!(harness.copied.as_deref(), Some("a\tb\nc\td"));
     assert_eq!(said(&harness).as_deref(), Some("Copied 2 rows as TSV"));
-    assert!(harness.app.exporting.is_none());
+    assert!(harness.app.exports.is_empty());
     let recorded = harness.app.backend.sent[history..]
         .iter()
         .any(|command| matches!(command, Command::History(HistoryCommand::Append { .. })));
@@ -391,13 +391,13 @@ fn the_toasts_follow_an_export_to_its_end() {
         harness.painted
     );
     harness.click("Hide");
-    assert!(harness.app.exporting.as_ref().unwrap().hidden);
+    assert!(harness.app.exports.last().unwrap().hidden);
     assert!(
-        harness.has("Exporting book_covers"),
+        harness.has("Exporting book_covers.csv"),
         "the pill, as a screen reader hears it"
     );
-    harness.click("Exporting book_covers");
-    assert!(!harness.app.exporting.as_ref().unwrap().hidden);
+    harness.click("Exporting book_covers.csv");
+    assert!(!harness.app.exports.last().unwrap().hidden);
     harness.click("Cancel");
     assert!(
         harness
@@ -492,7 +492,7 @@ fn a_failure_stays_until_dismissed_and_try_again_sends_it_again() {
         ExportState::Failed(ExportFailure::ConnectionLost { rows: 2 }),
     );
     harness.click("Dismiss");
-    assert!(harness.app.exporting.is_none());
+    assert!(harness.app.exports.is_empty());
 }
 
 /// Test 12: `:export`, `:export json`, `:w <path>` with the format from
@@ -561,13 +561,11 @@ fn the_terminal_looks_lines_export() {
             .iter()
             .any(|command| matches!(command, Command::CancelExport(_)))
     );
-    // One at a time (D5).
+    // `:w!` answered the failure, which goes (plan 4b, B16); and another
+    // export may start beside the running one (spec 4, F7).
+    assert_eq!(harness.app.exports.len(), 1);
     run_line(&mut harness, tab, ":export");
-    assert!(sheet(&harness).is_none());
-    assert_eq!(
-        said(&harness).as_deref(),
-        Some("an export is running · :export cancel")
-    );
+    assert!(sheet(&harness).is_some());
 }
 
 /// Test 8 and 12: `E` opens the float; Enter from the path line exports
@@ -636,7 +634,7 @@ fn the_status_line_follows_the_export() {
     let (mut harness, tab, _id) = covers_in(Look::omarchy());
     let (_dir, path) = folder();
     run_line(&mut harness, tab, &format!(":w {}", path.display()));
-    harness.app.exporting.as_mut().unwrap().total = Some(crate::export_sheet::Count {
+    harness.app.exports.last_mut().unwrap().total = Some(crate::export_sheet::Count {
         rows: 4,
         exact: true,
     });
@@ -670,7 +668,7 @@ fn the_status_line_follows_the_export() {
         harness.painted
     );
     harness.press(Key::Escape, Modifiers::NONE);
-    assert!(harness.app.exporting.is_none(), "Esc puts it away");
+    assert!(harness.app.exports.is_empty(), "Esc puts it away");
 }
 
 /// Test 13: the File menu's Export… acts on the table in front, and its
@@ -811,9 +809,10 @@ fn rows_past_the_clipboards_limit_take_the_file_back() {
     );
 }
 
-/// D11: while one runs, ⇧⌘E is File › Export…'s Cancel export.
+/// Spec 4, F7: while one runs, ⇧⌘E and File › Export… still open the
+/// sheet, for another export beside it (3a's D11 is gone).
 #[test]
-fn the_export_key_cancels_while_one_runs() {
+fn the_export_key_opens_the_sheet_while_one_runs() {
     let (mut harness, tab, _id) = covers_in(Look::macos());
     let (_dir, path) = folder();
     harness.app.apply(Action::ExportTo {
@@ -823,15 +822,18 @@ fn the_export_key_cancels_while_one_runs() {
     });
     harness.settle();
     let export = crate::menu::Item::Command(crate::keymap::Command::Export);
-    assert_eq!(harness.app.menu_state(export).title, "Cancel Export");
+    let state = harness.app.menu_state(export);
+    assert_eq!(state.title, "Export…");
+    assert!(state.enabled);
     export_chord(&mut harness);
-    assert!(sheet(&harness).is_none());
+    assert!(sheet(&harness).is_some(), "the sheet opens");
     assert!(
-        harness
+        !harness
             .app
             .backend
             .sent
             .iter()
-            .any(|command| matches!(command, Command::CancelExport(_)))
+            .any(|command| matches!(command, Command::CancelExport(_))),
+        "nothing is cancelled"
     );
 }

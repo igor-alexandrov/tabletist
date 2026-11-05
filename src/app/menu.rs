@@ -103,10 +103,6 @@ impl App {
         };
         match command {
             Command::ToggleSidebar => !workspace.sidebar_hidden,
-            Command::Export => self
-                .exporting
-                .as_ref()
-                .is_some_and(crate::export_sheet::Exporting::running),
             Command::ToggleInspector => workspace.row_panel,
             Command::ToggleSqlMode => workspace
                 .active_tab

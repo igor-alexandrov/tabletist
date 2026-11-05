@@ -106,7 +106,7 @@ Cmd+A): none of them can be given to a command.
 | Cmd+Y | Show the History tab. Not while you type in a text field, where it is redo |
 | F6, Shift+F6 | Next and previous part of the window |
 | Cmd+, | Settings |
-| Cmd+Shift+' | Move the keyboard to the [export's toast]({% link _guide/browsing-data.md %}#exporting). Tab goes round its buttons, Esc gives the keyboard back |
+| Cmd+Shift+' | Move the keyboard to the newest [export's toast]({% link _guide/browsing-data.md %}#exporting). Tab goes round every toast's buttons, Esc gives the keyboard back |
 | Cmd+=, Cmd+-, Cmd+0 | Larger, smaller and default data text |
 | `?` | The list of keys |
 

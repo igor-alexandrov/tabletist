@@ -177,7 +177,7 @@ pub fn show(ctx: &egui::Context, paint: Paint, dialog: bool) -> Option<ExportOff
 }
 
 /// What ⌘⇧' left for the toasts: the keyboard asked for, and what had it.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct Keyboard {
     /// The frame ⌘⇧' was pressed in: the next toast drawn (in that frame
     /// or the one after) gives its first button the keyboard.
@@ -185,8 +185,8 @@ struct Keyboard {
     /// What had the keyboard before: Esc gives it back.
     behind: Option<Id>,
     /// The toasts' buttons the frame before drew, and this frame's.
-    before: [Option<Id>; 4],
-    drawn: [Option<Id>; 4],
+    before: Vec<Id>,
+    drawn: Vec<Id>,
     frame: u64,
     /// The button that had the keyboard as it was drawn: egui moves the
     /// keyboard on Tab before the frame's keys are read, so where it was
@@ -214,8 +214,8 @@ pub fn button(ctx: &egui::Context, response: &egui::Response, first: bool) {
         if focused {
             keyboard.had = Some(response.id);
         }
-        if let Some(slot) = keyboard.drawn.iter_mut().find(|slot| slot.is_none()) {
-            *slot = Some(response.id);
+        if !keyboard.drawn.contains(&response.id) {
+            keyboard.drawn.push(response.id);
         }
         let asked = keyboard.asked.is_some_and(|when| when + 1 >= now);
         if first && asked {
@@ -247,11 +247,36 @@ fn buttons(ctx: &egui::Context) -> Vec<Id> {
     if keyboard.frame + 1 < now {
         return Vec::new();
     }
-    let mut shown: Vec<Id> = keyboard.drawn.iter().flatten().copied().collect();
+    let mut shown = keyboard.drawn;
     if keyboard.frame == now {
-        shown.extend(keyboard.before.iter().flatten());
+        shown.extend(keyboard.before);
     }
     shown
+}
+
+/// The places of `rects` as they are read: by line, top to bottom (two
+/// whose middles are within a toast's half height share a line), then
+/// left to right.
+fn reading_order(rects: &[egui::Rect]) -> Vec<usize> {
+    const LINE: f32 = 12.0;
+    let mut order: Vec<usize> = (0..rects.len()).collect();
+    order.sort_by(|one, two| rects[*one].center().y.total_cmp(&rects[*two].center().y));
+    // Lines, each from its first's middle.
+    let mut lines: Vec<(f32, Vec<usize>)> = Vec::new();
+    for at in order {
+        let y = rects[at].center().y;
+        match lines.last_mut() {
+            Some((top, line)) if y - *top <= LINE => line.push(at),
+            _ => lines.push((y, vec![at])),
+        }
+    }
+    lines
+        .into_iter()
+        .flat_map(|(_, mut line)| {
+            line.sort_by(|one, two| rects[*one].left().total_cmp(&rects[*two].left()));
+            line
+        })
+        .collect()
 }
 
 /// Whether a button of a toast has the keyboard.
@@ -307,25 +332,28 @@ pub fn keys(ctx: &egui::Context, keymap: &crate::keymap::Keymap, layout: Layout,
         (focus, leave, step)
     });
     let focused = ctx.memory(|memory| memory.focused());
-    // ⇥ and ⇧⇥ go round the toast's buttons, left to right.
+    // ⇥ and ⇧⇥ go round every toast's buttons (spec 4, S13): top to
+    // bottom, and left to right along a toast.
     if step != 0
         && let Some(focused) = had.or(focused)
     {
-        // The buttons of the toast that has the keyboard: each is an area
-        // of its own.
-        let layer = ctx.read_response(focused).map(|response| response.layer_id);
-        let mut shown: Vec<(f32, Id)> = buttons(ctx)
+        let mut shown: Vec<egui::Rect> = Vec::new();
+        let mut ids: Vec<Id> = Vec::new();
+        for response in buttons(ctx)
             .into_iter()
             .filter_map(|id| ctx.read_response(id))
-            .filter(|response| Some(response.layer_id) == layer)
-            .map(|response| (response.rect.left(), response.id))
-            .collect();
-        shown.sort_by(|(one, _), (two, _)| one.total_cmp(two));
-        shown.dedup_by_key(|(_, id)| *id);
-        if let Some(at) = shown.iter().position(|(_, id)| *id == focused) {
-            let next = (at as isize + step).rem_euclid(shown.len() as isize) as usize;
+        {
+            if !ids.contains(&response.id) {
+                ids.push(response.id);
+                shown.push(response.rect);
+            }
+        }
+        let order = reading_order(&shown);
+        let ordered: Vec<Id> = order.into_iter().map(|at| ids[at]).collect();
+        if let Some(at) = ordered.iter().position(|id| *id == focused) {
+            let next = (at as isize + step).rem_euclid(ordered.len() as isize) as usize;
             ctx.memory_mut(|memory| {
-                memory.request_focus(shown[next].1);
+                memory.request_focus(ordered[next]);
                 memory.move_focus(egui::FocusDirection::None);
             });
         }

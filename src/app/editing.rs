@@ -1994,14 +1994,15 @@ impl App {
             // Export: the float, in a format, or at once to a path. Bare
             // `:w` is the line above, and never reaches these.
             (Typed::Command(Command::Export), _) if rows_here => {
-                // After a failure, the same export again.
-                if self.exporting.as_ref().is_some_and(|exporting| {
+                // After a failure, the same export again: the one whose
+                // line shows (spec 4, S14).
+                if self.shown_export().is_some_and(|exporting| {
                     matches!(
                         exporting.status,
                         crate::export_sheet::ExportStatus::Failed { .. }
                     )
                 }) {
-                    return self.export_failure_action();
+                    return self.export_failure_action(None);
                 }
                 Action::OpenExport { tab, format: None }
             }
@@ -2036,7 +2037,7 @@ impl App {
                 let replace = command == Command::ExportOver;
                 Action::ExportTo { tab, path, replace }
             }
-            (Typed::Command(Command::CancelExport), _) => Action::CancelExport,
+            (Typed::Command(Command::CancelExport), _) => Action::CancelExport(None),
             (Typed::Command(Command::DiscardChanges), Some((id, _))) => {
                 Action::DiscardEdits { tab, id }
             }

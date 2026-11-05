@@ -329,7 +329,7 @@ fn run_again_sends_the_statement_and_records_it() {
         }
     );
     let history = harness.app.backend.sent.len();
-    let job = harness.app.exporting.as_ref().unwrap().job.id;
+    let job = harness.app.exports.last().unwrap().job.id;
     for state in [
         ExportState::Started {
             statement: Some(TEXT.into()),
@@ -382,7 +382,7 @@ fn loaded_rows_go_to_the_clipboard_as_loaded() {
     let names: Vec<&str> = columns.iter().map(|column| column.name.as_str()).collect();
     assert_eq!(names, ["id", "publisher_id", "kind", "created_at"]);
     assert_eq!((rows.len(), rows[0].len()), (3, 4));
-    assert!(harness.app.exporting.as_ref().unwrap().history.is_none());
+    assert!(harness.app.exports.last().unwrap().history.is_none());
 }
 
 /// Test 4, S9: the results bar's Copy as and Export…, greyed with no cell

@@ -754,6 +754,11 @@ fn shown(item: &QuickItem, skin: &Skin<'_>) -> Shown {
                     let detail = skin.say("jumps to the setting");
                     (name, Icon::Settings, detail, "setting")
                 }
+                // An export running (spec 4, F7).
+                QuickCommand::CancelExport { .. } => {
+                    let name = crate::app::command_words(skin.locale, command);
+                    (name, Icon::X, skin.say("export running"), "command")
+                }
             };
             let mut label = format!("{name}, {}", skin.say(what));
             for words in [&detail, &key] {

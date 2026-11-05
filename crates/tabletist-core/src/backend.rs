@@ -255,6 +255,17 @@ pub enum Command {
         summary: String,
         body: String,
     },
+    /// The names of `folder` that start with `start`, for the export
+    /// float's path line `typed` (spec 4, S15): read off the UI thread, a
+    /// slow or network disk taking what it takes. Answered with
+    /// [`Event::FolderListed`], no names where the folder cannot be read.
+    ListFolder {
+        /// The sheet's (`ExportSheet::asked`).
+        asked: u64,
+        typed: String,
+        folder: PathBuf,
+        start: String,
+    },
     /// Signals `done` once every save sent before it is on disk.
     Flush {
         done: mpsc::Sender<()>,
@@ -408,6 +419,13 @@ pub enum Event {
         job: export::ExportId,
         path: Option<PathBuf>,
         replace: bool,
+    },
+    /// The names a path line `typed` starts, as
+    /// [`crate::export_sheet::completions`] keeps them.
+    FolderListed {
+        asked: u64,
+        typed: String,
+        names: Vec<crate::export_sheet::Listed>,
     },
     /// How an export stands, and its end.
     Export {
@@ -2239,6 +2257,22 @@ impl Worker {
                     }
                 });
             }
+            Command::ListFolder {
+                asked,
+                typed,
+                folder,
+                start,
+            } => {
+                let outbox = self.outbox.clone();
+                tokio::task::spawn_blocking(move || {
+                    let names = list_folder(&folder, &start);
+                    outbox.emit(Event::FolderListed {
+                        asked,
+                        typed,
+                        names,
+                    });
+                });
+            }
             Command::Notify { summary, body } => {
                 #[cfg(target_os = "linux")]
                 tokio::spawn(agents::notify::plain(summary, body));
@@ -2318,10 +2352,30 @@ fn session_of(command: &Command) -> SessionId {
         | Command::CancelExport(_)
         | Command::Reveal { .. }
         | Command::Notify { .. }
+        | Command::ListFolder { .. }
         | Command::Agents(_)
         | Command::History(_)
         | Command::Updates(_) => SessionId(0),
     }
+}
+
+/// The names of `folder` the path line offers for `start` (see
+/// [`crate::export_sheet::completions`]); none where it cannot be read. A
+/// name that is not UTF-8 is left out: the line could not write it.
+fn list_folder(folder: &Path, start: &str) -> Vec<crate::export_sheet::Listed> {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    let names = entries.flatten().filter_map(|entry| {
+        let name = entry.file_name().into_string().ok()?;
+        // A link to a folder is a folder here, as the dialog has it: the
+        // only kind followed, so a large folder costs no read a name.
+        let folder = entry
+            .file_type()
+            .is_ok_and(|kind| kind.is_dir() || (kind.is_symlink() && entry.path().is_dir()));
+        Some((name, folder))
+    });
+    crate::export_sheet::completions(names, start)
 }
 
 /// The request a queued command answers.
@@ -2359,6 +2413,7 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::CancelExport(_)
         | Command::Reveal { .. }
         | Command::Notify { .. }
+        | Command::ListFolder { .. }
         | Command::Agents(_)
         | Command::History(_)
         | Command::Updates(_) => None,
@@ -2468,6 +2523,7 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         | Command::CancelExport(_)
         | Command::Reveal { .. }
         | Command::Notify { .. }
+        | Command::ListFolder { .. }
         | Command::Agents(_)
         | Command::History(_)
         | Command::Updates(_) => return,
@@ -2787,6 +2843,7 @@ async fn run_session(
             | Command::CancelExport(_)
             | Command::Reveal { .. }
             | Command::Notify { .. }
+            | Command::ListFolder { .. }
             | Command::Agents(_)
             | Command::History(_)
             | Command::Updates(_) => None,
@@ -3104,6 +3161,72 @@ mod tests {
                 assert_eq!(page.rows.len(), 2);
             }
             other => panic!("expected rows, got {other:?}"),
+        }
+    }
+
+    /// Spec 4, test 8: the path line's names are read on the backend's
+    /// runtime, folders first with whether each is one, dot files only
+    /// for a `.`, and an unreadable folder answers none.
+    #[test]
+    fn a_folder_is_listed_off_the_ui_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("reports")).unwrap();
+        for name in ["reviews.csv", "Reviews-2026.csv", "authors.csv", ".review"] {
+            std::fs::write(dir.path().join(name), "").unwrap();
+        }
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        let mut ask = |start: &str, folder: PathBuf| {
+            backend.send(Command::ListFolder {
+                asked: 7,
+                typed: format!("~/x/{start}"),
+                folder,
+                start: start.to_owned(),
+            });
+            match backend.wait(WAIT) {
+                Some(Event::FolderListed {
+                    asked: 7,
+                    typed,
+                    names,
+                }) => {
+                    assert_eq!(typed, format!("~/x/{start}"));
+                    names
+                        .into_iter()
+                        .map(|listed| (listed.name, listed.folder))
+                        .collect::<Vec<_>>()
+                }
+                other => panic!("expected the names, got {other:?}"),
+            }
+        };
+        let owned = |names: &[(&str, bool)]| {
+            names
+                .iter()
+                .map(|(name, folder)| ((*name).to_owned(), *folder))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ask("re", dir.path().to_path_buf()),
+            owned(&[
+                ("reports", true),
+                ("Reviews-2026.csv", false),
+                ("reviews.csv", false)
+            ])
+        );
+        assert_eq!(
+            ask(".", dir.path().to_path_buf()),
+            owned(&[(".review", false)])
+        );
+        assert!(ask("", dir.path().join("not-there")).is_empty());
+        // A link to a folder is a folder, a link to a file a file.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.path().join("reports"), dir.path().join("linked"))
+                .unwrap();
+            std::os::unix::fs::symlink(dir.path().join("authors.csv"), dir.path().join("link.csv"))
+                .unwrap();
+            assert_eq!(
+                ask("lin", dir.path().to_path_buf()),
+                owned(&[("linked", true), ("link.csv", false)])
+            );
         }
     }
 

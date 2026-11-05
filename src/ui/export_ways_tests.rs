@@ -476,10 +476,10 @@ fn export_a_table_lists_tables_and_opens_the_picked_ones_sheet() {
     assert!(sheet(&harness).is_some(), "its sheet");
 }
 
-/// R2: while an export runs, Export's row is its cancel and Export a
-/// table… is not listed.
+/// Spec 4, F7: while an export runs, the export rows stay (3b's R2 is
+/// gone), and a row cancels it.
 #[test]
-fn the_export_rows_give_way_to_cancel_while_one_runs() {
+fn the_export_rows_stay_and_a_cancel_row_joins_while_one_runs() {
     let (mut harness, _tab, _id) = bookshop_in(Look::macos());
     harness.press(Key::E, Modifiers::COMMAND | Modifiers::SHIFT);
     harness.app.apply(Action::ChangeExport(
@@ -489,11 +489,22 @@ fn the_export_rows_give_way_to_cancel_while_one_runs() {
     ));
     harness.app.apply(Action::StartExport);
     harness.settle();
-    assert!(harness.app.exporting.is_some(), "it runs");
+    assert!(!harness.app.exports.is_empty(), "it runs");
     quick_open(&mut harness, ">exp");
-    assert!(painted(&harness, "Cancel export"), "{:?}", harness.painted);
-    assert!(!painted(&harness, "Export a table…"));
-    assert!(!painted(&harness, "Export book_covers…"));
+    assert!(
+        painted(&harness, "Export a table…"),
+        "{:?}",
+        harness.painted
+    );
+    assert!(painted(&harness, "Export book_covers…"));
+    harness.app.dialog = None;
+    harness.settle();
+    quick_open(&mut harness, ">cancel");
+    assert!(
+        painted(&harness, "Cancel copying book_covers"),
+        "{:?}",
+        harness.painted
+    );
 }
 
 /// Test 3: ⇧⌘E and `ctrl+e` on a picked table open it and its sheet.
@@ -757,7 +768,7 @@ fn the_clipboards_failure_offers_the_file() {
             ),
         ));
         harness.app.apply(Action::StartExport);
-        let job = harness.app.exporting.as_ref().unwrap().job.id;
+        let job = harness.app.exports.last().unwrap().job.id;
         harness
             .app
             .apply(Action::Backend(crate::backend::Event::Export {
@@ -784,7 +795,7 @@ fn the_clipboards_failure_offers_the_file() {
             "{}",
             look.name
         );
-        assert!(harness.app.exporting.is_none());
+        assert!(harness.app.exports.is_empty());
     }
 }
 
@@ -809,7 +820,7 @@ fn export_ends_unseen(
         replace: false,
     });
     harness.settle();
-    let job = harness.app.exporting.as_ref().unwrap().job.id;
+    let job = harness.app.exports.last().unwrap().job.id;
     harness
         .app
         .apply(Action::Backend(crate::backend::Event::Export {
@@ -876,16 +887,16 @@ fn no_notice_while_in_front_or_for_a_failure_or_a_copy() {
     let (mut harness, tab, _id) = bookshop_in(Look::macos());
     export_ends(&mut harness, tab, done());
     assert!(notices(&harness).is_empty(), "in front");
-    harness.app.exporting = None;
+    harness.app.exports.clear();
     harness.window_focus(false);
     export_ends(&mut harness, tab, ExportState::Cancelled);
-    harness.app.exporting = None;
+    harness.app.exports.clear();
     export_ends(
         &mut harness,
         tab,
         ExportState::Failed(ExportFailure::ConnectionLost { rows: 2 }),
     );
-    harness.app.exporting = None;
+    harness.app.exports.clear();
     assert!(notices(&harness).is_empty(), "a cancel, a failure");
     harness.app.apply(Action::OpenExport { tab, format: None });
     harness.app.apply(Action::ChangeExport(
@@ -894,7 +905,7 @@ fn no_notice_while_in_front_or_for_a_failure_or_a_copy() {
         ),
     ));
     harness.app.apply(Action::StartExport);
-    let job = harness.app.exporting.as_ref().unwrap().job.id;
+    let job = harness.app.exports.last().unwrap().job.id;
     harness
         .app
         .apply(Action::Backend(crate::backend::Event::Export {
@@ -948,7 +959,7 @@ fn the_toast_key_moves_the_keyboard_to_the_toast() {
     harness.press(Key::Escape, Modifiers::NONE);
     harness.settle();
     assert_eq!(harness.ctx.memory(|memory| memory.focused()), before);
-    assert!(harness.app.exporting.is_some(), "Esc cancels nothing");
+    assert!(!harness.app.exports.is_empty(), "Esc cancels nothing");
     // Enter presses the button that has the keyboard.
     toast_key(&mut harness);
     harness.press(Key::Enter, Modifiers::NONE);
@@ -1030,10 +1041,10 @@ fn the_picker_keeps_its_rows_and_its_connection() {
     assert!(sheet(&harness).is_some(), "⌥↩ exports too");
 }
 
-/// R4 and run 3's D5: while an export runs, quick open's key opens
-/// nothing, says why, and quick open stays.
+/// R4 and spec 4, F7: while an export runs, quick open's key opens the
+/// picked table's sheet for another (run 3's D5 is gone).
 #[test]
-fn the_export_key_in_quick_open_waits_for_a_running_export() {
+fn the_export_key_in_quick_open_opens_beside_a_running_export() {
     let (mut harness, tab, _id) = bookshop_in(Look::macos());
     let dir = tempfile::tempdir().unwrap();
     harness.app.apply(Action::ExportTo {
@@ -1043,12 +1054,9 @@ fn the_export_key_in_quick_open_waits_for_a_running_export() {
     });
     quick_open(&mut harness, "ratings");
     export_key(&mut harness);
-    assert_eq!(quick_open_exporting(&harness), Some(false), "it stays");
-    assert_eq!(
-        said(&harness).as_deref(),
-        Some("An export is running. Cancel it first, or wait for it.")
-    );
-    assert_eq!(front(&harness, tab).0, "book_covers");
+    assert_eq!(front(&harness, tab).0, "ratings");
+    assert!(sheet(&harness).is_some(), "its sheet");
+    assert_eq!(harness.app.exports.len(), 1, "the first still runs");
 }
 
 /// File › Export a Table… opens the picker, as quick open's row does.
@@ -1106,7 +1114,7 @@ fn the_clipboards_failure_keeps_the_sheets_choices() {
         ),
     ));
     harness.app.apply(Action::StartExport);
-    let job = harness.app.exporting.as_ref().unwrap().job.id;
+    let job = harness.app.exports.last().unwrap().job.id;
     harness
         .app
         .apply(Action::Backend(crate::backend::Event::Export {
@@ -1147,7 +1155,7 @@ fn the_toast_key_goes_to_each_toasts_first_button() {
         focused_label(&mut harness),
         Some(crate::ui::export_toast::reveal_words(harness.app.locale))
     );
-    harness.app.exporting = None;
+    harness.app.exports.clear();
     export_ends(
         &mut harness,
         tab,
@@ -1155,13 +1163,13 @@ fn the_toast_key_goes_to_each_toasts_first_button() {
     );
     toast_key(&mut harness);
     assert_eq!(focused_label(&mut harness).as_deref(), Some("Try again"));
-    harness.app.exporting = None;
+    harness.app.exports.clear();
     export_ends(
         &mut harness,
         tab,
         ExportState::Failed(ExportFailure::TooLarge),
     );
-    harness.app.exporting = None;
+    harness.app.exports.clear();
     harness.settle();
     // A running export hidden to its pill.
     let dir = tempfile::tempdir().unwrap();
@@ -1170,12 +1178,15 @@ fn the_toast_key_goes_to_each_toasts_first_button() {
         path: dir.path().join("book_covers.csv").display().to_string(),
         replace: false,
     });
-    harness.app.apply(Action::HideExport(true));
+    harness.app.apply(Action::HideExport {
+        job: harness.app.exports.last().unwrap().job.id,
+        hidden: true,
+    });
     harness.settle();
     toast_key(&mut harness);
     let pill = focused_label(&mut harness).unwrap_or_default();
     assert!(pill.starts_with("Exporting book_covers"), "{pill:?}");
-    harness.app.exporting = None;
+    harness.app.exports.clear();
     harness.press(Key::Escape, Modifiers::NONE);
     // A toast of words alone.
     harness.app.said = Some("Copied 3 rows as CSV".into());
@@ -1186,10 +1197,10 @@ fn the_toast_key_goes_to_each_toasts_first_button() {
 }
 
 /// R9: a ⌘⇧' pressed as its toast goes takes nothing later; with an
-/// export's toast and Copy as's offer both up, Tab stays in the one that
-/// has the keyboard.
+/// export's toast and Copy as's offer both up, Tab walks both (spec 4,
+/// S13).
 #[test]
-fn the_toast_key_asks_once_and_tab_keeps_to_its_toast() {
+fn the_toast_key_asks_once_and_tab_walks_every_toast() {
     let (mut harness, tab, _id) = too_large_in(Look::macos());
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("book_covers.csv").display().to_string();
@@ -1200,7 +1211,7 @@ fn the_toast_key_asks_once_and_tab_keeps_to_its_toast() {
     });
     harness.settle();
     // The toast goes in the frame ⌘⇧' comes in.
-    harness.app.exporting = None;
+    harness.app.exports.clear();
     let chord = Modifiers::COMMAND | Modifiers::SHIFT;
     harness.frame(vec![crate::testing::key(Key::Quote, chord)]);
     harness.frame(vec![crate::testing::release(Key::Quote, chord)]);
@@ -1219,7 +1230,8 @@ fn the_toast_key_asks_once_and_tab_keeps_to_its_toast() {
         before,
         "nothing asked for it now"
     );
-    // Both toasts: Tab goes round the export's alone.
+    // Both toasts: Tab goes round every toast's buttons, top to bottom
+    // (spec 4, S13).
     copy_as_markdown(&mut harness, tab);
     toast_key(&mut harness);
     let mut seen = vec![focused_label(&mut harness)];
@@ -1233,8 +1245,8 @@ fn the_toast_key_asks_once_and_tab_keeps_to_its_toast() {
         [
             words("Cancel"),
             words("Hide"),
-            words("Cancel"),
-            words("Hide")
+            words("Export…"),
+            words("Cancel")
         ]
     );
 }
@@ -1266,7 +1278,7 @@ fn a_done_said_twice_is_told_once() {
     let (mut harness, tab, _id) = bookshop_in(Look::macos());
     harness.window_focus(false);
     export_ends(&mut harness, tab, done());
-    if let Some(exporting) = &harness.app.exporting {
+    if let Some(exporting) = harness.app.exports.last() {
         let job = exporting.job.id;
         harness
             .app
@@ -1509,10 +1521,10 @@ fn the_offer_goes_once_the_page_changes() {
     );
 }
 
-/// R6 and run 3's D5: the offer taken while an export runs says so and
-/// moves neither the selection nor the tab in front.
+/// R6 and spec 4, F7: the offer taken while an export runs opens its
+/// sheet, on what was copied (run 3's D5 is gone).
 #[test]
-fn the_offer_taken_while_an_export_runs_moves_nothing() {
+fn the_offer_taken_while_an_export_runs_opens_its_sheet() {
     let (mut harness, tab, id) = too_large_in(Look::macos());
     copy_as_markdown(&mut harness, tab);
     let offer = crate::ui::toast::offered(&harness.ctx).expect("an offer");
@@ -1523,17 +1535,11 @@ fn the_offer_taken_while_an_export_runs_moves_nothing() {
         replace: false,
     });
     harness.settle();
+    let copied = offer.copied.clone().expect("what was copied");
     select(&mut harness, tab, id, (0, 1));
     harness.app.apply(Action::ExportSelection(offer));
-    assert_eq!(
-        harness.app.said.as_deref(),
-        Some("An export is running. Cancel it first, or wait for it.")
-    );
-    assert!(sheet(&harness).is_none());
+    let open = sheet(&harness).expect("its sheet");
+    assert_eq!(open.format, crate::export::Format::Markdown);
     let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
-    assert_eq!(
-        object.selection,
-        Some(crate::model::CellPos { row: 0, col: 1 })
-    );
-    assert_eq!(object.range, None, "the selection where it was moved to");
+    assert_eq!(object.selection, Some(copied.cursor), "what was copied");
 }

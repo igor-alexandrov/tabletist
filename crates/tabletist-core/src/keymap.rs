@@ -278,6 +278,12 @@ pub enum When {
     Export,
     /// A failed export's line stands in the terminal look's status line.
     ExportFailed,
+    /// The terminal look's `:export cancel` asks which of the exports
+    /// running to cancel.
+    CancelExports,
+    /// The float's save to line has the keyboard, with the names it
+    /// starts listed under it.
+    PathListed,
     /// A button of a toast has the keyboard (⌘⇧' put it there).
     ToastFocused,
     /// The start screen's search is on: its field has the keyboard. The
@@ -599,6 +605,16 @@ commands! {
     ExportNoColumns = "export_no_columns",
     DismissExport = "dismiss_export",
     ExportTable = "export_table",
+    CancelWhichExport = "cancel_which_export",
+    CancelExportNext = "cancel_export_next",
+    CancelExportPrevious = "cancel_export_previous",
+    CancelExportPick = "cancel_export_pick",
+    CloseCancelExport = "close_cancel_export",
+    ExportPickFile = "export_pick_file",
+    PathNext = "path_next",
+    PathPrevious = "path_previous",
+    PathPick = "path_pick",
+    ClosePathList = "close_path_list",
     Import = "import",
     FocusToast = "focus_toast",
     LeaveToast = "leave_toast",
@@ -1016,6 +1032,16 @@ impl Command {
             C::ExportNoColumns => info("Leave every column out", "", Prompts),
             C::DismissExport => info("Put away a failed export's line", "", Window),
             C::ExportTable => info("Export a table…", "", Window),
+            C::CancelWhichExport => info("Cancel the export of that number", "", Prompts),
+            C::CancelExportNext => info("Next export to cancel", "", Prompts),
+            C::CancelExportPrevious => info("Previous export to cancel", "", Prompts),
+            C::CancelExportPick => info("Cancel the highlighted export", "", Prompts),
+            C::CloseCancelExport => info("Close the exports to cancel", "", Prompts),
+            C::ExportPickFile => info("Pick the export's file in the system's dialog", "", Prompts),
+            C::PathNext => info("Next name for the path", "", Prompts),
+            C::PathPrevious => info("Previous name for the path", "", Prompts),
+            C::PathPick => info("Take the highlighted name", "", Prompts),
+            C::ClosePathList => info("Close the names for the path", "", Prompts),
             C::Import => info("Import…", "", Window).reserved(),
             C::FocusToast => info("Move to the toast", "", Window),
             C::LeaveToast => info("Give the keyboard back from the toast", "", Prompts),
@@ -1979,7 +2005,7 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k(":w! {path}")]),
         ),
         // The macOS look's Cancel is the toast's button. Read from any tab:
-        // the export is the window's, and its line names this.
+        // the exports are the window's, and their line names this.
         bind(C::CancelExport, GLOBAL, NONE, keys(&[k(":export cancel")])),
         bind(C::OpenExportFolder, EXPORTS_END, NONE, keys(&[k("go")])),
         bind(C::ExportReviewSql, PROMPT, NONE, keys(&[k("ctrl+r")])).when(When::Export),
@@ -2018,6 +2044,31 @@ pub const BINDINGS: &[Binding] = {
         bind(C::ExportAllColumns, PROMPT, NONE, keys(&[k("a")])).when(When::Export),
         bind(C::ExportNoColumns, PROMPT, NONE, keys(&[k("n")])).when(When::Export),
         bind(C::DismissExport, EXPORTS_END, NONE, keys(&[k("esc")])).when(When::ExportFailed),
+        // `:export cancel` with two or more running (spec 4, F5).
+        bind(C::CancelWhichExport, PROMPT, NONE, keys(&[k("1..9")])).when(When::CancelExports),
+        bind(
+            C::CancelExportNext,
+            PROMPT,
+            NONE,
+            keys(&[k("ctrl+n"), k("down")]),
+        )
+        .when(When::CancelExports),
+        bind(
+            C::CancelExportPrevious,
+            PROMPT,
+            NONE,
+            keys(&[k("ctrl+p"), k("up")]),
+        )
+        .when(When::CancelExports),
+        bind(C::CancelExportPick, PROMPT, NONE, keys(&[k("enter")])).when(When::CancelExports),
+        bind(C::CloseCancelExport, PROMPT, NONE, keys(&[k("esc")])).when(When::CancelExports),
+        // The float's save to line (spec 4, S15 and S16): the system's
+        // dialog, and the names the line starts.
+        bind(C::ExportPickFile, PROMPT, NONE, keys(&[k("ctrl+o")])).when(When::Export),
+        bind(C::PathNext, PROMPT, NONE, keys(&[k("ctrl+n"), k("down")])).when(When::PathListed),
+        bind(C::PathPrevious, PROMPT, NONE, keys(&[k("ctrl+p"), k("up")])).when(When::PathListed),
+        bind(C::PathPick, PROMPT, NONE, keys(&[k("enter")])).when(When::PathListed),
+        bind(C::ClosePathList, PROMPT, NONE, keys(&[k("esc")])).when(When::PathListed),
         // Quick open's Export a table…: a row to pick, no key.
         bind(C::ExportTable, GLOBAL, NONE, NONE),
         // File › Import…, held for later: no key, and not built.

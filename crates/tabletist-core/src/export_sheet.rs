@@ -133,6 +133,108 @@ pub struct ExportSheet {
     /// Selected rows is the cursor's row alone, whatever range stands: the
     /// row panel's Export row… (spec 4, S8).
     pub row_only: bool,
+    /// The names the terminal look's path line starts, listed under it
+    /// for the line they were asked for (spec 4, S15).
+    pub listed: Option<PathList>,
+    /// `ctrl+o`'s dialog is up (`asking` too): its answer fills the line
+    /// and starts nothing (spec 4, S16).
+    pub picking: bool,
+    /// A listing is on its way: no other is asked until it comes, so one
+    /// slow folder holds one of the backend's threads, not one a key.
+    pub listing: bool,
+    /// The list was put away (Esc, or the keyboard gone from the line):
+    /// none shows again until the line changes, though an answer asked
+    /// before comes.
+    pub list_closed: bool,
+    /// The file `ctrl+o`'s dialog answered, while the line is the one it
+    /// filled: Enter writes there, whatever the line could not say of it
+    /// (a name that is no UTF-8).
+    pub picked: Option<PathBuf>,
+    /// Asks the view, once for each new value, to give the line the
+    /// keyboard with its cursor at the end: after a name is taken from
+    /// the list, or `ctrl+o`'s answer fills it.
+    pub to_line: u64,
+}
+
+/// What the path line lists under it: the names of its folder that its
+/// last part starts, for `line`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathList {
+    pub line: String,
+    pub names: Vec<Listed>,
+    /// The name the keyboard is on.
+    pub lit: usize,
+}
+
+/// A name the path line may take: a folder's (written with its `/`) or a
+/// file's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    pub name: String,
+    pub folder: bool,
+}
+
+/// How many names the path line lists at most (spec 4, S15).
+pub const LISTED: usize = 8;
+
+/// Of a folder's names (each with whether it is a folder), those the path
+/// line offers for a last part `start`: the names that start with it,
+/// case aside, folders first, then files, each by name; dot files only
+/// once `start` begins with a `.`; at most [`LISTED`] (spec 4, S15).
+pub fn completions(names: impl IntoIterator<Item = (String, bool)>, start: &str) -> Vec<Listed> {
+    let wanted = start.to_lowercase();
+    let dots = start.starts_with('.');
+    let mut kept: Vec<Listed> = names
+        .into_iter()
+        .filter(|(name, _)| dots || !name.starts_with('.'))
+        .filter(|(name, _)| name.to_lowercase().starts_with(&wanted))
+        .map(|(name, folder)| Listed { name, folder })
+        .collect();
+    kept.sort_by(|one, two| {
+        two.folder
+            .cmp(&one.folder)
+            .then_with(|| one.name.to_lowercase().cmp(&two.name.to_lowercase()))
+            .then_with(|| one.name.cmp(&two.name))
+    });
+    kept.truncate(LISTED);
+    kept
+}
+
+/// Where the path line's last part starts: after its last separator.
+fn last_part(typed: &str) -> usize {
+    typed
+        .rfind(['/', std::path::MAIN_SEPARATOR])
+        .map_or(0, |at| at + 1)
+}
+
+/// What the path line `typed` asks to list: the folder its last part is
+/// in, as [`typed_path`] reads it, and that part. `None` for an empty
+/// line. No disk is read.
+pub fn completion_ask(
+    typed: &str,
+    downloads: &Path,
+    home: Option<&Path>,
+) -> Option<(PathBuf, String)> {
+    // As `typed_path` reads it: spaces at either end are no part of it.
+    let typed = typed.trim();
+    if typed.is_empty() {
+        return None;
+    }
+    let at = last_part(typed);
+    let (folder, start) = typed.split_at(at);
+    let folder = match folder {
+        "" => downloads.to_path_buf(),
+        folder => typed_path(folder, downloads, home),
+    };
+    Some((folder, start.to_owned()))
+}
+
+/// The path line `typed` with `listed` in its last part's place: a folder
+/// with its `/`, for its own names next.
+pub fn complete(typed: &str, listed: &Listed) -> String {
+    let at = last_part(typed);
+    let slash = if listed.folder { "/" } else { "" };
+    format!("{}{}{slash}", &typed[..at], listed.name)
 }
 
 /// A change made in the sheet.
@@ -155,6 +257,10 @@ pub enum ExportChange {
     Options(Box<Options>),
     Path(String),
     Review(bool),
+    /// The path line's list: its lit name moved by, round.
+    PathMove(isize),
+    /// The path line's list put away (Esc).
+    ClosePathList,
 }
 
 impl ExportSheet {
@@ -200,6 +306,18 @@ impl ExportSheet {
             ExportChange::Options(options) => self.options = *options,
             ExportChange::Path(path) => self.set_path(path),
             ExportChange::Review(review) => self.review = review,
+            ExportChange::PathMove(by) => {
+                if let Some(list) = &mut self.listed
+                    && !list.names.is_empty()
+                {
+                    let lit = list.lit.min(list.names.len() - 1) as isize;
+                    list.lit = (lit + by).rem_euclid(list.names.len() as isize) as usize;
+                }
+            }
+            ExportChange::ClosePathList => {
+                self.listed = None;
+                self.list_closed = true;
+            }
         }
         None
     }
@@ -207,8 +325,13 @@ impl ExportSheet {
     /// The format, and the path line's extension with it.
     fn set_format(&mut self, format: Format) {
         self.format = format;
-        self.path = with_extension(&self.path, format);
-        self.exists = false;
+        let path = with_extension(&self.path, format);
+        // The same line names the same file: a replace asked for stands.
+        if path != self.path {
+            self.picked = None;
+            self.exists = false;
+        }
+        self.path = path;
     }
 
     /// The path line, and the format of a known extension typed in it.
@@ -218,15 +341,40 @@ impl ExportSheet {
         }
         if path != self.path {
             self.exists = false;
+            // Its list was another line's, and so was the dialog's file.
+            self.listed = None;
+            self.list_closed = false;
+            self.picked = None;
         }
         self.path = path;
+    }
+
+    /// The sheet as an export keeps it, to open again: without its list,
+    /// which a sheet opened again asks for anew.
+    pub fn kept(&self) -> ExportSheet {
+        ExportSheet {
+            listed: None,
+            listing: false,
+            list_closed: false,
+            picking: false,
+            ..self.clone()
+        }
+    }
+
+    /// The name the path line's list has lit, if one is listed for the
+    /// line as it is.
+    pub fn lit_name(&self) -> Option<&Listed> {
+        let list = self.listed.as_ref().filter(|list| list.line == self.path)?;
+        list.names
+            .get(list.lit.min(list.names.len().saturating_sub(1)))
     }
 }
 
 /// `path` ending in `format`'s extension: a known one is replaced, any
 /// other kept and the format's added.
 pub fn with_extension(path: &str, format: Format) -> String {
-    if path.is_empty() {
+    // Nor a folder's line, still waiting for its file's name.
+    if path.is_empty() || path.ends_with(['/', std::path::MAIN_SEPARATOR]) {
         return path.to_owned();
     }
     let known = Path::new(path)
@@ -319,7 +467,7 @@ pub fn typed_path(typed: &str, downloads: &Path, home: Option<&Path>) -> PathBuf
     }
 }
 
-/// How the running (or last) export stands, as the app keeps it.
+/// How an export stands, as the app keeps it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExportStatus {
     /// The save panel is up.
@@ -346,8 +494,8 @@ pub enum ExportStatus {
     },
 }
 
-/// The export the app runs (one at a time, spec D5), or the last one,
-/// while its end is still told.
+/// An export the app runs (several at once, spec 4, S12), or one whose
+/// end is still told.
 #[derive(Debug, Clone)]
 pub struct Exporting {
     /// What runs, whole: Try again sends it again.
@@ -387,6 +535,25 @@ pub struct Exporting {
 pub const TOLD_FOR: Duration = Duration::from_secs(4);
 
 impl Exporting {
+    /// Its name as its toast and line say it: the file's ("reviews.csv"),
+    /// or a copy's table.
+    pub fn name(&self) -> &str {
+        match self.file.is_empty() {
+            true => &self.table,
+            false => &self.file,
+        }
+    }
+
+    /// When it ended, done, cancelled or failed.
+    pub fn ended_at(&self) -> Option<Instant> {
+        match self.status {
+            ExportStatus::Done { at, .. }
+            | ExportStatus::Cancelled { at }
+            | ExportStatus::Failed { at, .. } => Some(at),
+            ExportStatus::Asking | ExportStatus::Running { .. } => None,
+        }
+    }
+
     /// Whether it still runs (or waits for the save panel).
     pub fn running(&self) -> bool {
         matches!(
@@ -672,6 +839,12 @@ mod tests {
             asking: false,
             cursor_row: false,
             row_only: false,
+            listed: None,
+            picking: false,
+            listing: false,
+            list_closed: false,
+            picked: None,
+            to_line: 0,
             result: None,
         }
     }
@@ -700,8 +873,93 @@ mod tests {
         // An ending no format has is kept, and the format's added.
         assert_eq!(with_extension("notes.txt", Format::Csv), "notes.txt.csv");
         assert_eq!(with_extension("dump.SQL", Format::Tsv), "dump.tsv");
+        // A folder's line waits for its file's name, whatever the format.
+        assert_eq!(with_extension("~/Exports/", Format::Json), "~/Exports/");
         assert_eq!(Format::of_extension("JSONL"), Some(Format::JsonLines));
         assert_eq!(Format::of_extension("xlsx"), None);
+    }
+
+    /// Spec 4, S15: what the path line offers, folders first, at most
+    /// eight, dot files once a `.` is typed, case aside.
+    #[test]
+    fn completions_keep_folders_first_and_eight() {
+        let names = |names: &[(&str, bool)]| {
+            names
+                .iter()
+                .map(|(name, folder)| ((*name).to_owned(), *folder))
+                .collect::<Vec<_>>()
+        };
+        let kept = completions(
+            names(&[
+                ("reviews.csv", false),
+                ("Reports", true),
+                (".reviews", false),
+                ("authors.csv", false),
+                ("rev", true),
+            ]),
+            "RE",
+        );
+        let shown: Vec<(&str, bool)> = kept
+            .iter()
+            .map(|listed| (listed.name.as_str(), listed.folder))
+            .collect();
+        assert_eq!(
+            shown,
+            [("Reports", true), ("rev", true), ("reviews.csv", false)]
+        );
+        let dots = completions(names(&[(".reviews", false), ("reviews", false)]), ".r");
+        assert_eq!(dots.len(), 1);
+        assert_eq!(dots[0].name, ".reviews");
+        let many: Vec<(String, bool)> = (0..20).map(|n| (format!("r{n:02}.csv"), false)).collect();
+        let kept = completions(many, "r");
+        assert_eq!(kept.len(), LISTED);
+        assert_eq!(kept[0].name, "r00.csv");
+        assert!(completions(names(&[("authors.csv", false)]), "re").is_empty());
+    }
+
+    /// Spec 4, S15: the line's folder and last part, with no disk read;
+    /// a name taken in the last part's place.
+    #[test]
+    fn a_completion_fills_the_line() {
+        let downloads = Path::new("/home/reader/Downloads");
+        let home = Some(Path::new("/home/reader"));
+        assert_eq!(completion_ask("  ", downloads, home), None);
+        assert_eq!(
+            completion_ask("~/Downloads/rev", downloads, home),
+            Some((PathBuf::from("/home/reader/Downloads"), "rev".to_owned()))
+        );
+        assert_eq!(
+            completion_ask("~/", downloads, home),
+            Some((PathBuf::from("/home/reader"), String::new()))
+        );
+        assert_eq!(
+            completion_ask("rev", downloads, home),
+            Some((downloads.to_path_buf(), "rev".to_owned()))
+        );
+        assert_eq!(
+            completion_ask("/tmp/out/a", downloads, home),
+            Some((PathBuf::from("/tmp/out/"), "a".to_owned()))
+        );
+        let file = Listed {
+            name: "reviews.csv".into(),
+            folder: false,
+        };
+        let folder = Listed {
+            name: "Downloads".into(),
+            folder: true,
+        };
+        assert_eq!(
+            complete("~/Downloads/rev", &file),
+            "~/Downloads/reviews.csv"
+        );
+        assert_eq!(complete("~/Dow", &folder), "~/Downloads/");
+        assert_eq!(complete("rev", &file), "reviews.csv");
+        // Spaces at either end are no part of the line, as the export
+        // reads it.
+        assert_eq!(
+            completion_ask("  rev ", downloads, home),
+            Some((downloads.to_path_buf(), "rev".to_owned()))
+        );
     }
 
     /// Test 7 of the spec: chosen and reordered columns, in that order,

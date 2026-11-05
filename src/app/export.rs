@@ -216,17 +216,40 @@ impl App {
             .collect()
     }
 
-    /// Says that an export already runs (spec, D5).
-    pub(super) fn export_runs(&mut self) -> bool {
-        if !self.exporting.as_ref().is_some_and(Exporting::running) {
-            return false;
+    /// Where `job` is among the exports; with none named, the one whose
+    /// end the terminal look's line shows ([`App::shown_export`]).
+    fn export_at(&self, job: Option<ExportId>) -> Option<usize> {
+        match job {
+            Some(job) => self
+                .exports
+                .iter()
+                .position(|exporting| exporting.job.id == job),
+            None => self.shown_end(),
         }
-        let words = match self.look.terminal {
-            true => "an export is running · :export cancel",
-            false => "An export is running. Cancel it first, or wait for it.",
-        };
-        self.said = Some(gettext(self.locale, words).into_owned());
-        true
+    }
+
+    /// The export whose end the terminal look's line shows: of those whose
+    /// end is still told, the one that ended last (spec 4, S14).
+    fn shown_end(&self) -> Option<usize> {
+        let now = Instant::now();
+        self.exports
+            .iter()
+            .enumerate()
+            .filter(|(_, exporting)| !exporting.gone(now))
+            .filter_map(|(at, exporting)| Some((at, exporting.ended_at()?)))
+            .max_by_key(|(at, ended)| (*ended, *at))
+            .map(|(at, _)| at)
+    }
+
+    /// The export whose end the terminal look's line shows, if any: `go`,
+    /// Esc and `:export` act on it.
+    pub fn shown_export(&self) -> Option<&Exporting> {
+        self.shown_end().map(|at| &self.exports[at])
+    }
+
+    /// The exports running, in the order they started.
+    pub fn running_exports(&self) -> impl Iterator<Item = &Exporting> {
+        self.exports.iter().filter(|exporting| exporting.running())
     }
 
     /// A copy over the clipboard's limit offers the file (spec 3b, R6):
@@ -328,7 +351,7 @@ impl App {
     /// (spec 3b, R1 and R6).
     pub(super) fn export_selection(&mut self, offer: crate::model::ExportOffer) {
         // Nothing moves where no sheet would open.
-        if self.dialog.is_some() || !self.offer_holds(&offer) || self.export_runs() {
+        if self.dialog.is_some() || !self.offer_holds(&offer) {
             return;
         }
         let crate::model::ExportOffer {
@@ -383,7 +406,7 @@ impl App {
         format: Option<Format>,
         (selection, whole_rows, row_only): (bool, bool, bool),
     ) {
-        if self.dialog.is_some() || self.export_runs() {
+        if self.dialog.is_some() {
             return;
         }
         let asked = self.next_id();
@@ -457,6 +480,12 @@ impl App {
             asking: false,
             cursor_row: selection,
             row_only,
+            listed: None,
+            picking: false,
+            listing: false,
+            list_closed: false,
+            picked: None,
+            to_line: 0,
         };
         self.open_sheet(sheet);
     }
@@ -520,6 +549,12 @@ impl App {
             asking: false,
             cursor_row: selection,
             row_only,
+            listed: None,
+            picking: false,
+            listing: false,
+            list_closed: false,
+            picked: None,
+            to_line: 0,
         };
         self.open_sheet(sheet);
     }
@@ -563,7 +598,7 @@ impl App {
         object: tabletist_db::ObjectRef,
         kind: tabletist_db::ObjectKind,
     ) {
-        if self.dialog.is_some() || self.export_runs() {
+        if self.dialog.is_some() {
             return;
         }
         self.open_object(tab, object, kind, true);
@@ -612,9 +647,11 @@ impl App {
         let Some(Dialog::Export(sheet)) = &mut self.dialog else {
             return;
         };
+        let typed = matches!(change, ExportChange::Path(_));
         if let Some(said) = sheet.change(change, locale) {
             self.export_said = Some(said);
         }
+
         // Over the clipboard's rows: the file, whatever was chosen.
         let sheet = sheet.clone();
         if sheet.destination == DestinationChoice::Clipboard
@@ -624,6 +661,132 @@ impl App {
             && let Some(Dialog::Export(open)) = &mut self.dialog
         {
             open.destination = DestinationChoice::File;
+        }
+        // Typed in the path line: the names it starts (spec 4, S15).
+        if typed {
+            self.list_folder();
+        }
+    }
+
+    /// Asks for the names the float's path line starts, off this thread
+    /// (spec 4, S15): none for an empty line, nor in the macOS look, whose
+    /// sheet has no path line.
+    fn list_folder(&mut self) {
+        let Some(Dialog::Export(sheet)) = &self.dialog else {
+            return;
+        };
+        if !self.look.terminal {
+            return;
+        }
+        let asked = crate::export_sheet::completion_ask(
+            &sheet.path,
+            &self.dirs.downloads,
+            self.dirs.home.as_deref(),
+        );
+        let Some((folder, start)) = asked else {
+            return;
+        };
+        // One listing at a time: the one on its way is followed by
+        // another for the line as it is then (`folder_listed`).
+        if sheet.listing {
+            return;
+        }
+        let command = Command::ListFolder {
+            asked: sheet.asked,
+            typed: sheet.path.clone(),
+            folder,
+            start,
+        };
+        self.backend.send(command);
+        if let Some(Dialog::Export(sheet)) = &mut self.dialog {
+            sheet.listing = true;
+        }
+    }
+
+    /// The names a path line starts: kept for the line they were asked
+    /// for, dropped for one since changed or another sheet's.
+    pub(super) fn folder_listed(
+        &mut self,
+        asked: u64,
+        typed: &str,
+        names: Vec<crate::export_sheet::Listed>,
+    ) {
+        let Some(Dialog::Export(sheet)) = &mut self.dialog else {
+            return;
+        };
+        if sheet.asked != asked {
+            return;
+        }
+        sheet.listing = false;
+        // The line changed while it was read: the line as it is now.
+        if sheet.path != typed {
+            self.list_folder();
+            return;
+        }
+        // Nor while `ctrl+o`'s dialog is up, its answer to fill the line,
+        // nor once the list was put away for this line.
+        if sheet.asking || sheet.list_closed {
+            return;
+        }
+        // Nothing matches: no list (spec 4, S15).
+        sheet.listed = (!names.is_empty()).then(|| crate::export_sheet::PathList {
+            line: typed.to_owned(),
+            names,
+            lit: 0,
+        });
+    }
+
+    /// A name of the path line's list taken: the one at `at`, else the
+    /// lit one. A folder lists its own names next; a file closes the list
+    /// and sets the format from its ending (spec 4, S15).
+    pub(super) fn pick_path(&mut self, at: Option<usize>) {
+        let locale = self.locale;
+        let Some(Dialog::Export(sheet)) = &mut self.dialog else {
+            return;
+        };
+        let picked = match at {
+            Some(at) => sheet
+                .listed
+                .as_ref()
+                .filter(|list| list.line == sheet.path)
+                .and_then(|list| list.names.get(at)),
+            None => sheet.lit_name(),
+        };
+        let Some(picked) = picked.cloned() else {
+            return;
+        };
+        let line = crate::export_sheet::complete(&sheet.path, &picked);
+        sheet.change(ExportChange::Path(line), locale);
+        sheet.listed = None;
+        // Typing goes on at the line's end, not where the part taken was.
+        sheet.to_line += 1;
+        if picked.folder {
+            self.list_folder();
+        }
+    }
+
+    /// The float's `ctrl+o`: the system's save dialog (the portal's on
+    /// Linux), suggested from the path line. Its answer fills the line;
+    /// nothing starts until Enter (spec 4, S16).
+    pub(super) fn pick_export_file(&mut self) {
+        let Some(Dialog::Export(sheet)) = &self.dialog else {
+            return;
+        };
+        if sheet.asking || sheet.review || sheet.destination != DestinationChoice::File {
+            return;
+        }
+        let suggested = crate::export_sheet::typed_path(
+            &sheet.path,
+            &self.dirs.downloads,
+            self.dirs.home.as_deref(),
+        );
+        let title = gettext(self.locale, "Export rows").into_owned();
+        self.backend
+            .ask_export_path(ExportId(sheet.asked), &title, &suggested);
+        if let Some(Dialog::Export(sheet)) = &mut self.dialog {
+            sheet.asking = true;
+            sheet.picking = true;
+            sheet.listed = None;
         }
     }
 
@@ -929,7 +1092,7 @@ impl App {
             connection: self.history_name(sheet.tab),
             total: facts.rows,
             statement: facts.statement.clone(),
-            sheet: Box::new(sheet.clone()),
+            sheet: Box::new(sheet.kept()),
             status: ExportStatus::Running { rows: 0, bytes: 0 },
             hidden: false,
             started: Instant::now(),
@@ -1050,7 +1213,7 @@ impl App {
             connection: self.history_name(sheet.tab),
             total: facts.rows,
             statement: facts.statement.clone(),
-            sheet: Box::new(sheet.clone()),
+            sheet: Box::new(sheet.kept()),
             status: ExportStatus::Running { rows: 0, bytes: 0 },
             hidden: false,
             started: Instant::now(),
@@ -1078,12 +1241,25 @@ impl App {
         let destination = match sheet.destination {
             DestinationChoice::Clipboard if facts.clipboard_refused => return,
             DestinationChoice::Clipboard => Destination::Clipboard,
+            // A folder taken from the path line's list names no file yet:
+            // Enter waits for one (plan 4b, B20).
+            DestinationChoice::File
+                if self.look.terminal
+                    && sheet
+                        .path
+                        .trim_end()
+                        .ends_with(['/', std::path::MAIN_SEPARATOR]) =>
+            {
+                return;
+            }
             DestinationChoice::File if self.look.terminal => {
-                let path = crate::export_sheet::typed_path(
-                    &sheet.path,
-                    &self.dirs.downloads,
-                    self.dirs.home.as_deref(),
-                );
+                let path = sheet.picked.clone().unwrap_or_else(|| {
+                    crate::export_sheet::typed_path(
+                        &sheet.path,
+                        &self.dirs.downloads,
+                        self.dirs.home.as_deref(),
+                    )
+                });
                 // A file that is there fails the rename, and the float
                 // opens again saying so (`export_state`): no disk is read
                 // here.
@@ -1114,17 +1290,19 @@ impl App {
             }
         };
         let reopens = self.look.terminal && matches!(destination, Destination::File { .. });
-        self.run_export(&sheet, destination);
-        if let Some(exporting) = &mut self.exporting {
+        if self.run_export(&sheet, destination)
+            && let Some(exporting) = self.exports.last_mut()
+        {
             exporting.reopens = reopens;
         }
     }
 
-    /// Starts `sheet`'s export to `destination`, and closes the sheet.
-    fn run_export(&mut self, sheet: &ExportSheet, destination: Destination) {
+    /// Starts `sheet`'s export to `destination`, after any running (spec
+    /// 4, S12), and closes the sheet. Returns whether it started.
+    fn run_export(&mut self, sheet: &ExportSheet, destination: Destination) -> bool {
         let clipboard = destination == Destination::Clipboard;
         let Some(exporting) = self.export_job(sheet, destination) else {
-            return;
+            return false;
         };
         // Remembered when it starts (spec, Q11), and the format the next
         // sheet opens on.
@@ -1139,9 +1317,19 @@ impl App {
         if matches!(&self.dialog, Some(Dialog::Export(open)) if open.asked == sheet.asked) {
             self.dialog = None;
         }
+        // A failure to write the same file is answered by this one
+        // (`:w!` after "exists"): it goes.
+        if let Destination::File { path, .. } = &exporting.job.destination {
+            self.exports.retain(|other| {
+                let failed = matches!(other.status, ExportStatus::Failed { .. });
+                !(failed
+                    && matches!(&other.job.destination, Destination::File { path: there, .. } if there == path))
+            });
+        }
         self.backend
             .send(Command::Export(Box::new(exporting.job.clone())));
-        self.exporting = Some(exporting);
+        self.exports.push(exporting);
+        true
     }
 
     /// The save panel's answer. It replaces only a file that was there as
@@ -1152,25 +1340,38 @@ impl App {
         path: Option<PathBuf>,
         replace: bool,
     ) {
-        let Some(Dialog::Export(sheet)) = &mut self.dialog else {
-            // Choose folder… from a failure's toast: its export again.
-            if let Some(path) = path
-                && self
-                    .exporting
-                    .as_ref()
-                    .is_some_and(|exporting| exporting.job.id == job && !exporting.running())
-            {
-                self.rerun_export(Some(Destination::File { path, replace }));
+        let sheet = match &mut self.dialog {
+            Some(Dialog::Export(sheet)) if ExportId(sheet.asked) == job => sheet,
+            // Choose folder… from a failure's toast: its export again,
+            // whatever sheet is open for another (spec 4, F7).
+            _ => {
+                if let Some(path) = path
+                    && let Some(at) = self.export_at(Some(job))
+                    && !self.exports[at].running()
+                {
+                    self.rerun_export(at, Some(Destination::File { path, replace }));
+                }
+                return;
             }
-            return;
         };
-        if ExportId(sheet.asked) != job {
-            return;
-        }
         sheet.asking = false;
         let Some(path) = path else {
+            sheet.picking = false;
             return;
         };
+        // `ctrl+o`'s answer: the line, and a replace where the dialog
+        // asked for one; Enter starts it (spec 4, S16).
+        if std::mem::take(&mut sheet.picking) {
+            let line = crate::export_sheet::shown_path(&path, self.dirs.home.as_deref());
+            sheet.change(ExportChange::Path(line), self.locale);
+            sheet.exists = replace;
+            sheet.listed = None;
+            // Enter writes the file answered, though the line could not
+            // say all of its name; from the line, which has the keyboard.
+            sheet.picked = Some(path);
+            sheet.to_line += 1;
+            return;
+        }
         let sheet = sheet.clone();
         self.run_export(&sheet, Destination::File { path, replace });
     }
@@ -1179,9 +1380,6 @@ impl App {
     /// column, at once (spec, Q13); of a SQL result, the rows already
     /// loaded (spec 4, S6).
     pub(super) fn export_to(&mut self, tab: ConnTabId, typed: &str, replace: bool) {
-        if self.export_runs() {
-            return;
-        }
         let home = self.dirs.home.clone();
         let path = crate::export_sheet::typed_path(typed, &self.dirs.downloads, home.as_deref());
         let Some(format) = crate::export::Format::of_path(&path) else {
@@ -1232,8 +1430,15 @@ impl App {
                 asking: false,
                 cursor_row: false,
                 row_only: false,
+                listed: None,
+                picking: false,
+                listing: false,
+                list_closed: false,
+                picked: None,
+                to_line: 0,
             };
-            return self.run_export(&sheet, Destination::File { path, replace });
+            self.run_export(&sheet, Destination::File { path, replace });
+            return;
         }
         let Some((_, object)) = self.export_table(tab) else {
             return;
@@ -1256,29 +1461,88 @@ impl App {
             asking: false,
             cursor_row: false,
             row_only: false,
+            listed: None,
+            picking: false,
+            listing: false,
+            list_closed: false,
+            picked: None,
+            to_line: 0,
         };
         self.run_export(&sheet, Destination::File { path, replace });
     }
 
-    pub(super) fn cancel_export(&mut self) {
-        match &self.exporting {
-            Some(exporting) if exporting.running() => {
-                self.backend.send(Command::CancelExport(exporting.job.id));
+    /// Cancels `job`; with none named (`:export cancel`) the one running,
+    /// or with two or more the picker of them (spec 4, F5).
+    pub(super) fn cancel_export(&mut self, job: Option<ExportId>) {
+        if let Some(job) = job {
+            if self
+                .exports
+                .iter()
+                .any(|exporting| exporting.job.id == job && exporting.running())
+            {
+                self.backend.send(Command::CancelExport(job));
             }
-            _ if self.look.terminal => {
+            return;
+        }
+        let running: Vec<ExportId> = self
+            .running_exports()
+            .map(|exporting| exporting.job.id)
+            .collect();
+        match running.as_slice() {
+            [] if self.look.terminal => {
                 self.said = Some(gettext(self.locale, "no export is running").into_owned());
+            }
+            [] => {}
+            [job] => self.backend.send(Command::CancelExport(*job)),
+            _ if self.dialog.is_none() => {
+                self.dialog = Some(Dialog::CancelExport(crate::model::CancelExportPicker {
+                    lit: running[0],
+                    jobs: running,
+                }));
             }
             _ => {}
         }
     }
 
+    /// The picker's row the keyboard is on, moved by `step`, round.
+    pub(super) fn move_in_cancel_export(&mut self, step: isize) {
+        let Some(Dialog::CancelExport(picker)) = &self.dialog else {
+            return;
+        };
+        let rows: Vec<ExportId> = self
+            .cancel_rows(picker)
+            .iter()
+            .map(|exporting| exporting.job.id)
+            .collect();
+        if let Some(Dialog::CancelExport(picker)) = &mut self.dialog
+            && !rows.is_empty()
+        {
+            let lit = picker.lit_row(&rows) as isize;
+            let to = (lit + step).rem_euclid(rows.len() as isize) as usize;
+            picker.lit = rows[to];
+        }
+    }
+
+    /// The picker's rows: those of its exports still running.
+    pub fn cancel_rows(&self, picker: &crate::model::CancelExportPicker) -> Vec<&Exporting> {
+        picker
+            .jobs
+            .iter()
+            .filter_map(|job| {
+                self.running_exports()
+                    .find(|exporting| exporting.job.id == *job)
+            })
+            .collect()
+    }
+
     /// A failed export's action: Choose folder… (the save panel again for
     /// the same export), Review SQL (the sheet again, on its statement),
     /// or Try again.
-    pub(super) fn export_failure_action(&mut self) {
-        let Some(exporting) = &self.exporting else {
+    pub(super) fn export_failure_action(&mut self, job: Option<ExportId>) {
+        let Some(at) = self.export_at(job) else {
             return;
         };
+        let exporting = &self.exports[at];
         let ExportStatus::Failed { failure, .. } = &exporting.status else {
             return;
         };
@@ -1297,7 +1561,7 @@ impl App {
                     sheet.review = true;
                     sheet.asking = false;
                     sheet.asked = self.next_id();
-                    self.exporting = None;
+                    self.exports.remove(at);
                     self.dialog = Some(Dialog::Export(sheet));
                 }
             }
@@ -1310,34 +1574,35 @@ impl App {
                     sheet.review = false;
                     sheet.asking = false;
                     sheet.asked = self.next_id();
-                    self.exporting = None;
+                    self.exports.remove(at);
                     self.dialog = Some(Dialog::Export(sheet));
                 }
             }
             // The terminal look: another name, from the float.
+            // Its own sheet: the table in front may be another now.
             ExportFailure::Exists { .. } | ExportFailure::PermissionDenied { .. } => {
-                let tab = exporting.tab;
-                self.exporting = None;
-                self.open_export(tab, None);
+                if self.dialog.is_none() {
+                    let mut sheet = exporting.sheet.clone();
+                    sheet.review = false;
+                    sheet.asking = false;
+                    sheet.asked = self.next_id();
+                    self.exports.remove(at);
+                    self.dialog = Some(Dialog::Export(sheet));
+                }
             }
-            _ => self.retry_export(),
+            _ => self.rerun_export(at, None),
         }
     }
 
-    /// Try again (`:export` after a failure): the same export from the
-    /// start.
-    pub(super) fn retry_export(&mut self) {
-        self.rerun_export(None);
-    }
-
-    /// The last export again from the start, under a new id, to
-    /// `destination` where one is given.
-    fn rerun_export(&mut self, destination: Option<Destination>) {
-        if self.exporting.as_ref().is_none_or(Exporting::running) {
+    /// The export at `at` again from the start, under a new id, to
+    /// `destination` where one is given. It starts anew, so it goes last
+    /// among the others (spec 4, S14: in the order they started).
+    fn rerun_export(&mut self, at: usize, destination: Option<Destination>) {
+        if self.exports.get(at).is_none_or(Exporting::running) {
             return;
         }
         let id = ExportId(self.next_id());
-        let Some(exporting) = &mut self.exporting else {
+        let Some(exporting) = self.exports.get_mut(at) else {
             return;
         };
         exporting.job.id = id;
@@ -1360,11 +1625,13 @@ impl App {
         }
         let job = exporting.job.clone();
         self.backend.send(Command::Export(Box::new(job)));
+        let again = self.exports.remove(at);
+        self.exports.push(again);
     }
 
     /// Show in Finder (Show in folder), `go`: while the done line shows.
-    pub(super) fn reveal_export(&mut self) {
-        let Some(exporting) = &self.exporting else {
+    pub(super) fn reveal_export(&mut self, job: Option<ExportId>) {
+        let Some(exporting) = self.export_at(job).map(|at| &self.exports[at]) else {
             return;
         };
         if let (ExportStatus::Done { .. }, Destination::File { path, .. }) =
@@ -1375,14 +1642,12 @@ impl App {
         }
     }
 
-    /// What the backend says of the running export.
+    /// What the backend says of the export `job`.
     pub(super) fn export_state(&mut self, job: ExportId, state: ExportState) {
-        let Some(exporting) = &mut self.exporting else {
+        let Some(place) = self.export_at(Some(job)) else {
             return;
         };
-        if exporting.job.id != job {
-            return;
-        }
+        let exporting = &mut self.exports[place];
         let at = Instant::now();
         let (rows, bytes) = match exporting.status {
             ExportStatus::Running { rows, bytes } => (rows, bytes),
@@ -1429,13 +1694,15 @@ impl App {
             && !self.focused;
         let ended = !exporting.running();
         if told {
-            self.tell_export_done();
+            self.tell_export_done(place);
         }
         if ended {
-            self.export_ended(copied_text);
+            self.export_ended(place, copied_text);
         }
         // The float's file is there: it opens again, and Enter replaces it.
-        let reopen = match &self.exporting {
+        // Found again by its id: a copy's end takes it out of the list.
+        let place = self.export_at(Some(job));
+        let reopen = match place.and_then(|place| self.exports.get(place)) {
             Some(exporting) if self.look.terminal && exporting.reopens => matches!(
                 exporting.status,
                 ExportStatus::Failed {
@@ -1445,22 +1712,20 @@ impl App {
             ),
             _ => false,
         };
-        if reopen && self.dialog.is_none() {
+        if let Some(place) = place.filter(|_| reopen && self.dialog.is_none()) {
             let asked = self.next_id();
-            if let Some(exporting) = self.exporting.take() {
-                let mut sheet = exporting.sheet;
-                sheet.exists = true;
-                sheet.asked = asked;
-                self.dialog = Some(Dialog::Export(sheet));
-            }
+            let mut sheet = self.exports.remove(place).sheet;
+            sheet.exists = true;
+            sheet.asked = asked;
+            self.dialog = Some(Dialog::Export(sheet));
         }
     }
 
     /// Tells of a finished export behind other windows: a desktop
     /// notification on Linux, the Dock's bounce on macOS, the taskbar
     /// button's flash on Windows (spec 3b, E4 and E5).
-    fn tell_export_done(&mut self) {
-        let Some(exporting) = &self.exporting else {
+    fn tell_export_done(&mut self, at: usize) {
+        let Some(exporting) = self.exports.get(at) else {
             return;
         };
         let ExportStatus::Done { rows, .. } = exporting.status else {
@@ -1486,9 +1751,10 @@ impl App {
         });
     }
 
-    /// The end of an export: its history entry, and the clipboard's text.
-    fn export_ended(&mut self, copied: Option<String>) {
-        let Some(exporting) = &self.exporting else {
+    /// The end of the export at `at`: its history entry, and the
+    /// clipboard's text.
+    fn export_ended(&mut self, at: usize, copied: Option<String>) {
+        let Some(exporting) = self.exports.get(at) else {
             return;
         };
         if let (Some(sql), Some(mut entry)) =
@@ -1524,7 +1790,7 @@ impl App {
             self.record(entry);
         }
         if let Some(text) = copied
-            && let Some(exporting) = &self.exporting
+            && let Some(exporting) = self.exports.get(at)
         {
             let rows = match exporting.status {
                 ExportStatus::Done { rows, .. } => rows,
@@ -1541,12 +1807,13 @@ impl App {
             .replace("{format}", format.name());
             self.said = Some(self.look.label(&said));
             self.to_clipboard = Some(text);
-            self.exporting = None;
+            self.exports.remove(at);
         }
     }
 
-    /// Puts away the end of the last export once it has been told for
-    /// long enough (a failure stays until dismissed).
+    /// Puts away the end of each export once it has been told for long
+    /// enough (a failure stays until dismissed), and the `:export cancel`
+    /// picker once none of its exports runs.
     pub(super) fn tick_export(&mut self) {
         // A sheet opened over a table still loading takes its columns
         // once they are there.
@@ -1560,28 +1827,28 @@ impl App {
         if let (Some(columns), Some(Dialog::Export(sheet))) = (columns, &mut self.dialog) {
             sheet.columns = columns;
         }
-        if self
-            .exporting
-            .as_ref()
-            .is_some_and(|exporting| exporting.gone(Instant::now()))
+        let now = Instant::now();
+        self.exports.retain(|exporting| !exporting.gone(now));
+        if let Some(Dialog::CancelExport(picker)) = &self.dialog
+            && self.cancel_rows(picker).is_empty()
         {
-            self.exporting = None;
+            self.dialog = None;
         }
     }
 
-    pub(super) fn dismiss_export(&mut self) {
-        if self
-            .exporting
-            .as_ref()
-            .is_some_and(|exporting| !exporting.running())
+    /// The failed export `job` put away; with none named, the one whose
+    /// end the terminal look's line shows.
+    pub(super) fn dismiss_export(&mut self, job: Option<ExportId>) {
+        if let Some(at) = self.export_at(job)
+            && !self.exports[at].running()
         {
-            self.exporting = None;
+            self.exports.remove(at);
         }
     }
 
-    pub(super) fn hide_export(&mut self, hidden: bool) {
-        if let Some(exporting) = &mut self.exporting {
-            exporting.hidden = hidden;
+    pub(super) fn hide_export(&mut self, job: ExportId, hidden: bool) {
+        if let Some(at) = self.export_at(Some(job)) {
+            self.exports[at].hidden = hidden;
         }
     }
 }

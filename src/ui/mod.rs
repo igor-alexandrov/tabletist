@@ -20,6 +20,7 @@ mod appearance_settings_tests;
 pub mod calendar;
 #[cfg(test)]
 mod calendar_tests;
+pub mod cancel_export;
 pub mod cell_editor;
 #[cfg(test)]
 mod comment_tests;
@@ -60,7 +61,11 @@ pub mod every_row_prompt;
 mod every_row_tests;
 pub mod export;
 #[cfg(test)]
+mod export_path_tests;
+#[cfg(test)]
 mod export_result_tests;
+#[cfg(test)]
+mod export_several_tests;
 #[cfg(test)]
 mod export_tests;
 pub mod export_toast;
@@ -190,6 +195,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let asked = copy_as::keys(ui.ctx(), Paint::of(app), open);
         app.actions.extend(asked);
     }
+    // And the `:export cancel` picker's.
+    if let Some(Dialog::CancelExport(picker)) = &app.dialog {
+        let rows = app.cancel_rows(picker);
+        let asked = cancel_export::keys(ui.ctx(), Paint::of(app), picker, &rows);
+        app.actions.extend(asked);
+    }
     let fill = app.palette.window;
     egui::CentralPanel::default()
         .frame(Frame::new().fill(fill))
@@ -296,10 +307,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let asked = export_toast::show(
         &ui.ctx().clone(),
         paint,
-        app.exporting.as_ref(),
+        &app.exports,
         app.dirs.home.as_deref(),
     );
     app.actions.extend(asked);
+    if let Some(Dialog::CancelExport(picker)) = &app.dialog {
+        let rows = app.cancel_rows(picker);
+        let asked = cancel_export::show(&ui.ctx().clone(), paint, picker, &rows);
+        app.actions.extend(asked);
+    }
     // Last: it says what was done, whatever is on screen by now.
     if let Some(offer) = toast::show(ui.ctx(), paint, app.dialog.is_some()) {
         app.actions.push(Action::ExportSelection(offer));

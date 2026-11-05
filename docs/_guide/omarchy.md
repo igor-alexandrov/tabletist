@@ -161,12 +161,12 @@ With the search open, the matches replace the start lists:
 | Ctrl+C | Cancel the running query |
 | `r`, `s`, `S` | Show the rows, the structure or the DDL, from any of them |
 | `:ddl` | The DDL view of the table under the sidebar's cursor (with the keyboard in the sidebar), or else of the table in front |
-| `E`, `:export` | [Export]({% link _guide/browsing-data.md %}#exporting) the table: the float. With a selection it starts on the selected rows, and a block on its columns. Tab moves, Space or Enter chooses, Enter on the save to line exports, Ctrl+R shows the SQL it runs, Esc closes. In its column list Space includes, `K` and `J` move, `a` takes all and `n` none. After a failure `:export` does what its line offers: tries again, shows the SQL after a timeout, the float for another name, or the float on a file when the clipboard could not take the rows. A right-click on the rows offers export selection… too |
+| `E`, `:export` | [Export]({% link _guide/browsing-data.md %}#exporting) the table: the float. With a selection it starts on the selected rows, and a block on its columns. Tab moves, Space or Enter chooses, Enter on the save to line exports, Ctrl+R shows the SQL it runs, Esc closes. On the save to line, the names of its folder that start with what you typed are listed: Ctrl+N and Ctrl+P move, Enter takes one, Esc closes the list. Ctrl+O picks the file in the desktop's save dialog. In its column list Space includes, `K` and `J` move, `a` takes all and `n` none. After a failure `:export` does what its line offers: tries again, shows the SQL after a timeout, the float for another name, or the float on a file when the clipboard could not take the rows. A right-click on the rows offers export selection… too |
 | `:export json` | The float, in that format: `csv`, `tsv`, `json`, `jsonl`, `sql` or `md` |
 | `:w ~/Downloads/reviews.csv` | Export the table now, in the format of the ending, with its filter and sort. A name without a folder goes to your downloads folder. `:w!` replaces a file that is there |
-| `:export cancel` | Stop the running export: nothing is saved |
-| `go` | While the status line says an export is done: open its folder |
-| Esc | While the status line says an export failed: put it away |
+| `:export cancel` | Stop the running export: nothing is saved. With two or more running, a list of them: a digit, or Ctrl+N and Ctrl+P then Enter, cancels the one picked, Esc closes it |
+| `go` | While the status line says an export is done: open its folder (of the one it names, with several) |
+| Esc | While the status line says an export failed: put it away (the one it names) |
 
 `V` then `y` copies whole rows, with tabs between the values.
 
