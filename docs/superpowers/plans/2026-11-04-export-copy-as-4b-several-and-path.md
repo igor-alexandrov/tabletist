@@ -48,8 +48,8 @@ request:
 | # | The spec | Built | Why, and the other way |
 |---|---|---|---|
 | B1 | S14: an end takes the line, "the newest first" | The one that ended last | What just happened is what the line says. The other way: the one that started last |
-| B2 | F5: `:export cancel`'s picker | Drawn as the Copy as menu is, at the status line's right end, over it: `cancel export` and how many, a row each `1  reviews.csv 58%`, its foot `one key picks · ctrl+n/p enter · esc close`; digits 1 to 9 pick | No board draws it; this is the look's one picker of a few rows |
-| B3 | F7: "Cancel exporting reviews.csv" | A clipboard export's row is "Cancel copying reviews"; the rows are listed for a word typed (or `>`), as the commands not suggested are | The toast's own words. The other way: listed with nothing typed |
+| B2 | F5: `:export cancel`'s picker | Drawn as the Copy as menu is, at the status line's right end, over it: `cancel export` and how many, a row each `1  reviews.csv 58%`, its foot `one key picks · ctrl+n/p enter · esc close`; digits 1 to 9 pick, and ↓ ↑ move as `ctrl+n/p` do (as in Copy as) | No board draws it; this is the look's one picker of a few rows |
+| B3 | F7: "Cancel exporting reviews.csv" | A clipboard export's row is "Cancel copying reviews"; the rows are listed for a word typed (or `>`), as the commands not suggested are, and in the macOS and Windows looks only, as every command row | The toast's own words. The other way: listed with nothing typed |
 | B4 | The board's second toast (no total) says "Bookshop · production" under its bar | Under the bar: the time left where the total is known (once 2 s have gone, as 3a), else the connection | As the board draws it |
 | B5 | S13: ⇥ walks every toast's buttons | Top to bottom, then left to right, over the export toasts, the pills and the copy offer's toast | The keyboard's order is the eye's |
 | B6 | S13: ⌘⇧' to the newest toast | The newest export's first button, its toast's or its pill's; with no export, the copy offer's | 3b's rule for the offer stays |
@@ -66,6 +66,9 @@ request:
 | B17 | F5: the picker | Lists those of its exports still running, and closes once none is; with one left it still asks | An export may end while it is open |
 | B18 | F7: quick open's cancel row | Drawn with the × icon, "export running" after its name | As a command's row |
 | B19 | S15: the list | A line changed puts its list away until the answer for the new line comes | Enter never takes a name listed for another line |
+| B20 | S15: a folder taken lists its own | Enter on a line ending in `/` starts nothing (the line names a folder, no file); an answer while `ctrl+o`'s dialog is up is dropped | A folder is no file to write; the dialog's answer fills the line |
+| B21 | S13: a pill each | A screen reader hears a toast or pill by its file ("Exporting reviews.csv, 58 percent"), as it reads, where 3a said the table | Two exports of one table sounded the same |
+| B22 | S14: "in the order they started" | Try again and Choose folder… start an export anew: it goes last in the line and is the newest for ⌘⇧' | It runs from the start |
 
 ## Files
 
@@ -136,7 +139,7 @@ with `TABLETIST_TEST_PG_URL` and `TABLETIST_TEST_MYSQL_URL`.
 ## After Task 2
 
 Push the branch and open the pull request: the summary, F5–F8, S12–S16,
-B1–B19. No screenshot goes to GitHub unblurred.
+B1–B22. No screenshot goes to GitHub unblurred.
 
 ## Checks by hand
 

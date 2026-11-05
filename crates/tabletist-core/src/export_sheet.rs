@@ -427,7 +427,7 @@ pub fn typed_path(typed: &str, downloads: &Path, home: Option<&Path>) -> PathBuf
     }
 }
 
-/// How the running (or last) export stands, as the app keeps it.
+/// How an export stands, as the app keeps it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExportStatus {
     /// The save panel is up.
@@ -454,8 +454,8 @@ pub enum ExportStatus {
     },
 }
 
-/// The export the app runs (one at a time, spec D5), or the last one,
-/// while its end is still told.
+/// An export the app runs (several at once, spec 4, S12), or one whose
+/// end is still told.
 #[derive(Debug, Clone)]
 pub struct Exporting {
     /// What runs, whole: Try again sends it again.

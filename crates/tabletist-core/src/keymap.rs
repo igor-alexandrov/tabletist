@@ -2005,7 +2005,7 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k(":w! {path}")]),
         ),
         // The macOS look's Cancel is the toast's button. Read from any tab:
-        // the export is the window's, and its line names this.
+        // the exports are the window's, and their line names this.
         bind(C::CancelExport, GLOBAL, NONE, keys(&[k(":export cancel")])),
         bind(C::OpenExportFolder, EXPORTS_END, NONE, keys(&[k("go")])),
         bind(C::ExportReviewSql, PROMPT, NONE, keys(&[k("ctrl+r")])).when(When::Export),

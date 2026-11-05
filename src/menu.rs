@@ -211,7 +211,6 @@ pub fn title(item: Item, on: bool) -> &'static str {
             C::EditConnection => "Edit Connection",
             C::CloseConnection => "Close Connection",
             C::CloseTab => "Close Tab",
-            C::Export if on => "Cancel Export",
             C::Export => "Export…",
             C::ExportTable => "Export a Table…",
             C::Settings => "Settings…",

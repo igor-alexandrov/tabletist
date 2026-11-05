@@ -666,7 +666,26 @@ fn choices(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec<A
                 response.rect.center().y,
                 Text::one(look, TextRole::OSecondary, &hint, palette.dim),
             );
-            if response.has_focus() && sheet.lit_name().is_some() {
+            // Where the list is drawn: a press on it takes the keyboard
+            // from the line for the moment of a click.
+            let list_rect = sheet.listed.as_ref().map(|list| {
+                let height = TextRole::OBody.row_height(ui.ctx(), look.faces) + 4.0;
+                Rect::from_min_size(
+                    response.rect.left_bottom(),
+                    vec2(response.rect.width(), height * list.names.len() as f32),
+                )
+            });
+            let pointer_on_list = list_rect.is_some_and(|rect| {
+                ui.ctx()
+                    .pointer_latest_pos()
+                    .is_some_and(|pos| rect.contains(pos))
+            });
+            // The keyboard gone from the line: its list goes too, until the
+            // next key typed there (plan 4b, B9).
+            if !response.has_focus() && !pointer_on_list && sheet.listed.is_some() {
+                change(actions, ExportChange::ClosePathList);
+            }
+            if (response.has_focus() || pointer_on_list) && sheet.lit_name().is_some() {
                 // Esc and ↑ ↓ are the list's, not egui's to move or drop
                 // the keyboard with (`keys`).
                 let filter = egui::EventFilter {
@@ -677,7 +696,11 @@ fn choices(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec<A
                 };
                 ui.ctx()
                     .memory_mut(|memory| memory.set_focus_lock_filter(response.id, filter));
-                path_list(ui, sheet, response.rect, skin, actions);
+                if path_list(ui.ctx(), sheet, response.rect, skin, actions) {
+                    // Back to the line, for a folder's names next.
+                    ui.ctx()
+                        .memory_mut(|memory| memory.request_focus(response.id));
+                }
             }
             if sheet.exists {
                 widgets::label(
@@ -692,69 +715,75 @@ fn choices(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec<A
     }
 }
 
-/// The names the path line starts, under it (spec 4, S15; the component
-/// board's path line): the lit one on the selection's fill, the rest
-/// muted. A click takes one.
+/// The names the path line starts, under the line `field` (spec 4, S15;
+/// the component board's path line): the lit one on the selection's fill,
+/// the rest muted, in an area of their own over the float, as the float's
+/// rows scroll and clip. A click takes one; returns whether one did.
 fn path_list(
-    ui: &mut Ui,
+    ctx: &egui::Context,
     sheet: &ExportSheet,
     field: Rect,
     skin: Skin<'_>,
     actions: &mut Vec<Action>,
-) {
+) -> bool {
     let Skin { look, palette, .. } = skin;
     let Some(list) = sheet.listed.as_ref() else {
-        return;
+        return false;
     };
     let lit = list.lit.min(list.names.len().saturating_sub(1));
-    let height = TextRole::OBody.row_height(ui.ctx(), look.faces) + 4.0;
-    let top = field.bottom();
-    let outline = Rect::from_min_size(
-        pos2(field.left(), top),
-        vec2(field.width(), height * list.names.len() as f32),
-    );
-    // Over what follows the line: the list is the line's for now.
-    let painter = ui.ctx().layer_painter(egui::LayerId::new(
-        egui::Order::Tooltip,
-        Id::new(("export-path-list", sheet.asked)),
-    ));
-    painter.rect_filled(outline, 0, palette.panel);
-    painter.rect_stroke(
-        outline,
-        0,
-        egui::Stroke::new(1.0, palette.outline),
-        egui::StrokeKind::Inside,
-    );
-    for (at, listed) in list.names.iter().enumerate() {
-        let row = Rect::from_min_size(
-            pos2(field.left(), top + height * at as f32),
-            vec2(field.width(), height),
-        );
-        let name = match listed.folder {
-            true => format!("{}/", listed.name),
-            false => listed.name.clone(),
-        };
-        let ink = match at == lit {
-            true => {
-                painter.rect_filled(row.shrink(1.0), 0, palette.selection);
-                palette.text
+    let height = TextRole::OBody.row_height(ctx, look.faces) + 4.0;
+    let mut taken = false;
+    egui::Area::new(Id::new(("export-path-list", sheet.asked)))
+        .order(egui::Order::Tooltip)
+        .fixed_pos(field.left_bottom())
+        .show(ctx, |ui| {
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            for (at, listed) in list.names.iter().enumerate() {
+                // No keyboard of its own: the line keeps it.
+                let (row, response) =
+                    ui.allocate_exact_size(vec2(field.width(), height), Sense::CLICK);
+                let name = match listed.folder {
+                    true => format!("{}/", listed.name),
+                    false => listed.name.clone(),
+                };
+                let ink = match at == lit {
+                    true => {
+                        ui.painter().rect_filled(row, 0, palette.selection);
+                        palette.text
+                    }
+                    false => {
+                        ui.painter().rect_filled(row, 0, palette.panel);
+                        palette.dim
+                    }
+                };
+                widgets::paint_text(
+                    ui,
+                    row.left() + 8.0,
+                    row.center().y,
+                    Text::one(look, TextRole::OBody, &name, ink),
+                );
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::WidgetType::SelectableLabel,
+                        true,
+                        at == lit,
+                        &name,
+                    )
+                });
+                if response.clicked() {
+                    actions.push(Action::PickPath(Some(at)));
+                    taken = true;
+                }
             }
-            false => palette.dim,
-        };
-        let laid = Text::one(look, TextRole::OBody, &name, ink).layout(ui.ctx());
-        laid.paint_left(&painter, row.left() + 8.0, row.center().y);
-        let response = ui.interact(
-            row,
-            Id::new(("export-path-name", sheet.asked, at)),
-            Sense::click(),
-        );
-        response.widget_info(|| {
-            egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, at == lit, &name)
+            let outline = ui.min_rect();
+            ui.painter().rect_stroke(
+                outline,
+                0,
+                egui::Stroke::new(1.0, palette.outline),
+                egui::StrokeKind::Inside,
+            );
         });
-        if response.clicked() {
-            actions.push(Action::PickPath(Some(at)));
-        }
-    }
+    taken
 }
 
 /// The notes under the choices, always in sight above the footer: the

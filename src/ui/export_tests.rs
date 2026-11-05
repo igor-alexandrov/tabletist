@@ -393,10 +393,10 @@ fn the_toasts_follow_an_export_to_its_end() {
     harness.click("Hide");
     assert!(harness.app.exports.last().unwrap().hidden);
     assert!(
-        harness.has("Exporting book_covers"),
+        harness.has("Exporting book_covers.csv"),
         "the pill, as a screen reader hears it"
     );
-    harness.click("Exporting book_covers");
+    harness.click("Exporting book_covers.csv");
     assert!(!harness.app.exports.last().unwrap().hidden);
     harness.click("Cancel");
     assert!(

@@ -307,3 +307,88 @@ fn ctrl_o_fills_the_line_and_starts_nothing() {
     assert_eq!(sheet(&harness).path, "~/Downloads/kept.csv");
     assert!(!sheet(&harness).asking && !sheet(&harness).picking);
 }
+
+/// B9: the list goes with the keyboard; back on the line it waits for the
+/// next key (review).
+#[test]
+fn the_list_goes_when_the_line_loses_the_keyboard() {
+    let mut harness = float();
+    type_line(&mut harness, "~/Downloads/rev");
+    answer(&mut harness, "~/Downloads/rev", &[("reviews.csv", false)]);
+    harness.ctx.memory_mut(|memory| {
+        let id = memory.focused().unwrap();
+        memory.surrender_focus(id);
+    });
+    harness.settle();
+    assert!(sheet(&harness).listed.is_none());
+    let id = crate::ui::export::path_id(sheet(&harness));
+    harness.ctx.memory_mut(|memory| memory.request_focus(id));
+    harness.settle();
+    assert!(!painted(&harness, "reviews.csv"));
+}
+
+/// S16 and B20: no list while `ctrl+o`'s dialog is up, and Enter on a
+/// folder taken waits for a file's name (review).
+#[test]
+fn the_list_waits_for_the_dialog_and_a_folder_for_a_name() {
+    let mut harness = float();
+    type_line(&mut harness, "~/Downloads/rev");
+    harness.press(Key::O, Modifiers::CTRL);
+    answer(&mut harness, "~/Downloads/rev", &[("reviews.csv", false)]);
+    assert!(sheet(&harness).listed.is_none(), "not under the dialog");
+    let job = ExportId(sheet(&harness).asked);
+    harness.app.apply(Action::Backend(Event::ExportPath {
+        job,
+        path: None,
+        replace: false,
+    }));
+    type_line(&mut harness, "~/Dow");
+    answer(&mut harness, "~/Dow", &[("Downloads", true)]);
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert_eq!(sheet(&harness).path, "~/Downloads/");
+    harness.press(Key::Enter, Modifiers::NONE);
+    let exported = harness
+        .app
+        .backend
+        .sent
+        .iter()
+        .any(|command| matches!(command, Command::Export(_)));
+    assert!(!exported, "a folder is no file to write");
+    assert!(matches!(harness.app.dialog, Some(Dialog::Export(_))));
+}
+
+/// Test 8: a click with the pointer on a listed name takes it, the line
+/// keeping the keyboard for a folder's names next (review).
+#[test]
+fn a_pointer_click_takes_a_name() {
+    let mut harness = float();
+    type_line(&mut harness, "~/Dow");
+    answer(
+        &mut harness,
+        "~/Dow",
+        &[("Desktop", true), ("Downloads", true)],
+    );
+    let pos = harness
+        .text_rects
+        .iter()
+        .find(|(text, _)| text == "Downloads/")
+        .map(|(_, rect)| rect.center())
+        .unwrap_or_else(|| panic!("not drawn: {:?}", harness.painted));
+    let press = |pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    harness.frame(vec![egui::Event::PointerMoved(pos)]);
+    harness.frame(vec![press(true)]);
+    harness.frame(vec![press(false)]);
+    harness.settle();
+    assert_eq!(sheet(&harness).path, "~/Downloads/");
+    let id = crate::ui::export::path_id(sheet(&harness));
+    assert_eq!(harness.ctx.memory(|memory| memory.focused()), Some(id));
+    assert_eq!(
+        asks(&harness).last().map(|ask| ask.0.as_str()),
+        Some("~/Downloads/")
+    );
+}

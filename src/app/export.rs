@@ -698,7 +698,8 @@ impl App {
         let Some(Dialog::Export(sheet)) = &mut self.dialog else {
             return;
         };
-        if sheet.asked != asked || sheet.path != typed {
+        // Nor while `ctrl+o`'s dialog is up: its answer will fill the line.
+        if sheet.asked != asked || sheet.path != typed || sheet.asking {
             return;
         }
         // Nothing matches: no list (spec 4, S15).
@@ -1212,6 +1213,17 @@ impl App {
         let destination = match sheet.destination {
             DestinationChoice::Clipboard if facts.clipboard_refused => return,
             DestinationChoice::Clipboard => Destination::Clipboard,
+            // A folder taken from the path line's list names no file yet:
+            // Enter waits for one (plan 4b, B20).
+            DestinationChoice::File
+                if self.look.terminal
+                    && sheet
+                        .path
+                        .trim_end()
+                        .ends_with(['/', std::path::MAIN_SEPARATOR]) =>
+            {
+                return;
+            }
             DestinationChoice::File if self.look.terminal => {
                 let path = crate::export_sheet::typed_path(
                     &sheet.path,
@@ -1298,19 +1310,20 @@ impl App {
         path: Option<PathBuf>,
         replace: bool,
     ) {
-        let Some(Dialog::Export(sheet)) = &mut self.dialog else {
-            // Choose folder… from a failure's toast: its export again.
-            if let Some(path) = path
-                && let Some(at) = self.export_at(Some(job))
-                && !self.exports[at].running()
-            {
-                self.rerun_export(at, Some(Destination::File { path, replace }));
+        let sheet = match &mut self.dialog {
+            Some(Dialog::Export(sheet)) if ExportId(sheet.asked) == job => sheet,
+            // Choose folder… from a failure's toast: its export again,
+            // whatever sheet is open for another (spec 4, F7).
+            _ => {
+                if let Some(path) = path
+                    && let Some(at) = self.export_at(Some(job))
+                    && !self.exports[at].running()
+                {
+                    self.rerun_export(at, Some(Destination::File { path, replace }));
+                }
+                return;
             }
-            return;
         };
-        if ExportId(sheet.asked) != job {
-            return;
-        }
         sheet.asking = false;
         let Some(path) = path else {
             sheet.picking = false;
@@ -1529,8 +1542,8 @@ impl App {
     }
 
     /// The export at `at` again from the start, under a new id, to
-    /// `destination` where one is given. It keeps its place among the
-    /// others.
+    /// `destination` where one is given. It starts anew, so it goes last
+    /// among the others (spec 4, S14: in the order they started).
     fn rerun_export(&mut self, at: usize, destination: Option<Destination>) {
         if self.exports.get(at).is_none_or(Exporting::running) {
             return;
@@ -1559,6 +1572,8 @@ impl App {
         }
         let job = exporting.job.clone();
         self.backend.send(Command::Export(Box::new(job)));
+        let again = self.exports.remove(at);
+        self.exports.push(again);
     }
 
     /// Show in Finder (Show in folder), `go`: while the done line shows.
@@ -1574,7 +1589,7 @@ impl App {
         }
     }
 
-    /// What the backend says of the running export.
+    /// What the backend says of the export `job`.
     pub(super) fn export_state(&mut self, job: ExportId, state: ExportState) {
         let Some(place) = self.export_at(Some(job)) else {
             return;
@@ -1632,7 +1647,9 @@ impl App {
             self.export_ended(place, copied_text);
         }
         // The float's file is there: it opens again, and Enter replaces it.
-        let reopen = match self.exports.get(place) {
+        // Found again by its id: a copy's end takes it out of the list.
+        let place = self.export_at(Some(job));
+        let reopen = match place.and_then(|place| self.exports.get(place)) {
             Some(exporting) if self.look.terminal && exporting.reopens => matches!(
                 exporting.status,
                 ExportStatus::Failed {
@@ -1642,7 +1659,7 @@ impl App {
             ),
             _ => false,
         };
-        if reopen && self.dialog.is_none() {
+        if let Some(place) = place.filter(|_| reopen && self.dialog.is_none()) {
             let asked = self.next_id();
             let mut sheet = self.exports.remove(place).sheet;
             sheet.exists = true;

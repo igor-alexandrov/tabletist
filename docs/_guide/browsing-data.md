@@ -302,8 +302,9 @@ Several exports can run at once, each on its own connection. In the
 macOS and Windows looks their toasts stack at the bottom, the newest
 last, each with its own **Cancel** and ×, and each hidden one is a pill
 of its own at the bottom right. Cmd/Ctrl+Shift+E and **File › Export…**
-always open the sheet for one more, and quick open lists **Cancel
-exporting reviews.csv** for each one running. The Omarchy status line
+always open the sheet for one more, and quick open finds **Cancel
+exporting reviews.csv** (**Cancel copying** for the clipboard) for each
+one running, once you type a word or `>`. The Omarchy status line
 names them all while two or more run (`2 exports · reviews.csv 58% ·
 events.jsonl 4,000 rows · :export cancel`), and `:export cancel` then asks
 which: a digit, or Ctrl+N and Ctrl+P then Enter, cancels the one picked,

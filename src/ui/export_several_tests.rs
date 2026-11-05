@@ -215,7 +215,7 @@ fn a_hidden_export_is_a_pill_each() {
     assert!(top_of(&harness, "book_covers.csv 50%") < top_of(&harness, "events.jsonl"));
     assert!(!painted(&harness, "Exporting book_covers.csv"), "no toast");
     // The pill, as a screen reader hears it.
-    let pill = buttons(&mut harness, "Exporting book_covers")[1];
+    let pill = buttons(&mut harness, "Exporting events.jsonl")[0];
     harness.frame(vec![egui::Event::AccessKitActionRequest(
         accesskit::ActionRequest {
             target_tree: accesskit::TreeId::ROOT,
@@ -428,4 +428,109 @@ fn go_esc_and_export_act_on_the_line_shown() {
     );
     harness.press(Key::Escape, Modifiers::NONE);
     assert!(harness.app.exports.is_empty());
+}
+
+/// A copy's end takes it out of the list: the export after it, a float's
+/// file found there, keeps its line and opens no float (review).
+#[test]
+fn a_copy_ending_leaves_the_next_export_where_it_was() {
+    use crate::export_sheet::{DestinationChoice, ExportChange};
+    let (mut harness, tab, _id) = covers_in(Look::omarchy());
+    let dir = tempfile::tempdir().unwrap();
+    harness.app.apply(Action::OpenExport { tab, format: None });
+    harness
+        .app
+        .apply(Action::ChangeExport(ExportChange::Destination(
+            DestinationChoice::Clipboard,
+        )));
+    harness.app.apply(Action::StartExport);
+    harness.settle();
+    let copy = harness.app.exports[0].job.id;
+    harness.app.apply(Action::OpenExport { tab, format: None });
+    harness
+        .app
+        .apply(Action::ChangeExport(ExportChange::Destination(
+            DestinationChoice::File,
+        )));
+    let target = dir.path().join("b.csv");
+    harness.app.apply(Action::ChangeExport(ExportChange::Path(
+        target.display().to_string(),
+    )));
+    harness.app.apply(Action::StartExport);
+    harness.settle();
+    let file = harness.app.exports[1].job.id;
+    // A float is up as it fails: its line stays.
+    harness.app.apply(Action::OpenExport { tab, format: None });
+    harness.settle();
+    tell(
+        &mut harness,
+        file,
+        ExportState::Failed(ExportFailure::Exists {
+            path: target.clone(),
+        }),
+    );
+    harness.app.apply(Action::CloseDialog);
+    harness.settle();
+    tell(
+        &mut harness,
+        copy,
+        ExportState::Done {
+            rows: 4,
+            bytes: 10,
+            took: std::time::Duration::from_secs(1),
+            copied: Some("a,b".into()),
+            statements: 0,
+        },
+    );
+    assert!(harness.app.dialog.is_none(), "no float for the copy's end");
+    let left: Vec<ExportId> = harness.app.exports.iter().map(|e| e.job.id).collect();
+    assert_eq!(left, [file]);
+}
+
+/// B6: ⌘⇧' goes to the newest toast with a button: a cancelled one has
+/// none (review).
+#[test]
+fn the_toast_key_passes_over_a_cancelled_toast() {
+    let (mut harness, tab, _id) = covers_in(Look::macos());
+    let (_dir, _one, two) = two_running(&mut harness, tab);
+    tell(&mut harness, two, ExportState::Cancelled);
+    harness.press(Key::Quote, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert_eq!(focused_label(&mut harness).as_deref(), Some("Cancel"));
+}
+
+/// Choose folder…'s answer reaches its failed export while a sheet is
+/// open for another; and an export tried again goes last, as it starts
+/// anew (plan 4b, B22; review).
+#[test]
+fn choose_folder_answers_beside_an_open_sheet_and_goes_last() {
+    let (mut harness, tab, _id) = covers_in(Look::macos());
+    let (dir, one, two) = two_running(&mut harness, tab);
+    tell(
+        &mut harness,
+        one,
+        ExportState::Failed(ExportFailure::PermissionDenied {
+            folder: dir.path().to_path_buf(),
+        }),
+    );
+    harness.app.apply(Action::ExportFailureAction(Some(one)));
+    assert_eq!(
+        harness.app.backend.export_asks.last().map(|ask| ask.0),
+        Some(one)
+    );
+    // Another sheet is opened while the panel is up.
+    harness.app.apply(Action::OpenExport { tab, format: None });
+    harness.settle();
+    assert!(matches!(harness.app.dialog, Some(Dialog::Export(_))));
+    let there = dir.path().join("elsewhere.csv");
+    harness.app.apply(Action::Backend(Event::ExportPath {
+        job: one,
+        path: Some(there.clone()),
+        replace: false,
+    }));
+    harness.settle();
+    let order: Vec<ExportId> = harness.app.exports.iter().map(|e| e.job.id).collect();
+    assert_eq!(order.len(), 2);
+    assert_eq!(order[0], two, "the one tried again goes last");
+    assert_eq!(harness.app.exports[1].file, "elsewhere.csv");
+    assert!(harness.app.exports[1].running());
 }

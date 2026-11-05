@@ -2511,7 +2511,7 @@ struct StatusAsked {
     labels: bool,
     /// What editing asks of the app about the table in front.
     editing: EditingAsked,
-    /// The export's line, and its colour, while one runs or its end is
+    /// The exports' line, and its colour, while one runs or an end is
     /// told.
     export: Option<(String, egui::Color32)>,
 }

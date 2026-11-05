@@ -81,9 +81,9 @@ fn spoken(ctx: &egui::Context, exporting: &Exporting, locale: crate::i18n::Local
     }
     let text = match exporting.share() {
         Some(share) => gettext(locale, "Exporting {table}, {n} percent")
-            .replace("{table}", &exporting.table)
+            .replace("{table}", exporting.name())
             .replace("{n}", &((share * 100.0).round() as u32).to_string()),
-        None => gettext(locale, "Exporting {table}").replace("{table}", &exporting.table),
+        None => gettext(locale, "Exporting {table}").replace("{table}", exporting.name()),
     };
     ctx.data_mut(|data| data.insert_temp(id, (now, text.clone())));
     text
@@ -117,7 +117,12 @@ pub fn show(
             ExportStatus::Failed { .. } => {}
         }
     }
-    let newest = exports.last().map(|exporting| exporting.job.id);
+    // The newest that draws a button: a cancelled toast has none.
+    let newest = exports
+        .iter()
+        .rev()
+        .find(|exporting| !matches!(exporting.status, ExportStatus::Cancelled { .. }))
+        .map(|exporting| exporting.job.id);
     let pilled = |exporting: &&Exporting| exporting.hidden && exporting.running();
     let pills: Vec<&Exporting> = exports.iter().filter(pilled).collect();
     let toasts: Vec<&Exporting> = exports
@@ -239,169 +244,159 @@ fn one_toast(
             palette.window.gamma_multiply(0.7),
         ),
     };
-    {
-        {
-            let frame = Frame::new()
-                .fill(fill)
-                .corner_radius(9)
-                .inner_margin(Margin::symmetric(14, 10))
-                .shadow(egui::Shadow {
-                    offset: [0, 8],
-                    blur: 24,
-                    spread: 0,
-                    color: palette.shadow,
-                });
-            let frame = match failed {
-                true => frame.stroke(egui::Stroke::new(1.0, palette.danger.gamma_multiply(0.5))),
-                false => frame,
+    let frame = Frame::new()
+        .fill(fill)
+        .corner_radius(9)
+        .inner_margin(Margin::symmetric(14, 10))
+        .shadow(egui::Shadow {
+            offset: [0, 8],
+            blur: 24,
+            spread: 0,
+            color: palette.shadow,
+        });
+    let frame = match failed {
+        true => frame.stroke(egui::Stroke::new(1.0, palette.danger.gamma_multiply(0.5))),
+        false => frame,
+    };
+    frame.show(ui, |ui| match &exporting.status {
+        ExportStatus::Asking | ExportStatus::Running { .. } => {
+            let rows = match exporting.status {
+                ExportStatus::Running { rows, .. } => rows,
+                _ => 0,
             };
-            frame.show(ui, |ui| match &exporting.status {
-                ExportStatus::Asking | ExportStatus::Running { .. } => {
-                    let rows = match exporting.status {
-                        ExportStatus::Running { rows, .. } => rows,
-                        _ => 0,
-                    };
-                    ui.set_width(420.0);
-                    ui.horizontal(|ui| {
-                        let title = running_title(exporting, locale);
-                        widgets::label(ui, TextRole::UiBodyStrong, &title, ink, &look);
-                        widgets::label(
-                            ui,
-                            body,
-                            &of_total(rows, exporting.total, locale),
-                            dim,
-                            &look,
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            // Right to left: Cancel is drawn after ×, and
-                            // is the first the keyboard comes to.
-                            let hide = gettext(locale, "Hide");
-                            let hidden = widgets::icon_button_tipped(
-                                ui,
-                                crate::style::Icon::X,
-                                (&hide, &hide),
-                                &look,
-                                &palette,
-                            );
-                            toast::button(ui.ctx(), &hidden, false);
-                            if hidden.clicked() {
-                                actions.push(Action::HideExport { job, hidden: true });
-                            }
-                            let cancel = gettext(locale, "Cancel");
-                            let cancelled = ButtonSpec::new(&cancel)
-                                .link()
-                                .show(ui, 22.0, &look, &palette);
-                            toast::button(ui.ctx(), &cancelled, first);
-                            if cancelled.clicked() {
-                                actions.push(Action::CancelExport(Some(job)));
-                            }
-                        });
-                    });
-                    ui.add_space(6.0);
-                    let (bar, _) =
-                        ui.allocate_exact_size(vec2(ui.available_width(), 4.0), Sense::hover());
-                    ui.painter().rect_filled(bar, 2, ink.gamma_multiply(0.25));
-                    if let Some(share) = exporting.share() {
-                        let done =
-                            Rect::from_min_size(bar.min, vec2(bar.width() * share, bar.height()));
-                        ui.painter().rect_filled(done, 2, palette.accent);
-                    }
-                    // A status region, told at most every 2 s.
-                    let spoken = spoken(ui.ctx(), exporting, locale);
-                    let response = ui.interact(
-                        bar,
-                        Id::new(("export-progress", exporting.job.id.0)),
-                        Sense::hover(),
+            ui.set_width(420.0);
+            ui.horizontal(|ui| {
+                let title = running_title(exporting, locale);
+                widgets::label(ui, TextRole::UiBodyStrong, &title, ink, &look);
+                widgets::label(
+                    ui,
+                    body,
+                    &of_total(rows, exporting.total, locale),
+                    dim,
+                    &look,
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Right to left: Cancel is drawn after ×, and
+                    // is the first the keyboard comes to.
+                    let hide = gettext(locale, "Hide");
+                    let hidden = widgets::icon_button_tipped(
+                        ui,
+                        crate::style::Icon::X,
+                        (&hide, &hide),
+                        &look,
+                        &palette,
                     );
-                    response.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                            egui::WidgetType::ProgressIndicator,
-                            true,
-                            &spoken,
-                        )
-                    });
-                    ui.ctx().accesskit_node_builder(response.id, |node| {
-                        node.set_live(egui::accesskit::Live::Polite);
-                    });
-                    // The time left where the total is known, else the
-                    // connection, as the board's second toast says it.
-                    let under = match exporting.total {
-                        Some(_) => exporting.time_left(now, locale),
-                        None => Some(exporting.connection.clone()),
-                    };
-                    if let Some(under) = under {
-                        ui.add_space(4.0);
-                        widgets::label(ui, small, &under, dim, &look);
+                    toast::button(ui.ctx(), &hidden, false);
+                    if hidden.clicked() {
+                        actions.push(Action::HideExport { job, hidden: true });
                     }
-                }
-                ExportStatus::Done { .. } => {
-                    ui.horizontal(|ui| {
-                        let words = done_words(exporting, locale).unwrap_or_default();
-                        let said = widgets::label(ui, body, &words, ink, &look);
-                        ui.ctx().accesskit_node_builder(said.id, |node| {
-                            node.set_live(egui::accesskit::Live::Polite);
-                        });
-                        let reveal = reveal_words(locale);
-                        let shown = ButtonSpec::new(&reveal)
-                            .link()
-                            .show(ui, 22.0, &look, &palette);
-                        toast::button(ui.ctx(), &shown, first);
-                        if shown.clicked() {
-                            actions.push(Action::RevealExport(Some(job)));
-                        }
-                    });
-                }
-                ExportStatus::Cancelled { .. } => {
-                    let said = widgets::label(ui, body, &gettext(locale, CANCELLED), ink, &look);
-                    ui.ctx().accesskit_node_builder(said.id, |node| {
-                        node.set_live(egui::accesskit::Live::Polite);
-                    });
-                }
-                ExportStatus::Failed {
-                    failure,
-                    rows,
-                    bytes,
-                    ..
-                } => {
-                    let (words, action) = crate::export_sheet::failure_words(
-                        exporting,
-                        failure,
-                        (*rows, *bytes),
-                        home,
-                        locale,
-                    );
-                    ui.horizontal(|ui| {
-                        ui.set_max_width(560.0);
-                        let said = Text::one(&look, body, &words, ink)
-                            .wrap(440.0)
-                            .layout(ui.ctx())
-                            .label(ui);
-                        // An alert: read out as it appears.
-                        ui.ctx().accesskit_node_builder(said.id, |node| {
-                            node.set_live(egui::accesskit::Live::Assertive);
-                        });
-                        if let Some(action) = &action {
-                            let acted = ButtonSpec::new(action).show(ui, 24.0, &look, &palette);
-                            toast::button(ui.ctx(), &acted, first);
-                            if acted.clicked() {
-                                actions.push(Action::ExportFailureAction(Some(job)));
-                            }
-                        }
-                        let dismiss = gettext(locale, "Dismiss");
-                        let dismissed = widgets::icon_button_tipped(
-                            ui,
-                            crate::style::Icon::X,
-                            (&dismiss, &dismiss),
-                            &look,
-                            &palette,
-                        );
-                        toast::button(ui.ctx(), &dismissed, first && action.is_none());
-                        if dismissed.clicked() {
-                            actions.push(Action::DismissExport(Some(job)));
-                        }
-                    });
+                    let cancel = gettext(locale, "Cancel");
+                    let cancelled = ButtonSpec::new(&cancel)
+                        .link()
+                        .show(ui, 22.0, &look, &palette);
+                    toast::button(ui.ctx(), &cancelled, first);
+                    if cancelled.clicked() {
+                        actions.push(Action::CancelExport(Some(job)));
+                    }
+                });
+            });
+            ui.add_space(6.0);
+            let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 4.0), Sense::hover());
+            ui.painter().rect_filled(bar, 2, ink.gamma_multiply(0.25));
+            if let Some(share) = exporting.share() {
+                let done = Rect::from_min_size(bar.min, vec2(bar.width() * share, bar.height()));
+                ui.painter().rect_filled(done, 2, palette.accent);
+            }
+            // A status region, told at most every 2 s.
+            let spoken = spoken(ui.ctx(), exporting, locale);
+            let response = ui.interact(
+                bar,
+                Id::new(("export-progress", exporting.job.id.0)),
+                Sense::hover(),
+            );
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::ProgressIndicator, true, &spoken)
+            });
+            ui.ctx().accesskit_node_builder(response.id, |node| {
+                node.set_live(egui::accesskit::Live::Polite);
+            });
+            // The time left where the total is known, else the
+            // connection, as the board's second toast says it.
+            let under = match exporting.total {
+                Some(_) => exporting.time_left(now, locale),
+                None => Some(exporting.connection.clone()),
+            };
+            if let Some(under) = under {
+                ui.add_space(4.0);
+                widgets::label(ui, small, &under, dim, &look);
+            }
+        }
+        ExportStatus::Done { .. } => {
+            ui.horizontal(|ui| {
+                let words = done_words(exporting, locale).unwrap_or_default();
+                let said = widgets::label(ui, body, &words, ink, &look);
+                ui.ctx().accesskit_node_builder(said.id, |node| {
+                    node.set_live(egui::accesskit::Live::Polite);
+                });
+                let reveal = reveal_words(locale);
+                let shown = ButtonSpec::new(&reveal)
+                    .link()
+                    .show(ui, 22.0, &look, &palette);
+                toast::button(ui.ctx(), &shown, first);
+                if shown.clicked() {
+                    actions.push(Action::RevealExport(Some(job)));
                 }
             });
         }
-    }
+        ExportStatus::Cancelled { .. } => {
+            let said = widgets::label(ui, body, &gettext(locale, CANCELLED), ink, &look);
+            ui.ctx().accesskit_node_builder(said.id, |node| {
+                node.set_live(egui::accesskit::Live::Polite);
+            });
+        }
+        ExportStatus::Failed {
+            failure,
+            rows,
+            bytes,
+            ..
+        } => {
+            let (words, action) = crate::export_sheet::failure_words(
+                exporting,
+                failure,
+                (*rows, *bytes),
+                home,
+                locale,
+            );
+            ui.horizontal(|ui| {
+                ui.set_max_width(560.0);
+                let said = Text::one(&look, body, &words, ink)
+                    .wrap(440.0)
+                    .layout(ui.ctx())
+                    .label(ui);
+                // An alert: read out as it appears.
+                ui.ctx().accesskit_node_builder(said.id, |node| {
+                    node.set_live(egui::accesskit::Live::Assertive);
+                });
+                if let Some(action) = &action {
+                    let acted = ButtonSpec::new(action).show(ui, 24.0, &look, &palette);
+                    toast::button(ui.ctx(), &acted, first);
+                    if acted.clicked() {
+                        actions.push(Action::ExportFailureAction(Some(job)));
+                    }
+                }
+                let dismiss = gettext(locale, "Dismiss");
+                let dismissed = widgets::icon_button_tipped(
+                    ui,
+                    crate::style::Icon::X,
+                    (&dismiss, &dismiss),
+                    &look,
+                    &palette,
+                );
+                toast::button(ui.ctx(), &dismissed, first && action.is_none());
+                if dismissed.clicked() {
+                    actions.push(Action::DismissExport(Some(job)));
+                }
+            });
+        }
+    });
 }
