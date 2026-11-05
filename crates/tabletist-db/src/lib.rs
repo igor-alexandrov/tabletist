@@ -491,6 +491,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.stream_statement(text, batch, to, stop).await,
             Inner::Postgres(conn) => conn.stream_statement(text, batch, to, stop).await,
             Inner::MySql(conn) => conn.stream_statement(text, batch, to, stop).await,
+            Inner::BigQuery(conn) => conn.stream_statement(text, batch, to, stop).await,
         }
     }
 

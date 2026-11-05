@@ -401,6 +401,24 @@ impl Conn {
         }
     }
 
+    /// Streams `sql` as an export's job, once [`crate::agent::check_read`]
+    /// proves it a read: BigQuery has no read-only transaction to fence
+    /// anything else.
+    async fn stream_read(
+        &self,
+        sql: &str,
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        let read = crate::agent::check_read(Dialect::BigQuery, sql, &[]).map_err(Error::Agent)?;
+        let job_id = next_job_id();
+        *self.running.lock().expect("running-job lock") = Some((job_id.clone(), None));
+        let result = self.stream_job(read.text(), batch, to, stop, job_id).await;
+        *self.running.lock().expect("running-job lock") = None;
+        result
+    }
+
     /// The job of an export's checked read, a page at a time: the columns
     /// once, then batches of up to `batch` rows, so no more than a page is
     /// held at once. There are no parameters: an export's statement has
@@ -714,13 +732,18 @@ impl Adapter for Conn {
         let classes = self.column_classes(query).await?;
         let sql = Dialect::BigQuery.export_rows(query, &[], &classes, columns)?;
         debug_assert!(sql.params.is_empty());
-        let read =
-            crate::agent::check_read(Dialect::BigQuery, &sql.text, &[]).map_err(Error::Agent)?;
-        let job_id = next_job_id();
-        *self.running.lock().expect("running-job lock") = Some((job_id.clone(), None));
-        let result = self.stream_job(read.text(), batch, to, stop, job_id).await;
-        *self.running.lock().expect("running-job lock") = None;
-        result
+        self.stream_read(&sql.text, batch, to, stop).await
+    }
+
+    /// A statement of the person's, as `stream_rows` streams a table's.
+    async fn stream_statement(
+        &self,
+        text: &str,
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        self.stream_read(text, batch, to, stop).await
     }
 
     async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
@@ -970,7 +993,8 @@ mod tests {
 
     #[test]
     fn a_script_only_runs_what_proves_a_read() {
-        // The guard the adapter's run_script stands on.
+        // The guard the adapter's run_script and stream_read (a table's or
+        // a statement's export) stand on.
         assert!(crate::agent::check_read(crate::Dialect::BigQuery, "SELECT 1", &[]).is_ok());
         assert!(
             crate::agent::check_read(
