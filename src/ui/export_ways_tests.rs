@@ -111,6 +111,82 @@ fn nodes(harness: &mut Harness, label: &str) -> (usize, usize) {
     (found.len(), off)
 }
 
+/// How much wider the open menu is than its widest row needs: its words,
+/// then each key or chevron after a gap, then the inset the menu keeps.
+/// The menu is painted over everything else, so a row's words and keys
+/// are the last painted inside it.
+fn menu_slack(harness: &mut Harness, rows: &[&str]) -> f32 {
+    let tree = harness.settle();
+    let shown = harness.app.look;
+    let inset = if shown.terminal { 10.0 } else { 8.0 };
+    // The gap before a row's key: `DETAIL_GAP` in `menu.rs`.
+    let gap = 16.0;
+    let mut width = None;
+    let mut needed = 0.0_f32;
+    for row in rows {
+        let label = shown.label(row);
+        let at = harness
+            .text_rects
+            .iter()
+            .rposition(|(text, _)| *text == label)
+            .unwrap_or_else(|| panic!("{label:?} is not painted"));
+        let words = harness.text_rects[at].1;
+        let rect = tree
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.label() == Some(label.as_str()))
+            .filter_map(|(_, node)| node.bounds())
+            .map(|b| {
+                egui::Rect::from_min_max(
+                    egui::pos2(b.x0 as f32, b.y0 as f32),
+                    egui::pos2(b.x1 as f32, b.y1 as f32),
+                )
+            })
+            .find(|rect| rect.contains(words.center()))
+            .unwrap_or_else(|| panic!("no menu row {label:?}"));
+        let keys: f32 = harness.text_rects[at + 1..]
+            .iter()
+            .filter(|(_, painted)| rect.contains(painted.center()))
+            .map(|(_, painted)| gap + painted.width())
+            .sum();
+        needed = needed.max(words.right() - rect.left() + keys + inset);
+        width = Some(rect.width());
+    }
+    width.expect("a row") - needed
+}
+
+/// The grid's menu is as wide as its widest row, the rule over Export
+/// selection… taking no width of its own. In both looks.
+#[test]
+fn the_grids_menu_is_as_wide_as_its_rows() {
+    for look in [Look::macos(), Look::omarchy()] {
+        let (mut harness, _tab, _id) = bookshop_in(look);
+        grid_menu(&mut harness, 2);
+        let rows = ["Copy", "Copy as", "Copy rows as TSV", "Export selection…"];
+        let slack = menu_slack(&mut harness, &rows);
+        assert!(
+            slack.abs() < 1.0,
+            "{slack} too wide in the {} look",
+            look.name
+        );
+    }
+}
+
+/// The sidebar's menu is as wide as its widest row too. In both looks.
+#[test]
+fn the_sidebars_menu_is_as_wide_as_its_rows() {
+    for look in [Look::macos(), Look::omarchy()] {
+        let (mut harness, _tab, _id) = bookshop_in(look);
+        tree_menu(&mut harness, "reviews");
+        let slack = menu_slack(&mut harness, &MENU);
+        assert!(
+            slack.abs() < 1.0,
+            "{slack} too wide in the {} look",
+            look.name
+        );
+    }
+}
+
 const MENU: [&str; 6] = [
     "Open",
     "Structure",
