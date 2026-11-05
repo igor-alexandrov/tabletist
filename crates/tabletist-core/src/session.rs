@@ -147,7 +147,9 @@ pub fn database_of(spec: &tabletist_db::ConnectSpec) -> String {
             .as_ref()
             .map(|path| path.display().to_string())
             .unwrap_or_default(),
-        tabletist_db::Driver::Postgres | tabletist_db::Driver::MySql => spec.database.clone(),
+        tabletist_db::Driver::Postgres
+        | tabletist_db::Driver::MySql
+        | tabletist_db::Driver::BigQuery => spec.database.clone(),
     }
 }
 
@@ -715,6 +717,8 @@ mod tests {
         let (spec, _) =
             tabletist_db::ConnectSpec::from_url("postgres://demo@localhost:5432/bookshop").unwrap();
         assert_eq!(database_of(&spec), "bookshop");
+        let spec = tabletist_db::ConnectSpec::bigquery("analytics-project", None);
+        assert_eq!(database_of(&spec), "analytics-project");
     }
 
     #[test]

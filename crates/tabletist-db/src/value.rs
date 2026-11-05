@@ -68,6 +68,22 @@ impl ValueKind {
         }
     }
 
+    /// The kind for a BigQuery type name as the API gives it (`INT64`,
+    /// `STRING`), any case. STRUCTs, ARRAYs, GEOGRAPHY and INTERVAL are
+    /// `Other`; their text is the JSON the API gives.
+    pub fn from_bigquery_type(name: &str) -> Self {
+        match name.to_ascii_uppercase().as_str() {
+            "INT64" | "INTEGER" | "SMALLINT" | "TINYINT" | "BIGINT" | "NUMERIC" | "DECIMAL"
+            | "BIGNUMERIC" | "BIGDECIMAL" | "FLOAT64" | "FLOAT" | "DOUBLE" => Self::Numeric,
+            "BOOL" | "BOOLEAN" => Self::Bool,
+            "JSON" => Self::Json,
+            "DATE" | "TIME" | "DATETIME" | "TIMESTAMP" => Self::Temporal,
+            "BYTES" => Self::Binary,
+            "STRING" => Self::Text,
+            _ => Self::Other,
+        }
+    }
+
     /// The kind for a PostgreSQL type name (`pg_type.typname`). Arrays
     /// (`_text`), enums, ranges and extension types are `Other`.
     pub fn from_pg_type(name: &str) -> Self {

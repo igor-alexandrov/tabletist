@@ -1,7 +1,7 @@
 [package]
 name = "tabletist-db"
 version = "0.1.0"
-description = "Access to PostgreSQL, MySQL and SQLite for Tabletist"
+description = "Access to PostgreSQL, MySQL, SQLite and BigQuery for Tabletist"
 edition.workspace = true
 rust-version.workspace = true
 publish = false
@@ -67,6 +67,14 @@ mysql_common = { version = "0.37", default-features = false }
 # agent's statement would scan (`agent`'s hidden tables). Already in the
 # tree through the app and mysql_async.
 serde_json = "1"
+
+# BigQuery over its REST API (there is no wire protocol), with rustls on
+# ring like the other two network drivers. No cloud-storage load jobs.
+gcp-bigquery-client = { version = "0.28", default-features = false, features = ["rust-tls", "ring"] }
+# BigQuery's BYTES cells are base64 in JSON, and its TIMESTAMP cells
+# seconds since the epoch (both already in the tree).
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["std", "alloc"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }

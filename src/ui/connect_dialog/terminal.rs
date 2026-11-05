@@ -302,6 +302,10 @@ pub(super) fn terminal_body(
                     terminal_section(ui, &skin.say("Database"), skin);
                     file_field(ui, form, skin, actions);
                 }
+                Driver::BigQuery => {
+                    terminal_section(ui, &skin.say("BigQuery"), skin);
+                    terminal_bigquery(ui, form, skin);
+                }
                 Driver::Postgres | Driver::MySql => {
                     terminal_section(ui, &skin.say("Server"), skin);
                     terminal_server(ui, form, skin, actions);
@@ -345,6 +349,21 @@ pub(super) fn terminal_body(
 
 /// The terminal look: the host and port on one line, then the database,
 /// the user and the password.
+/// BigQuery's project and key file, as the terminal rows them.
+fn terminal_bigquery(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
+    let role = TextRole::OBody;
+    let height = skin.field_height();
+    terminal_row(ui, &skin.say("Project"), skin, |ui, label| {
+        ui.add(input(ui, &mut form.database, role, height, skin))
+            .labelled_by(label);
+    });
+    terminal_row(ui, &skin.say("Key file"), skin, |ui, label| {
+        let hint = hint(ui, &skin.say("Default credentials when empty"), role, skin);
+        ui.add(input(ui, &mut form.bigquery_key, role, height, skin).hint_text(hint))
+            .labelled_by(label);
+    });
+}
+
 fn terminal_server(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut Vec<Action>) {
     let role = TextRole::OBody;
     let height = skin.field_height();

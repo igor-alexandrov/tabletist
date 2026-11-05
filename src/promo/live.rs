@@ -206,10 +206,14 @@ impl Live {
                     asked: *asked,
                     result: Ok(super::history::newest(history, connection, *keep)),
                 })),
-                // Nothing is written, saved, stored, watched or closed here.
+                // Nothing is written, saved, stored, watched, exported,
+                // revealed or closed here.
                 Command::Test { .. }
                 | Command::Close { .. }
                 | Command::Cancel { .. }
+                | Command::Export(_)
+                | Command::CancelExport(_)
+                | Command::Reveal { .. }
                 | Command::LoadSecret { .. }
                 | Command::StoreSecret { .. }
                 | Command::Save { .. }

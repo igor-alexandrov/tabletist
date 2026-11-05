@@ -201,17 +201,22 @@ impl Conn {
     /// The byte string columns a filter of `query` compares as bytes when
     /// its value reads as bytes; empty, without asking, when no filter has
     /// such a value.
-    async fn binary_columns(&self, query: &RowQuery) -> Result<Vec<String>> {
+    async fn binary_columns(&self, query: &RowQuery) -> Result<Vec<(String, ColumnClass)>> {
         if !crate::dialect::reads_bytes(query) {
             return Ok(Vec::new());
         }
-        self.catalog(
-            "SELECT column_name FROM information_schema.columns \
-             WHERE table_schema = ? AND table_name = ? AND data_type IN \
-                   ('binary', 'varbinary', 'tinyblob', 'blob', 'mediumblob', 'longblob')",
-            (&query.object.schema, &query.object.name),
-        )
-        .await
+        let names: Vec<String> = self
+            .catalog(
+                "SELECT column_name FROM information_schema.columns \
+                 WHERE table_schema = ? AND table_name = ? AND data_type IN \
+                       ('binary', 'varbinary', 'tinyblob', 'blob', 'mediumblob', 'longblob')",
+                (&query.object.schema, &query.object.name),
+            )
+            .await?;
+        Ok(names
+            .into_iter()
+            .map(|name| (name, ColumnClass::Binary))
+            .collect())
     }
 }
 
@@ -529,7 +534,7 @@ impl Adapter for Conn {
     async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
         let key = self.primary_key(&query.object).await?;
         let binary = self.binary_columns(query).await?;
-        let sql = Dialect::MySql.select_rows(query, &key, &binary);
+        let sql = Dialect::MySql.select_rows(query, &key, &binary)?;
         let limit = query.limit as usize;
         let mut conn = self.conn.lock().await;
         let started = Instant::now();
@@ -553,7 +558,7 @@ impl Adapter for Conn {
     async fn export_statement(&self, query: &RowQuery, columns: &[String]) -> Result<String> {
         let key = self.primary_key(&query.object).await?;
         let binary = self.binary_columns(query).await?;
-        Ok(Dialect::MySql.shown_export(query, &key, &binary, columns))
+        Dialect::MySql.shown_export(query, &key, &binary, columns)
     }
 
     /// A table's export rows, through `stream_sql`.
@@ -567,7 +572,7 @@ impl Adapter for Conn {
     ) -> Result<u64> {
         let key = self.primary_key(&query.object).await?;
         let binary = self.binary_columns(query).await?;
-        let sql = Dialect::MySql.export_rows(query, &key, &binary, columns);
+        let sql = Dialect::MySql.export_rows(query, &key, &binary, columns)?;
         self.stream_sql(&sql, batch, to, stop).await
     }
 
@@ -588,7 +593,7 @@ impl Adapter for Conn {
 
     async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
         let binary = self.binary_columns(query).await?;
-        let sql = Dialect::MySql.count_rows(query, &binary);
+        let sql = Dialect::MySql.count_rows(query, &binary)?;
         let mut conn = self.conn.lock().await;
         let mut transaction = conn
             .start_transaction(read_only())

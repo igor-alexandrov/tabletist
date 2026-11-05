@@ -102,6 +102,15 @@ impl Match {
     pub fn matches(&self, spec: &ConnectSpec, home: Option<&Path>) -> bool {
         let server = match spec.driver {
             Driver::Postgres | Driver::MySql => true,
+            // BigQuery's `database` (its project) is a rule's to match; a
+            // host or port rule is never its: it has neither, and a `*`
+            // would match the emptiness.
+            Driver::BigQuery => {
+                if self.host.is_some() || self.port.is_some() {
+                    return false;
+                }
+                true
+            }
             Driver::Sqlite => false,
         };
         if let Some(driver) = &self.driver
@@ -154,6 +163,7 @@ fn driver_key(driver: Driver) -> &'static str {
         Driver::Postgres => "postgres",
         Driver::MySql => "mysql",
         Driver::Sqlite => "sqlite",
+        Driver::BigQuery => "bigquery",
     }
 }
 
@@ -401,12 +411,18 @@ impl MatchTable {
         }
         if let Some(driver) = &matches.driver
             && !driver.contains('*')
-            && ![Driver::Postgres, Driver::MySql, Driver::Sqlite]
-                .into_iter()
-                .any(|known| driver_key(known) == driver)
+            && ![
+                Driver::Postgres,
+                Driver::MySql,
+                Driver::Sqlite,
+                Driver::BigQuery,
+            ]
+            .into_iter()
+            .any(|known| driver_key(known) == driver)
         {
             return Err(
-                "its driver is none that Tabletist knows: postgres, mysql or sqlite".into(),
+                "its driver is none that Tabletist knows: postgres, mysql, sqlite or bigquery"
+                    .into(),
             );
         }
         Ok(matches)
@@ -744,6 +760,28 @@ access_max = "off"
         assert!(connections.contains("it has connections"), "{connections}");
         let service = problem("version = 1\n[service]\nurl = \"https://example.com\"\n");
         assert!(service.contains("it has a service"), "{service}");
+    }
+
+    #[test]
+    fn a_bigquery_connection_matches_no_host_or_port_rule() {
+        // Its host is empty and its port 0: a `*` rule must not match
+        // either, and only its project is a rule's to match.
+        let spec = tabletist_db::ConnectSpec::bigquery("analytics-project", None);
+        let host = Match {
+            host: Some("*".into()),
+            ..Match::default()
+        };
+        assert!(!host.matches(&spec, None));
+        let port = Match {
+            port: Some(0),
+            ..Match::default()
+        };
+        assert!(!port.matches(&spec, None));
+        let project = Match {
+            database: Some("analytics-*".into()),
+            ..Match::default()
+        };
+        assert!(project.matches(&spec, None));
     }
 
     #[test]

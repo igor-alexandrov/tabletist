@@ -108,6 +108,7 @@ struct Entry {
     #[serde(default)]
     database: String,
     sqlite_path: Option<PathBuf>,
+    bigquery_key: Option<PathBuf>,
     #[serde(default)]
     tls: TlsMode,
     ca_file: Option<PathBuf>,
@@ -250,6 +251,7 @@ impl Entry {
                 user: self.user,
                 database: self.database,
                 sqlite_path: self.sqlite_path,
+                bigquery_key: self.bigquery_key,
                 tls: self.tls,
                 ca_file: self.ca_file,
                 ssh,
@@ -388,6 +390,7 @@ fn driver(driver: Driver) -> &'static str {
         Driver::Postgres => "postgres",
         Driver::MySql => "mysql",
         Driver::Sqlite => "sqlite",
+        Driver::BigQuery => "bigquery",
     }
 }
 
@@ -424,7 +427,7 @@ pub(super) fn write(connections: &[SavedConnection]) -> std::io::Result<String> 
         let spec = &connection.spec;
         let server = match spec.driver {
             Driver::Postgres | Driver::MySql => true,
-            Driver::Sqlite => false,
+            Driver::Sqlite | Driver::BigQuery => false,
         };
         let mut lines = Lines::default();
         lines.text("id", &connection.id.0);
@@ -442,6 +445,9 @@ pub(super) fn write(connections: &[SavedConnection]) -> std::io::Result<String> 
         lines.text("driver", driver(spec.driver));
         if let Some(path) = &spec.sqlite_path {
             lines.path("sqlite_path", path)?;
+        }
+        if let Some(path) = &spec.bigquery_key {
+            lines.path("bigquery_key", path)?;
         }
         if server || !spec.host.is_empty() {
             lines.text("host", &spec.host);

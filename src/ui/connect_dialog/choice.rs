@@ -14,7 +14,12 @@ use crate::ui::widgets;
 
 use super::Skin;
 
-const DRIVERS: [Driver; 3] = [Driver::Sqlite, Driver::Postgres, Driver::MySql];
+const DRIVERS: [Driver; 4] = [
+    Driver::Sqlite,
+    Driver::Postgres,
+    Driver::MySql,
+    Driver::BigQuery,
+];
 
 /// One choice of a [`radio_group`], as it is drawn.
 #[derive(Clone, Copy)]
