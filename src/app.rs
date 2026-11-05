@@ -50,7 +50,7 @@ pub use menu::ItemState;
 pub use quick_open::{
     GROUP_SHOWN, QuickHeading, QuickList, QuickRow, command_words, picked_object, setting_path,
 };
-pub use updates::{Pending, Work};
+pub use updates::{Pending, Work, WorkId};
 
 /// What a keyring read is for; each names the exact request it serves, so
 /// a late answer for an earlier attempt is dropped.

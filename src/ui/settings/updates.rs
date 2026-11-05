@@ -265,6 +265,7 @@ pub(super) fn work_said(work: &Work, locale: Locale) -> String {
             gettext(locale, "query running for {time}").replace("{time}", &time)
         }
         Pending::Loading { table } => gettext(locale, "loading {table}").replace("{table}", table),
+        Pending::Exporting { name } => gettext(locale, "exporting {name}").replace("{name}", name),
     }
 }
 
@@ -1098,7 +1099,7 @@ mod tests {
     fn running(secs: u64) -> String {
         let work = Work {
             tab: crate::model::ConnTabId(1),
-            id: crate::model::TabId(2),
+            id: crate::app::WorkId::Tab(crate::model::TabId(2)),
             window: "Bookshop · dev".into(),
             what: Pending::Running { query: 2, secs },
         };

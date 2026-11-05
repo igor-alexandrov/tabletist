@@ -9,6 +9,7 @@
 use std::time::Duration;
 
 use super::App;
+use crate::backend::export::ExportId;
 use crate::backend::{Command, StateFile, UpdatesCommand, UpdatesEvent};
 use crate::model::{Action, ConnTabContent, ConnTabId, Dialog, SettingsPane, Tab, TabId};
 use crate::update::{Downloading, Failed, Failure, Found, Install, Phase, download, release};
@@ -29,12 +30,31 @@ pub const ANNOUNCED_FOR: f64 = 8.0;
 /// What a restart would interrupt: a line of the Work in progress card.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Work {
-    /// The window that holds it, and its tab.
+    /// The window that holds it, and its tab or its export.
     pub tab: ConnTabId,
-    pub id: TabId,
+    pub id: WorkId,
     /// The window as the card names it: `Bookshop · dev`.
     pub window: String,
     pub what: Pending,
+}
+
+/// What a line of work is of, in its window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkId {
+    /// A table's tab or a SQL editor's.
+    Tab(TabId),
+    /// An export, which runs on with its tab closed.
+    Export(ExportId),
+}
+
+impl Work {
+    /// The tab that holds it, where a tab does: not an export.
+    pub fn tab_id(&self) -> Option<TabId> {
+        match self.id {
+            WorkId::Tab(id) => Some(id),
+            WorkId::Export(_) => None,
+        }
+    }
 }
 
 /// What is pending in a window.
@@ -51,12 +71,17 @@ pub enum Pending {
     Running { query: u32, secs: u64 },
     /// A table's page, count or structure being read.
     Loading { table: String },
+    /// An export running, or waiting for its save panel: its name as its
+    /// toast says it, the file's (`reviews.csv`) or a copy's table.
+    Exporting { name: String },
 }
 
 impl App {
     /// What a restart would interrupt now, window by window in the bar's
     /// order: each table's unsaved edits, its save or its read, then each
-    /// SQL editor's run. Nothing is ever dropped to restart.
+    /// SQL editor's run, then each export from it, in the order they
+    /// started. Last the exports whose window was closed. Nothing is ever
+    /// dropped to restart.
     pub fn work_in_progress(&self) -> Vec<Work> {
         let platform = crate::env::Platform::of(&self.look);
         let mut work = Vec::new();
@@ -83,7 +108,7 @@ impl App {
                 };
                 work.push(Work {
                     tab,
-                    id: object.id,
+                    id: WorkId::Tab(object.id),
                     window: window.clone(),
                     what,
                 });
@@ -102,13 +127,34 @@ impl App {
                 };
                 work.push(Work {
                     tab,
-                    id: sql.id,
+                    id: WorkId::Tab(sql.id),
                     window: window.clone(),
                     what,
                 });
             }
+            let exports = self
+                .running_exports()
+                .filter(|exporting| exporting.tab == tab);
+            work.extend(exports.map(|exporting| exported(exporting, window.clone())));
         }
+        // Their window closed: named as it was when they started.
+        let orphans = self
+            .running_exports()
+            .filter(|exporting| self.workspace(exporting.tab).is_none());
+        work.extend(orphans.map(|exporting| exported(exporting, exporting.connection.clone())));
         work
+    }
+}
+
+/// A running export's line, in `window`.
+fn exported(exporting: &crate::export_sheet::Exporting, window: String) -> Work {
+    Work {
+        tab: exporting.tab,
+        id: WorkId::Export(exporting.job.id),
+        window,
+        what: Pending::Exporting {
+            name: exporting.name().to_owned(),
+        },
     }
 }
 
@@ -674,18 +720,22 @@ impl App {
     }
 
     /// Show them: Settings closes, and the first window with work comes
-    /// forward, on the tab that holds it.
+    /// forward, on the tab that holds it. An export's window comes forward
+    /// on the tab it has in front; one whose window closed brings nothing
+    /// more forward.
     fn show_work(&mut self) {
         let Some(first) = self.work_in_progress().into_iter().next() else {
             return;
         };
         self.close_settings();
         self.window_asks.push(egui::ViewportCommand::Focus);
+        if self.workspace(first.tab).is_none() {
+            return;
+        }
         self.apply(Action::ActivateConnTab(first.tab));
-        self.apply(Action::ActivateTab {
-            tab: first.tab,
-            id: first.id,
-        });
+        if let Some(id) = first.tab_id() {
+            self.apply(Action::ActivateTab { tab: first.tab, id });
+        }
     }
 
     fn close_settings(&mut self) {
@@ -1660,7 +1710,7 @@ mod tests {
             harness.app.work_in_progress(),
             [Work {
                 tab,
-                id,
+                id: WorkId::Tab(id),
                 window: "Bookshop · dev".into(),
                 what: Pending::Edits {
                     count: 1,
