@@ -61,6 +61,8 @@ pub mod every_row_prompt;
 mod every_row_tests;
 pub mod export;
 #[cfg(test)]
+mod export_path_tests;
+#[cfg(test)]
 mod export_result_tests;
 #[cfg(test)]
 mod export_several_tests;

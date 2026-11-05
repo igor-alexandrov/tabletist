@@ -2241,6 +2241,8 @@ impl App {
             Action::ExportFailureAction(job) => self.export_failure_action(job),
             Action::RevealExport(job) => self.reveal_export(job),
             Action::MoveInCancelExport(step) => self.move_in_cancel_export(step),
+            Action::ExportPickFile => self.pick_export_file(),
+            Action::PickPath(at) => self.pick_path(at),
             Action::MoveInCopyAs(step) => {
                 if let Some(Dialog::CopyAs(menu)) = &mut self.dialog {
                     let last = crate::model::CopyHow::menu(menu.pick).len() - 1;
@@ -4226,6 +4228,11 @@ impl App {
                 self.export_path_answered(job, path, replace)
             }
             Event::Export { job, state } => self.export_state(job, state),
+            Event::FolderListed {
+                asked,
+                typed,
+                names,
+            } => self.folder_listed(asked, &typed, names),
             Event::Connected {
                 session,
                 request,

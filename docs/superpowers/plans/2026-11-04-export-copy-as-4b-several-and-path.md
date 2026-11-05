@@ -50,7 +50,7 @@ request:
 | B1 | S14: an end takes the line, "the newest first" | The one that ended last | What just happened is what the line says. The other way: the one that started last |
 | B2 | F5: `:export cancel`'s picker | Drawn as the Copy as menu is, at the status line's right end, over it: `cancel export` and how many, a row each `1  reviews.csv 58%`, its foot `one key picks · ctrl+n/p enter · esc close`; digits 1 to 9 pick | No board draws it; this is the look's one picker of a few rows |
 | B3 | F7: "Cancel exporting reviews.csv" | A clipboard export's row is "Cancel copying reviews"; the rows are listed for a word typed (or `>`), as the commands not suggested are | The toast's own words. The other way: listed with nothing typed |
-| B4 | The board's second toast (no total) says "Bookshop · production" under its bar | The small line under the bar is the time left where it is known, else the connection | As the board draws it |
+| B4 | The board's second toast (no total) says "Bookshop · production" under its bar | Under the bar: the time left where the total is known (once 2 s have gone, as 3a), else the connection | As the board draws it |
 | B5 | S13: ⇥ walks every toast's buttons | Top to bottom, then left to right, over the export toasts, the pills and the copy offer's toast | The keyboard's order is the eye's |
 | B6 | S13: ⌘⇧' to the newest toast | The newest export's first button, its toast's or its pill's; with no export, the copy offer's | 3b's rule for the offer stays |
 | B7 | F8: the pills | 8 apart, as the toasts | As S13 |
@@ -62,6 +62,10 @@ request:
 | B13 | S12: no cap | No cap on the toasts either: a stack taller than the window goes off its top | Rare; the pills stay |
 | B14 | F7: ⇧⌘E always opens the sheet | 3a's "An export is running" refusal goes everywhere (`:w <path>`, Export selection…, the tree's `E`) | One more export starts from wherever |
 | B15 | S14: `2 exports · …` | A clipboard copy is named by its table there, as on its own line | As 3a |
+| B16 | (a failure answered) | An export to a file puts away a failed export to the same file: `:w!` after "exists" answers it | 3a's one export was replaced by the next. The other way: the failure stays until Esc |
+| B17 | F5: the picker | Lists those of its exports still running, and closes once none is; with one left it still asks | An export may end while it is open |
+| B18 | F7: quick open's cancel row | Drawn with the × icon, "export running" after its name | As a command's row |
+| B19 | S15: the list | A line changed puts its list away until the answer for the new line comes | Enter never takes a name listed for another line |
 
 ## Files
 
@@ -132,7 +136,7 @@ with `TABLETIST_TEST_PG_URL` and `TABLETIST_TEST_MYSQL_URL`.
 ## After Task 2
 
 Push the branch and open the pull request: the summary, F5–F8, S12–S16,
-B1–B15. No screenshot goes to GitHub unblurred.
+B1–B19. No screenshot goes to GitHub unblurred.
 
 ## Checks by hand
 

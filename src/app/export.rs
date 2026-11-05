@@ -480,6 +480,8 @@ impl App {
             asking: false,
             cursor_row: selection,
             row_only,
+            listed: None,
+            picking: false,
         };
         self.open_sheet(sheet);
     }
@@ -543,6 +545,8 @@ impl App {
             asking: false,
             cursor_row: selection,
             row_only,
+            listed: None,
+            picking: false,
         };
         self.open_sheet(sheet);
     }
@@ -635,9 +639,11 @@ impl App {
         let Some(Dialog::Export(sheet)) = &mut self.dialog else {
             return;
         };
+        let typed = matches!(change, ExportChange::Path(_));
         if let Some(said) = sheet.change(change, locale) {
             self.export_said = Some(said);
         }
+
         // Over the clipboard's rows: the file, whatever was chosen.
         let sheet = sheet.clone();
         if sheet.destination == DestinationChoice::Clipboard
@@ -647,6 +653,111 @@ impl App {
             && let Some(Dialog::Export(open)) = &mut self.dialog
         {
             open.destination = DestinationChoice::File;
+        }
+        // Typed in the path line: the names it starts (spec 4, S15).
+        if typed {
+            self.list_folder();
+        }
+    }
+
+    /// Asks for the names the float's path line starts, off this thread
+    /// (spec 4, S15): none for an empty line, nor in the macOS look, whose
+    /// sheet has no path line.
+    fn list_folder(&mut self) {
+        let Some(Dialog::Export(sheet)) = &self.dialog else {
+            return;
+        };
+        if !self.look.terminal {
+            return;
+        }
+        let asked = crate::export_sheet::completion_ask(
+            &sheet.path,
+            &self.dirs.downloads,
+            self.dirs.home.as_deref(),
+        );
+        let Some((folder, start)) = asked else {
+            return;
+        };
+        let command = Command::ListFolder {
+            asked: sheet.asked,
+            typed: sheet.path.clone(),
+            folder,
+            start,
+        };
+        self.backend.send(command);
+    }
+
+    /// The names a path line starts: kept for the line they were asked
+    /// for, dropped for one since changed or another sheet's.
+    pub(super) fn folder_listed(
+        &mut self,
+        asked: u64,
+        typed: &str,
+        names: Vec<crate::export_sheet::Listed>,
+    ) {
+        let Some(Dialog::Export(sheet)) = &mut self.dialog else {
+            return;
+        };
+        if sheet.asked != asked || sheet.path != typed {
+            return;
+        }
+        // Nothing matches: no list (spec 4, S15).
+        sheet.listed = (!names.is_empty()).then(|| crate::export_sheet::PathList {
+            line: typed.to_owned(),
+            names,
+            lit: 0,
+        });
+    }
+
+    /// A name of the path line's list taken: the one at `at`, else the
+    /// lit one. A folder lists its own names next; a file closes the list
+    /// and sets the format from its ending (spec 4, S15).
+    pub(super) fn pick_path(&mut self, at: Option<usize>) {
+        let locale = self.locale;
+        let Some(Dialog::Export(sheet)) = &mut self.dialog else {
+            return;
+        };
+        let picked = match at {
+            Some(at) => sheet
+                .listed
+                .as_ref()
+                .filter(|list| list.line == sheet.path)
+                .and_then(|list| list.names.get(at)),
+            None => sheet.lit_name(),
+        };
+        let Some(picked) = picked.cloned() else {
+            return;
+        };
+        let line = crate::export_sheet::complete(&sheet.path, &picked);
+        sheet.change(ExportChange::Path(line), locale);
+        sheet.listed = None;
+        if picked.folder {
+            self.list_folder();
+        }
+    }
+
+    /// The float's `ctrl+o`: the system's save dialog (the portal's on
+    /// Linux), suggested from the path line. Its answer fills the line;
+    /// nothing starts until Enter (spec 4, S16).
+    pub(super) fn pick_export_file(&mut self) {
+        let Some(Dialog::Export(sheet)) = &self.dialog else {
+            return;
+        };
+        if sheet.asking || sheet.destination != DestinationChoice::File {
+            return;
+        }
+        let suggested = crate::export_sheet::typed_path(
+            &sheet.path,
+            &self.dirs.downloads,
+            self.dirs.home.as_deref(),
+        );
+        let title = gettext(self.locale, "Export rows").into_owned();
+        self.backend
+            .ask_export_path(ExportId(sheet.asked), &title, &suggested);
+        if let Some(Dialog::Export(sheet)) = &mut self.dialog {
+            sheet.asking = true;
+            sheet.picking = true;
+            sheet.listed = None;
         }
     }
 
@@ -1202,8 +1313,18 @@ impl App {
         }
         sheet.asking = false;
         let Some(path) = path else {
+            sheet.picking = false;
             return;
         };
+        // `ctrl+o`'s answer: the line, and a replace where the dialog
+        // asked for one; Enter starts it (spec 4, S16).
+        if std::mem::take(&mut sheet.picking) {
+            let line = crate::export_sheet::shown_path(&path, self.dirs.home.as_deref());
+            sheet.change(ExportChange::Path(line), self.locale);
+            sheet.exists = replace;
+            sheet.listed = None;
+            return;
+        }
         let sheet = sheet.clone();
         self.run_export(&sheet, Destination::File { path, replace });
     }
@@ -1262,6 +1383,8 @@ impl App {
                 asking: false,
                 cursor_row: false,
                 row_only: false,
+                listed: None,
+                picking: false,
             };
             self.run_export(&sheet, Destination::File { path, replace });
             return;
@@ -1287,6 +1410,8 @@ impl App {
             asking: false,
             cursor_row: false,
             row_only: false,
+            listed: None,
+            picking: false,
         };
         self.run_export(&sheet, Destination::File { path, replace });
     }

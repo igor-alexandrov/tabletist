@@ -273,7 +273,13 @@ holds them, and a value the grid cuts off at 256 KiB is written whole.
 
 In the macOS look the system's save panel names the file (on Linux, the
 desktop's). In the Omarchy look the sheet's **save to** line does: your downloads folder
-first, and a name you type without a folder goes there too. Changing the
+first, and a name you type without a folder goes there too. As you type,
+the line lists up to eight names of its folder that start with what you
+typed, folders first: Ctrl+N and Ctrl+P (or Down and Up) move in the
+list, Enter takes a name (a folder then lists its own), and Esc closes
+the list. Names starting with a dot are listed once you type the dot.
+Ctrl+O opens the desktop's save dialog instead; the name you choose there
+fills the line, and nothing is written until you press Enter. Changing the
 format changes the name's ending, and typing a known ending changes the
 format. `:w ~/Downloads/reviews.csv` writes the table straight away, in
 the format of its ending, with the filter and the sort, and `:w!` replaces

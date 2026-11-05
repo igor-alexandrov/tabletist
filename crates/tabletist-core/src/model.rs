@@ -411,6 +411,12 @@ pub enum Action {
     RevealExport(Option<crate::backend::export::ExportId>),
     /// The `:export cancel` picker's row the keyboard is on, moved by.
     MoveInCancelExport(isize),
+    /// The float's `ctrl+o`: the system's save dialog, suggested from the
+    /// path line (spec 4, S16).
+    ExportPickFile,
+    /// A name of the path line's list taken: the one at the place, or
+    /// with none the lit one (spec 4, S15).
+    PickPath(Option<usize>),
     /// Put `pick` of the grid in front on the clipboard, as `how` says,
     /// and say so. A visual selection is left, as `y` leaves it.
     CopyAs {

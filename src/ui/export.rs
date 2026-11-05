@@ -167,6 +167,31 @@ fn keys(ctx: &egui::Context, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut 
     let on = |command: Command| {
         ctx.input_mut(|input| asked(input, &keymap, layout, command, Scope::Prompt, true).count > 0)
     };
+    // The path line's list, while it shows: its keys come before the
+    // float's Enter and Esc (spec 4, S15).
+    if look.terminal && on_path && !sheet.asking && sheet.lit_name().is_some() {
+        if on(Command::PathPick) {
+            ctx.input_mut(take_enter);
+            actions.push(Action::PickPath(None));
+            return;
+        }
+        if on(Command::ClosePathList) {
+            actions.push(Action::ChangeExport(ExportChange::ClosePathList));
+            return;
+        }
+        let step = on(Command::PathNext) as isize - on(Command::PathPrevious) as isize;
+        if step != 0 {
+            actions.push(Action::ChangeExport(ExportChange::PathMove(step)));
+        }
+    }
+    // `ctrl+o`: the system's save dialog (spec 4, S16).
+    if look.terminal
+        && !sheet.asking
+        && sheet.destination == DestinationChoice::File
+        && on(Command::ExportPickFile)
+    {
+        actions.push(Action::ExportPickFile);
+    }
     // The keymap's Enter; then no other Enter of the frame reaches a
     // control that has the keyboard (plan, B6).
     if exports && !sheet.asking && on(Command::ExportNow) {
@@ -631,6 +656,29 @@ fn choices(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec<A
             if response.changed() {
                 change(actions, ExportChange::Path(path));
             }
+            // `ctrl+o pick` at the line's right end, as the boards draw it.
+            let pick =
+                crate::ui::keys::written_in(ui.ctx(), look, Command::ExportPickFile, Scope::Prompt);
+            let hint = format!("{pick} {}", skin.say("pick"));
+            widgets::paint_text_right(
+                ui,
+                response.rect.right() - 8.0,
+                response.rect.center().y,
+                Text::one(look, TextRole::OSecondary, &hint, palette.dim),
+            );
+            if response.has_focus() && sheet.lit_name().is_some() {
+                // Esc and ↑ ↓ are the list's, not egui's to move or drop
+                // the keyboard with (`keys`).
+                let filter = egui::EventFilter {
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    escape: true,
+                    ..Default::default()
+                };
+                ui.ctx()
+                    .memory_mut(|memory| memory.set_focus_lock_filter(response.id, filter));
+                path_list(ui, sheet, response.rect, skin, actions);
+            }
             if sheet.exists {
                 widgets::label(
                     ui,
@@ -641,6 +689,71 @@ fn choices(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec<A
                 );
             }
         });
+    }
+}
+
+/// The names the path line starts, under it (spec 4, S15; the component
+/// board's path line): the lit one on the selection's fill, the rest
+/// muted. A click takes one.
+fn path_list(
+    ui: &mut Ui,
+    sheet: &ExportSheet,
+    field: Rect,
+    skin: Skin<'_>,
+    actions: &mut Vec<Action>,
+) {
+    let Skin { look, palette, .. } = skin;
+    let Some(list) = sheet.listed.as_ref() else {
+        return;
+    };
+    let lit = list.lit.min(list.names.len().saturating_sub(1));
+    let height = TextRole::OBody.row_height(ui.ctx(), look.faces) + 4.0;
+    let top = field.bottom();
+    let outline = Rect::from_min_size(
+        pos2(field.left(), top),
+        vec2(field.width(), height * list.names.len() as f32),
+    );
+    // Over what follows the line: the list is the line's for now.
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(
+        egui::Order::Tooltip,
+        Id::new(("export-path-list", sheet.asked)),
+    ));
+    painter.rect_filled(outline, 0, palette.panel);
+    painter.rect_stroke(
+        outline,
+        0,
+        egui::Stroke::new(1.0, palette.outline),
+        egui::StrokeKind::Inside,
+    );
+    for (at, listed) in list.names.iter().enumerate() {
+        let row = Rect::from_min_size(
+            pos2(field.left(), top + height * at as f32),
+            vec2(field.width(), height),
+        );
+        let name = match listed.folder {
+            true => format!("{}/", listed.name),
+            false => listed.name.clone(),
+        };
+        let ink = match at == lit {
+            true => {
+                painter.rect_filled(row.shrink(1.0), 0, palette.selection);
+                palette.text
+            }
+            false => palette.dim,
+        };
+        let laid = Text::one(look, TextRole::OBody, &name, ink).layout(ui.ctx());
+        laid.paint_left(&painter, row.left() + 8.0, row.center().y);
+        let response = ui.interact(
+            row,
+            Id::new(("export-path-name", sheet.asked, at)),
+            Sense::click(),
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, at == lit, &name)
+        });
+        if response.clicked() {
+            actions.push(Action::PickPath(Some(at)));
+        }
     }
 }
 
@@ -1555,6 +1668,7 @@ fn terminal(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec<
     let space = written(Command::ExportChoose);
     let esc = written(Command::CloseExport);
     let review_key = written(Command::ExportReviewSql);
+    let pick_key = written(Command::ExportPickFile);
     let primary = match (sheet.review, sheet.destination) {
         (true, _) | (_, DestinationChoice::File) => skin.say("export"),
         (_, DestinationChoice::Clipboard) => skin.say("copy"),
@@ -1566,6 +1680,7 @@ fn terminal(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec<
         skin.say("cancel"),
         skin.say("back"),
     );
+    let pick_word = skin.say("pick file");
     let primary_name = primary_words(sheet, facts, look, locale);
     let mut keys = Vec::new();
     if !sheet.review {
@@ -1592,6 +1707,16 @@ fn terminal(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec<
             lead: false,
             disabled: None,
         });
+        // The system's dialog, for a file (spec 4, S16).
+        if sheet.destination == DestinationChoice::File {
+            keys.push(crate::ui::terminal_dialog::Key {
+                key: &pick_key,
+                label: &pick_word,
+                button: None,
+                lead: false,
+                disabled: None,
+            });
+        }
         if facts.statement.is_some() {
             keys.push(crate::ui::terminal_dialog::Key {
                 key: &review_key,
