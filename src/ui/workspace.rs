@@ -2955,6 +2955,18 @@ fn status_line(
             if completing {
                 editor_hints.insert(0, (&complete_key, &*words[5], true));
             }
+            // The result's rows have the keys: its copy in a format, and
+            // its export (spec 4), the first to give way.
+            let result_keys = !ui.ctx().text_edit_focused()
+                && workspace
+                    .active_sql_tab()
+                    .is_some_and(crate::ui::keys::shows_grid);
+            if result_keys {
+                editor_hints.extend([
+                    (&copy_as_key, "copy as", true),
+                    (&export_key, "export result", true),
+                ]);
+            }
             // The Structure view's keys: a row's do nothing on it.
             let structure_words =
                 ["column", "use as label", "choose", "tables"].map(|word| gettext(locale, word));

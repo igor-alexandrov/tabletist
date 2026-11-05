@@ -3125,6 +3125,9 @@ pub enum About {
     CurrentTable(String),
     /// A table is picked next: "pick one next".
     PickNext,
+    /// The SQL editor in front, whose number the command's name holds
+    /// ("Export result of Query 1…"): "SQL editor".
+    CurrentResult(u32),
 }
 
 /// A tab as a command's row names it.
@@ -3167,6 +3170,7 @@ impl Runnable {
         let name = crate::i18n::gettext(locale, self.name);
         match &self.about {
             About::CurrentTable(table) => name.replace("{table}", table),
+            About::CurrentResult(query) => name.replace("{n}", &query.to_string()),
             _ => name.into_owned(),
         }
     }
@@ -3771,13 +3775,17 @@ pub struct SchemaNode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportOffer {
     pub tab: ConnTabId,
-    /// The table's tab the copy was of: it comes to the front first.
+    /// The table's (or the SQL editor's) tab the copy was of: it comes to
+    /// the front first.
     pub table: Option<TabId>,
     pub format: Option<crate::export::Format>,
     pub whole_rows: bool,
     /// What the copy took: a selection moved since is put back, so the
     /// sheet exports what was copied.
     pub copied: Option<CopiedSelection>,
+    /// The cursor's row alone, whatever range stands: the row panel's
+    /// Export row… (spec 4, S8).
+    pub row_only: bool,
 }
 
 /// The selection a refused copy took, on the page it was of.
@@ -5731,6 +5739,16 @@ impl SqlTab {
             .find(|(_, result)| {
                 matches!(result.outcome, tabletist_db::StatementOutcome::Rows { .. })
             })
+    }
+
+    /// Whether the shown result can be exported (spec 4): its statement
+    /// returned rows, and no run is in flight, whose answer would put other
+    /// rows in their place.
+    pub fn exports(&self) -> bool {
+        !self.is_running()
+            && self
+                .shown_rows()
+                .is_some_and(|(_, rows, _)| !rows.is_empty())
     }
 
     /// The shown result's columns and rows, and whether the limit cut

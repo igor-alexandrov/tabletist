@@ -48,6 +48,16 @@ pub(crate) trait Adapter {
         stop: &StopFlag,
     ) -> Result<u64>;
 
+    /// See [`crate::Connection::stream_statement`]: `text` is one statement
+    /// that reads, with no `;` after it; `batch` is at least 1.
+    async fn stream_statement(
+        &self,
+        text: &str,
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64>;
+
     async fn lookup(&self, lookup: &Lookup) -> Result<LookupPage>;
 
     /// `texts` are statements [`crate::sql::refusal`] has let through.

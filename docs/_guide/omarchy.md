@@ -243,6 +243,7 @@ cursor is on.
 | `[` `]` | Previous and next row, while the panel shows. Where there is an error to go to, the bracket waits for the key after it: `e` goes to the error, and any other key steps the row. A key that moves then moves on from there; a key that edits, and `:`, are dropped, so the edit never lands on the row you left: press it again |
 | `za` | Fold the documents in it |
 | `cc`, `x`, `D`, `u` | Work on the field as they do on its cell |
+| `E` | [Export]({% link _guide/browsing-data.md %}#exporting) the panel's row alone: the float |
 | Ctrl+H | Back to the grid, on that field's cell |
 | Esc | From its fields, back to the rows. From the rows, close it |
 
@@ -260,7 +261,7 @@ cursor is on.
 | `v`, Ctrl+V | Start a selection of cells, or a block, on the cursor's cell. The moves stretch it. The status line reads `-- VISUAL --` or `-- VISUAL BLOCK --` and its size |
 | `V` | Start a selection of rows on the cursor's row. `j`, `k` and the other moves extend it. The status line reads `-- VISUAL LINE --` and counts its rows |
 | `y` | In a selection: copy it, with tabs between the values, and leave it |
-| `gy` | [Copy as]({% link _guide/browsing-data.md %}#copying): the selection, or the cursor's row, in a format. One letter picks: `c` csv, `t` tsv, `j` json, `m` markdown, `s` sql insert, `n` column names. Ctrl+N and Ctrl+P move, Enter picks, Esc closes. In the row panel it copies the row, but not a new one. A table's selection past the clipboard's limit copies nothing: the line ends `E export`, the selection stays, and `E` opens the float on it in that format, to a file |
+| `gy` | [Copy as]({% link _guide/browsing-data.md %}#copying): the selection, or the cursor's row, in a format. One letter picks: `c` csv, `t` tsv, `j` json, `m` markdown, `s` sql insert, `n` column names. Ctrl+N and Ctrl+P move, Enter picks, Esc closes. In the row panel it copies the row, but not a new one. A selection past the clipboard's limit copies nothing: the line ends `E export`, the selection stays, and `E` opens the float on it in that format, to a file |
 | `d` | In a selection of rows: delete its rows, or restore them where all are marked. New rows among them are dropped |
 | Esc, or the key that started it | Leave the selection |
 | Enter, Tab, Shift+Tab | Keep the edit and move down, right or left |
@@ -318,6 +319,8 @@ A save can ask you something first. Each question has its own keys:
 | Tab, Shift+Tab | Indent, outdent, in the text: at the cursor, or every line of the selection |
 | `:ro`, `:rw` | Read-only and read-write runs, from normal mode or with the keyboard out of the text |
 | `:w` | Nothing: vim's write, where the editor has nothing to write, and never writes to the database |
+| `:export`, `:export json` | [Export the result]({% link _guide/browsing-data.md %}#exporting-a-sql-result): the float, in a format if you name one |
+| `:w ~/Downloads/query-1.csv` | Export the result's loaded rows now, in the format of the ending. `:w!` replaces a file that is there |
 | Ctrl+Space | Complete |
 | `y`; `n`, Enter or Esc | When the status line asks before a run that changes every row of a table (an `UPDATE` or a `DELETE` without `WHERE`, a `TRUNCATE`): run it; do not |
 
@@ -338,6 +341,8 @@ On a result, with the keyboard out of the editor:
 | --- | --- |
 | `j` `k`, `h` `l` | Move in the result |
 | `v`, Ctrl+V, `V` | Select cells, a block, or whole rows, as in a table. `y` copies the selection and Esc leaves it |
+| `gy` | [Copy as]({% link _guide/browsing-data.md %}#copying): the selection in a format |
+| `E` | [Export the result]({% link _guide/browsing-data.md %}#exporting-a-sql-result): the float. With a selection it starts on the selected rows. In it, run again without the limit is offered where `a` (show all) is |
 | Enter | Show the selected row in the row panel |
 | Ctrl+Shift+R | Show or hide the row panel |
 | `[` `]` | Previous and next row, while the panel shows |

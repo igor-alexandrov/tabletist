@@ -161,7 +161,7 @@ These are the keys of the macOS and Windows looks. The Omarchy look has
 | Mod+A | Select every row loaded |
 | Mod+C, Mod+Shift+C | Copy the selection as tab-separated values, or its rows whole. One cell is copied as it is |
 | Mod+Alt+C | [Copy as]({% link _guide/browsing-data.md %}#copying): the selection in CSV (C), TSV (T), JSON (J), Markdown (M), SQL INSERT (S), or its column names (N). Up and Down move, Return picks, Esc closes |
-| Mod+Shift+E | [Export]({% link _guide/browsing-data.md %}#exporting) the table in front, or the one selected in the sidebar. In the sheet Return exports, Esc closes, and Alt+Up and Alt+Down move a chosen column |
+| Mod+Shift+E | [Export]({% link _guide/browsing-data.md %}#exporting) the table in front, the one selected in the sidebar, or [a SQL editor's result]({% link _guide/browsing-data.md %}#exporting-a-sql-result); on the row panel, its row alone. In the sheet Return exports, Esc closes, and Alt+Up and Alt+Down move a chosen column |
 | Enter, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Alt+Enter | Open the large editor. In it, Mod+Enter applies and Esc cancels |
 | Esc | Cancel the edit |
@@ -187,6 +187,8 @@ These are the keys of the macOS and Windows looks. The Omarchy look has
 | Mod+Shift+F | Format |
 | Tab, Shift+Tab | Indent, outdent: at the cursor, or every line of the selection |
 | Mod+Shift+M | Switch between read-only and read-write runs |
+| Mod+Alt+C | [Copy as]({% link _guide/browsing-data.md %}#copying): the cells picked in the result, in a format |
+| Mod+Shift+E | [Export the result]({% link _guide/browsing-data.md %}#exporting-a-sql-result), from the script or its rows. With a selection it starts on the selected rows |
 | Mod+Alt+Down, Mod+Alt+Up | Put the cursor where the last run's error is, while the script is the one that ran |
 | Ctrl+Space, Mod+I | Complete |
 | Up, Down | Move in the completion list |

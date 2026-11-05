@@ -425,6 +425,47 @@ impl Connection {
         }
     }
 
+    /// The rows of `statement`, a statement of the person's, as
+    /// [`Self::stream_rows`] sends a table's: the columns, then batches of
+    /// up to `batch` rows, read-only, never more than a batch ahead of
+    /// `to`. It runs as it was written, with no `LIMIT` added. Refused with
+    /// nothing sent unless [`sql::kind`] reads it as a read and
+    /// [`sql::refusal`] lets it run: an export never runs a write. Returns
+    /// the rows sent; `stop`, or `to` closing, ends it as
+    /// [`Error::Cancelled`], and the server's own timeout as
+    /// [`Error::Timeout`]. On PostgreSQL it runs as a cursor, so a
+    /// statement no cursor holds (`SHOW`, `EXPLAIN`) fails with the
+    /// server's words.
+    pub async fn stream_statement(
+        &self,
+        statement: &sql::Statement,
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        let dialect = self.dialect();
+        let refused = |what: String| Error::Refused {
+            line: statement.first_line,
+            what,
+            mode: ScriptMode::ReadOnly,
+        };
+        if let Some(what) = sql::refusal(dialect, &statement.text) {
+            return Err(refused(what));
+        }
+        if sql::kind(dialect, &statement.text) != sql::StatementKind::Read {
+            return Err(Error::query(
+                "Run again without the limit is only for a statement that reads",
+            ));
+        }
+        let text = statement.text.trim().trim_end_matches(';').trim_end();
+        let batch = batch.max(1);
+        match &self.inner {
+            Inner::Sqlite(conn) => conn.stream_statement(text, batch, to, stop).await,
+            Inner::Postgres(conn) => conn.stream_statement(text, batch, to, stop).await,
+            Inner::MySql(conn) => conn.stream_statement(text, batch, to, stop).await,
+        }
+    }
+
     pub async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
         match &self.inner {
             Inner::Sqlite(conn) => conn.count_rows(query).await,

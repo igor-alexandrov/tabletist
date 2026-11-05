@@ -222,7 +222,8 @@ impl App {
                 };
                 (name, About::Nothing, vec![Action::ToggleSidebar(tab)])
             }
-            // The table in front's; while one runs, its cancel.
+            // The table in front's, or the SQL result's; while one runs,
+            // its cancel.
             Command::Export => {
                 if self
                     .exporting
@@ -231,8 +232,21 @@ impl App {
                 {
                     ("Cancel export", About::Nothing, vec![Action::CancelExport])
                 } else {
-                    let table = object?.object.name.clone();
                     let open = Action::OpenExport { tab, format: None };
+                    // A SQL editor whose shown statement returned rows:
+                    // its result's (spec 4, S11).
+                    if let Some(sql) = sql.filter(|sql| sql.exports()) {
+                        let about = About::CurrentResult(sql.number);
+                        return Some((
+                            Runnable {
+                                command,
+                                name: "Export result of Query {n}…",
+                                about,
+                            },
+                            vec![open],
+                        ));
+                    }
+                    let table = object?.object.name.clone();
                     ("Export {table}…", About::CurrentTable(table), vec![open])
                 }
             }

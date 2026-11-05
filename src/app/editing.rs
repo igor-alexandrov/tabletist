@@ -1928,6 +1928,12 @@ impl App {
             .active_object_tab()
             .map(|object| (object.id, object.edits.pending()));
         let sql_tab = workspace.active_sql_tab().map(|sql| sql.id);
+        // A SQL editor whose shown statement returned rows: its result
+        // exports as a table does (spec 4).
+        let rows_here = table.is_some()
+            || workspace
+                .active_sql_tab()
+                .is_some_and(crate::model::SqlTab::exports);
         let scope = match table {
             Some(_) => Scope::Grid,
             None if workspace.agents_in_front() => Scope::Agents,
@@ -1987,7 +1993,7 @@ impl App {
             (Typed::Command(Command::SaveChanges), Some((id, _))) => Action::WriteEdits { tab, id },
             // Export: the float, in a format, or at once to a path. Bare
             // `:w` is the line above, and never reaches these.
-            (Typed::Command(Command::Export), Some(_)) => {
+            (Typed::Command(Command::Export), _) if rows_here => {
                 // After a failure, the same export again.
                 if self.exporting.as_ref().is_some_and(|exporting| {
                     matches!(
@@ -1999,7 +2005,7 @@ impl App {
                 }
                 Action::OpenExport { tab, format: None }
             }
-            (Typed::Command(Command::ExportAs), Some(_)) => {
+            (Typed::Command(Command::ExportAs), _) if rows_here => {
                 let named =
                     self.keymap
                         .ex_argument(Layout::Omarchy, Command::ExportAs, scope, line);
@@ -2018,7 +2024,9 @@ impl App {
                     format: Some(format),
                 }
             }
-            (Typed::Command(command @ (Command::ExportTo | Command::ExportOver)), Some(_)) => {
+            (Typed::Command(command @ (Command::ExportTo | Command::ExportOver)), _)
+                if rows_here =>
+            {
                 let named = self
                     .keymap
                     .ex_argument(Layout::Omarchy, command, scope, line);

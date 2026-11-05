@@ -1,4 +1,5 @@
-//! An export's stream (`Connection::stream_rows`) on each engine, on the
+//! An export's stream (`Connection::stream_rows`, and
+//! `Connection::stream_statement` for a SQL result) on each engine, on the
 //! Bookshop. PostgreSQL and MySQL need their servers (see compose.yaml):
 //! without the variables those tests print "skipped" and pass.
 
@@ -12,6 +13,7 @@ use tabletist_db::{
 
 /// What a stream sent: its columns' names, each batch's rows, and the
 /// count it returned.
+#[derive(Debug)]
 struct Got {
     columns: Vec<String>,
     batches: Vec<Vec<Vec<Value>>>,
@@ -78,6 +80,122 @@ fn int(value: &Value) -> i64 {
         Value::Text(text) => text.parse().unwrap(),
         other => panic!("not a number: {other:?}"),
     }
+}
+
+/// Streams `text`, a statement of the person's, as Run again without the
+/// limit reads it.
+async fn streamed_statement(
+    connection: &Connection,
+    text: &str,
+    batch: usize,
+    stop: &StopFlag,
+) -> Result<Got, Error> {
+    let statements = sql::statements(connection.dialect(), text);
+    assert_eq!(statements.len(), 1, "one statement: {text}");
+    let statement = statements[0].clone();
+    let (to, mut from) = tokio::sync::mpsc::channel(1);
+    let collecting = async move {
+        let mut got = (Vec::new(), Vec::new());
+        while let Some(streamed) = from.recv().await {
+            match streamed {
+                Streamed::Columns(metas) => {
+                    got.0 = metas.into_iter().map(|meta| meta.name).collect();
+                }
+                Streamed::Rows(rows) => got.1.push(rows),
+            }
+        }
+        got
+    };
+    let (sent, (columns, batches)) = tokio::join!(
+        async move {
+            let sent = connection
+                .stream_statement(&statement, batch, &to, stop)
+                .await;
+            drop(to);
+            sent
+        },
+        collecting
+    );
+    match sent {
+        Ok(sent) => Ok(Got {
+            columns,
+            batches,
+            sent,
+        }),
+        // A statement refused before it ran sent nothing at all.
+        Err(error) if refused(&error) => {
+            assert!(columns.is_empty() && batches.is_empty(), "{error:?}");
+            Err(error)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Whether `error` is the stream's refusal of a statement that is no read.
+fn refused(error: &Error) -> bool {
+    matches!(error, Error::Refused { .. })
+        || error
+            .to_string()
+            .contains("Run again without the limit is only for a statement that reads")
+}
+
+/// Run again without the limit (spec 4, S2 and S3): a statement as it was
+/// written, every row, in batches; a write refused with nothing sent; a
+/// stop.
+async fn streams_a_statement(connection: &Connection, on: &str) {
+    let got = streamed_statement(
+        connection,
+        "SELECT id, title FROM books WHERE id > 2 ORDER BY id DESC;",
+        4,
+        &StopFlag::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(got.columns, ["id", "title"], "{on}");
+    assert_eq!(got.sent, 10, "{on}");
+    assert_eq!(got.batches.len(), 3, "{on}: 4, 4 and 2");
+    let ids: Vec<i64> = got.rows().iter().map(|row| int(&row[0])).collect();
+    assert_eq!(ids, (3..=12).rev().collect::<Vec<_>>(), "{on}");
+
+    let none = streamed_statement(
+        connection,
+        "SELECT id FROM books WHERE id < 0",
+        4,
+        &StopFlag::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!((none.sent, none.columns.len()), (0, 1), "{on}");
+
+    for write in [
+        "UPDATE books SET title = 'x'",
+        "DELETE FROM books",
+        "INSERT INTO authors (id, name) VALUES (99, 'Nobody')",
+    ] {
+        let answer = streamed_statement(connection, write, 4, &StopFlag::new()).await;
+        assert!(
+            answer.as_ref().is_err_and(refused),
+            "{on}: {write} was not refused: {answer:?}"
+        );
+    }
+    let committed = streamed_statement(connection, "COMMIT", 4, &StopFlag::new()).await;
+    assert!(
+        matches!(committed, Err(Error::Refused { .. })),
+        "{on}: {committed:?}"
+    );
+
+    let stop = StopFlag::new();
+    stop.stop();
+    let stopped = streamed_statement(connection, "SELECT id FROM books", 2, &stop).await;
+    assert!(
+        matches!(stopped, Err(Error::Cancelled)),
+        "{on}: {stopped:?}"
+    );
+    // The session is still there for the next one.
+    let again = streamed_statement(connection, "SELECT id FROM books", 100, &StopFlag::new())
+        .await
+        .unwrap();
+    assert_eq!(again.sent, 12, "{on}");
 }
 
 /// Test 1 and 2 of the spec, on any engine: every row in the key's order,
@@ -228,6 +346,12 @@ mod sqlite {
     async fn the_export_session_cannot_write_on_sqlite() {
         let (connection, _dir) = bookshop(0).await;
         the_export_session_cannot_write(&connection, "sqlite").await;
+    }
+
+    #[tokio::test]
+    async fn a_statement_streams_on_sqlite() {
+        let (connection, _dir) = bookshop(0).await;
+        streams_a_statement(&connection, "sqlite").await;
     }
 
     #[tokio::test]
@@ -391,6 +515,21 @@ mod postgres {
     }
 
     #[tokio::test]
+    async fn a_statement_streams_on_postgres() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        streams_a_statement(&connection, "postgres").await;
+        // A statement no cursor holds fails with the server's words.
+        let shown = streamed_statement(&connection, "SHOW search_path", 10, &StopFlag::new()).await;
+        let Err(error) = shown else {
+            panic!("{shown:?}");
+        };
+        assert!(error.to_string().contains("syntax error"), "{error}");
+        streams_a_statement(&connection, "postgres").await;
+    }
+
+    #[tokio::test]
     async fn a_stop_ends_the_stream_on_postgres() {
         let Some(connection) = bookshop().await else {
             return;
@@ -484,6 +623,14 @@ mod mysql {
             return;
         };
         streams_the_books(&connection, "bookshop", "mysql").await;
+    }
+
+    #[tokio::test]
+    async fn a_statement_streams_on_mysql() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        streams_a_statement(&connection, "mysql").await;
     }
 
     #[tokio::test]

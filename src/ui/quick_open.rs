@@ -816,6 +816,7 @@ fn about(about: &About, skin: &Skin<'_>) -> String {
         About::Tab(TabName::Agents) => skin.say("Agents"),
         About::Tab(TabName::History) => skin.say("History"),
         About::CurrentTable(_) => skin.say("current table"),
+        About::CurrentResult(_) => skin.say("SQL editor"),
         About::PickNext => skin.say("pick one next"),
     }
 }

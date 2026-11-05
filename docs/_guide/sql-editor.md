@@ -77,6 +77,11 @@ limit (it keeps the timeout). It is offered for a run that only read,
 while the editor holds the text that ran and the tab is on the database
 it ran on.
 
+**Copy as** and **Export…**, at the bar's right, copy the cells you
+picked in a format and [export the result]({% link _guide/browsing-data.md %}#exporting-a-sql-result)
+to a file or the clipboard; its export can run the statement again
+without the limit, as **Show all** does, straight into the file.
+
 When the timeout stopped a run, Messages says "Cancelled after 30 s" on
 the statement it stopped, and **Run without timeout** runs the whole run
 again with none (it keeps the row limit). It is offered when nothing of

@@ -74,6 +74,35 @@ pub(crate) struct Conn {
 }
 
 impl Conn {
+    /// An export's rows through a prepared statement inside a read-only
+    /// transaction, read from the server a row at a time (the driver does
+    /// not buffer a result), sent on a batch at a time: a table's
+    /// statement, or a SQL editor's.
+    async fn stream_sql(
+        &self,
+        sql: &crate::dialect::Sql,
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        let mut conn = self.conn.lock().await;
+        let mut transaction = conn
+            .start_transaction(read_only())
+            .await
+            .map_err(query_error)?;
+        match stream_into(&mut transaction, sql, batch, to, stop).await {
+            Ok(sent) => {
+                stop.finish();
+                finish(transaction, Ok(sent)).await
+            }
+            // Rows the stream did not read are still on their way: a
+            // rollback now would read every one of them first. The
+            // export's connection is closed after a failure, which ends
+            // the transaction with it.
+            Err(error) => Err(crate::agent::over_its_time(error)),
+        }
+    }
+
     /// Connects to the spec's server, or through a tunnel's local port `via`.
     pub async fn connect(
         spec: &ConnectSpec,
@@ -527,9 +556,7 @@ impl Adapter for Conn {
         Ok(Dialect::MySql.shown_export(query, &key, &binary, columns))
     }
 
-    /// An export's rows through a prepared statement inside a read-only
-    /// transaction, read from the server a row at a time (the driver does
-    /// not buffer a result), sent on a batch at a time.
+    /// A table's export rows, through `stream_sql`.
     async fn stream_rows(
         &self,
         query: &RowQuery,
@@ -541,22 +568,22 @@ impl Adapter for Conn {
         let key = self.primary_key(&query.object).await?;
         let binary = self.binary_columns(query).await?;
         let sql = Dialect::MySql.export_rows(query, &key, &binary, columns);
-        let mut conn = self.conn.lock().await;
-        let mut transaction = conn
-            .start_transaction(read_only())
-            .await
-            .map_err(query_error)?;
-        match stream_into(&mut transaction, &sql, batch, to, stop).await {
-            Ok(sent) => {
-                stop.finish();
-                finish(transaction, Ok(sent)).await
-            }
-            // Rows the stream did not read are still on their way: a
-            // rollback now would read every one of them first. The
-            // export's connection is closed after a failure, which ends
-            // the transaction with it.
-            Err(error) => Err(crate::agent::over_its_time(error)),
-        }
+        self.stream_sql(&sql, batch, to, stop).await
+    }
+
+    /// A statement of the person's, as `stream_rows` streams a table's.
+    async fn stream_statement(
+        &self,
+        text: &str,
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        let sql = crate::dialect::Sql {
+            text: text.to_owned(),
+            params: Vec::new(),
+        };
+        self.stream_sql(&sql, batch, to, stop).await
     }
 
     async fn count_rows(&self, query: &RowQuery) -> Result<u64> {

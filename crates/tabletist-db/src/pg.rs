@@ -270,6 +270,60 @@ fn row_values(row: &tokio_postgres::SimpleQueryRow, columns: &[ColumnMeta]) -> R
 }
 
 impl Conn {
+    /// `text`'s rows through a cursor in a read-only transaction, a
+    /// `FETCH` of `batch` rows at a time.
+    async fn stream_text(
+        &self,
+        text: &str,
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        let mut client = self.client.lock().await;
+        let transaction = client
+            .build_transaction()
+            .read_only(true)
+            .start()
+            .await
+            .map_err(stream_error)?;
+        // Prepared first: its columns, and a second statement refused
+        // before anything runs.
+        let statement = transaction.prepare(text).await.map_err(stream_error)?;
+        let metas = column_metas(&statement);
+        crate::stream::send(to, crate::Streamed::Columns(metas.clone())).await?;
+        transaction
+            .simple_query(&format!(
+                "DECLARE {EXPORT_CURSOR} NO SCROLL CURSOR FOR {text}"
+            ))
+            .await
+            .map_err(stream_error)?;
+        let fetch = format!("FETCH {batch} FROM {EXPORT_CURSOR}");
+        let mut sent = 0u64;
+        loop {
+            if stop.is_stopped() {
+                return Err(Error::Cancelled);
+            }
+            let messages = transaction
+                .simple_query(&fetch)
+                .await
+                .map_err(stream_error)?;
+            let mut rows = Vec::with_capacity(batch);
+            for message in messages {
+                if let SimpleQueryMessage::Row(row) = message {
+                    rows.push(row_values(&row, &metas)?);
+                }
+            }
+            if rows.is_empty() {
+                break;
+            }
+            sent += rows.len() as u64;
+            crate::stream::send(to, crate::Streamed::Rows(rows)).await?;
+        }
+        stop.finish();
+        transaction.rollback().await.map_err(stream_error)?;
+        Ok(sent)
+    }
+
     /// Connects to the spec's server, or through a tunnel's local port `via`.
     pub async fn connect(
         spec: &ConnectSpec,
@@ -846,48 +900,18 @@ impl Adapter for Conn {
         let sql = Dialect::Postgres.export_rows(query, &key, &binary, columns);
         // Every value is a literal in the text, so there is nothing to bind.
         debug_assert!(sql.params.is_empty());
-        let mut client = self.client.lock().await;
-        let transaction = client
-            .build_transaction()
-            .read_only(true)
-            .start()
-            .await
-            .map_err(stream_error)?;
-        let statement = transaction.prepare(&sql.text).await.map_err(stream_error)?;
-        let metas = column_metas(&statement);
-        crate::stream::send(to, crate::Streamed::Columns(metas.clone())).await?;
-        transaction
-            .simple_query(&format!(
-                "DECLARE {EXPORT_CURSOR} NO SCROLL CURSOR FOR {}",
-                sql.text
-            ))
-            .await
-            .map_err(stream_error)?;
-        let fetch = format!("FETCH {batch} FROM {EXPORT_CURSOR}");
-        let mut sent = 0u64;
-        loop {
-            if stop.is_stopped() {
-                return Err(Error::Cancelled);
-            }
-            let messages = transaction
-                .simple_query(&fetch)
-                .await
-                .map_err(stream_error)?;
-            let mut rows = Vec::with_capacity(batch);
-            for message in messages {
-                if let SimpleQueryMessage::Row(row) = message {
-                    rows.push(row_values(&row, &metas)?);
-                }
-            }
-            if rows.is_empty() {
-                break;
-            }
-            sent += rows.len() as u64;
-            crate::stream::send(to, crate::Streamed::Rows(rows)).await?;
-        }
-        stop.finish();
-        transaction.rollback().await.map_err(stream_error)?;
-        Ok(sent)
+        self.stream_text(&sql.text, batch, to, stop).await
+    }
+
+    /// A statement of the person's, as `stream_rows` streams a table's.
+    async fn stream_statement(
+        &self,
+        text: &str,
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        self.stream_text(text, batch, to, stop).await
     }
 
     async fn count_rows(&self, query: &RowQuery) -> Result<u64> {

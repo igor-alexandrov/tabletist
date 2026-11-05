@@ -21,7 +21,7 @@ pub enum Chosen {
     CopyRows,
     /// A row of Copy as ›.
     As(CopyHow),
-    /// Export selection…: a table's grid only (spec 3b, E3).
+    /// Export selection…: a table's grid's, and a SQL result's (spec 4).
     Export,
 }
 
@@ -39,6 +39,7 @@ impl Chosen {
                     format: None,
                     whole_rows: false,
                     copied: None,
+                    row_only: false,
                 });
             }
         };
@@ -280,8 +281,8 @@ fn foot_line(ui: &mut Ui, paint: Paint) {
 }
 
 /// The grid's menu: Copy, Copy as › (its rows, with their letters), Copy
-/// rows as TSV, and in a table's grid (`export`) Export selection…. Returns
-/// what was picked.
+/// rows as TSV, and (`export`) Export selection…, in a table's grid and a
+/// SQL result's (spec 4). Returns what was picked.
 pub fn context_rows(ui: &mut Ui, paint: Paint, export: bool) -> Option<Chosen> {
     let Paint {
         locale,

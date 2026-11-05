@@ -32,7 +32,7 @@ mod commands;
 mod editing;
 mod export;
 mod history;
-pub use export::ExportFacts;
+pub use export::{ExportFacts, ResultFacts};
 mod key_picker;
 mod keyboard;
 #[cfg(test)]

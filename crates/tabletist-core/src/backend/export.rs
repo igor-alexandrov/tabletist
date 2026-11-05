@@ -45,6 +45,14 @@ pub enum ExportRows {
         columns: Vec<ColumnMeta>,
         rows: Vec<Vec<Value>>,
     },
+    /// A SQL result's statement, run again as it was written, without the
+    /// editor's limit (spec 4, S2). The connection refuses it unless it
+    /// reads. `pick` is the columns written, by their places in what the
+    /// statement returns, in their order; `None` is every one as it comes.
+    Statement {
+        statement: tabletist_db::sql::Statement,
+        pick: Option<Vec<usize>>,
+    },
 }
 
 /// Where the text goes.
@@ -74,8 +82,9 @@ pub struct ExportJob {
     pub options: Options,
     /// The table the rows are of: SQL INSERT's target, and the `CREATE
     /// TABLE` it starts with where its options ask (read on the export's
-    /// connection).
-    pub object: ObjectRef,
+    /// connection). `None` for a SQL result, which SQL INSERT writes into
+    /// `result` and starts with no `CREATE TABLE` (spec 4, S4).
+    pub object: Option<ObjectRef>,
     pub dialect: Dialect,
     pub destination: Destination,
 }
@@ -241,8 +250,8 @@ pub async fn run(job: ExportJob, stopper: Stopper, report: impl Fn(ExportState))
     if stopper.stop.is_stopped() {
         return ended(&report, ExportState::Cancelled, reading).await;
     }
-    let create = match (&reading, creates(&job)) {
-        (Some(connection), true) => match connection.ddl(&job.object).await {
+    let create = match (&reading, creates(&job), &job.object) {
+        (Some(connection), true, Some(object)) => match connection.ddl(object).await {
             Ok(ddl) => ddl.part(tabletist_db::ddl::PartKind::Object).map(|part| {
                 part.statements
                     .iter()
@@ -261,6 +270,7 @@ pub async fn run(job: ExportJob, stopper: Stopper, report: impl Fn(ExportState))
         (ExportRows::Query(query), Some(connection)) => {
             connection.export_statement(query, &job.columns).await.ok()
         }
+        (ExportRows::Statement { statement, .. }, _) => Some(statement.text.clone()),
         _ => None,
     };
     report(ExportState::Started { statement });
@@ -301,9 +311,18 @@ pub async fn run(job: ExportJob, stopper: Stopper, report: impl Fn(ExportState))
     ended(&report, state, reading).await
 }
 
-/// Whether SQL INSERT starts with the table's `CREATE TABLE`.
+/// Whether SQL INSERT starts with the table's `CREATE TABLE`: never a
+/// result's, which has no table to read.
 fn creates(job: &ExportJob) -> bool {
-    job.format == Format::SqlInsert && job.options.sql.create_table
+    job.format == Format::SqlInsert && job.options.sql.create_table && job.object.is_some()
+}
+
+/// What SQL INSERT writes into: the table, or `result` (spec 4, S4).
+fn target_of<'a>(job: &'a ExportJob, create: Option<&'a str>) -> Target<'a> {
+    match &job.object {
+        Some(object) => Target::Table { object, create },
+        None => Target::Named("result"),
+    }
 }
 
 fn failed(report: &impl Fn(ExportState), failure: ExportFailure) -> ExportState {
@@ -373,7 +392,14 @@ async fn produce(
                 .stream_rows(query, &job.columns, export::BATCH, &to, stop)
                 .await
         }
-        (ExportRows::Query(_), None) => Err(Error::ConnectionLost("not connected".into())),
+        (ExportRows::Statement { statement, .. }, Some(connection)) => {
+            connection
+                .stream_statement(statement, export::BATCH, &to, stop)
+                .await
+        }
+        (ExportRows::Query(_) | ExportRows::Statement { .. }, None) => {
+            Err(Error::ConnectionLost("not connected".into()))
+        }
         (ExportRows::Loaded { columns, rows }, _) => {
             let gone = |_| Error::Cancelled;
             to.send(Streamed::Columns(columns.clone()))
@@ -500,10 +526,7 @@ impl Written<'_> {
                     kinds: self.columns.iter().map(|column| column.kind).collect(),
                     dialect: self.job.dialect,
                 };
-                let target = Target::Table {
-                    object: &self.job.object,
-                    create: self.create,
-                };
+                let target = target_of(self.job, self.create);
                 let count = rows.len();
                 match export::clipboard(
                     self.job.format,
@@ -594,6 +617,38 @@ async fn write<'a>(
     let Some(Streamed::Columns(columns)) = from.recv().await else {
         return Ok(written);
     };
+    // A result run again keeps the columns chosen, in their order: each
+    // at its place, under its name, as when it ran. A table changed since
+    // (a column of a `SELECT *` dropped or added) moves them, and the
+    // export fails rather than write other columns under the names chosen.
+    let pick = match &job.rows {
+        ExportRows::Statement {
+            pick: Some(pick), ..
+        } => Some(pick.clone()),
+        _ => None,
+    };
+    let moved = |pick: &[usize]| {
+        pick.len() != job.columns.len()
+            || pick
+                .iter()
+                .zip(&job.columns)
+                .any(|(&at, name)| columns.get(at).is_none_or(|column| column.name != *name))
+    };
+    if let Some(pick) = &pick
+        && moved(pick)
+    {
+        return Err(ExportFailure::Other(
+            "the statement's columns changed since it ran".into(),
+        ));
+    }
+    let columns = match &pick {
+        Some(pick) => pick.iter().map(|&at| columns[at].clone()).collect(),
+        None => columns,
+    };
+    let picked = |row: Vec<Value>| match &pick {
+        Some(pick) => pick.iter().map(|&at| row[at].clone()).collect(),
+        None => row,
+    };
     // The writer borrows the names it writes: they are kept here.
     let names: Vec<String> = columns.iter().map(|column| column.name.clone()).collect();
     let kinds: Vec<_> = columns.iter().map(|column| column.kind).collect();
@@ -620,10 +675,7 @@ async fn write<'a>(
                     kinds,
                     dialect: job.dialect,
                 },
-                Target::Table {
-                    object: &job.object,
-                    create,
-                },
+                target_of(job, create),
             );
             writer.start(&mut text);
             Some(writer)
@@ -654,7 +706,7 @@ async fn write<'a>(
                 Some(writer),
             ) => {
                 for row in rows {
-                    writer.row(&masked(row), &mut text);
+                    writer.row(&masked(picked(row)), &mut text);
                     written.rows += 1;
                 }
                 #[cfg(test)]
@@ -679,7 +731,7 @@ async fn write<'a>(
                     if held > export::CLIPBOARD_BYTES {
                         return Err(ExportFailure::TooLarge);
                     }
-                    kept.push(masked(row));
+                    kept.push(masked(picked(row)));
                     written.rows += 1;
                     if kept.len() > export::CLIPBOARD_ROWS {
                         // Dropping the stream's receiver stops it.
@@ -745,7 +797,7 @@ mod tests {
             masked: vec![false, false],
             format: Format::Csv,
             options: Options::default(),
-            object,
+            object: Some(object),
             dialect: Dialect::Sqlite,
             destination: Destination::File {
                 path: dir.path().join("books.csv"),
@@ -801,6 +853,94 @@ mod tests {
         assert!(text.ends_with('\n'), "a file ends with a line ending");
         assert_eq!(text.lines().count(), 13);
         assert_eq!(left(dir.path()), ["books.csv"]);
+    }
+
+    /// A SQL result run again (spec 4, S2): its statement as it was
+    /// written, every row, the columns chosen in their order; SQL INSERT
+    /// writes into `result` with no `CREATE TABLE`; the history is told
+    /// the statement.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_result_runs_again_with_its_columns_chosen() {
+        let (dir, mut job) = bookshop(0);
+        let text = "SELECT id, title, publisher_id FROM books WHERE id > 2";
+        let statement = tabletist_db::sql::statements(Dialect::Sqlite, text).remove(0);
+        job.rows = ExportRows::Statement {
+            statement,
+            pick: Some(vec![1, 0]),
+        };
+        job.columns = vec!["title".into(), "id".into()];
+        job.object = None;
+        job.format = Format::SqlInsert;
+        job.options.sql.create_table = true;
+        job.options.sql.rows_per_insert = 1;
+        job.destination = Destination::File {
+            path: dir.path().join("query-1.sql"),
+            replace: false,
+        };
+        let (last, told) = ran(job).await;
+        assert!(
+            matches!(last, ExportState::Done { rows: 10, .. }),
+            "{last:?}"
+        );
+        assert!(
+            matches!(told.first(), Some(ExportState::Started { statement: Some(sql) }) if sql == text),
+            "{told:?}"
+        );
+        let file = std::fs::read_to_string(dir.path().join("query-1.sql")).unwrap();
+        assert!(!file.contains("CREATE TABLE"), "{file}");
+        let first = file.lines().next().unwrap();
+        assert!(
+            first.starts_with("INSERT INTO result (title, id) VALUES ("),
+            "{first}"
+        );
+        assert_eq!(file.lines().count(), 10, "{file}");
+        assert_eq!(left(dir.path()), ["query-1.sql"]);
+    }
+
+    /// A table changed since the statement ran moves its columns: the
+    /// export fails rather than write others under the names chosen.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_result_whose_columns_moved_is_not_written() {
+        let (dir, mut job) = bookshop(0);
+        let text = "SELECT id, title FROM books";
+        let statement = tabletist_db::sql::statements(Dialect::Sqlite, text).remove(0);
+        job.rows = ExportRows::Statement {
+            statement,
+            pick: Some(vec![1, 0]),
+        };
+        // As it was when it ran: `isbn`, then `id`.
+        job.columns = vec!["isbn".into(), "id".into()];
+        job.object = None;
+        let (last, _) = ran(job).await;
+        assert_eq!(
+            last,
+            ExportState::Failed(ExportFailure::Other(
+                "the statement's columns changed since it ran".into()
+            ))
+        );
+        assert!(left(dir.path()).is_empty());
+    }
+
+    /// A write is never run again: the connection refuses it, and nothing
+    /// is left behind.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_result_of_a_write_is_not_run_again() {
+        let (dir, mut job) = bookshop(0);
+        let text = "DELETE FROM books";
+        let statement = tabletist_db::sql::statements(Dialect::Sqlite, text).remove(0);
+        job.rows = ExportRows::Statement {
+            statement,
+            pick: None,
+        };
+        job.object = None;
+        let (last, _) = ran(job).await;
+        assert!(matches!(last, ExportState::Failed(_)), "{last:?}");
+        assert!(left(dir.path()).is_empty());
+        let file = rusqlite::Connection::open(dir.path().join("bookshop.db")).unwrap();
+        let books: i64 = file
+            .query_row("SELECT count(*) FROM books", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(books, 12);
     }
 
     /// Test 5 of the spec: the file is the user's alone.
@@ -1006,7 +1146,12 @@ mod tests {
         let (dir, mut job) = bookshop(0);
         let masked: Vec<tabletist_db::agent::ColumnName> = vec!["books.title".parse().unwrap()];
         for follow in [false, true] {
-            job.masked = export::masks(follow, &masked, &job.object, &["id", "title"]);
+            job.masked = export::masks(
+                follow,
+                &masked,
+                job.object.as_ref().unwrap(),
+                &["id", "title"],
+            );
             job.destination = Destination::Clipboard;
             let ExportState::Done { copied, .. } = ran(job.clone()).await.0 else {
                 panic!()
