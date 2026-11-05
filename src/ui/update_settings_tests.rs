@@ -1206,6 +1206,37 @@ fn show_them_brings_the_exports_window_forward() {
     assert_eq!(harness.app.active_tab_id(), tab);
 }
 
+/// An export runs on with its window closed: it still holds the restart,
+/// listed last under the window's name as it started, and Show them
+/// closes Settings with no window to bring forward.
+#[test]
+fn an_export_whose_window_closed_still_holds_the_restart() {
+    let mut harness = installs(Look::macos());
+    let (_dir, job) = with_an_export(&mut harness);
+    let tab = harness.app.exports[0].tab;
+    harness.app.apply(Action::CloseConnTab(tab));
+    harness.settle();
+    assert!(harness.app.workspace(tab).is_none());
+    assert!(harness.app.exports[0].running());
+    harness.app.updates.install = ready();
+    harness.app.apply(Action::RestartToUpdate);
+    harness.settle();
+    assert!(!handed(&harness));
+    let work = harness.app.work_in_progress();
+    assert_eq!(work.len(), 1);
+    assert_eq!(work[0].id, WorkId::Export(job));
+    let tree = harness.settle();
+    assert_eq!(
+        work_items(&tree, &Look::macos()),
+        ["Bookshop · dev: exporting book_covers.csv"]
+    );
+    let front = harness.app.active_tab_id();
+    harness.click("Show them");
+    harness.settle();
+    assert!(harness.app.dialog.is_none());
+    assert_eq!(harness.app.active_tab_id(), front);
+}
+
 /// `S` is the block's only while it offers the version: with the update
 /// ready it is left, and the version still installs.
 #[test]
