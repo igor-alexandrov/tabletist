@@ -326,11 +326,12 @@ impl ExportSheet {
     fn set_format(&mut self, format: Format) {
         self.format = format;
         let path = with_extension(&self.path, format);
+        // The same line names the same file: a replace asked for stands.
         if path != self.path {
             self.picked = None;
+            self.exists = false;
         }
         self.path = path;
-        self.exists = false;
     }
 
     /// The path line, and the format of a known extension typed in it.

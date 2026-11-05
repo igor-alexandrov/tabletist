@@ -522,3 +522,40 @@ fn a_pointer_resting_on_the_list_does_not_keep_it() {
     harness.press(Key::Tab, Modifiers::NONE);
     assert!(sheet(&harness).listed.is_none());
 }
+
+/// Review: the format chosen again, the line unchanged, keeps the replace
+/// the dialog asked for.
+#[test]
+fn the_same_format_again_keeps_the_dialogs_replace() {
+    let mut harness = float();
+    harness.press(Key::O, Modifiers::CTRL);
+    let job = ExportId(sheet(&harness).asked);
+    let answered = PathBuf::from("/home/reader").join("books.csv");
+    harness.app.apply(Action::Backend(Event::ExportPath {
+        job,
+        path: Some(answered.clone()),
+        replace: true,
+    }));
+    harness.app.apply(Action::ChangeExport(
+        crate::export_sheet::ExportChange::Format(Format::Csv),
+    ));
+    harness.settle();
+    assert!(sheet(&harness).exists, "still a replace");
+    harness.press(Key::Enter, Modifiers::NONE);
+    let job = harness
+        .app
+        .backend
+        .sent
+        .iter()
+        .find_map(|command| match command {
+            Command::Export(job) => Some(job.destination.clone()),
+            _ => None,
+        });
+    assert_eq!(
+        job,
+        Some(crate::backend::export::Destination::File {
+            path: answered,
+            replace: true
+        })
+    );
+}

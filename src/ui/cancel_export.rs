@@ -103,10 +103,12 @@ pub fn show(
                 // As many rows as the window holds; the rest scroll, to the
                 // lit one as the keys move it.
                 let seen = Id::new("cancel-export-lit");
+                // The row lit as drawn: the first, once the lit one ended.
+                let shown = rows[lit].job.id.0;
                 let moved = ctx.data_mut(|data| {
                     let before = data.get_temp::<u64>(seen);
-                    data.insert_temp(seen, picker.lit.0);
-                    before != Some(picker.lit.0)
+                    data.insert_temp(seen, shown);
+                    before != Some(shown)
                 });
                 let room = (ctx.content_rect().height() - 160.0).max(80.0);
                 egui::ScrollArea::vertical()
