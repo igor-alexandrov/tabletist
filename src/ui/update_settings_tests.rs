@@ -1196,6 +1196,9 @@ fn show_them_brings_the_exports_window_forward() {
     let mut harness = installs(Look::macos());
     let (_dir, _job) = with_an_export(&mut harness);
     let tab = harness.app.exports[0].tab;
+    // Another of its tabs in front: it stays there.
+    let sql = harness.add_sql_tab(tab);
+    harness.app.apply(Action::ActivateTab { tab, id: sql });
     harness.app.apply(Action::ShowConnections);
     assert_ne!(harness.app.active_tab_id(), tab);
     harness.app.updates.install = ready();
@@ -1204,6 +1207,42 @@ fn show_them_brings_the_exports_window_forward() {
     harness.settle();
     assert!(harness.app.dialog.is_none());
     assert_eq!(harness.app.active_tab_id(), tab);
+    assert_eq!(harness.app.workspace(tab).unwrap().active_tab, Some(sql));
+}
+
+/// With the window hidden no frame runs, only `logic`: an export that
+/// ends there lets Restart when done quit for the helper that waits,
+/// before the helper gives up.
+#[test]
+fn an_export_that_ends_with_the_window_hidden_lets_the_restart_quit() {
+    let mut harness = installs(Look::macos());
+    let (_dir, job) = with_an_export(&mut harness);
+    harness.app.updates.install = Install::Ready {
+        version: "99.0.0".into(),
+        handed: Some(std::time::Instant::now()),
+    };
+    harness.app.apply(Action::RestartToUpdate);
+    harness.app.apply(Action::RestartWhenDone);
+    assert!(matches!(
+        harness.app.updates.install,
+        Install::Held {
+            when_done: true,
+            ..
+        }
+    ));
+    harness.app.backend.inject(Event::Export {
+        job,
+        state: ExportState::Done {
+            rows: 4,
+            bytes: 900,
+            took: std::time::Duration::from_secs(2),
+            copied: None,
+            statements: 0,
+        },
+    });
+    harness.app.logic(&harness.ctx.clone());
+    assert!(!harness.app.exports[0].running());
+    assert!(harness.app.closing);
 }
 
 /// An export runs on with its window closed: it still holds the restart,

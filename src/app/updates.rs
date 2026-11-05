@@ -643,23 +643,38 @@ impl App {
 
     /// The helper's answer, taken in `logic` too: with the window hidden
     /// no frame reads the backend, and the helper waits a minute at most.
-    /// The other events wait for the frame, in their order.
+    /// So are the exports' news while Restart when done waits for one: an
+    /// export that ends with the window hidden lets the restart go ahead
+    /// then, not at the next frame. The other events wait for the frame,
+    /// in their order.
     pub(super) fn take_handoff(&mut self) {
-        if !matches!(self.updates.install, Install::Restarting { .. }) {
+        let restarting = matches!(self.updates.install, Install::Restarting { .. });
+        let exporting = matches!(
+            self.updates.install,
+            Install::Held {
+                when_done: true,
+                ..
+            }
+        ) && self.running_exports().next().is_some();
+        if !restarting && !exporting {
             return;
         }
         self.poll_backend();
-        let (handed, rest): (Vec<Action>, Vec<Action>) = std::mem::take(&mut self.actions)
+        let (taken, rest): (Vec<Action>, Vec<Action>) = std::mem::take(&mut self.actions)
             .into_iter()
-            .partition(|action| {
-                matches!(
-                    action,
-                    Action::Backend(crate::backend::Event::Updates(UpdatesEvent::Handed { .. }))
-                )
+            .partition(|action| match action {
+                Action::Backend(crate::backend::Event::Updates(UpdatesEvent::Handed {
+                    ..
+                })) => restarting,
+                Action::Backend(crate::backend::Event::Export { .. }) => exporting,
+                _ => false,
             });
         self.actions = rest;
-        for action in handed {
+        for action in taken {
             self.apply(action);
+        }
+        if exporting {
+            self.tick_restart();
         }
     }
 
