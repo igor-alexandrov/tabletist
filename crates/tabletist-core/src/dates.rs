@@ -90,6 +90,15 @@ pub fn kind(dialect: Dialect, type_name: &str) -> Option<Kind> {
             "time" => Some(Kind::Time { offset: false }),
             _ => None,
         },
+        // BigQuery's own names, as the API gives them (any case; the
+        // caller lowered none).
+        Dialect::BigQuery => match name.to_ascii_lowercase().as_str() {
+            "date" => Some(Kind::Date),
+            "datetime" => Some(Kind::Timestamp),
+            "timestamp" => Some(Kind::Zoned),
+            "time" => Some(Kind::Time { offset: false }),
+            _ => None,
+        },
         // SQLite has no such types: the declared name says what the
         // column is meant to keep.
         Dialect::Sqlite => {
@@ -125,6 +134,8 @@ fn kept_digits(dialect: Dialect, type_name: &str) -> u8 {
         (Dialect::Postgres, None) => 6,
         (Dialect::MySql, None) => 0,
         (Dialect::Sqlite, _) => 9,
+        // BigQuery's moments keep microseconds; its types state none.
+        (Dialect::BigQuery, _) => 6,
     }
 }
 
@@ -264,7 +275,7 @@ impl Column {
         let kind = kind(dialect, type_name)?;
         let stored = match dialect {
             Dialect::Sqlite => Stored::of(values),
-            Dialect::Postgres | Dialect::MySql => Stored::Fresh,
+            Dialect::Postgres | Dialect::MySql | Dialect::BigQuery => Stored::Fresh,
         };
         // A number such as `20260115` is a day's, and no time's.
         let stored = match (stored, kind) {
@@ -466,6 +477,13 @@ pub enum Range {
     MySqlTime,
     /// PostgreSQL's `timetz` offsets: -15:59:59 to +15:59:59.
     PgOffset,
+    /// BigQuery's `DATE` and `DATETIME`: 0001-01-01 to 9999-12-31.
+    BigQueryDate,
+    /// BigQuery's `TIMESTAMP`: 0001-01-01 00:00:00 to 9999-12-31
+    /// 23:59:59.999999 UTC.
+    BigQueryTimestamp,
+    /// BigQuery's `TIME`: 00:00:00 to 23:59:59.999999.
+    BigQueryTime,
 }
 
 /// Why a text is no value of its column.
@@ -558,7 +576,7 @@ fn written_time(time: Time, digits: u8) -> String {
 fn eras(dialect: Dialect) -> bool {
     match dialect {
         Dialect::Postgres => true,
-        Dialect::MySql | Dialect::Sqlite => false,
+        Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery => false,
     }
 }
 
@@ -662,6 +680,7 @@ fn special(text: &str, column: &Column) -> Result<Option<Moment>, Refusal> {
                 Kind::Date | Kind::Timestamp | Kind::Zoned => Ok(None),
             }
         }
+        Dialect::BigQuery => Ok(None),
         Dialect::Sqlite => {
             if let Some(end) = end_of_day(text, column) {
                 return Ok(Some(end));
@@ -1271,6 +1290,27 @@ fn pg_first_day() -> Date {
     Date::new(-4713, 11, 24).unwrap_or(Date::MIN)
 }
 
+/// The first and the last day BigQuery keeps: 0001-01-01 to 9999-12-31
+/// (Jiff's civil years read 0000 and earlier too).
+fn bigquery_days() -> (Date, Date) {
+    let first = Date::new(1, 1, 1).unwrap_or(Date::MIN);
+    let last = Date::new(9999, 12, 31).unwrap_or(Date::MAX);
+    (first, last)
+}
+
+/// The first and the last moment BigQuery's `TIMESTAMP` holds:
+/// 0001-01-01 00:00:00 to 9999-12-31 23:59:59.999999 UTC. Jiff's
+/// timestamps end about a day sooner, so the last lands on its MAX.
+fn bigquery_timestamps() -> (Timestamp, Timestamp) {
+    let first = Date::new(1, 1, 1)
+        .unwrap_or(Date::MIN)
+        .to_zoned(TimeZone::UTC)
+        .map(|zoned| zoned.timestamp())
+        .unwrap_or(Timestamp::MIN);
+    let last = Timestamp::new(253_402_300_799, 999_999_000).unwrap_or(Timestamp::MAX);
+    (first, last)
+}
+
 /// Whether the column's type holds `at` (the moment `instant` is, for a
 /// zoned value).
 fn within(column: &Column, at: DateTime, instant: Option<Timestamp>) -> Result<(), Refusal> {
@@ -1304,8 +1344,23 @@ fn within(column: &Column, at: DateTime, instant: Option<Timestamp>) -> Result<(
             let (first, last) = mysql_timestamps();
             (instant < first || instant > last).then_some(Range::MySqlTimestamp)
         }
+        (Dialect::BigQuery, Kind::Date | Kind::Timestamp) => {
+            let (first, last) = bigquery_days();
+            (date < first || date > last).then_some(Range::BigQueryDate)
+        }
+        (Dialect::BigQuery, Kind::Zoned) => {
+            // The moment as UTC: BigQuery's TIMESTAMP has no zone of its
+            // own to be read in.
+            let instant = instant.unwrap_or_else(|| {
+                at.to_zoned(TimeZone::UTC)
+                    .map_or(Timestamp::MIN, |zoned| zoned.timestamp())
+            });
+            let (first, last) = bigquery_timestamps();
+            (instant < first || instant > last).then_some(Range::BigQueryTimestamp)
+        }
         // SQLite's dates run from 0000 to 9999, and the years read do.
-        (Dialect::Sqlite, _) | (Dialect::Postgres | Dialect::MySql, Kind::Time { .. }) => None,
+        (Dialect::Sqlite, _)
+        | (Dialect::Postgres | Dialect::MySql | Dialect::BigQuery, Kind::Time { .. }) => None,
     };
     refused.map_or(Ok(()), |range| Err(Refusal::Range(range)))
 }
@@ -1371,7 +1426,7 @@ fn resolve(parts: Parts, column: &Column, clock: &Clock) -> Result<Reading, Refu
             }
             let postgres = match column.dialect {
                 Dialect::Postgres => true,
-                Dialect::MySql | Dialect::Sqlite => false,
+                Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery => false,
             };
             if let Some(offset) = parts.offset
                 && postgres
@@ -1384,15 +1439,17 @@ fn resolve(parts: Parts, column: &Column, clock: &Clock) -> Result<Reading, Refu
             let at = rounded(day.to_datetime(time), digits);
             if at.date() != day {
                 // Rounded up past the day's last moment: its end, which
-                // MySQL keeps as a span of a day.
-                reading.moment = match column.dialect {
-                    Dialect::MySql => Moment::Span("24:00:00".to_owned()),
-                    Dialect::Postgres | Dialect::Sqlite => Moment::EndOfDay,
+                // MySQL keeps as a span of a day. BigQuery's TIME ends at
+                // 23:59:59.999999: it has no 24:00:00 to write.
+                let (moment, literal) = match column.dialect {
+                    Dialect::MySql => (Moment::Span("24:00:00".to_owned()), "24:00:00".to_owned()),
+                    Dialect::BigQuery => return Err(Refusal::Range(Range::BigQueryTime)),
+                    Dialect::Postgres | Dialect::Sqlite => {
+                        (Moment::EndOfDay, day_end(column.stored))
+                    }
                 };
-                reading.literal = match column.dialect {
-                    Dialect::MySql => "24:00:00".to_owned(),
-                    Dialect::Postgres | Dialect::Sqlite => day_end(column.stored),
-                };
+                reading.moment = moment;
+                reading.literal = literal;
             } else {
                 let time = at.time();
                 reading.moment = Moment::At {
@@ -1420,7 +1477,7 @@ fn resolve(parts: Parts, column: &Column, clock: &Clock) -> Result<Reading, Refu
             // SQLite keeps the text it is given, an offset too.
             let keeps_any = match column.dialect {
                 Dialect::Sqlite => true,
-                Dialect::Postgres | Dialect::MySql => false,
+                Dialect::Postgres | Dialect::MySql | Dialect::BigQuery => false,
             };
             if parts.offset.is_some() && !keeps_any {
                 return Err(Refusal::NoZone);
@@ -1598,7 +1655,7 @@ fn zoned(
     // A MySQL literal has no offset to choose one of the two moments by:
     // the server takes the one it takes, and nothing is offered.
     reading.fold = match column.dialect {
-        Dialect::Postgres | Dialect::Sqlite => fold(zone, at),
+        Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => fold(zone, at),
         Dialect::MySql => None,
     };
     let (day, bc) = written_date(at.date(), column.dialect);
@@ -1607,7 +1664,7 @@ fn zoned(
         // The server reads a MySQL value in the session's zone, which is
         // this one: it is sent as that zone's clock writes it.
         Dialect::MySql => format!("{day} {time}"),
-        Dialect::Postgres | Dialect::Sqlite => {
+        Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => {
             era((format!("{day} {time}{}", written_offset(offset)), bc))
         }
     };
@@ -1789,7 +1846,7 @@ fn folded(at: DateTime, offset: Option<Offset>, column: &Column) -> Option<Offse
     let offset = offset?;
     let two = column.zone.as_ref().and_then(|zone| fold(zone, at))?;
     let sent = match column.dialect {
-        Dialect::Postgres | Dialect::Sqlite => true,
+        Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => true,
         Dialect::MySql => false,
     };
     (sent && (two.earlier.0 == offset || two.later.0 == offset)).then_some(offset)
@@ -2231,6 +2288,40 @@ mod tests {
         );
         assert_eq!(refusal(pg, "date", "0000-01-01"), Refusal::YearZero);
         assert_eq!(literal(Dialect::Sqlite, "DATE", "0000-01-01"), "0000-01-01");
+        let bq = Dialect::BigQuery;
+        assert_eq!(literal(bq, "date", "0001-01-01"), "0001-01-01");
+        // Jiff's years read 0000, which BigQuery's DATE starts after.
+        assert_eq!(
+            refusal(bq, "date", "0000-12-31"),
+            Refusal::Range(Range::BigQueryDate)
+        );
+        assert_eq!(
+            literal(bq, "datetime", "9999-12-31 23:59:59.999999"),
+            "9999-12-31 23:59:59.999999"
+        );
+        // A seventh digit would round into the year 10000; past jiff's
+        // last civil moment, the rounding keeps the day's last instead.
+        assert_eq!(
+            literal(bq, "datetime", "9999-12-31 23:59:59.9999999"),
+            "9999-12-31 23:59:59.999999"
+        );
+        // 00:00 at +01 is 23:00 the day before UTC, before BigQuery's
+        // first moment (its last is past jiff's own, refused as Years).
+        assert_eq!(
+            refusal(bq, "timestamp", "0001-01-01 00:00:00+01"),
+            Refusal::Range(Range::BigQueryTimestamp)
+        );
+        // A zoned value is written in the column's zone: 09:30 UTC is
+        // 04:30 in New York.
+        assert_eq!(
+            literal(bq, "timestamp", "2026-01-15 09:30+00"),
+            "2026-01-15 04:30:00-05"
+        );
+        assert_eq!(
+            refusal(bq, "time", "23:59:59.9999999"),
+            Refusal::Range(Range::BigQueryTime)
+        );
+        assert_eq!(literal(bq, "time", "23:59:59.999999"), "23:59:59.999999");
     }
 
     #[test]

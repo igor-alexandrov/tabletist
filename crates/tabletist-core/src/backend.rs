@@ -19,6 +19,7 @@ use crate::connections::SavedConnections;
 use crate::secrets::{Keyring, SecretString};
 
 mod agents;
+pub mod export;
 mod history;
 mod updates;
 
@@ -235,6 +236,25 @@ pub enum Command {
     /// Lists the installed monospace families the data font's menu offers
     /// on macOS. Answered with [`Event::Fonts`].
     ListFonts,
+    /// Runs an export in the background on a read-only connection of its
+    /// own (see [`export::run`]). Answered with [`Event::Export`] as it
+    /// goes and when it ends.
+    Export(Box<export::ExportJob>),
+    /// Stops a running export: nothing it wrote is kept.
+    CancelExport(export::ExportId),
+    /// Shows `path` in the file manager: Finder or Explorer with it
+    /// selected, its folder elsewhere. Nothing is answered: a failure is
+    /// logged.
+    Reveal {
+        path: PathBuf,
+    },
+    /// A desktop notification of `summary` over `body`, with no action:
+    /// on Linux over D-Bus (what mako shows on Omarchy); nothing elsewhere,
+    /// where the window asks for attention instead. Nothing is answered.
+    Notify {
+        summary: String,
+        body: String,
+    },
     /// Signals `done` once every save sent before it is on disk.
     Flush {
         done: mpsc::Sender<()>,
@@ -264,6 +284,9 @@ pub enum StateFile {
     /// How each connection lists its tables where its user chose, by id:
     /// a list's name, or a value a newer version wrote, kept as it was.
     TableLists(std::collections::BTreeMap<String, serde_json::Value>),
+    /// The options last chosen for each format of an export, by the
+    /// format's key (`export::Options::to_file`).
+    ExportOptions(std::collections::BTreeMap<String, serde_json::Value>),
     /// The connection tabs open, and each connection's tables.
     Session(crate::session::Session),
     /// What was opened lately on each connection.
@@ -289,6 +312,7 @@ impl StateFile {
             Self::Labels(labels) => labels.save(path),
             Self::AgentsShown(shown) => shown.save(path),
             Self::TableLists(lists) => crate::util::save_json(path, lists),
+            Self::ExportOptions(options) => crate::util::save_json(path, options),
             Self::Session(session) => session.save(path),
             Self::Recents(recents) => recents.save(path),
             Self::Updates(seen) => crate::util::save_json(path, seen),
@@ -375,6 +399,20 @@ pub enum Event {
     FilePicked {
         request: RequestId,
         path: Option<PathBuf>,
+    },
+    /// Where the save panel says an export goes: `None` when it was
+    /// closed without a choice. `replace` when a file was there as the
+    /// panel answered, so the panel asked before it is replaced; a file
+    /// made later is refused, not replaced.
+    ExportPath {
+        job: export::ExportId,
+        path: Option<PathBuf>,
+        replace: bool,
+    },
+    /// How an export stands, and its end.
+    Export {
+        job: export::ExportId,
+        state: export::ExportState,
     },
     /// The Host aliases in ~/.ssh/config, for the connection dialog.
     SshHosts {
@@ -509,6 +547,10 @@ pub struct Backend {
     /// the name the dialog suggests.
     #[cfg(any(test, feature = "testing"))]
     pub exports: Vec<(tabletist_mcp::LogFilter, String)>,
+    /// Where a test asked the save panel to start an export: its job and
+    /// the path suggested.
+    #[cfg(any(test, feature = "testing"))]
+    pub export_asks: Vec<(export::ExportId, PathBuf)>,
     #[cfg(test)]
     watched: Watched,
 }
@@ -581,6 +623,8 @@ impl Backend {
             saves: Vec::new(),
             #[cfg(any(test, feature = "testing"))]
             exports: Vec::new(),
+            #[cfg(any(test, feature = "testing"))]
+            export_asks: Vec::new(),
             #[cfg(test)]
             watched,
         }
@@ -604,6 +648,8 @@ impl Backend {
             saves: Vec::new(),
             #[cfg(any(test, feature = "testing"))]
             exports: Vec::new(),
+            #[cfg(any(test, feature = "testing"))]
+            export_asks: Vec::new(),
             #[cfg(test)]
             watched: Watched::default(),
         }
@@ -640,6 +686,59 @@ impl Backend {
         runtime.spawn(async move {
             let path = dialog.await.map(|file| file.path().to_path_buf());
             outbox.emit(Event::FilePicked { request, path });
+        });
+    }
+
+    /// Asks where an export goes, in the system's save panel (the
+    /// portal's on Linux), suggesting `suggested`: its folder and its
+    /// name. The panel asks before a file of the name is replaced.
+    /// Answered with [`Event::ExportPath`]. Whether the folder is there
+    /// is asked on the runtime, never in a frame: a sleeping or network
+    /// disk can take seconds to say. The panel is then opened from there,
+    /// which rfd allows in a windowed app.
+    pub fn ask_export_path(&mut self, job: export::ExportId, title: &str, suggested: &Path) {
+        #[cfg(any(test, feature = "testing"))]
+        self.export_asks.push((job, suggested.to_path_buf()));
+        let Some(runtime) = &self.runtime else {
+            return;
+        };
+        let title = title.to_owned();
+        let folder = suggested.parent().map(Path::to_path_buf);
+        let name = suggested
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
+        let outbox = self.outbox.clone();
+        runtime.spawn(async move {
+            let folder = match folder {
+                Some(folder) => {
+                    tokio::task::spawn_blocking(move || folder.is_dir().then_some(folder))
+                        .await
+                        .ok()
+                        .flatten()
+                }
+                None => None,
+            };
+            let mut dialog = rfd::AsyncFileDialog::new().set_title(title);
+            if let Some(folder) = folder {
+                dialog = dialog.set_directory(folder);
+            }
+            if let Some(name) = name {
+                dialog = dialog.set_file_name(name);
+            }
+            let path = dialog
+                .save_file()
+                .await
+                .map(|file| file.path().to_path_buf());
+            let replace = match &path {
+                Some(path) => {
+                    let path = path.clone();
+                    tokio::task::spawn_blocking(move || path.exists())
+                        .await
+                        .unwrap_or(false)
+                }
+                None => false,
+            };
+            outbox.emit(Event::ExportPath { job, path, replace });
         });
     }
 
@@ -1771,6 +1870,8 @@ struct Worker {
     history: history::History,
     /// The download under way, and the one that verified.
     updates: updates::Updates,
+    /// What stops each export that runs.
+    exports: Arc<Mutex<HashMap<export::ExportId, export::Stopper>>>,
     #[cfg(test)]
     watched: Watched,
 }
@@ -1791,6 +1892,7 @@ impl Worker {
             settings_watch: None,
             history: history::History::default(),
             updates: updates::Updates::default(),
+            exports: Arc::default(),
             #[cfg(test)]
             watched: Watched::default(),
         };
@@ -2115,6 +2217,39 @@ impl Worker {
                     outbox.emit(Event::Fonts(crate::font_files::installed_font::families()));
                 });
             }
+            Command::Export(job) => {
+                let id = job.id;
+                let stopper = export::Stopper::default();
+                lock(&self.exports).insert(id, stopper.clone());
+                let exports = Arc::clone(&self.exports);
+                let outbox = self.outbox.clone();
+                tokio::spawn(async move {
+                    let told = outbox.clone();
+                    export::run(*job, stopper, move |state| {
+                        told.emit(Event::Export { job: id, state });
+                    })
+                    .await;
+                    lock(&exports).remove(&id);
+                });
+            }
+            Command::Reveal { path } => {
+                tokio::task::spawn_blocking(move || {
+                    if let Err(error) = start_reveal(&path) {
+                        log::warn!("could not show {}: {error}", path.display());
+                    }
+                });
+            }
+            Command::Notify { summary, body } => {
+                #[cfg(target_os = "linux")]
+                tokio::spawn(agents::notify::plain(summary, body));
+                #[cfg(not(target_os = "linux"))]
+                let _ = (summary, body);
+            }
+            Command::CancelExport(id) => {
+                if let Some(stopper) = lock(&self.exports).get(&id).cloned() {
+                    tokio::spawn(async move { stopper.stop().await });
+                }
+            }
             Command::Flush { done } => {
                 let saves = self.saves.clone();
                 tokio::spawn(async move {
@@ -2179,6 +2314,10 @@ fn session_of(command: &Command) -> SessionId {
         | Command::ReadFont { .. }
         | Command::ListFonts
         | Command::Flush { .. }
+        | Command::Export(_)
+        | Command::CancelExport(_)
+        | Command::Reveal { .. }
+        | Command::Notify { .. }
         | Command::Agents(_)
         | Command::History(_)
         | Command::Updates(_) => SessionId(0),
@@ -2216,6 +2355,10 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::ReadFont { .. }
         | Command::ListFonts
         | Command::Flush { .. }
+        | Command::Export(_)
+        | Command::CancelExport(_)
+        | Command::Reveal { .. }
+        | Command::Notify { .. }
         | Command::Agents(_)
         | Command::History(_)
         | Command::Updates(_) => None,
@@ -2321,6 +2464,10 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         | Command::ReadFont { .. }
         | Command::ListFonts
         | Command::Flush { .. }
+        | Command::Export(_)
+        | Command::CancelExport(_)
+        | Command::Reveal { .. }
+        | Command::Notify { .. }
         | Command::Agents(_)
         | Command::History(_)
         | Command::Updates(_) => return,
@@ -2636,6 +2783,10 @@ async fn run_session(
             | Command::ReadFont { .. }
             | Command::ListFonts
             | Command::Flush { .. }
+            | Command::Export(_)
+            | Command::CancelExport(_)
+            | Command::Reveal { .. }
+            | Command::Notify { .. }
             | Command::Agents(_)
             | Command::History(_)
             | Command::Updates(_) => None,
@@ -4839,6 +4990,24 @@ mod tests {
             crate::settings::Settings::from_toml(&text).settings,
             settings
         );
+    }
+
+    #[test]
+    fn export_options_are_saved_as_a_state_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("export_options.json");
+        let mut options = crate::export::Options::default();
+        options.md.long_values = crate::export::LongValues::Cut;
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        backend.send(Command::Save {
+            path: path.clone(),
+            file: StateFile::ExportOptions(options.to_file()),
+        });
+        match backend.wait(WAIT) {
+            Some(Event::Saved { result: Ok(()), .. }) => {}
+            other => panic!("expected the save to be written, got {other:?}"),
+        }
+        assert_eq!(crate::export::Options::load(&path), options);
     }
 
     #[test]

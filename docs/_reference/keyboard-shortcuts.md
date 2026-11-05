@@ -85,7 +85,8 @@ In the connection dialog:
 
 | Keys | Do |
 | --- | --- |
-| Mod+P | Quick open (Ctrl+P in the Omarchy look too). In it, Up and Down move, Enter opens, Tab searches every open connection and Esc closes. On macOS and Windows, Alt+Enter opens a SQL editor reading the rows, and `>` typed first lists the commands alone (and, with a word after it, the settings) |
+| Mod+P | Quick open (Ctrl+P in the Omarchy look too). In it, Up and Down move, Enter opens, Tab searches every open connection and Esc closes. On macOS and Windows, Alt+Enter opens a SQL editor reading the rows, and `>` typed first lists the commands alone (and, with a word after it, the settings). Mod+Shift+E ([Export]({% link _guide/browsing-data.md %}#exporting), Ctrl+E in the Omarchy look) opens the table or view picked, with the export over it |
+| Mod+Shift+' | Move the keyboard to the [export's toast]({% link _guide/browsing-data.md %}#exporting). Tab and Shift+Tab go round its buttons, Esc gives the keyboard back. The Omarchy look has no such key: its status line has no buttons |
 | Mod+B | Show or hide the sidebar |
 | Mod+Alt+A | Show the Agents tab |
 | Mod+Y | Show the [History tab]({% link _guide/sql-editor.md %}#history). Not while you type in a text field, where it is redo |
@@ -120,8 +121,8 @@ takes what you type (Mod+P opens the same search from anywhere):
 | Mod+. | Cancel the running query |
 | Mod+I | Open the row panel, with the keyboard on its fields. Esc goes back to the rows |
 | Mod+Shift+R | Show or hide the row panel |
-| Mod+C | Copy the cell |
-| Mod+Shift+C | Copy the row |
+| Mod+C | Copy the selection, or the cell |
+| Mod+Shift+C | Copy the selected rows |
 | Ctrl+Cmd+1, 2, 3 on macOS, Alt+1, 2, 3 on Windows | Show the rows, the structure, the DDL |
 
 In a table's [Structure view]({% link _guide/browsing-data.md %}#structure):
@@ -152,9 +153,15 @@ These are the keys of the macOS and Windows looks. The Omarchy look has
 | Enter, F2 | Edit the cell. Typing on a selected cell starts an edit too, and so does a double-click |
 | Mod+N | [Add a row]({% link _guide/editing-data.md %}#add-a-row), at the top of the grid, while a table's rows are in front |
 | Down | On the table's last row, on its last page: add a row below it |
-| Mod+D | [Duplicate the row]({% link _guide/editing-data.md %}#duplicate-a-row), as a new row at the top of the grid |
+| Mod+D | [Duplicate the selected rows]({% link _guide/editing-data.md %}#duplicate-a-row), as new rows at the top of the grid |
 | Backspace, Delete | [Delete the row]({% link _guide/editing-data.md %}#delete-a-row): mark it for deletion, or restore a marked row. A new row that is not saved yet is dropped |
-| Shift+Up, Shift+Down | Select the row above or below with the selected rows. Shift with a click selects through to the clicked row. Backspace then [deletes them all]({% link _guide/editing-data.md %}#delete-a-row) |
+| Shift+arrows | [Select cells]({% link _guide/browsing-data.md %}#selecting) from the selected one. Shift with a click, or a drag, selects through to the clicked cell. Backspace then [deletes their rows]({% link _guide/editing-data.md %}#delete-a-row) |
+| Click a row's number | Select the row. Shift-click selects through to another, Mod-click adds or takes out one |
+| Shift+Space | Select the rows of the selected cells |
+| Mod+A | Select every row loaded |
+| Mod+C, Mod+Shift+C | Copy the selection as tab-separated values, or its rows whole. One cell is copied as it is |
+| Mod+Alt+C | [Copy as]({% link _guide/browsing-data.md %}#copying): the selection in CSV (C), TSV (T), JSON (J), Markdown (M), SQL INSERT (S), or its column names (N). Up and Down move, Return picks, Esc closes |
+| Mod+Shift+E | [Export]({% link _guide/browsing-data.md %}#exporting) the table in front, the one selected in the sidebar, or [a SQL editor's result]({% link _guide/browsing-data.md %}#exporting-a-sql-result); on the row panel, its row alone. In the sheet Return exports, Esc closes, and Alt+Up and Alt+Down move a chosen column |
 | Enter, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Alt+Enter | Open the large editor. In it, Mod+Enter applies and Esc cancels |
 | Esc | Cancel the edit |
@@ -180,6 +187,8 @@ These are the keys of the macOS and Windows looks. The Omarchy look has
 | Mod+Shift+F | Format |
 | Tab, Shift+Tab | Indent, outdent: at the cursor, or every line of the selection |
 | Mod+Shift+M | Switch between read-only and read-write runs |
+| Mod+Alt+C | [Copy as]({% link _guide/browsing-data.md %}#copying): the cells picked in the result, in a format |
+| Mod+Shift+E | [Export the result]({% link _guide/browsing-data.md %}#exporting-a-sql-result), from the script or its rows. With a selection it starts on the selected rows |
 | Mod+Alt+Down, Mod+Alt+Up | Put the cursor where the last run's error is, while the script is the one that ran |
 | Ctrl+Space, Mod+I | Complete |
 | Up, Down | Move in the completion list |

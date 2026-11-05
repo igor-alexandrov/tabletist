@@ -106,6 +106,7 @@ Cmd+A): none of them can be given to a command.
 | Cmd+Y | Show the History tab. Not while you type in a text field, where it is redo |
 | F6, Shift+F6 | Next and previous part of the window |
 | Cmd+, | Settings |
+| Cmd+Shift+' | Move the keyboard to the [export's toast]({% link _guide/browsing-data.md %}#exporting). Tab goes round its buttons, Esc gives the keyboard back |
 | Cmd+=, Cmd+-, Cmd+0 | Larger, smaller and default data text |
 | `?` | The list of keys |
 
@@ -142,6 +143,7 @@ keyboard.
 | Option+Return | Open a new SQL editor reading its first rows |
 | Tab | Search every open connection, or this one again |
 | `>` | Typed first: list the commands alone (and, with a word after it, the settings) |
+| Cmd+Shift+E | [Export]({% link _guide/browsing-data.md %}#exporting) the table or view picked: it opens, with the export over it |
 | Esc | Close |
 
 ### The picker
@@ -177,6 +179,7 @@ keyboard.
 | Cmd+Up, Cmd+Down | The top and the bottom, as Home and End |
 | Return | Open the table or view |
 | Cmd+R | Reload the list |
+| Right-click | A table's or view's menu: Open, Structure, DDL, Copy name, Export… |
 
 ### A table
 
@@ -187,8 +190,14 @@ keyboard.
 | Cmd+Left, Cmd+Right | First and last column |
 | Cmd+Option+Left and Right | Previous and next page |
 | Cmd+F | Filter bar |
-| Cmd+C | Copy the cell |
-| Cmd+Shift+C | Copy the row |
+| Cmd+C | Copy the selection, or the cell |
+| Cmd+Shift+C | Copy the selected rows |
+| Cmd+Option+C | [Copy as]({% link _guide/browsing-data.md %}#copying): the selection in a format, one letter each |
+| Cmd+Shift+E | [Export]({% link _guide/browsing-data.md %}#exporting) the table, or the one selected in the sidebar. With a selection it starts on the selected rows, and a block on its columns. On the row panel, its row alone |
+| Shift+arrows, Shift-click, drag | Select cells |
+| Click a row's number | Select the row. Shift-click selects through to another, Cmd-click adds or takes out one |
+| Shift+Space | Select the rows of the selected cells |
+| Cmd+A | Select every row loaded |
 | Cmd+R | Reload |
 | Cmd+. | Cancel the running query |
 | Cmd+I | Open the row panel, with the keyboard on its fields. Esc goes back to the rows |
@@ -220,9 +229,9 @@ In its DDL view:
 | Return, F2 | Edit the cell. Typing on a selected cell starts an edit too, and so does a double-click |
 | Cmd+N | Add a row, at the top of the grid |
 | Down | On the table's last row, on its last page: add a row below it |
-| Cmd+D | Duplicate the row, as a new row at the top of the grid |
+| Cmd+D | Duplicate the selected rows, as new rows at the top of the grid |
 | Backspace, Forward Delete | Delete the row: mark it for deletion, or restore a marked row. A new row that is not saved yet is dropped |
-| Shift+Up, Shift+Down | Select the row above or below with the selected rows. Backspace then deletes them all |
+| Shift+Up, Shift+Down | Select cells across the rows above or below. Backspace then deletes their rows |
 | Return, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Esc | Cancel the edit |
 | Cmd+L | In a foreign key cell's list: choose the column that labels it. In the chooser, Up and Down move, Return chooses and Esc closes |
@@ -247,6 +256,8 @@ In its DDL view:
 | Cmd+Shift+F | Format |
 | Tab, Shift+Tab | Indent, outdent: at the cursor, or every line of the selection |
 | Cmd+Shift+M | Switch between read-only and read-write runs |
+| Cmd+Option+C | [Copy as]({% link _guide/browsing-data.md %}#copying): the cells picked in the result, in a format |
+| Cmd+Shift+E | [Export the result]({% link _guide/browsing-data.md %}#exporting-a-sql-result), from the script or its rows. With a selection it starts on the selected rows |
 | Cmd+Option+Down, Cmd+Option+Up | Put the cursor where the last run's error is, while the script is the one that ran |
 | Cmd+I, Ctrl+Space | Complete |
 | Esc, Return | Cancel, when a run that changes every row of a table asks first. Return runs only from Run anyway, with the keyboard on it |

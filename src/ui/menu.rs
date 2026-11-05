@@ -310,6 +310,14 @@ impl<'a> Item<'a> {
     }
 }
 
+/// A rule between two parts of a menu: 1 pt, 4 above and below, 6 in from
+/// the panel's sides.
+pub fn separator(ui: &mut Ui, palette: &Palette) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 9.0), Sense::hover());
+    let sides = (rect.left() + 6.0)..=(rect.right() - 6.0);
+    widgets::hline(ui, sides.into(), rect.center().y, palette.border);
+}
+
 /// A heading over a part of a menu: a rule above it and its words muted,
 /// with nothing to pick (the Connections list's Agents part).
 pub fn heading(ui: &mut Ui, text: &str, look: &Look, palette: &Palette) {

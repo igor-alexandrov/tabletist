@@ -250,8 +250,11 @@ pub enum When {
     NewRow,
     /// The list of a foreign key cell's picker is open under its field.
     KeyPicker,
-    /// A visual selection of rows is on, in the terminal look.
+    /// A visual selection is on, in the terminal look: of cells, a block
+    /// or rows.
     Visual,
+    /// The visual selection of rows (`V`) is on.
+    VisualRows,
     /// The chooser of a table's label column is open: beside a picker's
     /// list, which gives it the keys.
     LabelChooser,
@@ -269,6 +272,14 @@ pub enum When {
     ClearingHistory,
     /// The Connections list asks whether to delete a connection.
     DeletingConnection,
+    /// The Copy as menu is open: its letters pick a format.
+    CopyAs,
+    /// The Export sheet (the terminal look's float) is open.
+    Export,
+    /// A failed export's line stands in the terminal look's status line.
+    ExportFailed,
+    /// A button of a toast has the keyboard (⌘⇧' put it there).
+    ToastFocused,
     /// The start screen's search is on: its field has the keyboard. The
     /// keys that move among the matches, open one and clear the search are
     /// read then, and only then.
@@ -524,6 +535,8 @@ commands! {
     MovePage = "move_page",
     ExtendUp = "extend_up",
     ExtendDown = "extend_down",
+    ExtendLeft = "extend_left",
+    ExtendRight = "extend_right",
     OpenInspector = "open_inspector",
     ToggleInspector = "toggle_inspector",
     CloseInspector = "close_inspector",
@@ -555,7 +568,42 @@ commands! {
     UndoCell = "undo_cell",
     RedoCell = "redo_cell",
     CopyCells = "copy_cells",
+    CopySelection = "copy_selection",
     CopyRow = "copy_row",
+    CopyAs = "copy_as",
+    CopyRowAs = "copy_row_as",
+    CopyAsCsv = "copy_as_csv",
+    CopyAsTsv = "copy_as_tsv",
+    CopyAsJson = "copy_as_json",
+    CopyAsMarkdown = "copy_as_markdown",
+    CopyAsSql = "copy_as_sql",
+    CopyColumnNames = "copy_column_names",
+    CopyAsNext = "copy_as_next",
+    CopyAsPrevious = "copy_as_previous",
+    CopyAsPick = "copy_as_pick",
+    CloseCopyAs = "close_copy_as",
+    Export = "export",
+    ExportAs = "export_as",
+    ExportTo = "export_to",
+    ExportOver = "export_over",
+    CancelExport = "cancel_export",
+    OpenExportFolder = "open_export_folder",
+    ExportReviewSql = "export_review_sql",
+    ExportNow = "export_now",
+    ExportNext = "export_next",
+    ExportChoose = "export_choose",
+    CloseExport = "close_export",
+    ExportColumnUp = "export_column_up",
+    ExportColumnDown = "export_column_down",
+    ExportAllColumns = "export_all_columns",
+    ExportNoColumns = "export_no_columns",
+    DismissExport = "dismiss_export",
+    ExportTable = "export_table",
+    Import = "import",
+    FocusToast = "focus_toast",
+    LeaveToast = "leave_toast",
+    ToastNext = "toast_next",
+    ToastPrevious = "toast_previous",
     PasteCells = "paste_cells",
     PasteNewRows = "paste_new_rows",
     AddRow = "add_row",
@@ -567,6 +615,10 @@ commands! {
     PutRowAbove = "put_row_above",
     DeleteRow = "delete_row",
     SelectRows = "select_rows",
+    SelectCells = "select_cells",
+    SelectBlock = "select_block",
+    SelectRowsOfCursor = "select_rows_of_cursor",
+    SelectAllRows = "select_all_rows",
     DeleteSelection = "delete_selection",
     LeaveVisual = "leave_visual",
     OpenReferencedRow = "open_referenced_row",
@@ -701,6 +753,7 @@ commands! {
     QuickOpenCommands = "quick_open_commands",
     QuickOpenNumber = "quick_open_number",
     QuickOpenClose = "quick_open_close",
+    QuickOpenExport = "quick_open_export",
     NextLabel = "next_label",
     PreviousLabel = "previous_label",
     ChooseLabel = "choose_label",
@@ -889,6 +942,8 @@ impl Command {
             C::MovePage => info("Move by page", "", Editing),
             C::ExtendUp => info("Extend the selection up", "", Editing),
             C::ExtendDown => info("Extend the selection down", "", Editing),
+            C::ExtendLeft => info("Extend the selection left", "", Editing),
+            C::ExtendRight => info("Extend the selection right", "", Editing),
             C::OpenInspector => info(
                 "Open inspector / focus fields",
                 "Open inspector / focus fields",
@@ -930,7 +985,42 @@ impl Command {
             C::UndoCell => info("Undo one cell", UNDO, Editing),
             C::RedoCell => info("Redo one cell", UNDO, Editing).reserved(),
             C::CopyCells => info("Copy cell values", COPY, Editing),
+            C::CopySelection => info("Copy the selection", COPY, Editing),
             C::CopyRow => info("Copy row", "", Editing),
+            C::CopyAs => info("Copy as…", "", Editing),
+            C::CopyRowAs => info("Copy row as…", "", Editing),
+            C::CopyAsCsv => info("Copy as CSV", "", Prompts),
+            C::CopyAsTsv => info("Copy as TSV", "", Prompts),
+            C::CopyAsJson => info("Copy as JSON", "", Prompts),
+            C::CopyAsMarkdown => info("Copy as Markdown", "", Prompts),
+            C::CopyAsSql => info("Copy as SQL INSERT", "", Prompts),
+            C::CopyColumnNames => info("Copy column names", "", Prompts),
+            C::CopyAsNext => info("Next format of Copy as", "", Prompts),
+            C::CopyAsPrevious => info("Previous format of Copy as", "", Prompts),
+            C::CopyAsPick => info("Copy in the highlighted format", "", Prompts),
+            C::CloseCopyAs => info("Close Copy as", "", Prompts),
+            C::Export => info("Export…", "", Window),
+            C::ExportAs => info("Export in a format", "", Window),
+            C::ExportTo => info("Export to a file now", "", Window),
+            C::ExportOver => info("Export to a file now, replacing it", "", Window),
+            C::CancelExport => info("Cancel the export", "", Window),
+            C::OpenExportFolder => info("Open the exported file's folder", "", Window),
+            C::ExportReviewSql => info("Review the export's SQL", "", Prompts),
+            C::ExportNow => info("Export, or copy", "", Prompts),
+            C::ExportNext => info("Next choice of the export", "", Prompts),
+            C::ExportChoose => info("Choose what has the keyboard", "", Prompts),
+            C::CloseExport => info("Close the export", "", Prompts),
+            C::ExportColumnUp => info("Move the column up", "", Prompts),
+            C::ExportColumnDown => info("Move the column down", "", Prompts),
+            C::ExportAllColumns => info("Include every column", "", Prompts),
+            C::ExportNoColumns => info("Leave every column out", "", Prompts),
+            C::DismissExport => info("Put away a failed export's line", "", Window),
+            C::ExportTable => info("Export a table…", "", Window),
+            C::Import => info("Import…", "", Window).reserved(),
+            C::FocusToast => info("Move to the toast", "", Window),
+            C::LeaveToast => info("Give the keyboard back from the toast", "", Prompts),
+            C::ToastNext => info("Next button of the toast", "", Prompts),
+            C::ToastPrevious => info("Previous button of the toast", "", Prompts),
             C::PasteCells => info("Paste cell values", COPY, Editing).reserved(),
             C::PasteNewRows => info("Paste as new rows", "Paste as new rows", Editing).reserved(),
             C::AddRow => info("Add row", "Add row", Editing),
@@ -950,8 +1040,12 @@ impl Command {
             ),
             C::DeleteRow => info("Delete row", "Delete row", Editing),
             C::SelectRows => info("Select rows", "", Editing),
+            C::SelectCells => info("Select cells", "", Editing),
+            C::SelectBlock => info("Select a block of cells", "", Editing),
+            C::SelectRowsOfCursor => info("Select the rows of the selection", "", Editing),
+            C::SelectAllRows => info("Select all loaded rows", "", Editing),
             C::DeleteSelection => info("Delete the selected rows", "", Editing),
-            C::LeaveVisual => info("Leave the selection of rows", "", Editing),
+            C::LeaveVisual => info("Leave the selection", "", Editing),
             C::OpenReferencedRow => info("Open referenced row", "Open referenced row", Editing),
             C::ShowSavedRow => info(
                 "Show saved row in sorted position",
@@ -1129,6 +1223,7 @@ impl Command {
             C::QuickOpenCommands => info("List the commands alone", "", Prompts),
             C::QuickOpenNumber => info("Open a recent by its number", "", Prompts),
             C::QuickOpenClose => info("Close quick open", "", Prompts),
+            C::QuickOpenExport => info("Export the picked table", "", Prompts),
             C::NextLabel => info("Next line of the label chooser", "", Prompts),
             C::PreviousLabel => info("Previous line of the label chooser", "", Prompts),
             C::ChooseLabel => info("Choose the label column", "", Prompts),
@@ -1248,6 +1343,12 @@ const ROWS: &[Scope] = &[Scope::Grid, Scope::Results];
 const AGENTS: &[Scope] = &[Scope::Agents];
 const HISTORY: &[Scope] = &[Scope::History];
 const TREE_AND_GRID: &[Scope] = &[Scope::Sidebar, Scope::Grid];
+/// Where a SQL result's rows are, and the row panel's row.
+const RESULTS_AND_INSPECTOR: &[Scope] = &[Scope::Results, Scope::Inspector];
+/// A table's `:` lines, and a SQL editor's (its result's).
+const GRID_AND_EDITOR: &[Scope] = &[Scope::Grid, Scope::SqlEditor];
+/// Where an export's end shows: a table's, the tree, a result's rows.
+const EXPORTS_END: &[Scope] = &[Scope::Sidebar, Scope::Grid, Scope::Results];
 const START: &[Scope] = &[Scope::Start];
 const CELLS: &[Scope] = &[Scope::Grid, Scope::Inspector];
 
@@ -1612,9 +1713,11 @@ pub const BINDINGS: &[Binding] = {
             ]),
             keys(&[k("pgup"), k("pgdn"), k("home"), k("end")]),
         ),
-        // A table's rows only: a result has one selected row.
-        bind(C::ExtendUp, GRID, keys(&[k("shift+up")]), NONE),
-        bind(C::ExtendDown, GRID, keys(&[k("shift+down")]), NONE),
+        // A rectangle of cells, in a table's rows and a result's.
+        bind(C::ExtendUp, ROWS, keys(&[k("shift+up")]), NONE),
+        bind(C::ExtendDown, ROWS, keys(&[k("shift+down")]), NONE),
+        bind(C::ExtendLeft, ROWS, keys(&[k("shift+left")]), NONE),
+        bind(C::ExtendRight, ROWS, keys(&[k("shift+right")]), NONE),
         bind(
             C::OpenInspector,
             GRID,
@@ -1794,9 +1897,139 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("cmd+shift+z")]),
             keys(&[k("ctrl+r")]).normal(),
         ),
-        bind(C::CopyCells, GRID, keys(&[k("cmd+c")]), keys(&[k("v y")])),
-        bind(C::CopyRow, GRID, keys(&[k("cmd+shift+c")]), NONE),
-        bind(C::PasteCells, GRID, keys(&[k("cmd+v")]), keys(&[k("v p")])),
+        // The terminal look copies and pastes from a visual selection: `v`
+        // starts one on the cursor's cell, and `y` copies it, so `v y`
+        // copies that cell as it always did.
+        bind(
+            C::CopyCells,
+            GRID,
+            keys(&[k("cmd+c")]),
+            keys(&[via("v"), via("y")]).shown("v y"),
+        ),
+        bind(
+            C::CopyCells,
+            RESULTS,
+            keys(&[k("cmd+c")]),
+            keys(&[via("v"), via("y")]).shown("v y"),
+        ),
+        bind(C::CopySelection, ROWS, NONE, keys(&[k("y")])).when(When::Visual),
+        bind(C::CopyRow, ROWS, keys(&[k("cmd+shift+c")]), NONE),
+        // Alt with the copy: the window's copy, as Cmd+Shift+C is.
+        bind(C::CopyAs, ROWS, keys(&[k("cmd+alt+c")]), keys(&[k("gy")])),
+        // The macOS look's Copy row ▾ is a button.
+        bind(C::CopyRowAs, INSPECTOR, NONE, keys(&[k("gy")])),
+        // The menu's letters, one a format.
+        bind(C::CopyAsCsv, PROMPT, keys(&[k("c")]), keys(&[k("c")])).when(When::CopyAs),
+        bind(C::CopyAsTsv, PROMPT, keys(&[k("t")]), keys(&[k("t")])).when(When::CopyAs),
+        bind(C::CopyAsJson, PROMPT, keys(&[k("j")]), keys(&[k("j")])).when(When::CopyAs),
+        bind(C::CopyAsMarkdown, PROMPT, keys(&[k("m")]), keys(&[k("m")])).when(When::CopyAs),
+        bind(C::CopyAsSql, PROMPT, keys(&[k("s")]), keys(&[k("s")])).when(When::CopyAs),
+        bind(C::CopyColumnNames, PROMPT, keys(&[k("n")]), keys(&[k("n")])).when(When::CopyAs),
+        bind(
+            C::CopyAsNext,
+            PROMPT,
+            keys(&[k("down")]),
+            keys(&[k("ctrl+n"), k("down")]),
+        )
+        .when(When::CopyAs),
+        bind(
+            C::CopyAsPrevious,
+            PROMPT,
+            keys(&[k("up")]),
+            keys(&[k("ctrl+p"), k("up")]),
+        )
+        .when(When::CopyAs),
+        bind(
+            C::CopyAsPick,
+            PROMPT,
+            keys(&[k("enter")]),
+            keys(&[k("enter")]),
+        )
+        .when(When::CopyAs),
+        bind(C::CloseCopyAs, PROMPT, keys(&[k("esc")]), keys(&[k("esc")])).when(When::CopyAs),
+        // Export: a table's, from its rows or from the tree.
+        bind(
+            C::Export,
+            TREE_AND_GRID,
+            keys(&[k("cmd+shift+e")]),
+            keys(&[k("E")]),
+        ),
+        // A SQL result's (spec 4), and the row panel's Export row….
+        bind(
+            C::Export,
+            RESULTS_AND_INSPECTOR,
+            keys(&[k("cmd+shift+e")]),
+            keys(&[k("E")]),
+        ),
+        // The editor's text holds the keyboard: the chord exports its
+        // result there too (the board's "Editor"); `E` is typed.
+        bind(C::Export, SQL_EDITOR, keys(&[k("cmd+shift+e")]), NONE),
+        bind(C::Export, GRID_AND_EDITOR, NONE, keys(&[k(":export")])),
+        bind(
+            C::ExportAs,
+            GRID_AND_EDITOR,
+            NONE,
+            keys(&[k(":export {format}")]),
+        ),
+        bind(C::ExportTo, GRID_AND_EDITOR, NONE, keys(&[k(":w {path}")])),
+        bind(
+            C::ExportOver,
+            GRID_AND_EDITOR,
+            NONE,
+            keys(&[k(":w! {path}")]),
+        ),
+        // The macOS look's Cancel is the toast's button. Read from any tab:
+        // the export is the window's, and its line names this.
+        bind(C::CancelExport, GLOBAL, NONE, keys(&[k(":export cancel")])),
+        bind(C::OpenExportFolder, EXPORTS_END, NONE, keys(&[k("go")])),
+        bind(C::ExportReviewSql, PROMPT, NONE, keys(&[k("ctrl+r")])).when(When::Export),
+        // Enter exports from where it is read (the sheet says where); the
+        // rest is the dialog's own focus.
+        bind(
+            C::ExportNow,
+            PROMPT,
+            keys(&[k("enter")]),
+            keys(&[k("enter")]),
+        )
+        .when(When::Export),
+        bind(C::ExportNext, PROMPT, keys(&[k("tab")]), keys(&[k("tab")])).when(When::Export),
+        bind(
+            C::ExportChoose,
+            PROMPT,
+            keys(&[k("space")]),
+            keys(&[k("space")]),
+        )
+        .when(When::Export),
+        bind(C::CloseExport, PROMPT, keys(&[k("esc")]), keys(&[k("esc")])).when(When::Export),
+        bind(
+            C::ExportColumnUp,
+            PROMPT,
+            keys(&[k("alt+up")]),
+            keys(&[k("K")]),
+        )
+        .when(When::Export),
+        bind(
+            C::ExportColumnDown,
+            PROMPT,
+            keys(&[k("alt+down")]),
+            keys(&[k("J")]),
+        )
+        .when(When::Export),
+        bind(C::ExportAllColumns, PROMPT, NONE, keys(&[k("a")])).when(When::Export),
+        bind(C::ExportNoColumns, PROMPT, NONE, keys(&[k("n")])).when(When::Export),
+        bind(C::DismissExport, EXPORTS_END, NONE, keys(&[k("esc")])).when(When::ExportFailed),
+        // Quick open's Export a table…: a row to pick, no key.
+        bind(C::ExportTable, GLOBAL, NONE, NONE),
+        // File › Import…, held for later: no key, and not built.
+        bind(C::Import, GLOBAL, NONE, NONE),
+        // The toast's buttons take the keyboard; the terminal look's
+        // status line has none.
+        bind(C::FocusToast, GLOBAL, keys(&[k("cmd+shift+'")]), NONE),
+        bind(C::LeaveToast, PROMPT, keys(&[k("esc")]), NONE).when(When::ToastFocused),
+        bind(C::ToastNext, PROMPT, keys(&[k("tab")]), NONE).when(When::ToastFocused),
+        bind(C::ToastPrevious, PROMPT, keys(&[k("shift+tab")]), NONE).when(When::ToastFocused),
+        bind(C::PasteCells, GRID, keys(&[k("cmd+v")]), NONE),
+        bind(C::PasteCells, GRID, NONE, keys(&[k("p")]).shown("v p")).when(When::Visual),
         bind(
             C::PasteNewRows,
             GRID,
@@ -1834,11 +2067,17 @@ pub const BINDINGS: &[Binding] = {
         // other looks have a button there.
         bind(C::DeleteRow, INSPECTOR, NONE, keys(&[k("dd")])).when(When::NewRow),
         bind(C::AddRow, INSPECTOR, NONE, keys(&[k("o")])).when(When::NewRow),
-        // The terminal look's visual selection of rows: `V` starts and
-        // leaves it, and while it is on `d` alone deletes its rows.
-        bind(C::SelectRows, GRID, NONE, keys(&[k("V")])),
-        bind(C::DeleteSelection, GRID, NONE, keys(&[k("d")])).when(When::Visual),
-        bind(C::LeaveVisual, GRID, NONE, keys(&[k("esc")])).when(When::Visual),
+        // The terminal look's visual selections: `v` of cells, `ctrl+v` of
+        // a block, `V` of rows. Each key starts its own and leaves it, and
+        // while the rows' is on `d` alone deletes them.
+        bind(C::SelectRows, ROWS, NONE, keys(&[k("V")])),
+        bind(C::SelectCells, ROWS, NONE, keys(&[k("v")])),
+        bind(C::SelectBlock, ROWS, NONE, keys(&[k("ctrl+v")])),
+        bind(C::DeleteSelection, GRID, NONE, keys(&[k("d")])).when(When::VisualRows),
+        bind(C::LeaveVisual, ROWS, NONE, keys(&[k("esc")])).when(When::Visual),
+        // The rows of what is selected, and every row loaded.
+        bind(C::SelectRowsOfCursor, ROWS, keys(&[k("shift+space")]), NONE),
+        bind(C::SelectAllRows, ROWS, keys(&[k("cmd+a")]), NONE),
         bind(C::OpenReferencedRow, GRID, NONE, keys(&[k("gd")])),
         bind(C::ShowSavedRow, GRID, NONE, keys(&[k("gs")])),
         // The Structure view of a table, which is the grid's tab with its
@@ -2466,6 +2705,14 @@ pub const BINDINGS: &[Binding] = {
             PROMPT,
             keys(&[k("esc")]),
             keys(&[k("esc")]),
+        )
+        .when(When::QuickOpen),
+        // The picked table or view opens, and its export over it.
+        bind(
+            C::QuickOpenExport,
+            PROMPT,
+            keys(&[k("cmd+shift+e")]),
+            keys(&[k("ctrl+e")]),
         )
         .when(When::QuickOpen),
         // The chooser of a table's label column. It has no field: a letter
@@ -3607,8 +3854,9 @@ const OWN: [Command; 2] = [Command::Help, Command::LeaveEditor];
 /// every look: there a chord can be given them. Any other row with no key
 /// in a look is read by that look's letters or prompt, or by the other
 /// look's handler alone, and nothing would answer a key given it.
-const ANY_LOOK: [(Command, Scope); 14] = [
+const ANY_LOOK: [(Command, Scope); 15] = [
     (Command::SwitchDatabase, Scope::Global),
+    (Command::ExportTable, Scope::Global),
     (Command::PaneLeft, Scope::Global),
     (Command::PaneRight, Scope::Global),
     (Command::PaneUp, Scope::Global),
@@ -4167,6 +4415,19 @@ mod tests {
         // given one, and not where nothing would read it.
         assert!(listed(Layout::Mac, row(Command::SwitchDatabase, global)));
         assert!(written(Layout::Mac, row(Command::SwitchDatabase, global)).is_empty());
+        // Export a Table… has no key in either look, and takes a chord in
+        // both: the key handler reads it in every look.
+        for layout in Layout::ALL {
+            assert!(
+                listed(layout, row(Command::ExportTable, global)),
+                "{layout:?}"
+            );
+            assert_eq!(
+                takes(layout, row(Command::ExportTable, global)),
+                [Press::Chord],
+                "{layout:?}"
+            );
+        }
         assert!(listed(
             Layout::Mac,
             row(Command::ComparePreviousRun, Scope::SqlEditor)
@@ -4776,8 +5037,9 @@ mod tests {
             command(Command::OpenReferencedRow)
         );
         assert_eq!(omarchy(Scope::Grid, "gs"), Claimed);
-        assert_eq!(omarchy(Scope::Grid, "vy"), command(Command::CopyCells));
-        assert_eq!(omarchy(Scope::Grid, "vp"), Claimed);
+        // `v` starts a selection of cells, which `y` copies.
+        assert_eq!(omarchy(Scope::Grid, "v"), command(Command::SelectCells));
+        assert_eq!(omarchy(Scope::Grid, "y"), Waiting);
         assert_eq!(omarchy(Scope::Grid, "\"+p"), Claimed);
         assert_eq!(omarchy(Scope::Grid, "D"), command(Command::SetDefault));
         assert_eq!(omarchy(Scope::Grid, "R"), command(Command::Reload));
@@ -4838,19 +5100,48 @@ mod tests {
     #[test]
     fn a_visual_selection_has_its_own_keys() {
         let keymap = Keymap::default();
-        let visual = |when: When| when == When::Visual;
+        let rows = |when: When| when == When::Visual || when == When::VisualRows;
+        let cells = |when: When| when == When::Visual;
         let nothing = |_: When| false;
         let grid = |holds: &dyn Fn(When) -> bool, typed: &str| {
             keymap.typed(Layout::Omarchy, Scope::Grid, holds, typed)
         };
         assert_eq!(grid(&nothing, "V"), Typed::Command(Command::SelectRows));
-        // `d` alone is the whole key while a selection is on, and the
-        // first of two without one.
-        assert_eq!(grid(&visual, "d"), Typed::Command(Command::DeleteSelection));
+        assert_eq!(grid(&nothing, "v"), Typed::Command(Command::SelectCells));
+        // `d` alone is the whole key while a selection of rows is on, and
+        // the first of two without one. A selection of cells has none.
+        assert_eq!(grid(&rows, "d"), Typed::Command(Command::DeleteSelection));
+        assert_eq!(grid(&cells, "d"), Typed::Waiting);
         assert_eq!(grid(&nothing, "d"), Typed::Waiting);
         assert_eq!(grid(&nothing, "dd"), Typed::Command(Command::DeleteRow));
+        // `y` alone copies a selection, and is the first of `yy` without.
+        for holds in [&rows as &dyn Fn(When) -> bool, &cells] {
+            assert_eq!(grid(holds, "y"), Typed::Command(Command::CopySelection));
+            // Pasting is not built: the key is claimed.
+            assert_eq!(grid(holds, "p"), Typed::Claimed);
+        }
+        assert_eq!(grid(&nothing, "y"), Typed::Waiting);
+        assert_eq!(grid(&nothing, "yy"), Typed::Command(Command::YankRow));
+        assert_eq!(grid(&nothing, "p"), Typed::Command(Command::PutRow));
+        // A result's rows have the same selections, and copy them.
+        let results = |typed: &str| keymap.typed(Layout::Omarchy, Scope::Results, &cells, typed);
+        assert_eq!(results("v"), Typed::Command(Command::SelectCells));
+        assert_eq!(results("V"), Typed::Command(Command::SelectRows));
+        assert_eq!(results("y"), Typed::Command(Command::CopySelection));
         assert_eq!(keymap.label(Layout::Omarchy, Command::LeaveVisual), "esc");
+        assert_eq!(
+            keymap.label(Layout::Omarchy, Command::SelectBlock),
+            "ctrl+v"
+        );
+        assert_eq!(keymap.label(Layout::Omarchy, Command::CopyCells), "v y");
+        assert_eq!(keymap.label(Layout::Omarchy, Command::CopySelection), "y");
         assert_eq!(keymap.label(Layout::Mac, Command::SelectRows), "");
+        assert_eq!(
+            keymap.label(Layout::Mac, Command::SelectRowsOfCursor),
+            "⇧Space"
+        );
+        assert_eq!(keymap.label(Layout::Mac, Command::SelectAllRows), "⌘A");
+        assert_eq!(keymap.label(Layout::Mac, Command::ExtendRight), "⇧→");
     }
 
     #[test]

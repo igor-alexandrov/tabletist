@@ -407,6 +407,8 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             .and_then(|workspace| workspace.object_tab(id))
             .is_some_and(|object| object.selection.is_some())
     });
+    // A field of a SQL result's row panel has the keyboard: Export row….
+    let on_result_field = result_field(ctx, app);
     // The row panel's field that has the keyboard, of the table on screen:
     // its keys are read here with the grid's, so one key is never both's.
     let field = object.filter(|_| grid).and_then(|(tab, id)| {
@@ -545,7 +547,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     let flips = object
         .filter(|_| grid && !editing && !tree_arrows && !focused)
         .filter(|&(tab, id)| app.flips(tab, id))
-        // Not under the terminal look's visual selection of rows.
+        // Not under the terminal look's visual selection.
         .filter(|&(tab, id)| {
             let object = app
                 .workspace(tab)
@@ -850,6 +852,10 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         if in_workspace && on(input, Command::History, Scope::Global).count > 0 {
             actions.push(Action::ShowHistory(active));
         }
+        // No key of its own: one the person gives it in Settings.
+        if in_workspace && on(input, Command::ExportTable, Scope::Global).count > 0 {
+            actions.push(Action::PickTableToExport(active));
+        }
         if on(input, Command::Connections, Scope::Global).count > 0 {
             actions.push(Action::ShowConnections);
         }
@@ -1048,6 +1054,47 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 }
             }
         }
+        // Export…: of the table in front, of the one the tree's selection
+        // is on, of the SQL result in front, or the row panel's row
+        // (spec 4, S8 and S10). While one runs it cancels, as File ›
+        // Export… does then (spec, D11).
+        if !terminal && app.dialog.is_none() {
+            let running = app
+                .exporting
+                .as_ref()
+                .is_some_and(crate::export_sheet::Exporting::running);
+            let result_front = object.is_none()
+                && app
+                    .workspace(active)
+                    .and_then(crate::model::Workspace::active_sql_tab)
+                    .is_some_and(crate::model::SqlTab::exports);
+            let tree_asked = tree_arrows && on(input, Command::Export, Scope::Sidebar).fresh;
+            let row_asked = !tree_asked
+                && (field.is_some() || on_result_field)
+                && on(input, Command::Export, Scope::Inspector).fresh;
+            let grid_asked = !tree_asked
+                && !row_asked
+                && object.is_some()
+                && on(input, Command::Export, Scope::Grid).fresh;
+            let result_asked = !tree_asked
+                && !row_asked
+                && result_front
+                && (on(input, Command::Export, Scope::Results).fresh
+                    || on(input, Command::Export, Scope::SqlEditor).fresh);
+            let asked = tree_asked || row_asked || grid_asked || result_asked;
+            if running && asked {
+                actions.push(Action::CancelExport);
+            } else if tree_asked {
+                actions.push(Action::ExportFromTree(active));
+            } else if row_asked {
+                actions.push(Action::ExportSelection(export_row(active)));
+            } else if grid_asked || result_asked {
+                actions.push(Action::OpenExport {
+                    tab: active,
+                    format: None,
+                });
+            }
+        }
         // The DDL view's chords, in its text too.
         if !terminal
             && app.dialog.is_none()
@@ -1119,13 +1166,38 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 actions.push(Action::CloseTab { tab, id });
             }
             if !editing && any_grid && !tree_arrows && !focused {
-                // Shift with an arrow takes the row it moves to into the
-                // selection. A table's rows only.
-                if sql.is_none() {
-                    for (command, rows) in [(Command::ExtendUp, -1), (Command::ExtendDown, 1)] {
-                        let presses = on(input, command, Scope::Grid).count;
-                        actions.extend((0..presses).map(|_| Action::ExtendBy { tab, id, rows }));
-                    }
+                // Shift with an arrow takes the cell it moves to into the
+                // selection, in a table's rows and a result's.
+                let rows_scope = if sql.is_some() {
+                    Scope::Results
+                } else {
+                    Scope::Grid
+                };
+                for (command, rows, cols) in [
+                    (Command::ExtendUp, -1, 0),
+                    (Command::ExtendDown, 1, 0),
+                    (Command::ExtendLeft, 0, -1),
+                    (Command::ExtendRight, 0, 1),
+                ] {
+                    let presses = on(input, command, rows_scope).count;
+                    actions.extend((0..presses).map(|_| Action::ExtendBy {
+                        tab,
+                        id,
+                        rows,
+                        cols,
+                    }));
+                }
+                if on(input, Command::SelectRowsOfCursor, rows_scope).fresh {
+                    actions.push(Action::SelectRowsOfCursor { tab, id });
+                }
+                if on(input, Command::SelectAllRows, rows_scope).fresh {
+                    actions.push(Action::SelectAllRows { tab, id });
+                }
+                // The terminal look's block: a chord, where `v` and `V`
+                // are letters.
+                if on(input, Command::SelectBlock, rows_scope).fresh {
+                    let mode = crate::model::Visual::Block;
+                    actions.push(Action::SelectRows { tab, id, mode });
                 }
                 // Down on a table's last row, on its last page, adds a
                 // row below it where the table takes one, in the looks
@@ -1287,23 +1359,35 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     if terminal {
         held_copy(ctx, open);
     }
-    if !editing && grid {
+    if !editing && any_grid {
         // The row's chord first: with Shift exact neither is the other's.
         // They come as the window's copy, which `presses` reads. A look
-        // with no chord for them copies nothing here.
+        // with no chord for them copies nothing here. A table's grid or a
+        // result's.
+        // Copy as's chord too: it holds Alt with the copy.
+        let scope = if grid { Scope::Grid } else { Scope::Results };
         let copied = ctx.input_mut(|input| {
-            [Command::CopyRow, Command::CopyCells]
+            [Command::CopyAs, Command::CopyRow, Command::CopyCells]
                 .into_iter()
                 .find(|command| {
-                    let scope = Scope::Grid;
                     asked(input, &app.keymap, layout, *command, scope, normal).count > 0
                 })
         });
-        let row = copied == Some(Command::CopyRow);
-        if copied.is_some()
-            && let Some(text) = app.copy_text(row)
-        {
-            ctx.copy_text(text);
+        match copied {
+            Some(Command::CopyAs) => {
+                let pick = crate::model::CopyPick::Selection;
+                let tab = app.active_tab_id();
+                actions.push(Action::OpenCopyAs { tab, pick });
+            }
+            Some(command) => {
+                let pick = if command == Command::CopyRow {
+                    crate::model::CopyPick::Rows
+                } else {
+                    crate::model::CopyPick::Selection
+                };
+                copy_plain(ctx, app, pick, &mut actions);
+            }
+            None => {}
         }
     }
     // The Settings window, wherever the keyboard is.
@@ -1736,7 +1820,7 @@ fn editing_keys(
         asked(input, keymap, layout, command, scope, normal)
     };
     let open = object.edits.editor.is_some();
-    // The terminal look's visual selection of rows holds back the chords
+    // The terminal look's visual selection holds back the chords
     // that act on one cell or one row.
     let visual = app.look.terminal && object.visual();
     let editor = crate::ui::cell_editor::field_id(tab, id);
@@ -2084,10 +2168,37 @@ fn on_last_row(object: &ObjectTab) -> bool {
         && place.is_some_and(|place| place + 1 == order.len())
 }
 
-/// Whether a visual selection of rows holds `command` back: what changes,
-/// copies or follows one cell or one row. The moves, the inspector's
-/// show and hide, a save, a discard, Review SQL, a reload, the filters and
-/// the pages are not among them.
+/// Copies `pick` of the grid in front as ⌘C does, saying nothing: past the
+/// clipboard's limits it copies nothing and says why.
+/// A copy too large for the clipboard is the app's to refuse: it says
+/// why and offers the file (spec 3b, R6). Says whether it was refused.
+fn copy_plain(
+    ctx: &egui::Context,
+    app: &App,
+    pick: crate::model::CopyPick,
+    actions: &mut Vec<Action>,
+) -> bool {
+    let how = crate::model::CopyHow::Plain;
+    let Some(copying) = app.copy(pick, how) else {
+        return false;
+    };
+    match copying.copied {
+        crate::export::Copied::Text { text, .. } => {
+            ctx.copy_text(text);
+            false
+        }
+        _ => {
+            let tab = app.active_tab_id();
+            actions.push(Action::CopyAs { tab, pick, how });
+            true
+        }
+    }
+}
+
+/// Whether a visual selection holds `command` back: what changes or
+/// follows one cell or one row, and what copies one row. The moves, the
+/// inspector's show and hide, a save, a discard, Review SQL, a reload, the
+/// filters, the pages and the copy of the selection are not among them.
 fn held_back(command: Command) -> bool {
     matches!(
         command,
@@ -2098,7 +2209,6 @@ fn held_back(command: Command) -> bool {
             | Command::SetDefault
             | Command::UndoCell
             | Command::RedoCell
-            | Command::CopyCells
             | Command::CopyRow
             | Command::PasteCells
             | Command::PasteNewRows
@@ -2303,7 +2413,7 @@ fn agents_here(app: &App, tab: ConnTabId) -> bool {
 
 /// Whether `sql` shows a result grid for the keys to move in: its last
 /// run's rows, unless the Messages pane covers them.
-fn shows_grid(sql: &crate::model::SqlTab) -> bool {
+pub(crate) fn shows_grid(sql: &crate::model::SqlTab) -> bool {
     sql.pane == crate::model::ResultPane::Results && sql.dims().0 > 0
 }
 
@@ -2338,6 +2448,32 @@ pub fn after_frame(ctx: &egui::Context) {
 /// The commands of the letters every look reads before anything else
 /// takes a key: [`letters`] takes such a character from the frame.
 const WINDOW_LETTERS: [Command; 4] = crate::keymap::ONE_LETTER;
+
+/// Whether a field of the row panel of the SQL result in front has the
+/// keyboard: its Export row… is the panel's row (spec 4, S8).
+fn result_field(ctx: &egui::Context, app: &App) -> bool {
+    let tab = app.active_tab_id();
+    app.workspace(tab)
+        .and_then(crate::model::Workspace::active_sql_tab)
+        .and_then(|sql| {
+            let (columns, _, _) = sql.shown_rows()?;
+            crate::ui::row_panel::focused_field(ctx, tab, sql.id, columns.len())
+        })
+        .is_some()
+}
+
+/// Export row…: the sheet on the cursor's row alone, of the table or the
+/// SQL result in front of `tab` (spec 4, S8).
+pub fn export_row(tab: crate::model::ConnTabId) -> crate::model::ExportOffer {
+    crate::model::ExportOffer {
+        tab,
+        table: None,
+        format: None,
+        whole_rows: false,
+        copied: None,
+        row_only: true,
+    }
+}
 
 /// The command `char`, typed this frame, stands for among
 /// [`WINDOW_LETTERS`], in the first of `scopes` that reads it (the global
@@ -2568,9 +2704,18 @@ fn letters(
     // The cursor's row is a new one: the row panel is its form, and the
     // key that drops the row is read from the form's fields too.
     let on_new = selection.is_some_and(|cell| crate::edit::new_id(cell.row).is_some());
-    // A visual selection of rows is on: its keys are read, and the keys
-    // that act on one cell or one row are held back.
-    let visual = object.is_some_and(|object| object.visual());
+    // A visual selection is on, of a table's rows or a result's: its keys
+    // are read, and the keys that act on one cell or one row are held
+    // back. `V`'s holds the key that deletes its rows.
+    let visual_mode = match object {
+        Some(object) => object.visual_mode(),
+        None => workspace
+            .active_sql_tab()
+            .filter(|sql| shows_grid(sql))
+            .and_then(|sql| sql.visual_mode()),
+    };
+    let visual = visual_mode.is_some();
+    let visual_rows = visual_mode == Some(crate::model::Visual::Rows);
     let on_sql = workspace.active_sql_tab().is_some();
     // A SQL editor showing its result takes the letters that move in it.
     let sql_grid = workspace
@@ -2607,9 +2752,9 @@ fn letters(
     // field of the panel it gave the keys back to the grid, before this.)
     let quiet = !left_field && !menu_open;
     // A visual selection first: it is the innermost thing the key leaves.
-    if let Some(id) = active.filter(|_| visual)
+    if let Some(id) = active.or(sql_grid).filter(|_| visual)
         && quiet
-        && on(Command::LeaveVisual, Scope::Grid).fresh
+        && on(Command::LeaveVisual, rows).fresh
     {
         actions.push(Action::LeaveVisual { tab, id });
     }
@@ -2625,6 +2770,17 @@ fn letters(
         && on(Command::DismissNote, Scope::Grid).fresh
     {
         actions.push(Action::DismissNote { tab, id });
+    }
+    // A failed export's line, which stays until Esc.
+    let export_failed = app.exporting.as_ref().is_some_and(|exporting| {
+        matches!(
+            exporting.status,
+            crate::export_sheet::ExportStatus::Failed { .. }
+        )
+    });
+    let here = if tree { Scope::Sidebar } else { rows };
+    if export_failed && quiet && on(Command::DismissExport, here).fresh {
+        actions.push(Action::DismissExport);
     }
     // The row panel's keys: an object tab's, or a SQL result's while a row
     // of it is selected (with none its panel has nothing to show).
@@ -2733,6 +2889,7 @@ fn letters(
         crate::keymap::When::TimedOut => timed_out,
         crate::keymap::When::NewRow => on_new,
         crate::keymap::When::Visual => visual,
+        crate::keymap::When::VisualRows => visual_rows,
         // The Structure view shows where the rows would: its own keys
         // come before the rows' there.
         crate::keymap::When::Structure => structure_shows,
@@ -2961,6 +3118,23 @@ fn letters(
         waiting.clear();
         let command = command.filter(|command| !(visual && held_back(*command)));
         match (command, active) {
+            // Export: the table under the tree's cursor, the row panel's
+            // row (spec 4, S8), or the rows' (a table's or a result's).
+            (Some(Command::Export), _) if tree => actions.push(Action::ExportFromTree(tab)),
+            (Some(Command::Export), _) if field.is_some() || result_field(ctx, app) => {
+                actions.push(Action::ExportSelection(export_row(tab)));
+            }
+            // While the line offers the file for a copy refused, on the
+            // copy's selection and format (spec 3b, R6).
+            (Some(Command::Export), _) if rows_show || (active.is_none() && sql_grid.is_some()) => {
+                match crate::ui::toast::offered(ctx) {
+                    Some(offer) if offer.tab == tab => {
+                        actions.push(Action::ExportSelection(offer));
+                    }
+                    _ => actions.push(Action::OpenExport { tab, format: None }),
+                }
+            }
+            (Some(Command::OpenExportFolder), _) => actions.push(Action::RevealExport),
             (Some(Command::ShowAgents), _) if crate::endpoint::AVAILABLE => {
                 actions.push(Action::ShowAgents(tab));
             }
@@ -3142,10 +3316,23 @@ fn letters(
             // is the page's.
             (Some(Command::YankRow), Some(id)) if rows_show && !tree && selection.is_some() => {
                 actions.push(Action::YankRow { tab, id });
-                if let Some(text) = app.copy_text(true) {
-                    ctx.copy_text(text);
-                }
-                let said = crate::i18n::gettext(app.locale, "Row yanked");
+                let how = crate::model::CopyHow::Plain;
+                let yanked = app.copy(crate::model::CopyPick::CursorRow, how);
+                // Past the clipboard's limits it is yanked, and not put
+                // there: the toast says why.
+                let said = match yanked {
+                    Some(copying)
+                        if !matches!(copying.copied, crate::export::Copied::Text { .. }) =>
+                    {
+                        crate::app::copy_said(app.locale, &copying, how)
+                    }
+                    yanked => {
+                        if let Some(text) = yanked.and_then(crate::app::Copying::text) {
+                            ctx.copy_text(text);
+                        }
+                        crate::i18n::gettext(app.locale, "Row yanked").into_owned()
+                    }
+                };
                 crate::ui::toast::say(ctx, &app.look.label(&said));
             }
             // A copy of the yanked row below the cursor's, or above it
@@ -3157,8 +3344,18 @@ fn letters(
                 let above = command == Command::PutRowAbove;
                 actions.push(Action::PutRow { tab, id, above });
             }
-            (Some(Command::SelectRows), Some(id)) if rows_show && !tree && field.is_none() => {
-                actions.push(Action::SelectRows { tab, id });
+            // The visual selections, of a table's rows or a result's.
+            (Some(command @ (Command::SelectRows | Command::SelectCells)), _)
+                if !tree && field.is_none() =>
+            {
+                let mode = if command == Command::SelectRows {
+                    crate::model::Visual::Rows
+                } else {
+                    crate::model::Visual::Cells
+                };
+                if let Some(id) = active.filter(|_| rows_show).or(sql_grid) {
+                    actions.push(Action::SelectRows { tab, id, mode });
+                }
             }
             // The rows of the visual selection. Where none of them is
             // deleted the selection stays, to be made smaller.
@@ -3273,10 +3470,25 @@ fn letters(
             }
             // The rows' cell, where the rows show: no other view copies
             // one it hides.
-            (Some(Command::CopyCells), Some(_)) if rows_show => {
-                if let Some(text) = app.copy_text(false) {
-                    ctx.copy_text(text);
+            // A visual selection's cells, of the rows or a result, and as
+            // vim's `y` does the selection is left.
+            (Some(Command::CopySelection), _) if active.is_none() || rows_show => {
+                // A refused copy keeps the selection, for `E` to export.
+                let refused = copy_plain(ctx, app, crate::model::CopyPick::Selection, actions);
+                if let Some(id) = active.or(sql_grid).filter(|_| visual && !refused) {
+                    actions.push(Action::LeaveVisual { tab, id });
                 }
+            }
+            // Copy as, over the selection of the rows or a result.
+            (Some(Command::CopyAs), _) if active.is_none() || rows_show => {
+                let pick = crate::model::CopyPick::Selection;
+                actions.push(Action::OpenCopyAs { tab, pick });
+            }
+            // Copy row as, from a field of the row panel: not of a new
+            // row, as the macOS look's Copy row ▾ hides there.
+            (Some(Command::CopyRowAs), Some(_)) if rows_show && selection.is_some() && !on_new => {
+                let pick = crate::model::CopyPick::CursorRow;
+                actions.push(Action::OpenCopyAs { tab, pick });
             }
             // The whole statements, never the lines as the panel shows
             // them. The copy shows nowhere, so the status line says it.

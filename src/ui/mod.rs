@@ -27,6 +27,9 @@ mod comment_tests;
 mod complete_tests;
 pub mod conflict_prompt;
 pub mod connect_dialog;
+pub mod copy_as;
+#[cfg(test)]
+mod copy_as_tests;
 pub mod data_view;
 pub mod date_line;
 #[cfg(test)]
@@ -55,6 +58,14 @@ mod env_tests;
 pub mod every_row_prompt;
 #[cfg(test)]
 mod every_row_tests;
+pub mod export;
+#[cfg(test)]
+mod export_result_tests;
+#[cfg(test)]
+mod export_tests;
+pub mod export_toast;
+#[cfg(test)]
+mod export_ways_tests;
 pub mod filter_bar;
 pub mod focus;
 #[cfg(test)]
@@ -97,6 +108,8 @@ mod quick_open_tests;
 pub mod review;
 pub mod row_form;
 pub mod row_panel;
+#[cfg(test)]
+mod selection_tests;
 pub mod settings;
 #[cfg(test)]
 mod settings_access_tests;
@@ -160,6 +173,23 @@ impl Paint {
 }
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
+    // What the app's last actions copied and said: the clipboard and the
+    // toast are the frame's.
+    if let Some(text) = app.to_clipboard.take() {
+        ui.ctx().copy_text(text);
+    }
+    if let Some(said) = app.said.take() {
+        // Copy as over the clipboard's limit: its toast offers the file.
+        match app.offer.take() {
+            Some(offer) => toast::offer(ui.ctx(), &said, offer),
+            None => toast::say(ui.ctx(), &said),
+        }
+    }
+    // The Copy as menu's keys, before any view reads them.
+    if let Some(Dialog::CopyAs(open)) = &app.dialog {
+        let asked = copy_as::keys(ui.ctx(), Paint::of(app), open);
+        app.actions.extend(asked);
+    }
     let fill = app.palette.window;
     egui::CentralPanel::default()
         .frame(Frame::new().fill(fill))
@@ -244,8 +274,47 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let asked = agent_access::show(&ui.ctx().clone(), paint, prompt, current);
         app.actions.extend(asked);
     }
+    if let Some(Dialog::CopyAs(open)) = &app.dialog {
+        let size = copy_as_size(app, open);
+        let asked = copy_as::show(&ui.ctx().clone(), paint, open, &size);
+        app.actions.extend(asked);
+    } else {
+        copy_as::fold(ui.ctx());
+    }
+    let said = app.export_said.take();
+    if let Some(Dialog::Export(sheet)) = &app.dialog {
+        let facts = app.export_facts();
+        let asked = export::show(
+            &ui.ctx().clone(),
+            paint,
+            sheet,
+            facts.as_ref(),
+            said.as_deref(),
+        );
+        app.actions.extend(asked);
+    }
+    let asked = export_toast::show(
+        &ui.ctx().clone(),
+        paint,
+        app.exporting.as_ref(),
+        app.dirs.home.as_deref(),
+    );
+    app.actions.extend(asked);
     // Last: it says what was done, whatever is on screen by now.
-    toast::show(ui.ctx(), paint);
+    if let Some(offer) = toast::show(ui.ctx(), paint, app.dialog.is_some()) {
+        app.actions.push(Action::ExportSelection(offer));
+    }
+}
+
+/// What the Copy as menu copies, in words: "4 rows × 2 columns".
+fn copy_as_size(app: &App, open: &crate::model::CopyAsMenu) -> String {
+    let how = crate::model::CopyHow::ColumnNames;
+    app.copy_in(open.tab, open.pick, how)
+        .map(|copying| {
+            let size = (copying.rows, copying.cols);
+            crate::selection::size_words(app.locale, size, copying.whole_rows)
+        })
+        .unwrap_or_default()
 }
 
 /// What quick open over `open.tab` asks of the app: none where that
@@ -8287,10 +8356,8 @@ value_tags   = true
         harness.copy(false);
         assert_eq!(harness.copied.as_deref(), Some("user5@example.com"));
         harness.copy(true);
-        assert_eq!(
-            harness.copied.as_deref(),
-            Some("5\tuser5@example.com\tNULL")
-        );
+        // TSV's NULL as: empty by default.
+        assert_eq!(harness.copied.as_deref(), Some("5\tuser5@example.com\t"));
     }
 
     #[test]
@@ -14329,11 +14396,13 @@ value_tags   = true
     }
 
     /// The middle of the cell that shows `text`.
+    /// Where a cell writes `text`: not a row's number.
     fn cell_of(harness: &Harness, text: &str) -> egui::Pos2 {
-        harness
-            .painted_rect(text)
+        let mut pieces = harness.text_rects.iter();
+        pieces
+            .find(|(piece, rect)| piece == text && !harness.is_row_number(*rect))
+            .map(|(_, rect)| rect.center())
             .unwrap_or_else(|| panic!("no cell shows {text}"))
-            .center()
     }
 
     fn edits(harness: &Harness, tab: ConnTabId, id: TabId) -> &crate::edit::Edits {
@@ -15099,7 +15168,8 @@ value_tags   = true
             // It is a note at the cell: beside the key it is about.
             // (The row panel writes the key too: the grid's is leftmost.)
             let note = harness.painted_rect(why).unwrap();
-            let keys = harness.text_rects.iter().filter(|(text, _)| text == "2");
+            let pieces = harness.text_rects.iter();
+            let keys = pieces.filter(|(text, rect)| text == "2" && !harness.is_row_number(*rect));
             let cell = keys
                 .map(|(_, rect)| *rect)
                 .min_by(|a, b| a.left().total_cmp(&b.left()))
@@ -17488,7 +17558,9 @@ value_tags   = true
         make_pending(&mut harness, tab, id, (1, 1), "ann@example.com");
         harness.press(Key::S, Modifiers::COMMAND);
         harness.answer_written(Err(tabletist_db::Error::Cancelled));
-        harness.size.x = 720.0;
+        // Narrow enough that the keys give way, wide enough for the grid
+        // and the rows' numbers to keep every column in sight.
+        harness.size.x = 820.0;
         harness.settle();
         let said = "save cancelled. nothing was written.";
         assert!(painted(&harness, said), "{:?}", harness.painted);
@@ -24640,10 +24712,14 @@ value_tags   = true
         for look in Look::ALL {
             let (mut harness, tab, id) = editing_a_document(look);
             let palette = harness.app.palette;
+            // The editor's, not the grid's row numbers: those are written
+            // in the same colour.
             let numbered = |harness: &Harness, number: &str| {
                 let pieces = harness.text_rects.iter().zip(&harness.painted);
                 pieces
-                    .filter(|((text, _), (_, color))| text == number && *color == palette.faint)
+                    .filter(|((text, rect), (_, color))| {
+                        text == number && *color == palette.faint && !harness.is_row_number(*rect)
+                    })
                     .count()
             };
             let valid = |harness: &Harness| {

@@ -230,6 +230,7 @@ fn paint_grid(ui: &mut Ui, rect: Rect, settings: &Settings, look: &Look, palette
         &columns,
         rows.len(),
         None,
+        grid::Picked::default(),
         false,
         palette,
         look,

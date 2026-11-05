@@ -19,7 +19,7 @@ pub const COLLAPSE_CHARS: usize = 4_000;
 
 /// A float with an exponent where PostgreSQL writes one: plain digits
 /// would run to a line of zeros that says nothing of the number.
-fn float_text(number: f64) -> String {
+pub fn float_text(number: f64) -> String {
     let size = number.abs();
     if number.is_finite() && size != 0.0 && !(1e-4..1e15).contains(&size) {
         format!("{number:e}")
@@ -954,17 +954,11 @@ pub fn refuses_writes(error: &tabletist_db::Error, driver: tabletist_db::Driver)
         } => match driver {
             Driver::Sqlite => code == "8",
             Driver::Postgres | Driver::MySql => code == "25006",
+            // A BigQuery error carries no SQLSTATE here.
+            Driver::BigQuery => false,
         },
         _ => false,
     }
-}
-
-/// A row as tab-separated values on one line.
-pub fn tsv_row(row: &[Value]) -> String {
-    row.iter()
-        .map(|value| plain_text(value).replace(['\t', '\n', '\r'], " "))
-        .collect::<Vec<_>>()
-        .join("\t")
 }
 
 pub fn elapsed(duration: Duration) -> String {
@@ -1388,7 +1382,6 @@ mod tests {
         assert_eq!(cell_text(&key), uuid);
         assert_eq!(plain_text(&key), uuid);
         assert_eq!(full_text(&key), uuid);
-        assert_eq!(tsv_row(&[Value::Int(1), key]), format!("1\t{uuid}"));
         // Any other length stays a blob.
         for len in [15, 17] {
             let blob = Value::Bytes(vec![0xab; len].into());
@@ -1537,12 +1530,6 @@ mod tests {
     }
 
     #[test]
-    fn tsv_rows_keep_one_line_per_row() {
-        let row = vec![Value::Int(1), text("a\tb\nc"), Value::Null];
-        assert_eq!(tsv_row(&row), "1\ta b c\tNULL");
-    }
-
-    #[test]
     fn elapsed_times_read_naturally() {
         assert_eq!(elapsed(Duration::from_millis(84)), "84 ms");
         assert_eq!(elapsed(Duration::from_millis(1234)), "1.2 s");
@@ -1661,7 +1648,6 @@ mod tests {
     fn copying_keeps_hidden_characters() {
         let value = text("users_\u{202E}atad");
         assert_eq!(plain_text(&value), "users_\u{202E}atad");
-        assert_eq!(tsv_row(&[value]), "users_\u{202E}atad");
     }
 
     #[test]

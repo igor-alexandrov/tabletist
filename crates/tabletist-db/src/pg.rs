@@ -14,10 +14,11 @@ use tokio_postgres::{SimpleQueryMessage, Socket};
 use crate::adapter::Adapter;
 use crate::agent::{Catalog, ColumnName, Limits, Read, Sources};
 use crate::{
-    Access, CancelHandle, CancelInner, ChangeSet, ColumnInfo, ColumnMeta, ConnectSpec, Ddl,
-    Dialect, Error, ForeignKeyInfo, IndexInfo, Lookup, LookupPage, MAX_LISTED, Named, ObjectInfo,
-    ObjectKind, ObjectRef, ReferencingKey, Result, RowPage, RowQuery, ScriptMode, ScriptOutcome,
-    Secrets, Sql, StopFlag, Structure, Value, ValueKind, WriteOutcome, value_from_pg_text,
+    Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, ConnectSpec,
+    Ddl, Dialect, Error, ForeignKeyInfo, IndexInfo, Lookup, LookupPage, MAX_LISTED, Named,
+    ObjectInfo, ObjectKind, ObjectRef, ReferencingKey, Result, RowPage, RowQuery, ScriptMode,
+    ScriptOutcome, Secrets, Sql, StopFlag, Structure, Value, ValueKind, WriteOutcome,
+    value_from_pg_text,
 };
 use tokio_postgres::error::SqlState;
 use tokio_postgres_rustls::MakeRustlsConnect;
@@ -185,6 +186,23 @@ fn session_setup(access: Access) -> String {
     format!("{read_only}SET standard_conforming_strings = on; {PRINTS_EXACTLY}")
 }
 
+/// The cursor an export reads through. One export per connection, so one
+/// name.
+const EXPORT_CURSOR: &str = "tabletist_export";
+
+/// [`query_error`], where the server's own `statement_timeout` (which
+/// PostgreSQL reports as a cancel) is [`Error::Timeout`]: an export sets no
+/// timeout of its own, so a cancel that names it was the server's.
+fn stream_error(error: tokio_postgres::Error) -> Error {
+    if let Some(db) = error.as_db_error()
+        && *db.code() == SqlState::QUERY_CANCELED
+        && db.message().contains("statement timeout")
+    {
+        return Error::Timeout;
+    }
+    query_error(error)
+}
+
 pub(crate) fn query_error(error: tokio_postgres::Error) -> Error {
     if error.is_closed() {
         return Error::ConnectionLost(describe(&error));
@@ -253,6 +271,60 @@ fn row_values(row: &tokio_postgres::SimpleQueryRow, columns: &[ColumnMeta]) -> R
 }
 
 impl Conn {
+    /// `text`'s rows through a cursor in a read-only transaction, a
+    /// `FETCH` of `batch` rows at a time.
+    async fn stream_text(
+        &self,
+        text: &str,
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        let mut client = self.client.lock().await;
+        let transaction = client
+            .build_transaction()
+            .read_only(true)
+            .start()
+            .await
+            .map_err(stream_error)?;
+        // Prepared first: its columns, and a second statement refused
+        // before anything runs.
+        let statement = transaction.prepare(text).await.map_err(stream_error)?;
+        let metas = column_metas(&statement);
+        crate::stream::send(to, crate::Streamed::Columns(metas.clone())).await?;
+        transaction
+            .simple_query(&format!(
+                "DECLARE {EXPORT_CURSOR} NO SCROLL CURSOR FOR {text}"
+            ))
+            .await
+            .map_err(stream_error)?;
+        let fetch = format!("FETCH {batch} FROM {EXPORT_CURSOR}");
+        let mut sent = 0u64;
+        loop {
+            if stop.is_stopped() {
+                return Err(Error::Cancelled);
+            }
+            let messages = transaction
+                .simple_query(&fetch)
+                .await
+                .map_err(stream_error)?;
+            let mut rows = Vec::with_capacity(batch);
+            for message in messages {
+                if let SimpleQueryMessage::Row(row) = message {
+                    rows.push(row_values(&row, &metas)?);
+                }
+            }
+            if rows.is_empty() {
+                break;
+            }
+            sent += rows.len() as u64;
+            crate::stream::send(to, crate::Streamed::Rows(rows)).await?;
+        }
+        stop.finish();
+        transaction.rollback().await.map_err(stream_error)?;
+        Ok(sent)
+    }
+
     /// Connects to the spec's server, or through a tunnel's local port `via`.
     pub async fn connect(
         spec: &ConnectSpec,
@@ -470,7 +542,7 @@ impl Conn {
     /// The `bytea` columns a filter of `query` compares as bytes when its
     /// value reads as bytes; empty, without asking, when no filter has such
     /// a value.
-    async fn binary_columns(&self, query: &RowQuery) -> Result<Vec<String>> {
+    async fn binary_columns(&self, query: &RowQuery) -> Result<Vec<(String, ColumnClass)>> {
         if !crate::dialect::reads_bytes(query) {
             return Ok(Vec::new());
         }
@@ -485,7 +557,9 @@ impl Conn {
                 &[&query.object.schema, &query.object.name],
             )
             .await?;
-        rows.iter().map(|row| column(row, 0)).collect()
+        rows.iter()
+            .map(|row| column(row, 0).map(|name| (name, ColumnClass::Binary)))
+            .collect()
     }
 }
 
@@ -792,7 +866,7 @@ impl Adapter for Conn {
     async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
         let key = self.primary_key(&query.object).await?;
         let binary = self.binary_columns(query).await?;
-        let sql = Dialect::Postgres.select_rows(query, &key, &binary);
+        let sql = Dialect::Postgres.select_rows(query, &key, &binary)?;
         let limit = query.limit as usize;
         let (columns, mut rows, elapsed) = self.read(&sql, limit).await?;
         let has_more = rows.len() > limit;
@@ -806,9 +880,46 @@ impl Adapter for Conn {
         })
     }
 
+    async fn export_statement(&self, query: &RowQuery, columns: &[String]) -> Result<String> {
+        let key = self.primary_key(&query.object).await?;
+        let binary = self.binary_columns(query).await?;
+        Dialect::Postgres.shown_export(query, &key, &binary, columns)
+    }
+
+    /// An export's rows through a cursor in a read-only transaction:
+    /// prepared first (which types the columns and refuses a second
+    /// statement), declared, then fetched a batch at a time through the
+    /// simple-query protocol, so the server holds the rest.
+    async fn stream_rows(
+        &self,
+        query: &RowQuery,
+        columns: &[String],
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        let key = self.primary_key(&query.object).await?;
+        let binary = self.binary_columns(query).await?;
+        let sql = Dialect::Postgres.export_rows(query, &key, &binary, columns)?;
+        // Every value is a literal in the text, so there is nothing to bind.
+        debug_assert!(sql.params.is_empty());
+        self.stream_text(&sql.text, batch, to, stop).await
+    }
+
+    /// A statement of the person's, as `stream_rows` streams a table's.
+    async fn stream_statement(
+        &self,
+        text: &str,
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        self.stream_text(text, batch, to, stop).await
+    }
+
     async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
         let binary = self.binary_columns(query).await?;
-        let sql = Dialect::Postgres.count_rows(query, &binary);
+        let sql = Dialect::Postgres.count_rows(query, &binary)?;
         let mut client = self.client.lock().await;
         let transaction = client
             .build_transaction()

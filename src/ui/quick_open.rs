@@ -86,6 +86,7 @@ struct Keys {
     commands: Written,
     number: Written,
     close: Written,
+    export: Written,
 }
 
 fn keys(keymap: &Keymap, layout: Layout) -> Keys {
@@ -98,6 +99,7 @@ fn keys(keymap: &Keymap, layout: Layout) -> Keys {
         commands: key(Command::QuickOpenCommands),
         number: key(Command::QuickOpenNumber),
         close: key(Command::QuickOpenClose),
+        export: key(Command::QuickOpenExport),
     }
 }
 
@@ -270,6 +272,7 @@ pub fn show(
                 no_match(
                     ui,
                     (&open.query, open.everywhere, commands_query.as_deref()),
+                    open.exporting,
                     &keys,
                     &skin,
                     &mut actions,
@@ -282,7 +285,18 @@ pub fn show(
                 let offset = rows(ui, &list, selected, reveal, &skin, &mut actions);
                 open.scroll_offset = offset;
             }
-            footer(ui, open.everywhere, nothing_typed, &keys, &skin);
+            // ⇧⌘E's hint while a table or view is picked (spec 3b, R4).
+            let on_table = picked
+                .and_then(|at| list.items().nth(at))
+                .and_then(crate::app::picked_object)
+                .is_some();
+            let shown = Footer {
+                everywhere: open.everywhere,
+                nothing_typed,
+                on_table,
+                picking: open.exporting,
+            };
+            footer(ui, shown, &keys, &skin);
         });
     if modal.backdrop_response.clicked() {
         actions.push(Action::CloseDialog);
@@ -352,6 +366,9 @@ fn read_keys(
     }
     if on(input, Command::QuickOpenScope) {
         actions.push(Action::QuickOpenScope);
+    }
+    if on(input, Command::QuickOpenExport) {
+        actions.push(Action::QuickOpenExport);
     }
     if nothing_typed
         && let Some(index) =
@@ -455,15 +472,17 @@ fn field(
     }
     // What the field finds, and no more: tables, views and (macOS) the
     // commands. Omarchy's prompt shows no placeholder, as its board.
-    let hint = if look.terminal {
+    let hint = if open.exporting {
+        skin.say("Pick a table to export")
+    } else if look.terminal {
         skin.say("Find a table or view")
     } else {
         skin.say("Find a table, view or command")
     };
-    let placeholder = if look.terminal {
+    let placeholder = if look.terminal && !open.exporting {
         String::new()
     } else {
-        hint.clone()
+        look.label(&hint)
     };
     let mut child = ui.new_child(UiBuilder::new().max_rect(inner));
     let placeholder = Text::one(look, role, &placeholder, palette.dim).layout(child.ctx());
@@ -718,7 +737,7 @@ fn shown(item: &QuickItem, skin: &Skin<'_>) -> Shown {
             // Settings, not the setting.
             let (name, icon, detail, what) = match command {
                 QuickCommand::Run(runnable) => {
-                    let name = gettext(skin.locale, runnable.name).into_owned();
+                    let name = runnable.named(skin.locale);
                     let icon = match runnable.command {
                         Command::NewSqlTab => Icon::Code,
                         Command::SwitchDatabase => Icon::Database,
@@ -796,6 +815,9 @@ fn about(about: &About, skin: &Skin<'_>) -> String {
         About::Tab(TabName::Query(number)) => format!("{} {number}", skin.say("Query")),
         About::Tab(TabName::Agents) => skin.say("Agents"),
         About::Tab(TabName::History) => skin.say("History"),
+        About::CurrentTable(_) => skin.say("current table"),
+        About::CurrentResult(_) => skin.say("SQL editor"),
+        About::PickNext => skin.say("pick one next"),
     }
 }
 
@@ -1085,12 +1107,13 @@ fn full_on_hover(response: &egui::Response, laid: &crate::typography::Laid, name
 }
 
 /// What the panel says when nothing matches: where it looked, and in this
-/// connection's scope a way to look in every open one. Where the commands
-/// alone are listed (`>`, `commands_query` what follows it), that no
-/// command matches.
+/// connection's scope a way to look in every open one (not while picking
+/// a table to export). Where the commands alone are listed (`>`,
+/// `commands_query` what follows it), that no command matches.
 fn no_match(
     ui: &mut egui::Ui,
     (query, everywhere, commands_query): (&str, bool, Option<&str>),
+    picking: bool,
     keys: &Keys,
     skin: &Skin<'_>,
     actions: &mut Vec<Action>,
@@ -1122,6 +1145,8 @@ fn no_match(
         .replace("{place}", &place);
     let said = look.label(&said);
     let link = gettext(locale, "Search all open connections");
+    // Export a table… picks one of this connection's: no other to search.
+    let widen = !everywhere && !picking;
     let height = if look.terminal { 52.0 } else { 96.0 };
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
     if look.terminal {
@@ -1129,7 +1154,7 @@ fn no_match(
         let x = rect.left() + 10.0;
         let text = Text::one(look, TextRole::OBody, &said, palette.secondary);
         let width = widgets::paint_label(ui, x, y, text);
-        if !everywhere {
+        if widen {
             let key = Text::one(look, TextRole::OBody, keys.scope.as_str(), palette.accent);
             let x = x + width + 24.0;
             let key_width = widgets::paint_text(ui, x, y, key);
@@ -1144,7 +1169,7 @@ fn no_match(
     let y = rect.top() + 36.0;
     laid.paint_left(ui.painter(), rect.center().x - laid.width() / 2.0, y);
     widgets::announce(ui, rect, &said);
-    if !everywhere {
+    if widen {
         let words = format!("{link} {}", keys.scope.as_str());
         let words = words.trim();
         let button = ButtonSpec::new(words).link();
@@ -1161,7 +1186,24 @@ fn no_match(
 /// editor`, `> commands`, `⇥` and the scope it switches to, `esc close` at
 /// the right, on the sunken surface. Omarchy: the same in its words, but
 /// no `>`, and `1..9 pick` only while nothing is typed.
-fn footer(ui: &mut egui::Ui, everywhere: bool, nothing_typed: bool, keys: &Keys, skin: &Skin<'_>) {
+/// What the footer's hints depend on.
+struct Footer {
+    everywhere: bool,
+    nothing_typed: bool,
+    /// The pick is a table or view: ⇧⌘E exports it.
+    on_table: bool,
+    /// Export a table…: Enter exports, and it lists this connection's
+    /// tables alone (no commands, no SQL editor, no other connection).
+    picking: bool,
+}
+
+fn footer(ui: &mut egui::Ui, shown: Footer, keys: &Keys, skin: &Skin<'_>) {
+    let Footer {
+        everywhere,
+        nothing_typed,
+        on_table,
+        picking,
+    } = shown;
     let (look, palette, locale) = (skin.look, skin.palette, skin.locale);
     let height = if look.terminal { 30.0 } else { 34.0 };
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
@@ -1188,18 +1230,29 @@ fn footer(ui: &mut egui::Ui, everywhere: bool, nothing_typed: bool, keys: &Keys,
         word("pick"),
         word("close"),
     );
+    let export_words = word("export");
+    let open = if picking { &export_words } else { &open };
     let mut hints: Vec<widgets::Hint<'_>> =
-        vec![(&keys.moves, &moves, true), (&keys.open, &open, true)];
-    if !keys.editor.as_str().is_empty() {
+        vec![(&keys.moves, &moves, true), (&keys.open, open, true)];
+    if !keys.editor.as_str().is_empty() && !picking {
         hints.push((&keys.editor, &editor, true));
     }
-    if !keys.commands.as_str().is_empty() {
+    let export = match look.terminal {
+        true => word("export the picked table"),
+        false => word("export"),
+    };
+    if on_table && !picking && !keys.export.as_str().is_empty() {
+        hints.push((&keys.export, &export, true));
+    }
+    if !keys.commands.as_str().is_empty() && !picking {
         hints.push((&keys.commands, &commands, true));
     }
     if look.terminal && nothing_typed && !keys.number.as_str().is_empty() {
         hints.push((&keys.number, &pick, true));
     }
-    hints.push((&keys.scope, &scope, true));
+    if !picking {
+        hints.push((&keys.scope, &scope, true));
+    }
     let pad = if look.terminal { 10.0 } else { 14.0 };
     let gap = if look.terminal { 14.0 } else { 12.0 };
     let y = rect.center().y;

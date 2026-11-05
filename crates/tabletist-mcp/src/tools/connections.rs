@@ -58,6 +58,7 @@ fn entry(listed: &Listed) -> Json {
         Dialect::Postgres => ("PostgreSQL", "$1, $2"),
         Dialect::MySql => ("MySQL", "?"),
         Dialect::Sqlite => ("SQLite", "?"),
+        Dialect::BigQuery => ("BigQuery", "?"),
     };
     let mut entry = Map::new();
     entry.insert("name".into(), json!(listed.name));

@@ -943,6 +943,7 @@ fn a_large_schema_answers_each_keystroke_within_a_frame() {
         scrolled_to: None,
         scroll_offset: 0.0,
         picked: None,
+        exporting: false,
     };
     // Each keystroke of a query, and taking the names apart beside it, the
     // fastest of five tries of each taken as its time, so that a pause of

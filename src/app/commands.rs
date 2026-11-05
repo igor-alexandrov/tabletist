@@ -79,7 +79,7 @@ impl Scripts {
 /// review, which the key shows and hides by turns; and its Agents shows
 /// the Agents tab, which the key does but where History has an agent's
 /// statement picked (there it shows that call).
-pub const RUNNABLE: [Command; 30] = [
+pub const RUNNABLE: [Command; 32] = [
     Command::NewSqlTab,
     Command::SwitchDatabase,
     Command::ShowAgents,
@@ -110,6 +110,8 @@ pub const RUNNABLE: [Command; 30] = [
     Command::Format,
     Command::ToggleSqlMode,
     Command::CancelQuery,
+    Command::Export,
+    Command::ExportTable,
 ];
 
 impl App {
@@ -219,6 +221,47 @@ impl App {
                     "Hide sidebar"
                 };
                 (name, About::Nothing, vec![Action::ToggleSidebar(tab)])
+            }
+            // The table in front's, or the SQL result's; while one runs,
+            // its cancel.
+            Command::Export => {
+                if self
+                    .exporting
+                    .as_ref()
+                    .is_some_and(crate::export_sheet::Exporting::running)
+                {
+                    ("Cancel export", About::Nothing, vec![Action::CancelExport])
+                } else {
+                    let open = Action::OpenExport { tab, format: None };
+                    // A SQL editor whose shown statement returned rows:
+                    // its result's (spec 4, S11).
+                    if let Some(sql) = sql.filter(|sql| sql.exports()) {
+                        let about = About::CurrentResult(sql.number);
+                        return Some((
+                            Runnable {
+                                command,
+                                name: "Export result of Query {n}…",
+                                about,
+                            },
+                            vec![open],
+                        ));
+                    }
+                    let table = object?.object.name.clone();
+                    ("Export {table}…", About::CurrentTable(table), vec![open])
+                }
+            }
+            // A table of the connection, picked next; not while one runs,
+            // where Export's row is its cancel.
+            Command::ExportTable => {
+                if self
+                    .exporting
+                    .as_ref()
+                    .is_some_and(crate::export_sheet::Exporting::running)
+                {
+                    return None;
+                }
+                let pick = Action::PickTableToExport(tab);
+                ("Export a table…", About::PickNext, vec![pick])
             }
             // The tab in front's.
             Command::CloseTab => {

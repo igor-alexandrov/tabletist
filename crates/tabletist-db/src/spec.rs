@@ -16,6 +16,7 @@ pub enum Driver {
     #[serde(rename = "mysql")]
     MySql,
     Sqlite,
+    BigQuery,
 }
 
 impl Driver {
@@ -23,7 +24,7 @@ impl Driver {
         match self {
             Self::Postgres => 5432,
             Self::MySql => 3306,
-            Self::Sqlite => 0,
+            Self::Sqlite | Self::BigQuery => 0,
         }
     }
 
@@ -32,6 +33,7 @@ impl Driver {
             Self::Postgres => "PostgreSQL",
             Self::MySql => "MySQL",
             Self::Sqlite => "SQLite",
+            Self::BigQuery => "BigQuery",
         }
     }
 
@@ -41,6 +43,7 @@ impl Driver {
             Self::Postgres => crate::Dialect::Postgres,
             Self::MySql => crate::Dialect::MySql,
             Self::Sqlite => crate::Dialect::Sqlite,
+            Self::BigQuery => crate::Dialect::BigQuery,
         }
     }
 }
@@ -103,8 +106,13 @@ pub struct ConnectSpec {
     pub host: String,
     pub port: u16,
     pub user: String,
+    /// The database name; for BigQuery, the GCP project that is billed.
     pub database: String,
     pub sqlite_path: Option<PathBuf>,
+    /// A service-account key file (JSON) for BigQuery. `None` there uses
+    /// Google Cloud's application default credentials.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bigquery_key: Option<PathBuf>,
     pub tls: TlsMode,
     pub ca_file: Option<PathBuf>,
     pub ssh: Option<SshSpec>,
@@ -119,6 +127,7 @@ impl Default for ConnectSpec {
             user: String::new(),
             database: String::new(),
             sqlite_path: None,
+            bigquery_key: None,
             tls: TlsMode::Prefer,
             ca_file: None,
             ssh: None,
@@ -180,9 +189,37 @@ impl ParsedUrl {
         let driver = match parsed.scheme() {
             "postgres" | "postgresql" => Driver::Postgres,
             "mysql" | "mariadb" => Driver::MySql,
+            "bigquery" => {
+                // bigquery:project?credentials=/path/key.json — there is
+                // no host, user or password to take from the URL.
+                let project = parsed
+                    .host_str()
+                    .map(str::to_owned)
+                    .filter(|host| !host.is_empty())
+                    .unwrap_or_else(|| decode(parsed.path().trim_start_matches('/')));
+                if project.is_empty() {
+                    return Err(Error::InvalidSpec(
+                        "the BigQuery URL names no project".into(),
+                    ));
+                }
+                let mut key = None;
+                for (name, value) in parsed.query_pairs() {
+                    if name == "credentials" {
+                        key = Some(PathBuf::from(value.as_ref()));
+                    } else {
+                        log::debug!("ignoring URL parameter {name}");
+                    }
+                }
+                return Ok(Self {
+                    spec: ConnectSpec::bigquery(project, key),
+                    secrets: Secrets::default(),
+                    names_tls: false,
+                    names_ca_file: false,
+                });
+            }
             other => {
                 return Err(Error::InvalidSpec(format!(
-                    "unsupported scheme {other:?}; use postgres://, mysql:// or sqlite:"
+                    "unsupported scheme {other:?}; use postgres://, mysql://, sqlite: or bigquery:"
                 )));
             }
         };
@@ -247,6 +284,19 @@ impl ConnectSpec {
         }
     }
 
+    /// A BigQuery connection: the billed project, and a service-account
+    /// key file where one is chosen (else application default credentials).
+    pub fn bigquery(project: impl Into<String>, key: Option<PathBuf>) -> Self {
+        Self {
+            driver: Driver::BigQuery,
+            host: String::new(),
+            port: 0,
+            database: project.into(),
+            bigquery_key: key,
+            ..Self::default()
+        }
+    }
+
     /// Parses `postgres://`, `postgresql://`, `mysql://`, `mariadb://` and
     /// `sqlite:` URLs. The password, if any, comes back in `Secrets`.
     pub fn from_url(url: &str) -> Result<(Self, Secrets)> {
@@ -259,7 +309,7 @@ impl ConnectSpec {
     pub fn effective_tls(&self) -> TlsMode {
         match (self.driver, self.tls, &self.ca_file) {
             (Driver::Postgres, TlsMode::Require, Some(_)) => TlsMode::VerifyCa,
-            (Driver::Postgres | Driver::MySql | Driver::Sqlite, tls, _) => tls,
+            (Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery, tls, _) => tls,
         }
     }
 
@@ -275,6 +325,8 @@ impl ConnectSpec {
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_default();
             }
+            // The project alone: there is no host, port or user.
+            Driver::BigQuery => return self.database.clone(),
             Driver::Postgres | Driver::MySql => {}
         }
         let mut text = String::new();
@@ -427,6 +479,29 @@ mod tests {
         assert_eq!(ConnectSpec::sqlite("/tmp/data/app.db").summary(), "app.db");
         let (spec, _) = ConnectSpec::from_url("mysql://h").unwrap();
         assert_eq!(spec.summary(), "h:3306");
+    }
+
+    #[test]
+    fn bigquery_urls_name_a_project_and_a_key() {
+        let (spec, secrets) = ConnectSpec::from_url("bigquery:my-project").unwrap();
+        assert_eq!(spec, ConnectSpec::bigquery("my-project", None));
+        assert_eq!(spec.host, "");
+        assert_eq!(spec.port, 0);
+        assert_eq!(secrets, Secrets::default());
+        assert_eq!(spec.summary(), "my-project");
+
+        let (spec, _) =
+            ConnectSpec::from_url("bigquery://my-project?credentials=/keys/sa.json").unwrap();
+        assert_eq!(spec.database, "my-project");
+        assert_eq!(spec.bigquery_key, Some(PathBuf::from("/keys/sa.json")));
+
+        assert!(matches!(
+            ConnectSpec::from_url("bigquery:"),
+            Err(Error::InvalidSpec(_))
+        ));
+        // No secret ever prints.
+        let json = serde_json::to_string(&spec).unwrap();
+        assert_eq!(serde_json::from_str::<ConnectSpec>(&json).unwrap(), spec);
     }
 
     #[test]

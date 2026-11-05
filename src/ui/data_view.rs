@@ -59,13 +59,20 @@ fn state_note(selected: Option<String>, read_only: bool, locale: crate::i18n::Lo
 }
 
 /// What the footer says of the tab's selection: that a row is selected,
-/// or, on a new row, that it is one and how many values it still needs.
+/// how many rows or rows and columns a range covers, or, on a new row,
+/// that it is one and how many values it still needs.
 fn selection_note(
     workspace: &crate::model::Workspace,
     object: &ObjectTab,
     locale: crate::i18n::Locale,
 ) -> Option<String> {
     let cell = object.selection?;
+    // A rectangle of cells: how many rows and columns.
+    let cells = object.range.as_ref().is_some_and(|range| !range.rows());
+    if let Some(size) = object.selection_size().filter(|_| cells) {
+        let size = crate::selection::size_words(locale, size, false);
+        return Some(format!("{size} {}", gettext(locale, "selected")));
+    }
     // Several rows: how many, whatever kind each is.
     let rows = object.selected_rows().len();
     if rows > 1 {
@@ -406,6 +413,22 @@ pub fn header(
                 };
                 if short { button.gap(0.0) } else { button }
             };
+            // Export… stands before Add row, and folds with it (spec,
+            // Entry points).
+            let export_label = gettext(locale, "Export…");
+            let export_keys =
+                crate::ui::keys::written(ui.ctx(), &look, crate::keymap::Command::Export);
+            let export = |short: bool| {
+                let button = widgets::ButtonSpec::new(if short { "" } else { &export_label })
+                    .label(&export_label)
+                    .icon(Icon::Download)
+                    .role(TextRole::UiBodyStrong);
+                if short {
+                    button.gap(0.0)
+                } else {
+                    button.shortcut(&export_keys)
+                }
+            };
             // In the DDL view, what it says while it reads stands where
             // Add row would.
             // Its Copy and Open in SQL editor stand there once its text
@@ -440,15 +463,28 @@ pub fn header(
                 .find(|form| free - wait(Some(*form)) >= title_width)
                 .or_else(|| (free - wait(Some(Buttons::Icons)) >= cut).then_some(Buttons::Icons));
             let wait = wait(form);
-            let stack = |button: Option<bool>| {
-                let button = button.map_or(0.0, |short| 12.0 + add_row(short).width(ui, &look));
+            // The buttons as room allows: Export… (whole, its icon, or
+            // gone) and Add row (whole or its icon). Export… folds and goes
+            // first.
+            let stack = |button: Option<(Option<bool>, bool)>| {
+                let button = button.map_or(0.0, |(exported, short)| {
+                    let export_width =
+                        exported.map_or(0.0, |short| 8.0 + export(short).width(ui, &look));
+                    12.0 + add_row(short).width(ui, &look) + export_width
+                });
                 free - button - wait
             };
             // The DDL view has no Add row.
             let rows = if view == ObjectView::Ddl {
                 &[None][..]
             } else {
-                &[Some(false), Some(true), None][..]
+                &[
+                    Some((Some(false), false)),
+                    Some((Some(true), false)),
+                    Some((None, false)),
+                    Some((None, true)),
+                    None,
+                ][..]
             };
             let button = rows
                 .iter()
@@ -565,7 +601,18 @@ pub fn header(
                 } else {
                     super::ddl::header_wait(ui, reading, right, center, skin);
                 }
-            } else if let Some(short) = button {
+            } else if let Some((exported, short)) = button {
+                if let Some(export_short) = exported {
+                    let exporting = export(export_short);
+                    let export_width = exporting.width(ui, &look);
+                    let add_width = add_row(short).width(ui, &look);
+                    let at = right - add_width - 8.0 - export_width;
+                    let place =
+                        Rect::from_min_size(pos2(at, center - 16.0), vec2(export_width, 32.0));
+                    if exporting.show_at(ui, place, &look, &palette).clicked() {
+                        actions.push(Action::OpenExport { tab, format: None });
+                    }
+                }
                 let button = add_row(short);
                 let width = button.width(ui, &look);
                 let place =
@@ -1654,11 +1701,12 @@ pub fn show(
         )),
         (None, _) => None,
     };
-    // A visual selection of rows, and how many it holds: said when it
-    // starts and each time it grows or shrinks.
-    let visual = (look.terminal && object.visual()).then(|| {
-        let rows = object.selected_rows().len();
-        let held = super::pending_bar::counted(locale, rows, "row selected", "rows selected");
+    // A visual selection, and what it holds: said when it starts and each
+    // time it grows or shrinks.
+    let visual = object.visual_mode().filter(|_| look.terminal).map(|mode| {
+        let whole_rows = mode == crate::selection::Visual::Rows;
+        let size = object.selection_size().unwrap_or((1, 1));
+        let held = crate::selection::said(locale, size, whole_rows);
         format!("{} {held}.", gettext(locale, "Visual."))
     });
     // The tab itself from here on: the field on a cell edits the text its
@@ -1774,11 +1822,24 @@ pub fn show(
         // among them. A place is the grid's; a row is the set's and the
         // page's, and the reducer's.
         let order = crate::edit::Order::of(&object.edits.added, page.rows.len());
-        // The rows selected with the cursor's, as places of the grid. Read
-        // here, before the tab is taken for its editor's text.
-        let span = object.selected_span();
-        let ranged =
-            |place: usize| span.is_some_and(|(first, last)| (first..=last).contains(&place));
+        // What is selected with the cursor's cell, as places of the grid:
+        // whole rows, or a rectangle of cells. Read here, before the tab is
+        // taken for its editor's text.
+        let width = page.columns.len();
+        let selected = object.selected();
+        let whole = selected
+            .map(|selected| selected.ranged())
+            .unwrap_or_default();
+        let block = selected.and_then(|selected| selected.block(width));
+        let said = selected.and_then(|selected| {
+            let whole_rows = object
+                .range
+                .as_ref()
+                .is_some_and(crate::selection::Range::rows);
+            let size = selected.size(width)?;
+            Some(crate::selection::said(locale, size, whole_rows))
+        });
+        let ranged = |place: usize| whole.contains(&place);
         let placed = |cell: CellPos| {
             let row = order.place(cell.row)?;
             Some(CellPos { row, col: cell.col })
@@ -1825,12 +1886,20 @@ pub fn show(
         // grid of the fit before kept goes when this one is drawn.
         let id = grid_id(tab, object_tab, fit);
         grid::keep(ui.ctx(), table_id(tab, object_tab), id);
+        // A secondary click's menu: Copy, Copy as ›, Copy rows as TSV,
+        // Export selection….
+        let menu_rows = |ui: &mut egui::Ui| crate::ui::copy_as::context_rows(ui, paint, true);
         let output = grid::show(
             ui,
             id,
             &columns,
             order.len(),
             object.selection.and_then(placed),
+            grid::Picked {
+                block,
+                said: said.as_deref(),
+                menu: Some(grid::Menu(&menu_rows)),
+            },
             keys,
             &palette,
             &grid_look,
@@ -1991,12 +2060,33 @@ pub fn show(
             });
         }
         if let Some(cell) = output.clicked.and_then(held) {
-            // With Shift held the click takes the rows up to its own into
+            // With Shift held the click takes the cells up to its own into
             // the selection.
             actions.push(if output.shift {
                 Action::ExtendTo { tab, id, cell }
             } else {
                 Action::SelectCell { tab, id, cell }
+            });
+        }
+        // A drag over the cells: the range runs to the one under it.
+        if let Some(cell) = output.dragged.and_then(held) {
+            actions.push(Action::ExtendTo { tab, id, cell });
+        }
+        // A secondary click outside the selection selects its cell.
+        if let Some(cell) = output.context_clicked.and_then(held) {
+            actions.push(Action::SelectCell { tab, id, cell });
+        }
+        if let Some(chosen) = output.chosen {
+            actions.push(chosen.action(tab));
+        }
+        if let Some((place, click)) = output.row_clicked
+            && let Some(row) = order.row(place)
+        {
+            actions.push(Action::RowNumberClicked {
+                tab,
+                id,
+                row,
+                click,
             });
         }
         // A second click edits the cell.

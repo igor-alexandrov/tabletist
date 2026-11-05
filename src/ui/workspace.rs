@@ -538,6 +538,8 @@ fn connecting(
     let spec = &workspace.spec;
     let (reach, target) = match spec.driver {
         Driver::Sqlite => ("Open", spec.summary()),
+        // The project is the whole target.
+        Driver::BigQuery => ("Connect to", spec.summary()),
         Driver::Postgres | Driver::MySql => {
             let target = format!("{}:{}", spec.host, spec.port);
             let target = match &spec.ssh {
@@ -645,6 +647,10 @@ fn failure_title(
             Driver::Postgres | Driver::MySql => (
                 Icon::WifiOff,
                 format!("{} {}:{}", say("Can't reach"), spec.host, spec.port),
+            ),
+            Driver::BigQuery => (
+                Icon::WifiOff,
+                format!("{} {}", say("Can't reach"), spec.summary()),
             ),
         },
         Error::Tls(_) => (Icon::ShieldAlert, say("TLS or certificate problem")),
@@ -852,6 +858,7 @@ fn is_remote(workspace: &crate::model::Workspace) -> bool {
     match workspace.driver {
         Driver::Sqlite => false,
         Driver::Postgres | Driver::MySql => !crate::model::is_local_host(&workspace.spec.host),
+        Driver::BigQuery => true,
     }
 }
 
@@ -864,7 +871,13 @@ pub(super) fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
     let tls = is_remote(workspace).then(|| {
         let encrypted =
             matches!(workspace.status, SessionStatus::Connected).then_some(workspace.encrypted);
-        let (text, warn) = tls_status(spec.effective_tls(), encrypted);
+        let (text, warn) = match workspace.driver {
+            // HTTPS to Google's API, verified against the system roots.
+            Driver::BigQuery => ("HTTPS", false),
+            Driver::Postgres | Driver::MySql | Driver::Sqlite => {
+                tls_status(spec.effective_tls(), encrypted)
+            }
+        };
         (text, if warn { Tone::Warn } else { Tone::Good })
     });
     Some(BarInfo {
@@ -872,7 +885,8 @@ pub(super) fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
         read_only: workspace.access == tabletist_db::Access::ReadOnly,
         database: match workspace.driver {
             Driver::Sqlite => String::new(),
-            Driver::Postgres | Driver::MySql => spec.database.clone(),
+            // The project.
+            Driver::Postgres | Driver::MySql | Driver::BigQuery => spec.database.clone(),
         },
         databases: workspace.databases.value.clone().unwrap_or_default(),
         tls,
@@ -939,6 +953,12 @@ fn card_rows(
                 .unwrap_or_default();
             rows.push((say("File"), path));
         }
+        Driver::BigQuery => {
+            rows.push((say("Project"), display_safe(&spec.database).into_owned()));
+            if let Some(key) = &spec.bigquery_key {
+                rows.push((say("Key file"), key.display().to_string()));
+            }
+        }
         Driver::Postgres | Driver::MySql => {
             rows.push((say("Host"), format!("{}:{}", spec.host, spec.port)));
             if !spec.database.is_empty() {
@@ -958,7 +978,12 @@ fn card_rows(
     let connected = matches!(workspace.status, SessionStatus::Connected);
     let tls = if is_remote(workspace) {
         let encrypted = connected.then_some(workspace.encrypted);
-        say(tls_status(spec.effective_tls(), encrypted).0)
+        say(match workspace.driver {
+            Driver::BigQuery => "HTTPS",
+            Driver::Postgres | Driver::MySql | Driver::Sqlite => {
+                tls_status(spec.effective_tls(), encrypted).0
+            }
+        })
     } else {
         say("Local")
     };
@@ -1953,8 +1978,9 @@ struct Editing {
     can_edit: bool,
     /// Insert mode: the column being edited and its type.
     insert: Option<String>,
-    /// A visual selection of rows is on, with this many rows.
-    visual: Option<usize>,
+    /// A visual selection is on, of a table's rows or a result's: its mode,
+    /// and its size in words ("4 rows × 2 columns", "3 rows").
+    visual: Option<(crate::selection::Visual, String)>,
     /// Where Tab moves on to: the next cell from an editor on a cell, the
     /// next field from one in the row panel. Nowhere from the large
     /// editor, in either place: Tab is its text's own.
@@ -2066,7 +2092,18 @@ fn editing_status(
     use crate::edit::Note;
     let (palette, look, locale) = (&paint.palette, &paint.look, paint.locale);
     let Some(object) = workspace.active_object_tab() else {
-        return Editing::default();
+        // A result's visual selection: the line says it as a table's.
+        let visual = workspace.active_sql_tab().and_then(|sql| {
+            // Not under the Messages pane, where the rows do not show.
+            let mode = sql.visual_mode().filter(|_| super::keys::shows_grid(sql))?;
+            let size = sql.selection_size().unwrap_or((1, 1));
+            let rows = mode == crate::selection::Visual::Rows;
+            Some((mode, crate::selection::size_words(locale, size, rows)))
+        });
+        return Editing {
+            visual,
+            ..Editing::default()
+        };
     };
     let say = |text: &'static str| gettext(locale, text);
     let edits = &object.edits;
@@ -2104,8 +2141,12 @@ fn editing_status(
         });
     let can_add = data
         && crate::edit::Table::of(workspace, object).is_some_and(|table| table.no_rows().is_none());
-    // The rows of a visual selection, while one is on and the rows show.
-    let visual = (data && object.visual()).then(|| object.selected_rows().len());
+    // A visual selection, while one is on and the rows show.
+    let visual = object.visual_mode().filter(|_| data).map(|mode| {
+        let size = object.selection_size().unwrap_or((1, 1));
+        let rows = mode == crate::selection::Visual::Rows;
+        (mode, crate::selection::size_words(locale, size, rows))
+    });
     let errors = counts.to_fix + counts.failed;
     let errors = (errors > 0).then(|| counted(locale, errors, "error", "errors"));
     // What a new row still needs, by its column: said while a value is
@@ -2461,6 +2502,99 @@ struct StatusAsked {
     labels: bool,
     /// What editing asks of the app about the table in front.
     editing: EditingAsked,
+    /// The export's line, and its colour, while one runs or its end is
+    /// told.
+    export: Option<(String, egui::Color32)>,
+}
+
+/// The terminal look's line for the export, as the progress and states
+/// board writes it: its bar while it runs, its end for 4 s, a failure
+/// until Esc.
+pub fn export_line(app: &App) -> Option<(String, egui::Color32)> {
+    use crate::export_sheet::{ExportStatus, count_words, size_words, took_words};
+    let exporting = app.exporting.as_ref()?;
+    let (locale, palette) = (app.locale, &app.palette);
+    let layout = crate::keymap::Layout::Omarchy;
+    let key = |command| app.keymap.key(layout, command);
+    let name = match exporting.file.is_empty() {
+        true => exporting.table.clone(),
+        false => exporting.file.clone(),
+    };
+    let line = match &exporting.status {
+        ExportStatus::Asking | ExportStatus::Running { .. } => {
+            let rows = match exporting.status {
+                ExportStatus::Running { rows, .. } => rows,
+                _ => 0,
+            };
+            let cancel = key(crate::keymap::Command::CancelExport);
+            let done = crate::format::group_digits(rows);
+            let text = match (exporting.share(), exporting.total) {
+                (Some(share), Some(total)) => {
+                    let filled = ((share * 12.0).round() as usize).min(12);
+                    let bar = format!("{}{}", "█".repeat(filled), "░".repeat(12 - filled));
+                    gettext(
+                        locale,
+                        "export {name} [{bar}] {share}% · {done}/{total} · {cancel}",
+                    )
+                    .replace("{name}", &name)
+                    .replace("{bar}", &bar)
+                    .replace("{share}", &((share * 100.0).round() as u32).to_string())
+                    .replace("{done}", &done)
+                    .replace("{total}", &count_words(total))
+                    .replace("{cancel}", cancel.as_str())
+                }
+                _ => gettext(locale, "export {name} · {done} rows · {cancel}")
+                    .replace("{name}", &name)
+                    .replace("{done}", &done)
+                    .replace("{cancel}", cancel.as_str()),
+            };
+            (text, palette.text)
+        }
+        ExportStatus::Done {
+            rows, bytes, took, ..
+        } => {
+            let open = key(crate::keymap::Command::OpenExportFolder);
+            let rows = crate::format::group_digits(*rows);
+            let text = gettext(
+                locale,
+                "✓ exported {rows} rows → {path} · {size} · {time} · {key} open folder",
+            )
+            .replace("{rows}", &rows)
+            .replace("{path}", &exporting.shown_path)
+            .replace("{size}", &size_words(*bytes, locale).to_lowercase())
+            .replace("{time}", &took_words(*took))
+            .replace("{key}", open.as_str());
+            (text, palette.success)
+        }
+        ExportStatus::Cancelled { .. } => (
+            gettext(
+                locale,
+                "export cancelled · nothing saved, the partial file was removed",
+            )
+            .into_owned(),
+            palette.warning,
+        ),
+        ExportStatus::Failed {
+            failure,
+            rows,
+            bytes,
+            ..
+        } => {
+            let text = crate::export_sheet::failure_line(
+                exporting,
+                failure,
+                (*rows, *bytes),
+                app.dirs.home.as_deref(),
+                locale,
+            );
+            let color = match failure {
+                crate::backend::export::ExportFailure::Exists { .. } => palette.warning,
+                _ => palette.danger,
+            };
+            (text, color)
+        }
+    };
+    Some(line)
 }
 
 /// What the status line of `tab` asks of the app: none where the
@@ -2489,6 +2623,7 @@ fn status_asked(app: &App, tab: ConnTabId) -> Option<StatusAsked> {
         call_saved,
         labels,
         editing: editing_asked(app, tab),
+        export: export_line(app),
     })
 }
 
@@ -2579,6 +2714,9 @@ fn status_line(
     let (keep_key, next_key) = (key(Command::KeepEdit), key(Command::CommitNext));
     let (visual_delete_key, leave_visual_key) =
         (key(Command::DeleteSelection), key(Command::LeaveVisual));
+    let visual_copy_key = key(Command::CopySelection);
+    let copy_as_key = key(Command::CopyAs);
+    let export_key = key(Command::Export);
     // The keys of a foreign key's list, while one is open under the field.
     let pick_keys = keymap.together(layout, &[Command::NextPick, Command::PreviousPick]);
     let (set_key, close_key) = (key(Command::CommitDown), key(Command::ClosePicker));
@@ -2745,6 +2883,19 @@ fn status_line(
             color: palette.text,
         });
     }
+    // Then the export: its progress, its end, a failure until Esc.
+    if editing.said.is_none()
+        && let Some((text, color)) = asked.export
+    {
+        editing.said = Some(Said {
+            mark: None,
+            text,
+            tail: None,
+            color,
+        });
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(500));
+    }
     egui::Panel::bottom(egui::Id::new(("status-line", tab.0)))
         .exact_size(STATUS_LINE)
         .resizable(false)
@@ -2782,6 +2933,7 @@ fn status_line(
                 (&filter_key, "filter", true),
                 (&sidebar_key, "tables", true),
                 (&copy_key, "copy", true),
+                (&copy_as_key, "copy as", true),
             ]);
             // The prompt's line that saves, where a save can be made.
             let write = gettext(locale, "write");
@@ -2796,6 +2948,8 @@ fn status_line(
             if reviewed {
                 table_hints.push((&review_key, &*review, true));
             }
+            // Export last: the first to give way where room runs out.
+            table_hints.push((&export_key, "export", true));
             // An editor's keys: a table's do nothing on it.
             let words = [
                 "run",
@@ -2816,6 +2970,18 @@ fn status_line(
             // An open completion list: its key leads.
             if completing {
                 editor_hints.insert(0, (&complete_key, &*words[5], true));
+            }
+            // The result's rows have the keys: its copy in a format, and
+            // its export (spec 4), the first to give way.
+            let result_keys = !ui.ctx().text_edit_focused()
+                && workspace
+                    .active_sql_tab()
+                    .is_some_and(crate::ui::keys::shows_grid);
+            if result_keys {
+                editor_hints.extend([
+                    (&copy_as_key, "copy as", true),
+                    (&export_key, "export result", true),
+                ]);
             }
             // The Structure view's keys: a row's do nothing on it.
             let structure_words =
@@ -3036,7 +3202,14 @@ fn status_line(
             };
             if on_editor {
                 // The toolbar says the transaction is read-only; the line
-                // has no editing keys to strike out.
+                // has no editing keys to strike out. What was just done (a
+                // copy of the result) is said at its end in place of the
+                // summary: this look floats no toast.
+                let (summary, summary_color) = match &editing.said {
+                    Some(said) => (said.text.clone(), said.color),
+                    None => (summary.clone(), palette.dim),
+                };
+                let summary_width = measure(&summary);
                 let mut left = rect.left() + 12.0;
                 if let Some(mode) =
                     vim_mode.and_then(|mode| mode.label().map(|label| (mode, label)))
@@ -3051,16 +3224,53 @@ fn status_line(
                     let text = Text::one(&look, TextRole::OModeLine, &label, color);
                     left += widgets::paint_label(ui, left, y, text) + gap;
                 }
-                let shown =
-                    fit(rect.right() - 12.0 - summary_width - gap - (left - rect.left() - 12.0));
-                let at = (left, y);
-                widgets::key_hints(ui, at, &hints[..shown], gap, &look, &palette);
-                widgets::paint_text_right(
-                    ui,
-                    rect.right() - 12.0,
-                    y,
-                    Text::one(&look, role, &summary, palette.dim),
-                );
+                // A visual selection of the result: its mode, its size and
+                // its keys, in place of the editor's.
+                if let Some((visual, held)) = &editing.visual {
+                    let mode = gettext(locale, visual.mode());
+                    let mode = Text::one(&look, TextRole::OModeLine, &mode, palette.magenta);
+                    left += widgets::paint_label(ui, left, y, mode) + gap;
+                    let text = Text::one(&look, role, held, palette.secondary);
+                    left += widgets::paint_label(ui, left, y, text) + gap;
+                    let (copies, normal) = (gettext(locale, "copy tsv"), gettext(locale, "normal"));
+                    let copies_as = gettext(locale, "copy as");
+                    let keys = || {
+                        Text::new(&look)
+                            .add(role, &visual_copy_key, palette.text)
+                            .space(role, " ")
+                            .add(role, &copies, palette.dim)
+                            .add(role, " · ", palette.dim)
+                            .add(role, &copy_as_key, palette.text)
+                            .space(role, " ")
+                            .add(role, &copies_as, palette.dim)
+                            .add(role, " · ", palette.dim)
+                            .add(role, &leave_visual_key, palette.text)
+                            .space(role, " ")
+                            .add(role, &normal, palette.dim)
+                    };
+                    if left + widgets::measure(ui, keys())
+                        <= rect.right() - 12.0 - summary_width - gap
+                    {
+                        widgets::paint_label(ui, left, y, keys());
+                    }
+                } else {
+                    let shown = fit(rect.right()
+                        - 12.0
+                        - summary_width
+                        - gap
+                        - (left - rect.left() - 12.0));
+                    let at = (left, y);
+                    widgets::key_hints(ui, at, &hints[..shown], gap, &look, &palette);
+                }
+                let text = Text::one(&look, role, &summary, summary_color);
+                let width = widgets::paint_text_right(ui, rect.right() - 12.0, y, text);
+                if editing.said.is_some() {
+                    let place = Rect::from_min_size(
+                        pos2(rect.right() - 12.0 - width, y - 8.0),
+                        vec2(width.max(1.0), 16.0),
+                    );
+                    widgets::announce(ui, place, &summary);
+                }
                 return;
             }
             let left = rect.left() + 12.0;
@@ -3086,19 +3296,30 @@ fn status_line(
                 }
                 x
             };
-            if let Some(rows) = editing.visual {
-                // A visual selection of rows: the mode, how many rows it
-                // holds and the counts. Its keys, at the right, give way.
-                let mode = gettext(locale, "-- VISUAL --");
+            if let Some((visual, held)) = &editing.visual {
+                // A visual selection: the mode, what it holds and the
+                // counts. Its keys, at the right, give way: `V`'s rows
+                // are deleted, the others' cells copied.
+                let mode = gettext(locale, visual.mode());
                 let mode = || Text::one(&look, TextRole::OModeLine, &mode, palette.magenta);
-                let held = crate::ui::pending_bar::counted(locale, rows, "row", "rows");
-                let deletes = gettext(locale, "delete");
+                let rows = *visual == crate::selection::Visual::Rows;
+                let (act_key, acts) = if rows {
+                    (&visual_delete_key, gettext(locale, "delete"))
+                } else {
+                    (&visual_copy_key, gettext(locale, "copy tsv"))
+                };
                 let normal = gettext(locale, "normal");
+                let copies_as = gettext(locale, "copy as");
                 let keys = || {
-                    Text::new(&look)
-                        .add(role, &visual_delete_key, palette.text)
+                    let keys = Text::new(&look)
+                        .add(role, act_key, palette.text)
                         .space(role, " ")
-                        .add(role, &deletes, palette.dim)
+                        .add(role, &acts, palette.dim)
+                        .add(role, " · ", palette.dim);
+                    // The cells, or `V`'s rows, are copied in a format too.
+                    keys.add(role, &copy_as_key, palette.text)
+                        .space(role, " ")
+                        .add(role, &copies_as, palette.dim)
                         .add(role, " · ", palette.dim)
                         .add(role, &leave_visual_key, palette.text)
                         .space(role, " ")
@@ -3106,7 +3327,7 @@ fn status_line(
                 };
                 let right = rect.right() - 12.0;
                 let mut x = left + widgets::paint_label(ui, left, y, mode()) + gap;
-                let text = Text::one(&look, role, &held, palette.secondary);
+                let text = Text::one(&look, role, held, palette.secondary);
                 x += widgets::paint_label(ui, x, y, text) + gap;
                 x = counts(ui, x);
                 if let Some(said) = &editing.said {

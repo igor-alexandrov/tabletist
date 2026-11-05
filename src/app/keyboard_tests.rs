@@ -169,3 +169,36 @@ fn vim_s_redo_in_the_sql_editor_is_moved_by_a_line_of_the_file() {
     assert_eq!(redo(&app), "⌃Y");
     assert!(app.settings_file.invalid.is_empty());
 }
+
+/// Export a Table… has no key of its own: one given in the file is taken,
+/// in either look (spec 3b, R2).
+#[test]
+fn export_a_table_takes_a_key_from_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = mac_app(dir.path());
+    edited(
+        &mut app,
+        "[keys.global]\n\"cmd+ctrl+e\" = \"export_table\"\n",
+    );
+    assert!(
+        app.settings_file.invalid.is_empty(),
+        "taken: {:?}",
+        app.keys_refused
+    );
+    let row = Row {
+        command: Command::ExportTable,
+        scope: Scope::Global,
+        when: When::Always,
+    };
+    assert_eq!(app.keymap.keys_of(Layout::Mac, row), ["cmd+ctrl+e"]);
+    app.look = crate::theme::Look::omarchy();
+    edited(
+        &mut app,
+        "[keys.global]\n\"ctrl+alt+shift+x\" = \"export_table\"\n",
+    );
+    assert!(app.settings_file.invalid.is_empty(), "taken in Omarchy too");
+    assert_eq!(
+        app.keymap.keys_of(Layout::Omarchy, row),
+        ["ctrl+alt+shift+x"]
+    );
+}

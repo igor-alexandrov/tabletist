@@ -805,19 +805,13 @@ fn draw(
                 let (title_line, sub_line) =
                     (line_of(ui, title_role, &look), line_of(ui, sub_role, &look));
                 let top = header.top() + (52.0 - title_line - sub_line) / 2.0;
-                widgets::paint_label(
-                    ui,
-                    header.left() + side,
-                    top + title_line / 2.0,
-                    Text::one(&look, title_role, &title, palette.text),
-                );
                 // Under it the table's name, or how much of the row is
                 // not saved yet, while anything is.
                 let changed = texts.map_or(0, |texts| texts.pending.iter().flatten().count());
-                let under = match changed {
+                let (under, under_color) = match changed {
                     // A new row is unsaved whole, whatever is set in it.
-                    _ if fresh.is_some() => Text::one(&look, sub_role, &not_saved, green.marker),
-                    0 => Text::one(&look, sub_role, &source.name, palette.dim),
+                    _ if fresh.is_some() => (not_saved.clone(), green.marker),
+                    0 => (source.name.clone(), palette.dim),
                     _ => {
                         let what = if changed == 1 {
                             "unsaved change"
@@ -825,9 +819,42 @@ fn draw(
                             "unsaved changes"
                         };
                         let said = format!("{changed} {}", gettext(locale, what));
-                        Text::one(&look, sub_role, &said, palette.warning)
+                        (said, palette.warning)
                     }
                 };
+                // Both lines end 8 before the buttons at the right: the
+                // three icons and, but over a new row, Copy row ▾. Where
+                // they do not fit beside its words, the button gives them
+                // up, its name kept; what still does not fit is cut, the
+                // title named whole.
+                let copy_text = format!("{} ▾", gettext(locale, "Copy row"));
+                let icons_left = header.right() - 8.0 - 3.0 * 34.0;
+                let room_beside = |button: Option<&widgets::ButtonSpec<'_>>| {
+                    let buttons_left = icons_left - button.map_or(0.0, |b| b.width(ui, &look));
+                    (buttons_left - 8.0 - header.left() - side).max(0.0)
+                };
+                let worded = widgets::ButtonSpec::new(&copy_text).icon(Icon::Copy);
+                let widest = title_role
+                    .width(ui.ctx(), look.faces, &title)
+                    .max(sub_role.width(ui.ctx(), look.faces, &under));
+                let copy_button = if widest <= room_beside(Some(&worded)) {
+                    worded
+                } else {
+                    widgets::ButtonSpec::new("▾")
+                        .icon(Icon::Copy)
+                        .label(&copy_text)
+                };
+                let room = room_beside(fresh.is_none().then_some(&copy_button));
+                let cut = |role: TextRole, text: &str| {
+                    let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
+                    crate::ui::grid::ellipsize(text, room, false, measure).into_owned()
+                };
+                let (x, y) = (header.left() + side, top + title_line / 2.0);
+                let shown = Text::one(&look, title_role, &cut(title_role, &title), palette.text);
+                let title_width = widgets::paint_text(ui, x, y, shown);
+                let place = Rect::from_min_size(pos2(x, y - 8.0), vec2(title_width.max(1.0), 16.0));
+                widgets::announce(ui, place, &title);
+                let under = Text::one(&look, sub_role, &cut(sub_role, &under), under_color);
                 let under_width = widgets::paint_text(
                     ui,
                     header.left() + side,
@@ -893,6 +920,81 @@ fn draw(
                             actions.push(action);
                         }
                     });
+                }
+                // Copy row ▾, left of them: the row in a format. A new row
+                // is no row of the page's to copy.
+                if fresh.is_none() {
+                    let button = copy_button;
+                    let width = button.width(ui, &look);
+                    let at = Rect::from_min_size(pos2(right - width, y - 14.0), vec2(width, 28.0));
+                    let response = button.show_at(ui, at, &look, &palette);
+                    // As the board lists them: TSV first, as ⇧⌘C copies it.
+                    let order = {
+                        use crate::export::Format;
+                        use crate::model::CopyHow::{As, Plain};
+                        [
+                            Plain,
+                            As(Format::Json),
+                            As(Format::Csv),
+                            As(Format::Markdown),
+                            As(Format::SqlInsert),
+                        ]
+                    };
+                    // Then, under a rule, Export row… with its key (spec
+                    // 4, S8).
+                    let export_keys = crate::ui::keys::written_in(
+                        ui.ctx(),
+                        &look,
+                        Command::Export,
+                        crate::keymap::Scope::Inspector,
+                    );
+                    let export_row = gettext(locale, "Export row…");
+                    let picked = crate::ui::menu::under(&response, 0.0, &look, &palette, |ui| {
+                        let mut picked = None;
+                        for (index, how) in order.iter().enumerate() {
+                            let text = crate::ui::copy_as::row_name(*how, true, locale);
+                            if crate::ui::menu::Item::action(&text)
+                                .show(ui, &look, &palette)
+                                .clicked()
+                            {
+                                picked = Some(Some(index));
+                            }
+                        }
+                        crate::ui::menu::separator(ui, &palette);
+                        // Its key where the panel takes the keyboard: a
+                        // table's (a result's fields take none; plan, B15).
+                        let item = crate::ui::menu::Item::action(&export_row);
+                        let item = match source.table {
+                            true => item.detail(export_keys.as_str()),
+                            false => item,
+                        };
+                        if item.show(ui, &look, &palette).clicked() {
+                            picked = Some(None);
+                        }
+                        if picked.is_some() {
+                            ui.close();
+                        }
+                        picked
+                    });
+                    // The keyboard goes back to the button, as the
+                    // other menus give it.
+                    let escaped = || ui.input(|input| input.key_pressed(egui::Key::Escape));
+                    if picked.is_some_and(|picked| picked.is_some())
+                        || (picked.is_some() && escaped())
+                    {
+                        response.request_focus();
+                    }
+                    match picked.flatten() {
+                        Some(Some(index)) => {
+                            let pick = crate::model::CopyPick::CursorRow;
+                            let how = order[index];
+                            actions.push(Action::CopyAs { tab, pick, how });
+                        }
+                        Some(None) => {
+                            actions.push(Action::ExportSelection(crate::ui::keys::export_row(tab)));
+                        }
+                        None => {}
+                    }
                 }
             }
             // A row no field of which can be edited says why, once, in a

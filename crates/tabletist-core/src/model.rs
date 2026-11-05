@@ -302,30 +302,111 @@ pub enum Action {
         id: TabId,
         cell: CellPos,
     },
-    /// Select the rows from the cursor's row, or from the range's anchor,
-    /// to `cell`'s row, and put the cursor on `cell`: Shift with a click.
-    /// With no cursor it selects the cell.
+    /// Select the cells from the cursor's, or from the range's anchor, to
+    /// `cell`, and put the cursor on `cell`: Shift with a click, a drag.
+    /// A range of rows runs to `cell`'s row. With no cursor it selects the
+    /// cell.
     ExtendTo {
         tab: ConnTabId,
         id: TabId,
         cell: CellPos,
     },
-    /// The same by rows from the cursor: Shift with an arrow.
+    /// The same by rows and columns from the cursor: Shift with an arrow.
     ExtendBy {
         tab: ConnTabId,
         id: TabId,
         rows: isize,
+        cols: isize,
     },
-    /// Start a visual selection of rows on the cursor's row, or leave the
-    /// one that is on: the terminal look's `V`.
+    /// Start a visual selection on the cursor, or leave the one that is
+    /// on: the terminal look's `v` (cells), `ctrl+v` (a block) and `V`
+    /// (rows).
     SelectRows {
         tab: ConnTabId,
         id: TabId,
+        mode: Visual,
     },
-    /// Leave a visual selection of rows. The cursor stays.
+    /// Select the rows the selection covers, whole: `⇧Space`.
+    SelectRowsOfCursor {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Select every row the grid shows: `⌘A`.
+    SelectAllRows {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// A click on a row's number: that row, with Shift the rows to it, with
+    /// Command that row in or out.
+    RowNumberClicked {
+        tab: ConnTabId,
+        id: TabId,
+        row: usize,
+        click: RowClick,
+    },
+    /// Leave a visual selection. The cursor stays.
     LeaveVisual {
         tab: ConnTabId,
         id: TabId,
+    },
+    /// Open the Copy as menu on the grid in front: over its selection, or
+    /// the row panel's row.
+    OpenCopyAs {
+        tab: ConnTabId,
+        pick: CopyPick,
+    },
+    /// Move the Copy as menu's lit row.
+    MoveInCopyAs(isize),
+    /// Open the Export sheet over the table in front of `tab`, its format
+    /// chosen where one is given (`:export json`).
+    OpenExport {
+        tab: ConnTabId,
+        format: Option<crate::export::Format>,
+    },
+    /// The terminal look's `E` on the tree: the table under the cursor
+    /// opens, and its export float over it.
+    ExportFromTree(ConnTabId),
+    /// The grid's Export selection…, and Copy as's Export… over the
+    /// clipboard's limit: the sheet over the table in front, on its
+    /// selection.
+    ExportSelection(ExportOffer),
+    /// A row of the sidebar's menu on a table or view.
+    FromTree {
+        tab: ConnTabId,
+        object: ObjectRef,
+        kind: ObjectKind,
+        pick: TreePick,
+    },
+    /// A change made in the Export sheet.
+    ChangeExport(crate::export_sheet::ExportChange),
+    /// The sheet's Count exactly: the tab's count, as the footer's Count.
+    CountForExport,
+    /// The sheet's primary button: ask where the file goes (the macOS
+    /// look), or start the export.
+    StartExport,
+    /// `:w <path>` (`replace` for `:w!`): the table in front, written at
+    /// once (spec, Q13).
+    ExportTo {
+        tab: ConnTabId,
+        path: String,
+        replace: bool,
+    },
+    /// Stop the running export (the toast's Cancel, `:export cancel`).
+    CancelExport,
+    /// Hide the macOS progress toast to its pill, or show it again.
+    HideExport(bool),
+    /// Put away a failed export's toast or line.
+    DismissExport,
+    /// A failed export's action: Try again, Choose folder… or Review SQL.
+    ExportFailureAction,
+    /// Show the exported file in the file manager (Show in Finder, `go`).
+    RevealExport,
+    /// Put `pick` of the grid in front on the clipboard, as `how` says,
+    /// and say so. A visual selection is left, as `y` leaves it.
+    CopyAs {
+        tab: ConnTabId,
+        pick: CopyPick,
+        how: CopyHow,
     },
     /// Open the editor on a cell of a table's grid, or say why it cannot
     /// be edited.
@@ -1117,6 +1198,12 @@ pub enum Action {
     },
     /// Switch quick open between this connection and every open one.
     QuickOpenScope,
+    /// ⇧⌘E (`ctrl+e`) in quick open: the picked table or view opens, and
+    /// its Export sheet over it.
+    QuickOpenExport,
+    /// Quick open's Export a table…: it opens again on `tab`'s tables and
+    /// views alone, and the one picked opens with its sheet.
+    PickTableToExport(ConnTabId),
     /// Open the menu of the server's other databases under the connection
     /// bar's chip, as Switch database's key does.
     ShowDatabaseMenu(ConnTabId),
@@ -1939,6 +2026,9 @@ pub struct ConnectionForm {
     pub focus_name: bool,
     pub driver: Driver,
     pub sqlite_path: String,
+    /// BigQuery's service-account key file (JSON), as typed; empty takes
+    /// Google Cloud's application default credentials.
+    pub bigquery_key: String,
     pub host: String,
     /// As typed; checked on save.
     pub port: String,
@@ -2070,6 +2160,7 @@ impl Default for ConnectionForm {
             focus_name: true,
             driver: Driver::Sqlite,
             sqlite_path: String::new(),
+            bigquery_key: String::new(),
             host: "localhost".into(),
             port: String::new(),
             user: String::new(),
@@ -2185,7 +2276,8 @@ impl ConnectionForm {
     /// `require` with a CA file does, like libpq).
     pub fn password_can_be_intercepted(&self) -> bool {
         let unchecked = match self.driver {
-            Driver::Sqlite => false,
+            // No password crosses: the API is HTTPS to Google.
+            Driver::Sqlite | Driver::BigQuery => false,
             Driver::Postgres => match self.tls {
                 TlsMode::Disable | TlsMode::Prefer => true,
                 TlsMode::Require => self.ca_file.trim().is_empty(),
@@ -2260,6 +2352,11 @@ impl ConnectionForm {
                 .as_ref()
                 .map(|path| path.display().to_string())
                 .unwrap_or_default(),
+            bigquery_key: spec
+                .bigquery_key
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
             host: spec.host.clone(),
             port: if spec.port == 0 {
                 String::new()
@@ -2326,6 +2423,17 @@ impl ConnectionForm {
     /// What to connect to, or why the fields do not describe a connection.
     pub fn to_spec(&self) -> Result<ConnectSpec, String> {
         match self.driver {
+            Driver::BigQuery => {
+                let project = self.database.trim();
+                if project.is_empty() {
+                    return Err("Enter a GCP project.".into());
+                }
+                let key = self.bigquery_key.trim();
+                Ok(ConnectSpec::bigquery(
+                    project,
+                    (!key.is_empty()).then(|| key.into()),
+                ))
+            }
             Driver::Sqlite => {
                 let path = self.sqlite_path.trim();
                 if path.is_empty() {
@@ -2389,6 +2497,7 @@ impl ConnectionForm {
                     user: user.to_owned(),
                     database: self.database.trim().to_owned(),
                     sqlite_path: None,
+                    bigquery_key: None,
                     tls: self.tls,
                     ca_file: (!ca_file.is_empty()).then(|| ca_file.into()),
                     ssh,
@@ -2474,7 +2583,7 @@ impl ConnectionForm {
         }
         let spec = self.to_spec()?;
         let password = match spec.driver {
-            Driver::Sqlite => PasswordMode::None,
+            Driver::Sqlite | Driver::BigQuery => PasswordMode::None,
             // Nothing typed and nothing saved (or the saved one forgotten):
             // a server that needs no password (trust or peer
             // authentication).
@@ -2736,6 +2845,80 @@ pub enum Dialog {
     Conflict(Box<ConflictPrompt>),
     /// What agents may do on a connection, in the terminal look's box.
     AgentAccess(Box<AgentAccessBox>),
+    /// The Copy as menu: ⌥⌘C, `gy`, or the row panel's Copy row ▾.
+    CopyAs(Box<CopyAsMenu>),
+    /// The Export sheet (the terminal look's float) over a table's tab.
+    Export(Box<crate::export_sheet::ExportSheet>),
+}
+
+/// What a copy takes of a grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyPick {
+    /// The selection: a rectangle's cells, or whole rows.
+    Selection,
+    /// Every column of the rows the selection covers.
+    Rows,
+    /// The cursor's row alone, whole: `yy`, and the row panel's.
+    CursorRow,
+}
+
+/// How a copy writes what it takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyHow {
+    /// As ⌘C: TSV with its remembered options and no header row, and one
+    /// cell alone as its text.
+    Plain,
+    /// In a format, with its remembered options.
+    As(crate::export::Format),
+    /// The columns' names, for a `SELECT` list.
+    ColumnNames,
+}
+
+impl CopyHow {
+    /// The rows the Copy as menu offers over `pick`: the row panel's row
+    /// takes no column names, and its TSV is as ⇧⌘C copies it.
+    pub fn menu(pick: CopyPick) -> Vec<(CopyHow, crate::keymap::Command)> {
+        match pick {
+            CopyPick::CursorRow => Self::MENU[..5]
+                .iter()
+                .map(|(how, letter)| (how.of_row(), *letter))
+                .collect(),
+            CopyPick::Selection | CopyPick::Rows => Self::MENU.to_vec(),
+        }
+    }
+
+    /// The copy of a row whole that this is: TSV with no header row, as
+    /// ⇧⌘C copies it.
+    pub fn of_row(self) -> CopyHow {
+        match self {
+            CopyHow::As(crate::export::Format::Tsv) => CopyHow::Plain,
+            other => other,
+        }
+    }
+
+    /// The Copy as menu's rows, in order, with their letters' commands.
+    pub const MENU: [(CopyHow, crate::keymap::Command); 6] = {
+        use crate::export::Format;
+        use crate::keymap::Command;
+        [
+            (CopyHow::As(Format::Csv), Command::CopyAsCsv),
+            (CopyHow::As(Format::Tsv), Command::CopyAsTsv),
+            (CopyHow::As(Format::Json), Command::CopyAsJson),
+            (CopyHow::As(Format::Markdown), Command::CopyAsMarkdown),
+            (CopyHow::As(Format::SqlInsert), Command::CopyAsSql),
+            (CopyHow::ColumnNames, Command::CopyColumnNames),
+        ]
+    };
+}
+
+/// The Copy as menu, while it is open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopyAsMenu {
+    /// The connection tab whose grid it copies from.
+    pub tab: ConnTabId,
+    pub pick: CopyPick,
+    /// The row the keyboard is on, of [`CopyHow::MENU`].
+    pub lit: usize,
 }
 
 /// The terminal look's box of what agents may do on a saved connection.
@@ -2905,6 +3088,9 @@ pub struct QuickOpen {
     /// typed): what Enter opens, wherever the list, which can change by
     /// itself (a run that ends, a list that comes in), has moved it.
     pub picked: Option<QuickItem>,
+    /// Export a table…: it lists the connection's tables and views alone,
+    /// and the one picked opens with its Export sheet.
+    pub exporting: bool,
 }
 
 /// Where quick open moves its field's caret.
@@ -2956,6 +3142,14 @@ pub enum About {
     Agents,
     /// The tab in front.
     Tab(TabName),
+    /// The table in front, which the command's name holds ("Export
+    /// reviews…"): "current table".
+    CurrentTable(String),
+    /// A table is picked next: "pick one next".
+    PickNext,
+    /// The SQL editor in front, whose number the command's name holds
+    /// ("Export result of Query 1…"): "SQL editor".
+    CurrentResult(u32),
 }
 
 /// A tab as a command's row names it.
@@ -2989,6 +3183,19 @@ pub struct Runnable {
     pub command: crate::keymap::Command,
     pub name: &'static str,
     pub about: About,
+}
+
+impl Runnable {
+    /// Its name in `locale`, the table in front written into it where it
+    /// names one ("Export {table}…").
+    pub fn named(&self, locale: crate::i18n::Locale) -> String {
+        let name = crate::i18n::gettext(locale, self.name);
+        match &self.about {
+            About::CurrentTable(table) => name.replace("{table}", table),
+            About::CurrentResult(query) => name.replace("{n}", &query.to_string()),
+            _ => name.into_owned(),
+        }
+    }
 }
 
 /// A row of a window's start screen list, as quick open shows it with
@@ -3583,6 +3790,51 @@ pub struct SchemaNode {
     pub open_groups: HashSet<String>,
 }
 
+/// The sheet Export selection… opens (spec 3b, R1 and R6): over the table
+/// in front of `tab`, on its selection (the cursor's row where no range
+/// stands), every column where `whole_rows` (a refused Copy rows as TSV),
+/// else a block's own. A format given is the copy's, to a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportOffer {
+    pub tab: ConnTabId,
+    /// The table's (or the SQL editor's) tab the copy was of: it comes to
+    /// the front first.
+    pub table: Option<TabId>,
+    pub format: Option<crate::export::Format>,
+    pub whole_rows: bool,
+    /// What the copy took: a selection moved since is put back, so the
+    /// sheet exports what was copied.
+    pub copied: Option<CopiedSelection>,
+    /// The cursor's row alone, whatever range stands: the row panel's
+    /// Export row… (spec 4, S8).
+    pub row_only: bool,
+}
+
+/// The selection a refused copy took, on the page it was of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopiedSelection {
+    /// The read whose page the rows are of: once another page is shown
+    /// the rows are other rows, and the offer goes.
+    pub page: Option<RequestId>,
+    pub cursor: CellPos,
+    pub range: Option<Range>,
+}
+
+/// What a row of the sidebar's menu on a table or view does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreePick {
+    /// Open it pinned, as a double click.
+    Open,
+    /// Open it in its Structure view.
+    Structure,
+    /// Open it in its DDL view.
+    Ddl,
+    /// Put its name on the clipboard, and say so.
+    CopyName,
+    /// Open it, and its Export sheet over it.
+    Export,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeNode {
     /// "No tables or views" in a loaded schema that has none.
@@ -3694,6 +3946,9 @@ pub fn is_system_schema(driver: Driver, name: &str) -> bool {
             "mysql" | "sys" | "performance_schema" | "information_schema"
         ),
         Driver::Sqlite => false,
+        // BigQuery lists dataset IDs here; a dataset's INFORMATION_SCHEMA
+        // is views inside it, never a dataset of its own.
+        Driver::BigQuery => false,
     }
 }
 
@@ -3938,33 +4193,7 @@ pub enum SaveBlock {
     Unsendable,
 }
 
-/// The rows selected with the cursor's: from `anchor` to the cursor's row,
-/// in the order the grid shows them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RowRange {
-    /// A row as [`CellPos::row`] names it: of the page, or a new row.
-    pub anchor: usize,
-    /// Moves keep the range until it is left: the terminal look's visual
-    /// selection.
-    pub held: bool,
-}
-
-/// What becomes of the range when the cursor is set
-/// ([`ObjectTab::set_cursor`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reach {
-    /// Shift with a click or an arrow: the range runs from its anchor, or
-    /// from the row the cursor was on, to the new row.
-    Extend,
-    /// A move by key: a held range follows, another ends.
-    Move,
-    /// Anything else ends it: a click, an editor that opens, a new row, a
-    /// page that goes.
-    End,
-    /// The rows under the cursor changed, not what is selected: a new row
-    /// was dropped.
-    Keep,
-}
+pub use crate::selection::{Range, Reach, RowClick, Visual};
 
 /// One open table or view.
 #[derive(Debug)]
@@ -3996,9 +4225,9 @@ pub struct ObjectTab {
     /// it is on: it runs from there to the cursor's line.
     pub ddl_visual: Option<usize>,
     pub selection: Option<CellPos>,
-    /// The rows selected with the cursor's, where there are several.
-    /// Written with the cursor, by [`ObjectTab::set_cursor`].
-    pub range: Option<RowRange>,
+    /// What is selected with the cursor's cell: a rectangle of cells, or
+    /// whole rows. Written with the cursor, by [`ObjectTab::set_cursor`].
+    pub range: Option<Range>,
     pub estimated_rows: Option<u64>,
     /// The exact row count for the current filters, when asked for.
     pub count: Fetch<u64>,
@@ -4145,68 +4374,97 @@ impl ObjectTab {
     pub fn set_cursor(&mut self, cell: Option<CellPos>, reach: Reach) {
         let was = self.selection;
         self.selection = cell;
-        let Some(cell) = cell else {
-            self.range = None;
-            return;
-        };
-        let range = match reach {
-            Reach::Extend => self.range.or_else(|| {
-                was.map(|was| RowRange {
-                    anchor: was.row,
-                    held: false,
-                })
-            }),
-            Reach::Move => self.range.filter(|range| range.held),
-            Reach::End => None,
-            Reach::Keep => self.range,
-        };
-        // One row that is not held is no range.
-        self.range = range.filter(|range| range.held || range.anchor != cell.row);
+        let range = self.range.take();
+        self.range = cell.and_then(|cell| crate::selection::moved(range, was, cell, reach));
     }
 
-    /// The places of the grid the range covers, the first and the last,
-    /// where a range stands.
-    pub fn selected_span(&self) -> Option<(usize, usize)> {
-        let (cell, range) = (self.selection?, self.range?);
+    /// The grid's order of its rows: the page's, and the new ones among
+    /// them.
+    pub fn order(&self) -> crate::edit::Order<'_> {
         let height = self.page().map_or(0, |page| page.rows.len());
-        let order = crate::edit::Order::of(&self.edits.added, height);
-        let (from, to) = (order.place(range.anchor)?, order.place(cell.row)?);
-        Some((from.min(to), from.max(to)))
+        crate::edit::Order::of(&self.edits.added, height)
+    }
+
+    /// The selection, read, where there is a cursor.
+    pub fn selected(&self) -> Option<crate::selection::Selection<'_>> {
+        Some(crate::selection::Selection {
+            cursor: self.selection?,
+            range: self.range.as_ref(),
+            order: self.order(),
+        })
     }
 
     /// The selected rows, in the grid's order: the cursor's, and with a
-    /// range every row from its anchor to the cursor's.
+    /// range the rows it covers.
     pub fn selected_rows(&self) -> Vec<usize> {
-        let Some(cell) = self.selection else {
-            return Vec::new();
-        };
-        let Some((first, last)) = self.selected_span() else {
-            return vec![cell.row];
-        };
-        let height = self.page().map_or(0, |page| page.rows.len());
-        let order = crate::edit::Order::of(&self.edits.added, height);
-        (first..=last)
-            .filter_map(|place| order.row(place))
-            .collect()
+        self.selected()
+            .map_or_else(Vec::new, |selected| selected.rows())
     }
 
-    /// Whether a visual selection of rows is on: a range that moves keep.
+    /// The first and the last column the selection covers.
+    pub fn selected_cols(&self) -> Option<(usize, usize)> {
+        let width = self.page()?.columns.len();
+        self.selected()?.cols(width)
+    }
+
+    /// How many rows and columns a range covers, where one stands.
+    pub fn selection_size(&self) -> Option<(usize, usize)> {
+        let width = self.page()?.columns.len();
+        self.selected()?.size(width)
+    }
+
+    /// Whether a visual selection is on: a range that moves keep.
     pub fn visual(&self) -> bool {
-        self.range.is_some_and(|range| range.held)
+        self.visual_mode().is_some()
     }
 
-    /// Starts a visual selection of rows on the cursor's row, or leaves
-    /// the one that is on. A range that stands becomes it, from its
-    /// anchor. With no cursor there is none to start.
-    pub fn toggle_visual(&mut self) {
-        if self.visual() {
-            self.range = None;
-            return;
-        }
+    /// The terminal look's visual mode, while one is on.
+    pub fn visual_mode(&self) -> Option<Visual> {
+        self.range.as_ref().and_then(Range::visual)
+    }
+
+    /// Starts the visual selection `mode` on the cursor, or leaves the one
+    /// that is on: `v`, `ctrl+v`, `V`. A range that stands becomes it,
+    /// from its anchor. With no cursor there is none to start.
+    pub fn toggle_visual(&mut self, mode: Visual) {
         if let Some(cell) = self.selection {
-            let anchor = self.range.map_or(cell.row, |range| range.anchor);
-            self.range = Some(RowRange { anchor, held: true });
+            self.range = crate::selection::toggled(self.range.take(), cell, mode);
+        } else {
+            self.range = None;
         }
+    }
+
+    /// Selects the rows the selection covers, whole: `⇧Space`.
+    pub fn select_rows_of_cursor(&mut self) {
+        if let Some(cell) = self.selection {
+            let range = crate::selection::as_rows(self.range.take(), cell, false);
+            self.range = Some(range);
+        }
+    }
+
+    /// Selects every row the grid shows: `⌘A`. The cursor goes to the
+    /// first where there is none.
+    pub fn select_all_rows(&mut self) {
+        let order = self.order();
+        let range = crate::selection::all(order);
+        let first = order.row(0);
+        if range.is_some() && self.selection.is_none() {
+            self.selection = first.map(|row| CellPos { row, col: 0 });
+        }
+        self.range = range.filter(|_| self.selection.is_some());
+    }
+
+    /// A click on the number of `row`.
+    pub fn row_number_clicked(&mut self, row: usize, click: RowClick) {
+        let (cell, range) = crate::selection::row_clicked(
+            self.range.take(),
+            self.selection,
+            row,
+            click,
+            self.order(),
+        );
+        self.selection = Some(cell);
+        self.range = range;
     }
 
     /// The cursor's row and the rows after it in the grid's order, `count`
@@ -4331,14 +4589,12 @@ impl ObjectTab {
         {
             self.set_cursor(None, Reach::End);
         }
-        // A range that began on a new row, the cursor on a row of the
-        // page: the set that held its anchor was dropped.
-        if self
+        // The new rows of a range: the set that held them was dropped.
+        let new = |row: usize| crate::edit::new_id(row).is_some();
+        self.range = self
             .range
-            .is_some_and(|range| crate::edit::new_id(range.anchor).is_some())
-        {
-            self.range = None;
-        }
+            .take()
+            .and_then(|range| range.without(new, |_| None));
     }
 
     /// The row panel's text for the selected row, if it is up to date.
@@ -5277,6 +5533,8 @@ pub struct SqlTab {
     /// to 1. Change it through `set_split`.
     pub split: f32,
     pub selection: Option<CellPos>,
+    /// What is selected with the cursor's cell, as in a table's grid.
+    pub range: Option<Range>,
     /// The row panel's text for the selected row (see `App::format_rows`).
     pub fields: Option<RowFields>,
     /// Focus the editor on the next frame.
@@ -5346,6 +5604,7 @@ impl SqlTab {
             pane: ResultPane::default(),
             split: Self::DEFAULT_SPLIT,
             selection: None,
+            range: None,
             fields: None,
             focus_editor: true,
             go_to: None,
@@ -5507,6 +5766,16 @@ impl SqlTab {
             })
     }
 
+    /// Whether the shown result can be exported (spec 4): its statement
+    /// returned rows, and no run is in flight, whose answer would put other
+    /// rows in their place.
+    pub fn exports(&self) -> bool {
+        !self.is_running()
+            && self
+                .shown_rows()
+                .is_some_and(|(_, rows, _)| !rows.is_empty())
+    }
+
     /// The shown result's columns and rows, and whether the limit cut
     /// rows off.
     pub fn shown_rows(&self) -> Option<ShownRows<'_>> {
@@ -5561,6 +5830,80 @@ impl SqlTab {
     pub fn dims(&self) -> (usize, usize) {
         self.shown_rows()
             .map_or((0, 0), |(columns, rows, _)| (rows.len(), columns.len()))
+    }
+
+    /// Puts the cursor on `cell`, or takes it away, as a table's tab does
+    /// ([`ObjectTab::set_cursor`]).
+    pub fn set_cursor(&mut self, cell: Option<CellPos>, reach: Reach) {
+        let was = self.selection;
+        self.selection = cell;
+        let range = self.range.take();
+        self.range = cell.and_then(|cell| crate::selection::moved(range, was, cell, reach));
+    }
+
+    /// The result's order of its rows: as they came.
+    pub fn order(&self) -> crate::edit::Order<'static> {
+        crate::edit::Order::of(&[], self.dims().0)
+    }
+
+    /// The selection, read, where there is a cursor in the result's
+    /// rows.
+    pub fn selected(&self) -> Option<crate::selection::Selection<'_>> {
+        let cursor = self.selection.filter(|cell| cell.row < self.dims().0)?;
+        Some(crate::selection::Selection {
+            cursor,
+            range: self.range.as_ref(),
+            order: self.order(),
+        })
+    }
+
+    /// The terminal look's visual mode, while one is on.
+    pub fn visual_mode(&self) -> Option<Visual> {
+        self.range.as_ref().and_then(Range::visual)
+    }
+
+    /// How many rows and columns a range covers, where one stands.
+    pub fn selection_size(&self) -> Option<(usize, usize)> {
+        self.selected()?.size(self.dims().1)
+    }
+
+    /// As [`ObjectTab::toggle_visual`].
+    pub fn toggle_visual(&mut self, mode: Visual) {
+        if let Some(cell) = self.selection {
+            self.range = crate::selection::toggled(self.range.take(), cell, mode);
+        } else {
+            self.range = None;
+        }
+    }
+
+    /// As [`ObjectTab::select_rows_of_cursor`].
+    pub fn select_rows_of_cursor(&mut self) {
+        if let Some(cell) = self.selection {
+            let range = crate::selection::as_rows(self.range.take(), cell, false);
+            self.range = Some(range);
+        }
+    }
+
+    /// As [`ObjectTab::select_all_rows`].
+    pub fn select_all_rows(&mut self) {
+        let range = crate::selection::all(self.order());
+        if range.is_some() && self.selection.is_none() {
+            self.selection = Some(CellPos { row: 0, col: 0 });
+        }
+        self.range = range.filter(|_| self.selection.is_some());
+    }
+
+    /// As [`ObjectTab::row_number_clicked`].
+    pub fn row_number_clicked(&mut self, row: usize, click: RowClick) {
+        let (cell, range) = crate::selection::row_clicked(
+            self.range.take(),
+            self.selection,
+            row,
+            click,
+            self.order(),
+        );
+        self.selection = Some(cell);
+        self.range = range;
     }
 
     /// The selected row of the result, while the Results pane shows it:
@@ -6018,6 +6361,8 @@ impl Workspace {
             Driver::Postgres => "public",
             Driver::MySql => self.spec.database.as_str(),
             Driver::Sqlite => "main",
+            // BigQuery names resolve dataset-less in no dataset.
+            Driver::BigQuery => return None,
         };
         let schemas = self.tree.schemas.value.as_ref()?;
         let found = schemas.iter().find(|schema| *schema == name);
@@ -6416,25 +6761,30 @@ mod tests {
     }
 
     #[test]
-    fn an_extend_selects_the_rows_from_the_anchor_to_the_cursor() {
+    fn an_extend_selects_the_cells_from_the_anchor_to_the_cursor() {
         let mut tab = covers(5);
         tab.set_cursor(at(1), Reach::End);
         assert_eq!(tab.selected_rows(), [1]);
         tab.set_cursor(at(3), Reach::Extend);
         assert_eq!(tab.selected_rows(), [1, 2, 3]);
+        assert_eq!(tab.selected_cols(), Some((1, 1)));
+        assert_eq!(tab.selection_size(), Some((3, 1)));
+        tab.set_cursor(Some(CellPos { row: 3, col: 3 }), Reach::Extend);
+        assert_eq!(tab.selected_cols(), Some((1, 3)));
+        tab.set_cursor(at(3), Reach::Extend);
         // The anchor stays where the range began.
         tab.set_cursor(at(0), Reach::Extend);
         assert_eq!(tab.selected_rows(), [0, 1]);
         // Back on the anchor one row is selected, and no range stands.
         tab.set_cursor(at(1), Reach::Extend);
-        assert_eq!((tab.selected_rows(), tab.range), (vec![1], None));
+        assert_eq!((tab.selected_rows(), tab.range.clone()), (vec![1], None));
     }
 
     #[test]
     fn with_no_cursor_an_extend_selects_one_row() {
         let mut tab = covers(5);
         tab.set_cursor(at(2), Reach::Extend);
-        assert_eq!((tab.selected_rows(), tab.range), (vec![2], None));
+        assert_eq!((tab.selected_rows(), tab.range.clone()), (vec![2], None));
     }
 
     #[test]
@@ -6443,10 +6793,11 @@ mod tests {
         tab.set_cursor(at(1), Reach::End);
         tab.set_cursor(at(2), Reach::Extend);
         tab.set_cursor(at(3), Reach::Move);
-        assert_eq!((tab.selected_rows(), tab.range), (vec![3], None));
+        assert_eq!((tab.selected_rows(), tab.range.clone()), (vec![3], None));
         // A held range follows the cursor, along the row too.
-        tab.range = Some(RowRange {
-            anchor: 3,
+        tab.range = Some(Range::Rows {
+            anchor: Some(3),
+            picked: Default::default(),
             held: true,
         });
         tab.set_cursor(at(1), Reach::Move);
@@ -6458,10 +6809,10 @@ mod tests {
         assert!(tab.range.is_some());
         // Anything else ends it, and so does a cursor that goes.
         tab.set_cursor(at(2), Reach::End);
-        assert_eq!(tab.range, None);
+        assert_eq!(tab.range.clone(), None);
         tab.set_cursor(at(1), Reach::Extend);
         tab.set_cursor(None, Reach::Keep);
-        assert_eq!((tab.selected_rows(), tab.range), (Vec::new(), None));
+        assert_eq!((tab.selected_rows(), tab.range.clone()), (Vec::new(), None));
     }
 
     #[test]
@@ -6471,7 +6822,10 @@ mod tests {
         tab.set_cursor(at(0), Reach::End);
         tab.set_cursor(at(1), Reach::Extend);
         assert_eq!(tab.selected_rows(), [0, crate::edit::new_row(new), 1]);
-        assert_eq!(tab.selected_span(), Some((0, 2)));
+        assert_eq!(
+            tab.selected().map(|selected| selected.places()),
+            Some(vec![0, 1, 2])
+        );
     }
 
     #[test]
@@ -6483,17 +6837,17 @@ mod tests {
         assert_eq!(tab.selected_rows(), [new, 1, 2]);
         tab.edits = crate::edit::Edits::default();
         tab.off_new_rows();
-        assert_eq!((tab.selected_rows(), tab.range), (vec![2], None));
+        assert_eq!((tab.selected_rows(), tab.range.clone()), (vec![2], None));
     }
 
     #[test]
     fn a_visual_selection_is_started_and_left_on_the_cursors_row() {
         let mut tab = covers(5);
         // With no cursor there is none to start.
-        tab.toggle_visual();
+        tab.toggle_visual(Visual::Rows);
         assert!(!tab.visual());
         tab.set_cursor(at(2), Reach::End);
-        tab.toggle_visual();
+        tab.toggle_visual(Visual::Rows);
         assert!(tab.visual());
         assert_eq!(tab.selected_rows(), [2]);
         // Moves extend it, up and down.
@@ -6501,11 +6855,11 @@ mod tests {
         assert_eq!(tab.selected_rows(), [2, 3, 4]);
         tab.set_cursor(at(0), Reach::Move);
         assert_eq!(tab.selected_rows(), [0, 1, 2]);
-        tab.toggle_visual();
+        tab.toggle_visual(Visual::Rows);
         assert_eq!((tab.visual(), tab.selected_rows()), (false, vec![0]));
         // A range made with Shift becomes the visual one, from its anchor.
         tab.set_cursor(at(1), Reach::Extend);
-        tab.toggle_visual();
+        tab.toggle_visual(Visual::Rows);
         assert!(tab.visual());
         tab.set_cursor(at(3), Reach::Move);
         assert_eq!(tab.selected_rows(), [0, 1, 2, 3]);
@@ -7490,6 +7844,9 @@ mod tests {
         assert!(is_system_schema(Driver::MySql, "performance_schema"));
         assert!(!is_system_schema(Driver::Sqlite, "main"));
         assert!(!is_system_schema(Driver::Postgres, "public"));
+        // A dataset of that name is a user's own: INFORMATION_SCHEMA is
+        // views within a dataset, never one itself.
+        assert!(!is_system_schema(Driver::BigQuery, "information_schema"));
     }
 
     #[test]

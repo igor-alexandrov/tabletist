@@ -138,7 +138,8 @@ const COMMENT_WIDTH: f32 = 320.0;
 /// to have a place for it.
 fn keeps_comments(driver: Driver) -> bool {
     match driver {
-        Driver::Postgres | Driver::MySql => true,
+        // BigQuery's column descriptions are its comments.
+        Driver::Postgres | Driver::MySql | Driver::BigQuery => true,
         Driver::Sqlite => false,
     }
 }

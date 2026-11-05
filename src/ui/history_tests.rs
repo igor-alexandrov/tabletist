@@ -100,7 +100,7 @@ fn entry(harness: &Harness, tab: ConnTabId, source: Source, sql: Option<&str>) -
         source,
         detail: match source {
             Source::Sql => "Query 1",
-            Source::Save | Source::Filter => "book_covers",
+            Source::Save | Source::Filter | Source::Export => "book_covers",
             // An agent's name is the Agents Log's: the history keeps none.
             Source::Agent => "",
         }
@@ -112,14 +112,14 @@ fn entry(harness: &Harness, tab: ConnTabId, source: Source, sql: Option<&str>) -
         call: (source == Source::Agent).then_some(7),
         kind: match source {
             Source::Save => Kind::Write,
-            Source::Sql | Source::Filter | Source::Agent => Kind::Read,
+            Source::Sql | Source::Filter | Source::Agent | Source::Export => Kind::Read,
         },
         read_only: true,
         rows: Some(6),
         took_ms: Some(38),
         outcome: match source {
             Source::Save => Outcome::Saved,
-            Source::Sql | Source::Filter | Source::Agent => Outcome::Ok,
+            Source::Sql | Source::Filter | Source::Agent | Source::Export => Outcome::Ok,
         },
         code: None,
         message: None,

@@ -112,6 +112,7 @@ fn is_local(connection: &SavedConnection) -> bool {
         Driver::Postgres | Driver::MySql => {
             spec.ssh.is_none() && crate::model::is_local_host(&spec.host)
         }
+        Driver::BigQuery => false,
     }
 }
 
@@ -127,24 +128,31 @@ pub fn visible(connections: &SavedConnections, search: &str) -> Vec<ConnectionId
 
 /// How a connection's TLS reads in the list, and whether it is fine.
 fn tls_label(connection: &SavedConnection) -> (String, Option<bool>) {
-    use tabletist_db::TlsMode;
+    use tabletist_db::{Driver, TlsMode};
     if is_local(connection) {
         return ("Local".into(), None);
     }
-    let text = match connection.spec.tls {
-        TlsMode::Disable => "no TLS",
-        TlsMode::Prefer => "prefer",
-        TlsMode::Require => "require",
-        TlsMode::VerifyCa => "verify-ca",
-        TlsMode::VerifyFull => "verify-full",
-    };
-    (
-        text.into(),
-        Some(matches!(
-            connection.spec.tls,
-            TlsMode::VerifyFull | TlsMode::VerifyCa
-        )),
-    )
+    match connection.spec.driver {
+        // HTTPS to Google's API, verified against the system roots: the
+        // database TLS modes are not its to set.
+        Driver::BigQuery => ("HTTPS".into(), Some(true)),
+        Driver::Postgres | Driver::MySql | Driver::Sqlite => {
+            let text = match connection.spec.tls {
+                TlsMode::Disable => "no TLS",
+                TlsMode::Prefer => "prefer",
+                TlsMode::Require => "require",
+                TlsMode::VerifyCa => "verify-ca",
+                TlsMode::VerifyFull => "verify-full",
+            };
+            (
+                text.into(),
+                Some(matches!(
+                    connection.spec.tls,
+                    TlsMode::VerifyFull | TlsMode::VerifyCa
+                )),
+            )
+        }
+    }
 }
 
 /// How a connection's tunnel reads in the list.
@@ -806,7 +814,8 @@ pub(crate) fn target(connection: &SavedConnection) -> (String, String) {
     use tabletist_db::Driver;
     let spec = &connection.spec;
     match spec.driver {
-        Driver::Sqlite => (spec.summary(), String::new()),
+        // A BigQuery summary is the project alone.
+        Driver::Sqlite | Driver::BigQuery => (spec.summary(), String::new()),
         Driver::Postgres | Driver::MySql => (
             format!("{}:{}", spec.host, spec.port),
             format!("/{}", spec.database),

@@ -30,7 +30,7 @@ use crate::secrets::{Keyring, password_account, ssh_account};
 #[cfg(any(unix, windows))]
 mod listen;
 #[cfg(target_os = "linux")]
-mod notify;
+pub(super) mod notify;
 
 /// A connection agents may use, as the server is given it: what opens it,
 /// and what an agent calls it. Its password is not here: the gateway reads

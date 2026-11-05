@@ -74,6 +74,35 @@ pub(crate) struct Conn {
 }
 
 impl Conn {
+    /// An export's rows through a prepared statement inside a read-only
+    /// transaction, read from the server a row at a time (the driver does
+    /// not buffer a result), sent on a batch at a time: a table's
+    /// statement, or a SQL editor's.
+    async fn stream_sql(
+        &self,
+        sql: &crate::dialect::Sql,
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        let mut conn = self.conn.lock().await;
+        let mut transaction = conn
+            .start_transaction(read_only())
+            .await
+            .map_err(query_error)?;
+        match stream_into(&mut transaction, sql, batch, to, stop).await {
+            Ok(sent) => {
+                stop.finish();
+                finish(transaction, Ok(sent)).await
+            }
+            // Rows the stream did not read are still on their way: a
+            // rollback now would read every one of them first. The
+            // export's connection is closed after a failure, which ends
+            // the transaction with it.
+            Err(error) => Err(crate::agent::over_its_time(error)),
+        }
+    }
+
     /// Connects to the spec's server, or through a tunnel's local port `via`.
     pub async fn connect(
         spec: &ConnectSpec,
@@ -172,17 +201,22 @@ impl Conn {
     /// The byte string columns a filter of `query` compares as bytes when
     /// its value reads as bytes; empty, without asking, when no filter has
     /// such a value.
-    async fn binary_columns(&self, query: &RowQuery) -> Result<Vec<String>> {
+    async fn binary_columns(&self, query: &RowQuery) -> Result<Vec<(String, ColumnClass)>> {
         if !crate::dialect::reads_bytes(query) {
             return Ok(Vec::new());
         }
-        self.catalog(
-            "SELECT column_name FROM information_schema.columns \
-             WHERE table_schema = ? AND table_name = ? AND data_type IN \
-                   ('binary', 'varbinary', 'tinyblob', 'blob', 'mediumblob', 'longblob')",
-            (&query.object.schema, &query.object.name),
-        )
-        .await
+        let names: Vec<String> = self
+            .catalog(
+                "SELECT column_name FROM information_schema.columns \
+                 WHERE table_schema = ? AND table_name = ? AND data_type IN \
+                       ('binary', 'varbinary', 'tinyblob', 'blob', 'mediumblob', 'longblob')",
+                (&query.object.schema, &query.object.name),
+            )
+            .await?;
+        Ok(names
+            .into_iter()
+            .map(|name| (name, ColumnClass::Binary))
+            .collect())
     }
 }
 
@@ -500,7 +534,7 @@ impl Adapter for Conn {
     async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
         let key = self.primary_key(&query.object).await?;
         let binary = self.binary_columns(query).await?;
-        let sql = Dialect::MySql.select_rows(query, &key, &binary);
+        let sql = Dialect::MySql.select_rows(query, &key, &binary)?;
         let limit = query.limit as usize;
         let mut conn = self.conn.lock().await;
         let started = Instant::now();
@@ -521,9 +555,45 @@ impl Adapter for Conn {
         })
     }
 
+    async fn export_statement(&self, query: &RowQuery, columns: &[String]) -> Result<String> {
+        let key = self.primary_key(&query.object).await?;
+        let binary = self.binary_columns(query).await?;
+        Dialect::MySql.shown_export(query, &key, &binary, columns)
+    }
+
+    /// A table's export rows, through `stream_sql`.
+    async fn stream_rows(
+        &self,
+        query: &RowQuery,
+        columns: &[String],
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        let key = self.primary_key(&query.object).await?;
+        let binary = self.binary_columns(query).await?;
+        let sql = Dialect::MySql.export_rows(query, &key, &binary, columns)?;
+        self.stream_sql(&sql, batch, to, stop).await
+    }
+
+    /// A statement of the person's, as `stream_rows` streams a table's.
+    async fn stream_statement(
+        &self,
+        text: &str,
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        let sql = crate::dialect::Sql {
+            text: text.to_owned(),
+            params: Vec::new(),
+        };
+        self.stream_sql(&sql, batch, to, stop).await
+    }
+
     async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
         let binary = self.binary_columns(query).await?;
-        let sql = Dialect::MySql.count_rows(query, &binary);
+        let sql = Dialect::MySql.count_rows(query, &binary)?;
         let mut conn = self.conn.lock().await;
         let mut transaction = conn
             .start_transaction(read_only())
@@ -633,6 +703,41 @@ async fn read_page(
     }
     result.drop_result().await.map_err(query_error)?;
     Ok((columns, rows))
+}
+
+/// An export's rows, a batch at a time (see [`Conn::stream_rows`]).
+async fn stream_into(
+    transaction: &mut mysql_async::Transaction<'_>,
+    sql: &crate::dialect::Sql,
+    batch: usize,
+    to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+    stop: &StopFlag,
+) -> Result<u64> {
+    let statement = prepare(transaction, sql).await?;
+    let mut result = transaction
+        .exec_iter(&statement, params(&sql.params))
+        .await
+        .map_err(query_error)?;
+    let columns = column_metas(result.columns_ref());
+    crate::stream::send(to, crate::Streamed::Columns(columns.clone())).await?;
+    let mut sent = 0u64;
+    let mut rows = Vec::with_capacity(batch);
+    while let Some(row) = result.next().await.map_err(query_error)? {
+        rows.push(row_values(row, &columns));
+        if rows.len() == batch {
+            if stop.is_stopped() {
+                return Err(Error::Cancelled);
+            }
+            sent += rows.len() as u64;
+            let full = std::mem::replace(&mut rows, Vec::with_capacity(batch));
+            crate::stream::send(to, crate::Streamed::Rows(full)).await?;
+        }
+    }
+    if !rows.is_empty() {
+        sent += rows.len() as u64;
+        crate::stream::send(to, crate::Streamed::Rows(rows)).await?;
+    }
+    Ok(sent)
 }
 
 /// The row of a count.

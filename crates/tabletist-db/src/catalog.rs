@@ -160,6 +160,21 @@ pub struct Structure {
 }
 
 impl Structure {
+    /// The columns' names and classes as `dialect` reads their types:
+    /// what a filter's statement is built with (see
+    /// [`crate::Dialect::select_rows`]).
+    pub fn classes(&self, dialect: crate::Dialect) -> Vec<(String, crate::ColumnClass)> {
+        self.columns
+            .iter()
+            .map(|column| {
+                (
+                    column.name.clone(),
+                    crate::column_class(dialect, &column.type_name),
+                )
+            })
+            .collect()
+    }
+
     /// The columns that tell one row from every other, for a save to find
     /// the row by: the primary key, else the first unique index (by name)
     /// that covers every row and is over whole columns that cannot be NULL.
