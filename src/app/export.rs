@@ -482,6 +482,10 @@ impl App {
             row_only,
             listed: None,
             picking: false,
+            listing: false,
+            list_closed: false,
+            picked: None,
+            to_line: 0,
         };
         self.open_sheet(sheet);
     }
@@ -547,6 +551,10 @@ impl App {
             row_only,
             listed: None,
             picking: false,
+            listing: false,
+            list_closed: false,
+            picked: None,
+            to_line: 0,
         };
         self.open_sheet(sheet);
     }
@@ -678,6 +686,11 @@ impl App {
         let Some((folder, start)) = asked else {
             return;
         };
+        // One listing at a time: the one on its way is followed by
+        // another for the line as it is then (`folder_listed`).
+        if sheet.listing {
+            return;
+        }
         let command = Command::ListFolder {
             asked: sheet.asked,
             typed: sheet.path.clone(),
@@ -685,6 +698,9 @@ impl App {
             start,
         };
         self.backend.send(command);
+        if let Some(Dialog::Export(sheet)) = &mut self.dialog {
+            sheet.listing = true;
+        }
     }
 
     /// The names a path line starts: kept for the line they were asked
@@ -698,8 +714,18 @@ impl App {
         let Some(Dialog::Export(sheet)) = &mut self.dialog else {
             return;
         };
-        // Nor while `ctrl+o`'s dialog is up: its answer will fill the line.
-        if sheet.asked != asked || sheet.path != typed || sheet.asking {
+        if sheet.asked != asked {
+            return;
+        }
+        sheet.listing = false;
+        // The line changed while it was read: the line as it is now.
+        if sheet.path != typed {
+            self.list_folder();
+            return;
+        }
+        // Nor while `ctrl+o`'s dialog is up, its answer to fill the line,
+        // nor once the list was put away for this line.
+        if sheet.asking || sheet.list_closed {
             return;
         }
         // Nothing matches: no list (spec 4, S15).
@@ -732,6 +758,8 @@ impl App {
         let line = crate::export_sheet::complete(&sheet.path, &picked);
         sheet.change(ExportChange::Path(line), locale);
         sheet.listed = None;
+        // Typing goes on at the line's end, not where the part taken was.
+        sheet.to_line += 1;
         if picked.folder {
             self.list_folder();
         }
@@ -744,7 +772,7 @@ impl App {
         let Some(Dialog::Export(sheet)) = &self.dialog else {
             return;
         };
-        if sheet.asking || sheet.destination != DestinationChoice::File {
+        if sheet.asking || sheet.review || sheet.destination != DestinationChoice::File {
             return;
         }
         let suggested = crate::export_sheet::typed_path(
@@ -1064,7 +1092,7 @@ impl App {
             connection: self.history_name(sheet.tab),
             total: facts.rows,
             statement: facts.statement.clone(),
-            sheet: Box::new(sheet.clone()),
+            sheet: Box::new(sheet.kept()),
             status: ExportStatus::Running { rows: 0, bytes: 0 },
             hidden: false,
             started: Instant::now(),
@@ -1185,7 +1213,7 @@ impl App {
             connection: self.history_name(sheet.tab),
             total: facts.rows,
             statement: facts.statement.clone(),
-            sheet: Box::new(sheet.clone()),
+            sheet: Box::new(sheet.kept()),
             status: ExportStatus::Running { rows: 0, bytes: 0 },
             hidden: false,
             started: Instant::now(),
@@ -1225,11 +1253,13 @@ impl App {
                 return;
             }
             DestinationChoice::File if self.look.terminal => {
-                let path = crate::export_sheet::typed_path(
-                    &sheet.path,
-                    &self.dirs.downloads,
-                    self.dirs.home.as_deref(),
-                );
+                let path = sheet.picked.clone().unwrap_or_else(|| {
+                    crate::export_sheet::typed_path(
+                        &sheet.path,
+                        &self.dirs.downloads,
+                        self.dirs.home.as_deref(),
+                    )
+                });
                 // A file that is there fails the rename, and the float
                 // opens again saying so (`export_state`): no disk is read
                 // here.
@@ -1336,6 +1366,10 @@ impl App {
             sheet.change(ExportChange::Path(line), self.locale);
             sheet.exists = replace;
             sheet.listed = None;
+            // Enter writes the file answered, though the line could not
+            // say all of its name; from the line, which has the keyboard.
+            sheet.picked = Some(path);
+            sheet.to_line += 1;
             return;
         }
         let sheet = sheet.clone();
@@ -1398,6 +1432,10 @@ impl App {
                 row_only: false,
                 listed: None,
                 picking: false,
+                listing: false,
+                list_closed: false,
+                picked: None,
+                to_line: 0,
             };
             self.run_export(&sheet, Destination::File { path, replace });
             return;
@@ -1425,6 +1463,10 @@ impl App {
             row_only: false,
             listed: None,
             picking: false,
+            listing: false,
+            list_closed: false,
+            picked: None,
+            to_line: 0,
         };
         self.run_export(&sheet, Destination::File { path, replace });
     }
@@ -1454,8 +1496,8 @@ impl App {
             [job] => self.backend.send(Command::CancelExport(*job)),
             _ if self.dialog.is_none() => {
                 self.dialog = Some(Dialog::CancelExport(crate::model::CancelExportPicker {
+                    lit: running[0],
                     jobs: running,
-                    lit: 0,
                 }));
             }
             _ => {}
@@ -1467,12 +1509,17 @@ impl App {
         let Some(Dialog::CancelExport(picker)) = &self.dialog else {
             return;
         };
-        let rows = self.cancel_rows(picker).len();
+        let rows: Vec<ExportId> = self
+            .cancel_rows(picker)
+            .iter()
+            .map(|exporting| exporting.job.id)
+            .collect();
         if let Some(Dialog::CancelExport(picker)) = &mut self.dialog
-            && rows > 0
+            && !rows.is_empty()
         {
-            let lit = picker.lit.min(rows - 1) as isize;
-            picker.lit = (lit + step).rem_euclid(rows as isize) as usize;
+            let lit = picker.lit_row(&rows) as isize;
+            let to = (lit + step).rem_euclid(rows.len() as isize) as usize;
+            picker.lit = rows[to];
         }
     }
 
@@ -1532,10 +1579,16 @@ impl App {
                 }
             }
             // The terminal look: another name, from the float.
+            // Its own sheet: the table in front may be another now.
             ExportFailure::Exists { .. } | ExportFailure::PermissionDenied { .. } => {
-                let tab = exporting.tab;
-                self.exports.remove(at);
-                self.open_export(tab, None);
+                if self.dialog.is_none() {
+                    let mut sheet = exporting.sheet.clone();
+                    sheet.review = false;
+                    sheet.asking = false;
+                    sheet.asked = self.next_id();
+                    self.exports.remove(at);
+                    self.dialog = Some(Dialog::Export(sheet));
+                }
             }
             _ => self.rerun_export(at, None),
         }

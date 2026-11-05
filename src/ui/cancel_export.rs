@@ -32,12 +32,13 @@ pub fn keys(
     if rows.is_empty() {
         return Vec::new();
     }
-    let lit = picker.lit.min(rows.len() - 1);
-    let asked = |command: Command| {
+    let lit = lit_row(picker, rows);
+    let presses = |command: Command| {
         ctx.input_mut(|input| {
-            crate::ui::keys::asked(input, &keymap, layout, command, Scope::Prompt, true).count
+            crate::ui::keys::asked(input, &keymap, layout, command, Scope::Prompt, true)
         })
     };
+    let asked = |command: Command| presses(command).count;
     let digit = ctx.input_mut(|input| {
         crate::ui::keys::digit_asked(
             input,
@@ -53,8 +54,13 @@ pub fn keys(
     if let Some(digit) = digit {
         return rows.get(digit).map(|row| cancel(row)).unwrap_or_default();
     }
-    if asked(Command::CancelExportPick) > 0 {
+    // A press of its own: Enter held from before cancels nothing.
+    let pick = presses(Command::CancelExportPick);
+    if pick.fresh {
         return cancel(rows[lit]);
+    }
+    if pick.count > 0 {
+        return Vec::new();
     }
     if asked(Command::CloseCancelExport) > 0 {
         return vec![Action::CloseDialog];
@@ -82,7 +88,7 @@ pub fn show(
     if rows.is_empty() {
         return actions;
     }
-    let lit = picker.lit.min(rows.len() - 1);
+    let lit = lit_row(picker, rows);
     let title = look.label(&gettext(locale, "Cancel export"));
     let count = gettext(locale, "{n} running").replace("{n}", &rows.len().to_string());
     let area = Area::new(Id::new("cancel-export"))
@@ -94,16 +100,34 @@ pub fn show(
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                 ui.set_min_width(300.0);
                 title_line(ui, paint, &title, &count);
-                for (index, exporting) in rows.iter().enumerate() {
-                    let words = crate::ui::workspace::export_brief(exporting, locale);
-                    let shown = format!("{}  {words}", index + 1);
-                    let item = menu::Item::action(&shown)
-                        .name(&words)
-                        .kept_out(index == lit);
-                    if item.show(ui, &look, &palette).clicked() {
-                        actions.extend(cancel(exporting));
-                    }
-                }
+                // As many rows as the window holds; the rest scroll, to the
+                // lit one as the keys move it.
+                let seen = Id::new("cancel-export-lit");
+                let moved = ctx.data_mut(|data| {
+                    let before = data.get_temp::<u64>(seen);
+                    data.insert_temp(seen, picker.lit.0);
+                    before != Some(picker.lit.0)
+                });
+                let room = (ctx.content_rect().height() - 160.0).max(80.0);
+                egui::ScrollArea::vertical()
+                    .max_height(room)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for (index, exporting) in rows.iter().enumerate() {
+                            let words = crate::ui::workspace::export_brief(exporting, locale);
+                            let shown = format!("{}  {words}", index + 1);
+                            let item = menu::Item::action(&shown)
+                                .name(&words)
+                                .kept_out(index == lit);
+                            let response = item.show(ui, &look, &palette);
+                            if index == lit && moved {
+                                response.scroll_to_me(None);
+                            }
+                            if response.clicked() {
+                                actions.extend(cancel(exporting));
+                            }
+                        }
+                    });
                 foot_line(ui, paint);
             });
             let place = ui.min_rect();
@@ -113,6 +137,12 @@ pub fn show(
         actions.push(Action::CloseDialog);
     }
     actions
+}
+
+/// The row of `rows` the keyboard is on.
+fn lit_row(picker: &CancelExportPicker, rows: &[&Exporting]) -> usize {
+    let jobs: Vec<_> = rows.iter().map(|exporting| exporting.job.id).collect();
+    picker.lit_row(&jobs)
 }
 
 /// "cancel export", then how many run.

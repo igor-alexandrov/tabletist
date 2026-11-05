@@ -139,6 +139,21 @@ pub struct ExportSheet {
     /// `ctrl+o`'s dialog is up (`asking` too): its answer fills the line
     /// and starts nothing (spec 4, S16).
     pub picking: bool,
+    /// A listing is on its way: no other is asked until it comes, so one
+    /// slow folder holds one of the backend's threads, not one a key.
+    pub listing: bool,
+    /// The list was put away (Esc, or the keyboard gone from the line):
+    /// none shows again until the line changes, though an answer asked
+    /// before comes.
+    pub list_closed: bool,
+    /// The file `ctrl+o`'s dialog answered, while the line is the one it
+    /// filled: Enter writes there, whatever the line could not say of it
+    /// (a name that is no UTF-8).
+    pub picked: Option<PathBuf>,
+    /// Asks the view, once for each new value, to give the line the
+    /// keyboard with its cursor at the end: after a name is taken from
+    /// the list, or `ctrl+o`'s answer fills it.
+    pub to_line: u64,
 }
 
 /// What the path line lists under it: the names of its folder that its
@@ -200,7 +215,9 @@ pub fn completion_ask(
     downloads: &Path,
     home: Option<&Path>,
 ) -> Option<(PathBuf, String)> {
-    if typed.trim().is_empty() {
+    // As `typed_path` reads it: spaces at either end are no part of it.
+    let typed = typed.trim();
+    if typed.is_empty() {
         return None;
     }
     let at = last_part(typed);
@@ -297,7 +314,10 @@ impl ExportSheet {
                     list.lit = (lit + by).rem_euclid(list.names.len() as isize) as usize;
                 }
             }
-            ExportChange::ClosePathList => self.listed = None,
+            ExportChange::ClosePathList => {
+                self.listed = None;
+                self.list_closed = true;
+            }
         }
         None
     }
@@ -305,7 +325,11 @@ impl ExportSheet {
     /// The format, and the path line's extension with it.
     fn set_format(&mut self, format: Format) {
         self.format = format;
-        self.path = with_extension(&self.path, format);
+        let path = with_extension(&self.path, format);
+        if path != self.path {
+            self.picked = None;
+        }
+        self.path = path;
         self.exists = false;
     }
 
@@ -316,10 +340,24 @@ impl ExportSheet {
         }
         if path != self.path {
             self.exists = false;
-            // Its list was another line's.
+            // Its list was another line's, and so was the dialog's file.
             self.listed = None;
+            self.list_closed = false;
+            self.picked = None;
         }
         self.path = path;
+    }
+
+    /// The sheet as an export keeps it, to open again: without its list,
+    /// which a sheet opened again asks for anew.
+    pub fn kept(&self) -> ExportSheet {
+        ExportSheet {
+            listed: None,
+            listing: false,
+            list_closed: false,
+            picking: false,
+            ..self.clone()
+        }
     }
 
     /// The name the path line's list has lit, if one is listed for the
@@ -334,7 +372,8 @@ impl ExportSheet {
 /// `path` ending in `format`'s extension: a known one is replaced, any
 /// other kept and the format's added.
 pub fn with_extension(path: &str, format: Format) -> String {
-    if path.is_empty() {
+    // Nor a folder's line, still waiting for its file's name.
+    if path.is_empty() || path.ends_with(['/', std::path::MAIN_SEPARATOR]) {
         return path.to_owned();
     }
     let known = Path::new(path)
@@ -801,6 +840,10 @@ mod tests {
             row_only: false,
             listed: None,
             picking: false,
+            listing: false,
+            list_closed: false,
+            picked: None,
+            to_line: 0,
             result: None,
         }
     }
@@ -829,6 +872,8 @@ mod tests {
         // An ending no format has is kept, and the format's added.
         assert_eq!(with_extension("notes.txt", Format::Csv), "notes.txt.csv");
         assert_eq!(with_extension("dump.SQL", Format::Tsv), "dump.tsv");
+        // A folder's line waits for its file's name, whatever the format.
+        assert_eq!(with_extension("~/Exports/", Format::Json), "~/Exports/");
         assert_eq!(Format::of_extension("JSONL"), Some(Format::JsonLines));
         assert_eq!(Format::of_extension("xlsx"), None);
     }
@@ -908,6 +953,12 @@ mod tests {
         );
         assert_eq!(complete("~/Dow", &folder), "~/Downloads/");
         assert_eq!(complete("rev", &file), "reviews.csv");
+        // Spaces at either end are no part of the line, as the export
+        // reads it.
+        assert_eq!(
+            completion_ask("  rev ", downloads, home),
+            Some((downloads.to_path_buf(), "rev".to_owned()))
+        );
     }
 
     /// Test 7 of the spec: chosen and reordered columns, in that order,

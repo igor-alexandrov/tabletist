@@ -164,15 +164,20 @@ fn keys(ctx: &egui::Context, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut 
     let on_path = focused == Some(path_id(sheet));
     let typing = ctx.text_edit_focused();
     let exports = !look.terminal || focused.is_none() || on_path;
-    let on = |command: Command| {
-        ctx.input_mut(|input| asked(input, &keymap, layout, command, Scope::Prompt, true).count > 0)
+    let presses = |command: Command| {
+        ctx.input_mut(|input| asked(input, &keymap, layout, command, Scope::Prompt, true))
     };
+    let on = |command: Command| presses(command).count > 0;
     // The path line's list, while it shows: its keys come before the
-    // float's Enter and Esc (spec 4, S15).
+    // float's Enter and Esc (spec 4, S15). Enter held from the press that
+    // took a name takes nothing more, nor starts the export.
     if look.terminal && on_path && !sheet.asking && sheet.lit_name().is_some() {
-        if on(Command::PathPick) {
+        let pick = presses(Command::PathPick);
+        if pick.count > 0 {
             ctx.input_mut(take_enter);
-            actions.push(Action::PickPath(None));
+            if pick.fresh {
+                actions.push(Action::PickPath(None));
+            }
             return;
         }
         if on(Command::ClosePathList) {
@@ -187,6 +192,7 @@ fn keys(ctx: &egui::Context, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut 
     // `ctrl+o`: the system's save dialog (spec 4, S16).
     if look.terminal
         && !sheet.asking
+        && !sheet.review
         && sheet.destination == DestinationChoice::File
         && on(Command::ExportPickFile)
     {
@@ -194,9 +200,13 @@ fn keys(ctx: &egui::Context, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut 
     }
     // The keymap's Enter; then no other Enter of the frame reaches a
     // control that has the keyboard (plan, B6).
-    if exports && !sheet.asking && on(Command::ExportNow) {
+    let now = presses(Command::ExportNow);
+    if exports && !sheet.asking && now.count > 0 {
         ctx.input_mut(take_enter);
-        actions.push(Action::StartExport);
+        // A press of its own: Enter held starts nothing.
+        if now.fresh {
+            actions.push(Action::StartExport);
+        }
     }
     if !sheet.asking && on(Command::CloseExport) {
         actions.push(match sheet.review {
@@ -645,9 +655,18 @@ fn choices(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec<A
     });
     if look.terminal && sheet.destination == DestinationChoice::File {
         row(ui, &skin.say("save to"), skin, |ui| {
+            // `ctrl+o pick` at the line's right end, as the boards draw it;
+            // the path stops short of it.
+            let pick =
+                crate::ui::keys::written_in(ui.ctx(), look, Command::ExportPickFile, Scope::Prompt);
+            let words = format!("{pick} {}", skin.say("pick"));
+            let hint = || Text::one(look, TextRole::OSecondary, &words, palette.dim);
+            let room = widgets::measure(ui, hint()) + 16.0;
+            let id = path_id(sheet);
+            take_line(ui.ctx(), id, sheet);
             let mut path = sheet.path.clone();
-            let field = widgets::single_in(ui, &mut path, look, TextRole::OField)
-                .id(path_id(sheet))
+            let field = widgets::single_in_short(ui, &mut path, look, TextRole::OField, room)
+                .id(id)
                 .desired_width(ui.available_width().min(460.0));
             let response = ui.add(field);
             response.widget_info(|| {
@@ -656,30 +675,35 @@ fn choices(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec<A
             if response.changed() {
                 change(actions, ExportChange::Path(path));
             }
-            // `ctrl+o pick` at the line's right end, as the boards draw it.
-            let pick =
-                crate::ui::keys::written_in(ui.ctx(), look, Command::ExportPickFile, Scope::Prompt);
-            let hint = format!("{pick} {}", skin.say("pick"));
             widgets::paint_text_right(
                 ui,
                 response.rect.right() - 8.0,
                 response.rect.center().y,
-                Text::one(look, TextRole::OSecondary, &hint, palette.dim),
+                hint(),
             );
-            // Where the list is drawn: a press on it takes the keyboard
-            // from the line for the moment of a click.
+            // Where the list is drawn (where egui put it, as a small window
+            // may move it up): a press on it takes the keyboard from the
+            // line for the moment of a click, a pointer only resting there
+            // does not keep it.
             let list_rect = sheet.listed.as_ref().map(|list| {
                 let height = TextRole::OBody.row_height(ui.ctx(), look.faces) + 4.0;
-                Rect::from_min_size(
+                let below = Rect::from_min_size(
                     response.rect.left_bottom(),
                     vec2(response.rect.width(), height * list.names.len() as f32),
-                )
-            });
-            let pointer_on_list = list_rect.is_some_and(|rect| {
+                );
                 ui.ctx()
-                    .pointer_latest_pos()
-                    .is_some_and(|pos| rect.contains(pos))
+                    .memory(|memory| memory.area_rect(list_id(sheet)))
+                    .unwrap_or(below)
             });
+            let clicking = ui
+                .ctx()
+                .input(|input| input.pointer.any_down() || input.pointer.any_released());
+            let pointer_on_list = clicking
+                && list_rect.is_some_and(|rect| {
+                    ui.ctx()
+                        .pointer_latest_pos()
+                        .is_some_and(|pos| rect.contains(pos))
+                });
             // The keyboard gone from the line: its list goes too, until the
             // next key typed there (plan 4b, B9).
             if !response.has_focus() && !pointer_on_list && sheet.listed.is_some() {
@@ -715,6 +739,33 @@ fn choices(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec<A
     }
 }
 
+/// The path line's list's area.
+fn list_id(sheet: &ExportSheet) -> Id {
+    Id::new(("export-path-list", sheet.asked))
+}
+
+/// The keyboard to the path line, its cursor at the end, once for each
+/// time the app asks (`ExportSheet::to_line`): a name taken from the list,
+/// `ctrl+o`'s answer.
+fn take_line(ctx: &egui::Context, id: Id, sheet: &ExportSheet) {
+    let seen = id.with("to-line");
+    let asked = ctx.data_mut(|data| {
+        let before = data.get_temp::<u64>(seen).unwrap_or(0);
+        data.insert_temp(seen, sheet.to_line);
+        before != sheet.to_line
+    });
+    if !asked {
+        return;
+    }
+    let mut state = egui::text_edit::TextEditState::load(ctx, id).unwrap_or_default();
+    let end = egui::text::CCursor::new(sheet.path.chars().count());
+    state
+        .cursor
+        .set_char_range(Some(egui::text::CCursorRange::one(end)));
+    state.store(ctx, id);
+    ctx.memory_mut(|memory| memory.request_focus(id));
+}
+
 /// The names the path line starts, under the line `field` (spec 4, S15;
 /// the component board's path line): the lit one on the selection's fill,
 /// the rest muted, in an area of their own over the float, as the float's
@@ -733,7 +784,7 @@ fn path_list(
     let lit = list.lit.min(list.names.len().saturating_sub(1));
     let height = TextRole::OBody.row_height(ctx, look.faces) + 4.0;
     let mut taken = false;
-    egui::Area::new(Id::new(("export-path-list", sheet.asked)))
+    egui::Area::new(list_id(sheet))
         .order(egui::Order::Tooltip)
         .fixed_pos(field.left_bottom())
         .show(ctx, |ui| {

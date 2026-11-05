@@ -246,11 +246,14 @@ fn the_keyboard_walks_every_toast() {
     let focused = harness.ctx.memory(|memory| memory.focused()).unwrap();
     assert_eq!(focused.accesskit_id(), newest, "the newest toast's Cancel");
     let mut seen = Vec::new();
+    let mut visited = std::collections::HashSet::new();
     for _ in 0..4 {
         harness.press(Key::Tab, Modifiers::NONE);
         seen.push(focused_label(&mut harness).unwrap_or_default());
+        visited.extend(harness.ctx.memory(|memory| memory.focused()));
     }
     assert_eq!(seen, ["Hide", "Cancel", "Hide", "Cancel"]);
+    assert_eq!(visited.len(), 4, "each of the two toasts' buttons, once");
     // Enter on it cancels the newest alone.
     harness.press(Key::Enter, Modifiers::NONE);
     assert_eq!(cancels(&harness), [two]);
@@ -298,6 +301,29 @@ fn quick_open_cancels_each_export() {
     assert!(painted(&harness, "Cancel exporting events.jsonl"));
     harness.click("Cancel exporting events.jsonl, command, export running");
     assert_eq!(cancels(&harness), [two]);
+}
+
+/// Review: a cancel row lit from the keyboard keeps its place as its
+/// export's words change, and Enter cancels it.
+#[test]
+fn quick_open_keeps_a_cancel_row_lit_as_it_runs() {
+    let (mut harness, tab, _id) = covers_in(Look::macos());
+    let (_dir, one, two) = two_running(&mut harness, tab);
+    harness.press(Key::P, Modifiers::COMMAND);
+    harness.frame(vec![egui::Event::Text(">cancel exporting".into())]);
+    harness.settle();
+    let first = top_of(&harness, "Cancel exporting book_covers.csv")
+        < top_of(&harness, "Cancel exporting events.jsonl");
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    // The lit row's export goes on: its words change.
+    let lit = if first { two } else { one };
+    tell(
+        &mut harness,
+        lit,
+        ExportState::Progress { rows: 3, bytes: 20 },
+    );
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert_eq!(cancels(&harness), [lit]);
 }
 
 /// Test 7 and S14: the terminal look's line for one, for two in the order
@@ -533,4 +559,83 @@ fn choose_folder_answers_beside_an_open_sheet_and_goes_last() {
     assert_eq!(order[0], two, "the one tried again goes last");
     assert_eq!(harness.app.exports[1].file, "elsewhere.csv");
     assert!(harness.app.exports[1].running());
+}
+
+/// Review: the picker keeps the export the keyboard is on though one
+/// above it ends, and Enter held from the line that opened it cancels
+/// nothing.
+#[test]
+fn the_picker_keeps_its_export_and_waits_for_a_fresh_enter() {
+    let (mut harness, tab, _id) = covers_in(Look::omarchy());
+    let (dir, one, two) = two_running(&mut harness, tab);
+    harness.app.apply(Action::ExportTo {
+        tab,
+        path: dir.path().join("third.md").display().to_string(),
+        replace: false,
+    });
+    harness.settle();
+    assert_eq!(harness.app.exports.len(), 3);
+    // Enter held from the `:` line that asks for it.
+    type_key(&mut harness, Key::Colon, ":");
+    harness.frame(vec![egui::Event::Text("export cancel".into())]);
+    for _ in 0..3 {
+        harness.frame(vec![crate::testing::key(Key::Enter, Modifiers::NONE)]);
+    }
+    harness.frame(vec![crate::testing::release(Key::Enter, Modifiers::NONE)]);
+    harness.settle();
+    assert!(
+        matches!(harness.app.dialog, Some(Dialog::CancelExport(_))),
+        "{:?}",
+        harness.app.dialog
+    );
+    assert!(
+        cancels(&harness).is_empty(),
+        "the held Enter cancels nothing"
+    );
+    harness.press(Key::N, Modifiers::CTRL);
+    tell(&mut harness, one, done());
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert_eq!(
+        cancels(&harness),
+        [two],
+        "the lit one, not the row now in its place"
+    );
+}
+
+/// Review: in the terminal look, a failure's float opens on its own
+/// export's sheet, its choices as they were.
+#[test]
+fn a_failures_float_is_its_own_sheet() {
+    let (mut harness, tab, _id) = covers_in(Look::omarchy());
+    type_key(&mut harness, Key::E, "E");
+    let dir = tempfile::tempdir().unwrap();
+    let change = |harness: &mut Harness, change| {
+        harness.app.apply(Action::ChangeExport(change));
+        harness.settle();
+    };
+    use crate::export_sheet::ExportChange;
+    change(&mut harness, ExportChange::Choose(true));
+    change(&mut harness, ExportChange::Toggle(0));
+    let path = dir.path().join("locked").join("covers.csv");
+    change(&mut harness, ExportChange::Path(path.display().to_string()));
+    harness.app.apply(Action::StartExport);
+    harness.settle();
+    let job = harness.app.exports[0].job.id;
+    tell(
+        &mut harness,
+        job,
+        ExportState::Failed(ExportFailure::PermissionDenied {
+            folder: dir.path().join("locked"),
+        }),
+    );
+    run_line(&mut harness, tab, ":export");
+    let Some(Dialog::Export(sheet)) = &harness.app.dialog else {
+        panic!("no float: {:?}", harness.app.dialog);
+    };
+    assert!(
+        sheet.choose && !sheet.columns[0].included,
+        "its own columns"
+    );
+    assert_eq!(sheet.path, path.display().to_string());
+    assert!(harness.app.exports.is_empty(), "the failure is put away");
 }

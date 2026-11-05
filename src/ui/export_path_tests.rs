@@ -130,9 +130,18 @@ fn an_answer_for_an_old_line_is_dropped() {
     let mut harness = float();
     type_line(&mut harness, "~/Downloads/r");
     type_line(&mut harness, "~/Downloads/re");
+    // One listing at a time: the second line waits for the first's answer
+    // (review).
+    let typed: Vec<String> = asks(&harness).into_iter().map(|ask| ask.0).collect();
+    assert_eq!(typed, ["~/Downloads/r"]);
     answer(&mut harness, "~/Downloads/r", &[("reports", true)]);
     assert!(sheet(&harness).listed.is_none(), "the old line's");
     assert!(!painted(&harness, "reports/"));
+    assert_eq!(
+        asks(&harness).last().map(|ask| ask.0.as_str()),
+        Some("~/Downloads/re"),
+        "then the line as it is"
+    );
     answer(&mut harness, "~/Downloads/re", &[("reviews.csv", false)]);
     assert!(painted(&harness, "reviews.csv"));
 }
@@ -242,6 +251,10 @@ fn ctrl_o_fills_the_line_and_starts_nothing() {
         "the foot's key: {:?}",
         harness.painted
     );
+    // From another row: the answer gives the keyboard back to the line.
+    harness.press(Key::Tab, Modifiers::NONE);
+    let line = crate::ui::export::path_id(sheet(&harness));
+    assert_ne!(harness.ctx.memory(|memory| memory.focused()), Some(line));
     harness.press(Key::O, Modifiers::CTRL);
     let asks = harness.app.backend.export_asks.clone();
     let job = ExportId(sheet(&harness).asked);
@@ -261,21 +274,25 @@ fn ctrl_o_fills_the_line_and_starts_nothing() {
             .any(|command| matches!(command, Command::Export(_)))
     };
     assert!(!started(&harness));
+    let answered = PathBuf::from("/home/reader")
+        .join("Desktop")
+        .join("books.jsonl");
     harness.app.apply(Action::Backend(Event::ExportPath {
         job,
-        path: Some(PathBuf::from("/home/reader/Desktop/books.jsonl")),
+        path: Some(answered.clone()),
         replace: true,
     }));
     harness.settle();
     let open = sheet(&harness);
-    assert_eq!(open.path, "~/Desktop/books.jsonl");
+    let shown = ["~", "Desktop", "books.jsonl"].join(std::path::MAIN_SEPARATOR_STR);
+    assert_eq!(open.path, shown);
     assert_eq!(open.format, Format::JsonLines);
     assert!(open.exists, "a replace, as the dialog asked");
     assert!(!open.asking);
     assert!(painted(&harness, "! exists · enter again replaces it"));
     assert!(!started(&harness), "nothing starts on the answer");
     let id = crate::ui::export::path_id(sheet(&harness));
-    harness.ctx.memory_mut(|memory| memory.request_focus(id));
+    assert_eq!(harness.ctx.memory(|memory| memory.focused()), Some(id));
     harness.press(Key::Enter, Modifiers::NONE);
     let job = harness
         .app
@@ -289,7 +306,7 @@ fn ctrl_o_fills_the_line_and_starts_nothing() {
     assert_eq!(
         job,
         Some(crate::backend::export::Destination::File {
-            path: PathBuf::from("/home/reader/Desktop/books.jsonl"),
+            path: answered,
             replace: true
         })
     );
@@ -391,4 +408,117 @@ fn a_pointer_click_takes_a_name() {
         asks(&harness).last().map(|ask| ask.0.as_str()),
         Some("~/Downloads/")
     );
+}
+
+/// Review: a list put away stays away though an answer for the same line
+/// still comes, and Esc then closes the float.
+#[test]
+fn a_late_answer_leaves_the_list_put_away() {
+    let mut harness = float();
+    type_line(&mut harness, "~/Downloads/rev");
+    answer(&mut harness, "~/Downloads/rev", &[("reviews.csv", false)]);
+    harness.press(Key::Escape, Modifiers::NONE);
+    answer(&mut harness, "~/Downloads/rev", &[("reviews.csv", false)]);
+    assert!(sheet(&harness).listed.is_none());
+    assert!(!painted(&harness, "reviews.csv"));
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert!(harness.app.dialog.is_none(), "the float closes");
+}
+
+/// Review: Enter held from the press that took a name takes nothing more
+/// and starts nothing; typing goes on at the line's end.
+#[test]
+fn a_held_enter_after_a_pick_starts_nothing() {
+    let mut harness = float();
+    type_line(&mut harness, "~/Dow");
+    answer(&mut harness, "~/Dow", &[("Downloads", true)]);
+    for _ in 0..3 {
+        harness.frame(vec![crate::testing::key(Key::Enter, Modifiers::NONE)]);
+    }
+    answer(&mut harness, "~/Downloads/", &[("reviews.csv", false)]);
+    for _ in 0..3 {
+        harness.frame(vec![crate::testing::key(Key::Enter, Modifiers::NONE)]);
+    }
+    harness.frame(vec![crate::testing::release(Key::Enter, Modifiers::NONE)]);
+    harness.settle();
+    assert_eq!(sheet(&harness).path, "~/Downloads/");
+    let exported = harness
+        .app
+        .backend
+        .sent
+        .iter()
+        .any(|command| matches!(command, Command::Export(_)));
+    assert!(!exported);
+    // The cursor at the line's end, after the part taken.
+    harness.frame(vec![egui::Event::Text("a.md".into())]);
+    harness.settle();
+    assert_eq!(sheet(&harness).path, "~/Downloads/a.md");
+}
+
+/// Review: `ctrl+o` asks nothing while Review SQL shows, the line hidden.
+#[test]
+fn ctrl_o_waits_while_review_sql_shows() {
+    let mut harness = float();
+    harness.app.apply(Action::ChangeExport(
+        crate::export_sheet::ExportChange::Review(true),
+    ));
+    harness.settle();
+    harness.press(Key::O, Modifiers::CTRL);
+    assert!(harness.app.backend.export_asks.is_empty());
+    assert!(!sheet(&harness).asking);
+}
+
+/// Review: Enter writes the file the dialog answered, though the line
+/// could not say its name (no UTF-8).
+#[cfg(unix)]
+#[test]
+fn the_dialogs_file_is_written_whatever_the_line_says() {
+    use std::os::unix::ffi::OsStrExt;
+    let mut harness = float();
+    harness.press(Key::O, Modifiers::CTRL);
+    let job = ExportId(sheet(&harness).asked);
+    let answered = PathBuf::from(std::ffi::OsStr::from_bytes(
+        b"/home/reader/caf\xe9/books.csv",
+    ));
+    harness.app.apply(Action::Backend(Event::ExportPath {
+        job,
+        path: Some(answered.clone()),
+        replace: false,
+    }));
+    harness.settle();
+    harness.press(Key::Enter, Modifiers::NONE);
+    let job = harness
+        .app
+        .backend
+        .sent
+        .iter()
+        .find_map(|command| match command {
+            Command::Export(job) => Some(job.destination.clone()),
+            _ => None,
+        });
+    assert_eq!(
+        job,
+        Some(crate::backend::export::Destination::File {
+            path: answered,
+            replace: false
+        })
+    );
+}
+
+/// Review: a pointer resting on the list keeps it no longer than the
+/// line keeps the keyboard.
+#[test]
+fn a_pointer_resting_on_the_list_does_not_keep_it() {
+    let mut harness = float();
+    type_line(&mut harness, "~/Dow");
+    answer(&mut harness, "~/Dow", &[("Downloads", true)]);
+    let pos = harness
+        .text_rects
+        .iter()
+        .find(|(text, _)| text == "Downloads/")
+        .map(|(_, rect)| rect.center())
+        .unwrap_or_else(|| panic!("not drawn: {:?}", harness.painted));
+    harness.frame(vec![egui::Event::PointerMoved(pos)]);
+    harness.press(Key::Tab, Modifiers::NONE);
+    assert!(sheet(&harness).listed.is_none());
 }

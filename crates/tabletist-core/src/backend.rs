@@ -2368,8 +2368,11 @@ fn list_folder(folder: &Path, start: &str) -> Vec<crate::export_sheet::Listed> {
     };
     let names = entries.flatten().filter_map(|entry| {
         let name = entry.file_name().into_string().ok()?;
-        // A link to a folder is a folder here, as the dialog has it.
-        let folder = entry.path().is_dir();
+        // A link to a folder is a folder here, as the dialog has it: the
+        // only kind followed, so a large folder costs no read a name.
+        let folder = entry
+            .file_type()
+            .is_ok_and(|kind| kind.is_dir() || (kind.is_symlink() && entry.path().is_dir()));
         Some((name, folder))
     });
     crate::export_sheet::completions(names, start)
@@ -3213,6 +3216,18 @@ mod tests {
             owned(&[(".review", false)])
         );
         assert!(ask("", dir.path().join("not-there")).is_empty());
+        // A link to a folder is a folder, a link to a file a file.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.path().join("reports"), dir.path().join("linked"))
+                .unwrap();
+            std::os::unix::fs::symlink(dir.path().join("authors.csv"), dir.path().join("link.csv"))
+                .unwrap();
+            assert_eq!(
+                ask("lin", dir.path().to_path_buf()),
+                owned(&[("linked", true), ("link.csv", false)])
+            );
+        }
     }
 
     #[test]

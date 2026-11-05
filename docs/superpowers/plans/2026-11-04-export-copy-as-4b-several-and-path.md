@@ -55,10 +55,10 @@ request:
 | B6 | S13: ⌘⇧' to the newest toast | The newest export's first button, its toast's or its pill's; with no export, the copy offer's | 3b's rule for the offer stays |
 | B7 | F8: the pills | 8 apart, as the toasts | As S13 |
 | B8 | S15: the list closes "on a pick" | A file picked closes it; a folder picked lists that folder's names | A file picked would list itself again |
-| B9 | S15: the list is the path line's | It shows while the path line has the keyboard; Tab to another row hides it, and coming back types nothing new, so it waits for the next key | The list is the line's |
+| B9 | S15: the list is the path line's | It shows while the path line has the keyboard; Tab to another row hides it, and coming back types nothing new, so it waits for the next key. A pointer pressing on it keeps it for the click; one only resting there does not | The list is the line's |
 | B10 | `Command::ListFolder { asked, typed }` | `{ asked, typed, folder, start }`: the app resolves `~` and the downloads folder (no disk), the backend reads `folder` and keeps the names starting with `start`; `Event::FolderListed { asked, typed, names }` | The app knows the home and downloads folders; the disk is the backend's |
-| B11 | S16: `ctrl+o pick file` in the foot | Also `ctrl+o pick` at the line's right end, as the component board and the jsonl float draw it | Both boards |
-| B12 | S16: the answer "fills the line" | As `~/…` where under the home folder, its extension setting the format; a file the dialog asked to replace shows the line's `! exists · enter again replaces it`. A closed dialog leaves the line | The line's own way of saying a replace |
+| B11 | S16: `ctrl+o pick file` in the foot | Also `ctrl+o pick` at the line's right end, as the component board and the jsonl float draw it; the line's text stops short of it | Both boards |
+| B12 | S16: the answer "fills the line" | As `~/…` where under the home folder, its extension setting the format; a file the dialog asked to replace shows the line's `! exists · enter again replaces it`. The keyboard goes back to the line, and Enter writes the file answered while the line is unchanged (a name that is no UTF-8 too). A closed dialog leaves the line; Review SQL's view asks no dialog | The line's own way of saying a replace |
 | B13 | S12: no cap | No cap on the toasts either: a stack taller than the window goes off its top | Rare; the pills stay |
 | B14 | F7: ⇧⌘E always opens the sheet | 3a's "An export is running" refusal goes everywhere (`:w <path>`, Export selection…, the tree's `E`) | One more export starts from wherever |
 | B15 | S14: `2 exports · …` | A clipboard copy is named by its table there, as on its own line | As 3a |
@@ -69,6 +69,10 @@ request:
 | B20 | S15: a folder taken lists its own | Enter on a line ending in `/` starts nothing (the line names a folder, no file); an answer while `ctrl+o`'s dialog is up is dropped | A folder is no file to write; the dialog's answer fills the line |
 | B21 | S13: a pill each | A screen reader hears a toast or pill by its file ("Exporting reviews.csv, 58 percent"), as it reads, where 3a said the table | Two exports of one table sounded the same |
 | B22 | S14: "in the order they started" | Try again and Choose folder… start an export anew: it goes last in the line and is the newest for ⌘⇧' | It runs from the start |
+| B23 | S15: the names asked as the line is typed | One listing at a time for a float: a line changed while one is on its way is asked for when it comes; a list put away stays away until the line changes, though an answer comes | A slow or network folder holds one of the backend's threads, not one a key |
+| B24 | (a key held) | Enter held from the press before (a name taken, the `:` line that opened the picker) takes no name, starts no export and cancels none: a press of its own does | A held key repeats what it did |
+| B25 | F5: the picker | Kept on the export the keyboard is on, not its row, as one above it ends; its rows scroll where they are taller than the window, the lit one in sight (the toasts still do not, B13) | Enter cancels what was lit |
+| B26 | (a failure's float, terminal look) | `go` or `:export` on a failed export to a file that is there or may not be written opens that export's own sheet again, as the other failures do | The table in front may be another |
 
 ## Files
 
@@ -139,7 +143,7 @@ with `TABLETIST_TEST_PG_URL` and `TABLETIST_TEST_MYSQL_URL`.
 ## After Task 2
 
 Push the branch and open the pull request: the summary, F5–F8, S12–S16,
-B1–B22. No screenshot goes to GitHub unblurred.
+B1–B22; the review of the pull request added B23–B26. No screenshot goes to GitHub unblurred.
 
 ## Checks by hand
 

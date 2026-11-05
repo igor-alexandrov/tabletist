@@ -2875,8 +2875,17 @@ pub enum Dialog {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CancelExportPicker {
     pub jobs: Vec<crate::backend::export::ExportId>,
-    /// The row the keyboard is on.
-    pub lit: usize,
+    /// The export the keyboard is on: kept by its id, as an export that
+    /// ends takes its row away from under the others.
+    pub lit: crate::backend::export::ExportId,
+}
+
+impl CancelExportPicker {
+    /// The row of `rows` the keyboard is on: the lit export's, else the
+    /// first, once the lit one has ended.
+    pub fn lit_row(&self, rows: &[crate::backend::export::ExportId]) -> usize {
+        rows.iter().position(|job| *job == self.lit).unwrap_or(0)
+    }
 }
 
 /// What a copy takes of a grid.
@@ -3321,6 +3330,12 @@ impl QuickItem {
                 match (command, other) {
                     (QuickCommand::Run(one), QuickCommand::Run(two)) => one.command == two.command,
                     (QuickCommand::Setting(one), QuickCommand::Setting(two)) => one == two,
+                    // An export's cancel row: the same export, its words
+                    // (how far it is) changing as it runs.
+                    (
+                        QuickCommand::CancelExport { job: one, .. },
+                        QuickCommand::CancelExport { job: two, .. },
+                    ) => one == two,
                     _ => false,
                 }
             }
