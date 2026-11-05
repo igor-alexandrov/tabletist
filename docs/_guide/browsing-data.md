@@ -290,15 +290,28 @@ look). A failure stays until you dismiss it,
 with what to do next: **Try again**, **Choose folder…** or **Review SQL**.
 In the Omarchy look `:export` does what the line offers: it tries again,
 shows the SQL after a timeout, or opens the float for another name, and
-Esc puts the line away. One export runs at a time: while it runs,
-Cmd/Ctrl+Shift+E and **File › Export…** cancel it. An export to the
-clipboard that turns out larger than the clipboard takes offers
-**Export…** to a file instead (`:export` in the Omarchy look).
+Esc puts the line away.
+
+Several exports can run at once, each on its own connection. In the
+macOS and Windows looks their toasts stack at the bottom, the newest
+last, each with its own **Cancel** and ×, and each hidden one is a pill
+of its own at the bottom right. Cmd/Ctrl+Shift+E and **File › Export…**
+always open the sheet for one more, and quick open lists **Cancel
+exporting reviews.csv** for each one running. The Omarchy status line
+names them all while two or more run (`2 exports · reviews.csv 58% ·
+events.jsonl 4,000 rows · :export cancel`), and `:export cancel` then asks
+which: a digit, or Ctrl+N and Ctrl+P then Enter, cancels the one picked,
+and Esc closes it. An end takes the line while it shows, the last to end
+first, and `go`, Esc and `:export` act on that one.
+
+An export to the clipboard that turns out larger than the clipboard
+takes offers **Export…** to a file instead (`:export` in the Omarchy
+look).
 
 In the macOS and Windows looks Cmd/Ctrl+Shift+' moves the keyboard to
-the export's toast (or to Copy as's offer): Tab and Shift+Tab go round
-its buttons, Return or Space presses one, and Esc gives the keyboard back
-to where it was.
+the newest export's toast (or to Copy as's offer): Tab and Shift+Tab go
+round every toast's buttons, top to bottom, Return or Space presses one,
+and Esc gives the keyboard back to where it was.
 
 When an export to a file finishes while Tabletist is not the window in
 front, it tells you: a desktop notification on Linux ("Exported 31,400

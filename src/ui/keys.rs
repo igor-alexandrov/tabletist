@@ -1056,13 +1056,8 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         }
         // Export…: of the table in front, of the one the tree's selection
         // is on, of the SQL result in front, or the row panel's row
-        // (spec 4, S8 and S10). While one runs it cancels, as File ›
-        // Export… does then (spec, D11).
+        // (spec 4, S8 and S10), beside any export running (spec 4, F7).
         if !terminal && app.dialog.is_none() {
-            let running = app
-                .exporting
-                .as_ref()
-                .is_some_and(crate::export_sheet::Exporting::running);
             let result_front = object.is_none()
                 && app
                     .workspace(active)
@@ -1081,10 +1076,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 && result_front
                 && (on(input, Command::Export, Scope::Results).fresh
                     || on(input, Command::Export, Scope::SqlEditor).fresh);
-            let asked = tree_asked || row_asked || grid_asked || result_asked;
-            if running && asked {
-                actions.push(Action::CancelExport);
-            } else if tree_asked {
+            if tree_asked {
                 actions.push(Action::ExportFromTree(active));
             } else if row_asked {
                 actions.push(Action::ExportSelection(export_row(active)));
@@ -2771,8 +2763,9 @@ fn letters(
     {
         actions.push(Action::DismissNote { tab, id });
     }
-    // A failed export's line, which stays until Esc.
-    let export_failed = app.exporting.as_ref().is_some_and(|exporting| {
+    // A failed export's line, which stays until Esc: the one the line
+    // shows (spec 4, S14).
+    let export_failed = app.shown_export().is_some_and(|exporting| {
         matches!(
             exporting.status,
             crate::export_sheet::ExportStatus::Failed { .. }
@@ -2780,7 +2773,7 @@ fn letters(
     });
     let here = if tree { Scope::Sidebar } else { rows };
     if export_failed && quiet && on(Command::DismissExport, here).fresh {
-        actions.push(Action::DismissExport);
+        actions.push(Action::DismissExport(None));
     }
     // The row panel's keys: an object tab's, or a SQL result's while a row
     // of it is selected (with none its panel has nothing to show).
@@ -3134,7 +3127,7 @@ fn letters(
                     _ => actions.push(Action::OpenExport { tab, format: None }),
                 }
             }
-            (Some(Command::OpenExportFolder), _) => actions.push(Action::RevealExport),
+            (Some(Command::OpenExportFolder), _) => actions.push(Action::RevealExport(None)),
             (Some(Command::ShowAgents), _) if crate::endpoint::AVAILABLE => {
                 actions.push(Action::ShowAgents(tab));
             }

@@ -387,6 +387,25 @@ pub struct Exporting {
 pub const TOLD_FOR: Duration = Duration::from_secs(4);
 
 impl Exporting {
+    /// Its name as its toast and line say it: the file's ("reviews.csv"),
+    /// or a copy's table.
+    pub fn name(&self) -> &str {
+        match self.file.is_empty() {
+            true => &self.table,
+            false => &self.file,
+        }
+    }
+
+    /// When it ended, done, cancelled or failed.
+    pub fn ended_at(&self) -> Option<Instant> {
+        match self.status {
+            ExportStatus::Done { at, .. }
+            | ExportStatus::Cancelled { at }
+            | ExportStatus::Failed { at, .. } => Some(at),
+            ExportStatus::Asking | ExportStatus::Running { .. } => None,
+        }
+    }
+
     /// Whether it still runs (or waits for the save panel).
     pub fn running(&self) -> bool {
         matches!(

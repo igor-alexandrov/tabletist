@@ -47,7 +47,9 @@ mod updates;
 pub use commands::RUNNABLE;
 pub use keyboard::{CHEAT_SHEET, cheat_sheet, keys_list};
 pub use menu::ItemState;
-pub use quick_open::{GROUP_SHOWN, QuickHeading, QuickList, QuickRow, picked_object, setting_path};
+pub use quick_open::{
+    GROUP_SHOWN, QuickHeading, QuickList, QuickRow, command_words, picked_object, setting_path,
+};
 pub use updates::{Pending, Work};
 
 /// What a keyring read is for; each names the exact request it serves, so
@@ -157,8 +159,9 @@ pub struct App {
     /// The options last chosen for each format of an export and of Copy
     /// as, from export_options.json.
     pub export: crate::export::Options,
-    /// The export running, or the last one while its end is told.
-    pub exporting: Option<crate::export_sheet::Exporting>,
+    /// The exports running, and those whose end is still told, in the
+    /// order they started (spec 4, S12).
+    pub exports: Vec<crate::export_sheet::Exporting>,
     /// The formats whose last export went to the clipboard: the sheet
     /// starts there for them (spec, Q12).
     export_clipboard: std::collections::HashSet<crate::export::Format>,
@@ -449,7 +452,7 @@ impl App {
             table_lists,
             table_lists_unread,
             export,
-            exporting: None,
+            exports: Vec::new(),
             export_clipboard: Default::default(),
             export_format: None,
             export_said: None,
@@ -2232,11 +2235,12 @@ impl App {
             Action::CountForExport => self.count_for_export(),
             Action::StartExport => self.start_export(),
             Action::ExportTo { tab, path, replace } => self.export_to(tab, &path, replace),
-            Action::CancelExport => self.cancel_export(),
-            Action::HideExport(hidden) => self.hide_export(hidden),
-            Action::DismissExport => self.dismiss_export(),
-            Action::ExportFailureAction => self.export_failure_action(),
-            Action::RevealExport => self.reveal_export(),
+            Action::CancelExport(job) => self.cancel_export(job),
+            Action::HideExport { job, hidden } => self.hide_export(job, hidden),
+            Action::DismissExport(job) => self.dismiss_export(job),
+            Action::ExportFailureAction(job) => self.export_failure_action(job),
+            Action::RevealExport(job) => self.reveal_export(job),
+            Action::MoveInCancelExport(step) => self.move_in_cancel_export(step),
             Action::MoveInCopyAs(step) => {
                 if let Some(Dialog::CopyAs(menu)) = &mut self.dialog {
                     let last = crate::model::CopyHow::menu(menu.pick).len() - 1;

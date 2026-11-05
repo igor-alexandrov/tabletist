@@ -391,16 +391,26 @@ pub enum Action {
         path: String,
         replace: bool,
     },
-    /// Stop the running export (the toast's Cancel, `:export cancel`).
-    CancelExport,
-    /// Hide the macOS progress toast to its pill, or show it again.
-    HideExport(bool),
-    /// Put away a failed export's toast or line.
-    DismissExport,
-    /// A failed export's action: Try again, Choose folder… or Review SQL.
-    ExportFailureAction,
-    /// Show the exported file in the file manager (Show in Finder, `go`).
-    RevealExport,
+    /// Stop an export: the one named (a toast's Cancel, quick open's row,
+    /// the picker's), or with none `:export cancel`'s: the one running,
+    /// or with several the picker of them (spec 4, F5).
+    CancelExport(Option<crate::backend::export::ExportId>),
+    /// Hide an export's macOS progress toast to its pill, or show it again.
+    HideExport {
+        job: crate::backend::export::ExportId,
+        hidden: bool,
+    },
+    /// Put away a failed export's toast, or with none named the terminal
+    /// look's line's.
+    DismissExport(Option<crate::backend::export::ExportId>),
+    /// A failed export's action: Try again, Choose folder… or Review SQL;
+    /// with none named, the one the terminal look's line shows.
+    ExportFailureAction(Option<crate::backend::export::ExportId>),
+    /// Show the exported file in the file manager (Show in Finder, `go`);
+    /// with none named, the one the terminal look's line shows.
+    RevealExport(Option<crate::backend::export::ExportId>),
+    /// The `:export cancel` picker's row the keyboard is on, moved by.
+    MoveInCancelExport(isize),
     /// Put `pick` of the grid in front on the clipboard, as `how` says,
     /// and say so. A visual selection is left, as `y` leaves it.
     CopyAs {
@@ -2849,6 +2859,18 @@ pub enum Dialog {
     CopyAs(Box<CopyAsMenu>),
     /// The Export sheet (the terminal look's float) over a table's tab.
     Export(Box<crate::export_sheet::ExportSheet>),
+    /// The terminal look's `:export cancel` with two or more exports
+    /// running: which to cancel (spec 4, F5).
+    CancelExport(CancelExportPicker),
+}
+
+/// The `:export cancel` picker, while it is open: the exports running as
+/// it opened, in the order they started.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CancelExportPicker {
+    pub jobs: Vec<crate::backend::export::ExportId>,
+    /// The row the keyboard is on.
+    pub lit: usize,
 }
 
 /// What a copy takes of a grid.
@@ -3213,6 +3235,13 @@ pub enum QuickCommand {
     Run(Runnable),
     /// A row of the Settings window: the window opens at it.
     Setting(crate::settings::OptionId),
+    /// An export running: its row cancels it (spec 4, F7). `name` is its
+    /// file's ("reviews.csv"), or a copy's table where `copying`.
+    CancelExport {
+        job: crate::backend::export::ExportId,
+        name: String,
+        copying: bool,
+    },
 }
 
 impl QuickCommand {
@@ -3222,6 +3251,7 @@ impl QuickCommand {
         match self {
             Self::Run(runnable) => runnable.command,
             Self::Setting(_) => crate::keymap::Command::Settings,
+            Self::CancelExport { .. } => crate::keymap::Command::CancelExport,
         }
     }
 }

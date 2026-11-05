@@ -193,12 +193,25 @@ pub fn setting_path(locale: crate::i18n::Locale, run: &str, option: OptionId) ->
     format!("{} › {} › {label}", say("Settings"), say(pane.name()))
 }
 
+/// A cancel row's name, translated: "Cancel exporting reviews.csv". Any
+/// other command's is [`App::command_name`]'s.
+pub fn command_words(locale: crate::i18n::Locale, command: &QuickCommand) -> String {
+    name_of(locale, "", command)
+}
+
 /// `command`'s name, translated; `run` is the run key, as for
 /// [`setting_path`].
 fn name_of(locale: crate::i18n::Locale, run: &str, command: &QuickCommand) -> String {
     match command {
         QuickCommand::Run(runnable) => runnable.named(locale),
         QuickCommand::Setting(option) => setting_path(locale, run, *option),
+        QuickCommand::CancelExport { name, copying, .. } => {
+            let words = match copying {
+                true => "Cancel copying {name}",
+                false => "Cancel exporting {name}",
+            };
+            crate::i18n::gettext(locale, words).replace("{name}", name)
+        }
     }
 }
 
@@ -361,6 +374,18 @@ impl App {
             })
             .map(QuickCommand::Run)
             .collect();
+        // An export running: a row each that cancels it, as a command not
+        // suggested is listed (spec 4, F7).
+        if (!typed.is_empty() || commands_only) && !self.look.terminal {
+            commands.extend(
+                self.running_exports()
+                    .map(|exporting| QuickCommand::CancelExport {
+                        job: exporting.job.id,
+                        name: exporting.name().to_owned(),
+                        copying: exporting.file.is_empty(),
+                    }),
+            );
+        }
         // The settings' rows answer a word: with nothing typed they would
         // bury the commands.
         if !typed.is_empty() && !self.look.terminal {
@@ -702,6 +727,9 @@ impl App {
                     }
                 }
                 QuickCommand::Setting(option) => self.apply(Action::ShowSetting(option)),
+                QuickCommand::CancelExport { job, .. } => {
+                    self.apply(Action::CancelExport(Some(job)));
+                }
             },
             QuickItem::More { .. } => {}
         }
@@ -726,8 +754,7 @@ impl App {
     }
 
     /// The table or view picked in quick open opens in its window, and
-    /// its sheet over it. While an export runs quick open stays, and says
-    /// why nothing opens (run 3's D5).
+    /// its sheet over it, beside any export running (spec 4, F7).
     fn export_picked(
         &mut self,
         here: ConnTabId,
@@ -735,9 +762,6 @@ impl App {
         object: ObjectRef,
         kind: ObjectKind,
     ) {
-        if self.export_runs() {
-            return;
-        }
         self.dialog = None;
         if tab != here {
             self.apply(Action::ActivateConnTab(tab));

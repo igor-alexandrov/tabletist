@@ -222,44 +222,28 @@ impl App {
                 };
                 (name, About::Nothing, vec![Action::ToggleSidebar(tab)])
             }
-            // The table in front's, or the SQL result's; while one runs,
-            // its cancel.
+            // The table in front's, or the SQL result's: another export
+            // starts beside any running (spec 4, F7).
             Command::Export => {
-                if self
-                    .exporting
-                    .as_ref()
-                    .is_some_and(crate::export_sheet::Exporting::running)
-                {
-                    ("Cancel export", About::Nothing, vec![Action::CancelExport])
-                } else {
-                    let open = Action::OpenExport { tab, format: None };
-                    // A SQL editor whose shown statement returned rows:
-                    // its result's (spec 4, S11).
-                    if let Some(sql) = sql.filter(|sql| sql.exports()) {
-                        let about = About::CurrentResult(sql.number);
-                        return Some((
-                            Runnable {
-                                command,
-                                name: "Export result of Query {n}…",
-                                about,
-                            },
-                            vec![open],
-                        ));
-                    }
-                    let table = object?.object.name.clone();
-                    ("Export {table}…", About::CurrentTable(table), vec![open])
+                let open = Action::OpenExport { tab, format: None };
+                // A SQL editor whose shown statement returned rows: its
+                // result's (spec 4, S11).
+                if let Some(sql) = sql.filter(|sql| sql.exports()) {
+                    let about = About::CurrentResult(sql.number);
+                    return Some((
+                        Runnable {
+                            command,
+                            name: "Export result of Query {n}…",
+                            about,
+                        },
+                        vec![open],
+                    ));
                 }
+                let table = object?.object.name.clone();
+                ("Export {table}…", About::CurrentTable(table), vec![open])
             }
-            // A table of the connection, picked next; not while one runs,
-            // where Export's row is its cancel.
+            // A table of the connection, picked next.
             Command::ExportTable => {
-                if self
-                    .exporting
-                    .as_ref()
-                    .is_some_and(crate::export_sheet::Exporting::running)
-                {
-                    return None;
-                }
                 let pick = Action::PickTableToExport(tab);
                 ("Export a table…", About::PickNext, vec![pick])
             }

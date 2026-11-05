@@ -2516,20 +2516,78 @@ struct StatusAsked {
     export: Option<(String, egui::Color32)>,
 }
 
-/// The terminal look's line for the export, as the progress and states
-/// board writes it: its bar while it runs, its end for 4 s, a failure
-/// until Esc.
+/// The terminal look's line for the exports, as the progress and states
+/// board writes it (spec 4, S14): an end while it is told (for 4 s, a
+/// failure until Esc), the one that ended last; else one export's bar, or
+/// with several running a word on each, in the order they started.
 pub fn export_line(app: &App) -> Option<(String, egui::Color32)> {
+    if let Some(exporting) = app.shown_export() {
+        return Some(one_export_line(app, exporting));
+    }
+    let running: Vec<&crate::export_sheet::Exporting> = app.running_exports().collect();
+    match running.as_slice() {
+        [] => None,
+        [exporting] => Some(one_export_line(app, exporting)),
+        several => {
+            let locale = app.locale;
+            let cancel = app.keymap.key(
+                crate::keymap::Layout::Omarchy,
+                crate::keymap::Command::CancelExport,
+            );
+            let each: Vec<String> = several
+                .iter()
+                .map(|exporting| export_brief(exporting, locale))
+                .collect();
+            let count = u32::try_from(several.len()).unwrap_or(u32::MAX);
+            let text = crate::i18n::ngettext(
+                locale,
+                "{n} export · {each} · {cancel}",
+                "{n} exports · {each} · {cancel}",
+                count,
+            )
+            .replace("{n}", &several.len().to_string())
+            .replace("{each}", &each.join(" · "))
+            .replace("{cancel}", cancel.as_str());
+            Some((text, app.palette.text))
+        }
+    }
+}
+
+/// An export running, in a few words: "reviews.csv 58%", where its total
+/// is known, else "events.jsonl 4,000 rows". The `:export cancel` picker's
+/// rows say it too.
+pub fn export_brief(
+    exporting: &crate::export_sheet::Exporting,
+    locale: crate::i18n::Locale,
+) -> String {
+    let rows = match exporting.status {
+        crate::export_sheet::ExportStatus::Running { rows, .. } => rows,
+        _ => 0,
+    };
+    match exporting.share() {
+        Some(share) => format!("{} {}%", exporting.name(), (share * 100.0).round() as u32),
+        None => crate::i18n::ngettext(
+            locale,
+            "{name} {n} row",
+            "{name} {n} rows",
+            u32::try_from(rows).unwrap_or(u32::MAX),
+        )
+        .replace("{name}", exporting.name())
+        .replace("{n}", &crate::format::group_digits(rows)),
+    }
+}
+
+/// One export's line: its bar while it runs, else its end.
+fn one_export_line(
+    app: &App,
+    exporting: &crate::export_sheet::Exporting,
+) -> (String, egui::Color32) {
     use crate::export_sheet::{ExportStatus, count_words, size_words, took_words};
-    let exporting = app.exporting.as_ref()?;
     let (locale, palette) = (app.locale, &app.palette);
     let layout = crate::keymap::Layout::Omarchy;
     let key = |command| app.keymap.key(layout, command);
-    let name = match exporting.file.is_empty() {
-        true => exporting.table.clone(),
-        false => exporting.file.clone(),
-    };
-    let line = match &exporting.status {
+    let name = exporting.name().to_owned();
+    match &exporting.status {
         ExportStatus::Asking | ExportStatus::Running { .. } => {
             let rows = match exporting.status {
                 ExportStatus::Running { rows, .. } => rows,
@@ -2602,8 +2660,7 @@ pub fn export_line(app: &App) -> Option<(String, egui::Color32)> {
             };
             (text, color)
         }
-    };
-    Some(line)
+    }
 }
 
 /// What the status line of `tab` asks of the app: none where the

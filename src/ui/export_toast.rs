@@ -2,8 +2,9 @@
 //! at the bottom centre while it runs, hidden to a pill at the bottom
 //! right; the done and cancelled toasts for 4 s; the error toast until it
 //! is dismissed. The terminal look says each in its status line
-//! (`workspace::export_line`). The states are the app's
-//! (`App::exporting`): this draws them and asks.
+//! (`workspace::export_line`). Several stack, a toast or a pill each
+//! (spec 4, S13). The states are the app's (`App::exports`): this draws
+//! them and asks.
 
 use std::time::Instant;
 
@@ -88,77 +89,142 @@ fn spoken(ctx: &egui::Context, exporting: &Exporting, locale: crate::i18n::Local
     text
 }
 
-/// Draws the export's state, and returns what its buttons ask.
+/// Draws the exports' states, and returns what their buttons ask: a
+/// toast each, stacked at the bottom centre with the newest at the bottom,
+/// and a pill each for those hidden, stacked up from the bottom right
+/// (spec 4, S13 and F8). ⌘⇧' goes to the newest's first button.
 pub fn show(
     ctx: &egui::Context,
     paint: Paint,
-    exporting: Option<&Exporting>,
+    exports: &[Exporting],
     home: Option<&std::path::Path>,
 ) -> Vec<Action> {
     let mut actions = Vec::new();
-    let Some(exporting) = exporting else {
-        return actions;
-    };
-    if paint.look.terminal {
+    if exports.is_empty() || paint.look.terminal {
         return actions;
     }
+    let now = Instant::now();
+    // While one runs, the time left and the bar move: a frame now and then.
+    for exporting in exports {
+        match exporting.status {
+            ExportStatus::Running { .. } | ExportStatus::Asking => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(500));
+            }
+            ExportStatus::Done { at, .. } | ExportStatus::Cancelled { at } => {
+                let left = crate::export_sheet::TOLD_FOR.saturating_sub(now.duration_since(at));
+                ctx.request_repaint_after(left);
+            }
+            ExportStatus::Failed { .. } => {}
+        }
+    }
+    let newest = exports.last().map(|exporting| exporting.job.id);
+    let pilled = |exporting: &&Exporting| exporting.hidden && exporting.running();
+    let pills: Vec<&Exporting> = exports.iter().filter(pilled).collect();
+    let toasts: Vec<&Exporting> = exports
+        .iter()
+        .filter(|exporting| !pilled(exporting))
+        .collect();
+    if !pills.is_empty() {
+        Area::new(Id::new("export-pill"))
+            .order(Order::Foreground)
+            .anchor(Align2::RIGHT_BOTTOM, vec2(-16.0, -16.0))
+            .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing = vec2(0.0, GAP);
+                ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+                    for exporting in pills {
+                        let first = Some(exporting.job.id) == newest;
+                        pill(ui, paint, exporting, first, &mut actions);
+                    }
+                });
+            });
+    }
+    if !toasts.is_empty() {
+        Area::new(Id::new("export-toast"))
+            .order(Order::Foreground)
+            .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -lift(ctx)))
+            .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing = vec2(0.0, GAP);
+                ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                    for exporting in toasts {
+                        let first = Some(exporting.job.id) == newest;
+                        // Its own ids, whatever goes above it.
+                        ui.push_id(("export-toast", exporting.job.id.0), |ui| {
+                            one_toast(ui, paint, exporting, (first, now), home, &mut actions);
+                        });
+                    }
+                });
+            });
+    }
+    actions
+}
+
+/// How far apart the toasts are, and the pills.
+const GAP: f32 = 8.0;
+
+/// The pill of a hidden export, the bottom right's: a click shows its
+/// toast again.
+fn pill(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    exporting: &Exporting,
+    first: bool,
+    actions: &mut Vec<Action>,
+) {
     let Paint {
         locale,
         palette,
         look,
     } = paint;
-    let now = Instant::now();
-    // While it runs, the time left and the bar move: a frame now and then.
-    match exporting.status {
-        ExportStatus::Running { .. } | ExportStatus::Asking => {
-            ctx.request_repaint_after(std::time::Duration::from_millis(500));
-        }
-        ExportStatus::Done { at, .. } | ExportStatus::Cancelled { at } => {
-            let left = crate::export_sheet::TOLD_FOR.saturating_sub(now.duration_since(at));
-            ctx.request_repaint_after(left);
-        }
-        ExportStatus::Failed { .. } => {}
+    let small = widgets::secondary(&look);
+    let share = exporting
+        .share()
+        .map(|share| format!(" {}%", (share * 100.0).round() as u32))
+        .unwrap_or_default();
+    let text = format!("{}{share}", exporting.name());
+    let drawn = Frame::new()
+        .fill(palette.text)
+        .corner_radius(14)
+        .inner_margin(Margin::symmetric(12, 6))
+        .show(ui, |ui| {
+            widgets::label(ui, small, &text, palette.window, &look);
+        })
+        .response;
+    // A widget of its own over the frame, which takes the keyboard as a
+    // button does.
+    let response = ui.interact(
+        drawn.rect,
+        Id::new(("export-pill-button", exporting.job.id.0)),
+        Sense::click(),
+    );
+    let spoken = spoken(ui.ctx(), exporting, locale);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &spoken));
+    toast::button(ui.ctx(), &response, first);
+    if response.clicked() {
+        actions.push(Action::HideExport {
+            job: exporting.job.id,
+            hidden: false,
+        });
     }
+}
+
+/// One export's toast; `first` where its first button is the one ⌘⇧'
+/// goes to.
+fn one_toast(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    exporting: &Exporting,
+    (first, now): (bool, Instant),
+    home: Option<&std::path::Path>,
+    actions: &mut Vec<Action>,
+) {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let job = exporting.job.id;
     let body = widgets::body(&look);
     let small = widgets::secondary(&look);
-    // The pill: the hidden toast, bottom right; a click shows it again.
-    if exporting.hidden && exporting.running() {
-        let share = exporting
-            .share()
-            .map(|share| format!(" {}%", (share * 100.0).round() as u32))
-            .unwrap_or_default();
-        let name = match exporting.file.is_empty() {
-            true => exporting.table.clone(),
-            false => exporting.file.clone(),
-        };
-        let text = format!("{name}{share}");
-        Area::new(Id::new("export-pill"))
-            .order(Order::Foreground)
-            .anchor(Align2::RIGHT_BOTTOM, vec2(-16.0, -16.0))
-            .show(ctx, |ui| {
-                let drawn = Frame::new()
-                    .fill(palette.text)
-                    .corner_radius(14)
-                    .inner_margin(Margin::symmetric(12, 6))
-                    .show(ui, |ui| {
-                        widgets::label(ui, small, &text, palette.window, &look);
-                    })
-                    .response;
-                // A widget of its own over the frame, which takes the
-                // keyboard as a button does.
-                let response =
-                    ui.interact(drawn.rect, Id::new("export-pill-button"), Sense::click());
-                let spoken = spoken(ui.ctx(), exporting, locale);
-                response.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &spoken)
-                });
-                toast::button(ui.ctx(), &response, true);
-                if response.clicked() {
-                    actions.push(Action::HideExport(false));
-                }
-            });
-        return actions;
-    }
     let failed = matches!(exporting.status, ExportStatus::Failed { .. });
     let (fill, ink, dim) = match failed {
         // The error banner's danger-soft, with the text's colour.
@@ -173,10 +239,8 @@ pub fn show(
             palette.window.gamma_multiply(0.7),
         ),
     };
-    Area::new(Id::new("export-toast"))
-        .order(Order::Foreground)
-        .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -lift(ctx)))
-        .show(ctx, |ui| {
+    {
+        {
             let frame = Frame::new()
                 .fill(fill)
                 .corner_radius(9)
@@ -221,15 +285,15 @@ pub fn show(
                             );
                             toast::button(ui.ctx(), &hidden, false);
                             if hidden.clicked() {
-                                actions.push(Action::HideExport(true));
+                                actions.push(Action::HideExport { job, hidden: true });
                             }
                             let cancel = gettext(locale, "Cancel");
                             let cancelled = ButtonSpec::new(&cancel)
                                 .link()
                                 .show(ui, 22.0, &look, &palette);
-                            toast::button(ui.ctx(), &cancelled, true);
+                            toast::button(ui.ctx(), &cancelled, first);
                             if cancelled.clicked() {
-                                actions.push(Action::CancelExport);
+                                actions.push(Action::CancelExport(Some(job)));
                             }
                         });
                     });
@@ -259,9 +323,15 @@ pub fn show(
                     ui.ctx().accesskit_node_builder(response.id, |node| {
                         node.set_live(egui::accesskit::Live::Polite);
                     });
-                    if let Some(left) = exporting.time_left(now, locale) {
+                    // The time left where the total is known, else the
+                    // connection, as the board's second toast says it.
+                    let under = match exporting.total {
+                        Some(_) => exporting.time_left(now, locale),
+                        None => Some(exporting.connection.clone()),
+                    };
+                    if let Some(under) = under {
                         ui.add_space(4.0);
-                        widgets::label(ui, small, &left, dim, &look);
+                        widgets::label(ui, small, &under, dim, &look);
                     }
                 }
                 ExportStatus::Done { .. } => {
@@ -275,9 +345,9 @@ pub fn show(
                         let shown = ButtonSpec::new(&reveal)
                             .link()
                             .show(ui, 22.0, &look, &palette);
-                        toast::button(ui.ctx(), &shown, true);
+                        toast::button(ui.ctx(), &shown, first);
                         if shown.clicked() {
-                            actions.push(Action::RevealExport);
+                            actions.push(Action::RevealExport(Some(job)));
                         }
                     });
                 }
@@ -312,9 +382,9 @@ pub fn show(
                         });
                         if let Some(action) = &action {
                             let acted = ButtonSpec::new(action).show(ui, 24.0, &look, &palette);
-                            toast::button(ui.ctx(), &acted, true);
+                            toast::button(ui.ctx(), &acted, first);
                             if acted.clicked() {
-                                actions.push(Action::ExportFailureAction);
+                                actions.push(Action::ExportFailureAction(Some(job)));
                             }
                         }
                         let dismiss = gettext(locale, "Dismiss");
@@ -325,13 +395,13 @@ pub fn show(
                             &look,
                             &palette,
                         );
-                        toast::button(ui.ctx(), &dismissed, action.is_none());
+                        toast::button(ui.ctx(), &dismissed, first && action.is_none());
                         if dismissed.clicked() {
-                            actions.push(Action::DismissExport);
+                            actions.push(Action::DismissExport(Some(job)));
                         }
                     });
                 }
             });
-        });
-    actions
+        }
+    }
 }
