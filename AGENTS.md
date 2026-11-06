@@ -276,16 +276,19 @@ Optional secrets (each step skips with a notice without its own):
   host key is pinned in `release.yml`; update it there if the AUR rotates it.
 - `HOMEBREW_TAP_SSH_KEY`: the private half of a deploy key with write
   access on `igor-alexandrov/homebrew-tabletist`, and on nothing else.
-  The job renders `packaging/homebrew/tabletist.rb.in` with
-  `packaging/homebrew/render.sh` and pushes it as `Casks/tabletist.rb`, so
-  change the cask here, never in the tap. GitHub's host key is pinned in
+  The job renders `packaging/homebrew/tabletist.rb.in` and
+  `packaging/homebrew/tabletist-formula.rb.in` with
+  `packaging/homebrew/render.sh` and pushes them as `Casks/tabletist.rb`
+  (the app) and `Formula/tabletist.rb` (built from the release's source
+  archive), so change them here, never in the tap. GitHub's host key is pinned in
   `release.yml` beside the AUR's. A re-run of an older tag leaves a newer
   cask as it is.
 
 Dry run without publishing: `gh workflow run release.yml -f tag=v0.0.0-dry`.
 `packaging.yml` builds and installs the DMG, the Windows installer and the
-source AUR package, builds and runs the AppImage, and installs the Homebrew
-cask (rendered for the latest release), whenever `packaging/` changes. `packaging/linux/appimage.sh` pins appimagetool and the AppImage
+source AUR package, builds and runs the AppImage, installs the Homebrew
+cask and builds the Homebrew formula on macOS and Linux (both rendered for
+the latest release), whenever `packaging/` changes. `packaging/linux/appimage.sh` pins appimagetool and the AppImage
 runtime by version and SHA-256; move them together. Locally,
 `packaging/arch/render.sh` fills a PKGBUILD from a release's checksums.
 

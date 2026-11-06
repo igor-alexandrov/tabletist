@@ -107,6 +107,11 @@ The guide and the reference are on the website:
   download `tabletist-v<version>-macos-universal.dmg` from the
   [releases](https://github.com/igor-alexandrov/tabletist/releases) and drag
   Tabletist to Applications.
+- **Homebrew, from source (macOS and Linux):**
+  `brew install igor-alexandrov/tabletist/tabletist`, without `--cask`,
+  builds the `tabletist` program from the release's source with Homebrew's
+  Rust. It installs no app bundle and no launcher entry: on macOS, the cask
+  above is the app.
 - **Windows:** run `tabletist-v<version>-x86_64-pc-windows-msvc-setup.exe`
   (or the `aarch64` one on ARM). No administrator rights needed.
 - **Other Linux:** to try it, download `tabletist-<version>-x86_64.AppImage`
