@@ -450,15 +450,19 @@ jobs:
             --output "$RUNNER_TEMP/checksums.txt"
           git clone git@github.com:igor-alexandrov/homebrew-tabletist.git "$RUNNER_TEMP/tap"
           cask="$RUNNER_TEMP/tap/Casks/tabletist.rb"
-          # A re-run of an older tag leaves a newer cask, and its formula, as
-          # they are.
-          current="$(sed -n 's/^  version "\(.*\)"$/\1/p' "$cask" 2>/dev/null || true)"
-          if [ -n "$current" ] && [ "$current" != "$version" ] &&
-            [ "$(printf '%s\n%s\n' "$current" "$version" | sort -V | tail -n 1)" = "$current" ]; then
-            echo "::notice::The tap has ${current}, newer than ${version}; left as it is."
-            exit 0
-          fi
           formula="$RUNNER_TEMP/tap/Formula/tabletist.rb"
+          # A re-run of an older tag leaves a newer cask or formula, and so
+          # both, as they are. Each is read on its own: either may be missing.
+          # The formula's version is in its source archive's name.
+          cask_version="$(sed -n 's/^  version "\(.*\)"$/\1/p' "$cask" 2>/dev/null || true)"
+          formula_version="$(sed -n 's/^  url ".*\/tabletist-v\(.*\)-source\.tar\.gz"$/\1/p' "$formula" 2>/dev/null || true)"
+          for current in $cask_version $formula_version; do
+            if [ "$current" != "$version" ] &&
+              [ "$(printf '%s\n%s\n' "$current" "$version" | sort -V | tail -n 1)" = "$current" ]; then
+              echo "::notice::The tap has ${current}, newer than ${version}; left as it is."
+              exit 0
+            fi
+          done
           mkdir -p "$(dirname "$cask")" "$(dirname "$formula")"
           bash packaging/homebrew/render.sh packaging/homebrew/tabletist.rb.in "$version" \
             "$RUNNER_TEMP/checksums.txt" > "$cask"

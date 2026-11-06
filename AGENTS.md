@@ -281,8 +281,8 @@ Optional secrets (each step skips with a notice without its own):
   `packaging/homebrew/render.sh` and pushes them as `Casks/tabletist.rb`
   (the app) and `Formula/tabletist.rb` (built from the release's source
   archive), so change them here, never in the tap. GitHub's host key is pinned in
-  `release.yml` beside the AUR's. A re-run of an older tag leaves a newer
-  cask as it is.
+  `release.yml` beside the AUR's. A re-run of an older tag leaves the tap as
+  it is where its cask or its formula is newer.
 
 Dry run without publishing: `gh workflow run release.yml -f tag=v0.0.0-dry`.
 `packaging.yml` builds and installs the DMG, the Windows installer and the
