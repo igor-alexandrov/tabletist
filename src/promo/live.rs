@@ -207,13 +207,15 @@ impl Live {
                     result: Ok(super::history::newest(history, connection, *keep)),
                 })),
                 // Nothing is written, saved, stored, watched, exported,
-                // revealed or closed here.
+                // revealed, notified, listed or closed here.
                 Command::Test { .. }
                 | Command::Close { .. }
                 | Command::Cancel { .. }
                 | Command::Export(_)
                 | Command::CancelExport(_)
                 | Command::Reveal { .. }
+                | Command::Notify { .. }
+                | Command::ListFolder { .. }
                 | Command::LoadSecret { .. }
                 | Command::StoreSecret { .. }
                 | Command::Save { .. }
