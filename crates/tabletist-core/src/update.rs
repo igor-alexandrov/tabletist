@@ -6,11 +6,11 @@
 //!
 //! What a later release's helper relies on from this build, which must not
 //! change: `tabletist --version` prints `tabletist <version>`;
-//! `--update-receipt <job>` and `--update-error <message>` are taken out
-//! before clap reads the command line ([`fastframe_update::intercept`] in
-//! `entrypoint::run`); the receipt is confirmed once the window is up; and
-//! `--relaunch`, which the helper adds to the old copy's arguments, is
-//! read.
+//! `--update-receipt <job>`, `--update-error <message>` and
+//! `--update-failure <reason>` are taken out before clap reads the command
+//! line ([`fastframe_update::intercept`] in `entrypoint::run`); the receipt
+//! is confirmed once the window is up; and `--relaunch`, which the helper
+//! adds to the old copy's arguments, is read.
 //! The release side of the contract (asset names, markers, the signed
 //! checksums) is in `release.yml` and `tests/update_release.rs`.
 

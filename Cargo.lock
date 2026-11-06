@@ -306,7 +306,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
  "x11rb",
 ]
 
@@ -1418,7 +1418,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1860,7 +1860,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1918,16 +1918,16 @@ checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
 
 [[package]]
 name = "fastframe-dirs"
-version = "0.13.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.13.0#d5e1a99702f39fda6e252b7acb5582c60becf545"
+version = "0.16.1"
+source = "git+https://github.com/crmne/fastframe?tag=v0.16.1#ebc7cecb7cfb229e3d6849abd17bff953506fdb8"
 dependencies = [
  "directories",
 ]
 
 [[package]]
 name = "fastframe-fonts"
-version = "0.13.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.13.0#d5e1a99702f39fda6e252b7acb5582c60becf545"
+version = "0.16.1"
+source = "git+https://github.com/crmne/fastframe?tag=v0.16.1#ebc7cecb7cfb229e3d6849abd17bff953506fdb8"
 dependencies = [
  "directories",
  "egui",
@@ -1939,8 +1939,8 @@ dependencies = [
 
 [[package]]
 name = "fastframe-i18n"
-version = "0.13.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.13.0#d5e1a99702f39fda6e252b7acb5582c60becf545"
+version = "0.16.1"
+source = "git+https://github.com/crmne/fastframe?tag=v0.16.1#ebc7cecb7cfb229e3d6849abd17bff953506fdb8"
 dependencies = [
  "include-po",
  "polib",
@@ -1950,16 +1950,16 @@ dependencies = [
 
 [[package]]
 name = "fastframe-icons"
-version = "0.13.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.13.0#d5e1a99702f39fda6e252b7acb5582c60becf545"
+version = "0.16.1"
+source = "git+https://github.com/crmne/fastframe?tag=v0.16.1#ebc7cecb7cfb229e3d6849abd17bff953506fdb8"
 dependencies = [
  "egui",
 ]
 
 [[package]]
 name = "fastframe-log"
-version = "0.13.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.13.0#d5e1a99702f39fda6e252b7acb5582c60becf545"
+version = "0.16.1"
+source = "git+https://github.com/crmne/fastframe?tag=v0.16.1#ebc7cecb7cfb229e3d6849abd17bff953506fdb8"
 dependencies = [
  "env_logger",
  "jiff",
@@ -1968,8 +1968,8 @@ dependencies = [
 
 [[package]]
 name = "fastframe-text"
-version = "0.13.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.13.0#d5e1a99702f39fda6e252b7acb5582c60becf545"
+version = "0.16.1"
+source = "git+https://github.com/crmne/fastframe?tag=v0.16.1#ebc7cecb7cfb229e3d6849abd17bff953506fdb8"
 dependencies = [
  "egui",
  "zbus",
@@ -1977,8 +1977,8 @@ dependencies = [
 
 [[package]]
 name = "fastframe-theme"
-version = "0.13.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.13.0#d5e1a99702f39fda6e252b7acb5582c60becf545"
+version = "0.16.1"
+source = "git+https://github.com/crmne/fastframe?tag=v0.16.1#ebc7cecb7cfb229e3d6849abd17bff953506fdb8"
 dependencies = [
  "directories",
  "egui",
@@ -1990,8 +1990,8 @@ dependencies = [
 
 [[package]]
 name = "fastframe-update"
-version = "0.13.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.13.0#d5e1a99702f39fda6e252b7acb5582c60becf545"
+version = "0.16.1"
+source = "git+https://github.com/crmne/fastframe?tag=v0.16.1#ebc7cecb7cfb229e3d6849abd17bff953506fdb8"
 dependencies = [
  "anyhow",
  "fastframe-dirs",
@@ -4994,7 +4994,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5512,7 +5512,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6444,7 +6444,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7647,7 +7647,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
