@@ -135,9 +135,13 @@ pub fn main(cli: Cli, launch: fastframe_update::Launch) -> anyhow::Result<()> {
     }
     logging.init()?;
     // The helper put the previous version back: this one. The next run
-    // shows it in the window; until then the log has it.
+    // shows it in the window; until then the log has it, with the step
+    // that failed and why, which only the log keeps.
     if let Some(message) = &launch.error {
         log::error!("{message}");
+    }
+    if let Some(failure) = &launch.failure {
+        log::error!("the update failed: {failure}");
     }
     let update_receipt = launch.receipt;
     // What the helper starts the next version with, but the program's

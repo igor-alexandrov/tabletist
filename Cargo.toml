@@ -63,18 +63,18 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 egui_kittest = { version = "0.36", optional = true, default-features = false, features = ["wgpu"] }
 # Shared foundation with spotifast (crmne/fastframe). Every crate comes from
 # the same tag; move them together.
-fastframe-text = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
-fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
-fastframe-icons = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
+fastframe-text = { git = "https://github.com/crmne/fastframe", tag = "v0.16.1" }
+fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.16.1" }
+fastframe-icons = { git = "https://github.com/crmne/fastframe", tag = "v0.16.1" }
 # Palettes, presets, and following the Omarchy theme live.
-fastframe-theme = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
+fastframe-theme = { git = "https://github.com/crmne/fastframe", tag = "v0.16.1" }
 # The gettext calls the views make (`crate::i18n`, tabletist-core's).
-fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
+fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.16.1" }
 # Log file for bug reports and a panic log without payloads.
-fastframe-log = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
+fastframe-log = { git = "https://github.com/crmne/fastframe", tag = "v0.16.1" }
 # Self-update from GitHub releases (tabletist-core's `update`): the
 # entrypoint runs the helper that installs an update.
-fastframe-update = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
+fastframe-update = { git = "https://github.com/crmne/fastframe", tag = "v0.16.1" }
 # The app beneath its interface: its state and edits, the backend, the
 # settings, the keymap and the theme's data (src/lib.rs re-exports each of
 # its modules). The crate boundary keeps it off the interface.

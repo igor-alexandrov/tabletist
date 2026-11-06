@@ -36,19 +36,26 @@ fn demo_flags_require_demo() {
 }
 
 /// An update's helper relaunches the app with `--update-receipt` (or, after
-/// a rollback, `--update-error`) beside the arguments it was started with.
+/// a rollback, `--update-error`, and from fastframe 0.15.5 on
+/// `--update-failure` beside it) beside the arguments it was started with.
 /// Those flags are taken out before clap reads the rest; clap alone would
-/// refuse them.
+/// refuse them. A helper older than 0.15.5 sends `--update-error` alone.
 #[test]
 fn update_flags_are_taken_out_before_the_arguments_are_read() {
     for flags in [
-        [
+        &[
             "--update-receipt",
             "/missing/.tabletist-update-0000000000000000/handoff.json",
-        ],
-        [
+        ][..],
+        &[
             "--update-error",
             "The update could not start. The previous version has been restored.",
+        ],
+        &[
+            "--update-error",
+            "The update did not finish, so nothing changed. Restart to try again.",
+            "--update-failure",
+            "the new version did not start within a minute",
         ],
     ] {
         let output = tabletist()

@@ -38,14 +38,14 @@ egui = { version = "0.36", features = ["serde"] }
 # The version epaint already uses on every platform.
 skrifa = { version = "0.44", default-features = false, features = ["std"] }
 # Palettes, presets, and following the Omarchy theme live.
-fastframe-theme = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
+fastframe-theme = { git = "https://github.com/crmne/fastframe", tag = "v0.16.1" }
 # gettext catalogs compiled at build time (see build.rs).
-fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
+fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.16.1" }
 # Self-update from GitHub releases (src/update.rs): detects how this copy
 # was installed, checks the signature on checksums.txt, hands an update to
 # a helper that installs it and rolls back if the new version does not
 # start.
-fastframe-update = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
+fastframe-update = { git = "https://github.com/crmne/fastframe", tag = "v0.16.1" }
 # The database layer (no UI dependencies).
 tabletist-db = { path = "../tabletist-db" }
 # The MCP server agents reach the saved connections through. The backend
@@ -138,7 +138,7 @@ windows-native-keyring-store = { version = "1.1", default-features = false }
 tokio = { version = "1", features = ["test-util"] }
 
 [build-dependencies]
-fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0", features = ["build"] }
+fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.16.1", features = ["build"] }
 
 [features]
 # The test hooks and the data fixtures (`fixtures`), for the interface's

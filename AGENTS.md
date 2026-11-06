@@ -297,9 +297,10 @@ the new one, so these hold for every release, and a change to any of them
 needs a release that accepts both ways first:
 
 - `tabletist --version` prints `tabletist <version>`, and
-  `--update-receipt <job>`, `--update-error <message>` and
-  `--apply-update <job>` are handled by `fastframe_update::intercept` before
-  clap reads the command line (`tests/cli.rs`).
+  `--update-receipt <job>`, `--update-error <message>`,
+  `--update-failure <reason>` and `--apply-update <job>` are handled by
+  `fastframe_update::intercept` before clap reads the command line
+  (`tests/cli.rs`).
 - The receipt is confirmed once the first frame is painted, on the second
   (`entrypoint.rs`): eframe paints a frame after its `ui` returns.
 - The helper starts the new version with the old one's arguments and
