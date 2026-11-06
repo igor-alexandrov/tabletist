@@ -216,3 +216,37 @@ jobs:
           sudo -u builder bash -c "cd $work/src && makepkg --printsrcinfo > .SRCINFO && makepkg --noconfirm"
           tar -tf "$work"/src/tabletist-0.0.0-1-*.pkg.tar.zst | grep -x 'usr/bin/tabletist'
 
+
+  # The tap's cask as release.yml renders it, against the latest release: the
+  # DMG `brew install --cask igor-alexandrov/tabletist/tabletist` downloads. A
+  # template that needs a file no release has yet fails here until one does.
+  homebrew:
+    name: Homebrew cask
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+      HOMEBREW_NO_ANALYTICS: 1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render the cask into a local tap
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern checksums.txt --dir "$RUNNER_TEMP"
+          brew tap-new --no-git tabletist/test
+          tap="$(brew --repository tabletist/test)"
+          mkdir -p "$tap/Casks"
+          bash packaging/homebrew/render.sh packaging/homebrew/tabletist.rb.in "${tag#v}" \
+            "$RUNNER_TEMP/checksums.txt" > "$tap/Casks/tabletist.rb"
+          cat "$tap/Casks/tabletist.rb"
+      - run: brew style --cask tabletist/test/tabletist
+      - run: brew audit --cask --strict --online tabletist/test/tabletist
+      - name: Install, open as Gatekeeper sees it, uninstall
+        run: |
+          brew install --cask tabletist/test/tabletist
+          /Applications/Tabletist.app/Contents/MacOS/tabletist --version
+          spctl --assess --type execute --verbose /Applications/Tabletist.app
+          brew uninstall --cask tabletist/test/tabletist
+          test ! -e /Applications/Tabletist.app
