@@ -13,8 +13,10 @@ switches to another look.
 ## Install
 
 Tabletist needs macOS 11 or later. One download runs on both Apple
-Silicon and Intel. The steps are on the
-[Download page]({% link _guide/download.md %}#macos).
+Silicon and Intel. Install it with
+`brew install --cask igor-alexandrov/tabletist/tabletist`, or from the
+disk image as the
+[Download page]({% link _guide/download.md %}#macos) shows.
 
 ## The window
 

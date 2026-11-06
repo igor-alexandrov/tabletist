@@ -14,13 +14,21 @@ its signature by the Tabletist release key.
 
 ## macOS
 
-Download `tabletist-v<version>-macos-universal.dmg`. It is one file for both
-Apple Silicon and Intel, and needs macOS 11 or later. Open it and drag
+Tabletist needs macOS 11 or later, on Apple Silicon or Intel. With
+[Homebrew](https://brew.sh):
+
+```sh
+brew install --cask igor-alexandrov/tabletist/tabletist
+```
+
+Or download `tabletist-v<version>-macos-universal.dmg`, open it and drag
 **Tabletist** to **Applications**.
 
 To update, choose **Tabletist → Check for Updates…**, then **Download and
 install**: the new version goes in when you restart. Tabletist updates
 itself only when it runs from **Applications**, not from the disk image.
+Installed with Homebrew, it updates itself the same way, and
+`brew upgrade --greedy` updates it too.
 
 ## Windows
 
