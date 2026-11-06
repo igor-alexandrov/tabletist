@@ -1,6 +1,8 @@
 //! How this copy was installed, and so who updates it: itself, or the
 //! tool that installed it, with the command that does it.
 
+use std::path::Path;
+
 use fastframe_update::{Kind, PackageManager, Unsupported};
 
 /// Who updates this copy.
@@ -24,8 +26,14 @@ pub struct Managed {
 impl Installed {
     /// What detecting the installation came to. `found` says whether a
     /// program is on the `PATH`: an AUR helper's update covers the AUR's
-    /// packages, which pacman's does not.
-    pub fn of(detected: Result<Kind, &Unsupported>, found: impl Fn(&str) -> bool) -> Self {
+    /// packages, which pacman's does not. `exe` is the running program,
+    /// with its links followed: Homebrew keeps a formula's in its `Cellar`,
+    /// and a formula and a cask take different commands.
+    pub fn of(
+        detected: Result<Kind, &Unsupported>,
+        found: impl Fn(&str) -> bool,
+        exe: Option<&Path>,
+    ) -> Self {
         let reason = match detected {
             Ok(kind) => return Self::Itself(kind),
             Err(reason) => reason,
@@ -35,7 +43,11 @@ impl Installed {
         match reason {
             Unsupported::Homebrew => managed(
                 "Installed with Homebrew, so Homebrew updates it",
-                Some("brew upgrade --cask tabletist"),
+                Some(if exe.is_some_and(in_cellar) {
+                    "brew upgrade tabletist"
+                } else {
+                    "brew upgrade --cask tabletist"
+                }),
             ),
             Unsupported::Cargo => managed(
                 "Installed with cargo, so cargo updates it",
@@ -79,9 +91,11 @@ impl Installed {
     /// thread, once per launch.
     pub fn detect() -> Self {
         let detected = super::updater().installation();
+        let exe = std::env::current_exe().and_then(std::fs::canonicalize).ok();
         Self::of(
             detected.as_ref().map(|installation| installation.kind),
             on_path,
+            exe.as_deref(),
         )
     }
 
@@ -100,6 +114,14 @@ impl Installed {
             Self::Elsewhere(_) => None,
         }
     }
+}
+
+/// Whether `exe` is in Homebrew's `Cellar`, where a formula is installed:
+/// `/opt/homebrew/Cellar/tabletist/0.5.0/bin/tabletist`. A cask's app is in
+/// Applications.
+fn in_cellar(exe: &Path) -> bool {
+    exe.components()
+        .any(|part| part.as_os_str().eq_ignore_ascii_case("Cellar"))
 }
 
 /// Whether a program of this name is in a folder of the `PATH`.
@@ -121,12 +143,12 @@ mod tests {
         detected: Result<Kind, &Unsupported>,
         found: impl Fn(&str) -> bool,
     ) -> Option<&'static str> {
-        Installed::of(detected, found).command()
+        Installed::of(detected, found, None).command()
     }
 
     #[test]
     fn homebrew_and_cargo_say_their_own_command() {
-        let homebrew = Installed::of(Err(&Unsupported::Homebrew), none);
+        let homebrew = Installed::of(Err(&Unsupported::Homebrew), none, None);
         assert_eq!(
             homebrew,
             Installed::Elsewhere(Managed {
@@ -138,6 +160,37 @@ mod tests {
             command(Err(&Unsupported::Cargo), none),
             Some("cargo install tabletist --locked")
         );
+    }
+
+    #[test]
+    fn a_homebrew_formula_upgrades_without_cask() {
+        let upgrade = |exe: &str| {
+            Installed::of(Err(&Unsupported::Homebrew), none, Some(Path::new(exe))).command()
+        };
+        // The formula's program, on Apple silicon, on Intel and on Linux.
+        for formula in [
+            "/opt/homebrew/Cellar/tabletist/0.5.0/bin/tabletist",
+            "/usr/local/Cellar/tabletist/0.5.0/bin/tabletist",
+            "/home/linuxbrew/.linuxbrew/Cellar/tabletist/0.5.0/bin/tabletist",
+        ] {
+            assert_eq!(
+                upgrade(formula),
+                Some("brew upgrade tabletist"),
+                "{formula}"
+            );
+        }
+        // The cask's app, and a folder that only names a cellar.
+        for cask in [
+            "/Applications/Tabletist.app/Contents/MacOS/tabletist",
+            "/opt/homebrew/Caskroom/tabletist/0.5.0/Tabletist.app/Contents/MacOS/tabletist",
+            "/Users/ada/WineCellar/Tabletist.app/Contents/MacOS/tabletist",
+        ] {
+            assert_eq!(
+                upgrade(cask),
+                Some("brew upgrade --cask tabletist"),
+                "{cask}"
+            );
+        }
     }
 
     #[test]
@@ -159,7 +212,7 @@ mod tests {
             Some("sudo apt update && sudo apt upgrade")
         );
         for unknown in [Unsupported::Nix, Unsupported::SystemDirectory] {
-            let installed = Installed::of(Err(&unknown), none);
+            let installed = Installed::of(Err(&unknown), none, None);
             assert_eq!(
                 installed,
                 Installed::Elsewhere(Managed {
@@ -179,7 +232,7 @@ mod tests {
             Unsupported::Unavailable("no".into()),
         ] {
             assert_eq!(
-                Installed::of(Err(&reason), none),
+                Installed::of(Err(&reason), none, None),
                 Installed::Elsewhere(Managed {
                     said: "Tabletist can't replace itself here",
                     command: None,
@@ -192,7 +245,7 @@ mod tests {
     #[test]
     fn a_copy_from_the_download_page_updates_itself() {
         for kind in [Kind::Portable, Kind::MacBundle, Kind::AppImage] {
-            let installed = Installed::of(Ok(kind), none);
+            let installed = Installed::of(Ok(kind), none, None);
             assert_eq!(installed, Installed::Itself(kind));
             assert_eq!(installed.command(), None);
             assert_eq!(installed.kind(), Some(kind));
