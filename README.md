@@ -103,7 +103,8 @@ The guide and the reference are on the website:
 - **Arch Linux / Omarchy:** the AUR packages (`tabletist-bin` and
   `tabletist`) are not published yet. Until they are, use the release
   AppImage or `.tar.gz` (see Other Linux below).
-- **macOS:** download `tabletist-v<version>-macos-universal.dmg` from the
+- **macOS:** `brew install --cask igor-alexandrov/tabletist/tabletist`, or
+  download `tabletist-v<version>-macos-universal.dmg` from the
   [releases](https://github.com/igor-alexandrov/tabletist/releases) and drag
   Tabletist to Applications.
 - **Windows:** run `tabletist-v<version>-x86_64-pc-windows-msvc-setup.exe`
