@@ -249,8 +249,13 @@ jobs:
           brew install --cask tabletist/test/tabletist
           /Applications/Tabletist.app/Contents/MacOS/tabletist --version
           spctl --assess --type execute --verbose /Applications/Tabletist.app
-      # Refuses a cask nobody trusted, so after the install.
-      - run: brew audit --cask --strict --online tabletist/test/tabletist
+      # Refuses a cask nobody trusted, so after the install. --online asks
+      # GitHub's API about the repository, more often than the 60 an hour
+      # a runner may ask without a token.
+      - name: brew audit --cask --strict --online
+        env:
+          HOMEBREW_GITHUB_API_TOKEN: ${{ github.token }}
+        run: brew audit --cask --strict --online tabletist/test/tabletist
       - name: Uninstall
         run: |
           brew uninstall --cask tabletist/test/tabletist
