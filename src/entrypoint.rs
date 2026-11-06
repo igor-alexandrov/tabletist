@@ -134,14 +134,8 @@ pub fn main(cli: Cli, launch: fastframe_update::Launch) -> anyhow::Result<()> {
         logging = logging.file(dirs.log_file()).panic_log(dirs.panic_log());
     }
     logging.init()?;
-    // The helper put the previous version back: this one. The next run
-    // shows it in the window; until then the log has it, with the step
-    // that failed and why, which only the log keeps.
-    if let Some(message) = &launch.error {
-        log::error!("{message}");
-    }
-    if let Some(failure) = &launch.failure {
-        log::error!("the update failed: {failure}");
+    for line in rollback_lines(&launch) {
+        log::error!("{line}");
     }
     let update_receipt = launch.receipt;
     // What the helper starts the next version with, but the program's
@@ -457,6 +451,19 @@ impl eframe::App for Window {
     }
 }
 
+/// What the log says when the helper put the previous version back: this
+/// one. The next run shows the message in the window; until then the log
+/// has it, with the step that failed and why, which only the log keeps. A
+/// helper older than fastframe 0.15.5 sends the message alone.
+fn rollback_lines(launch: &fastframe_update::Launch) -> Vec<String> {
+    let message = launch.error.iter().cloned();
+    let failure = launch
+        .failure
+        .iter()
+        .map(|failure| format!("the update failed: {failure}"));
+    message.chain(failure).collect()
+}
+
 /// What the app's log takes, at its usual level and at `--verbose`.
 ///
 /// Never a line of the MCP server's SDK (`rmcp`, and `tracing`, which
@@ -498,6 +505,31 @@ fn without_agents_words(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rollback_logs_its_message_and_the_step_that_failed() {
+        let launch = |error: Option<&str>, failure: Option<&str>| fastframe_update::Launch {
+            arguments: Vec::new(),
+            receipt: None,
+            error: error.map(str::to_owned),
+            failure: failure.map(str::to_owned),
+        };
+        let restored = "The update did not finish, so nothing changed. Restart to try again.";
+        assert_eq!(
+            rollback_lines(&launch(
+                Some(restored),
+                Some("the new version did not start within a minute")
+            )),
+            [
+                restored.to_owned(),
+                "the update failed: the new version did not start within a minute".to_owned(),
+            ]
+        );
+        // A helper older than fastframe 0.15.5 sends the message alone.
+        assert_eq!(rollback_lines(&launch(Some(restored), None)), [restored]);
+        // A start no helper made logs nothing about updates.
+        assert!(rollback_lines(&launch(None, None)).is_empty());
+    }
 
     #[test]
     fn a_line_that_can_hold_an_agents_words_is_written_without_them() {
