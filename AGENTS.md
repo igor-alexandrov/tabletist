@@ -253,9 +253,9 @@ Whoever can push a `v*` tag runs `release.yml` as it is at that tag, with
 the key: keep `v*` tags to the owner (a tag ruleset), or give the
 environment a required reviewer. `publish` creates the release as a draft
 and makes it public only once `checksums.txt.sig` is attached. When only
-the AUR job failed, use "Re-run failed jobs": "Re-run all jobs" builds,
-signs and uploads everything again, and takes the release back to a
-draft while it does.
+the AUR job or the Homebrew tap job failed, use "Re-run failed jobs":
+"Re-run all jobs" builds, signs and uploads everything again, and takes
+the release back to a draft while it does.
 
 Required for a tag, the Apple secrets, which sign and notarize the macOS app:
 
