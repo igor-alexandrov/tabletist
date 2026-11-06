@@ -242,11 +242,16 @@ jobs:
             "$RUNNER_TEMP/checksums.txt" > "$tap/Casks/tabletist.rb"
           cat "$tap/Casks/tabletist.rb"
       - run: brew style --cask tabletist/test/tabletist
-      - run: brew audit --cask --strict --online tabletist/test/tabletist
-      - name: Install, open as Gatekeeper sees it, uninstall
+      # By its full name, as the install steps give it: since Homebrew 6 that
+      # trusts this one cask of a tap nobody trusted, and nothing else.
+      - name: Install, and open as Gatekeeper sees it
         run: |
           brew install --cask tabletist/test/tabletist
           /Applications/Tabletist.app/Contents/MacOS/tabletist --version
           spctl --assess --type execute --verbose /Applications/Tabletist.app
+      # Refuses a cask nobody trusted, so after the install.
+      - run: brew audit --cask --strict --online tabletist/test/tabletist
+      - name: Uninstall
+        run: |
           brew uninstall --cask tabletist/test/tabletist
           test ! -e /Applications/Tabletist.app
