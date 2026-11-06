@@ -30,6 +30,17 @@ itself only when it runs from **Applications**, not from the disk image.
 Installed with Homebrew, it updates itself the same way, and
 `brew upgrade --greedy` updates it too.
 
+To build the `tabletist` program from source with Homebrew's Rust instead,
+install the formula of the same name, without `--cask`:
+
+```sh
+brew install igor-alexandrov/tabletist/tabletist
+```
+
+It installs the program, not the app in **Applications**.
+`brew upgrade tabletist` updates it, and **Settings › Updates** shows that
+command.
+
 ## Windows
 
 Download and run `tabletist-v<version>-x86_64-pc-windows-msvc-setup.exe`, or
@@ -67,6 +78,18 @@ An AppImage needs FUSE, which most desktops have. Without it, run it with
 
 The AppImage adds nothing to the app launcher. To start Tabletist from
 there, install it from the release archive instead.
+
+### Build it with Homebrew
+
+With [Homebrew](https://brew.sh) on Linux, the formula builds Tabletist from
+the release's source:
+
+```sh
+brew install igor-alexandrov/tabletist/tabletist
+```
+
+It adds nothing to the app launcher. `brew upgrade tabletist` updates it,
+and **Settings › Updates** shows that command.
 
 ### Install it: the release archive
 

@@ -410,9 +410,10 @@ jobs:
             ' bash "$package" "$version"
           done
 
-  # The cask in igor-alexandrov/homebrew-tabletist, for
-  # `brew install --cask igor-alexandrov/tabletist/tabletist`. Independent of
-  # the AUR job: either can fail and be re-run alone.
+  # The cask and the formula in igor-alexandrov/homebrew-tabletist, for
+  # `brew install --cask igor-alexandrov/tabletist/tabletist` (the app) and
+  # `brew install igor-alexandrov/tabletist/tabletist` (built from the source
+  # archive). Independent of the AUR job: either can fail and be re-run alone.
   homebrew:
     name: Homebrew tap
     needs: publish
@@ -433,7 +434,7 @@ jobs:
         if: env.HAS_HOMEBREW_TAP_SSH_KEY == 'true'
         with:
           persist-credentials: false
-      - name: Update Casks/tabletist.rb
+      - name: Update Casks/tabletist.rb and Formula/tabletist.rb
         if: env.HAS_HOMEBREW_TAP_SSH_KEY == 'true'
         env:
           HOMEBREW_TAP_SSH_KEY: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
@@ -449,20 +450,28 @@ jobs:
             --output "$RUNNER_TEMP/checksums.txt"
           git clone git@github.com:igor-alexandrov/homebrew-tabletist.git "$RUNNER_TEMP/tap"
           cask="$RUNNER_TEMP/tap/Casks/tabletist.rb"
-          # A re-run of an older tag leaves a newer cask as it is.
-          current="$(sed -n 's/^  version "\(.*\)"$/\1/p' "$cask" 2>/dev/null || true)"
-          if [ -n "$current" ] && [ "$current" != "$version" ] &&
-            [ "$(printf '%s\n%s\n' "$current" "$version" | sort -V | tail -n 1)" = "$current" ]; then
-            echo "::notice::The tap has ${current}, newer than ${version}; left as it is."
-            exit 0
-          fi
-          mkdir -p "$(dirname "$cask")"
+          formula="$RUNNER_TEMP/tap/Formula/tabletist.rb"
+          # A re-run of an older tag leaves a newer cask or formula, and so
+          # both, as they are. Each is read on its own: either may be missing.
+          # The formula's version is in its source archive's name.
+          cask_version="$(sed -n 's/^  version "\(.*\)"$/\1/p' "$cask" 2>/dev/null || true)"
+          formula_version="$(sed -n 's/^  url ".*\/tabletist-v\(.*\)-source\.tar\.gz"$/\1/p' "$formula" 2>/dev/null || true)"
+          for current in $cask_version $formula_version; do
+            if [ "$current" != "$version" ] &&
+              [ "$(printf '%s\n%s\n' "$current" "$version" | sort -V | tail -n 1)" = "$current" ]; then
+              echo "::notice::The tap has ${current}, newer than ${version}; left as it is."
+              exit 0
+            fi
+          done
+          mkdir -p "$(dirname "$cask")" "$(dirname "$formula")"
           bash packaging/homebrew/render.sh packaging/homebrew/tabletist.rb.in "$version" \
             "$RUNNER_TEMP/checksums.txt" > "$cask"
+          bash packaging/homebrew/render.sh packaging/homebrew/tabletist-formula.rb.in "$version" \
+            "$RUNNER_TEMP/checksums.txt" > "$formula"
           cd "$RUNNER_TEMP/tap"
           git config user.name "Igor Alexandrov"
           git config user.email "igor.alexandrov@gmail.com"
-          git add Casks/tabletist.rb
+          git add Casks/tabletist.rb Formula/tabletist.rb
           # A re-run for the same tag has nothing to commit.
           if git diff --cached --quiet; then
             echo "::notice::The Homebrew tap is already at ${version}."
