@@ -235,7 +235,8 @@ other way round.
    named `tabletist-<version>-<arch>.AppImage`), Windows (x64, arm64 `.zip`
    and `-setup.exe`) and macOS (universal `.dmg`), signs `checksums.txt`
    (`checksums.txt.sig`), publishes a GitHub release with both, then updates
-   the AUR. A tag with a `-` (`v0.2.0-rc1`) is a pre-release and skips the AUR.
+   the AUR and the Homebrew tap. A tag with a `-` (`v0.2.0-rc1`) is a
+   pre-release and skips both.
 
 Required: `TABLETIST_UPDATE_SIGNING_KEY`, an Ed25519 private key (PEM) in
 the `release-signing` environment, which only `v*` tags may use. The
@@ -252,9 +253,9 @@ Whoever can push a `v*` tag runs `release.yml` as it is at that tag, with
 the key: keep `v*` tags to the owner (a tag ruleset), or give the
 environment a required reviewer. `publish` creates the release as a draft
 and makes it public only once `checksums.txt.sig` is attached. When only
-the AUR job failed, use "Re-run failed jobs": "Re-run all jobs" builds,
-signs and uploads everything again, and takes the release back to a
-draft while it does.
+the AUR job or the Homebrew tap job failed, use "Re-run failed jobs":
+"Re-run all jobs" builds, signs and uploads everything again, and takes
+the release back to a draft while it does.
 
 Required for a tag, the Apple secrets, which sign and notarize the macOS app:
 
@@ -269,15 +270,22 @@ with them checks the notarized DMG as a release does. The certificate is a
 Developer ID Application one; when it expires, export the new one and
 replace the first three together.
 
-Optional secret (its step skips with a notice without it):
+Optional secrets (each step skips with a notice without its own):
 
 - `AUR_SSH_KEY`: push `tabletist-bin` and `tabletist` to the AUR. The AUR's
   host key is pinned in `release.yml`; update it there if the AUR rotates it.
+- `HOMEBREW_TAP_SSH_KEY`: the private half of a deploy key with write
+  access on `igor-alexandrov/homebrew-tabletist`, and on nothing else.
+  The job renders `packaging/homebrew/tabletist.rb.in` with
+  `packaging/homebrew/render.sh` and pushes it as `Casks/tabletist.rb`, so
+  change the cask here, never in the tap. GitHub's host key is pinned in
+  `release.yml` beside the AUR's. A re-run of an older tag leaves a newer
+  cask as it is.
 
 Dry run without publishing: `gh workflow run release.yml -f tag=v0.0.0-dry`.
 `packaging.yml` builds and installs the DMG, the Windows installer and the
-source AUR package, and builds and runs the AppImage, whenever `packaging/`
-changes. `packaging/linux/appimage.sh` pins appimagetool and the AppImage
+source AUR package, builds and runs the AppImage, and installs the Homebrew
+cask (rendered for the latest release), whenever `packaging/` changes. `packaging/linux/appimage.sh` pins appimagetool and the AppImage
 runtime by version and SHA-256; move them together. Locally,
 `packaging/arch/render.sh` fills a PKGBUILD from a release's checksums.
 
