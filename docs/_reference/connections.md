@@ -36,9 +36,10 @@ what was last open on it.
 | Field | Notes |
 | --- | --- |
 | **Name** | Left empty, it becomes `user@host:port/database` or the file's name |
-| **Type** | SQLite, PostgreSQL or MySQL |
+| **Type** | SQLite, PostgreSQL, MySQL or Files, on a line of its own above the name. Changing it keeps the name, the environment and whatever was typed for the other types until the dialog closes. Saving a connection you have used under another type asks first |
 | **Environment** | local, dev, staging, production or none. Sets the connection's color |
 | **File** | SQLite only |
+| **Source** | Files only. See [Files](#files) |
 | **Host**, **Port** | The port defaults to 5432 for PostgreSQL and 3306 for MySQL |
 | **Database** | Left empty, PostgreSQL uses the user's name and MySQL selects no database |
 | **User**, **Password** | See [Passwords](#passwords) |
@@ -50,6 +51,38 @@ what was last open on it.
 **Test** checks the connection without saving it.
 
 {% include shot.html file="macos-connection-edit" alt="The connection dialog with every field filled in for a production database behind an SSH tunnel" width="2880" height="1800" %}
+
+## Files
+
+A Files connection opens data files as tables: CSV, TSV, Parquet, JSON
+(an array), NDJSON (`.ndjson`, `.jsonl`), Excel (`.xlsx`, its first sheet)
+and DuckDB files (`.duckdb`). DuckDB reads them, inside Tabletist.
+
+- **Source** is a **Folder** or **Files**. Every supported file directly
+  in a folder becomes a table; subfolders, hidden files and other files
+  are left out, and a file added later shows the next time the connection
+  opens. **Files** is a list you add files to (**Add files…**); × takes a
+  file off the list and never off the disk.
+- Under the source, Tabletist says what it found: `4 files · 2.5 GB · CSV,
+  Parquet, NDJSON`, and the tables they become.
+- A table's name is the file's name without its extension, in lower case,
+  with anything but letters, digits and `_` turned into `_`. Two files of
+  the same name each take their extension: `orders_csv`,
+  `orders_parquet`. A `.duckdb` file is a schema, its tables inside it.
+- A new Files connection is **local**, and lets agents read. Files open
+  read-only: nothing writes to them, and a statement that would read
+  another file on the computer, write a file or install anything is
+  refused. Agents can query the files, never change them, and cannot
+  hide tables or mask columns on a Files connection.
+- **Test** reads each file's columns and its first rows, never a whole
+  file. The Excel reader is downloaded the first time a connection opens
+  an Excel file.
+- The SQL editor runs DuckDB's SQL, and the Structure view shows each
+  file's path, size and format beside its columns.
+- A connection has no URL: paste a folder's or a file's path into the
+  **URL** field of a new connection instead, and it becomes a Files
+  connection over it. A SQLite database's path (`.db`, `.sqlite`,
+  `.sqlite3`, `.db3`) opens as SQLite.
 
 ## Connection URLs
 
@@ -173,7 +206,9 @@ asks you for it again, and saves it in the keyring once it is accepted.
 ## Agents
 
 What AI agents may do on a connection, through `tabletist mcp`. Every
-connection starts with agents **Off**: they do not see it at all.
+connection starts with agents **Off**: they do not see it at all. A new
+[Files](#files) connection starts with **Read**, and with **Off** on
+production.
 **Read** lets them read it, in read-only transactions, while the agent
 server is on.
 

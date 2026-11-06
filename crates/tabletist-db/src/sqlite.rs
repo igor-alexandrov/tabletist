@@ -1072,6 +1072,7 @@ impl Adapter for Conn {
                 foreign_keys: foreign_keys(connection, &object)?,
                 referenced_by: referencing_keys(connection, &object)?,
                 comment: None,
+                file: None,
             })
         })
         .await

@@ -14,6 +14,9 @@ pub enum Dialect {
     Sqlite,
     /// GoogleSQL (BigQuery).
     BigQuery,
+    /// DuckDB's, for Files connections. Its parser is PostgreSQL's: it
+    /// quotes, comments and nests strings as PostgreSQL does.
+    DuckDb,
 }
 
 /// SQL text with its bound parameters.
@@ -266,7 +269,9 @@ impl Dialect {
             Self::BigQuery => {
                 format!("`{}`", ident.replace('\\', "\\\\").replace('`', "\\`"))
             }
-            Self::Postgres | Self::Sqlite => format!("\"{}\"", ident.replace('"', "\"\"")),
+            Self::Postgres | Self::Sqlite | Self::DuckDb => {
+                format!("\"{}\"", ident.replace('"', "\"\""))
+            }
         }
     }
 
@@ -277,7 +282,9 @@ impl Dialect {
     /// a quoted name always works.
     pub fn ident(self, name: &str) -> std::borrow::Cow<'_, str> {
         let word = |byte: u8| match self {
-            Self::Postgres => byte.is_ascii_lowercase() || byte == b'_',
+            // DuckDB keeps a bare name's case and finds it in any case:
+            // lower case reads the same in both.
+            Self::Postgres | Self::DuckDb => byte.is_ascii_lowercase() || byte == b'_',
             Self::MySql | Self::Sqlite | Self::BigQuery => {
                 byte.is_ascii_alphabetic() || byte == b'_'
             }
@@ -309,22 +316,23 @@ impl Dialect {
         match self {
             Self::MySql => format!("CAST({column} AS CHAR)"),
             Self::BigQuery => format!("CAST({column} AS STRING)"),
-            Self::Postgres | Self::Sqlite => format!("CAST({column} AS TEXT)"),
+            Self::Postgres | Self::Sqlite | Self::DuckDb => format!("CAST({column} AS TEXT)"),
         }
     }
 
     fn like(self) -> &'static str {
         match self {
-            Self::Postgres => "ILIKE",
+            Self::Postgres | Self::DuckDb => "ILIKE",
             Self::MySql | Self::Sqlite | Self::BigQuery => "LIKE",
         }
     }
 
     /// PostgreSQL and MySQL already treat `\` as LIKE's escape character,
-    /// and so does GoogleSQL.
+    /// and so does GoogleSQL; SQLite and DuckDB have none until they are
+    /// told.
     fn like_escape(self) -> &'static str {
         match self {
-            Self::Sqlite => " ESCAPE '\\'",
+            Self::Sqlite | Self::DuckDb => " ESCAPE '\\'",
             Self::Postgres | Self::MySql | Self::BigQuery => "",
         }
     }
@@ -339,7 +347,7 @@ impl Dialect {
             Self::BigQuery => {
                 format!("LOWER({}) LIKE LOWER({placeholder})", self.as_text(column))
             }
-            Self::Postgres | Self::MySql | Self::Sqlite => format!(
+            Self::Postgres | Self::MySql | Self::Sqlite | Self::DuckDb => format!(
                 "{} {} {placeholder}{}",
                 self.as_text(column),
                 self.like(),
@@ -358,8 +366,8 @@ impl Dialect {
         match self {
             Self::Postgres => quote_literal(&value),
             Self::BigQuery => self.literal(&value),
-            Self::MySql | Self::Sqlite if binds.inline => self.literal(&value),
-            Self::MySql | Self::Sqlite => {
+            Self::MySql | Self::Sqlite | Self::DuckDb if binds.inline => self.literal(&value),
+            Self::MySql | Self::Sqlite | Self::DuckDb => {
                 binds.params.push(Value::Text(value.into()));
                 self.placeholder().to_owned()
             }
@@ -378,8 +386,8 @@ impl Dialect {
                 quote_literal(&hex)
             }
             Self::BigQuery => self.bytes_literal(&bytes),
-            Self::MySql | Self::Sqlite if binds.inline => self.bytes_literal(&bytes),
-            Self::MySql | Self::Sqlite => {
+            Self::MySql | Self::Sqlite | Self::DuckDb if binds.inline => self.bytes_literal(&bytes),
+            Self::MySql | Self::Sqlite | Self::DuckDb => {
                 binds.params.push(Value::Bytes(bytes.into()));
                 self.placeholder().to_owned()
             }
@@ -455,7 +463,7 @@ impl Dialect {
                 };
             }
             (Self::BigQuery, Some(_)) | (Self::BigQuery, None) => return Ok(None),
-            (Self::Postgres | Self::MySql | Self::Sqlite, _) => return Ok(None),
+            (Self::Postgres | Self::MySql | Self::Sqlite | Self::DuckDb, _) => return Ok(None),
         };
         Ok(Some(operand))
     }
@@ -583,7 +591,10 @@ impl Dialect {
     pub(crate) fn literal(self, text: &str) -> String {
         match self {
             Self::Postgres if text.contains('\\') => quote_literal(text),
-            Self::Postgres | Self::Sqlite => format!("'{}'", text.replace('\'', "''")),
+            // DuckDB's strings are standard: a backslash is itself.
+            Self::Postgres | Self::Sqlite | Self::DuckDb => {
+                format!("'{}'", text.replace('\'', "''"))
+            }
             // GoogleSQL's strings read a backslash as an escape in every
             // one, so it is doubled there, and the quote itself escaped;
             // a raw line break or NUL is no string's, so they are escapes.
@@ -606,7 +617,7 @@ impl Dialect {
     }
 
     /// Bytes as a literal: PostgreSQL's hex `bytea`, `b'\x..'` on
-    /// BigQuery, `x'..'` elsewhere.
+    /// BigQuery, DuckDB's escaped `BLOB`, `x'..'` elsewhere.
     pub(crate) fn bytes_literal(self, bytes: &[u8]) -> String {
         let mut hex = String::new();
         for byte in bytes {
@@ -622,6 +633,13 @@ impl Dialect {
                 format!("b'{escaped}'")
             }
             Self::MySql | Self::Sqlite => format!("x'{hex}'"),
+            Self::DuckDb => {
+                let mut escaped = String::new();
+                for byte in bytes {
+                    let _ = write!(escaped, "\\x{byte:02X}");
+                }
+                format!("'{escaped}'::BLOB")
+            }
         }
     }
 
@@ -661,11 +679,13 @@ impl Dialect {
     /// that keeps `kind`.
     fn now(self, kind: Temporal) -> &'static str {
         match (self, kind) {
-            (Self::Postgres | Self::MySql | Self::Sqlite, Temporal::Date) => "CURRENT_DATE",
+            (Self::Postgres | Self::MySql | Self::Sqlite | Self::DuckDb, Temporal::Date) => {
+                "CURRENT_DATE"
+            }
             (Self::BigQuery, Temporal::Date) => "CURRENT_DATE()",
-            (Self::Postgres | Self::Sqlite, Temporal::Time) => "CURRENT_TIME",
+            (Self::Postgres | Self::Sqlite | Self::DuckDb, Temporal::Time) => "CURRENT_TIME",
             (Self::BigQuery, Temporal::Time) => "CURRENT_TIME()",
-            (Self::Postgres, Temporal::Timestamp) => "now()",
+            (Self::Postgres | Self::DuckDb, Temporal::Timestamp) => "now()",
             (Self::BigQuery, Temporal::Timestamp) => "CURRENT_TIMESTAMP()",
             // To the microsecond: without the precision MySQL gives whole
             // seconds, whatever the column keeps.
@@ -681,7 +701,7 @@ impl Dialect {
     fn sent(self, operand: &Operand, params: &mut Vec<Value>) -> String {
         match self {
             Self::Postgres | Self::BigQuery => return self.shown(operand),
-            Self::MySql | Self::Sqlite => {}
+            Self::MySql | Self::Sqlite | Self::DuckDb => {}
         }
         params.push(match operand {
             Operand::Null => return "NULL".to_owned(),
@@ -704,11 +724,12 @@ impl Dialect {
             (_, Value::Null) => Operand::Null,
             (_, Value::Int(number)) => Operand::Int(*number),
             (Self::Sqlite, Value::Bool(flag)) => Operand::Int(i64::from(*flag)),
-            (Self::Postgres | Self::MySql | Self::BigQuery, Value::Bool(flag)) => {
+            (Self::Postgres | Self::MySql | Self::BigQuery | Self::DuckDb, Value::Bool(flag)) => {
                 Operand::Raw(if *flag { "TRUE" } else { "FALSE" }.to_owned())
             }
-            // PostgreSQL reads its words for the numbers no digits write.
-            (Self::Postgres, Value::Float(number)) if !number.is_finite() => {
+            // PostgreSQL reads its words for the numbers no digits write,
+            // and DuckDB does too.
+            (Self::Postgres | Self::DuckDb, Value::Float(number)) if !number.is_finite() => {
                 let word = match number {
                     number if number.is_nan() => "NaN",
                     number if number.is_sign_positive() => "Infinity",
@@ -735,7 +756,7 @@ impl Dialect {
             // MySQL keeps neither a NaN nor an infinity.
             (Self::MySql, Value::Float(number)) if !number.is_finite() => Operand::Null,
             (
-                Self::Postgres | Self::MySql | Self::Sqlite | Self::BigQuery,
+                Self::Postgres | Self::MySql | Self::Sqlite | Self::BigQuery | Self::DuckDb,
                 Value::Float(number),
             ) => Operand::Float(*number),
             (_, Value::Text(text))
@@ -757,7 +778,9 @@ impl Dialect {
             NewValue::Null | NewValue::Text(_) => return None,
             // As `new_operand` writes it: SQLite has no DEFAULT among VALUES.
             NewValue::Default { expression } => Operand::Raw(match (self, expression) {
-                (Self::Postgres | Self::MySql | Self::BigQuery, _) => "DEFAULT".to_owned(),
+                (Self::Postgres | Self::MySql | Self::BigQuery | Self::DuckDb, _) => {
+                    "DEFAULT".to_owned()
+                }
                 (Self::Sqlite, Some(expression)) => format!("({expression})"),
                 (Self::Sqlite, None) => "NULL".to_owned(),
             }),
@@ -783,7 +806,11 @@ impl Dialect {
                 Operand::Text(number.to_string())
             }
             (Self::MySql | Self::Sqlite, Value::Bool(flag)) => Operand::Int(i64::from(*flag)),
-            (Self::MySql | Self::Sqlite, Value::Float(number)) => Operand::Float(*number),
+            (Self::MySql | Self::Sqlite | Self::DuckDb, Value::Float(number)) => {
+                Operand::Float(*number)
+            }
+            // DuckDB casts the text to the column's boolean.
+            (Self::DuckDb, Value::Bool(flag)) => Operand::Text(flag.to_string()),
         }
     }
 
@@ -825,7 +852,9 @@ impl Dialect {
             NewValue::Null => return Ok(Operand::Null),
             NewValue::Default { expression } => {
                 return Ok(Operand::Raw(match self {
-                    Self::Postgres | Self::MySql | Self::BigQuery => "DEFAULT".to_owned(),
+                    Self::Postgres | Self::MySql | Self::BigQuery | Self::DuckDb => {
+                        "DEFAULT".to_owned()
+                    }
                     // SQLite has no DEFAULT to write in an UPDATE or among
                     // VALUES: the column's own expression, which is what
                     // the word would have come to, or NULL where it has
@@ -1009,13 +1038,13 @@ impl Dialect {
     pub fn insert_row(self, object: &ObjectRef, row: &RowInsert) -> Result<InsertStatement> {
         let table = self.qualified(object);
         let back = match self {
-            Self::Postgres | Self::Sqlite => " RETURNING *",
+            Self::Postgres | Self::Sqlite | Self::DuckDb => " RETURNING *",
             Self::MySql | Self::BigQuery => "",
         };
         let lead = format!("INSERT INTO {table}");
         if row.set.is_empty() {
             let (text, values) = match self {
-                Self::Postgres | Self::Sqlite | Self::BigQuery => {
+                Self::Postgres | Self::Sqlite | Self::BigQuery | Self::DuckDb => {
                     (format!("{lead} DEFAULT VALUES"), lead.len() + 1)
                 }
                 Self::MySql => (format!("{lead} () VALUES ()"), lead.len() + 4),
@@ -1069,7 +1098,7 @@ impl Dialect {
         // in a message: see `update_row`.
         let refused = match self {
             Self::Postgres => text.contains('\0'),
-            Self::MySql | Self::Sqlite | Self::BigQuery => false,
+            Self::MySql | Self::Sqlite | Self::BigQuery | Self::DuckDb => false,
         };
         if refused {
             return Err(Error::query("PostgreSQL text cannot hold a NUL character"));
@@ -1109,7 +1138,7 @@ impl Dialect {
         // in a message: see `update_row`.
         let refused = match self {
             Self::Postgres => text.contains('\0'),
-            Self::MySql | Self::Sqlite | Self::BigQuery => false,
+            Self::MySql | Self::Sqlite | Self::BigQuery | Self::DuckDb => false,
         };
         if refused {
             return Err(Error::query("PostgreSQL text cannot hold a NUL character"));
@@ -1168,9 +1197,12 @@ impl Dialect {
         // A list of rows on the right of `IN`: SQLite takes one only as
         // `VALUES`.
         let open = match (self, several) {
-            (Self::Postgres | Self::MySql | Self::Sqlite | Self::BigQuery, false) => " IN (",
+            (
+                Self::Postgres | Self::MySql | Self::Sqlite | Self::BigQuery | Self::DuckDb,
+                false,
+            ) => " IN (",
             (Self::Postgres | Self::MySql | Self::BigQuery, true) => ") IN (",
-            (Self::Sqlite, true) => ") IN (VALUES ",
+            (Self::Sqlite | Self::DuckDb, true) => ") IN (VALUES ",
         };
         shown.push_str(open);
         sent.push_str(open);
@@ -1204,7 +1236,7 @@ impl Dialect {
         // PostgreSQL text cannot hold a NUL: see `delete_row`.
         let refused = match self {
             Self::Postgres => sent.contains('\0'),
-            Self::MySql | Self::Sqlite | Self::BigQuery => false,
+            Self::MySql | Self::Sqlite | Self::BigQuery | Self::DuckDb => false,
         };
         if refused {
             return Err(Error::query("PostgreSQL text cannot hold a NUL character"));
@@ -1238,6 +1270,9 @@ impl Dialect {
                 .is_some_and(|code| matches!(code & 0xff, 5 | 6)),
             // BigQuery has no row locks to wait for.
             Self::BigQuery => false,
+            // One session in the app's own process: nothing else holds a
+            // lock it could wait for.
+            Self::DuckDb => false,
         }
     }
 
@@ -1249,10 +1284,11 @@ impl Dialect {
     pub fn select_row(self, object: &ObjectRef, key: &[(String, Value)], lock: bool) -> Sql {
         let mut params = Vec::new();
         let clause = self.key_clause(key, &mut params).sent;
+        // SQLite and DuckDB have no row locks: one writer at a time.
+        // BigQuery has none at all.
         let locks = match self {
             Self::Postgres | Self::MySql => true,
-            // SQLite has no row locks to take; BigQuery has none at all.
-            Self::Sqlite | Self::BigQuery => false,
+            Self::Sqlite | Self::BigQuery | Self::DuckDb => false,
         };
         let lock = if lock && locks { " FOR UPDATE" } else { "" };
         Sql {
@@ -2714,7 +2750,7 @@ mod tests {
             }
             let bound = match dialect {
                 Dialect::Postgres | Dialect::BigQuery => 0,
-                Dialect::MySql | Dialect::Sqlite => 1,
+                Dialect::MySql | Dialect::Sqlite | Dialect::DuckDb => 1,
             };
             assert_eq!(update.sql.params.len(), bound, "{dialect:?}");
             // A new row's values are written the same way.
@@ -2797,7 +2833,7 @@ mod tests {
             let after = &shown[parts.literals[1].end..];
             let back = parts.back.map(|at| &shown[at..]);
             match dialect {
-                Dialect::Postgres | Dialect::Sqlite => {
+                Dialect::Postgres | Dialect::Sqlite | Dialect::DuckDb => {
                     assert_eq!(after, ") RETURNING *");
                     assert_eq!(back, Some("RETURNING *"));
                 }
@@ -2813,7 +2849,7 @@ mod tests {
             let clause = &shown[parts.values..];
             assert!(shown[..parts.values].ends_with(' '), "{shown}");
             match dialect {
-                Dialect::Postgres | Dialect::Sqlite => {
+                Dialect::Postgres | Dialect::Sqlite | Dialect::DuckDb => {
                     assert_eq!(clause, "DEFAULT VALUES RETURNING *");
                     assert_eq!(parts.back.map(|at| &shown[at..]), Some("RETURNING *"));
                 }
