@@ -137,10 +137,12 @@ Restart`. It installs only when you choose Restart now: a quit does not
 install it, and the next launch offers it again. Restart now first looks
 at every window, and the restart waits for what it would interrupt:
 unsaved edits in a table, a save running, a table's page, count or
-structure being read, a write running in a SQL editor, and any other
-query an editor runs. With any of them, the card says **Finish your
+structure being read, a write running in a SQL editor, any other
+query an editor runs, and an export or Copy as running, or waiting for
+its save dialog. With any of them, the card says **Finish your
 work first** and lists them (`Bookshop · dev: 3 unsaved edits in
-book_covers`, `Bookshop · dev: query running for 1 min 12 s`), with
+book_covers`, `Bookshop · dev: query running for 1 min 12 s`,
+`Bookshop · dev: exporting reviews.csv`), with
 **Restart when done** (Omarchy: `U`), which restarts as soon as the list
 is empty and no other dialog is open, and **Show them**, which closes Settings and
 brings the first window with work forward, on its tab. Nothing is
