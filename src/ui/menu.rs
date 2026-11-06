@@ -311,9 +311,15 @@ impl<'a> Item<'a> {
 }
 
 /// A rule between two parts of a menu: 1 pt, 4 above and below, 6 in from
-/// the panel's sides.
+/// the panel's sides. It asks for no width while egui measures the menu,
+/// as egui's own separator does, so the menu is as wide as its rows.
 pub fn separator(ui: &mut Ui, palette: &Palette) {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 9.0), Sense::hover());
+    let width = if ui.is_sizing_pass() {
+        0.0
+    } else {
+        ui.available_width()
+    };
+    let (rect, _) = ui.allocate_exact_size(vec2(width, 9.0), Sense::hover());
     let sides = (rect.left() + 6.0)..=(rect.right() - 6.0);
     widgets::hline(ui, sides.into(), rect.center().y, palette.border);
 }
