@@ -1,0 +1,60 @@
+# The README's clip: the core loop in about 15 seconds, with no voice.
+# Open a table, filter it, edit a price, review the SQL, save. The clip is
+# the video with its intro and outro cards cut away and its sound dropped,
+# as a looping WebP (a GIF of the same is four times the size):
+#
+#   CHROME=/usr/bin/chromium contrib/promo/make contrib/promo/scenarios/readme.toml --final
+#   ffmpeg -ss 2.15 -to 17.75 -i target/promo/readme.mp4 -an \
+#     -vf "fps=15,scale=1280:-1:flags=lanczos" -c:v libwebp_anim -lossless 0 \
+#     -q:v 62 -compression_level 6 -loop 0 assets/screenshots/macos-core-loop.webp
+#
+# The two times are where the intro's curtain has lifted and where the
+# outro's starts to rise (the timeline.json beside the frames has them).
+title = "Tabletist"
+tempo = 128
+
+# Someone else lowers The Salt Road's price once the clip has loaded it,
+# so the save is answered by the real save: it finds the row changed,
+# writes nothing and asks. The file is never written.
+meanwhile = "UPDATE books SET price = 17.00 WHERE id = 1"
+
+[[scene]]
+caption = "Open a table."
+steps = [
+  { open = "books" },
+]
+
+[[scene]]
+caption = "Filter without writing SQL."
+steps = [
+  { command = "filter_bar" },
+  { click = "Filter column" },
+  { click = "title" },
+  { click = "Filter operator" },
+  { click = "contains" },
+  { click = "Value" },
+  { type = "the" },
+  { press = "enter" },
+]
+
+[[scene]]
+caption = "Edit right in the grid."
+steps = [
+  { click = "18.5" },
+  { type = "16.50" },
+  { press = "enter" },
+]
+
+[[scene]]
+caption = "See the exact SQL first."
+steps = [
+  { command = "review_sql" },
+  { hold = 0.8 },
+]
+
+[[scene]]
+caption = "Save. Nothing is overwritten."
+steps = [
+  { click = "Save" },
+  { hold = 1.6 },
+]

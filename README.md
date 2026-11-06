@@ -27,6 +27,10 @@ The guide and the reference are on the website:
 **[igor.works/tabletist](https://igor.works/tabletist/)**.
 
 <p align="center">
+  <img src="assets/screenshots/macos-core-loop.webp" width="900" alt="A 15-second loop in the macOS look, on the Bookshop demo database: the books table opens, is filtered to titles that contain &quot;the&quot;, a price is edited, Review SQL shows the UPDATE that will run, and Save stops on a row someone else changed meanwhile, showing the loaded, server and new values side by side">
+</p>
+
+<p align="center">
   <img src="assets/screenshots/macos.png" width="900" alt="Tabletist 0.1.0, the macOS look: a table's data grid with the sidebar of tables on the left and the row panel on the right">
 </p>
 
