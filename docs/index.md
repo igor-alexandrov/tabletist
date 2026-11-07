@@ -29,7 +29,7 @@ features:
     title: Native
     details: Written in Rust, with no browser inside. One small program for Linux, macOS and Windows.
   - icon: 🗄️
-    title: Three databases
+    title: Four databases
     details: PostgreSQL, MySQL, SQLite and BigQuery, with the same grid, row panel and SQL editor for each.
   - icon: 🔐
     title: Connections that fit your setup
@@ -46,7 +46,7 @@ features:
     link_text: How editing works
   - icon: 🧭
     title: Made for browsing
-    details: Sort, filter and page on the server. Find any table with quick open, read a row's every field, follow its foreign keys, and read a table's structure and DDL.
+    details: Sort, filter and page on the server. Find any table with quick open, read a row's every field, follow its foreign keys, and read a table's structure and DDL. Copy a selection as CSV, JSON, Markdown or SQL, or export a table or a result to a file.
     link: /browsing-data/
     link_text: Browse a table
   - icon: ⌨️

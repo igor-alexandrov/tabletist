@@ -35,10 +35,11 @@ what was last open on it.
 
 | Field | Notes |
 | --- | --- |
-| **Name** | Left empty, it becomes `user@host:port/database` or the file's name |
-| **Type** | SQLite, PostgreSQL or MySQL |
+| **Name** | Left empty, it becomes `user@host:port/database`, the file's name or the BigQuery project |
+| **Type** | SQLite, PostgreSQL, MySQL or BigQuery |
 | **Environment** | local, dev, staging, production or none. Sets the connection's color |
 | **File** | SQLite only |
+| **Project**, **Key file** | BigQuery only. See [BigQuery](#bigquery) |
 | **Host**, **Port** | The port defaults to 5432 for PostgreSQL and 3306 for MySQL |
 | **Database** | Left empty, PostgreSQL uses the user's name and MySQL selects no database |
 | **User**, **Password** | See [Passwords](#passwords) |
@@ -61,14 +62,34 @@ password field.
 postgres://app@db.example.com:5432/shop?sslmode=verify-full
 mysql://app@127.0.0.1:3306/shop
 sqlite:///home/me/data/shop.db
+bigquery:my-project?credentials=/home/me/keys/reader.json
 ```
 
-- The schemes are `postgres://`, `postgresql://`, `mysql://`, `mariadb://`
-  and `sqlite:`.
+- The schemes are `postgres://`, `postgresql://`, `mysql://`, `mariadb://`,
+  `sqlite:` and `bigquery:`.
 - `sslmode` (also `ssl-mode` or `ssl_mode`) sets the SSL mode, and
-  `sslrootcert` (also `ssl-ca`) the CA certificate. Other parameters are
-  ignored.
+  `sslrootcert` (also `ssl-ca`) the CA certificate. For BigQuery,
+  `credentials` sets the key file. Other parameters are ignored.
 - A URL cannot be given on the command line.
+
+## BigQuery
+
+A BigQuery connection names a **Project**, the Google Cloud project its
+queries are billed to, and how it signs in:
+
+- **Key file:** a service-account key (JSON). The file stays where it is,
+  and the connection keeps its path.
+- **Left empty:** Google Cloud's application default credentials. These
+  are the file `GOOGLE_APPLICATION_CREDENTIALS` names, else the one
+  `gcloud auth application-default login` saved, else the service account
+  of the Google Cloud machine Tabletist runs on.
+
+The sidebar lists the project's datasets as schemas, with their tables
+and views. A BigQuery connection always opens read-only, whatever
+[Open read-only](#open-read-only) says: BigQuery has no transactions, so
+Tabletist runs only statements it can tell are reads. Rows cannot be
+edited, and a table has no DDL view. Agents can read a BigQuery
+connection only while it hides no table and masks no column.
 
 ## TLS
 
@@ -233,7 +254,8 @@ The file keeps this in the connection's `[connections.agents]` table: see
 
 A connection with **Open read-only** ticked blocks every write from
 Tabletist: the session itself is read-only on PostgreSQL and MySQL, and a
-SQLite file is opened read-only.
+SQLite file is opened read-only. A BigQuery connection is read-only with
+the box off too: see [BigQuery](#bigquery).
 
 The box is ticked by default for production, and not for the other
 environments. Turn it off to edit. A change applies from the next time
