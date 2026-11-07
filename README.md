@@ -91,6 +91,13 @@ The guide and the reference are on the website:
   selection's statements or the whole script. Keywords, schemas, tables,
   views and the columns of a statement's tables are completed while typing
   (Ctrl+Space asks for the list anywhere).
+- Cells, a block of them or whole rows are selected in a table's grid and
+  in a SQL result, and copied as TSV (Cmd/Ctrl+C, `y` on Omarchy) or, with
+  Copy as (Cmd/Ctrl+Alt+C, `gy`), as CSV, JSON, Markdown, SQL INSERT or
+  column names. Export (Cmd/Ctrl+Shift+E, `E`) writes a table, a selection
+  or a SQL result to CSV, TSV, JSON, JSON Lines, SQL INSERT or Markdown,
+  in the background and several at once. Values are written as the
+  database holds them, never as the grid formats them.
 - Quick open (Cmd/Ctrl+P on macOS and Windows) and a full keyboard map:
   press `?` in the app.
 - Looks native on each platform: a macOS look in IBM Plex, and on Linux the
