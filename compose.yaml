@@ -5,6 +5,11 @@
 #   TABLETIST_TEST_SSH_URL=ssh://tabletist:tabletist@localhost:52222 \
 #     cargo test --workspace
 #
+# The ClickHouse spike (not in CI):
+#   docker compose up -d --wait clickhouse
+#   TABLETIST_TEST_CLICKHOUSE_URL=http://tabletist:tabletist@localhost:58123/tabletist \
+#     cargo test -p tabletist-db --test clickhouse
+#
 # Ports are published on 127.0.0.1 only: the credentials are public.
 services:
   postgres:
@@ -51,6 +56,21 @@ services:
       interval: 2s
       timeout: 5s
       retries: 90
+  # ClickHouse over HTTP, for the spike in crates/tabletist-db/src/clickhouse.rs.
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    environment:
+      CLICKHOUSE_USER: tabletist
+      CLICKHOUSE_PASSWORD: tabletist
+      CLICKHOUSE_DB: tabletist
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "127.0.0.1:58123:8123"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8123/ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
   # SSH server for tunnel tests. It reaches the databases by service name
   # (postgres:5432, mysql:3306), which the host cannot resolve.
   ssh:
