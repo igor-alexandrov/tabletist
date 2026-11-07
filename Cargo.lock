@@ -6283,7 +6283,7 @@ dependencies = [
 
 [[package]]
 name = "tabletist"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -6332,7 +6332,7 @@ dependencies = [
 
 [[package]]
 name = "tabletist-core"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "apple-native-keyring-store",
