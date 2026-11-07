@@ -264,8 +264,20 @@ never do.
 | `press = "<keys>"`, `times = n` | Keys that no command holds where the keyboard is (Enter in a field, Backspace, vim's `==`), spelled as `settings.toml` spells keys. |
 | `type = "<text>"` | Typed into what has the keyboard, a character at a time. A newline is Enter. |
 | `hold = <seconds>` | The picture stays, beyond the scene's own time. The app's clock waits as long: a question takes no answer in its first half second. |
+| `omarchy = "<theme>"` | Omarchy switches to the theme of that name, as Omarchy shows it (`Retro 82`), and the window recolours as it follows the desktop. Only in the Omarchy look. |
 
 A scenario has no times in it. The director decides them.
+
+An `omarchy` step reads the theme as the app reads a theme pinned by
+name: its `colors.toml` (your own theme of that name first, then the
+shipped one) through `omarchy-theme-color` and Tabletist's template. The
+app is then told what a switch on the desktop tells it: the live palette
+the theme folder's scan finds, and the theme's name. The desktop's own
+theme is never changed, but its themes are read, so a scenario with the
+step renders only on Omarchy. A switch lands at once (on its cut, in a
+reel) and holds a second, with the whole window in view in a narrated
+video, and Hyprland's border takes the new theme's accent.
+`scenarios/theme-switch.toml` is a reel of six switches.
 
 A `press` that the keymap holds where the keyboard is does what the app does
 with it, with no keycap. If you want the keycap, write a `command`.

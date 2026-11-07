@@ -47,6 +47,9 @@
   const KEYCAP = 0.8;
   // The pause between the last typed character and a key (Enter, Run).
   const AFTER_TYPING = 0.3;
+  // How long a theme switch holds before the next step: the new colours
+  // are seen whole.
+  const THEME = 1;
   // The spotlight lights an event a moment before it happens.
   const GLOW = 0.1;
   // Once the action has been quiet this long, and stays quiet for at least
@@ -233,6 +236,12 @@
             own.push({ ...event, at: now });
             break;
           }
+          // A switch is no key: it lands at once, on its cut where it
+          // starts one.
+          case "theme":
+            own.push({ ...event, at: now });
+            now += THEME;
+            break;
           case "hold":
             now += event.seconds;
             break;
@@ -586,6 +595,8 @@
       clicks: timed.filter(e => e.kind === "click").map(e => ({ at: e.at, x: e.where.x, y: e.where.y })),
       // A cut has no keycap: its label stands alone.
       keycaps: timed.filter(e => e.kind === "command" && !e.cut).map(e => ({ at: e.at, until: e.at + KEYCAP, keys: e.keys })),
+      // Omarchy's theme switches: Hyprland edges the window in each one's accent.
+      themes: timed.filter(e => e.kind === "theme").map(e => ({ at: e.at, accent: e.accent })),
       sounds: sounds(timed, outro, slides.filter(card => !card.beats), seeded(`${record.title} keys`), reel),
       reel,
       cuts,

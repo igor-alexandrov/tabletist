@@ -162,6 +162,7 @@ may apply `Action`s; the steps never do.
 | `press = "<keys>"`, `times = n` | A key that no command holds where the keyboard is (Enter in a field, Backspace), spelled as `settings.toml` spells keys. |
 | `type = "<text>"` | Typed into what has the keyboard, a character at a time. A newline is Enter. |
 | `hold = <seconds>` | The picture stays, beyond the scene's own time. Up to 10 s. |
+| `omarchy = "<theme>"` | Omarchy switches to that theme, and the window recolours as it follows the desktop (the Omarchy look only). |
 
 A key is parsed by the keymap's own parser (`keymap::spell`, which reads
 `settings.toml`'s keys too), so `src/promo` spells none. The parse checks

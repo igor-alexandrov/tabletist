@@ -1,0 +1,58 @@
+# A reel, cut on the beat: Tabletist in the Omarchy look as Omarchy
+# switches its theme, six times, faster and faster. Each switch tells the
+# app what the desktop's does, and it recolours as it follows the
+# desktop. The desktop's own theme is never changed, but the themes'
+# colours are read from Omarchy, so only an Omarchy machine renders it.
+title = "Follows your Omarchy theme"
+look = "omarchy"
+tempo = 128
+
+[intro]
+title = "Your theme. Live."
+text = "Tabletist on Omarchy"
+beats = 4
+
+# Quick open, then vim's j down the rows.
+[[scene]]
+label = "Vim keys"
+beats = 4
+steps = [
+  { command = "find_object" },
+  { type = "books" },
+  { press = "enter" },
+  { command = "move_row", key = "j", times = 3 },
+]
+
+# Each switch lands on its cut, and j moves on under the new colours.
+[[scene]]
+label = "Ristretto"
+beats = 2
+steps = [{ omarchy = "Ristretto" }, { command = "move_row", key = "j" }]
+
+[[scene]]
+label = "Nord"
+beats = 2
+steps = [{ omarchy = "Nord" }, { command = "move_row", key = "j" }]
+
+[[scene]]
+label = "Osaka Jade"
+beats = 1
+steps = [{ omarchy = "Osaka Jade" }, { command = "move_row", key = "k" }]
+
+[[scene]]
+label = "Retro 82"
+beats = 1
+steps = [{ omarchy = "Retro 82" }, { command = "move_row", key = "k" }]
+
+[[scene]]
+label = "Rose Pine"
+beats = 1
+steps = [{ omarchy = "Rose Pine" }, { command = "move_row", key = "j" }]
+
+[[scene]]
+label = "Catppuccin Latte"
+beats = 2
+steps = [{ omarchy = "Catppuccin Latte" }, { command = "move_row", key = "j" }]
+
+[outro]
+beats = 6

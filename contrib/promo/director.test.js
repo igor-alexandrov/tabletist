@@ -256,6 +256,30 @@ test("the camera shows the whole window for a slide, and a bell marks it", () =>
   assert.ok(timeline.sounds.some(s => s.kind === "bell" && Math.abs(s.at - card.from) < 1e-9));
 });
 
+test("a theme switch holds a moment, framed whole, and edges the window in its accent", () => {
+  const whole = [0, 0, WIDTH, HEIGHT];
+  const events = [
+    { scene: 0, frame: 1, kind: "theme", text: "Nord", rect: whole, accent: "#81a1c1" },
+    { scene: 0, frame: 2, kind: "command", keys: "j", rect },
+  ];
+  const timeline = schedule(record(events));
+  const [theme, key] = place(record(events)).timed;
+  assert.ok(key.at - theme.at >= 1, `${(key.at - theme.at).toFixed(2)} s between them`);
+  assert.deepEqual(timeline.themes, [{ at: theme.at, accent: "#81a1c1" }]);
+  assert.ok(timeline.frames.some(([at, frame]) => at === theme.at && frame === 1));
+  const shown = timeline.camera[Math.round((theme.at + 0.25) * FPS)];
+  assert.ok(Math.abs(shown.zoom - 1) < 0.02, `zoom ${shown.zoom} on the switch`);
+});
+
+test("a theme switch that starts a cut lands on the cut", () => {
+  const events = [
+    { scene: 0, frame: 1, kind: "theme", text: "Nord", rect: [0, 0, WIDTH, HEIGHT], accent: "#81a1c1" },
+    { scene: 0, frame: 2, kind: "command", keys: "j", rect },
+  ];
+  const { scenes, timed } = place(record(events, [{ label: "Nord", beats: 2 }]));
+  assert.equal(timed[0].at, scenes[0].from);
+});
+
 test("an event the director does not know stops it", () => {
   assert.throws(() => place(record([{ scene: 0, frame: 1, kind: "teleport" }])), /teleport/);
 });
