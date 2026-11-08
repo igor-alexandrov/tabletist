@@ -94,7 +94,7 @@ In the connection dialog:
 | Mod+Shift+[ and ] | Previous and next tab |
 | F6, Shift+F6 | Next and previous part of the window |
 | Mod+, | Settings |
-| Mod+=, Mod+-, Mod+0 | Larger, smaller and default data text, under a dialog too |
+| Mod+=, Mod+-, Mod+0 | The interface scale a step larger, a step smaller, or back to 100%: the whole window, under a dialog too |
 | ? | This list |
 
 With no tab open the window shows the start screen, whose search field
