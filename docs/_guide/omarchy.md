@@ -6,8 +6,11 @@ nav_order: 7
 
 On Linux, Tabletist takes the Omarchy look: square corners, the keyboard
 first, vim keys, and the desktop's monospace font throughout. Every Linux
-desktop gets it. On macOS and Windows the app has a desktop look instead,
-and there is no setting that switches between them.
+desktop gets it until you choose otherwise. On macOS and Windows the app
+starts in its classic look. **Settings › Appearance › Interface** switches
+between the two at once, on every system: on Linux the classic look is the
+macOS one with its keys written with Ctrl, as Windows writes them. In this
+look the setting is the `interface` row, first in `appearance`.
 
 {% include shot.html file="omarchy-table" alt="Tabletist in its Omarchy look: a table filtered with a WHERE line, a row open beside it, and key hints along the bottom" width="2880" height="1800" %}
 

@@ -24,14 +24,19 @@ Cmd/Ctrl+, opens Settings. Changes apply right away.
 | **Ask before closing with unsaved edits** | On or off. Off, closing a table, its connection or the window, or loading another page of it, discards its pending changes without asking | On |
 | **Disconnect when idle** | Never, or after 5, 15 or 30 minutes, 1 hour or 4 hours unused. The server session is closed; the tabs stay, and the connection connects again when something next needs it: a refresh, a page, a table opened, a run or a save | After 30 min |
 
-A second pane, **Appearance**, sets the theme, the text, and how the grids
-and the connection bar are drawn. Each change shows in every open window
+A second pane, **Appearance**, sets the look, the theme, the text, and how
+the grids and the connection bar are drawn. Each change shows in every open window
 at once, and in the preview under the options: two rows of a table under
 the bar of a dev connection, drawn as the grid and the bar are. Its rows
 are made in the app, so it needs no connection and reads no database.
 
+Where the pane says macOS and Windows, it means their look, which Linux has
+too when **Interface** is Classic; Omarchy means the Omarchy look on any
+system.
+
 | Option | Choices | Default |
 | --- | --- | --- |
+| **Interface** | Classic or Omarchy. Classic is the system's own look: macOS's on a Mac, Windows' on Windows, and on Linux macOS's with its keys written with Ctrl. The window changes at once, and Settings stays open on Appearance. In the classic look the control is beside the theme's tiles; in the Omarchy look it is the first row. Reset to defaults leaves it as it is | Omarchy on Linux, Classic on macOS and Windows |
 | **Theme** (macOS and Windows) | System, Light or Dark. System follows the system's light or dark as it changes, Auto on macOS too | System |
 | **Theme** (Omarchy) | Follow Omarchy, or pin the theme it shows now, which then stays when Omarchy switches. The row says the theme drawn, and under it the palette it gave | Follow Omarchy |
 | **Interface size** (macOS and Windows) | Small, Default or Large: the sidebar, tabs, buttons and the inspector's labels, from a body text of 12, 13 or 14 points | Default |
@@ -293,8 +298,9 @@ check = "daily"
 | `editor.format.keywords` | `"upper"`, `"lower"` or `"keep"` | Not set: upper on macOS and Windows, lower in the Omarchy look |
 | `editor.format.commas` | `"trailing"` or `"leading"` | `"trailing"` |
 | `editor.history.keep` | 0 to 100000 statements kept for each connection, from every source; `0` keeps none. A smaller number deletes the oldest past it | `1000` |
+| `appearance.look` | `"classic"` or `"omarchy"`. Written once you set it; an edit of the file switches the window at once | Not set: the system's own look, the Omarchy look on Linux |
 | `appearance.interface_size` | `"small"`, `"default"` or `"large"`, on macOS and Windows | `"default"` |
-| `appearance.font` | On macOS the data's face, `"IBM Plex Mono"`, `"JetBrains Mono"` or the family name of an installed font (`"Menlo"`); `"monospace"` is IBM Plex Mono too, and a name no installed font has is drawn as IBM Plex Mono, which the window says. Windows draws its data in Inter, whatever it says. In the Omarchy look a fontconfig name (`"Fira Code"`); `"monospace"` is the system's. Written once you set it | Not set: IBM Plex Mono, or the system's monospace |
+| `appearance.font` | On macOS the data's face, `"IBM Plex Mono"`, `"JetBrains Mono"` or the family name of an installed font (`"Menlo"`); `"monospace"` is IBM Plex Mono too, and a name no installed font has is drawn as IBM Plex Mono, which the window says. Linux's classic look draws `"IBM Plex Mono"` or `"JetBrains Mono"`. Windows draws its data in Inter, whatever it says. In the Omarchy look a fontconfig name (`"Fira Code"`); `"monospace"` is the system's. Written once you set it | Not set: IBM Plex Mono, or the system's monospace |
 | `appearance.font_size` | Points, whole or by halves (`13`, `12.5`). On macOS and Windows the data's, 11 to 16; in the Omarchy look all of it, 9 to 24. A size past a look's range is drawn at its nearest end. Written once you set it | Not set: 12.5 on macOS and Windows, 13 in the Omarchy look |
 | `appearance.theme` | On macOS and Windows `"system"`, `"light"` or `"dark"`. In the Omarchy look `"omarchy"`, or a theme to pin: an Omarchy theme's name (`"Tokyo Night"`), a palette file in the `themes` folder (`"Nord.json"`; its name alone where no Omarchy theme has it), or a path that starts with `/` or `~/` to a palette file or an Omarchy theme's folder. A value meant for the other looks is drawn as not set and stays in the file | Not set: the system's light or dark, or the Omarchy theme |
 | `appearance.grid.row_height` | `"compact"`, `"regular"` or `"roomy"` | `"regular"` |
