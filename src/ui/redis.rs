@@ -512,7 +512,7 @@ fn footer_of(
     ui: &mut Ui,
     paint: Paint,
     tab: ConnTabId,
-    browser: &mut Browser,
+    browser: &Browser,
     keymap: &Keymap,
     full: Rect,
     actions: &mut Vec<Action>,
@@ -617,13 +617,14 @@ fn footer_of(
     ui.ctx().accesskit_node_builder(line.id, |node| {
         node.set_role(egui::accesskit::Role::Status);
     });
-    let due = browser
-        .scan
-        .announced
-        .is_none_or(|at| at.elapsed() >= ANNOUNCE_EVERY);
-    if due {
+    // When it was last said is the view's, kept in egui's memory under
+    // the footer's id: nothing of the scan's state.
+    let said_at = Id::new(("redis-scan-announced", tab.0));
+    let last: Option<std::time::Instant> = ui.ctx().data(|data| data.get_temp(said_at));
+    if last.is_none_or(|at| at.elapsed() >= ANNOUNCE_EVERY) {
         widgets::announce_polite(ui, line.rect, &said);
-        browser.scan.announced = Some(std::time::Instant::now());
+        let now = std::time::Instant::now();
+        ui.ctx().data_mut(|data| data.insert_temp(said_at, now));
     }
     if matches!(browser.scan.state, ScanState::Limited) && !browser.confirm_scan_all {
         widgets::label(

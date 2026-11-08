@@ -355,8 +355,6 @@ pub struct Scan {
     pub stop: StopFlag,
     /// Whether Scan all lifted the key limit.
     pub unlimited: bool,
-    /// When the progress was last said to a screen reader.
-    pub announced: Option<std::time::Instant>,
 }
 
 impl Default for Scan {
@@ -370,7 +368,6 @@ impl Default for Scan {
             took: Duration::ZERO,
             stop: StopFlag::new(),
             unlimited: false,
-            announced: None,
         }
     }
 }
