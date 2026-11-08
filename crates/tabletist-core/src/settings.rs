@@ -207,6 +207,47 @@ impl EnvBar {
     }
 }
 
+/// What `appearance.look` says: the OS's classic look, or the Omarchy
+/// experience. No value is the look the OS draws without one
+/// ([`crate::theme::Look::chosen`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LookChoice {
+    /// macOS's look on macOS and Linux, the standard look on Windows.
+    Classic,
+    /// The terminal look, keyboard first.
+    Omarchy,
+}
+
+impl LookChoice {
+    /// As the file says it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+            Self::Omarchy => "omarchy",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        [Self::Classic, Self::Omarchy]
+            .into_iter()
+            .find(|choice| choice.name() == name)
+    }
+
+    /// The choice a look drawn is: the terminal's, or a classic one.
+    pub fn of(terminal: bool) -> Self {
+        if terminal {
+            Self::Omarchy
+        } else {
+            Self::Classic
+        }
+    }
+
+    /// Whether it is the terminal look.
+    pub fn terminal(self) -> bool {
+        self == Self::Omarchy
+    }
+}
+
 /// How large macOS's and Windows's own text is: the sidebar, the tabs,
 /// the buttons and the inspector's labels. The data has a size of its own.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]

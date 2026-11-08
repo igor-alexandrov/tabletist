@@ -15,7 +15,7 @@
 
 use egui::Key;
 
-use crate::theme::{Look, Typeface};
+use crate::theme::Look;
 
 mod overrides;
 pub use overrides::{Bind, Line, Never, Overrides, Refused, Unbind, Why, intern, refuse_key};
@@ -25,7 +25,8 @@ pub use overrides::{Bind, Line, Never, Overrides, Refused, Unbind, Why, intern, 
 pub enum Layout {
     /// The macOS look: its own keys, written with glyphs.
     Mac,
-    /// The Windows look: the Mac's keys with Ctrl for Cmd, written out.
+    /// The Windows look, and Linux's classic look (macOS's drawn with
+    /// these): the Mac's keys with Ctrl for Cmd, written out.
     Windows,
     /// The Omarchy look: vim keys and the `:` prompt, in lower case.
     Omarchy,
@@ -34,14 +35,9 @@ pub enum Layout {
 impl Layout {
     pub const ALL: [Layout; 3] = [Layout::Mac, Layout::Windows, Layout::Omarchy];
 
+    /// The layout `look` binds and writes its keys in.
     pub fn of(look: &Look) -> Self {
-        if look.terminal {
-            Self::Omarchy
-        } else if look.faces.typeface == Typeface::Plex {
-            Self::Mac
-        } else {
-            Self::Windows
-        }
+        look.keys
     }
 }
 
