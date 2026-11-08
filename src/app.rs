@@ -104,6 +104,9 @@ pub enum PinState {
 enum LookSwitch {
     /// Its fonts are to be installed.
     Asked(crate::theme::Look),
+    /// The terminal look's: the desktop's monospace is being read, by the
+    /// read the counter names; its fonts are installed once it is in.
+    Reading(crate::theme::Look, u64),
     /// Its fonts are in place from this frame: it is drawn.
     Installed(crate::theme::Look),
 }
@@ -5855,7 +5858,11 @@ impl App {
         let chosen =
             crate::theme::Look::chosen(self.settings.look, crate::update::release::Os::current());
         let coming = match self.look_switch {
-            Some(LookSwitch::Asked(look) | LookSwitch::Installed(look)) => look,
+            Some(
+                LookSwitch::Asked(look)
+                | LookSwitch::Reading(look, _)
+                | LookSwitch::Installed(look),
+            ) => look,
             None => self.look,
         };
         if old.look != self.settings.look
@@ -8252,15 +8259,25 @@ impl App {
     fn switch_look(&mut self, ctx: &egui::Context) {
         match self.look_switch.take() {
             None => {}
+            // The terminal look's font is read before its first frame, as
+            // a start reads it (`attach`): one that came later would move
+            // every line. On the backend, as the app is running.
+            Some(LookSwitch::Asked(next))
+                if next.terminal && !self.look.terminal && self.follow_desktop =>
+            {
+                self.font_asked += 1;
+                self.backend.send(Command::ReadFont {
+                    font: self.settings.font.clone(),
+                    asked: self.font_asked,
+                });
+                self.look_switch = Some(LookSwitch::Reading(next, self.font_asked));
+            }
+            Some(LookSwitch::Reading(next, asked)) if self.font_taken < asked => {
+                self.look_switch = Some(LookSwitch::Reading(next, asked));
+            }
             // The fonts of both: the next frame draws the look now, or
             // the new one where nothing chooses again before it lands.
-            Some(LookSwitch::Asked(next)) => {
-                // The terminal look's font read before its first frame, as
-                // a start reads it (`attach`): one that came later would
-                // move every line.
-                if next.terminal && !self.look.terminal && self.follow_desktop {
-                    self.desktop_font = crate::font_files::read_font(self.settings.font.as_deref());
-                }
+            Some(LookSwitch::Asked(next) | LookSwitch::Reading(next, _)) => {
                 let next = next.with_text(&self.settings, self.installed_drawn());
                 let desktop = self.desktop_font.faces.as_ref();
                 let looks = (&self.look, &next);

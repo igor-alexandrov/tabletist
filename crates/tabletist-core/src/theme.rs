@@ -664,6 +664,14 @@ impl Look {
         Self::chosen(None, Os::current())
     }
 
+    /// Whether passwords are named the macOS Keychain where the look is
+    /// drawn on `os`: on macOS whatever the look, and wherever macOS's
+    /// look has the Mac's keys (its screenshots, rendered elsewhere).
+    /// Linux's classic look has Windows' keys, and the system keyring.
+    pub fn keychain(&self, os: Os) -> bool {
+        os == Os::MacOs || self.keys == Layout::Mac
+    }
+
     /// `text` as this look labels things: lower case in the terminal look.
     pub fn label(&self, text: &str) -> String {
         if self.terminal {
@@ -1003,6 +1011,19 @@ mod tests {
         for look in Look::ALL {
             assert_eq!(Layout::of(&look), look.keys, "{}", look.name);
         }
+    }
+
+    #[test]
+    fn passwords_are_named_the_keychain_on_macos_in_every_look() {
+        for look in Look::ALL {
+            assert!(look.keychain(Os::MacOs), "{}", look.name);
+        }
+        // macOS's look drawn elsewhere for its screenshots says it too.
+        assert!(Look::macos().keychain(Os::Linux));
+        let linux_classic = Look::chosen(Some(crate::settings::LookChoice::Classic), Os::Linux);
+        assert!(!linux_classic.keychain(Os::Linux));
+        assert!(!Look::omarchy().keychain(Os::Linux));
+        assert!(!Look::standard().keychain(Os::Windows));
     }
 
     #[test]

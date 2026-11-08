@@ -240,3 +240,47 @@ fn a_switch_that_changes_the_keybindings_starts_each_editor_over() {
     });
     assert_eq!(mode(&harness), crate::vim::Mode::Normal);
 }
+
+#[test]
+fn a_switch_to_the_terminal_look_waits_for_the_desktop_font_read_on_the_backend() {
+    let mut harness = Harness::new();
+    harness.set_look(Look::macos());
+    // As the window runs: the desktop's fonts are read.
+    harness.app.follow_desktop = true;
+    change(&mut harness, |settings| {
+        settings.look = Some(LookChoice::Omarchy);
+    });
+    // Asked of the backend, and nothing drawn in the new look before it.
+    let asked = harness
+        .app
+        .backend
+        .sent
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            crate::backend::Command::ReadFont { asked, .. } => Some(*asked),
+            _ => None,
+        })
+        .expect("the desktop font asked of the backend");
+    assert!(!harness.app.look.terminal);
+    // Read: the new look lands, in the font read.
+    let hack = egui::FontDefinitions::default().font_data["Hack"].clone();
+    harness
+        .app
+        .apply(crate::model::Action::Backend(crate::backend::Event::Font {
+            asked,
+            read: Box::new(crate::font_files::desktop_font::Read {
+                asked: None,
+                faces: Some([hack.clone(), hack.clone(), hack]),
+                family: Some("Hack".into()),
+                missing: false,
+            }),
+        }));
+    harness.settle();
+    assert!(draws(&harness, Look::omarchy()));
+    assert_eq!(
+        harness.app.desktop_font.family.as_deref(),
+        Some("Hack"),
+        "the read drawn"
+    );
+}
