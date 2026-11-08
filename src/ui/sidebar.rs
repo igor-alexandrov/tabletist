@@ -6,7 +6,7 @@ use egui::{CornerRadius, Id, Rect, Sense, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::{ObjectKind, ObjectRef};
 
 use crate::format::display_safe;
-use crate::i18n::{Locale, gettext};
+use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::{Command, Keymap, Scope, Written};
 use crate::model::{Action, AgentsHere, ConnTabId, TreeNode, TreeRow, Workspace};
 use crate::style::Icon;
@@ -142,6 +142,16 @@ fn row_height(row: &TreeRow, look: &Look) -> f32 {
         (TreeNode::Group(..), true) => 26.0,
         (TreeNode::Group(..), false) => 28.0,
         _ => look.tree_row,
+    }
+}
+
+/// What an object is, as a screen reader names its row and the terminal's
+/// status line says it.
+pub(super) fn kind_name(locale: Locale, kind: ObjectKind) -> std::borrow::Cow<'static, str> {
+    match kind {
+        ObjectKind::Table => gettext(locale, "table"),
+        ObjectKind::View => gettext(locale, "view"),
+        ObjectKind::MaterializedView => gettext(locale, "materialized view"),
     }
 }
 
@@ -410,7 +420,7 @@ pub fn show(
                     WidgetInfo::labeled(WidgetType::Other, true, gettext(locale, "Objects"))
                 });
                 ui.ctx().accesskit_node_builder(stop.id, |node| {
-                    node.set_role(egui::accesskit::Role::Group);
+                    node.set_role(egui::accesskit::Role::Tree);
                 });
                 focus::pane(ui, &stop);
                 focus::hint(ui, &stop, area, focus::Ring::Own);
@@ -1071,8 +1081,31 @@ fn tree_row(
         _ => display_safe(&row.label),
     };
     let label = display_safe(&row.label);
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &*full_name));
     let selected = matches!(&row.node, TreeNode::Object(object, _) if Some(object) == marks.active);
+    // A tree's item, named in full with what it is, though a grouped
+    // object's prefix is not drawn: "book_, 21 tables", "book_covers, table".
+    let name = match &row.node {
+        TreeNode::Group(..) => {
+            let count = row.count.unwrap_or_default();
+            let plural = u32::try_from(count).unwrap_or(u32::MAX);
+            ngettext(locale, "{name}, {n} table", "{name}, {n} tables", plural)
+                .replace("{name}", &label)
+                .replace("{n}", &count.to_string())
+        }
+        TreeNode::Object(_, kind) => format!("{full_name}, {}", kind_name(locale, *kind)),
+        TreeNode::Empty(_) => label.to_string(),
+    };
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &name));
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_role(egui::accesskit::Role::TreeItem);
+        node.set_level(usize::from(row.depth) + 1);
+        if let Some(open) = row.expanded {
+            node.set_expanded(open);
+        }
+        if selected {
+            node.set_selected(true);
+        }
+    });
     // Rows sit in the tree's inset: the macOS pill fills it, the terminal
     // bar spans it.
     let band = if look.terminal {
