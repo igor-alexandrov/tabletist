@@ -12,9 +12,9 @@ use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::{Command, Keymap, Layout};
 use crate::model::{Action, SettingsDialog, SettingsPane};
 use crate::settings::{
-    Autocomplete, Commas, EditorKeys, EnvBar, FontSizes, Idle, Indent, InterfaceSize, KeywordCase,
-    Launch, LineNumbers, LookChoice, Mode, NewTab, OptionId, OptionValue, RowHeight, RunScope,
-    Settings, TableList, ThemeChoice, Timestamps, UpdateCheck, Zone,
+    Autocomplete, Commas, EditorKeys, EnvBar, FontSizes, Idle, Indent, KeywordCase, Launch,
+    LineNumbers, LookChoice, Mode, NewTab, OptionId, OptionValue, RowHeight, RunScope, Settings,
+    TableList, ThemeChoice, Timestamps, UiScale, UpdateCheck, Zone,
 };
 use crate::theme::{DataFace, Look, Palette, Typeface};
 use crate::typography::{Laid, Text, TextRole};
@@ -57,6 +57,8 @@ const ZONE_MENU: f32 = 220.0;
 const FONT_MENU: f32 = 220.0;
 const FONT_MENU_MIN: f32 = 100.0;
 const SIZE_MENU: f32 = 90.0;
+/// The interface scale's menu, as wide as the board's.
+const SCALE_MENU: f32 = 200.0;
 /// Between the data font's menu and its size's.
 const MENU_GAP: f32 = 12.0;
 /// How tall the zone menu's list of zones is at most: it scrolls.
@@ -1034,8 +1036,7 @@ fn control_height(option: OptionId, look: &Look) -> f32 {
         OptionId::Look | OptionId::RowHeight | OptionId::TableList | OptionId::EnvBar => {
             SEGMENT + 4.0
         }
-        OptionId::InterfaceSize => SEGMENT + 4.0,
-        OptionId::Font | OptionId::FontSize => look.control_height,
+        OptionId::InterfaceScale | OptionId::Font | OptionId::FontSize => look.control_height,
         OptionId::NewTab
         | OptionId::RunScope
         | OptionId::EditorKeys
@@ -1318,27 +1319,7 @@ fn control(
                 )));
             }
         }
-        OptionId::InterfaceSize => {
-            // Each with the size of its body text, as the board writes
-            // them.
-            let words = InterfaceSize::ALL.map(|size| {
-                let word = match size {
-                    InterfaceSize::Small => "Small",
-                    InterfaceSize::Default => "Default",
-                    InterfaceSize::Large => "Large",
-                };
-                format!("{} · {}", skin.say(word), size.points())
-            });
-            let selected = InterfaceSize::ALL
-                .iter()
-                .position(|size| *size == settings.interface_size)
-                .unwrap_or(1);
-            if let Some(picked) = segments(ui, (&name, description), &words, selected, skin) {
-                actions.push(Action::SetOption(OptionValue::InterfaceSize(
-                    InterfaceSize::ALL[picked],
-                )));
-            }
-        }
+        OptionId::InterfaceScale => scale_menu(ui, (&name, description), settings, skin, actions),
         // The face's menu where the look draws data in a face of its own
         // (macOS), then the size's. Windows draws its data in Inter, the
         // interface's face: the size's alone.
@@ -1493,6 +1474,55 @@ fn font_menu(
     menu.response.widget_info(|| {
         let mut info = WidgetInfo::labeled(WidgetType::ComboBox, true, name);
         info.current_text_value = Some(shown.to_owned());
+        info
+    });
+}
+
+/// The interface scale: a menu of every scale, each with the size of the
+/// body text it comes to (`125% · 16 px text`), read out in words (`125
+/// percent, 16 pixel text`).
+fn scale_menu(
+    ui: &mut Ui,
+    (name, description): (&str, Option<&str>),
+    settings: &Settings,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
+    let Skin { look, palette, .. } = *skin;
+    let percent = |scale: UiScale| format!("{}%", scale.percent());
+    let pixels = |scale: UiScale| format!("{} {}", scale.text_px(), skin.say("px text"));
+    let spoken = |scale: UiScale| {
+        format!(
+            "{} {}, {} {}",
+            scale.percent(),
+            skin.say("percent"),
+            scale.text_px(),
+            skin.say("pixel text")
+        )
+    };
+    let current = settings.ui_scale;
+    let shown = format!("{} · {}", percent(current), pixels(current));
+    let dropdown =
+        menu::Dropdown::new("interface-scale", &shown, SCALE_MENU).description(description);
+    let default = skin.say("default");
+    let menu = dropdown.show(ui, look, palette, |ui| {
+        for scale in UiScale::ALL {
+            let (text, note, entry_name) = (percent(scale), pixels(scale), spoken(scale));
+            let mut entry = menu::Item::choice(&text, scale == current)
+                .note(&note)
+                .name(&entry_name);
+            if scale == UiScale::DEFAULT {
+                entry = entry.detail(&default);
+            }
+            if entry.show(ui, look, palette).clicked() {
+                actions.push(Action::SetOption(OptionValue::InterfaceScale(scale)));
+                ui.close();
+            }
+        }
+    });
+    menu.response.widget_info(|| {
+        let mut info = WidgetInfo::labeled(WidgetType::ComboBox, true, name);
+        info.current_text_value = Some(spoken(current));
         info
     });
 }
@@ -1731,6 +1761,30 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
             palette.dim,
         ),
         OptionId::ValueTags => return tags(ui, at, right, settings.value_tags, skin),
+        // The keys that step it, from the keymap: `⌘= larger · ⌘- smaller
+        // · ⌘0 back to 100%`. Windows's longer keys leave no room for the
+        // words: the keys alone, `Ctrl+= / Ctrl+- / Ctrl+0`.
+        OptionId::InterfaceScale => {
+            let key = |command| crate::ui::keys::written(ui.ctx(), look, command);
+            let [larger, smaller, actual] = [
+                Command::LargerText,
+                Command::SmallerText,
+                Command::DefaultTextSize,
+            ]
+            .map(|command| key(command).as_str().to_owned());
+            let said = format!(
+                "{larger} {} · {smaller} {} · {actual} {}",
+                skin.say("larger"),
+                skin.say("smaller"),
+                skin.say("back to 100%")
+            );
+            let said = Text::one(look, TextRole::Secondary, &said, palette.dim).layout(ui.ctx());
+            if at.x + said.width() <= right {
+                return write(ui, at.x, at.y, &said);
+            }
+            let keys = format!("{larger} / {smaller} / {actual}");
+            Text::one(look, TextRole::Secondary, &keys, palette.dim)
+        }
         OptionId::RunScope => Text::one(
             look,
             TextRole::Secondary,
@@ -1759,7 +1813,6 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
         | OptionId::AgentsOn
         | OptionId::LogDays
         | OptionId::AgentsNotify
-        | OptionId::InterfaceSize
         | OptionId::Font
         | OptionId::FontSize
         | OptionId::RowHeight

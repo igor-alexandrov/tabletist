@@ -5,9 +5,7 @@
 use egui::Color32;
 
 use crate::keymap::Layout;
-use crate::settings::{
-    FontSize, FontSizes, InterfaceSize, LookChoice, Mode, RowHeight, Settings, Theme,
-};
+use crate::settings::{FontSize, FontSizes, LookChoice, Mode, RowHeight, Settings, Theme};
 use crate::update::release::Os;
 
 /// A palette file from the themes directory.
@@ -397,14 +395,13 @@ impl DataFace {
 }
 
 /// A look's typefaces at the sizes the settings give them: what every
-/// text role is drawn in. The terminal look keeps its roles' sizes and
-/// draws the whole window larger or smaller
-/// ([`Settings::font_size_in`]).
+/// text role is drawn in. The interface's roles keep the design's sizes in
+/// every look: the window is drawn larger or smaller as a whole, by the
+/// terminal look's font size ([`Settings::font_size_in`]) or the others'
+/// interface scale ([`Settings::ui_scale`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Faces {
     pub typeface: Typeface,
-    /// The interface's own text, on macOS and Windows.
-    pub interface: InterfaceSize,
     /// The data's face, on macOS.
     pub data: DataFace,
     /// The data's size, on macOS and Windows.
@@ -416,7 +413,6 @@ impl Faces {
     pub const fn of(typeface: Typeface) -> Self {
         Self {
             typeface,
-            interface: InterfaceSize::Default,
             data: DataFace::PlexMono,
             data_size: FontSizes::of(false).default,
         }
@@ -436,7 +432,6 @@ impl Faces {
         };
         Self {
             typeface: self.typeface,
-            interface: settings.interface_size,
             data,
             data_size: settings.font_size_in(false),
         }
@@ -612,8 +607,8 @@ impl Look {
         }
     }
 
-    /// The look with its text as `settings` have it: the interface's size,
-    /// and the data's face and size, the installed face where `installed`
+    /// The look with its text as `settings` have it: the data's face and
+    /// size, the installed face where `installed`
     /// ([`Faces::with_text`]).
     pub fn with_text(self, settings: &Settings, installed: bool) -> Self {
         Self {
@@ -795,11 +790,9 @@ mod tests {
     use super::*;
     use fastframe_theme::Palette as _;
 
-    /// The settings with the interface's size, the data font and its size
-    /// as given.
-    fn text(interface: InterfaceSize, font: Option<&str>, size: f64) -> Settings {
+    /// The settings with the data font and its size as given.
+    fn text(font: Option<&str>, size: f64) -> Settings {
         Settings {
-            interface_size: interface,
             font: font.map(str::to_owned),
             font_size: FontSize::of(size),
             ..Settings::default()
@@ -824,7 +817,7 @@ mod tests {
         );
         assert_eq!(DataFace::of(Some("Fira Code")), Err("Fira Code"));
         // An installed font is drawn once it is read, the default before.
-        let fira = text(InterfaceSize::Default, Some("Fira Code"), 12.5);
+        let fira = text(Some("Fira Code"), 12.5);
         assert_eq!(
             Look::macos().with_text(&fira, false).faces.data,
             DataFace::PlexMono
@@ -834,12 +827,12 @@ mod tests {
             DataFace::Installed
         );
         // A bundled face's name is the bundled face, read or not.
-        let jetbrains = text(InterfaceSize::Default, Some("JetBrains Mono"), 12.5);
+        let jetbrains = text(Some("JetBrains Mono"), 12.5);
         for installed in [false, true] {
             let look = Look::macos().with_text(&jetbrains, installed);
             assert_eq!(look.faces.data, DataFace::JetBrainsMono);
         }
-        let plex = text(InterfaceSize::Default, None, 12.5);
+        let plex = text(None, 12.5);
         assert_eq!(
             Look::macos().with_text(&plex, true).faces.data,
             DataFace::PlexMono

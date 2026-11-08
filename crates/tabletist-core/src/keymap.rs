@@ -847,9 +847,9 @@ impl Command {
             C::SwitchDatabase => info("Switch database", "Switch database", Window),
             C::Settings => info("Settings", "Settings", Window),
             C::CheckForUpdates => info("Check for Updates…", "", Window),
-            C::LargerText => info("Larger text", "", Window),
-            C::SmallerText => info("Smaller text", "", Window),
-            C::DefaultTextSize => info("Default text size", "", Window),
+            C::LargerText => info("Larger", "", Window),
+            C::SmallerText => info("Smaller", "", Window),
+            C::DefaultTextSize => info("Actual size", "", Window),
             C::CloseConnection => info("Close connection", "", Window),
             C::NextConnection => info("Next connection", "", Window),
             C::PreviousConnection => info("Previous connection", "", Window),
@@ -1418,8 +1418,9 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("cmd+,")]),
             keys(&[k("ctrl+,")]),
         ),
-        // The text's size, under a dialog too: the Settings window shows
-        // what it changes. The terminal look resets it from that window.
+        // The window's size, under a dialog too: the Settings window shows
+        // what it changes. macOS's and Windows's interface scale, the
+        // terminal look's one font size.
         bind(
             C::LargerText,
             ANYWHERE,
@@ -1432,7 +1433,12 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("cmd+-")]),
             keys(&[k("ctrl+-")]),
         ),
-        bind(C::DefaultTextSize, ANYWHERE, keys(&[k("cmd+0")]), NONE),
+        bind(
+            C::DefaultTextSize,
+            ANYWHERE,
+            keys(&[k("cmd+0")]),
+            keys(&[k("ctrl+0")]),
+        ),
         bind(
             C::CloseConnection,
             GLOBAL,
@@ -3937,14 +3943,13 @@ const OWN: [Command; 3] = [Command::Help, Command::LeaveEditor, Command::LeaveFi
 /// every look: there a chord can be given them. Any other row with no key
 /// in a look is read by that look's letters or prompt, or by the other
 /// look's handler alone, and nothing would answer a key given it.
-const ANY_LOOK: [(Command, Scope); 15] = [
+const ANY_LOOK: [(Command, Scope); 14] = [
     (Command::SwitchDatabase, Scope::Global),
     (Command::ExportTable, Scope::Global),
     (Command::PaneLeft, Scope::Global),
     (Command::PaneRight, Scope::Global),
     (Command::PaneUp, Scope::Global),
     (Command::PaneDown, Scope::Global),
-    (Command::DefaultTextSize, Scope::Global),
     (Command::ExtendUp, Scope::Grid),
     (Command::ExtendDown, Scope::Grid),
     (Command::CopyRow, Scope::Grid),

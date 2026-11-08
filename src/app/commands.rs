@@ -378,10 +378,11 @@ impl App {
     /// connection picker too, which has no workspace. They have no arm in
     /// `run_of`'s match, which asks here first: None here is None there.
     fn window_run(&self, command: Command) -> Option<(&'static str, About, Vec<Action>)> {
-        let stepped = |larger| {
-            let terminal = self.look.terminal;
-            let settings = &self.settings;
-            settings.stepped_font_size(terminal, larger) != settings.font_size_in(terminal)
+        // The terminal look's font size, the others' interface scale.
+        let settings = &self.settings;
+        let stepped = |larger| match self.look.terminal {
+            true => settings.stepped_font_size(true, larger) != settings.font_size_in(true),
+            false => settings.ui_scale.stepped(larger) != settings.ui_scale,
         };
         let run = match command {
             Command::Connections => ("Connections", About::Nothing, vec![Action::ShowConnections]),
@@ -401,31 +402,27 @@ impl App {
             // nor back to the look's own where it is that already.
             Command::LargerText => {
                 stepped(true).then_some(())?;
-                (
-                    "Larger text",
-                    About::Nothing,
-                    vec![Action::TextSize(Some(true))],
-                )
+                ("Larger", About::Nothing, vec![Action::TextSize(Some(true))])
             }
             Command::SmallerText => {
                 stepped(false).then_some(())?;
                 (
-                    "Smaller text",
+                    "Smaller",
                     About::Nothing,
                     vec![Action::TextSize(Some(false))],
                 )
             }
             Command::DefaultTextSize => {
-                let terminal = self.look.terminal;
-                let default = crate::settings::FontSizes::of(terminal).default;
-                if self.settings.font_size_in(terminal) == default {
+                let actual = match self.look.terminal {
+                    true => {
+                        settings.font_size_in(true) == crate::settings::FontSizes::of(true).default
+                    }
+                    false => settings.ui_scale == crate::settings::UiScale::DEFAULT,
+                };
+                if actual {
                     return None;
                 }
-                (
-                    "Default text size",
-                    About::Nothing,
-                    vec![Action::TextSize(None)],
-                )
+                ("Actual size", About::Nothing, vec![Action::TextSize(None)])
             }
             _ => return None,
         };
