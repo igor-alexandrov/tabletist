@@ -28,6 +28,11 @@ impl Got {
 
 /// Streams `query` in batches of `batch` through a channel that holds one
 /// batch, as the app's export reads it.
+/// The SQL dialect of a test's connection, which is a SQL one.
+fn sql_dialect(connection: &Connection) -> tabletist_db::Dialect {
+    connection.dialect().expect("a SQL connection")
+}
+
 async fn streamed(
     connection: &Connection,
     query: &RowQuery,
@@ -90,7 +95,7 @@ async fn streamed_statement(
     batch: usize,
     stop: &StopFlag,
 ) -> Result<Got, Error> {
-    let statements = sql::statements(connection.dialect(), text);
+    let statements = sql::statements(sql_dialect(connection), text);
     assert_eq!(statements.len(), 1, "one statement: {text}");
     let statement = statements[0].clone();
     let (to, mut from) = tokio::sync::mpsc::channel(1);
@@ -241,7 +246,7 @@ async fn streams_the_books(connection: &Connection, schema: &str, on: &str) {
 async fn the_export_session_cannot_write(connection: &Connection, on: &str) {
     assert_eq!(connection.access(), Access::ReadOnly, "{on}");
     let statements = sql::statements(
-        connection.dialect(),
+        sql_dialect(connection),
         "INSERT INTO authors (id, name) VALUES (99, 'Nobody')",
     );
     let refused = connection

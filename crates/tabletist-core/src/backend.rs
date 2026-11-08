@@ -21,12 +21,14 @@ use crate::secrets::{Keyring, SecretString};
 mod agents;
 pub mod export;
 mod history;
+mod redis;
 mod updates;
 
 pub use agents::{
     Agentable, AgentsCommand, AgentsEvent, AppGateway, LOG_PAGE, agent_names, agentable,
 };
 pub use history::{HistoryCommand, HistoryEvent};
+pub use redis::{RedisAnswer, RedisAsk};
 pub use updates::{UpdatesCommand, UpdatesEvent};
 
 /// Wakes the UI from any thread. The default does nothing (tests).
@@ -180,6 +182,12 @@ pub enum Command {
     SessionZone {
         session: SessionId,
         request: RequestId,
+    },
+    /// What a Redis window asks of its session.
+    Redis {
+        session: SessionId,
+        request: RequestId,
+        ask: RedisAsk,
     },
     /// Writes a state file atomically. Saves to one file are written in
     /// order, and a burst of them writes only the newest.
@@ -354,9 +362,16 @@ pub enum Event {
         request: RequestId,
         error: Error,
     },
+    /// A Test ended: for a Redis server, with what it learned of it.
     Tested {
         request: RequestId,
-        result: Result<(), Error>,
+        result: Result<Option<tabletist_db::redis::Probe>, Error>,
+    },
+    /// What a Redis window asked came back: a scan answers once a step.
+    Redis {
+        session: SessionId,
+        request: RequestId,
+        answer: RedisAnswer,
     },
     /// The session died; later commands to it fail until a reconnect.
     Disconnected { session: SessionId, error: Error },
@@ -2055,7 +2070,21 @@ impl Worker {
                     )
                     .await
                     {
-                        Ok(connection) => connection.close().await,
+                        // A Redis server says what it is, and what its
+                        // databases hold.
+                        Ok(connection) => {
+                            let probe = match connection.redis() {
+                                Some(handle) => {
+                                    let database = spec.redis_spec().database;
+                                    handle.probe(database).await.map(Some)
+                                }
+                                None => Ok(None),
+                            };
+                            match (probe, connection.close().await) {
+                                (Ok(probe), Ok(())) => Ok(probe),
+                                (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+                            }
+                        }
                         Err(error) => Err(error),
                     };
                     outbox.emit(Event::Tested { request, result });
@@ -2334,7 +2363,8 @@ fn session_of(command: &Command) -> SessionId {
         | Command::ListDatabases { session, .. }
         | Command::RunSql { session, .. }
         | Command::ServerVersion { session, .. }
-        | Command::SessionZone { session, .. } => *session,
+        | Command::SessionZone { session, .. }
+        | Command::Redis { session, .. } => *session,
         Command::Test { .. }
         | Command::LoadSecret { .. }
         | Command::StoreSecret { .. }
@@ -2392,7 +2422,8 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::ListDatabases { request, .. }
         | Command::RunSql { request, .. }
         | Command::ServerVersion { request, .. }
-        | Command::SessionZone { request, .. } => Some(*request),
+        | Command::SessionZone { request, .. }
+        | Command::Redis { request, .. } => Some(*request),
         Command::Connect { .. }
         | Command::Test { .. }
         | Command::Close { .. }
@@ -2502,6 +2533,15 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
             session,
             request,
             result: Err(error),
+        },
+        Command::Redis {
+            session,
+            request,
+            ask,
+        } => Event::Redis {
+            session,
+            request,
+            answer: redis::failed(ask, error),
         },
         Command::Connect { .. }
         | Command::Test { .. }
@@ -2823,6 +2863,11 @@ async fn run_session(
                 });
                 lost
             }
+            Command::Redis {
+                session,
+                request,
+                ask,
+            } => redis::run(&connection, (*session, *request), ask, &outbox).await,
             Command::Connect { .. }
             | Command::Test { .. }
             | Command::Close { .. }
@@ -3279,7 +3324,7 @@ mod tests {
             backend.wait(WAIT),
             Some(Event::Tested {
                 request: RequestId(5),
-                result: Ok(())
+                result: Ok(None)
             })
         ));
     }

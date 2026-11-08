@@ -329,6 +329,10 @@ impl App {
     /// where it is not open yet, and read again from the file each time it
     /// is shown.
     pub(super) fn show_history(&mut self, tab: ConnTabId) {
+        // The history is of statements: Redis runs none of its own.
+        if !self.has_sql(tab) {
+            return;
+        }
         let id = TabId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
             return;

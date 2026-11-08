@@ -101,7 +101,7 @@ impl Match {
     /// not followed. A key the driver has no use for does not match.
     pub fn matches(&self, spec: &ConnectSpec, home: Option<&Path>) -> bool {
         let server = match spec.driver {
-            Driver::Postgres | Driver::MySql => true,
+            Driver::Postgres | Driver::MySql | Driver::Redis => true,
             // BigQuery's `database` (its project) is a rule's to match; a
             // host or port rule is never its: it has neither, and a `*`
             // would match the emptiness.
@@ -133,7 +133,7 @@ impl Match {
             return false;
         }
         if let Some(database) = &self.database
-            && !glob(database, &spec.database)
+            && !glob(database, &crate::session::database_of(spec))
         {
             return false;
         }
@@ -164,6 +164,7 @@ fn driver_key(driver: Driver) -> &'static str {
         Driver::MySql => "mysql",
         Driver::Sqlite => "sqlite",
         Driver::BigQuery => "bigquery",
+        Driver::Redis => "redis",
     }
 }
 

@@ -828,12 +828,16 @@ impl Gateway for AppGateway {
         lock(&self.inner.policy)
             .connections
             .iter()
-            .map(|agentable| Listed {
-                id: agentable.id.0.clone(),
-                name: agentable.name.clone(),
-                dialect: agentable.spec.driver.dialect(),
-                limits: agentable.limits,
-                sources: agentable.sources.clone(),
+            // A connection with no SQL (Redis) is never an agent's: this
+            // version gives agents none of its keys.
+            .filter_map(|agentable| {
+                Some(Listed {
+                    id: agentable.id.0.clone(),
+                    name: agentable.name.clone(),
+                    dialect: agentable.spec.driver.dialect()?,
+                    limits: agentable.limits,
+                    sources: agentable.sources.clone(),
+                })
             })
             .collect()
     }
@@ -2127,7 +2131,7 @@ mod tests {
             .unwrap();
         let gateway = AppGateway::new(keyring);
         gateway.set_policy(agentable(&[connection]), HostKeys::default());
-        Some((gateway, dialect))
+        Some((gateway, dialect?))
     }
 
     async fn the_password_is_the_keyrings_and_a_stop_reaches_the_server(

@@ -594,7 +594,7 @@ impl App {
             }
             let Some(dialect) = self
                 .workspace(tab)
-                .map(|workspace| workspace.driver.dialect())
+                .and_then(|workspace| workspace.driver.dialect())
             else {
                 return;
             };
@@ -744,7 +744,10 @@ impl App {
             return;
         };
         let session = workspace.session;
-        let dialect = workspace.driver.dialect();
+        // Nothing of it without SQL (Redis).
+        let Some(dialect) = workspace.driver.dialect() else {
+            return;
+        };
         let mut history = keeps.then(|| {
             super::history::entry_on(workspace, Source::Save, changes.object.name.clone())
         });
@@ -2298,7 +2301,10 @@ impl App {
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
-        let dialect = workspace.driver.dialect();
+        // Nothing of it without SQL (Redis).
+        let Some(dialect) = workspace.driver.dialect() else {
+            return;
+        };
         let Some(object) = workspace.object_tabs_mut().find(|object| {
             object
                 .edits

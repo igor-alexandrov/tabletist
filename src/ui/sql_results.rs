@@ -1034,7 +1034,9 @@ fn undone(run: &SqlRun, index: usize, driver: Driver) -> bool {
         // A statement that returned rows may have changed some (RETURNING,
         // a function that writes): told by what it looks like.
         Some(StatementOutcome::Rows { .. }) => run.statements.get(index).is_some_and(|statement| {
-            kind(driver.dialect(), &statement.text) == StatementKind::Write
+            driver
+                .dialect()
+                .is_some_and(|dialect| kind(dialect, &statement.text) == StatementKind::Write)
         }),
         _ => false,
     }
@@ -1568,8 +1570,9 @@ fn blocked<'a>(workspace: &'a Workspace, sql: &'a SqlTab) -> Option<Blocked<'a>>
             _ => None,
         };
     let (index, error) = run.outcome.results.iter().enumerate().find_map(refused)?;
+    let dialect = driver.dialect()?;
     let writes = |statement: &tabletist_db::sql::Statement| {
-        kind(driver.dialect(), &statement.text) == StatementKind::Write
+        kind(dialect, &statement.text) == StatementKind::Write
     };
     let why = match workspace.sql_writes() {
         Err(NoWrites::ReadOnlyConnection) => Why::Connection {
@@ -1629,8 +1632,9 @@ impl Blocked<'_> {
         // "the UPDATE": the refused statement's first word.
         let verb = self
             .statement
-            .and_then(|statement| {
-                let words = tabletist_db::sql::words(workspace.driver.dialect(), &statement.text);
+            .zip(workspace.driver.dialect())
+            .and_then(|(statement, dialect)| {
+                let words = tabletist_db::sql::words(dialect, &statement.text);
                 words.into_iter().next()
             })
             .map_or_else(

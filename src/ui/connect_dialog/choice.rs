@@ -14,10 +14,11 @@ use crate::ui::widgets;
 
 use super::Skin;
 
-const DRIVERS: [Driver; 4] = [
+const DRIVERS: [Driver; 5] = [
     Driver::Sqlite,
     Driver::Postgres,
     Driver::MySql,
+    Driver::Redis,
     Driver::BigQuery,
 ];
 

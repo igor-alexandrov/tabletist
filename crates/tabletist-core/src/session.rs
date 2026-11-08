@@ -150,6 +150,8 @@ pub fn database_of(spec: &tabletist_db::ConnectSpec) -> String {
         tabletist_db::Driver::Postgres
         | tabletist_db::Driver::MySql
         | tabletist_db::Driver::BigQuery => spec.database.clone(),
+        // The database a Redis connection opens on, by its number.
+        tabletist_db::Driver::Redis => spec.redis_spec().database.to_string(),
     }
 }
 

@@ -7,9 +7,7 @@
 use crate::backend::{RequestId, SessionId};
 use crate::connections::{ConnectionId, SavedConnection};
 use crate::model::Workspace;
-use tabletist_db::{
-    ColumnMeta, ConnectSpec, Driver, ObjectInfo, ObjectKind, RowPage, Value, ValueKind,
-};
+use tabletist_db::{ColumnMeta, ConnectSpec, ObjectInfo, ObjectKind, RowPage, Value, ValueKind};
 
 /// What the fake session lists in schema `main`: `users`, `orders` and
 /// the view `active_users`.
@@ -73,6 +71,87 @@ pub fn fixture_connection() -> SavedConnection {
         ssh_secret: crate::connections::PasswordMode::None,
         spec: ConnectSpec::sqlite("/tmp/fixture.db"),
         agents: Default::default(),
+    }
+}
+
+/// The Bookshop's cache: a Redis connection on this machine, as the
+/// default user, dev.
+pub fn bookshop_cache() -> SavedConnection {
+    SavedConnection {
+        id: ConnectionId::new(),
+        name: "Bookshop cache".into(),
+        environment: crate::env::Environment::Dev,
+        read_only: Some(false),
+        password: crate::connections::PasswordMode::None,
+        ssh_secret: crate::connections::PasswordMode::None,
+        spec: ConnectSpec::redis("localhost", 6379),
+        agents: Default::default(),
+    }
+}
+
+/// The names of the Bookshop's keys, as `fixtures::redis_server` seeds
+/// them: 65 in all.
+pub fn bookshop_keys() -> Vec<Vec<u8>> {
+    let mut keys: Vec<String> = Vec::new();
+    for id in 1..=12 {
+        keys.push(format!("book:{id}"));
+        keys.push(format!("tags:{id}"));
+    }
+    keys.push("book:reviews:12".into());
+    keys.push("tags:all".into());
+    for cart in 1..=4 {
+        keys.push(format!("cart:{cart}"));
+    }
+    for session in 1..=31 {
+        keys.push(format!("session:{session:04}"));
+    }
+    for key in ["queue:emails", "top:books", "events", "config"] {
+        keys.push(key.into());
+    }
+    keys.into_iter().map(String::into_bytes).collect()
+}
+
+/// What `TYPE` says each of the Bookshop's keys is.
+pub fn bookshop_type(key: &[u8]) -> tabletist_db::redis::KeyType {
+    use tabletist_db::redis::KeyType;
+    let key = String::from_utf8_lossy(key);
+    let prefix = key.split(':').next().unwrap_or_default();
+    match (prefix, key.as_ref()) {
+        ("book" | "cart", _) => KeyType::Hash,
+        ("tags", _) => KeyType::Set,
+        ("session", _) | (_, "config") => KeyType::String,
+        (_, "queue:emails") => KeyType::List,
+        (_, "top:books") => KeyType::ZSet,
+        (_, "events") => KeyType::Stream,
+        _ => KeyType::Missing,
+    }
+}
+
+/// A Redis server's answer to a probe: Redis 7.4.1, its 16 databases, 65
+/// keys in the first.
+pub fn bookshop_probe(database: u32) -> tabletist_db::redis::Probe {
+    use tabletist_db::redis::{Keyspace, Probe, Server};
+    Probe {
+        server: Server {
+            name: "Redis".into(),
+            version: "7.4.1".into(),
+        },
+        database,
+        keys: Some(65),
+        keyspace: vec![
+            Keyspace {
+                database: 0,
+                keys: 65,
+                expires: 31,
+            },
+            Keyspace {
+                database: 2,
+                keys: 38,
+                expires: 0,
+            },
+        ],
+        databases: 16,
+        refused: None,
     }
 }
 
@@ -644,7 +723,7 @@ pub fn run_script(
 ) {
     sql.text = text.into();
     let request = RequestId(sql.run.loaded.map_or(9, |last| last.0 + 1));
-    let statements = tabletist_db::sql::statements(Driver::Sqlite.dialect(), text);
+    let statements = tabletist_db::sql::statements(tabletist_db::Dialect::Sqlite, text);
     let _ = sql.start_run(request, statements, tabletist_db::ScriptMode::ReadOnly);
     assert!(sql.finish_run(request, Ok(script_outcome(outcomes)), None));
 }

@@ -135,6 +135,8 @@ pub enum QuickHeading {
     Tables,
     Views,
     Commands,
+    /// A Redis window's keys and groups.
+    Keys,
     /// One connection's results, where every open one is searched.
     Connection(ConnTabId),
 }
@@ -424,6 +426,72 @@ impl App {
     /// command that matches what follows it, and nothing else; the
     /// terminal look lists every match, in one list with no kind headings,
     /// and no commands.
+    /// The groups and the keys of the Redis window `tab` whose names hold
+    /// `query`, without regard to case: the groups first, and in each
+    /// what begins with it before what holds it elsewhere. At most
+    /// `KEYS_LISTED`: the names held are the window's, the scan's.
+    pub fn search_keys(&self, tab: ConnTabId, query: &str) -> Vec<crate::model::FoundKey> {
+        let Some(browser) = self
+            .workspace(tab)
+            .and_then(|workspace| workspace.redis.as_deref())
+        else {
+            return Vec::new();
+        };
+        let wanted = query.to_lowercase();
+        let place = |name: &[u8]| {
+            let text = crate::keyspace::lossy(name).to_lowercase();
+            text.find(&wanted).map(|at| (at, at..at + wanted.len()))
+        };
+        let mut groups: Vec<(usize, crate::model::FoundKey)> = browser
+            .tree
+            .prefixes()
+            .into_iter()
+            .filter_map(|(prefix, count)| {
+                let (at, span) = place(&prefix)?;
+                Some((
+                    at,
+                    crate::model::FoundKey {
+                        name: prefix,
+                        group: Some(count),
+                        kind: None,
+                        spans: vec![span],
+                    },
+                ))
+            })
+            .collect();
+        let mut keys: Vec<(usize, crate::model::FoundKey)> = browser
+            .tree
+            .names()
+            .into_iter()
+            .filter_map(|name| {
+                let (at, span) = place(name)?;
+                Some((
+                    at,
+                    crate::model::FoundKey {
+                        name: name.to_vec(),
+                        group: None,
+                        kind: browser.types.get(name).cloned(),
+                        spans: vec![span],
+                    },
+                ))
+            })
+            .take(KEYS_LISTED)
+            .collect();
+        let order = |a: &(usize, crate::model::FoundKey), b: &(usize, crate::model::FoundKey)| {
+            (a.0 > 0)
+                .cmp(&(b.0 > 0))
+                .then_with(|| crate::keyspace::natural(&a.1.name, &b.1.name))
+        };
+        groups.sort_by(order);
+        keys.sort_by(order);
+        groups
+            .into_iter()
+            .chain(keys)
+            .map(|(_, found)| found)
+            .take(KEYS_LISTED)
+            .collect()
+    }
+
     pub fn quick_open_list(&self, open: &QuickOpen) -> QuickList {
         let terminal = self.look.terminal;
         let commands_query = self.quick_open_commands_query(open);
@@ -437,6 +505,35 @@ impl App {
             self.quick_open_windows(open)
         };
         for tab in windows {
+            // A Redis window's keys and groups, by the names it holds.
+            if self
+                .workspace(tab)
+                .is_some_and(|workspace| workspace.redis.is_some())
+            {
+                if query.is_empty() || open.exporting {
+                    continue;
+                }
+                let found = self.search_keys(tab, query);
+                if found.is_empty() {
+                    continue;
+                }
+                list.matches += found.len();
+                let heading = if open.everywhere {
+                    QuickHeading::Connection(tab)
+                } else {
+                    QuickHeading::Keys
+                };
+                if !terminal || open.everywhere {
+                    list.rows.push(QuickRow::Heading(heading));
+                }
+                let items = found
+                    .into_iter()
+                    .map(|found| QuickItem::Key { tab, found })
+                    .collect();
+                let group = QuickGroup::Keys;
+                list.group(group, items, whole(group));
+                continue;
+            }
             if query.is_empty() {
                 let (mut heading, mut rows) = self.start_rows(tab);
                 // Export a table… lists tables and views alone: the
@@ -692,6 +789,24 @@ impl App {
             }
         };
         match item {
+            QuickItem::Key { tab, found } => {
+                front(self, tab);
+                use crate::keyspace::RedisAction;
+                match found.group {
+                    // A group opens as the keys under it: the filter says
+                    // so, and the scan holds them alone.
+                    Some(_) => {
+                        if let Some(browser) = self
+                            .workspace_mut(tab)
+                            .and_then(|workspace| workspace.redis.as_deref_mut())
+                        {
+                            browser.filter = format!("{}*", crate::keyspace::lossy(&found.name));
+                        }
+                        self.apply(Action::Redis(tab, RedisAction::Filter));
+                    }
+                    None => self.apply(Action::Redis(tab, RedisAction::OpenKey(found.name.into()))),
+                }
+            }
             QuickItem::Object { tab, found } => {
                 front(self, tab);
                 if in_editor {
@@ -772,7 +887,7 @@ impl App {
     /// Export a table…: quick open again over `tab`, on its tables and
     /// views alone (spec 3b, R3).
     pub(super) fn pick_table_to_export(&mut self, tab: ConnTabId) {
-        if self.dialog.is_some() || self.workspace(tab).is_none() {
+        if self.dialog.is_some() || !self.has_sql(tab) {
             return;
         }
         self.dialog = Some(Dialog::QuickOpen(Box::new(QuickOpen {
@@ -805,6 +920,9 @@ pub fn picked_object(item: &QuickItem) -> Option<(ConnTabId, ObjectRef, ObjectKi
             StartRow::Largest(object, _) => Some((*tab, object.clone(), ObjectKind::Table)),
             StartRow::Recent(StartRecent::Sql { .. }) => None,
         },
-        QuickItem::Command { .. } | QuickItem::More { .. } => None,
+        QuickItem::Command { .. } | QuickItem::More { .. } | QuickItem::Key { .. } => None,
     }
 }
+
+/// The most keys and groups quick open lists of a Redis window.
+pub const KEYS_LISTED: usize = 500;

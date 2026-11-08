@@ -45,7 +45,9 @@ impl Environment {
     pub fn for_target(driver: Driver, host: &str, tunnelled: bool) -> Self {
         let local = match driver {
             Driver::Sqlite => true,
-            Driver::Postgres | Driver::MySql => !tunnelled && crate::model::is_local_host(host),
+            Driver::Postgres | Driver::MySql | Driver::Redis => {
+                !tunnelled && crate::model::is_local_host(host)
+            }
             // BigQuery is Google's cloud: never this machine.
             Driver::BigQuery => false,
         };

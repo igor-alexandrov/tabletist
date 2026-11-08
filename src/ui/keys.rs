@@ -508,9 +508,15 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             .is_some_and(|object| object.view == crate::model::ObjectView::Ddl)
     });
     let ddl = ddl_tab.is_some();
+    // A Redis connection's window: its keys are its own, and no table's
+    // or tree's.
+    let redis_window = app
+        .workspace(active)
+        .is_some_and(|workspace| workspace.redis.is_some());
     // The History tab's list is somewhere else: its arrows are its own,
     // unless the person went to the tree.
     let tree_arrows = !editing
+        && !redis_window
         && app.workspace(active).is_some_and(|workspace| {
             let nowhere_else =
                 !any_grid && structure.is_none() && !ddl && !workspace.history_in_front();
@@ -573,6 +579,8 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             .is_some_and(crate::model::Workspace::history_in_front);
     let front = if on_picker {
         Scope::Connections
+    } else if redis_window {
+        Scope::Redis
     } else if sql.is_some() {
         Scope::SqlEditor
     } else if agents {
@@ -585,9 +593,10 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     // What has the keyboard, for the letters: the nearest scope first.
     // `pane` says where the user last worked, not `tree_arrows`, which
     // also sends the arrows to the tree where there is no grid to move in.
-    let on_tree = app
-        .workspace(active)
-        .is_some_and(|workspace| workspace.pane == crate::model::Pane::Tree);
+    let on_tree = !redis_window
+        && app
+            .workspace(active)
+            .is_some_and(|workspace| workspace.pane == crate::model::Pane::Tree);
     // The start screen has the keys where the rows would: no tab is open,
     // and the keyboard is not in the tree.
     let start = !on_picker
@@ -610,6 +619,8 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         && ctx.memory(|memory| memory.has_focus(crate::ui::start::search_field_id(active)));
     let scopes: &[Scope] = if on_picker {
         &[Scope::Connections]
+    } else if redis_window {
+        &[Scope::Redis]
     } else if open {
         &[Scope::CellEditor]
     } else if field.is_some() {
@@ -777,6 +788,12 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             && on(input, Command::Format, Scope::CellEditor).fresh
         {
             actions.push(Action::FormatEditor { tab, id });
+        }
+        // A Redis window's chords: its filter, its scan, its databases, and
+        // the tree's arrows while no field or button has the keyboard.
+        if redis_window && app.dialog.is_none() {
+            let keys = (&**keymap, layout, normal);
+            menu_asked |= redis_chords(input, keys, active, !focused, &mut actions);
         }
         // A fresh press only: an Esc held to close a dialog over the tab
         // repeats after the dialog is gone.
@@ -2423,6 +2440,105 @@ fn typed_id() -> egui::Id {
     egui::Id::new("typed-keys")
 }
 
+/// A Redis window's chords, as the keymap has them: the filter, Reload,
+/// Switch database (whether its menu was asked for, which is the answer),
+/// and, where the keys are the tree's (`tree`), its arrows and Enter.
+fn redis_chords(
+    input: &mut egui::InputState,
+    (keymap, layout, normal): (&Keymap, Layout, bool),
+    tab: ConnTabId,
+    tree: bool,
+    actions: &mut Vec<Action>,
+) -> bool {
+    use crate::keyspace::RedisAction;
+    let scope = Scope::Redis;
+    let mut redis = |action| actions.push(Action::Redis(tab, action));
+    if asked(input, keymap, layout, Command::FilterKeys, scope, normal).count > 0 {
+        redis(RedisAction::FocusFilter);
+    }
+    if asked(input, keymap, layout, Command::ReloadKeys, scope, normal).fresh {
+        redis(RedisAction::Reload);
+    }
+    let menu = asked(
+        input,
+        keymap,
+        layout,
+        Command::SwitchDatabase,
+        scope,
+        normal,
+    )
+    .count
+        > 0;
+    if !tree || !normal {
+        return menu;
+    }
+    for keys in keymap.chords_now(layout, Command::MoveInKeys, scope, normal) {
+        let action = match keys {
+            "up" => RedisAction::Move(-1),
+            "down" => RedisAction::Move(1),
+            "left" => RedisAction::Step(false),
+            "right" => RedisAction::Step(true),
+            "home" => RedisAction::Move(isize::MIN),
+            "end" => RedisAction::Move(isize::MAX),
+            // A letter: read with the letters.
+            _ => continue,
+        };
+        for _ in 0..presses(input, layout, keys).count {
+            redis(action.clone());
+        }
+    }
+    if asked(input, keymap, layout, Command::OpenKey, scope, normal).count > 0 {
+        redis(RedisAction::Enter);
+    }
+    menu
+}
+
+/// A Redis window's letters, with the wait a key of two needs (`za`).
+fn redis_letters(app: &App, ctx: &egui::Context, tab: ConnTabId, actions: &mut Vec<Action>) {
+    use crate::keyspace::RedisAction;
+    let layout = app.layout();
+    let typed = typed_chars(ctx);
+    let mut waiting: String = ctx
+        .data(|data| data.get_temp(typed_id()))
+        .unwrap_or_default();
+    // A key that types nothing (an arrow, Esc) ends a wait.
+    if typed.is_empty() {
+        waiting.clear();
+    }
+    let nothing = |_: crate::keymap::When| false;
+    for char in typed {
+        waiting.push(char);
+        let read = app.keymap.typed(layout, Scope::Redis, &nothing, &waiting);
+        let command = match read {
+            Typed::Waiting => {
+                take_char(ctx, char);
+                continue;
+            }
+            Typed::Command(command) => command,
+            Typed::Claimed | Typed::Nothing | Typed::Counted(..) => {
+                waiting.clear();
+                continue;
+            }
+        };
+        take_char(ctx, char);
+        let action = match command {
+            Command::MoveInKeys if char == 'k' => Some(RedisAction::Move(-1)),
+            Command::MoveInKeys => Some(RedisAction::Move(1)),
+            Command::FoldKeyGroup => Some(RedisAction::FoldGroup),
+            Command::FilterKeys => Some(RedisAction::FocusFilter),
+            Command::ReloadKeys => Some(RedisAction::Reload),
+            Command::CopyKeyValue => Some(RedisAction::CopyValue),
+            Command::CopyKeyName => Some(RedisAction::CopyKey),
+            _ => None,
+        };
+        if let Some(action) = action {
+            actions.push(Action::Redis(tab, action));
+        }
+        waiting.clear();
+    }
+    ctx.data_mut(|data| data.insert_temp(typed_id(), waiting));
+}
+
 /// Whether a text field had the keyboard when the last frame ended.
 fn was_editing_id() -> egui::Id {
     egui::Id::new("was-editing")
@@ -2671,6 +2787,15 @@ fn letters(
             waiting.clear();
         }
         ctx.data_mut(|data| data.insert_temp(typed_id(), waiting));
+        return;
+    }
+    // A Redis window's letters: the keys move, open, fold, filter,
+    // scan again and copy.
+    if app
+        .workspace(tab)
+        .is_some_and(|workspace| workspace.redis.is_some())
+    {
+        redis_letters(app, ctx, tab, actions);
         return;
     }
     if !terminal {

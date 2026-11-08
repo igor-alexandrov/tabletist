@@ -140,6 +140,7 @@ fn listed(harness: &Harness) -> Vec<String> {
                 format!("> {}", harness.app.command_name(command))
             }
             QuickRow::Item(QuickItem::More { hidden, .. }) => format!("+{hidden}"),
+            QuickRow::Item(QuickItem::Key { found, .. }) => crate::keyspace::lossy(&found.name),
         })
         .collect()
 }
@@ -531,7 +532,7 @@ fn enter_opens_or_shows_a_tab_and_option_enter_opens_an_editor() {
     harness.press(Key::Enter, Modifiers::ALT);
     let workspace = harness.app.workspace(tab).unwrap();
     let sql = workspace.active_sql_tab().expect("a SQL editor");
-    let dialect = workspace.driver.dialect();
+    let dialect = workspace.driver.dialect().unwrap();
     let expected = format!(
         "SELECT * FROM {}.{} LIMIT 250",
         dialect.ident("main"),

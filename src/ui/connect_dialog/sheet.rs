@@ -137,7 +137,7 @@ pub(super) fn header(
 }
 
 /// macOS: a label over what `add` draws, 5 apart, naming it.
-fn labelled(
+pub(super) fn labelled(
     ui: &mut Ui,
     text: &str,
     role: TextRole,
@@ -152,7 +152,7 @@ fn labelled(
 /// macOS: the "Keychain" check box beside a secret, on the field's line.
 /// Screen readers hear `name`, which says whose secret it keeps.
 /// `below_label` puts it beside a field that has its label above it.
-fn keyring_box(
+pub(super) fn keyring_box(
     ui: &mut Ui,
     mode: &mut PasswordMode,
     name: &'static str,
@@ -187,7 +187,7 @@ fn keyring_box(
 /// macOS: a dropdown `width` wide that reads `text`, as tall as the
 /// dialog's fields and filled as they are. It relies on
 /// [`super::style_controls`] having set that fill on `ui`.
-fn select<'a>(
+pub(super) fn select<'a>(
     ui: &Ui,
     salt: &'static str,
     text: &'a str,
@@ -283,13 +283,35 @@ pub(super) fn body(
                             security(ui, form, skin, actions);
                         });
                     }
+                    Driver::Redis => {
+                        fieldset(ui, &skin.say("Server"), skin, |ui| {
+                            super::redis::server(ui, form, skin);
+                        });
+                        ui.add_space(18.0);
+                        fieldset(ui, &skin.say("Sign in"), skin, |ui| {
+                            super::redis::sign_in(ui, form, skin, actions);
+                        });
+                        ui.add_space(18.0);
+                        fieldset(ui, &skin.say("Security"), skin, |ui| {
+                            super::redis::security(ui, form, skin, actions);
+                            ssh_part(ui, form, skin, actions);
+                        });
+                        ui.add_space(18.0);
+                        super::redis::browsing(ui, form, skin);
+                    }
                 }
                 ui.add_space(18.0);
                 safety(ui, form, skin);
-                // What agents may do on it, where they can reach the app.
+                // What agents may do on it, where they can reach the app:
+                // nothing yet on Redis, which says so.
                 if crate::endpoint::AVAILABLE {
                     ui.add_space(18.0);
-                    super::agents::sheet(ui, form, skin);
+                    match form.driver {
+                        Driver::Redis => super::redis::agents(ui, skin),
+                        Driver::Sqlite | Driver::Postgres | Driver::MySql | Driver::BigQuery => {
+                            super::agents::sheet(ui, form, skin);
+                        }
+                    }
                 }
             }
         });
@@ -304,26 +326,18 @@ fn identity(
     actions: &mut Vec<Action>,
 ) {
     let Skin { look, palette, .. } = *skin;
-    row(
-        ui,
-        12.0,
-        &[Column::Fr(1.4), Column::Fr(1.0)],
-        |ui, column| {
-            if column == 0 {
-                let name = labelled(ui, &skin.say("Name"), TextRole::FormLabel, skin, |ui| {
-                    ui.add(input(ui, &mut form.name, TextRole::UiBody, 34.0, skin))
-                });
-                if focus_name {
-                    name.request_focus();
-                }
-            } else {
-                let heading = skin.say("Type");
-                widgets::label(ui, TextRole::FormLabel, &heading, palette.secondary, look);
-                ui.add_space(5.0);
-                driver_choice(ui, form, &heading, skin, actions);
-            }
-        },
-    );
+    // The type on a row of its own, as wide as its five choices need.
+    let heading = skin.say("Type");
+    widgets::label(ui, TextRole::FormLabel, &heading, palette.secondary, look);
+    ui.add_space(5.0);
+    driver_choice(ui, form, &heading, skin, actions);
+    ui.add_space(14.0);
+    let name = labelled(ui, &skin.say("Name"), TextRole::FormLabel, skin, |ui| {
+        ui.add(input(ui, &mut form.name, TextRole::UiBody, 34.0, skin))
+    });
+    if focus_name {
+        name.request_focus();
+    }
     ui.add_space(18.0);
     let heading = skin.say("Environment");
     widgets::label(ui, TextRole::FormLabel, &heading, palette.secondary, look);
@@ -452,6 +466,17 @@ fn security(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut V
         ui.add_space(10.0);
         intercept_warning(ui, skin);
     }
+    ssh_part(ui, form, skin, actions);
+}
+
+/// macOS: the box that turns the SSH tunnel on, and its fields under it.
+pub(super) fn ssh_part(
+    ui: &mut Ui,
+    form: &mut ConnectionForm,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
+    let Skin { look, palette, .. } = *skin;
     ui.add_space(12.0);
     // A line of text, not a row as tall as a field: the tunnel's fields
     // follow 10 below it.
@@ -637,6 +662,14 @@ fn env_check(ui: &mut Ui, on: bool, name: &str, skin: &Skin) -> Response {
 const READ_ONLY_NOTE: &str =
     "Blocks every write from this app. On by default for production; turn off to edit.";
 
+/// What a Redis connection's promise says, on and off: this version
+/// sends reads alone either way.
+const REDIS_READ_ONLY_NOTE: &str = "Only read commands run: GET, HGETALL, LRANGE, SMEMBERS, \
+                                    ZRANGE, XRANGE, SCAN, TYPE, TTL. On by default for \
+                                    production; turn off to edit.";
+const REDIS_WRITES_NOTE: &str =
+    "Writes are allowed. Redis applies each command at once and can't roll it back.";
+
 /// macOS: the read-only promise, on the environment's tint. The box shows
 /// the environment's default until it is clicked, and is the user's
 /// choice from then on.
@@ -667,19 +700,32 @@ fn safety(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
                     // red on the light palette comes out in the design's
                     // tone.
                     let tone = theme::mix(palette.secondary, skin.env_ink(&skin.env), 0.4);
-                    widgets::label(
-                        ui,
-                        TextRole::Secondary,
-                        &skin.say(READ_ONLY_NOTE),
-                        tone,
-                        look,
-                    );
+                    let note = match form.driver {
+                        Driver::Redis if on => REDIS_READ_ONLY_NOTE,
+                        Driver::Redis => REDIS_WRITES_NOTE,
+                        Driver::Sqlite | Driver::Postgres | Driver::MySql | Driver::BigQuery => {
+                            READ_ONLY_NOTE
+                        }
+                    };
+                    let width = ui.available_width();
+                    Text::one(look, TextRole::Secondary, &skin.say(note), tone)
+                        .wrap(width)
+                        .layout(ui.ctx())
+                        .label(ui);
                 });
                 if toggled {
                     form.read_only = Some(!on);
                 }
             });
         });
+    // Only an ACL user without writes makes the server refuse them.
+    match form.driver {
+        Driver::Redis => {
+            ui.add_space(8.0);
+            super::redis::acl_note(ui, skin);
+        }
+        Driver::Sqlite | Driver::Postgres | Driver::MySql | Driver::BigQuery => {}
+    }
 }
 
 /// macOS: the URL tab, one field that fills the parameters.
@@ -694,7 +740,7 @@ fn url_pane(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut V
     );
     ui.add_space(5.0);
     let (field, clicked) = field_with_button(ui, &skin.say("Fill"), "Fill", skin, |ui| {
-        url_field(ui, form, skin)
+        url_field(ui, form, skin, actions)
     });
     let field = field.labelled_by(label.id);
     let entered = field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));

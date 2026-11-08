@@ -325,7 +325,7 @@ impl App {
                 let sql = sql.filter(|sql| !sql.is_writing())?;
                 // A script with a statement in it: comments alone run
                 // nothing.
-                if !self.scripts.runs(workspace.driver.dialect(), &sql.text) {
+                if !self.scripts.runs(workspace.driver.dialect()?, &sql.text) {
                     return None;
                 }
                 let run = Action::RunSql {

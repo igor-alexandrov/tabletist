@@ -33,8 +33,13 @@ const STOCK: [(&str, i64); 9] = [
 
 /// What `text` answers when the SQL editor runs it and only reads: the
 /// rows of its one statement.
+/// The SQL dialect of a test's connection, which is a SQL one.
+fn sql_dialect(connection: &Connection) -> Dialect {
+    connection.dialect().expect("a SQL connection")
+}
+
 async fn rows_of(connection: &Connection, text: &str, on: &str) -> Vec<Vec<Value>> {
-    let statements = sql::statements(connection.dialect(), text);
+    let statements = sql::statements(sql_dialect(connection), text);
     let outcome = connection
         .run_script(&statements, 1_000, ScriptMode::ReadOnly, &StopFlag::new())
         .await
@@ -91,7 +96,7 @@ fn text(text: &str) -> Value {
 /// `sql` with each `?` as the connection's database spells a placeholder:
 /// `$1`, `$2` and so on for PostgreSQL.
 fn placed(connection: &Connection, sql: &str) -> String {
-    match connection.dialect() {
+    match sql_dialect(connection) {
         Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery => sql.to_owned(),
         Dialect::Postgres => {
             let mut number = 0;
@@ -117,7 +122,7 @@ async fn asked(
     limits: Limits,
 ) -> Result<Answer, Error> {
     let sql = placed(connection, sql);
-    let read = agent::check_read(connection.dialect(), &sql, params)
+    let read = agent::check_read(sql_dialect(connection), &sql, params)
         .unwrap_or_else(|refusal| panic!("{sql}: {refusal}"));
     connection
         .run_agent_read(&read, limits, &Sources::default(), &StopFlag::new())
@@ -255,7 +260,7 @@ async fn a_read_that_is_stopped_or_fails_says_so(connection: &Connection, on: &s
     // Stopped before it began.
     let stopped = StopFlag::new();
     stopped.stop();
-    let books = agent::check_read(connection.dialect(), "SELECT title FROM books", &[]).unwrap();
+    let books = agent::check_read(sql_dialect(connection), "SELECT title FROM books", &[]).unwrap();
     let ended = connection
         .run_agent_read(&books, LIMITS, &Sources::default(), &stopped)
         .await;
@@ -273,7 +278,7 @@ async fn a_read_that_is_stopped_or_fails_says_so(connection: &Connection, on: &s
 }
 
 async fn a_read_checked_for_another_database_is_not_run(connection: &Connection, on: &str) {
-    let other = match connection.dialect() {
+    let other = match sql_dialect(connection) {
         Dialect::Postgres => Dialect::MySql,
         Dialect::MySql => Dialect::Sqlite,
         Dialect::Sqlite | Dialect::BigQuery => Dialect::Postgres,
@@ -301,7 +306,7 @@ fn named(name: &str) -> TableName {
 /// What the connection's database answers an agent that sends `sql` on a
 /// connection that hides as `tables` says: its rows, or why not.
 async fn hiding(connection: &Connection, tables: &Tables, sql: &str) -> Result<Answer, Error> {
-    let read = agent::check_read(connection.dialect(), sql, &[])
+    let read = agent::check_read(sql_dialect(connection), sql, &[])
         .unwrap_or_else(|refusal| panic!("{sql}: {refusal}"));
     connection
         .run_agent_read(
@@ -337,7 +342,7 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
     // The hidden table, by every way to it the text gives: by name, in
     // another case and in quotes, counted, behind EXISTS, in a common
     // table expression, and through a view.
-    let quoted = match connection.dialect() {
+    let quoted = match sql_dialect(connection) {
         Dialect::MySql | Dialect::BigQuery => "SELECT * FROM `CUSTOMERS`",
         Dialect::Postgres | Dialect::Sqlite => "SELECT * FROM \"CUSTOMERS\"",
     };
@@ -369,7 +374,7 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
     );
     // The system catalogs describe every table: closed while one is
     // hidden, open where none is.
-    let catalog = match connection.dialect() {
+    let catalog = match sql_dialect(connection) {
         Dialect::Sqlite => "SELECT count(*) FROM sqlite_master",
         Dialect::Postgres | Dialect::MySql => "SELECT count(*) FROM information_schema.tables",
         Dialect::BigQuery => "SELECT count(*) FROM bookshop.INFORMATION_SCHEMA.TABLES",
@@ -395,7 +400,7 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
     // A function of the database's own, which reads what no check sees:
     // refused while anything is hidden, and so is a view that calls it.
     // The Bookshop has one on PostgreSQL alone (its fixture says why).
-    match connection.dialect() {
+    match sql_dialect(connection) {
         Dialect::Postgres => {
             for sql in [
                 "SELECT customer_count()",
@@ -468,7 +473,7 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
     }
     // What is hidden, asked outside a statement, as the server asks it to
     // leave hidden tables out of what it says of the schema.
-    let home = match connection.dialect() {
+    let home = match sql_dialect(connection) {
         Dialect::Sqlite => "main",
         Dialect::Postgres => "public",
         Dialect::MySql | Dialect::BigQuery => "bookshop",
@@ -506,7 +511,7 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
 /// connection that masks the columns `masked` names, and hides nothing.
 async fn masking(connection: &Connection, masked: &[&str], sql: &str) -> Result<Answer, Error> {
     let masked: Vec<ColumnName> = masked.iter().map(|entry| entry.parse().unwrap()).collect();
-    let read = agent::check_read(connection.dialect(), sql, &[])
+    let read = agent::check_read(sql_dialect(connection), sql, &[])
         .unwrap_or_else(|refusal| panic!("{sql}: {refusal}"));
     connection
         .run_agent_read(
@@ -583,7 +588,7 @@ async fn a_masked_column_is_used_only_as_it_is(connection: &Connection, on: &str
         assert_eq!(found, through, "{on}: {sql}");
     }
     // The system catalogs are closed, as on a connection that hides.
-    let catalog = match connection.dialect() {
+    let catalog = match sql_dialect(connection) {
         Dialect::Postgres => "SELECT count(*) FROM pg_catalog.pg_class",
         Dialect::MySql => "SELECT count(*) FROM information_schema.TABLES",
         Dialect::Sqlite => "SELECT count(*) FROM sqlite_master",
@@ -755,7 +760,7 @@ async fn a_column_computed_from_a_masked_one_is_masked(connection: &Connection, 
 /// What the connection's database answers an agent that sends `sql` on a
 /// connection with the settings `sources`.
 async fn sourced(connection: &Connection, sources: &Sources, sql: &str) -> Result<Answer, Error> {
-    let read = agent::check_read(connection.dialect(), sql, &[])
+    let read = agent::check_read(sql_dialect(connection), sql, &[])
         .unwrap_or_else(|refusal| panic!("{sql}: {refusal}"));
     connection
         .run_agent_read(&read, LIMITS, sources, &StopFlag::new())
@@ -936,7 +941,7 @@ mod sqlite {
     #[tokio::test]
     async fn the_bookshop_is_stocked_on_sqlite() {
         let (connection, _dir) = bookshop().await;
-        assert_eq!(connection.dialect(), Dialect::Sqlite);
+        assert_eq!(sql_dialect(&connection), Dialect::Sqlite);
         the_bookshop_is_stocked(&connection, "sqlite").await;
     }
 
@@ -1326,7 +1331,7 @@ mod postgres {
         let Some(connection) = bookshop().await else {
             return;
         };
-        assert_eq!(connection.dialect(), Dialect::Postgres);
+        assert_eq!(sql_dialect(&connection), Dialect::Postgres);
         the_bookshop_is_stocked(&connection, "postgres").await;
     }
 
@@ -1705,7 +1710,7 @@ mod mysql {
         let Some(connection) = bookshop().await else {
             return;
         };
-        assert_eq!(connection.dialect(), Dialect::MySql);
+        assert_eq!(sql_dialect(&connection), Dialect::MySql);
         the_bookshop_is_stocked(&connection, "mysql").await;
     }
 

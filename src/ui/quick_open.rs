@@ -673,6 +673,31 @@ fn shown(item: &QuickItem, skin: &Skin<'_>) -> Shown {
         })
     };
     match item {
+        QuickItem::Key { found, .. } => {
+            let name = crate::keyspace::lossy(&found.name);
+            let (icon, detail) = match (&found.group, &found.kind) {
+                (Some(count), _) => (
+                    Icon::ListTree,
+                    format!(
+                        "{} {}",
+                        crate::format::group_digits(*count as u64),
+                        skin.say("keys")
+                    ),
+                ),
+                (None, Some(kind)) => (Icon::KeyRound, kind.tag().to_owned()),
+                (None, None) => (Icon::KeyRound, skin.say("key")),
+            };
+            let label = format!("{}, {detail}", display_safe(&name));
+            Shown {
+                icon,
+                name,
+                spans: found.spans.clone(),
+                detail,
+                meta: String::new(),
+                label,
+                more: false,
+            }
+        }
         QuickItem::Object { found, .. } => {
             let Found {
                 object,
@@ -782,6 +807,8 @@ fn shown(item: &QuickItem, skin: &Skin<'_>) -> Shown {
                 QuickGroup::Tables => format!("{hidden} {}", skin.say("more tables")),
                 QuickGroup::Views if *hidden == 1 => skin.say("1 more view"),
                 QuickGroup::Views => format!("{hidden} {}", skin.say("more views")),
+                QuickGroup::Keys if *hidden == 1 => skin.say("1 more key"),
+                QuickGroup::Keys => format!("{hidden} {}", skin.say("more keys")),
                 QuickGroup::Commands if *hidden == 1 => skin.say("1 more command"),
                 QuickGroup::Commands => format!("{hidden} {}", skin.say("more commands")),
                 QuickGroup::Connection(tab) => format!(
@@ -928,6 +955,7 @@ fn heading_row(ui: &mut egui::Ui, rect: Rect, title: QuickHeading, skin: &Skin<'
         QuickHeading::Largest => (words("Largest tables"), Environment::None),
         QuickHeading::Tables => (words("Tables"), Environment::None),
         QuickHeading::Views => (words("Views"), Environment::None),
+        QuickHeading::Keys => (words("Keys"), Environment::None),
         QuickHeading::Commands => (words("Commands"), Environment::None),
         QuickHeading::Connection(tab) => skin.windows.get(&tab).map_or_else(
             || (String::new(), Environment::None),
