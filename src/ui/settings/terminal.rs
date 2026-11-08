@@ -600,7 +600,8 @@ fn appearance_rows(
     );
     let mut index = 0;
     for (heading_text, top, options) in [
-        ("Theme", 8.0, &OptionId::THEME[..]),
+        ("Interface", 8.0, &OptionId::INTERFACE[..]),
+        ("Theme", 12.0, &OptionId::THEME[..]),
         ("Text", 12.0, &OptionId::TERMINAL_TEXT[..]),
         ("Grid", 12.0, &OptionId::GRID[..]),
         ("Environment", 12.0, &OptionId::ENVIRONMENT[..]),
@@ -1203,6 +1204,7 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
         OptionId::Font => width(&font_value(settings, skin)),
         OptionId::Timestamps
         | OptionId::GroupDigits
+        | OptionId::Look
         | OptionId::Theme
         | OptionId::InterfaceSize
         | OptionId::RowHeight
@@ -1493,6 +1495,7 @@ pub(super) fn option_row(
         }
         OptionId::Timestamps
         | OptionId::GroupDigits
+        | OptionId::Look
         | OptionId::Theme
         | OptionId::InterfaceSize
         | OptionId::RowHeight
@@ -1709,6 +1712,7 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
             )
             .add(role, &format!(" {}", skin.say("shows it")), palette.dim),
         OptionId::AgentsNotify => dim(&skin.say("a desktop notification")),
+        OptionId::Look => dim(&skin.say("classic is the system's own look")),
         OptionId::Theme => theme_hint(skin),
         // macOS's and Windows's: no row of this look's.
         OptionId::InterfaceSize => Text::new(look),

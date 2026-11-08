@@ -8,10 +8,10 @@ use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, WidgetInfo, WidgetType
 use crate::app::App;
 use crate::connections::{ConnectionId, SavedConnection, SavedConnections};
 use crate::i18n::gettext;
-use crate::keymap::Command;
+use crate::keymap::{Command, Layout};
 use crate::model::{Action, ConnTabContent, PickerState};
 use crate::style::Icon;
-use crate::theme::{self, Look, Palette};
+use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::menu;
 use crate::ui::states;
@@ -557,7 +557,7 @@ fn body(
         }
         let secrets = if look.terminal {
             TERMINAL_SECRETS.to_owned()
-        } else if look.faces.typeface == theme::Typeface::Plex {
+        } else if look.keys == Layout::Mac {
             gettext(locale, "Passwords are stored in the macOS Keychain").into_owned()
         } else {
             gettext(locale, "Passwords are stored in the system keyring").into_owned()
@@ -586,7 +586,9 @@ fn body(
     let found = saved.search(search);
     if saved.connections.is_empty() {
         // First launch: why the list is empty, and the one next step.
-        let keyring = if look.faces.typeface == theme::Typeface::Plex {
+        // macOS's look with the Mac's keys: on macOS (Linux's classic look
+        // has Windows' keys, and the system keyring).
+        let keyring = if look.keys == Layout::Mac {
             gettext(locale, "Tabletist stores passwords in the macOS Keychain.")
         } else {
             gettext(locale, "Tabletist stores passwords in the system keyring.")

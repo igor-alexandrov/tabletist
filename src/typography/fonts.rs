@@ -1,8 +1,8 @@
 //! The font files behind each look, one egui family per weight.
 //!
 //! - Standard: Inter (fastframe's set-up), with egui's monospace for data.
-//! - macOS: IBM Plex Sans (400, 500, 600) and IBM Plex Mono (400, 500),
-//!   bundled: `plex-sans-400` ... `plex-mono-500`; JetBrains Mono (400,
+//! - macOS, and Linux's classic look: IBM Plex Sans (400, 500, 600) and
+//!   IBM Plex Mono (400, 500), bundled on both: `plex-sans-400` ... `plex-mono-500`; JetBrains Mono (400,
 //!   500), the other bundled face data can be drawn in: `jetbrains-mono-400`
 //!   and `jetbrains-mono-500`; and the installed font the settings name for
 //!   the data, where one was read ([`crate::font_files::installed_font`]):
@@ -27,15 +27,15 @@ use egui::{FontDefinitions, FontFamily};
 use super::{Kind, family_name};
 use crate::font_files::TerminalFaces;
 use crate::theme::{Look, Typeface};
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 use {super::data_family_name, crate::theme::DataFace};
 
 /// IBM Plex Sans, variable in weight and width (SIL OFL 1.1).
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 pub(crate) const PLEX_SANS: &[u8] = include_bytes!("../../assets/fonts/IBMPlexSans-Variable.ttf");
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 pub(crate) const PLEX_MONO: &[u8] = include_bytes!("../../assets/fonts/IBMPlexMono-Regular.ttf");
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 pub(crate) const PLEX_MONO_MEDIUM: &[u8] =
     include_bytes!("../../assets/fonts/IBMPlexMono-Medium.ttf");
 /// Noto Sans Symbols 2 cut down to the keyboard symbols Plex lacks (⌘ ⌥ ⇧
@@ -43,7 +43,7 @@ pub(crate) const PLEX_MONO_MEDIUM: &[u8] =
 /// shortcuts (both SIL OFL 1.1, of the same authors). It keeps the line of
 /// the first cut, which the symbols' place on the baseline is tuned to.
 /// Neither has ⇥: the keymap writes that key as a word.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 pub(crate) const KEYS: &[u8] = include_bytes!("../../assets/fonts/NotoSansSymbols2-Keys.ttf");
 /// JetBrains Mono, variable in weight (SIL OFL 1.1): Omarchy's default, for
 /// desktops without a monospace font of their own, and the other data face
@@ -53,14 +53,14 @@ pub(crate) const JETBRAINS_MONO: &[u8] =
     include_bytes!("../../assets/fonts/JetBrainsMono-Variable.ttf");
 
 /// A face's line box in ems: what epaint places its glyphs by.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 #[derive(Clone, Copy)]
 struct Metrics {
     ascent: f32,
     descent: f32,
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 impl Metrics {
     /// The baseline, below the middle of the line box.
     fn baseline(self) -> f32 {
@@ -69,13 +69,13 @@ impl Metrics {
 }
 
 /// IBM Plex's line box, Sans and Mono alike.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 const PLEX_METRICS: Metrics = Metrics {
     ascent: 1.025,
     descent: 0.275,
 };
 /// The key symbols' line box: it reaches far deeper below the baseline.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 const KEYS_METRICS: Metrics = Metrics {
     ascent: 1.069,
     descent: 0.63,
@@ -87,8 +87,9 @@ const PLEX_CAPITALS: f32 = 0.698;
 /// centre on them: Plex's centres a little above its capitals. Inter's and
 /// JetBrains Mono's centre on theirs, and a desktop font's are not known.
 pub fn capitals(typeface: Typeface) -> Option<f32> {
-    // Off macOS the Plex look draws in Inter.
-    (typeface == Typeface::Plex && cfg!(any(target_os = "macos", test))).then_some(PLEX_CAPITALS)
+    // Windows, which bundles no Plex, never draws the Plex look.
+    (typeface == Typeface::Plex && cfg!(any(target_os = "macos", target_os = "linux", test)))
+        .then_some(PLEX_CAPITALS)
 }
 
 /// fastframe's families for Inter's named weights.
@@ -168,7 +169,7 @@ fn inter(fonts: &mut FontDefinitions) {
     );
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 fn plex(fonts: &mut FontDefinitions, installed: Option<&TerminalFaces>) {
     for weight in [400, 500, 600] {
         let name = family_name(Typeface::Plex, Kind::Sans, weight);
@@ -236,7 +237,7 @@ fn plex(fonts: &mut FontDefinitions, installed: Option<&TerminalFaces>) {
     }
 }
 
-#[cfg(not(any(target_os = "macos", test)))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", test)))]
 fn plex(fonts: &mut FontDefinitions, _installed: Option<&TerminalFaces>) {
     inter(fonts);
 }

@@ -13,8 +13,8 @@ use crate::keymap::{Command, Keymap, Layout};
 use crate::model::{Action, SettingsDialog, SettingsPane};
 use crate::settings::{
     Autocomplete, Commas, EditorKeys, EnvBar, FontSizes, Idle, Indent, InterfaceSize, KeywordCase,
-    Launch, LineNumbers, Mode, NewTab, OptionId, OptionValue, RowHeight, RunScope, Settings,
-    TableList, ThemeChoice, Timestamps, UpdateCheck, Zone,
+    Launch, LineNumbers, LookChoice, Mode, NewTab, OptionId, OptionValue, RowHeight, RunScope,
+    Settings, TableList, ThemeChoice, Timestamps, UpdateCheck, Zone,
 };
 use crate::theme::{DataFace, Look, Palette, Typeface};
 use crate::typography::{Laid, Text, TextRole};
@@ -493,8 +493,23 @@ fn content(
                     ui.add_space(2.0);
                 }
                 for option in options.iter().copied() {
-                    if option == OptionId::Theme {
-                        tiles(ui, settings, skin, actions);
+                    if option == OptionId::Look {
+                        // Beside the theme's tiles: see `tiles`.
+                    } else if option == OptionId::Theme {
+                        // A sheet too narrow to have the look's control
+                        // beside the tiles has its row under them.
+                        if !tiles(ui, settings, skin, actions) {
+                            row(
+                                ui,
+                                OptionId::Look,
+                                true,
+                                column,
+                                settings,
+                                skin,
+                                actions,
+                                None,
+                            );
+                        }
                     } else {
                         // The button after the one row that has one.
                         let beside = after
@@ -534,10 +549,12 @@ fn content(
 }
 
 /// The Theme section: a tile for each mode, a radio group named by the
-/// option, the one set ringed in the accent, and what System does after
+/// option, the one set ringed in the accent, and what System does under
 /// them. Each tile draws a window in its palette: the sidebar's colour
-/// round the content's, System's half one and half the other.
-fn tiles(ui: &mut Ui, settings: &Settings, skin: &Skin, actions: &mut Vec<Action>) {
+/// round the content's, System's half one and half the other. The look's
+/// control is at the section's right, where the sheet is wide enough for
+/// it: false where it is not, and the control is not drawn.
+fn tiles(ui: &mut Ui, settings: &Settings, skin: &Skin, actions: &mut Vec<Action>) -> bool {
     let Skin { look, palette, .. } = *skin;
     let name = skin.say(label(OptionId::Theme));
     let label_role = TextRole::UiBody;
@@ -546,8 +563,10 @@ fn tiles(ui: &mut Ui, settings: &Settings, skin: &Skin, actions: &mut Vec<Action
         TILE.x + 2.0 * TILE_PAD,
         TILE_PAD + TILE.y + 6.0 + line + TILE_PAD,
     );
-    let height = 6.0 + tile.y + 12.0 + 1.0;
+    let hint_line = TextRole::Secondary.row_height(ui.ctx(), look.faces);
+    let height = 6.0 + tile.y + 4.0 + hint_line + 12.0 + 1.0;
     let ground = ui.painter().add(egui::Shape::Noop);
+    let look_ground = ui.painter().add(egui::Shape::Noop);
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
     widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, palette.surface);
     // The tiles in a Ui of their own, whose node is their parent in the
@@ -652,18 +671,95 @@ fn tiles(ui: &mut Ui, settings: &Settings, skin: &Skin, actions: &mut Vec<Action
             window.bottom() + 6.0 + line / 2.0,
         );
     }
-    let hint = if cfg!(target_os = "windows") {
-        "System follows Windows."
-    } else {
-        "System follows macOS, including Auto."
-    };
+    let hint = theme_hint(look);
     let hint = Text::one(look, TextRole::Secondary, &skin.say(hint), palette.dim).layout(ui.ctx());
-    let at = x - 12.0 + 8.0;
+    let at = rect.left() + TILE_PAD;
     if at + hint.width() <= rect.right() {
-        write(ui, at, top + tile.y / 2.0, &hint);
+        write(ui, at, top + tile.y + 4.0 + hint_line / 2.0, &hint);
     }
+    let tiles_end = x - 12.0;
+    let beside = Rect::from_min_max(pos2(tiles_end + GAP, top), pos2(rect.right(), top + tile.y));
+    let drawn = look_beside(ui, beside, settings, skin, actions);
     let row = rect.with_max_y(rect.bottom() - 1.0);
-    asked(ui, ground, (row, place), OptionId::Theme, skin, actions);
+    let theme_place = place.with_max_x(tiles_end);
+    asked(
+        ui,
+        ground,
+        (row, theme_place),
+        OptionId::Theme,
+        skin,
+        actions,
+    );
+    // The look's own ground: the block, not the tiles beside it.
+    if let Some(block) = drawn {
+        let ground = block.expand2(vec2(10.0, 8.0));
+        asked(
+            ui,
+            look_ground,
+            (ground, block),
+            OptionId::Look,
+            skin,
+            actions,
+        );
+    }
+    drawn.is_some()
+}
+
+/// What the System tile follows, under the tiles: the OS of the look's
+/// keys. Linux's classic look, macOS's with Windows' keys off Windows,
+/// follows the desktop.
+fn theme_hint(look: &Look) -> &'static str {
+    if cfg!(target_os = "windows") {
+        "System follows Windows."
+    } else if look.keys == Layout::Mac {
+        "System follows macOS, including Auto."
+    } else {
+        "System follows the desktop's light or dark."
+    }
+}
+
+/// The look's control in `place`, beside the theme's tiles: its label over
+/// its small print, and its segments under them, at the place's right and
+/// in its middle. Where it is drawn; `None` where `place` is too narrow.
+fn look_beside(
+    ui: &mut Ui,
+    place: Rect,
+    settings: &Settings,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) -> Option<Rect> {
+    let Skin { look, palette, .. } = *skin;
+    let name = said(ui.ctx(), look, skin.locale, label(OptionId::Look));
+    let name = Text::one(look, TextRole::UiBody, &name, palette.text).layout(ui.ctx());
+    let description = small_print(OptionId::Look).map(|print| skin.say(print));
+    let print = description.as_deref().unwrap_or_default();
+    let print = Text::one(look, TextRole::Secondary, print, palette.dim).layout(ui.ctx());
+    let control = vec2(CONTROLS, SEGMENT + 4.0);
+    let width = name.width().max(print.width()).max(control.x).ceil();
+    if width > place.width() {
+        return None;
+    }
+    let height = name.height() + 2.0 + print.height() + 8.0 + control.y;
+    let min = pos2(place.right() - width, place.center().y - height / 2.0);
+    let block = Rect::from_min_size(min, vec2(width, height));
+    write(ui, min.x, min.y + name.height() / 2.0, &name);
+    let print_y = min.y + name.height() + 2.0;
+    write(ui, min.x, print_y + print.height() / 2.0, &print);
+    let at = Rect::from_min_size(pos2(min.x, print_y + print.height() + 8.0), control);
+    let builder = egui::UiBuilder::new()
+        .id_salt("look")
+        .max_rect(at)
+        .layout(egui::Layout::left_to_right(egui::Align::Center));
+    let mut child = ui.new_child(builder);
+    let helper = super::helper(OptionId::Look).map(|text| skin.say(text));
+    self::control(
+        &mut child,
+        (OptionId::Look, helper.as_deref()),
+        settings,
+        skin,
+        actions,
+    );
+    Some(block)
 }
 
 /// How wide the rows' labels have it: `LABEL`, or what the widest small
@@ -935,7 +1031,9 @@ fn control_height(option: OptionId, look: &Look) -> f32 {
         OptionId::PageSize | OptionId::Tz | OptionId::OnLaunch => look.control_height,
         // The track has 2 over its segments and under them.
         OptionId::Timestamps | OptionId::GroupDigits => SEGMENT + 4.0,
-        OptionId::RowHeight | OptionId::TableList | OptionId::EnvBar => SEGMENT + 4.0,
+        OptionId::Look | OptionId::RowHeight | OptionId::TableList | OptionId::EnvBar => {
+            SEGMENT + 4.0
+        }
         OptionId::InterfaceSize => SEGMENT + 4.0,
         OptionId::Font | OptionId::FontSize => look.control_height,
         OptionId::NewTab
@@ -1261,6 +1359,16 @@ fn control(
                 actions.push(Action::SetOption(OptionValue::TableList(TableList::of(
                     picked == 1,
                 ))));
+            }
+        }
+        // Classic is the look of the OS: macOS's on macOS and Linux, the
+        // standard look on Windows.
+        OptionId::Look => {
+            let words = [skin.say("Classic"), skin.say("Omarchy")];
+            let selected = usize::from(settings.look.is_some_and(LookChoice::terminal));
+            if let Some(picked) = segments(ui, (&name, description), &words, selected, skin) {
+                let choice = [LookChoice::Classic, LookChoice::Omarchy][picked];
+                actions.push(Action::SetOption(OptionValue::Look(Some(choice))));
             }
         }
         OptionId::EnvBar => {
@@ -1640,7 +1748,8 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
         }
         // What the Appearance pane's rows say is their small print, and its
         // tiles have their own line.
-        OptionId::Theme
+        OptionId::Look
+        | OptionId::Theme
         | OptionId::OnLaunch
         | OptionId::RestoreTabs
         | OptionId::ProductionReadOnly

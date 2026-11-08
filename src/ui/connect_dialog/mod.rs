@@ -20,7 +20,7 @@ use crate::i18n::{Locale, gettext};
 use crate::keymap::{Command, Keymap, Scope};
 use crate::model::{Action, ConnectionForm, LoadedTables, SshAuthKind, SshHints, TestState};
 use crate::style::Icon;
-use crate::theme::{self, Look, Palette, Typeface};
+use crate::theme::{self, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::widgets::{self, ButtonSpec};
 use crate::ui::{Paint, menu};
@@ -184,9 +184,11 @@ impl<'a> Skin<'a> {
         ink
     }
 
-    /// Where saved passwords go, as this platform calls it.
+    /// Where saved passwords go, as this platform calls it: macOS's look
+    /// with the Mac's keys is on macOS (Linux's classic look has Windows'
+    /// keys, and the system keyring).
     fn keyring(&self) -> &'static str {
-        if self.look.faces.typeface == Typeface::Plex {
+        if self.look.keys == crate::keymap::Layout::Mac {
             "Keychain"
         } else {
             "Keyring"
@@ -196,7 +198,7 @@ impl<'a> Skin<'a> {
     /// The name of the box that keeps the SSH secret: the database
     /// password's has the same text beside it.
     fn ssh_keyring(&self) -> &'static str {
-        if self.look.faces.typeface == Typeface::Plex {
+        if self.look.keys == crate::keymap::Layout::Mac {
             "Keychain for the SSH secret"
         } else {
             "Keyring for the SSH secret"
@@ -204,7 +206,7 @@ impl<'a> Skin<'a> {
     }
 
     fn saved_hint(&self) -> &'static str {
-        if self.look.faces.typeface == Typeface::Plex {
+        if self.look.keys == crate::keymap::Layout::Mac {
             "Saved in the keychain"
         } else {
             "Saved in the keyring"

@@ -689,6 +689,10 @@ pub struct Settings {
     pub idle_disconnect: Idle,
     /// Show `pg_catalog`, `information_schema`, `mysql`, `sys` and friends.
     pub show_system_schemas: bool,
+    /// The look: the OS's classic one or the Omarchy experience. `None`
+    /// until the user sets it: the look the OS draws without one.
+    #[serde(skip)]
+    pub look: Option<LookChoice>,
     /// The theme each look draws. Older versions wrote a palette file's
     /// name here, which the terminal look still reads.
     #[serde(rename = "custom_theme")]
@@ -828,6 +832,7 @@ pub enum Key {
     McpEnabled,
     McpLogDays,
     McpNotify,
+    Look,
     Theme,
     InterfaceSize,
     Font,
@@ -845,7 +850,7 @@ impl Key {
     /// In the order the file has them: a table's keys together.
     /// An old key comes before the one that took its place: the new one
     /// is read over it.
-    pub const ALL: [Key; 43] = [
+    pub const ALL: [Key; 44] = [
         Self::OnLaunch,
         Self::RestoreTabs,
         Self::PageSize,
@@ -878,6 +883,7 @@ impl Key {
         Self::McpEnabled,
         Self::McpLogDays,
         Self::McpNotify,
+        Self::Look,
         Self::Theme,
         Self::InterfaceSize,
         Self::Font,
@@ -926,6 +932,7 @@ impl Key {
             Self::McpEnabled => ("mcp", "enabled"),
             Self::McpLogDays => ("mcp", "log_days"),
             Self::McpNotify => ("mcp", "notify"),
+            Self::Look => ("appearance", "look"),
             Self::Theme => ("appearance", "theme"),
             Self::InterfaceSize => ("appearance", "interface_size"),
             Self::Font => ("appearance", "font"),
@@ -969,6 +976,7 @@ impl Key {
             Self::Keywords => Some("upper | lower | keep"),
             Self::Commas => Some("trailing | leading"),
             Self::HistoryKeep => Some("0 keeps none"),
+            Self::Look => Some("classic | omarchy"),
             Self::RowHeight => Some("compact | regular | roomy"),
             Self::TableList => Some("tree | flat"),
             Self::EnvBar => Some("tint | label"),
@@ -981,15 +989,22 @@ impl Key {
             Self::Font if cfg!(target_os = "macos") => {
                 Some("\"IBM Plex Mono\" | \"JetBrains Mono\"")
             }
-            // The values of the look the platform draws: Linux has the
-            // terminal look, the others the system's light and dark.
-            Self::Theme => Some(if cfg!(target_os = "linux") {
-                "omarchy | \"Tokyo Night\" | path"
-            } else {
-                "system | light | dark"
-            }),
+            // The values of the look the platform draws with none chosen:
+            // Linux has the terminal look, the others the system's light
+            // and dark. A file that chooses one has its look's.
+            Self::Theme => Some(theme_note(cfg!(target_os = "linux"))),
             _ => None,
         }
+    }
+}
+
+/// The values the theme takes in the terminal look (`terminal`) or the
+/// others, as the file notes them.
+fn theme_note(terminal: bool) -> &'static str {
+    if terminal {
+        "omarchy | \"Tokyo Night\" | path"
+    } else {
+        "system | light | dark"
     }
 }
 
@@ -1022,6 +1037,8 @@ pub enum OptionId {
     LogDays,
     /// Whether a new agent is told of: `mcp.notify`.
     AgentsNotify,
+    /// The classic look or the Omarchy experience: `appearance.look`.
+    Look,
     Theme,
     /// macOS's and Windows's Interface size: `appearance.interface_size`.
     InterfaceSize,
@@ -1065,7 +1082,7 @@ pub enum OptionId {
 impl OptionId {
     /// Every option, the General pane's, the Appearance pane's, the Editor
     /// pane's, the Agents pane's and then the Updates pane's.
-    pub const ALL: [OptionId; 39] = [
+    pub const ALL: [OptionId; 40] = [
         Self::OnLaunch,
         Self::RestoreTabs,
         Self::PageSize,
@@ -1077,6 +1094,7 @@ impl OptionId {
         Self::ProductionReadOnly,
         Self::ConfirmCloseEdits,
         Self::IdleDisconnect,
+        Self::Look,
         Self::Theme,
         Self::InterfaceSize,
         Self::Font,
@@ -1135,11 +1153,14 @@ impl OptionId {
         Self::ConfirmCloseEdits,
         Self::IdleDisconnect,
     ];
-    /// The Appearance pane's, in the order it has them: its Theme
-    /// section's, its Text section's, its Grid section's, then its
-    /// Environment section's. Each look shows the Text section's its own
-    /// way ([`OptionId::TEXT`], [`OptionId::TERMINAL_TEXT`]).
-    pub const APPEARANCE: [OptionId; 9] = [
+    /// The Appearance pane's, in the order it has them: the look's (the
+    /// terminal look's Interface section; beside the theme's tiles on
+    /// macOS and Windows), its Theme section's, its Text section's, its
+    /// Grid section's, then its Environment section's. Each look shows the
+    /// Text section's its own way ([`OptionId::TEXT`],
+    /// [`OptionId::TERMINAL_TEXT`]).
+    pub const APPEARANCE: [OptionId; 10] = [
+        Self::Look,
         Self::Theme,
         Self::InterfaceSize,
         Self::Font,
@@ -1150,6 +1171,7 @@ impl OptionId {
         Self::TableList,
         Self::EnvBar,
     ];
+    pub const INTERFACE: [OptionId; 1] = [Self::Look];
     pub const THEME: [OptionId; 1] = [Self::Theme];
     /// macOS's and Windows's Text section: the interface's size, and the
     /// data font's row, which has the size's menu beside the font's.
@@ -1237,6 +1259,7 @@ impl OptionId {
             Self::AgentsOn => Key::McpEnabled,
             Self::LogDays => Key::McpLogDays,
             Self::AgentsNotify => Key::McpNotify,
+            Self::Look => Key::Look,
             Self::Theme => Key::Theme,
             Self::InterfaceSize => Key::InterfaceSize,
             Self::Font => Key::Font,
@@ -1289,6 +1312,8 @@ pub enum OptionValue {
     AgentsOn(bool),
     LogDays(u32),
     AgentsNotify(bool),
+    /// `None` is the OS's own look.
+    Look(Option<LookChoice>),
     Theme(ThemeChoice),
     InterfaceSize(InterfaceSize),
     /// `None` is the look's own font.
@@ -1347,6 +1372,12 @@ impl OptionValue {
             {
                 Self::Keywords(None)
             }
+            // The look drawn while nothing is set is the OS's own.
+            Self::Look(Some(choice))
+                if settings.look.is_none() && choice == LookChoice::of(terminal) =>
+            {
+                Self::Look(None)
+            }
             other => other,
         }
     }
@@ -1367,6 +1398,7 @@ impl OptionValue {
             Self::AgentsOn(_) => OptionId::AgentsOn,
             Self::LogDays(_) => OptionId::LogDays,
             Self::AgentsNotify(_) => OptionId::AgentsNotify,
+            Self::Look(_) => OptionId::Look,
             Self::Theme(_) => OptionId::Theme,
             Self::InterfaceSize(_) => OptionId::InterfaceSize,
             Self::Font(_) => OptionId::Font,
@@ -1412,6 +1444,7 @@ impl OptionValue {
             Self::AgentsOn(on) => settings.mcp_enabled = on,
             Self::LogDays(days) => settings.mcp_log_days = days,
             Self::AgentsNotify(on) => settings.mcp_notify = on,
+            Self::Look(choice) => settings.look = choice,
             Self::Theme(choice) => {
                 settings.theme = match choice {
                     ThemeChoice::Unset => Theme::Unset,
@@ -2081,6 +2114,7 @@ impl Settings {
             OptionId::AgentsOn => OptionValue::AgentsOn(self.mcp_enabled),
             OptionId::LogDays => OptionValue::LogDays(self.mcp_log_days),
             OptionId::AgentsNotify => OptionValue::AgentsNotify(self.mcp_notify),
+            OptionId::Look => OptionValue::Look(self.look),
             OptionId::Theme => OptionValue::Theme(self.theme.choice()),
             OptionId::InterfaceSize => OptionValue::InterfaceSize(self.interface_size),
             OptionId::Font => OptionValue::Font(self.font.clone()),
@@ -2195,6 +2229,8 @@ impl Settings {
                 OptionValue::LogDays(next.unwrap_or(days))
             }
             OptionId::AgentsNotify => OptionValue::AgentsNotify(forward),
+            // Classic at the left, Omarchy at the right.
+            OptionId::Look => OptionValue::Look(Some(LookChoice::of(forward))),
             // The terminal look's two: follow at the left, pin at the right.
             OptionId::Theme => OptionValue::Theme(if forward {
                 ThemeChoice::Pinned
@@ -2377,6 +2413,9 @@ impl Settings {
                 let name = name.trim();
                 (!name.is_empty()).then(|| name.to_owned().into())
             }
+            (Key::Theme, _) if self.look.is_some() => {
+                self.look.map(|look| theme_note(look.terminal()).into())
+            }
             _ => key.note().map(Into::into),
         }
     }
@@ -2430,6 +2469,11 @@ impl Settings {
             OptionId::AgentsOn => Some(OptionValue::AgentsOn(!self.mcp_enabled)),
             OptionId::LogDays => None,
             OptionId::AgentsNotify => Some(OptionValue::AgentsNotify(!self.mcp_notify)),
+            // Unset, it is flipped from classic: the window flips the
+            // settings as it shows them, with the look drawn in.
+            OptionId::Look => Some(OptionValue::Look(Some(LookChoice::of(
+                !self.look.is_some_and(LookChoice::terminal),
+            )))),
             // As the terminal look draws it: a pin, or the desktop followed.
             OptionId::Theme => Some(OptionValue::Theme(match self.theme.pin() {
                 Some(_) => ThemeChoice::Omarchy,
@@ -2521,6 +2565,7 @@ impl Settings {
             Key::McpEnabled => self.mcp_enabled.to_string(),
             Key::McpLogDays => self.mcp_log_days.to_string(),
             Key::McpNotify => self.mcp_notify.to_string(),
+            Key::Look => toml_string(self.look?.name()),
             Key::Theme => toml_string(self.theme.text()?),
             Key::InterfaceSize => toml_string(self.interface_size.name()),
             Key::Font => toml_string(self.font.as_deref()?),
@@ -2871,6 +2916,9 @@ impl Settings {
             Key::FontSize => points
                 .and_then(FontSize::of)
                 .map(|size| self.font_size = Some(size)),
+            Key::Look => text
+                .and_then(LookChoice::from_name)
+                .map(|choice| self.look = Some(choice)),
             Key::RowHeight => text
                 .and_then(RowHeight::from_name)
                 .map(|height| self.row_height = height),
@@ -3053,6 +3101,7 @@ impl Settings {
             Key::McpEnabled => self.mcp_enabled = other.mcp_enabled,
             Key::McpLogDays => self.mcp_log_days = other.mcp_log_days,
             Key::McpNotify => self.mcp_notify = other.mcp_notify,
+            Key::Look => self.look = other.look,
             Key::Theme => self.theme = other.theme.clone(),
             Key::InterfaceSize => self.interface_size = other.interface_size,
             Key::Font => self.font = other.font.clone(),
@@ -3143,6 +3192,7 @@ impl Default for Settings {
             mcp_enabled: false,
             mcp_log_days: 30,
             mcp_notify: true,
+            look: None,
             row_height: RowHeight::Regular,
             zebra: None,
             column_types: true,
@@ -3420,6 +3470,7 @@ mod tests {
             confirm_close_edits: false,
             idle_disconnect: Idle::Hours4,
             show_system_schemas: true,
+            look: Some(LookChoice::Omarchy),
             theme: Theme::Pinned("My \"Nord\".json".into()),
             interface_size: InterfaceSize::Large,
             font: Some("JetBrains Mono".into()),
@@ -3455,9 +3506,10 @@ mod tests {
 
     #[test]
     fn only_what_is_not_the_default_is_written_each_table_in_its_place() {
-        // The theme's note and the font's name the values of the look this
-        // platform draws; Windows has none for the font.
-        let note = Key::Theme.note().unwrap();
+        // The theme's note names the values of the look the file chooses,
+        // the terminal's; the font's those of the look this platform draws
+        // with none chosen, and Windows has none for the font.
+        let note = theme_note(true);
         let fonts = Key::Font
             .note()
             .map_or(String::new(), |note| format!("  # {note}"));
@@ -3515,6 +3567,7 @@ log_days = 7
 notify = false
 
 [appearance]
+look = \"omarchy\"  # classic | omarchy
 theme = \"My \\\"Nord\\\".json\"  # {note}
 interface_size = \"large\"  # small | default | large
 font = \"JetBrains Mono\"{fonts}
@@ -3623,17 +3676,18 @@ skip = \"0.4.0\"  # a version to stop offering
                 (Key::McpEnabled, 46),
                 (Key::McpLogDays, 47),
                 (Key::McpNotify, 48),
-                (Key::Theme, 51),
-                (Key::InterfaceSize, 52),
-                (Key::Font, 53),
-                (Key::FontSize, 54),
-                (Key::RowHeight, 57),
-                (Key::Zebra, 58),
-                (Key::ColumnTypes, 59),
-                (Key::TableList, 60),
-                (Key::EnvBar, 63),
-                (Key::UpdatesCheck, 66),
-                (Key::UpdatesSkip, 67),
+                (Key::Look, 51),
+                (Key::Theme, 52),
+                (Key::InterfaceSize, 53),
+                (Key::Font, 54),
+                (Key::FontSize, 55),
+                (Key::RowHeight, 58),
+                (Key::Zebra, 59),
+                (Key::ColumnTypes, 60),
+                (Key::TableList, 61),
+                (Key::EnvBar, 64),
+                (Key::UpdatesCheck, 67),
+                (Key::UpdatesSkip, 68),
             ]
         );
     }
@@ -4732,6 +4786,7 @@ skip = \"0.4.0\"  # a version to stop offering
                 Key::ProductionReadOnly,
                 Key::ConfirmCloseEdits,
                 Key::IdleDisconnect,
+                Key::Look,
                 Key::Theme,
                 Key::InterfaceSize,
                 Key::Font,
@@ -4784,6 +4839,7 @@ skip = \"0.4.0\"  # a version to stop offering
         // row; the terminal look's has a row for each, and no interface
         // size.
         let sections = [
+            &OptionId::INTERFACE[..],
             &OptionId::THEME[..],
             &OptionId::TEXT[..],
             &[OptionId::FontSize],
@@ -5021,6 +5077,78 @@ skip = \"0.4.0\"  # a version to stop offering
         let loaded = Settings::from_toml("[appearance]\nrow_height = \"compact\"\n");
         assert_eq!(loaded.invalid, Vec::<usize>::new());
         assert_eq!(loaded.settings.row_height, RowHeight::Regular);
+    }
+
+    #[test]
+    fn the_look_is_read_and_written_with_its_note_and_a_value_it_cannot_have_ignored() {
+        let loaded = Settings::from_toml("[appearance]\nlook = \"omarchy\"\n");
+        assert_eq!(loaded.settings.look, Some(LookChoice::Omarchy));
+        assert_eq!(loaded.invalid, Vec::<usize>::new());
+        // First in its table, over the theme.
+        let settings = Settings {
+            look: Some(LookChoice::Classic),
+            theme: Theme::Dark,
+            ..Settings::default()
+        };
+        assert!(
+            settings.to_toml().ends_with(
+                "\n[appearance]\nlook = \"classic\"  # classic | omarchy\n\
+                 theme = \"dark\"  # system | light | dark\n"
+            ),
+            "{}",
+            settings.to_toml()
+        );
+        let loaded = Settings::from_toml("[appearance]\nlook = \"gnome\"\n");
+        assert_eq!(loaded.settings.look, None);
+        assert_eq!(loaded.invalid, vec![2]);
+    }
+
+    #[test]
+    fn the_theme_s_note_names_the_values_of_the_look_the_file_chooses() {
+        for (look, note) in [
+            (LookChoice::Omarchy, "omarchy | \"Tokyo Night\" | path"),
+            (LookChoice::Classic, "system | light | dark"),
+        ] {
+            let settings = Settings {
+                look: Some(look),
+                theme: Theme::Pinned("Nord".into()),
+                ..Settings::default()
+            };
+            let line = format!("theme = \"Nord\"  # {note}\n");
+            assert!(settings.to_toml().contains(&line), "{look:?}");
+        }
+    }
+
+    #[test]
+    fn the_look_steps_to_its_side_and_the_one_drawn_unset_stays_unset() {
+        let settings = Settings::default();
+        assert_eq!(
+            settings.stepped(OptionId::Look, false),
+            OptionValue::Look(Some(LookChoice::Classic))
+        );
+        assert_eq!(
+            settings.stepped(OptionId::Look, true),
+            OptionValue::Look(Some(LookChoice::Omarchy))
+        );
+        // The window flips the look as it shows it: set to the one drawn.
+        let shown = Settings {
+            look: Some(LookChoice::Omarchy),
+            ..Settings::default()
+        };
+        assert_eq!(
+            shown.flipped(OptionId::Look),
+            Some(OptionValue::Look(Some(LookChoice::Classic)))
+        );
+        // The look drawn, picked while nothing is set, is not set.
+        let omarchy = OptionValue::Look(Some(LookChoice::Omarchy));
+        assert_eq!(
+            omarchy.clone().for_look(&settings, true),
+            OptionValue::Look(None)
+        );
+        assert_eq!(omarchy.clone().for_look(&settings, false), omarchy);
+        // Set, it is the person's.
+        let classic = OptionValue::Look(Some(LookChoice::Classic));
+        assert_eq!(classic.clone().for_look(&shown, false), classic);
     }
 
     #[test]

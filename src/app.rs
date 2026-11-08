@@ -424,7 +424,8 @@ impl App {
         };
         let writes_session = loaded_connections.problem.is_none();
         // An installed data font is read once the window exists (`attach`).
-        let look = crate::theme::Look::for_platform().with_text(&settings, false);
+        let look = crate::theme::Look::chosen(settings.look, crate::update::release::Os::current())
+            .with_text(&settings, false);
         let mut app = Self {
             dirs,
             settings,
