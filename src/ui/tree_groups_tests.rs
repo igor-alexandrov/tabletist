@@ -368,3 +368,32 @@ fn the_indent_scales_with_the_windows_zoom() {
         assert!(close(guide.width() * harness.ctx.pixels_per_point(), zoom));
     }
 }
+
+#[test]
+fn the_terminal_status_line_names_the_table_under_the_cursor_in_full() {
+    let (mut harness, tab) = grouped(Look::omarchy());
+    harness.app.apply(Action::OpenObject {
+        tab,
+        object: ObjectRef::new("main", "orders"),
+        kind: ObjectKind::Table,
+        pin: true,
+    });
+    harness.answer_rows(crate::testing::page(3, false));
+    harness.app.apply(Action::SetTreeCursor {
+        tab,
+        node: table("book_covers"),
+    });
+    harness.settle();
+    assert!(
+        harness
+            .painted_rect("book_covers · table · 13 rows")
+            .is_some()
+    );
+    // A view has no estimate: no rows said.
+    harness.app.apply(Action::SetTreeCursor {
+        tab,
+        node: TreeNode::Object(ObjectRef::new("main", "book_excerpts"), ObjectKind::View),
+    });
+    harness.settle();
+    assert!(harness.painted_rect("book_excerpts · view").is_some());
+}

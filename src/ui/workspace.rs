@@ -2717,6 +2717,37 @@ fn shown_log(
 /// The `:` prompt takes the whole of it while it is open (`command_line`).
 /// `asked` is what it asks of the app; `settings` say whether the editor
 /// keys are vim's, and how the columns in view are fitted.
+/// What the status line says of the object under the tree's cursor while
+/// the tree has the keys, in full though the sidebar drops its group's
+/// prefix: "book_covers · table · 13 rows", the rows where the database
+/// has an estimate.
+fn tree_summary(
+    workspace: &crate::model::Workspace,
+    locale: crate::i18n::Locale,
+) -> Option<String> {
+    if workspace.pane != crate::model::Pane::Tree {
+        return None;
+    }
+    let Some(crate::model::TreeNode::Object(object, kind)) = &workspace.tree.cursor else {
+        return None;
+    };
+    let kind = super::sidebar::kind_name(locale, *kind);
+    let name = crate::format::display_safe(&object.name);
+    let rows = workspace
+        .tree
+        .object_info(object)
+        .and_then(|info| info.estimated_rows)
+        .map(|rows| {
+            let plural = u32::try_from(rows).unwrap_or(u32::MAX);
+            crate::i18n::ngettext(locale, "{n} row", "{n} rows", plural)
+                .replace("{n}", &rows.to_string())
+        });
+    Some(match rows {
+        Some(rows) => format!("{name} · {kind} · {rows}"),
+        None => format!("{name} · {kind}"),
+    })
+}
+
 fn status_line(
     ui: &mut egui::Ui,
     paint: super::Paint,
@@ -2867,7 +2898,8 @@ fn status_line(
             None => at,
         })
     });
-    let summary = editor
+    let summary = tree_summary(workspace, locale)
+        .or(editor)
         .or(lines)
         .or_else(|| {
             let object = workspace.active_object_tab()?;
