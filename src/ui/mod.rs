@@ -119,6 +119,8 @@ pub mod review;
 pub mod row_form;
 pub mod row_panel;
 #[cfg(test)]
+mod scale_layout_tests;
+#[cfg(test)]
 mod selection_tests;
 pub mod settings;
 #[cfg(test)]

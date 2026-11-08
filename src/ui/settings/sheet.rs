@@ -50,6 +50,9 @@ const CONTROLS: f32 = 210.0;
 const HINT_GAP: f32 = 12.0;
 /// The page size menu's button.
 const MENU: f32 = 120.0;
+/// What a dropdown's words leave of its width: its insets, its mark and
+/// the gap before the mark.
+const MENU_CHROME: f32 = 38.0;
 /// The zone's menu: as wide as the artboard's, for `System · America/…`.
 const ZONE_MENU: f32 = 220.0;
 /// The data font's menu and its size's, as wide as the artboard's. A
@@ -596,6 +599,12 @@ fn tiles(ui: &mut Ui, settings: &Settings, skin: &Skin, actions: &mut Vec<Action
         let button = group.interact(area, group.id().with(word.as_str()), Sense::click());
         button.widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, true, set, &word));
         focus::hint(&group, &button, area, Ring::Outer { radius: 10 });
+        // Tab comes round to them from the pane's last control, scrolled
+        // out of view in a short window or a large scale: they come to
+        // the keyboard, as a row does.
+        if button.gained_focus() {
+            group.scroll_to_rect_animation(rect, None, egui::style::ScrollAnimation::none());
+        }
         if button.clicked() && !set {
             let choice = match mode {
                 Mode::System => ThemeChoice::System,
@@ -1853,7 +1862,17 @@ fn choice_menu(
     actions: &mut Vec<Action>,
 ) {
     let Skin { look, palette, .. } = *skin;
-    let dropdown = menu::Dropdown::new(id, shown, MENU).description(description);
+    let choices: Vec<(String, bool, OptionValue)> = choices.collect();
+    // As wide as its widest choice needs, past its own 120: `Last 1,000
+    // queries` was cut short. The field's insets, its mark and the gap
+    // before it are what the words leave.
+    let role = widgets::body(look);
+    let widest = choices
+        .iter()
+        .map(|(text, _, _)| role.width(ui.ctx(), look.faces, text))
+        .fold(0.0, f32::max);
+    let width = MENU.max((widest + MENU_CHROME).ceil());
+    let dropdown = menu::Dropdown::new(id, shown, width).description(description);
     let menu = dropdown.show(ui, look, palette, |ui| {
         for (text, chosen, value) in choices {
             let entry_name = format!("{name} {text}");
