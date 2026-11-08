@@ -543,12 +543,23 @@ pub fn node(tree: &TreeUpdate, label: &str, role: Role) -> Option<NodeId> {
 /// The sidebar's row of the object or group `name`: a tree item, named
 /// with what it is after its name ("orders, table", "book_, 2 tables").
 pub fn tree_row(tree: &TreeUpdate, name: &str) -> Option<NodeId> {
-    let named = format!("{name}, ");
+    // What follows the name: an object's kind, or a group's count.
+    let kind = |rest: &str| {
+        matches!(rest, "table" | "view" | "materialized view")
+            || rest
+                .strip_suffix(" tables")
+                .or_else(|| rest.strip_suffix(" table"))
+                .is_some_and(|count| !count.is_empty() && count.bytes().all(|b| b.is_ascii_digit()))
+    };
     tree.nodes
         .iter()
         .find(|(_, node)| {
             node.role() == Role::TreeItem
-                && node.label().is_some_and(|label| label.starts_with(&named))
+                && node
+                    .label()
+                    .and_then(|label| label.strip_prefix(name))
+                    .and_then(|rest| rest.strip_prefix(", "))
+                    .is_some_and(kind)
         })
         .map(|(id, _)| *id)
 }

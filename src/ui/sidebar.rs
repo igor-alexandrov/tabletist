@@ -1141,8 +1141,8 @@ fn tree_row(
             let count = row.count.unwrap_or_default();
             let plural = u32::try_from(count).unwrap_or(u32::MAX);
             ngettext(locale, "{name}, {n} table", "{name}, {n} tables", plural)
-                .replace("{name}", &label)
                 .replace("{n}", &count.to_string())
+                .replace("{name}", &label)
         }
         TreeNode::Object(_, kind) => format!("{full_name}, {}", kind_name(locale, *kind)),
         TreeNode::Empty(_) => label.to_string(),

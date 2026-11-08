@@ -397,3 +397,48 @@ fn the_terminal_status_line_names_the_table_under_the_cursor_in_full() {
     harness.settle();
     assert!(harness.painted_rect("book_excerpts · view").is_some());
 }
+
+#[test]
+fn with_no_table_open_the_start_line_names_the_table_under_the_cursor() {
+    let (mut harness, tab) = grouped(Look::omarchy());
+    harness.app.apply(Action::SetTreeCursor {
+        tab,
+        node: table("book_covers"),
+    });
+    harness.settle();
+    assert!(
+        harness
+            .painted_rect("book_covers · table · 13 rows")
+            .is_some()
+    );
+    assert!(harness.painted_rect("no table open").is_none());
+}
+
+#[test]
+fn a_letter_after_a_folds_first_key_is_its_own_where_no_fold_goes_on() {
+    let (mut harness, tab) = grouped(Look::omarchy());
+    harness.app.apply(Action::SetTreeCursor {
+        tab,
+        node: table("book_covers"),
+    });
+    type_key(&mut harness, Key::Z, "z");
+    harness.frame(vec![egui::Event::Text("?".into())]);
+    assert!(
+        harness.has("Keyboard shortcuts"),
+        "`z?` is no fold: `?` opens help"
+    );
+}
+
+#[test]
+fn a_groups_name_is_said_as_it_is_written() {
+    let (mut harness, tab) = grouped(Look::macos());
+    let objects = ["{n}_a", "{n}_b"].map(|name| tabletist_db::ObjectInfo {
+        name: name.into(),
+        kind: ObjectKind::Table,
+        estimated_rows: None,
+    });
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    workspace.tree.nodes.get_mut("main").unwrap().objects.value = Some(objects.to_vec());
+    let tree = harness.settle();
+    assert!(node(&tree, "{n}_, 2 tables", Role::TreeItem).is_some());
+}

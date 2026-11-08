@@ -2710,13 +2710,6 @@ fn shown_log(
     })
 }
 
-/// Omarchy's bottom line: the keys that work here, and the page's range
-/// or, on a SQL editor, the cursor and what the last run did. On a table it
-/// says what is pending too, and while a cell is edited it is the mode
-/// line: `-- INSERT --`, the column, the counts and the keys that leave.
-/// The `:` prompt takes the whole of it while it is open (`command_line`).
-/// `asked` is what it asks of the app; `settings` say whether the editor
-/// keys are vim's, and how the columns in view are fitted.
 /// What the status line says of the object under the tree's cursor while
 /// the tree has the keys, in full though the sidebar drops its group's
 /// prefix: "book_covers · table · 13 rows", the rows where the database
@@ -2748,6 +2741,13 @@ fn tree_summary(
     })
 }
 
+/// Omarchy's bottom line: the keys that work here, and the page's range
+/// or, on a SQL editor, the cursor and what the last run did. On a table it
+/// says what is pending too, and while a cell is edited it is the mode
+/// line: `-- INSERT --`, the column, the counts and the keys that leave.
+/// The `:` prompt takes the whole of it while it is open (`command_line`).
+/// `asked` is what it asks of the app; `settings` say whether the editor
+/// keys are vim's, and how the columns in view are fitted.
 fn status_line(
     ui: &mut egui::Ui,
     paint: super::Paint,
@@ -2832,7 +2832,8 @@ fn status_line(
     let (choose_key, back_key) = (key(Command::ChooseLabel), key(Command::CloseLabelChooser));
     // No tab: the start screen's keys, and that no table is open.
     if workspace.active_tab.is_none() {
-        super::start::status_line(ui, paint, tab, keymap);
+        let tree = tree_summary(workspace, locale);
+        super::start::status_line(ui, paint, tab, keymap, tree);
         return;
     }
     let read_only = workspace.access == tabletist_db::Access::ReadOnly;

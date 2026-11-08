@@ -2483,16 +2483,15 @@ fn window_letter(keymap: &Keymap, layout: Layout, scopes: &[Scope], char: char) 
     }
 }
 
-/// Whether `char` begins a key of several in the first of `scopes` that
-/// reads it: the keymap waits for the next.
-fn begins_chord(keymap: &Keymap, layout: Layout, scopes: &[Scope], char: char) -> bool {
+/// What `typed` is in the first of `scopes` that reads it: a command, the
+/// start of a key of several (the keymap waits for the next), or nothing.
+fn read_typed(keymap: &Keymap, layout: Layout, scopes: &[Scope], typed: &str) -> Typed {
     let nothing = |_: crate::keymap::When| false;
-    let typed = char.to_string();
     scopes
         .iter()
-        .map(|scope| keymap.typed(layout, *scope, &nothing, &typed))
+        .map(|scope| keymap.typed(layout, *scope, &nothing, typed))
         .find(|read| *read != Typed::Nothing)
-        == Some(Typed::Waiting)
+        .unwrap_or(Typed::Nothing)
 }
 
 /// Single letters: the picker's keys, and in the terminal look the
@@ -2512,18 +2511,31 @@ fn letters(
     // taken from the frame, its key with it; any other is left for the
     // code below.
     let layout = app.layout();
-    // A key of several begun (`z` of `zR`) takes the letter after it,
-    // though alone it is one of these (`R`). A count does not.
+    // A key of several begun (`z` of `zR`) takes the letter after it
+    // where that goes on with it, though alone the letter is one of these
+    // (`R`). A count does not, nor a key the letter does not go on (`d?`
+    // is Help's).
     let mut begun: String = ctx
         .data(|data| data.get_temp(typed_id()))
         .unwrap_or_default();
     for char in typed_chars(ctx) {
         if !begun.is_empty() && !crate::keymap::is_count(&begun) {
-            begun.clear();
-            continue;
+            let joined = format!("{begun}{char}");
+            match read_typed(&app.keymap, layout, scopes, &joined) {
+                Typed::Waiting => {
+                    begun = joined;
+                    continue;
+                }
+                Typed::Nothing => begun.clear(),
+                _ => {
+                    begun.clear();
+                    continue;
+                }
+            }
         }
         let Some(command) = window_letter(&app.keymap, layout, scopes, char) else {
-            begun = if begins_chord(&app.keymap, layout, scopes, char) {
+            begun = if read_typed(&app.keymap, layout, scopes, &char.to_string()) == Typed::Waiting
+            {
                 char.to_string()
             } else {
                 String::new()

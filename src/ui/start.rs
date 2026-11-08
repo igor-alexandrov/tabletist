@@ -1380,7 +1380,15 @@ fn status_bar(ui: &mut egui::Ui, skin: Skin<'_>, searching: bool) {
 
 /// The terminal look's status line with no tab open: the mode, the
 /// screen's keys (those that fit), and that no table is open.
-pub fn status_line(ui: &mut egui::Ui, paint: Paint, tab: ConnTabId, keymap: &Keymap) {
+/// `tree` is what the line says of the object under the sidebar's cursor,
+/// in the place of "no table open", while the sidebar has the keys.
+pub fn status_line(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    keymap: &Keymap,
+    tree: Option<String>,
+) {
     let Paint {
         locale,
         palette,
@@ -1441,7 +1449,9 @@ pub fn status_line(ui: &mut egui::Ui, paint: Paint, tab: ConnTabId, keymap: &Key
             let left = rect.left() + 12.0;
             let x = left + widgets::paint_label(ui, left, y, mode) + gap;
             let right = rect.right() - 12.0;
-            let said = gettext(locale, "no table open");
+            let said = tree
+                .clone()
+                .unwrap_or_else(|| gettext(locale, "no table open").into_owned());
             let summary = || Text::one(&look, role, &said, palette.dim);
             let summary_width = widgets::measure(ui, summary());
             // Everything 18 apart. What does not fit before the summary
