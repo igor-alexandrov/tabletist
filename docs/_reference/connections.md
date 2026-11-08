@@ -1,6 +1,6 @@
 ---
 title: Connections
-description: Every field of a connection, connection URLs, TLS modes, SSH tunnels, host keys, passwords and read-only connections.
+description: Every field of a connection, connection URLs, Redis, TLS modes, SSH tunnels, host keys, passwords and read-only connections.
 nav_order: 0
 ---
 
@@ -36,11 +36,12 @@ what was last open on it.
 | Field | Notes |
 | --- | --- |
 | **Name** | Left empty, it becomes `user@host:port/database`, the file's name or the BigQuery project |
-| **Type** | SQLite, PostgreSQL, MySQL or BigQuery |
+| **Type** | SQLite, PostgreSQL, MySQL, Redis or BigQuery |
 | **Environment** | local, dev, staging, production or none. Sets the connection's color |
 | **File** | SQLite only |
 | **Project**, **Key file** | BigQuery only. See [BigQuery](#bigquery) |
-| **Host**, **Port** | The port defaults to 5432 for PostgreSQL and 3306 for MySQL |
+| **Host**, **Port** | The port defaults to 5432 for PostgreSQL, 3306 for MySQL and 6379 for Redis |
+| **Database**, **Username**, **Use TLS**, **Browsing** | Redis only. See [Redis](#redis) |
 | **Database** | Left empty, PostgreSQL uses the user's name and MySQL selects no database |
 | **User**, **Password** | See [Passwords](#passwords) |
 | **SSL mode**, **CA certificate** | See [TLS](#tls) |
@@ -63,10 +64,14 @@ postgres://app@db.example.com:5432/shop?sslmode=verify-full
 mysql://app@127.0.0.1:3306/shop
 sqlite:///home/me/data/shop.db
 bigquery:my-project?credentials=/home/me/keys/reader.json
+rediss://reader@cache.example.com:6380/2
+redis-cli -h cache.example.com -p 6380 -n 2 --user reader --tls
 ```
 
 - The schemes are `postgres://`, `postgresql://`, `mysql://`, `mariadb://`,
-  `sqlite:` and `bigquery:`.
+  `sqlite:`, `bigquery:`, `redis://` and `rediss://`. A `redis-cli` line
+  is read too: its `-h`, `-p`, `-n`, `-a`, `--user`, `--pass`, `--tls`,
+  `--cacert`, `--cert`, `--key` and `-u`.
 - `sslmode` (also `ssl-mode` or `ssl_mode`) sets the SSL mode, and
   `sslrootcert` (also `ssl-ca`) the CA certificate. For BigQuery,
   `credentials` sets the key file. Other parameters are ignored.
@@ -90,6 +95,76 @@ and views. A BigQuery connection always opens read-only, whatever
 Tabletist runs only statements it can tell are reads. Rows cannot be
 edited, and a table has no DDL view. Agents can read a BigQuery
 connection only while it hides no table and masks no column.
+
+## Redis
+
+A Redis connection is to a standalone server (Redis, or one that speaks
+its protocol: Valkey, KeyDB, Dragonfly), with TLS and an SSH tunnel as
+for the others. Sentinel, Cluster and Unix sockets are not supported.
+
+- **Database:** the one the window opens on, 0 to 15. After a Test the
+  list says what each holds ("0 · 1,204 keys"), and lists every database
+  where the server has more than 16 and the user may ask how many.
+- **Username:** empty signs in as the default user, with the password
+  alone. Leave both empty for a server without a password. Tabletist
+  signs in with `HELLO 3` where the server has it, else with `AUTH`.
+- **Use TLS (rediss://):** the server's certificate is checked against
+  the CA certificate, else the system's, and its name unless
+  **Verify the server's hostname** is off. A client certificate and its
+  key go together.
+- **Browsing:** the separator keys are grouped by (`:`), how many keys
+  are read at a time (500, 1,000 or 5,000), the pattern of the keys
+  listed (`*`), and the most keys held (100,000).
+
+The **URL** tab of a Redis connection stays in step with the fields: it
+shows them as a URL, and what you type there fills them. The password
+shows as dots; it is kept in the Keychain or keyring, never in the URL or
+in `connections.toml`.
+
+**Test** says what it reached: "Connected · Redis 7.4.1 · db 0 · 1,204
+keys · 2 ms", with "Redis-compatible" after another server's name. A
+failure names its cause and keeps the server's code: a wrong password
+(`WRONGPASS`), a server that needs one (`NOAUTH`), a server that closed
+the connection (it may need TLS), nothing listening, no answer in 10
+seconds. A user that may not run `INFO` or `SCAN` connects, and Test
+says that its keys can't be listed (`NOPERM`).
+
+### The window
+
+The sidebar lists the database's keys grouped by the separator:
+`book:reviews:12` is under `book:` › `reviews:`, a key without it is at
+the top, and a group of one key shows as that key. Each key has its type.
+A group shows a page of its keys, then a row that shows the next page.
+**Filter keys…** takes a pattern (`book:*`) and scans again with it. The
+connection's chip switches between databases, listed with their keys.
+
+The keys are listed with `SCAN`, never `KEYS`, so a large database never
+blocks the server. `DBSIZE` gives the total first, and the tree grows as
+names arrive, with counts that grow ("31+") and **Stop** under it. On
+production, Tabletist waits 20 ms between two steps. A database with more
+keys than the limit stops there: the groups count what was held ("≈"),
+and **Scan all** goes on, after saying how much it would hold. Types are
+read only for the keys on screen. Reload scans again from the start;
+keys added or removed during a scan may or may not show until then.
+
+A key opens in a tab with its type, size, encoding and expiry, and its
+value: a string as text (JSON pretty-printed, a binary one as hex, a long
+one cut at 256 KiB), a hash, list, set, sorted set or stream as a table
+read a page at a time, a RedisJSON value as JSON. **Copy value** copies
+the string, or the rest as JSON; **Copy key** copies its name.
+
+### Read-only
+
+This version only reads. Every command Tabletist sends is checked against
+a list, and any other is refused before it reaches the server, whatever
+**Open read-only** says: `AUTH`, `HELLO`, `PING`, `INFO`, `SELECT`,
+`DBSIZE`, `SCAN`, `HSCAN`, `SSCAN`, `TYPE`, `PTTL`, `MEMORY USAGE`,
+`OBJECT ENCODING`, `GET`, `GETRANGE`, `STRLEN`, `HGETALL`, `HLEN`,
+`LRANGE`, `LLEN`, `SCARD`, `ZRANGE`, `ZCARD`, `XRANGE`, `XLEN`,
+`JSON.GET`, `JSON.TYPE`, `CONFIG GET databases` and
+`CLIENT SETNAME tabletist` (so `CLIENT LIST` names it). For the server
+itself to refuse writes, sign in as an ACL user without write permission.
+Agents cannot reach a Redis connection yet.
 
 ## TLS
 

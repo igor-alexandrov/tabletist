@@ -114,6 +114,19 @@ numbered; once you type, it lists what matches. Its commands stay on `:`.
 | Right-click | A table's or view's menu: open, structure, ddl, copy name, export… |
 | Ctrl+B | Hide the sidebar |
 
+### A Redis window
+
+| Keys | Do |
+| --- | --- |
+| `j` `k`, arrows, Home, End | Move in the keys |
+| Enter | Open the key, or open or close the group |
+| `za` | Fold the group the cursor is in |
+| `/` | Filter the keys by a pattern |
+| `r` | Scan the keys again |
+| `y` | Copy the value |
+| `Y` | Copy the key |
+| Ctrl+Shift+D | Switch database |
+
 ### The start screen
 
 A window with no tab open shows the start screen in the main pane: the

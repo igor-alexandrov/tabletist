@@ -125,6 +125,17 @@ takes what you type (Mod+P opens the same search from anywhere):
 | Mod+Shift+C | Copy the selected rows |
 | Ctrl+Cmd+1, 2, 3 on macOS, Alt+1, 2, 3 on Windows | Show the rows, the structure, the DDL |
 
+In a [Redis]({% link _reference/connections.md %}#redis) window:
+
+| Keys | Do |
+| --- | --- |
+| Arrows, Home, End | Move in the keys. Right opens a group, Left closes it or goes to its group |
+| Enter | Open the key, or open or close the group |
+| Mod+F | Filter the keys by a pattern |
+| Mod+R | Scan the keys again |
+| Mod+Shift+D | Switch database |
+| Mod+C | Copy the value's selected cell |
+
 In a table's [Structure view]({% link _guide/browsing-data.md %}#structure):
 
 | Keys | Do |
