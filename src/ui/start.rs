@@ -1452,7 +1452,12 @@ pub fn status_line(
             let said = tree
                 .clone()
                 .unwrap_or_else(|| gettext(locale, "no table open").into_owned());
-            let summary = || Text::one(&look, role, &said, palette.dim);
+            // A long name gives way at its end, never over the mode; a
+            // screen reader hears the whole of it.
+            let fits = crate::ui::grid::ellipsize(&said, (right - x).max(0.0), false, |text| {
+                role.width(ui.ctx(), look.faces, text)
+            });
+            let summary = || Text::one(&look, role, &fits, palette.dim);
             let summary_width = widgets::measure(ui, summary());
             // Everything 18 apart. What does not fit before the summary
             // gives way from the end.

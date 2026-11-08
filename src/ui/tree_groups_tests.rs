@@ -442,3 +442,59 @@ fn a_groups_name_is_said_as_it_is_written() {
     let tree = harness.settle();
     assert!(node(&tree, "{n}_, 2 tables", Role::TreeItem).is_some());
 }
+
+#[test]
+fn the_status_line_says_nothing_of_a_row_the_sidebar_hides() {
+    let (mut harness, tab) = grouped(Look::omarchy());
+    harness.app.apply(Action::SetTreeCursor {
+        tab,
+        node: table("book_covers"),
+    });
+    // Its group folded by a click, the cursor left on the hidden row.
+    harness.app.apply(Action::ToggleGroup {
+        tab,
+        schema: "main".into(),
+        prefix: "book".into(),
+    });
+    harness.settle();
+    assert!(
+        harness
+            .painted_rect("book_covers · table · 13 rows")
+            .is_none()
+    );
+    assert!(harness.painted_rect("no table open").is_some());
+}
+
+#[test]
+fn a_long_name_on_the_start_line_gives_way_at_its_end() {
+    let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
+    harness.set_look(Look::omarchy());
+    let tab = harness.connect_fake();
+    let long = format!("book_{}", "x".repeat(200));
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    workspace.tree.schemas.value = Some(vec!["main".into()]);
+    let node = workspace.tree.nodes.entry("main".into()).or_default();
+    node.expanded = true;
+    node.objects.value = Some(vec![tabletist_db::ObjectInfo {
+        name: long.clone(),
+        kind: ObjectKind::Table,
+        estimated_rows: None,
+    }]);
+    harness.app.apply(Action::SetTreeCursor {
+        tab,
+        node: table(&long),
+    });
+    harness.settle();
+    let said = format!("{long} · table");
+    // Said whole to a screen reader, drawn cut inside the window.
+    assert!(harness.has(&said));
+    let (drawn, rect) = harness
+        .text_rects
+        .iter()
+        // On the status line, at the window's foot, not the sidebar's row.
+        .find(|(text, rect)| text.starts_with("book_xxx") && rect.top() > 440.0)
+        .cloned()
+        .expect("the name drawn on the status line");
+    assert!(drawn.ends_with('…'), "{drawn}");
+    assert!(rect.right() <= 720.0 && rect.left() >= 0.0, "{rect:?}");
+}

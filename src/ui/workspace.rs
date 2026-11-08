@@ -2713,17 +2713,25 @@ fn shown_log(
 /// What the status line says of the object under the tree's cursor while
 /// the tree has the keys, in full though the sidebar drops its group's
 /// prefix: "book_covers · table · 13 rows", the rows where the database
-/// has an estimate.
+/// has an estimate. Nothing for a row the sidebar does not show (its
+/// group folded, or gone since a reload); `show_system` is the setting
+/// that lists the system's schemas.
 fn tree_summary(
     workspace: &crate::model::Workspace,
     locale: crate::i18n::Locale,
+    show_system: bool,
 ) -> Option<String> {
     if workspace.pane != crate::model::Pane::Tree {
         return None;
     }
-    let Some(crate::model::TreeNode::Object(object, kind)) = &workspace.tree.cursor else {
+    let cursor = workspace.tree.cursor.as_ref()?;
+    let crate::model::TreeNode::Object(object, kind) = cursor else {
         return None;
     };
+    let rows = workspace.tree.visible_rows(workspace.driver, show_system);
+    if !rows.iter().any(|row| &row.node == cursor) {
+        return None;
+    }
     let kind = super::sidebar::kind_name(locale, *kind);
     let name = crate::format::display_safe(&object.name);
     let rows = workspace
@@ -2832,7 +2840,7 @@ fn status_line(
     let (choose_key, back_key) = (key(Command::ChooseLabel), key(Command::CloseLabelChooser));
     // No tab: the start screen's keys, and that no table is open.
     if workspace.active_tab.is_none() {
-        let tree = tree_summary(workspace, locale);
+        let tree = tree_summary(workspace, locale, settings.show_system_schemas);
         super::start::status_line(ui, paint, tab, keymap, tree);
         return;
     }
@@ -2899,7 +2907,7 @@ fn status_line(
             None => at,
         })
     });
-    let summary = tree_summary(workspace, locale)
+    let summary = tree_summary(workspace, locale, settings.show_system_schemas)
         .or(editor)
         .or(lines)
         .or_else(|| {
