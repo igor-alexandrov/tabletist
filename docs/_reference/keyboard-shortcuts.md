@@ -111,7 +111,7 @@ takes what you type (Mod+P opens the same search from anywhere):
 
 | Keys | Do |
 | --- | --- |
-| Arrows, Home, End, Enter | Move in the sidebar. Mod+Up and Mod+Down go to the top and the bottom, as Home and End do |
+| Arrows, Home, End, Enter | Move in the sidebar. Right opens a group, Left closes it or goes from a table up to its group. Mod+Up and Mod+Down go to the top and the bottom, as Home and End do |
 | Arrows, Page Up, Page Down, Home, End | Move in the grid |
 | Mod+Up, Mod+Down | First and last row, as Home and End |
 | Mod+Left, Mod+Right | First and last column |
