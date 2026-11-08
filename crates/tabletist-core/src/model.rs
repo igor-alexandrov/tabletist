@@ -3830,6 +3830,13 @@ pub enum TreeKey {
     Enter,
     Home,
     End,
+    /// Fold or unfold the group under the cursor, or fold the group of
+    /// the object under it, as vim's `za` does.
+    Fold,
+    /// Fold every group.
+    FoldAll,
+    /// Unfold every group.
+    OpenAll,
 }
 
 #[derive(Debug, Default)]

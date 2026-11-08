@@ -20,7 +20,7 @@ use crate::model::{
     Advance, CellPos, Completion, ConnectionForm, Dialog, Fetch, FilterBar, FilterRow, Found, Held,
     HostKeyPrompt, LeavePrompt, ObjectTab, ObjectView, Pane, PasswordPrompt, PickTarget, Reach,
     ResultPane, RunMode, SecretKind, SessionStatus, SqlTab, StartRecent, Tab, TabId, TestState,
-    TextPrint, Tree, TreeKey, TreeNode, Wanted, Workspace,
+    TextPrint, Tree, TreeKey, TreeNode, TreeRow, Wanted, Workspace,
 };
 use crate::paths::AppDirs;
 use crate::secrets::{SecretString, password_account, ssh_account};
@@ -7675,6 +7675,27 @@ impl App {
             .as_ref()
             .and_then(|cursor| rows.iter().position(|row| &row.node == cursor));
         let last = rows.len() - 1;
+        // Up to the parent: the nearest row above that is shallower.
+        let parent = |at: usize| {
+            (0..at)
+                .rev()
+                .find(|&i| rows[i].depth < rows[at].depth)
+                .unwrap_or(at)
+        };
+        if let TreeKey::FoldAll | TreeKey::OpenAll = key {
+            let open = key == TreeKey::OpenAll;
+            // An object of a group folded now leaves its cursor to the group.
+            let target = at.map(|at| if open { at } else { parent(at) });
+            self.set_every_group(tab, &rows, open);
+            if let Some(index) = target
+                && let Some(workspace) = self.workspace_mut(tab)
+            {
+                workspace.tree.cursor = Some(rows[index].node.clone());
+                workspace.tree.reveal_cursor = true;
+                workspace.pane = Pane::Tree;
+            }
+            return;
+        }
         let target = match (key, at) {
             // No cursor, or it is on a row no longer shown: End and Up start
             // at the bottom, anything else at the top.
@@ -7697,14 +7718,23 @@ impl App {
                     self.toggle_tree_row(tab, &rows[at].node);
                     Some(at)
                 }
-                // Up to the parent: the nearest row above that is shallower.
-                _ => Some(
-                    (0..at)
-                        .rev()
-                        .find(|&i| rows[i].depth < rows[at].depth)
-                        .unwrap_or(at),
-                ),
+                _ => Some(parent(at)),
             },
+            // A group folds or unfolds; an object of one folds its group,
+            // and the cursor goes up to it.
+            (TreeKey::Fold, Some(at)) => match rows[at].expanded {
+                Some(_) => {
+                    self.toggle_tree_row(tab, &rows[at].node);
+                    Some(at)
+                }
+                None if rows[at].depth > 0 => {
+                    let group = parent(at);
+                    self.toggle_tree_row(tab, &rows[group].node);
+                    Some(group)
+                }
+                None => Some(at),
+            },
+            (TreeKey::FoldAll | TreeKey::OpenAll, Some(at)) => Some(at),
             (TreeKey::Enter, Some(at)) => {
                 match &rows[at].node {
                     TreeNode::Object(object, kind) => self.apply(Action::OpenObject {
@@ -7724,6 +7754,23 @@ impl App {
             workspace.tree.cursor = Some(rows[index].node.clone());
             workspace.tree.reveal_cursor = true;
             workspace.pane = Pane::Tree;
+        }
+    }
+
+    /// Folds every group of the tree `rows` shows, or unfolds them all.
+    fn set_every_group(&mut self, tab: ConnTabId, rows: &[TreeRow], open: bool) {
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        for row in rows {
+            if let TreeNode::Group(schema, prefix) = &row.node {
+                let node = workspace.tree.nodes.entry(schema.clone()).or_default();
+                if open {
+                    node.open_groups.insert(prefix.clone());
+                } else {
+                    node.open_groups.remove(prefix);
+                }
+            }
         }
     }
 

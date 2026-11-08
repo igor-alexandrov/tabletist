@@ -2483,6 +2483,18 @@ fn window_letter(keymap: &Keymap, layout: Layout, scopes: &[Scope], char: char) 
     }
 }
 
+/// Whether `char` begins a key of several in the first of `scopes` that
+/// reads it: the keymap waits for the next.
+fn begins_chord(keymap: &Keymap, layout: Layout, scopes: &[Scope], char: char) -> bool {
+    let nothing = |_: crate::keymap::When| false;
+    let typed = char.to_string();
+    scopes
+        .iter()
+        .map(|scope| keymap.typed(layout, *scope, &nothing, &typed))
+        .find(|read| *read != Typed::Nothing)
+        == Some(Typed::Waiting)
+}
+
 /// Single letters: the picker's keys, and in the terminal look the
 /// workspace's vim keys. Only when no text field has the keyboard. `field`
 /// is the column of the row panel's field that has it: `j` and `k` step
@@ -2500,8 +2512,22 @@ fn letters(
     // taken from the frame, its key with it; any other is left for the
     // code below.
     let layout = app.layout();
+    // A key of several begun (`z` of `zR`) takes the letter after it,
+    // though alone it is one of these (`R`). A count does not.
+    let mut begun: String = ctx
+        .data(|data| data.get_temp(typed_id()))
+        .unwrap_or_default();
     for char in typed_chars(ctx) {
+        if !begun.is_empty() && !crate::keymap::is_count(&begun) {
+            begun.clear();
+            continue;
+        }
         let Some(command) = window_letter(&app.keymap, layout, scopes, char) else {
+            begun = if begins_chord(&app.keymap, layout, scopes, char) {
+                char.to_string()
+            } else {
+                String::new()
+            };
             continue;
         };
         take_char(ctx, char);
@@ -3530,6 +3556,22 @@ fn letters(
                     crate::model::TreeKey::Up
                 } else {
                     crate::model::TreeKey::Down
+                };
+                actions.push(Action::TreeKey { tab, key });
+            }
+            // Vim's folds, on the tree's groups.
+            (
+                Some(
+                    command
+                    @ (Command::FoldGroup | Command::FoldAllGroups | Command::OpenAllGroups),
+                ),
+                _,
+            ) => {
+                use crate::model::TreeKey;
+                let key = match command {
+                    Command::FoldGroup => TreeKey::Fold,
+                    Command::FoldAllGroups => TreeKey::FoldAll,
+                    _ => TreeKey::OpenAll,
                 };
                 actions.push(Action::TreeKey { tab, key });
             }

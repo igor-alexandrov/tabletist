@@ -2,12 +2,12 @@
 //! under it, its prefix dropped where drawn, a guide along the open group,
 //! the rows a tree for a screen reader, and the terminal look's folds.
 
-use egui::Rect;
 use egui::accesskit::{Role, TreeUpdate};
+use egui::{Key, Modifiers, Rect};
 use tabletist_db::{ObjectKind, ObjectRef};
 
 use super::sidebar::INDENT;
-use super::tests::hover;
+use super::tests::{hover, type_key};
 use crate::model::{Action, ConnTabId, TreeNode};
 use crate::testing::{Harness, bounds, node};
 use crate::theme::Look;
@@ -86,6 +86,20 @@ fn bars(harness: &Harness) -> Vec<Rect> {
 /// One character of the terminal's face.
 fn cell(harness: &Harness) -> f32 {
     TextRole::OBody.width(&harness.ctx, harness.app.look.faces, " ")
+}
+
+fn cursor(harness: &Harness, tab: ConnTabId) -> Option<TreeNode> {
+    harness.app.workspace(tab).unwrap().tree.cursor.clone()
+}
+
+fn open_groups(harness: &Harness, tab: ConnTabId) -> Vec<String> {
+    let mut open: Vec<String> = harness.app.workspace(tab).unwrap().tree.nodes["main"]
+        .open_groups
+        .iter()
+        .cloned()
+        .collect();
+    open.sort();
+    open
 }
 
 fn levels(tree: &TreeUpdate) -> Vec<(String, Option<usize>)> {
@@ -225,6 +239,52 @@ fn groups_and_single_tables_sort_together() {
         .map(|row| row.label)
         .collect();
     assert_eq!(top, ["authors", "book_", "orders", "publisher_", "reviews"]);
+}
+
+#[test]
+fn left_and_right_close_and_open_a_group_and_left_climbs_to_it() {
+    let (mut harness, tab) = grouped(Look::macos());
+    harness.click("book_covers, table");
+    harness.press(Key::ArrowLeft, Modifiers::NONE);
+    assert_eq!(cursor(&harness, tab), Some(group("book")));
+    harness.press(Key::ArrowLeft, Modifiers::NONE);
+    assert_eq!(open_groups(&harness, tab), Vec::<String>::new());
+    harness.press(Key::ArrowRight, Modifiers::NONE);
+    assert_eq!(open_groups(&harness, tab), ["book"]);
+    harness.press(Key::ArrowRight, Modifiers::NONE);
+    assert_eq!(cursor(&harness, tab), Some(table("book_awards")));
+}
+
+#[test]
+fn omarchys_folds_work_on_the_groups_and_t_still_flattens() {
+    let (mut harness, tab) = grouped(Look::omarchy());
+    harness.app.apply(Action::SetTreeCursor {
+        tab,
+        node: table("book_covers"),
+    });
+    // `za` on a table folds its group, and the cursor goes up to it.
+    type_key(&mut harness, Key::Z, "z");
+    type_key(&mut harness, Key::A, "a");
+    assert_eq!(open_groups(&harness, tab), Vec::<String>::new());
+    assert_eq!(cursor(&harness, tab), Some(group("book")));
+    // On the group it opens it again.
+    type_key(&mut harness, Key::Z, "z");
+    type_key(&mut harness, Key::A, "a");
+    assert_eq!(open_groups(&harness, tab), ["book"]);
+    // `zR` opens every group, `zM` folds them all.
+    type_key(&mut harness, Key::Z, "z");
+    type_key(&mut harness, Key::R, "R");
+    assert_eq!(open_groups(&harness, tab), ["book", "publisher"]);
+    harness.app.apply(Action::SetTreeCursor {
+        tab,
+        node: table("publisher_imprints"),
+    });
+    type_key(&mut harness, Key::Z, "z");
+    type_key(&mut harness, Key::M, "M");
+    assert_eq!(open_groups(&harness, tab), Vec::<String>::new());
+    assert_eq!(cursor(&harness, tab), Some(group("publisher")));
+    type_key(&mut harness, Key::T, "t");
+    assert!(harness.app.workspace(tab).unwrap().tree.flat);
 }
 
 #[test]
