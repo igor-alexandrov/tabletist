@@ -53,11 +53,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      # And redis-server, which the Redis tests start on ports of their own
+      # (`fixtures::redis_server`): elsewhere they say "skipped".
       - name: GUI build dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev redis-server
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked --workspace --all-targets
       # The quality job's clippy runs on Linux, which compiles none of the
