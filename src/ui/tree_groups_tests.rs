@@ -2,15 +2,22 @@
 //! under it, its prefix dropped where drawn, a guide along the open group,
 //! the rows a tree for a screen reader, and the terminal look's folds.
 
+use egui::Rect;
 use egui::accesskit::{Role, TreeUpdate};
+use tabletist_db::{ObjectKind, ObjectRef};
 
+use super::sidebar::INDENT;
 use super::tests::hover;
-use crate::model::ConnTabId;
-use crate::testing::{Harness, node};
+use crate::model::{Action, ConnTabId, TreeNode};
+use crate::testing::{Harness, bounds, node};
 use crate::theme::Look;
+use crate::typography::TextRole;
 
 /// The `book_` group's row, as a screen reader names it.
 const BOOK: &str = "book_, 6 tables";
+
+/// Where the macOS chevron begins in its row: the tree's inset, then 8.
+const FOLD: f32 = 8.0 + 8.0;
 
 /// A connected tab in `look` whose `main` schema lists the Bookshop's
 /// grouped catalog, with `book_` open.
@@ -28,12 +35,122 @@ fn grouped(look: Look) -> (Harness, ConnTabId) {
     (harness, tab)
 }
 
+fn table(name: &str) -> TreeNode {
+    TreeNode::Object(ObjectRef::new("main", name), ObjectKind::Table)
+}
+
+fn group(prefix: &str) -> TreeNode {
+    TreeNode::Group("main".into(), prefix.into())
+}
+
+/// Where the row a screen reader names `name` sits.
+fn row(harness: &mut Harness, name: &str) -> Rect {
+    let tree = harness.settle();
+    bounds(&tree, name, Role::TreeItem).unwrap_or_else(|| panic!("no row {name:?}"))
+}
+
+/// Where the last frame began to paint `text`.
+fn drawn(harness: &Harness, text: &str) -> f32 {
+    harness
+        .painted_rect(text)
+        .unwrap_or_else(|| panic!("{text:?} is not drawn"))
+        .left()
+}
+
+fn close(a: f32, b: f32) -> bool {
+    (a - b).abs() < 0.5
+}
+
+/// The pieces of the macOS guide the last frame drew: 1 pt wide, in the
+/// subtle border's colour.
+fn guides(harness: &Harness) -> Vec<Rect> {
+    let color = harness.app.palette.surface_active;
+    harness
+        .fills
+        .iter()
+        .filter(|(rect, fill)| *fill == color && close(rect.width(), 1.0))
+        .map(|(rect, _)| *rect)
+        .collect()
+}
+
+/// Where the terminal look drew its `│` guides.
+fn bars(harness: &Harness) -> Vec<Rect> {
+    harness
+        .text_rects
+        .iter()
+        .filter(|(text, _)| text == "│")
+        .map(|(_, rect)| *rect)
+        .collect()
+}
+
+/// One character of the terminal's face.
+fn cell(harness: &Harness) -> f32 {
+    TextRole::OBody.width(&harness.ctx, harness.app.look.faces, " ")
+}
+
 fn levels(tree: &TreeUpdate) -> Vec<(String, Option<usize>)> {
     tree.nodes
         .iter()
         .filter(|(_, node)| node.role() == Role::TreeItem)
         .map(|(_, node)| (node.label().unwrap_or_default().to_owned(), node.level()))
         .collect()
+}
+
+#[test]
+fn grouped_tables_stand_one_step_in_and_single_tables_line_up_with_them() {
+    let (mut harness, _) = grouped(Look::macos());
+    let child = row(&mut harness, "book_covers, table");
+    let header = row(&mut harness, BOOK);
+    // One step past the group's chevron: where the group's name starts.
+    let covers = drawn(&harness, "covers");
+    assert!(close(covers - child.left(), FOLD + INDENT), "{covers}");
+    assert!(close(
+        drawn(&harness, "book_") - header.left(),
+        FOLD + INDENT
+    ));
+    // Single tables, grouped or not, in the same column.
+    for single in ["authors", "orders", "reviews"] {
+        assert!(close(drawn(&harness, single), covers), "{single}");
+    }
+}
+
+#[test]
+fn the_terminal_indents_a_groups_tables_two_cells_and_single_tables_with_them() {
+    let (mut harness, _) = grouped(Look::omarchy());
+    harness.settle();
+    let name = drawn(&harness, "book_");
+    let covers = drawn(&harness, "covers");
+    assert!(
+        close(covers - name, 2.0 * cell(&harness)),
+        "{name} {covers}"
+    );
+    for single in ["authors", "orders", "reviews"] {
+        assert!(close(drawn(&harness, single), covers), "{single}");
+    }
+}
+
+#[test]
+fn a_grouped_tables_highlight_begins_inside_the_indent() {
+    let (mut harness, _) = grouped(Look::macos());
+    let selection = harness.app.palette.selection;
+    let pill = |harness: &Harness, row: Rect| {
+        harness
+            .fills
+            .iter()
+            .find(|(rect, fill)| *fill == selection && row.contains(rect.center()))
+            .map(|(rect, _)| *rect)
+            .expect("the selected row's pill")
+    };
+    harness.click("book_covers, table");
+    let child = row(&mut harness, "book_covers, table");
+    // Past the guide at the chevron's middle, 4 after it.
+    let begins = pill(&harness, child).left() - child.left();
+    assert!(close(begins, FOLD + 6.0 + 4.0), "{begins}");
+    // A single table's pill fills the tree's inset, as before.
+    harness.click("orders, table");
+    let single = row(&mut harness, "orders, table");
+    let begins = pill(&harness, single).left() - single.left();
+    assert!(close(begins, 8.0), "{begins}");
 }
 
 #[test]
@@ -76,4 +193,118 @@ fn the_tree_says_each_rows_level_and_whether_a_group_is_open() {
     assert_eq!(expanded(BOOK), Some(true));
     assert_eq!(expanded("publisher_, 2 tables"), Some(false));
     assert_eq!(expanded("orders, table"), None);
+}
+
+#[test]
+fn a_longer_prefix_stays_in_its_group_and_groups_never_nest() {
+    let (harness, tab) = grouped(Look::macos());
+    let workspace = harness.app.workspace(tab).unwrap();
+    let rows = workspace.tree.visible_rows(workspace.driver, false);
+    let sizes = rows
+        .iter()
+        .find(|row| row.node == table("book_cover_sizes"))
+        .expect("book_cover_sizes");
+    assert_eq!((sizes.depth, sizes.label.as_str()), (1, "cover_sizes"));
+    let groups: Vec<&TreeNode> = rows
+        .iter()
+        .map(|row| &row.node)
+        .filter(|node| matches!(node, TreeNode::Group(..)))
+        .collect();
+    assert_eq!(groups, [&group("book"), &group("publisher")]);
+}
+
+#[test]
+fn groups_and_single_tables_sort_together() {
+    let (harness, tab) = grouped(Look::macos());
+    let workspace = harness.app.workspace(tab).unwrap();
+    let top: Vec<String> = workspace
+        .tree
+        .visible_rows(workspace.driver, false)
+        .into_iter()
+        .filter(|row| row.depth == 0)
+        .map(|row| row.label)
+        .collect();
+    assert_eq!(top, ["authors", "book_", "orders", "publisher_", "reviews"]);
+}
+
+#[test]
+fn the_guide_runs_along_the_open_groups_tables_and_no_further() {
+    let (mut harness, tab) = grouped(Look::macos());
+    let first = row(&mut harness, "book_awards, table");
+    let last = row(&mut harness, "book_genres, table");
+    let pieces = guides(&harness);
+    assert_eq!(pieces.len(), 6, "a piece on each of the group's tables");
+    let top = pieces
+        .iter()
+        .map(|rect| rect.top())
+        .fold(f32::MAX, f32::min);
+    let bottom = pieces
+        .iter()
+        .map(|rect| rect.bottom())
+        .fold(f32::MIN, f32::max);
+    assert!(close(top, first.top()) && close(bottom, last.bottom()));
+    // At the chevron's middle.
+    assert!(
+        pieces
+            .iter()
+            .all(|rect| close(rect.left(), first.left() + FOLD + 6.0))
+    );
+    // A folded group has none.
+    harness.app.apply(Action::ToggleGroup {
+        tab,
+        schema: "main".into(),
+        prefix: "book".into(),
+    });
+    harness.settle();
+    assert!(guides(&harness).is_empty());
+
+    // The terminal's `│`, under the group's name.
+    let (mut harness, _) = grouped(Look::omarchy());
+    harness.settle();
+    let name = drawn(&harness, "book_");
+    let bars = bars(&harness);
+    assert_eq!(bars.len(), 6);
+    assert!(bars.iter().all(|rect| close(rect.left(), name)));
+}
+
+#[test]
+fn the_flat_list_keeps_full_names_with_no_groups_or_guides() {
+    for look in [Look::macos(), Look::omarchy()] {
+        let (mut harness, tab) = grouped(look);
+        harness.app.apply(Action::ToggleFlatTree(tab));
+        let tree = harness.settle();
+        assert!(node(&tree, BOOK, Role::TreeItem).is_none(), "{}", look.name);
+        assert!(levels(&tree).iter().all(|(_, level)| *level == Some(1)));
+        assert!(guides(&harness).is_empty() && bars(&harness).is_empty());
+        let covers = row(&mut harness, "book_covers, table");
+        let x = drawn(&harness, "book_covers");
+        assert!(close(x, drawn(&harness, "authors")), "{}", look.name);
+        // Where a flat list has always drawn its names.
+        let glyph = if look.terminal {
+            TextRole::OBody.width(&harness.ctx, harness.app.look.faces, "▾")
+        } else {
+            12.0
+        };
+        let inset = if look.terminal { 4.0 } else { 8.0 };
+        assert!(
+            close(x - covers.left(), inset + 8.0 + glyph + 6.0),
+            "{}",
+            look.name
+        );
+    }
+}
+
+#[test]
+fn the_indent_scales_with_the_windows_zoom() {
+    for zoom in [1.0, 1.5, 2.0] {
+        let (mut harness, _) = grouped(Look::macos());
+        harness.ctx.set_zoom_factor(zoom);
+        harness.settle();
+        // Points stay the same; the screen's pixels grow with the zoom.
+        let guide = guides(&harness)[0];
+        let step = drawn(&harness, "covers") - (guide.left() - 6.0);
+        assert!(close(step, INDENT), "{zoom}: {step}");
+        assert!(close(step * harness.ctx.pixels_per_point(), INDENT * zoom));
+        assert!(close(guide.width() * harness.ctx.pixels_per_point(), zoom));
+    }
 }

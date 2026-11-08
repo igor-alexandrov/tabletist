@@ -465,6 +465,7 @@ pub fn show(
                                     cursor: cursor.as_ref(),
                                     keys,
                                     lit,
+                                    flat,
                                 },
                                 locale,
                                 Skin {
@@ -994,6 +995,8 @@ struct Marks<'a> {
     keys: bool,
     /// And the keyboard is in use: the cursor shows.
     lit: bool,
+    /// The objects are one flat list: no groups, no indent.
+    flat: bool,
 }
 
 /// How rows are drawn: the platform look and the colour palette.
@@ -1003,17 +1006,66 @@ struct Skin<'a> {
     palette: &'a Palette,
 }
 
-/// Where a tree row draws its label. macOS: the chevron 8 into the row
-/// (itself 8 in), then 6 to the name; grouped objects 26 into theirs.
-/// Terminal: 4 and 8 in, the glyph, 6; objects 24 into theirs.
-fn label_x(rect: Rect, depth: u8, look: &Look, glyph: f32) -> f32 {
+/// One step of the macOS tree's indent: the chevron, 12, and the 6 after
+/// it. A grouped object's name starts where its group's name does.
+pub(crate) const INDENT: f32 = 18.0;
+
+/// Where a tree row draws, from its left edge.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Places {
+    /// The fold mark: macOS's chevron, the terminal's ▸.
+    pub fold: f32,
+    /// The name.
+    pub label: f32,
+    /// The guide along an open group's objects, on each of its rows:
+    /// macOS's line at the chevron's middle, the terminal's `│` under its
+    /// group's name.
+    pub guide: Option<f32>,
+    /// Where the highlight and the focus ring begin: inside the indent,
+    /// past the guide, for a grouped object.
+    pub band: f32,
+}
+
+/// Where `row` draws, in the look. `glyph` is the fold mark's width and
+/// `cell` one character's of the terminal's face. macOS: the chevron 8
+/// into the row (itself 8 in), every name one step past it, so tables
+/// line up whether grouped or not. Terminal: the mark 4 and 8 in, a
+/// group's name 6 after it, and in the tree every object two cells
+/// further, a grouped one with `│` in the first of them.
+pub(crate) fn places(row: &TreeRow, flat: bool, look: &Look, glyph: f32, cell: f32) -> Places {
     let inset = tree_inset(look);
-    let (pad, nested) = if look.terminal {
-        (8.0, 24.0)
-    } else {
-        (8.0, 26.0)
+    let fold = inset + 8.0;
+    let grouped = row.depth > 0;
+    if look.terminal {
+        let name = fold + glyph + 6.0;
+        let label = match row.node {
+            TreeNode::Object(..) if !flat => name + 2.0 * cell,
+            _ => name,
+        };
+        return Places {
+            fold,
+            label,
+            guide: grouped.then_some(name),
+            band: inset,
+        };
+    }
+    let guide = fold + 6.0;
+    // The pill stands 8 inside its band.
+    let pill = match look.selection {
+        crate::theme::Selection::Pill => 8.0,
+        crate::theme::Selection::Tint | crate::theme::Selection::Bar => 0.0,
     };
-    rect.left() + inset + if depth > 0 { nested } else { pad + glyph + 6.0 }
+    Places {
+        fold,
+        label: fold + INDENT,
+        guide: grouped.then_some(guide),
+        band: if grouped { guide + 4.0 - pill } else { 0.0 },
+    }
+}
+
+/// One character's width in the terminal's face.
+fn cell_width(ui: &egui::Ui, look: &Look) -> f32 {
+    TextRole::OBody.width(ui.ctx(), look.faces, " ")
 }
 
 /// The width of the fold mark: macOS's 12 pt chevron, the terminal's ▾.
@@ -1045,8 +1097,8 @@ fn tree_row(
         ui.allocate_ui_with_layout(size, layout, |ui| {
             ui.set_min_size(size);
             ui.spacing_mut().item_spacing.x = 6.0;
-            let left = label_x(ui.max_rect(), 0, look, glyph_width(ui, look));
-            ui.add_space(left - ui.max_rect().left());
+            let at = places(row, marks.flat, look, glyph_width(ui, look), 0.0);
+            ui.add_space(at.label);
             let refresh = gettext(locale, "Reload");
             let link_width = small.width(ui.ctx(), look.faces, &refresh);
             let room = ui.available_width() - link_width - ui.spacing().item_spacing.x;
@@ -1106,13 +1158,17 @@ fn tree_row(
             node.set_selected(true);
         }
     });
+    let glyph = glyph_width(ui, look);
+    let at = places(row, marks.flat, look, glyph, cell_width(ui, look));
     // Rows sit in the tree's inset: the macOS pill fills it, the terminal
-    // bar spans it.
-    let band = if look.terminal {
-        rect.shrink2(vec2(tree_inset(look), 0.0))
-    } else {
-        rect
-    };
+    // bar spans it. A grouped object's begins past its guide.
+    let band = Rect::from_min_max(
+        pos2(rect.left() + at.band, rect.top()),
+        pos2(
+            rect.right() - if look.terminal { at.band } else { 0.0 },
+            rect.bottom(),
+        ),
+    );
     widgets::selection(ui, band, selected, response.hovered(), look, palette);
     let highlight = widgets::selection_rect(band, look);
     // The terminal's bar on the open object's row is muted while the keys
@@ -1134,9 +1190,21 @@ fn tree_row(
         );
     }
     let center = rect.center().y;
-    let glyph = glyph_width(ui, look);
-    let x = label_x(rect, row.depth, look, glyph);
-    let fold_x = rect.left() + tree_inset(look) + 8.0;
+    let x = rect.left() + at.label;
+    let fold_x = rect.left() + at.fold;
+    // The guide along the open group, a piece on each of its rows: one
+    // line from its first object to its last.
+    if let Some(guide) = at.guide {
+        let guide = rect.left() + guide;
+        if look.terminal {
+            let mark = Text::one(look, TextRole::OBody, "│", palette.dim);
+            widgets::paint_text(ui, guide, center, mark);
+        } else {
+            let line = Rect::from_min_size(pos2(guide, rect.top()), vec2(1.0, rect.height()));
+            ui.painter()
+                .rect_filled(line, CornerRadius::ZERO, palette.surface_active);
+        }
+    }
     if let Some(expanded) = row.expanded {
         if look.terminal {
             let mark = if expanded { "▾" } else { "▸" };
