@@ -98,6 +98,8 @@ pub mod keys;
 pub mod label_chooser;
 #[cfg(test)]
 mod label_tests;
+#[cfg(test)]
+mod look_switch_tests;
 pub mod menu;
 pub mod object_tabs;
 #[cfg(test)]
