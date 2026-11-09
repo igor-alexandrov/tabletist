@@ -1303,10 +1303,13 @@ fn top_bar(
             }
             widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, border);
             if look.terminal {
+                // Its row starts after the window buttons, as the picker's
+                // header does.
+                let row = Rect::from_min_max(pos2(rect.left() + inset, rect.top()), rect.max);
                 terminal_bar(
                     ui,
                     tab,
-                    rect,
+                    row,
                     info,
                     &env,
                     &look,

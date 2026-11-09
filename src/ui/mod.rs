@@ -11399,6 +11399,24 @@ value_tags   = true
         assert!(chip.x0 > button.x1, "the chips follow: {chip:?}");
     }
 
+    #[test]
+    fn every_looks_connection_bar_starts_after_the_mac_window_buttons() {
+        // The Omarchy look runs on macOS too, under the same buttons.
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            mac_title_bar(&mut harness);
+            harness.connect_fake();
+            let tree = harness.settle();
+            let button = bounds_of(&tree, "Connections");
+            assert!(
+                button.x0 >= 80.0,
+                "{}: the bar starts after the buttons: {button:?}",
+                look.name
+            );
+        }
+    }
+
     /// The middle of the node labelled (or valued) `label`.
     fn middle_of(tree: &egui::accesskit::TreeUpdate, label: &str) -> f64 {
         let bounds = tree
