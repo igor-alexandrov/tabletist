@@ -73,9 +73,15 @@ fn secondary(harness: &mut Harness, pos: egui::Pos2) {
 /// A secondary click on the tree's row of `name`.
 fn tree_menu(harness: &mut Harness, name: &str) {
     let tree = harness.settle();
-    let row = crate::testing::bounds(&tree, name, Role::Button)
+    let id = crate::testing::tree_row(&tree, name);
+    let row = id
+        .and_then(|id| tree.nodes.iter().find(|(node, _)| *node == id))
+        .and_then(|(_, node)| node.bounds())
         .unwrap_or_else(|| panic!("no tree row {name:?}"));
-    secondary(harness, row.center());
+    secondary(
+        harness,
+        egui::pos2(row.x0 as f32, row.y0 as f32) + egui::vec2(20.0, 4.0),
+    );
 }
 
 /// A secondary click on the cell of the grid's `row` (from 1) and first
@@ -540,7 +546,7 @@ fn export_a_table_lists_tables_and_opens_the_picked_ones_sheet() {
         !listed.is_empty() && listed.iter().all(Option::is_some),
         "{listed:?}"
     );
-    assert!(harness.has("reviews"));
+    assert!(harness.has("reviews, table"));
     assert!(
         !painted(&harness, "Commands"),
         "no commands: {:?}",

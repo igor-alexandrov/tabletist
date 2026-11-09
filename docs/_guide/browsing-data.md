@@ -7,8 +7,12 @@ nav_order: 3
 ## The sidebar
 
 The sidebar shows the tables and views of one schema at a time. Tables
-that share a prefix, such as `book_`, fold into a group. You can also
-list them flat. On macOS and Windows, the objects you opened recently
+that share a prefix, such as `book_`, fold into a group. Inside an open
+group the prefix is dropped (`book_covers` shows as `covers`), the group's
+tables stand in from its name, and a line runs along them; the pointer
+over one shows its full name. Groups have
+one level: `book_cover_sizes` sits under `book_` as `cover_sizes`. You can
+also list them flat, with full names. On macOS and Windows, the objects you opened recently
 are listed above them.
 
 Quick open (Cmd+P on macOS, Ctrl+P on Windows and Omarchy) finds any

@@ -521,6 +521,9 @@ commands! {
     MoveInTree = "move_in_tree",
     OpenObject = "open_object",
     ToggleTree = "toggle_tree",
+    FoldGroup = "fold_group",
+    FoldAllGroups = "fold_all_groups",
+    OpenAllGroups = "open_all_groups",
     Reload = "reload",
     FilterBar = "filter_bar",
     WhereFilter = "where_filter",
@@ -939,6 +942,9 @@ impl Command {
             C::MoveInTree => info("Move in the sidebar", "", Navigation),
             C::OpenObject => info("Open the table or view", "", Navigation),
             C::ToggleTree => info("Tree or flat list", "", Navigation),
+            C::FoldGroup => info("Fold or open the group", "", Navigation),
+            C::FoldAllGroups => info("Fold every group", "", Navigation),
+            C::OpenAllGroups => info("Open every group", "", Navigation),
             C::Reload => info("Reload", "Reload", Navigation),
             C::FilterBar => info("Filter bar", "", Navigation),
             C::WhereFilter => info("Filter with a WHERE line", "", Navigation),
@@ -1670,6 +1676,10 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("enter")]),
         ),
         bind(C::ToggleTree, SIDEBAR, NONE, keys(&[k("t")])),
+        // Vim's folds, on the tree's groups.
+        bind(C::FoldGroup, SIDEBAR, NONE, keys(&[k("za")])),
+        bind(C::FoldAllGroups, SIDEBAR, NONE, keys(&[k("zM")])),
+        bind(C::OpenAllGroups, SIDEBAR, NONE, keys(&[k("zR")])),
         bind(
             C::Reload,
             &[Scope::Grid, Scope::Sidebar],
@@ -3185,6 +3195,12 @@ impl Written {
         &self.0
     }
 
+    /// Keys a widget takes by itself, with no command of the keymap's:
+    /// a text field's Enter and Esc.
+    pub fn plain(text: &str) -> Written {
+        Written(text.to_owned())
+    }
+
     /// The key in the brackets a prompt draws round the letter that
     /// answers it: `[w]`.
     pub fn bracketed(&self) -> Written {
@@ -3632,6 +3648,15 @@ impl Keymap {
             .map_or_else(Written::default, |chord| {
                 Written(written(layout, chord.keys))
             })
+    }
+
+    /// The first key `command` has of its own in `scope`: not one that
+    /// only says where another command's key also acts (Back to grid's
+    /// ctrl+h, which is Pane to the left's). Empty where it has none.
+    pub fn own_key_in(&self, layout: Layout, command: Command, scope: Scope) -> Written {
+        self.chords(layout, command, scope)
+            .next()
+            .map_or_else(Written::default, |keys| Written(written(layout, keys)))
     }
 
     /// The `nth` keys that `first` and `second` have in `scope`, written
@@ -4950,6 +4975,10 @@ mod tests {
         assert_eq!(format(Layout::Omarchy, Scope::CellEditor), "ctrl+shift+f");
         assert_eq!(format(Layout::Mac, Scope::CellEditor), "⇧⌘F");
         assert_eq!(format(Layout::Mac, Scope::Grid), "");
+        // Back to grid's ctrl+h is Pane to the left's: its own key is Esc.
+        let back = (Command::BackToGrid, Scope::Inspector);
+        assert_eq!(keymap.key_in(Layout::Omarchy, back.0, back.1), "ctrl+h");
+        assert_eq!(keymap.own_key_in(Layout::Omarchy, back.0, back.1), "esc");
     }
 
     #[test]

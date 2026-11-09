@@ -18,7 +18,9 @@ look the setting is the `interface` row, first in `appearance`.
 
 This page lists the keys of the Omarchy look, grouped by where they
 work. The status line along the bottom shows the ones that work where you
-are. The app's own list (`?`) is shorter: it leaves out the keys of the
+are: the keys of the part that has the keyboard (the sidebar, its filter,
+the rows, the row panel, a SQL editor's script or its results), with
+`ctrl+h/l panes` wherever Ctrl+H and Ctrl+L move to another part. The app's own list (`?`) is shorter: it leaves out the keys of the
 dialogs and of the lists that open in an editor.
 
 A letter does its job when no text field has the keyboard. While a field
@@ -108,7 +110,9 @@ numbered; once you type, it lists what matches. Its commands stay on `:`.
 | Keys | Do |
 | --- | --- |
 | `j` `k`, arrows, Home, End | Move |
-| Enter | Open the table or view |
+| Enter | Open the table or view, or fold or open a group |
+| `za` | Fold or open the group under the cursor; on a table of a group, fold its group |
+| `zM` `zR` | Fold every group, open every group |
 | `/` | Filter the list |
 | `t` | Switch between tree and flat. The connection keeps its choice; Settings › Appearance sets the default |
 | `R` | Reload the list |
@@ -116,6 +120,10 @@ numbered; once you type, it lists what matches. Its commands stay on `:`.
 | `E` | [Export]({% link _guide/browsing-data.md %}#exporting) the table under the cursor: it opens, with the export's float over it |
 | Right-click | A table's or view's menu: open, structure, ddl, copy name, export… |
 | Ctrl+B | Hide the sidebar |
+
+A group's tables are drawn two cells in, with a `│` before them and
+without the group's prefix. The status line names the table under the
+cursor in full: `book_covers · table · 13 rows`.
 
 ### The start screen
 

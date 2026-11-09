@@ -2483,6 +2483,17 @@ fn window_letter(keymap: &Keymap, layout: Layout, scopes: &[Scope], char: char) 
     }
 }
 
+/// What `typed` is in the first of `scopes` that reads it: a command, the
+/// start of a key of several (the keymap waits for the next), or nothing.
+fn read_typed(keymap: &Keymap, layout: Layout, scopes: &[Scope], typed: &str) -> Typed {
+    let nothing = |_: crate::keymap::When| false;
+    scopes
+        .iter()
+        .map(|scope| keymap.typed(layout, *scope, &nothing, typed))
+        .find(|read| *read != Typed::Nothing)
+        .unwrap_or(Typed::Nothing)
+}
+
 /// Single letters: the picker's keys, and in the terminal look the
 /// workspace's vim keys. Only when no text field has the keyboard. `field`
 /// is the column of the row panel's field that has it: `j` and `k` step
@@ -2500,8 +2511,35 @@ fn letters(
     // taken from the frame, its key with it; any other is left for the
     // code below.
     let layout = app.layout();
+    // A key of several begun (`z` of `zR`) takes the letter after it
+    // where that goes on with it, though alone the letter is one of these
+    // (`R`). A count does not, nor a key the letter does not go on (`d?`
+    // is Help's).
+    let mut begun: String = ctx
+        .data(|data| data.get_temp(typed_id()))
+        .unwrap_or_default();
     for char in typed_chars(ctx) {
+        if !begun.is_empty() && !crate::keymap::is_count(&begun) {
+            let joined = format!("{begun}{char}");
+            match read_typed(&app.keymap, layout, scopes, &joined) {
+                Typed::Waiting => {
+                    begun = joined;
+                    continue;
+                }
+                Typed::Nothing => begun.clear(),
+                _ => {
+                    begun.clear();
+                    continue;
+                }
+            }
+        }
         let Some(command) = window_letter(&app.keymap, layout, scopes, char) else {
+            begun = if read_typed(&app.keymap, layout, scopes, &char.to_string()) == Typed::Waiting
+            {
+                char.to_string()
+            } else {
+                String::new()
+            };
             continue;
         };
         take_char(ctx, char);
@@ -3530,6 +3568,22 @@ fn letters(
                     crate::model::TreeKey::Up
                 } else {
                     crate::model::TreeKey::Down
+                };
+                actions.push(Action::TreeKey { tab, key });
+            }
+            // Vim's folds, on the tree's groups.
+            (
+                Some(
+                    command
+                    @ (Command::FoldGroup | Command::FoldAllGroups | Command::OpenAllGroups),
+                ),
+                _,
+            ) => {
+                use crate::model::TreeKey;
+                let key = match command {
+                    Command::FoldGroup => TreeKey::Fold,
+                    Command::FoldAllGroups => TreeKey::FoldAll,
+                    _ => TreeKey::OpenAll,
                 };
                 actions.push(Action::TreeKey { tab, key });
             }
