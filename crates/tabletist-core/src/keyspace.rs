@@ -238,7 +238,11 @@ impl KeyTree {
 /// so `i` and `\u{307}x` both match in `İx`) takes that character whole:
 /// never a slice of its bytes.
 pub fn find_folded(text: &str, query: &str) -> Option<std::ops::Range<usize>> {
-    let wanted: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
+    // Lowered one character at a time, with the final sigma `ς` as `σ`:
+    // a string's lowering writes `Σ` as `ς` at a word's end, and either
+    // must find the other.
+    let fold = |c: char| c.to_lowercase().map(|c| if c == 'ς' { 'σ' } else { c });
+    let wanted: Vec<char> = query.chars().flat_map(fold).collect();
     if wanted.is_empty() {
         return None;
     }
@@ -247,7 +251,7 @@ pub fn find_folded(text: &str, query: &str) -> Option<std::ops::Range<usize>> {
         .char_indices()
         .flat_map(|(at, c)| {
             let bytes = at..at + c.len_utf8();
-            c.to_lowercase().map(move |lower| (lower, bytes.clone()))
+            fold(c).map(move |lower| (lower, bytes.clone()))
         })
         .collect();
     let at = lowered
@@ -1302,6 +1306,9 @@ mod tests {
         // never a slice of its bytes.
         assert_eq!(find_folded("İx", "i"), Some(0..2));
         assert_eq!(find_folded("İx", "x"), Some(2..3));
+        // The final sigma, either way round.
+        assert_eq!(find_folded("ΟΣ", "ος"), Some(0..4));
+        assert_eq!(find_folded("ος", "ΟΣ"), Some(0..4));
         // A match that starts inside the expansion takes `İ` whole too.
         assert_eq!(find_folded("İx", "\u{307}x"), Some(0..3));
         assert_eq!(find_folded("aİx", "ix"), None);
