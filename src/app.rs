@@ -20,7 +20,7 @@ use crate::model::{
     Advance, CellPos, Completion, ConnectionForm, Dialog, Fetch, FilterBar, FilterRow, Found, Held,
     HostKeyPrompt, LeavePrompt, ObjectTab, ObjectView, Pane, PasswordPrompt, PickTarget, Reach,
     ResultPane, RunMode, SecretKind, SessionStatus, SqlTab, StartRecent, Tab, TabId, TestState,
-    TextPrint, Tree, TreeKey, TreeNode, TreeRow, Wanted, Workspace,
+    TextPrint, Tree, TreeKey, TreeNode, Wanted, Workspace,
 };
 use crate::paths::AppDirs;
 use crate::secrets::{SecretString, password_account, ssh_account};
@@ -7686,7 +7686,7 @@ impl App {
             let open = key == TreeKey::OpenAll;
             // An object of a group folded now leaves its cursor to the group.
             let target = at.map(|at| if open { at } else { parent(at) });
-            self.set_every_group(tab, &rows, open);
+            self.set_every_group(tab, show_system, open);
             if let Some(index) = target
                 && let Some(workspace) = self.workspace_mut(tab)
             {
@@ -7757,19 +7757,33 @@ impl App {
         }
     }
 
-    /// Folds every group of the tree `rows` shows, or unfolds them all.
-    fn set_every_group(&mut self, tab: ConnTabId, rows: &[TreeRow], open: bool) {
+    /// Folds every group of the schema the sidebar shows, or unfolds them
+    /// all: those a filter hides too, so they are as asked once it is
+    /// cleared. `show_system` is the setting that lists the system's
+    /// schemas.
+    fn set_every_group(&mut self, tab: ConnTabId, show_system: bool, open: bool) {
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
-        for row in rows {
-            if let TreeNode::Group(schema, prefix) = &row.node {
-                let node = workspace.tree.nodes.entry(schema.clone()).or_default();
-                if open {
-                    node.open_groups.insert(prefix.clone());
-                } else {
-                    node.open_groups.remove(prefix);
-                }
+        let Some(schema) = workspace.tree.shown_schema(workspace.driver, show_system) else {
+            return;
+        };
+        let Some(node) = workspace.tree.nodes.get_mut(&schema) else {
+            return;
+        };
+        let objects: Vec<&tabletist_db::ObjectInfo> = node.objects.value.iter().flatten().collect();
+        let prefixes: Vec<String> = crate::model::group_objects(&objects)
+            .into_iter()
+            .filter_map(|entry| match entry {
+                crate::model::Entry::Group { prefix, .. } => Some(prefix),
+                crate::model::Entry::Object(_) => None,
+            })
+            .collect();
+        for prefix in prefixes {
+            if open {
+                node.open_groups.insert(prefix);
+            } else {
+                node.open_groups.remove(&prefix);
             }
         }
     }

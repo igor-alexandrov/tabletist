@@ -498,3 +498,32 @@ fn a_long_name_on_the_start_line_gives_way_at_its_end() {
     assert!(drawn.ends_with('…'), "{drawn}");
     assert!(rect.right() <= 720.0 && rect.left() >= 0.0, "{rect:?}");
 }
+
+#[test]
+fn folding_or_opening_every_group_reaches_those_a_filter_hides() {
+    let (mut harness, tab) = grouped(Look::omarchy());
+    harness.app.apply(Action::ToggleGroup {
+        tab,
+        schema: "main".into(),
+        prefix: "publisher".into(),
+    });
+    assert_eq!(open_groups(&harness, tab), ["book", "publisher"]);
+    // The filter shows `book_awards` alone: `publisher_` is hidden.
+    let filter = |harness: &mut Harness, text: &str| {
+        harness.app.workspace_mut(tab).unwrap().tree.filter = text.into();
+    };
+    filter(&mut harness, "awards");
+    harness.app.apply(Action::TreeKey {
+        tab,
+        key: crate::model::TreeKey::FoldAll,
+    });
+    filter(&mut harness, "");
+    assert_eq!(open_groups(&harness, tab), Vec::<String>::new());
+    filter(&mut harness, "awards");
+    harness.app.apply(Action::TreeKey {
+        tab,
+        key: crate::model::TreeKey::OpenAll,
+    });
+    filter(&mut harness, "");
+    assert_eq!(open_groups(&harness, tab), ["book", "publisher"]);
+}
