@@ -2709,8 +2709,17 @@ impl Settings {
     /// more: a key to add or take out there gets the file written as
     /// [`Settings::to_toml`] has it. So does a text too long to be read.
     pub fn write_into(&self, text: &str, keys: &[Key]) -> String {
+        self.write_kept(text, keys)
+            .unwrap_or_else(|| self.to_toml())
+    }
+
+    /// [`Self::write_into`] where it keeps the rest of `text` as it was,
+    /// and `None` where it would write the file whole instead: what a
+    /// change nobody asked for (a start moving an older key) writes, or
+    /// leaves the file alone.
+    pub fn write_kept(&self, text: &str, keys: &[Key]) -> Option<String> {
         if text.len() > MAX_BYTES || text.lines().count() > MAX_LINES {
-            return self.to_toml();
+            return None;
         }
         let text = if text.trim_matches([' ', '\t', '\r', '\n']).is_empty() {
             HEADER
@@ -2762,7 +2771,7 @@ impl Settings {
                         // or with dotted keys, a header of its own would
                         // define it again: the file is written whole.
                         if !headed_parents(&document, &working, table_name) {
-                            return self.to_toml();
+                            return None;
                         }
                         new_tables.push((table_name, line(key, &literal)));
                     }
@@ -2811,7 +2820,7 @@ impl Settings {
                 (Some((found, value)), None) => {
                     let whole = found.span().start..value.span().end;
                     if !headed || !own_lines(&working, whole.clone()) {
-                        return self.to_toml();
+                        return None;
                     }
                     let lines = line_start(&working, whole.start)..line_end(&working, whole.end);
                     edits.push((lines, String::new()));
@@ -2823,7 +2832,7 @@ impl Settings {
                 }
                 (None, Some(literal)) => {
                     if !headed {
-                        return self.to_toml();
+                        return None;
                     }
                     // After the table's last key, or under its header. A
                     // table under it (`[data.more]`) is no key of it.
@@ -2880,7 +2889,7 @@ impl Settings {
             }
             out.push_str(&added);
         }
-        out
+        Some(out)
     }
 
     /// The settings with every number in its range.

@@ -565,11 +565,15 @@ impl App {
             app.save_settings();
         }
         // And a key read from the older one it took the place of, once:
-        // `interface_size` as `ui_scale`, the old line taken out.
+        // `interface_size` as `ui_scale`, the old line taken out. Where
+        // that would write the file whole (the key in a table written
+        // inline), it is not written: nobody asked, and the file's other
+        // keys and comments would go. The old key is read as it is.
         if !migrated.is_empty() {
             let settings = app.settings.clone();
-            let text = settings.write_into(&app.settings_file.text, &migrated);
-            app.take_written(text, settings);
+            if let Some(text) = settings.write_kept(&app.settings_file.text, &migrated) {
+                app.take_written(text, settings);
+            }
         }
         app
     }
@@ -9634,6 +9638,18 @@ mod tests {
             Backend::recording(),
         );
         assert_eq!(app.settings.sql_limit, 300);
+        assert!(saved_none(&app), "{:?}", app.backend.sent);
+        assert_eq!(app.settings_file.text, text);
+        // An inline table could only be written whole, losing the keys and
+        // comments this version does not know: the start leaves it alone,
+        // and the old key is read as it is.
+        let text = "appearance = { interface_size = \"large\", future = 1 } # mine\n";
+        let app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::from_toml(text),
+            Backend::recording(),
+        );
+        assert_eq!(app.settings.ui_scale, UiScale::of(1.1).unwrap());
         assert!(saved_none(&app), "{:?}", app.backend.sent);
         assert_eq!(app.settings_file.text, text);
         fn saved_none(app: &App) -> bool {
