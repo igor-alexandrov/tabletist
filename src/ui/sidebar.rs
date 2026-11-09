@@ -328,8 +328,8 @@ pub fn show(
                     focus::claim(ui, focus::Region::Search, &field);
                     // Clicked from another pane, the field is the tree's
                     // all the same: its Enter and Esc leave it for the tree.
-                    if field.has_focus() {
-                        workspace.pane = crate::model::Pane::Tree;
+                    if field.has_focus() && workspace.pane != crate::model::Pane::Tree {
+                        actions.push(Action::GiveTreeKeys(tab));
                     }
                 }
             });

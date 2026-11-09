@@ -1055,6 +1055,9 @@ pub enum Action {
         tab: ConnTabId,
         node: TreeNode,
     },
+    /// Give the tree the keys, its cursor where it was: its filter field
+    /// took the keyboard from another pane, and leaves it to the tree.
+    GiveTreeKeys(ConnTabId),
     /// Show the keyboard shortcuts.
     ShowHelp,
     /// Show the About dialog.

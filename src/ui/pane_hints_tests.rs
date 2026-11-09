@@ -268,6 +268,12 @@ fn the_filter_clicked_from_the_grid_leaves_for_the_tree_by_enter_or_esc() {
         let (mut harness, tab, _) = covers_in(Look::omarchy());
         assert_eq!(harness.app.workspace(tab).unwrap().pane, Pane::Grid);
         click_filter(&mut harness);
+        // The click gives the tree the keys, the field holding them.
+        assert_eq!(
+            harness.app.workspace(tab).unwrap().pane,
+            Pane::Tree,
+            "{leave:?}"
+        );
         assert!(
             starts(&harness, &["enter/esc tree"]),
             "{leave:?}: {:?}",

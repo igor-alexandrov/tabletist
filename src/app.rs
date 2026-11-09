@@ -1470,6 +1470,11 @@ impl App {
                     workspace.pane = Pane::Tree;
                 }
             }
+            Action::GiveTreeKeys(tab) => {
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.pane = Pane::Tree;
+                }
+            }
             Action::TreeKey { tab, key } => self.tree_key(tab, key),
             Action::ActivateTab { tab, id } => {
                 if let Some(workspace) = self.workspace_mut(tab)
