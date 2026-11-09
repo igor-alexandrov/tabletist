@@ -173,7 +173,8 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::TlsMode;
+    use crate::ssh::Tunnel;
+    use crate::{HostKeys, Secrets, SshAuth, SshSpec, SshStage, TlsMode};
 
     #[tokio::test]
     async fn a_statement_dropped_mid_run_leaves_nothing_to_cancel() {
@@ -204,5 +205,91 @@ mod tests {
         assert!(dropped.is_err());
         let running = session.running.lock().unwrap().clone();
         assert_eq!(running, None);
+    }
+
+    /// The compose SSH server and its password, from
+    /// TABLETIST_TEST_SSH_URL (`ssh://user:password@host:port`), or `None`.
+    fn ssh() -> Option<(SshSpec, Secrets)> {
+        let Ok(url) = std::env::var("TABLETIST_TEST_SSH_URL") else {
+            eprintln!("skipped: TABLETIST_TEST_SSH_URL is not set");
+            return None;
+        };
+        let url = url::Url::parse(&url).unwrap();
+        Some((
+            SshSpec {
+                host: url.host_str().unwrap().to_owned(),
+                port: url.port(),
+                user: url.username().to_owned(),
+                auth: SshAuth::Password,
+            },
+            Secrets {
+                ssh_password: url.password().map(str::to_owned),
+                ..Secrets::default()
+            },
+        ))
+    }
+
+    /// A tunnel to `clickhouse:port` in the compose network, trusting the
+    /// SSH server's key as the app does: from the first refusal.
+    async fn tunnel(ssh: &SshSpec, secrets: &Secrets, port: u16) -> Tunnel {
+        let error = match Tunnel::open(ssh, "clickhouse", port, secrets, &HostKeys::default()).await
+        {
+            Ok(_) => panic!("the host key was trusted before it was learned"),
+            Err(error) => error,
+        };
+        let Error::Ssh {
+            stage:
+                SshStage::HostKeyUnknown {
+                    host,
+                    port: ssh_port,
+                    fingerprint,
+                },
+            ..
+        } = error
+        else {
+            panic!("{error:?}");
+        };
+        let mut keys = HostKeys::default();
+        keys.trust(&host, ssh_port, &fingerprint);
+        Tunnel::open(ssh, "clickhouse", port, secrets, &keys)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_tunnel_carries_the_session_and_tls_checks_the_real_host() {
+        let Some((ssh, secrets)) = ssh() else { return };
+        let login = Login {
+            user: "tabletist".into(),
+            password: "tabletist".into(),
+            database: "tabletist".into(),
+        };
+
+        let plain = tunnel(&ssh, &secrets, 8123).await;
+        let endpoint = Endpoint {
+            host: "clickhouse".into(),
+            port: 8123,
+            via: Some(plain.port),
+            tls: TlsMode::Disable,
+            ca_file: None,
+        };
+        let session = Session::connect(endpoint, login.clone()).await.unwrap();
+        assert!(!session.server_version().await.unwrap().is_empty());
+
+        // The certificate names `clickhouse`, not 127.0.0.1 where the
+        // tunnel listens: verify-full passes only by the real host's name.
+        let tls = tunnel(&ssh, &secrets, 8443).await;
+        let ca_file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../compose/clickhouse/ca.pem");
+        let endpoint = Endpoint {
+            host: "clickhouse".into(),
+            port: 8443,
+            via: Some(tls.port),
+            tls: TlsMode::VerifyFull,
+            ca_file: Some(ca_file),
+        };
+        let session = Session::connect(endpoint, login).await.unwrap();
+        assert!(session.is_encrypted());
+        assert!(!session.server_version().await.unwrap().is_empty());
     }
 }
