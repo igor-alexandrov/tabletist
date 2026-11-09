@@ -8277,8 +8277,14 @@ impl App {
                 settings.font_size = larger.map(|larger| settings.stepped_font_size(true, larger));
             });
             let size = self.settings.font_size_in(true).text();
+            // A key that resets it is named; a `[keys]` line can leave none.
+            let words = if reset.as_str().is_empty() {
+                "font size {size}"
+            } else {
+                "font size {size} · {key} resets"
+            };
             self.said = Some(
-                gettext(self.locale, "font size {size} · {key} resets")
+                gettext(self.locale, words)
                     .replace("{size}", &size)
                     .replace("{key}", reset.as_str()),
             );
@@ -8289,14 +8295,16 @@ impl App {
                 });
             });
             let scale = self.settings.ui_scale;
+            let words = if reset.as_str().is_empty() {
+                "Interface {percent}% · {px} px text"
+            } else {
+                "Interface {percent}% · {px} px text · {key} resets"
+            };
             self.said = Some(
-                gettext(
-                    self.locale,
-                    "Interface {percent}% · {px} px text · {key} resets",
-                )
-                .replace("{percent}", &scale.percent().to_string())
-                .replace("{px}", &scale.text_px().to_string())
-                .replace("{key}", reset.as_str()),
+                gettext(self.locale, words)
+                    .replace("{percent}", &scale.percent().to_string())
+                    .replace("{px}", &scale.text_px().to_string())
+                    .replace("{key}", reset.as_str()),
             );
         }
     }

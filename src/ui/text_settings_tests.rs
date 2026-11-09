@@ -230,6 +230,95 @@ fn a_key_that_changes_the_scale_says_so_in_the_toast() {
     assert_eq!(crate::ui::toast::SECONDS, 4.0);
 }
 
+/// The keymap's key for Actual size, which the toast and the status line
+/// name.
+fn reset_key(harness: &Harness) -> String {
+    let reset = harness.app.keymap.key(
+        harness.app.layout(),
+        crate::keymap::Command::DefaultTextSize,
+    );
+    reset.as_str().to_owned()
+}
+
+/// A `[keys.unbind]` line that leaves Actual size no key, asked of the
+/// keymap: its scope's table and its default keys there.
+fn unbind_actual_size(harness: &Harness) -> String {
+    use crate::keymap::{BINDINGS, Command, Row, defaults};
+    let layout = harness.app.layout();
+    let row = BINDINGS
+        .iter()
+        .map(Row::of)
+        .find(|row| row.command == Command::DefaultTextSize)
+        .unwrap();
+    let keys: Vec<String> = defaults(layout, row)
+        .into_iter()
+        .map(|keys| format!("{keys:?}"))
+        .collect();
+    format!(
+        "[keys.unbind]\n{} = [{}]\n",
+        row.scope.table(layout),
+        keys.join(", ")
+    )
+}
+
+/// The settings file edited to `text`, as a live edit reaches the app.
+fn edited(harness: &mut Harness, text: &str) {
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::SettingsFile {
+            text: text.to_owned(),
+            own: false,
+        }));
+    harness.settle();
+}
+
+#[test]
+fn with_no_key_for_actual_size_the_toast_names_none() {
+    let mut harness = sheet(Look::macos());
+    let unbind = unbind_actual_size(&harness);
+    edited(&mut harness, &unbind);
+    assert_eq!(
+        reset_key(&harness),
+        "",
+        "{:?}",
+        harness.app.settings_file.invalid
+    );
+    harness.press(Key::Equals, Modifiers::COMMAND);
+    let said = "Interface 110% · 14 px text";
+    assert!(shows(&mut harness, said), "{:?}", harness.painted);
+    assert!(
+        !harness
+            .painted
+            .iter()
+            .any(|(text, _)| text.contains("resets")),
+        "{:?}",
+        harness.painted
+    );
+}
+
+#[test]
+fn with_no_key_for_actual_size_the_status_line_names_none() {
+    let mut harness = terminal();
+    let unbind = unbind_actual_size(&harness);
+    edited(&mut harness, &unbind);
+    assert_eq!(
+        reset_key(&harness),
+        "",
+        "{:?}",
+        harness.app.settings_file.invalid
+    );
+    harness.press(Key::Equals, Modifiers::CTRL);
+    assert!(shows(&mut harness, "font size 14"), "{:?}", harness.painted);
+    assert!(
+        !harness
+            .painted
+            .iter()
+            .any(|(text, _)| text.contains("resets")),
+        "{:?}",
+        harness.painted
+    );
+}
+
 #[test]
 fn the_scale_keys_work_under_the_settings_window_which_shows_it_unsaid() {
     let mut harness = sheet(Look::macos());
