@@ -1138,3 +1138,76 @@ fn a_letter_typed_in_a_redis_window_leaves_the_keyboard_on_the_keys() {
         Some(crate::keyspace::Place::Group(b"cart:".to_vec()))
     );
 }
+
+#[test]
+fn a_reconnect_that_cannot_go_back_falls_back_to_the_sessions_database() {
+    let mut harness = Harness::new();
+    let tab = harness.connect_redis();
+    harness.app.apply(Action::SwitchDatabase {
+        tab,
+        database: "2 · 38 keys".into(),
+    });
+    let answer = |harness: &mut Harness, database: u32, result| {
+        let (session, request) = harness.last_redis(|ask| matches!(ask, RedisAsk::Select { .. }));
+        harness.app.apply(Action::Backend(Event::Redis {
+            session,
+            request,
+            answer: RedisAnswer::Selected { database, result },
+        }));
+    };
+    answer(&mut harness, 2, Ok(()));
+    step(&mut harness, &["item:1"], 38, ScanEnd::Done);
+    harness.app.apply(Action::Redis(
+        tab,
+        RedisAction::OpenKey(Box::from(&b"item:1"[..])),
+    ));
+    // The connection drops; the new session opens on database 0, and its
+    // SELECT of database 2 is refused.
+    let session = harness.app.workspace(tab).unwrap().session;
+    harness.app.apply(Action::Backend(Event::Disconnected {
+        session,
+        error: tabletist_db::Error::ConnectionLost("gone".into()),
+    }));
+    harness.app.apply(Action::Reconnect(tab));
+    let (session, request) = harness
+        .app
+        .backend
+        .sent
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::Connect {
+                session, request, ..
+            } => Some((*session, *request)),
+            _ => None,
+        })
+        .expect("a Connect");
+    harness.app.apply(Action::Backend(Event::Connected {
+        session,
+        request,
+        driver: tabletist_db::Driver::Redis,
+        encrypted: false,
+        access: crate::testing::asked_access(&harness.app),
+    }));
+    let before = asks(&harness).len();
+    answer(
+        &mut harness,
+        2,
+        Err(tabletist_db::Error::query("ERR DB index is out of range")),
+    );
+    // The window shows the database its session is on, and nothing of 2.
+    assert_eq!(browser(&harness, tab).database, 0);
+    assert!(browser(&harness, tab).tabs.is_empty());
+    let after: Vec<&RedisAsk> = asks(&harness)[before..].to_vec();
+    assert!(
+        matches!(
+            after.as_slice(),
+            [
+                RedisAsk::Probe { database: 0 },
+                RedisAsk::Scan { cursor: 0, .. }
+            ]
+        ),
+        "{after:?}"
+    );
+    assert!(harness.app.said.is_some());
+}

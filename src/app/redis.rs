@@ -436,20 +436,39 @@ impl App {
                     self.redis_scan(tab);
                 }
             }
-            RedisAnswer::Selected { database, result } => match result {
-                Ok(()) => {
-                    browser.database = database;
-                    // Its keys are another database's: they go, and so do
-                    // the tabs of the old one's.
-                    browser.tabs.clear();
-                    browser.active = None;
-                    browser.open.clear();
-                    browser.cursor = None;
-                    self.redis_probe(tab, database);
-                    self.redis_scan(tab);
+            RedisAnswer::Selected { database, result } => {
+                // The database the window goes to: the one chosen, or, where
+                // a reconnect could not go back to the one it was on, the
+                // session's own, which it opened on. A switch that failed
+                // left both connections where they were (`Handle::select`).
+                let reconnect = database == browser.database;
+                let to = match &result {
+                    Ok(()) => Some(database),
+                    Err(_) if reconnect => Some(workspace.spec.redis_spec().database),
+                    Err(_) => None,
+                };
+                if let Err(error) = &result {
+                    self.said = Some(error.to_string());
                 }
-                Err(error) => self.said = Some(error.to_string()),
-            },
+                let Some(to) = to else {
+                    return;
+                };
+                let Some(browser) = self
+                    .workspace_mut(tab)
+                    .and_then(|workspace| workspace.redis.as_deref_mut())
+                else {
+                    return;
+                };
+                browser.database = to;
+                // Its keys are another database's: they go, and so do the
+                // tabs of the old one's.
+                browser.tabs.clear();
+                browser.active = None;
+                browser.open.clear();
+                browser.cursor = None;
+                self.redis_probe(tab, to);
+                self.redis_scan(tab);
+            }
             RedisAnswer::Scanned(step) => {
                 browser.take_step(request, step);
             }

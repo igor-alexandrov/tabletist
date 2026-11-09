@@ -2815,7 +2815,14 @@ impl ConnectionForm {
             }
             _ => self.ssh_secret_mode,
         };
-        let agents = self.agents_to_saved()?;
+        // A Redis connection keeps no agents' settings: agents get none of
+        // it, and its file entry has no table for them.
+        let agents = match spec.driver {
+            Driver::Redis => crate::connections::Agents::default(),
+            Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => {
+                self.agents_to_saved()?
+            }
+        };
         Ok(crate::connections::SavedConnection {
             id: self.editing.clone().unwrap_or_else(ConnectionId::new),
             name: name.to_owned(),

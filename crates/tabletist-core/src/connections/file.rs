@@ -321,6 +321,14 @@ impl Entry {
         };
         let redis = match (self.driver, self.redis) {
             (Driver::Redis, table) => {
+                // Agents get no Redis connection: a table for them would
+                // promise what is never given.
+                if !agents.is_default() {
+                    return Err(format!(
+                        "connection {:?}: a Redis connection has no [connections.agents] table",
+                        self.name
+                    ));
+                }
                 // Its TLS and its database are in its own table: a key of
                 // the others' would be read as nothing.
                 if self.tls != TlsMode::default() || self.ca_file.is_some() {
@@ -604,7 +612,8 @@ pub(super) fn write(connections: &[SavedConnection]) -> std::io::Result<String> 
         if !sql {
             redis_tables(&spec.redis_spec(), &mut out)?;
         }
-        if !connection.agents.is_default() {
+        // A Redis connection has no agents' table (the reader refuses one).
+        if sql && !connection.agents.is_default() {
             let mut lines = Lines::default();
             lines.text("access", connection.agents.access.key());
             lines.bare("rows", connection.agents.rows);
@@ -1343,6 +1352,15 @@ masked       = ["orders.email", "\"odd.schema\".orders.phone"]
         assert_eq!(write(&read.connections).unwrap(), text);
         // Without one, the file stays at the version that holds the rest.
         assert!(write(&bookshop()).unwrap().contains("version = 3\n"));
+    }
+
+    #[test]
+    fn a_redis_connection_has_no_agents_table() {
+        let text = "version = 7\n[[connections]]\nid = \"c\"\nname = \"Cache\"\n\
+                    driver = \"redis\"\nhost = \"localhost\"\n\
+                    [connections.agents]\naccess = \"read\"\n";
+        let said = read(text).unwrap_err().to_string();
+        assert!(said.contains("no [connections.agents] table"), "{said}");
     }
 
     #[test]

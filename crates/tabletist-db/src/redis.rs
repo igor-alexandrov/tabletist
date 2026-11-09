@@ -13,6 +13,7 @@
 //! the same check, so the handshake's words are on the list too.
 
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -344,6 +345,8 @@ pub struct Handle {
     scans: MultiplexedConnection,
     server: Server,
     encrypted: bool,
+    /// The database both connections are on.
+    database: Arc<AtomicU32>,
     /// The names of the commands sent, from [`READS`]: bounded by it.
     sent: Arc<Mutex<BTreeSet<&'static str>>>,
 }
@@ -637,6 +640,7 @@ pub(crate) async fn connect(
             scans,
             server,
             encrypted: spec.redis_spec().tls.enabled,
+            database: Arc::new(AtomicU32::new(spec.redis_spec().database)),
             sent: Arc::clone(&sent),
         })
     };
@@ -741,10 +745,17 @@ impl Handle {
     }
 
     /// Moves both connections to `database`.
+    /// Moves both connections to `database`, or neither: the main one
+    /// goes back to the database it was on where the scans' cannot follow.
     pub async fn select(&self, database: u32) -> Result<()> {
         let number = database.to_string();
+        let was = self.database.load(Ordering::SeqCst).to_string();
         self.send(&[b"SELECT", number.as_bytes()]).await?;
-        send(&self.scans, &self.sent, &[b"SELECT", number.as_bytes()]).await?;
+        if let Err(error) = send(&self.scans, &self.sent, &[b"SELECT", number.as_bytes()]).await {
+            let _ = self.send(&[b"SELECT", was.as_bytes()]).await;
+            return Err(error);
+        }
+        self.database.store(database, Ordering::SeqCst);
         Ok(())
     }
 
