@@ -415,17 +415,6 @@ impl App {
         found.into_iter().map(|(_, item)| item).collect()
     }
 
-    /// What quick open lists for `open`. With nothing typed: each searched
-    /// window's start screen list (headed by its connection where every
-    /// open one is searched), then the suggested commands. With a query:
-    /// the tables and then the views that match, or where every open
-    /// connection is searched, each connection's matches under it; then
-    /// the commands and the settings' rows whose names match. In the macOS
-    /// and Windows looks each group shows its first three and a "more" row
-    /// until that is opened, and a query that begins with `>` lists every
-    /// command that matches what follows it, and nothing else; the
-    /// terminal look lists every match, in one list with no kind headings,
-    /// and no commands.
     /// The groups and the keys of the Redis window `tab` whose names hold
     /// `query`, without regard to case: the groups first, and in each
     /// what begins with it before what holds it elsewhere. At most
@@ -492,6 +481,17 @@ impl App {
             .collect()
     }
 
+    /// What quick open lists for `open`. With nothing typed: each searched
+    /// window's start screen list (headed by its connection where every
+    /// open one is searched), then the suggested commands. With a query:
+    /// the tables and then the views that match, or where every open
+    /// connection is searched, each connection's matches under it; then
+    /// the commands and the settings' rows whose names match. In the macOS
+    /// and Windows looks each group shows its first three and a "more" row
+    /// until that is opened, and a query that begins with `>` lists every
+    /// command that matches what follows it, and nothing else; the
+    /// terminal look lists every match, in one list with no kind headings,
+    /// and no commands.
     pub fn quick_open_list(&self, open: &QuickOpen) -> QuickList {
         let terminal = self.look.terminal;
         let commands_query = self.quick_open_commands_query(open);

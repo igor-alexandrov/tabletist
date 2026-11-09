@@ -240,9 +240,9 @@ pub fn find_folded(text: &str, query: &str) -> Option<std::ops::Range<usize>> {
     if wanted.is_empty() {
         return None;
     }
-    let starts = text.char_indices().map(|(at, _)| at);
-    starts.into_iter().find_map(|start| {
-        let mut lowered = Vec::new();
+    let mut lowered = Vec::with_capacity(wanted.len() + 2);
+    text.char_indices().find_map(|(start, _)| {
+        lowered.clear();
         for (at, c) in text[start..].char_indices() {
             lowered.extend(c.to_lowercase());
             if lowered.len() > wanted.len() || lowered[..] != wanted[..lowered.len()] {

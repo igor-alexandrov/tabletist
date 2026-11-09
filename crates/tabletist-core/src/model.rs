@@ -1989,10 +1989,10 @@ pub enum TableFocus {
     Add,
 }
 
-/// The connection dialog's fields while it is open.
 /// What the URL tab shows in place of a Redis password.
 pub const REDIS_URL_DOTS: &str = "••••";
 
+/// The connection dialog's fields while it is open.
 pub struct ConnectionForm {
     /// `Some` when editing a saved connection, `None` for a new one.
     pub editing: Option<ConnectionId>,

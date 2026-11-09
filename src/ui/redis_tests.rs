@@ -1034,3 +1034,78 @@ fn quick_opens_group_escapes_the_globs_characters() {
     });
     assert_eq!(browser(&harness, tab).filter, "a\\[b\\]:*");
 }
+
+#[test]
+fn a_reconnect_goes_back_to_the_database_switched_to_and_keeps_the_keys_open() {
+    let mut harness = Harness::new();
+    let tab = harness.connect_redis();
+    // Switched to database 2, its scan done, a key open.
+    harness.app.apply(Action::SwitchDatabase {
+        tab,
+        database: "2 · 38 keys".into(),
+    });
+    let selected = |harness: &mut Harness, database: u32| {
+        let (session, request) = harness.last_redis(|ask| matches!(ask, RedisAsk::Select { .. }));
+        harness.app.apply(Action::Backend(Event::Redis {
+            session,
+            request,
+            answer: RedisAnswer::Selected {
+                database,
+                result: Ok(()),
+            },
+        }));
+    };
+    selected(&mut harness, 2);
+    step(&mut harness, &["item:1"], 38, ScanEnd::Done);
+    harness.app.apply(Action::Redis(
+        tab,
+        RedisAction::OpenKey(Box::from(&b"item:1"[..])),
+    ));
+    // The connection drops, and comes back.
+    let session = harness.app.workspace(tab).unwrap().session;
+    harness.app.apply(Action::Backend(Event::Disconnected {
+        session,
+        error: tabletist_db::Error::ConnectionLost("gone".into()),
+    }));
+    harness.app.apply(Action::Reconnect(tab));
+    let before = asks(&harness).len();
+    let (session, request) = harness
+        .app
+        .backend
+        .sent
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::Connect {
+                session, request, ..
+            } => Some((*session, *request)),
+            _ => None,
+        })
+        .expect("a Connect");
+    harness.app.apply(Action::Backend(Event::Connected {
+        session,
+        request,
+        driver: tabletist_db::Driver::Redis,
+        encrypted: false,
+        access: crate::testing::asked_access(&harness.app),
+    }));
+    // Only SELECT: nothing is asked of the first database meanwhile.
+    let after: Vec<&RedisAsk> = asks(&harness)[before..].to_vec();
+    assert!(
+        matches!(after.as_slice(), [RedisAsk::Select { database: 2 }]),
+        "{after:?}"
+    );
+    selected(&mut harness, 2);
+    let after: Vec<&RedisAsk> = asks(&harness)[before..].to_vec();
+    // A probe of it; no scan, which had ended; the key stays open.
+    assert!(
+        matches!(
+            after.as_slice(),
+            [RedisAsk::Select { .. }, RedisAsk::Probe { database: 2 }]
+        ),
+        "{after:?}"
+    );
+    assert_eq!(browser(&harness, tab).database, 2);
+    assert_eq!(browser(&harness, tab).tabs.len(), 1);
+    assert_eq!(browser(&harness, tab).tree.len(), 1);
+}

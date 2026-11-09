@@ -63,9 +63,12 @@ impl App {
             }
         };
         let database = match again {
+            // Back to the database it was on: the answer to SELECT probes
+            // it, and scans where a scan had not ended. Nothing is asked
+            // of the session's first database meanwhile.
             Some((database, _)) if database != first => {
                 self.redis_send(tab, RedisAsk::Select { database });
-                database
+                return;
             }
             Some((database, _)) => database,
             None => first,
@@ -419,6 +422,18 @@ impl App {
                 if let Some(counted) = counted {
                     let conn = workspace.conn_id.clone();
                     self.redis_keys.insert(conn, counted);
+                }
+            }
+            // The window's own database chosen again after a reconnect:
+            // what it shows stays, the scan goes on where it had not ended.
+            RedisAnswer::Selected {
+                database,
+                result: Ok(()),
+            } if database == browser.database => {
+                let scanning = browser.scan.running();
+                self.redis_probe(tab, database);
+                if scanning {
+                    self.redis_scan(tab);
                 }
             }
             RedisAnswer::Selected { database, result } => match result {
