@@ -8975,6 +8975,16 @@ value_tags   = true
         }
     }
 
+    /// The password box's name in `look`: the Keychain on macOS, in every
+    /// look, the keyring elsewhere ([`crate::theme::Look::keychain`]).
+    fn keyring_word(look: &crate::theme::Look) -> &'static str {
+        if look.keychain(crate::update::release::Os::current()) {
+            "Keychain"
+        } else {
+            "Keyring"
+        }
+    }
+
     /// Tabs until the widget named `name` has the keyboard.
     fn tab_to(harness: &mut Harness, name: &str) {
         for _ in 0..80 {
@@ -9007,7 +9017,8 @@ value_tags   = true
                 })
                 .count()
         };
-        for name in ["Keyring", "Connect through SSH tunnel", "Open read-only"] {
+        let keyring = keyring_word(&crate::theme::Look::omarchy());
+        for name in [keyring, "Connect through SSH tunnel", "Open read-only"] {
             tab_to(&mut harness, name);
             assert_eq!(rings(&mut harness, name), 1, "{name}");
         }
@@ -9485,9 +9496,10 @@ value_tags   = true
         new_connection(&mut harness);
         harness.click("PostgreSQL");
         assert_eq!(form(&harness).password_mode, PasswordMode::Keyring);
-        harness.click("Keyring");
+        let keyring = keyring_word(&harness.app.look);
+        harness.click(keyring);
         assert_eq!(form(&harness).password_mode, PasswordMode::Ask);
-        harness.click("Keyring");
+        harness.click(keyring);
         assert_eq!(form(&harness).password_mode, PasswordMode::Keyring);
     }
 
@@ -9508,7 +9520,7 @@ value_tags   = true
                 saved.password = PasswordMode::Keyring;
                 harness.app.connections.upsert(saved);
                 harness.app.apply(crate::model::Action::EditConnection(id));
-                let hint = look.label(if look.faces.typeface == crate::theme::Typeface::Plex {
+                let hint = look.label(if keyring_word(&look) == "Keychain" {
                     "Saved in the keychain"
                 } else {
                     "Saved in the keyring"
@@ -9759,11 +9771,7 @@ value_tags   = true
     fn each_keyring_box_says_which_secret_it_keeps() {
         use crate::connections::PasswordMode;
         for look in crate::theme::Look::ALL {
-            let keyring = if look.faces.typeface == crate::theme::Typeface::Plex {
-                "Keychain"
-            } else {
-                "Keyring"
-            };
+            let keyring = keyring_word(&look);
             let ssh = format!("{keyring} for the SSH secret");
             let mut harness = Harness::new();
             harness.set_look(look);
