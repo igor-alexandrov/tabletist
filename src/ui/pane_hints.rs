@@ -118,11 +118,13 @@ pub fn tree(
 }
 
 /// The filter field's: its Enter and Esc both leave it for the tree.
-pub fn filter(locale: Locale) -> Vec<Owned> {
-    vec![(
-        Written::plain("enter/esc"),
-        gettext(locale, "tree").into_owned(),
-    )]
+pub fn filter(keymap: &Keymap, layout: Layout, locale: Locale) -> Vec<Owned> {
+    let key = keymap.key(layout, Command::LeaveFilter);
+    let hints = vec![(key, gettext(locale, "tree").into_owned())];
+    hints
+        .into_iter()
+        .filter(|(key, _)| !key.is_empty())
+        .collect()
 }
 
 /// The row panel's, while one of its fields has the keyboard:

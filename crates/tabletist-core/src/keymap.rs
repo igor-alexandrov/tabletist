@@ -403,6 +403,13 @@ impl Bound {
         }
     }
 
+    const fn insert(self) -> Self {
+        Self {
+            mode: Mode::Insert,
+            ..self
+        }
+    }
+
     const fn any(self) -> Self {
         Self {
             mode: Mode::Any,
@@ -480,6 +487,7 @@ commands! {
     // Navigation.
     FindObject = "find_object",
     FilterObjects = "filter_objects",
+    LeaveFilter = "leave_filter",
     NewSqlTab = "new_sql_tab",
     ReopenClosedTab = "reopen_closed_tab",
     ShowAgents = "show_agents",
@@ -858,6 +866,7 @@ impl Command {
             C::FilterConnections => info("Filter the connections", "", Window),
             C::FindObject => info("Find any object", "Find any object", Navigation),
             C::FilterObjects => info("Filter the sidebar's objects", "", Navigation),
+            C::LeaveFilter => info("Leave the filter for the tree", "", Navigation),
             C::NewSqlTab => info("New SQL editor tab", "New SQL editor tab", Navigation),
             // Nothing reopens a closed tab yet: the start screen opens a
             // recent by its number.
@@ -1520,6 +1529,14 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("ctrl+p")]),
         ),
         bind(C::FilterObjects, SIDEBAR, NONE, keys(&[k("/")])),
+        // The filter field's own Enter and Esc: the field reads them, and
+        // they are listed here to be written in its hint.
+        bind(
+            C::LeaveFilter,
+            SIDEBAR,
+            NONE,
+            keys(&[k("enter"), k("esc")]).insert().shown("enter/esc"),
+        ),
         bind(
             C::NewSqlTab,
             GLOBAL,
@@ -3195,12 +3212,6 @@ impl Written {
         &self.0
     }
 
-    /// Keys a widget takes by itself, with no command of the keymap's:
-    /// a text field's Enter and Esc.
-    pub fn plain(text: &str) -> Written {
-        Written(text.to_owned())
-    }
-
     /// The key in the brackets a prompt draws round the letter that
     /// answers it: `[w]`.
     pub fn bracketed(&self) -> Written {
@@ -3920,7 +3931,7 @@ const DIRECTIONS: [Command; 9] = [
 ];
 
 /// The commands read where nothing asks the keymap for another key.
-const OWN: [Command; 2] = [Command::Help, Command::LeaveEditor];
+const OWN: [Command; 3] = [Command::Help, Command::LeaveEditor, Command::LeaveFilter];
 
 /// The rows with no key in one look whose chords the key handler reads in
 /// every look: there a chord can be given them. Any other row with no key

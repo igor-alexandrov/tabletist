@@ -2847,7 +2847,7 @@ fn status_line(
     use super::pane_hints::{self, Held};
     let held = Held::of(ui.ctx(), tab, workspace);
     let own = |editable: bool, pending: pane_hints::Pending| match held {
-        Held::Filter => Some(pane_hints::filter(locale)),
+        Held::Filter => Some(pane_hints::filter(keymap, layout, locale)),
         Held::Panel => Some(pane_hints::panel(
             ui.ctx(),
             keymap,
