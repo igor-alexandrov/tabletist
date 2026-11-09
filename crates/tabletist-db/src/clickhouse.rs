@@ -209,7 +209,13 @@ mod tests {
 
     /// The compose SSH server and its password, from
     /// TABLETIST_TEST_SSH_URL (`ssh://user:password@host:port`), or `None`.
+    /// Only with TABLETIST_TEST_CLICKHOUSE_URL set too: the PostgreSQL and
+    /// MySQL suites set the SSH variable without starting ClickHouse.
     fn ssh() -> Option<(SshSpec, Secrets)> {
+        if std::env::var_os("TABLETIST_TEST_CLICKHOUSE_URL").is_none() {
+            eprintln!("skipped: TABLETIST_TEST_CLICKHOUSE_URL is not set");
+            return None;
+        }
         let Ok(url) = std::env::var("TABLETIST_TEST_SSH_URL") else {
             eprintln!("skipped: TABLETIST_TEST_SSH_URL is not set");
             return None;

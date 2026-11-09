@@ -357,8 +357,9 @@ Each phase leaves `main` working and its checks passing.
    pool, `KILL QUERY`; the reader moved; the ureq spike removed; the
    compose TLS port and certificate. Its server tests use the hidden
    `clickhouse` module's `Session` from `tests/clickhouse.rs`; the tunnel
-   test is in-crate, gated by the SSH URL variable as `ssh::tests` are,
-   and opens its tunnel with `ssh::Tunnel::open` itself. A kept
+   test is in-crate (`ssh::Tunnel` is crate-private), runs only with both
+   the SSH and the ClickHouse URL variables set, and opens its tunnel with
+   `ssh::Tunnel::open` itself. A kept
    connection the server closed while idle is replaced once, not a lost
    session. Nothing names a
    `Driver` yet.
