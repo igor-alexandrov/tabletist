@@ -6,7 +6,7 @@ use egui::accesskit::{Role, TreeUpdate};
 use egui::{Key, Modifiers, Rect};
 use tabletist_db::{ObjectKind, ObjectRef};
 
-use super::sidebar::INDENT;
+use super::sidebar::{GUIDE, INDENT, NAME_IN, PAST_GUIDE};
 use super::tests::{hover, type_key};
 use crate::model::{Action, ConnTabId, TreeNode};
 use crate::testing::{Harness, bounds, node};
@@ -111,20 +111,24 @@ fn levels(tree: &TreeUpdate) -> Vec<(String, Option<usize>)> {
 }
 
 #[test]
-fn grouped_tables_stand_one_step_in_and_single_tables_line_up_with_them() {
+fn grouped_tables_stand_in_from_the_groups_name_and_single_tables_line_up_with_it() {
     let (mut harness, _) = grouped(Look::macos());
     let child = row(&mut harness, "book_covers, table");
     let header = row(&mut harness, BOOK);
-    // One step past the group's chevron: where the group's name starts.
-    let covers = drawn(&harness, "covers");
-    assert!(close(covers - child.left(), FOLD + INDENT), "{covers}");
-    assert!(close(
-        drawn(&harness, "book_") - header.left(),
-        FOLD + INDENT
-    ));
-    // Single tables, grouped or not, in the same column.
+    // The group's name one step past its chevron.
+    let name = drawn(&harness, "book_");
+    assert!(close(name - header.left(), FOLD + INDENT), "{name}");
+    // A grouped table's name further in: past the guide, its highlight
+    // and the room inside it. 39 in, the group's name at 34.
+    let covers = drawn(&harness, "covers") - child.left();
+    assert!(
+        close(covers, FOLD + GUIDE + PAST_GUIDE + NAME_IN),
+        "{covers}"
+    );
+    assert!(close(covers, 39.0) && close(name - header.left(), 34.0));
+    // Single tables in the group's name's column.
     for single in ["authors", "orders", "reviews"] {
-        assert!(close(drawn(&harness, single), covers), "{single}");
+        assert!(close(drawn(&harness, single), name), "{single}");
     }
 }
 
@@ -157,9 +161,10 @@ fn a_grouped_tables_highlight_begins_inside_the_indent() {
     };
     harness.click("book_covers, table");
     let child = row(&mut harness, "book_covers, table");
-    // Past the guide at the chevron's middle, 4 after it.
+    // 4 past the 1 pt guide, which stands 4 into the chevron: 25 in.
     let begins = pill(&harness, child).left() - child.left();
-    assert!(close(begins, FOLD + 6.0 + 4.0), "{begins}");
+    assert!(close(begins, FOLD + GUIDE + PAST_GUIDE), "{begins}");
+    assert!(close(begins, 25.0), "{begins}");
     // A single table's pill fills the tree's inset, as before.
     harness.click("orders, table");
     let single = row(&mut harness, "orders, table");
@@ -303,12 +308,13 @@ fn the_guide_runs_along_the_open_groups_tables_and_no_further() {
         .map(|rect| rect.bottom())
         .fold(f32::MIN, f32::max);
     assert!(close(top, first.top()) && close(bottom, last.bottom()));
-    // At the chevron's middle.
+    // 4 into the chevron: 20 in.
     assert!(
         pieces
             .iter()
-            .all(|rect| close(rect.left(), first.left() + FOLD + 6.0))
+            .all(|rect| close(rect.left(), first.left() + FOLD + GUIDE))
     );
+    assert!(close(FOLD + GUIDE, 20.0));
     // A folded group has none.
     harness.app.apply(Action::ToggleGroup {
         tab,
@@ -362,9 +368,10 @@ fn the_indent_scales_with_the_windows_zoom() {
         harness.settle();
         // Points stay the same; the screen's pixels grow with the zoom.
         let guide = guides(&harness)[0];
-        let step = drawn(&harness, "covers") - (guide.left() - 6.0);
-        assert!(close(step, INDENT), "{zoom}: {step}");
-        assert!(close(step * harness.ctx.pixels_per_point(), INDENT * zoom));
+        let step = drawn(&harness, "covers") - guide.left();
+        let points = PAST_GUIDE + NAME_IN;
+        assert!(close(step, points), "{zoom}: {step}");
+        assert!(close(step * harness.ctx.pixels_per_point(), points * zoom));
         assert!(close(guide.width() * harness.ctx.pixels_per_point(), zoom));
     }
 }

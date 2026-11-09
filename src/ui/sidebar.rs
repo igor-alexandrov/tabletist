@@ -1007,8 +1007,19 @@ struct Skin<'a> {
 }
 
 /// One step of the macOS tree's indent: the chevron, 12, and the 6 after
-/// it. A grouped object's name starts where its group's name does.
+/// it. A group's name and a single object's start one step past the
+/// chevron.
 pub(crate) const INDENT: f32 = 18.0;
+
+/// Where the macOS guide stands: 4 into the group's chevron.
+pub(crate) const GUIDE: f32 = 4.0;
+
+/// How far a grouped object's highlight begins past its guide: the 1 pt
+/// line, then 4.
+pub(crate) const PAST_GUIDE: f32 = 5.0;
+
+/// How far a grouped object's name stands into its highlight.
+pub(crate) const NAME_IN: f32 = 14.0;
 
 /// Where a tree row draws, from its left edge.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1018,7 +1029,7 @@ pub(crate) struct Places {
     /// The name.
     pub label: f32,
     /// The guide along an open group's objects, on each of its rows:
-    /// macOS's line at the chevron's middle, the terminal's `│` under its
+    /// macOS's line 4 into the chevron, the terminal's `│` under its
     /// group's name.
     pub guide: Option<f32>,
     /// Where the highlight and the focus ring begin: inside the indent,
@@ -1028,8 +1039,9 @@ pub(crate) struct Places {
 
 /// Where `row` draws, in the look. `glyph` is the fold mark's width and
 /// `cell` one character's of the terminal's face. macOS: the chevron 8
-/// into the row (itself 8 in), every name one step past it, so tables
-/// line up whether grouped or not. Terminal: the mark 4 and 8 in, a
+/// into the row (itself 8 in), a group's name and a single object's one
+/// step past it; a grouped object's highlight 4 past the guide and its
+/// name 14 into that, so it stands in from its group's name. Terminal: the mark 4 and 8 in, a
 /// group's name 6 after it, and in the tree every object two cells
 /// further, a grouped one with `│` in the first of them.
 pub(crate) fn places(row: &TreeRow, flat: bool, look: &Look, glyph: f32, cell: f32) -> Places {
@@ -1049,7 +1061,8 @@ pub(crate) fn places(row: &TreeRow, flat: bool, look: &Look, glyph: f32, cell: f
             band: inset,
         };
     }
-    let guide = fold + 6.0;
+    let guide = fold + GUIDE;
+    let highlight = guide + PAST_GUIDE;
     // The pill stands 8 inside its band.
     let pill = match look.selection {
         crate::theme::Selection::Pill => 8.0,
@@ -1057,9 +1070,13 @@ pub(crate) fn places(row: &TreeRow, flat: bool, look: &Look, glyph: f32, cell: f
     };
     Places {
         fold,
-        label: fold + INDENT,
+        label: if grouped {
+            highlight + NAME_IN
+        } else {
+            fold + INDENT
+        },
         guide: grouped.then_some(guide),
-        band: if grouped { guide + 4.0 - pill } else { 0.0 },
+        band: if grouped { highlight - pill } else { 0.0 },
     }
 }
 
