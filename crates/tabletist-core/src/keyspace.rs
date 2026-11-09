@@ -233,29 +233,29 @@ impl KeyTree {
 }
 
 /// Where `text` first holds `query`, without regard to case, as a range of
-/// `text`'s own bytes: whole characters, so a match that ends inside what
-/// a character lowers to (`i` in `İ`, which lowers to `i̇`) takes that
-/// character whole. A match starts where a character starts.
+/// `text`'s own bytes. The two are compared lowered, and a match that
+/// starts or ends inside what one character lowers to (`İ` lowers to `i̇`,
+/// so `i` and `\u{307}x` both match in `İx`) takes that character whole:
+/// never a slice of its bytes.
 pub fn find_folded(text: &str, query: &str) -> Option<std::ops::Range<usize>> {
     let wanted: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
     if wanted.is_empty() {
         return None;
     }
-    let mut lowered = Vec::with_capacity(wanted.len() + 2);
-    text.char_indices().find_map(|(start, _)| {
-        lowered.clear();
-        for (at, c) in text[start..].char_indices() {
-            lowered.extend(c.to_lowercase());
-            let shared = lowered.len().min(wanted.len());
-            if lowered[..shared] != wanted[..shared] {
-                return None;
-            }
-            if lowered.len() >= wanted.len() {
-                return Some(start..start + at + c.len_utf8());
-            }
-        }
-        None
-    })
+    // Each lowered character, with the bytes of the one it came from.
+    let lowered: Vec<(char, std::ops::Range<usize>)> = text
+        .char_indices()
+        .flat_map(|(at, c)| {
+            let bytes = at..at + c.len_utf8();
+            c.to_lowercase().map(move |lower| (lower, bytes.clone()))
+        })
+        .collect();
+    let at = lowered
+        .windows(wanted.len())
+        .position(|window| window.iter().map(|(c, _)| *c).eq(wanted.iter().copied()))?;
+    let first = &lowered[at].1;
+    let last = &lowered[at + wanted.len() - 1].1;
+    Some(first.start..last.end)
 }
 
 /// A key's name as a `SCAN MATCH` pattern that matches it as it is: the
@@ -1302,6 +1302,8 @@ mod tests {
         // never a slice of its bytes.
         assert_eq!(find_folded("İx", "i"), Some(0..2));
         assert_eq!(find_folded("İx", "x"), Some(2..3));
+        // A match that starts inside the expansion takes `İ` whole too.
+        assert_eq!(find_folded("İx", "\u{307}x"), Some(0..3));
         assert_eq!(find_folded("aİx", "ix"), None);
         assert_eq!(find_folded("abc", ""), None);
     }
