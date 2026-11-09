@@ -381,14 +381,13 @@ fn parse_redis_url(parsed: &url::Url) -> Result<ParsedUrl> {
             .parse()
             .map_err(|_| Error::InvalidSpec(format!("{path:?} is not a database number")))?;
     }
+    // `?db=` names the database too. Other parameters are left alone, and
+    // never logged: a stray `?word` would log the word.
     for (key, value) in parsed.query_pairs() {
-        match key.as_ref() {
-            "db" => {
-                redis.database = value.parse().map_err(|_| {
-                    Error::InvalidSpec(format!("{value:?} is not a database number"))
-                })?;
-            }
-            _ => log::debug!("ignoring URL parameter {key}"),
+        if key == "db" {
+            redis.database = value
+                .parse()
+                .map_err(|_| Error::InvalidSpec(format!("{value:?} is not a database number")))?;
         }
     }
     Ok(ParsedUrl {
@@ -517,7 +516,9 @@ fn parse_redis_cli(line: &str) -> Result<ParsedUrl> {
             | "--count" | "--quoted-pattern" => {
                 let _ = value(&word)?;
             }
-            other => log::debug!("ignoring redis-cli word {other:?}"),
+            // Other words (a command to run, options) are left alone, and
+            // never logged: one may be a password (`AUTH user pass`).
+            _ => {}
         }
     }
     Ok(parsed)
