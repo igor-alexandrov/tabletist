@@ -9624,6 +9624,18 @@ mod tests {
             let app = App::new(AppDirs::at(dir.path()), again, Backend::recording());
             assert!(saved_none(&app), "{size}");
         }
+        // The editor's older keys are not moved at a start: they give way
+        // the first time the limit or the timeout is set.
+        let dir = tempfile::tempdir().unwrap();
+        let text = "[editor]\nsql_limit = 300\nsql_timeout_secs = 7200\n";
+        let app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::from_toml(text),
+            Backend::recording(),
+        );
+        assert_eq!(app.settings.sql_limit, 300);
+        assert!(saved_none(&app), "{:?}", app.backend.sent);
+        assert_eq!(app.settings_file.text, text);
         fn saved_none(app: &App) -> bool {
             !app.backend.sent.iter().any(|command| {
                 matches!(

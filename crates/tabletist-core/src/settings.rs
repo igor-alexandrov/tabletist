@@ -1630,12 +1630,12 @@ impl Loaded {
 }
 
 impl Loaded {
-    /// The keys read from the older key they took the place of alone, in
-    /// the order of [`Key::ALL`]: what a start writes in their new place,
-    /// once, taking the old key out (`appearance.interface_size` as
-    /// `appearance.ui_scale`). A new key on a line that was ignored is not
-    /// one of them: the old key stands for it, and both lines stay as they
-    /// were written until the setting is changed.
+    /// The keys a start writes in their new place, once, taking the old key
+    /// out: of [`Self::MOVED_AT_START`], those read from the older key
+    /// alone (`appearance.interface_size` as `appearance.ui_scale`). A new
+    /// key on a line that was ignored is not one of them: the old key
+    /// stands for it, and both lines stay as they were written until the
+    /// setting is changed.
     pub fn migrated(&self) -> Vec<Key> {
         let read = |key: Key| self.lines.iter().any(|(line, _)| *line == key);
         let (working, _) = readable(&self.text);
@@ -1644,11 +1644,16 @@ impl Loaded {
             .iter()
             .filter_map(|line| key_on_line(&self.text, &working, *line))
             .collect();
-        Key::ALL
+        Self::MOVED_AT_START
             .into_iter()
             .filter(|key| key.replaced().is_some_and(read) && !read(*key) && !ignored.contains(key))
             .collect()
     }
+
+    /// The new keys a start moves an older one to. The editor's older
+    /// `sql_limit` and `sql_timeout_secs` are not: they give way the first
+    /// time the limit or the timeout is set, as they always have.
+    pub const MOVED_AT_START: [Key; 1] = [Key::UiScale];
 
     /// Says in the log which lines of `path` were ignored. Until a window
     /// shows them, the log is where a typo is told. More of them than
