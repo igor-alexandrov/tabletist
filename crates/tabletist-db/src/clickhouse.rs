@@ -82,8 +82,9 @@ impl Session {
         let started = Instant::now();
         let id = query_id();
         *self.running.lock().unwrap_or_else(PoisonError::into_inner) = Some(id.clone());
+        let running = Running(Arc::clone(&self.running));
         let read = self.read_rows(sql, limit, &id).await;
-        *self.running.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        drop(running);
         let (columns, mut rows) = read?;
         let has_more = rows.len() > limit as usize;
         rows.truncate(limit as usize);
@@ -142,8 +143,18 @@ impl Canceller {
             .body
             .read_to_end(&mut drained)
             .await
-            .map_err(|error| Error::Connect(format!("could not cancel: {error}")))?;
+            .map_err(|error| Error::ConnectionLost(format!("could not cancel: {error}")))?;
         Ok(())
+    }
+}
+
+/// Clears the running statement's `query_id` when it ends, or when its
+/// future is dropped mid-run, so a later cancel kills nothing.
+struct Running(Arc<Mutex<Option<String>>>);
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
 }
 
@@ -155,4 +166,43 @@ fn query_id() -> String {
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::TlsMode;
+
+    #[tokio::test]
+    async fn a_statement_dropped_mid_run_leaves_nothing_to_cancel() {
+        // A server that takes connections and never answers.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket);
+            }
+        });
+        let endpoint = Endpoint {
+            host: "127.0.0.1".into(),
+            port,
+            via: None,
+            tls: TlsMode::Disable,
+            ca_file: None,
+        };
+        let login = Login {
+            user: "u".into(),
+            password: "p".into(),
+            database: String::new(),
+        };
+        let session = Session::connect(endpoint, login).await.unwrap();
+        let page = session.select_page("SELECT 1", 1);
+        let dropped = tokio::time::timeout(Duration::from_millis(100), page).await;
+        assert!(dropped.is_err());
+        let running = session.running.lock().unwrap().clone();
+        assert_eq!(running, None);
+    }
 }

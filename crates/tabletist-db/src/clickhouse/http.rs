@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll, ready};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rustls::pki_types::ServerName;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
@@ -27,7 +27,16 @@ use ureq_proto::http::{HeaderMap, Request};
 use super::read::server_error;
 use crate::{Error, Result, TlsMode, tls};
 
+/// For opening a connection only. Nothing times a read, on purpose: a
+/// statement's time is the server's `max_execution_time` and the person's
+/// cancel (`KILL QUERY`), which the engine sets in its next phase.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How soon after a request a kept connection's end, with no byte of
+/// answer, still means the server closed it idle, before reading it: that
+/// close crosses our request within milliseconds, while a running query's
+/// silence is longer.
+const RETRY_WINDOW: Duration = Duration::from_secs(1);
 
 /// Connections kept for the next request: one runs, one cancels.
 const KEPT: usize = 2;
@@ -124,12 +133,15 @@ impl Http {
     pub async fn post(&self, sql: &str, settings: &[(&str, &str)]) -> Result<Answer> {
         let exchanged = match self.take() {
             // The server closes a connection idle past its
-            // `keep_alive_timeout`: one that did not answer is replaced,
-            // once. Safe to send again, for nothing ran.
+            // `keep_alive_timeout`, and `take` drops those it sees closed.
+            // One closed as we wrote is replaced, once: safe only because
+            // the write failed, or the connection ended within
+            // `RETRY_WINDOW` with no byte of answer, so nothing ran (or so
+            // little, on a server that died then, that a read runs again). A
+            // later end may be a running query's connection cut, and the
+            // query goes on: sending it again would run it twice.
             Some(kept) => match self.exchange(kept, sql, settings).await {
-                Err(Failure::Unanswered(_)) => {
-                    self.exchange(self.fresh().await?, sql, settings).await
-                }
+                Err(Failure::Unsent(_)) => self.exchange(self.fresh().await?, sql, settings).await,
                 other => other,
             },
             None => self.exchange(self.fresh().await?, sql, settings).await,
@@ -160,7 +172,7 @@ impl Http {
         sql: &str,
         settings: &[(&str, &str)],
     ) -> std::result::Result<(u16, HeaderMap, Body), Failure> {
-        let unanswered = |error: io::Error| Failure::Unanswered(lost(error));
+        let unsent = |error: io::Error| Failure::Unsent(lost(error));
         let mut request = Request::post(self.uri(settings))
             .header("X-ClickHouse-User", &self.login.user)
             .header("X-ClickHouse-Key", &self.login.password)
@@ -168,64 +180,68 @@ impl Http {
         if !self.login.database.is_empty() {
             request = request.header("X-ClickHouse-Database", &self.login.database);
         }
-        let request = request.body(()).map_err(answered(protocol))?;
+        let request = request.body(()).map_err(failed(protocol))?;
 
         let mut out = vec![0; 16 * 1024];
-        let mut call = Call::new(request).map_err(answered(protocol))?.proceed();
+        let mut call = Call::new(request).map_err(failed(protocol))?.proceed();
         while !call.can_proceed() {
-            let n = call.write(&mut out).map_err(answered(protocol))?;
-            stream.write_all(&out[..n]).await.map_err(unanswered)?;
+            let n = call.write(&mut out).map_err(failed(protocol))?;
+            stream.write_all(&out[..n]).await.map_err(unsent)?;
         }
-        let mut call = match call.proceed().map_err(answered(protocol))? {
+        let mut call = match call.proceed().map_err(failed(protocol))? {
             Some(SendRequestResult::SendBody(call)) => call,
             Some(SendRequestResult::Await100(call)) => {
-                match call.proceed().map_err(answered(protocol))? {
+                match call.proceed().map_err(failed(protocol))? {
                     Await100Result::SendBody(call) => call,
-                    Await100Result::RecvResponse(_) => return Err(Failure::Answered(unexpected())),
+                    Await100Result::RecvResponse(_) => return Err(Failure::Lost(unexpected())),
                 }
             }
             Some(SendRequestResult::RecvResponse(_)) | None => {
-                return Err(Failure::Answered(unexpected()));
+                return Err(Failure::Lost(unexpected()));
             }
         };
         let mut sent = 0;
         loop {
             let (used, n) = call
                 .write(&sql.as_bytes()[sent..], &mut out)
-                .map_err(answered(protocol))?;
+                .map_err(failed(protocol))?;
             sent += used;
-            stream.write_all(&out[..n]).await.map_err(unanswered)?;
+            stream.write_all(&out[..n]).await.map_err(unsent)?;
             if sent == sql.len() && call.can_proceed() {
                 break;
             }
         }
-        stream.flush().await.map_err(unanswered)?;
-        let mut call = call
-            .proceed()
-            .ok_or_else(|| Failure::Answered(unexpected()))?;
+        stream.flush().await.map_err(unsent)?;
+        let sent_at = Instant::now();
+        let mut call = call.proceed().ok_or_else(|| Failure::Lost(unexpected()))?;
 
         let mut input = Input::default();
         let response = loop {
             let (used, response) = call
                 .try_response(input.pending(), false)
-                .map_err(answered(protocol))?;
+                .map_err(failed(protocol))?;
             input.consume(used);
             if let Some(response) = response {
                 break response;
             }
             match input.fill(&mut stream).await {
                 Ok(0) | Err(_) if !input.received => {
-                    return Err(Failure::Unanswered(Error::ConnectionLost(
+                    let error = Error::ConnectionLost(
                         "the server closed the connection before it answered".into(),
-                    )));
+                    );
+                    return Err(if sent_at.elapsed() < RETRY_WINDOW {
+                        Failure::Unsent(error)
+                    } else {
+                        Failure::Lost(error)
+                    });
                 }
                 Ok(0) => {
-                    return Err(Failure::Answered(Error::ConnectionLost(
+                    return Err(Failure::Lost(Error::ConnectionLost(
                         "the server closed the connection mid-answer".into(),
                     )));
                 }
                 Ok(_) => {}
-                Err(error) => return Err(Failure::Answered(lost(error))),
+                Err(error) => return Err(Failure::Lost(lost(error))),
             }
         };
         let (parts, ()) = response.into_parts();
@@ -243,7 +259,7 @@ impl Http {
                 Body::empty(Arc::clone(&self.kept))
             }
             Some(RecvResponseResult::Redirect(_)) | None => {
-                return Err(Failure::Answered(unexpected()));
+                return Err(Failure::Lost(unexpected()));
             }
         };
         Ok((parts.status.as_u16(), parts.headers, body))
@@ -287,11 +303,15 @@ impl Http {
         }
     }
 
+    /// A kept connection still open, if there is one.
     fn take(&self) -> Option<Stream> {
-        self.kept
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .pop()
+        let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
+        while let Some(mut stream) = kept.pop() {
+            if is_idle(&mut stream) {
+                return Some(stream);
+            }
+        }
+        None
     }
 
     fn keep(&self, stream: Stream) {
@@ -306,23 +326,37 @@ fn keep(kept: &Kept, stream: Stream) {
     }
 }
 
-/// How an exchange failed: before the server sent a byte of its answer,
-/// or after.
+/// Whether a kept connection is open with nothing to read, as one waiting
+/// for our next request is. Asked before writing to it, so a connection
+/// the server closed while it sat idle is dropped, not sent a statement:
+/// a read polled once, without waiting, is pending on an open one, and
+/// ready on one closed, failed, or holding bytes nobody asked for.
+fn is_idle(stream: &mut Stream) -> bool {
+    let mut cx = Context::from_waker(std::task::Waker::noop());
+    let mut byte = [0; 1];
+    let mut read = ReadBuf::new(&mut byte);
+    Pin::new(stream).poll_read(&mut cx, &mut read).is_pending()
+}
+
+/// How an exchange failed: in a way that shows the server cannot have run
+/// the statement, or in any other.
 enum Failure {
-    Unanswered(Error),
-    Answered(Error),
+    /// The request was not written, or the connection ended within
+    /// `RETRY_WINDOW` of it with no byte of answer.
+    Unsent(Error),
+    Lost(Error),
 }
 
 impl Failure {
     fn into_error(self) -> Error {
         match self {
-            Self::Unanswered(error) | Self::Answered(error) => error,
+            Self::Unsent(error) | Self::Lost(error) => error,
         }
     }
 }
 
-fn answered<E>(to_error: impl Fn(E) -> Error) -> impl Fn(E) -> Failure {
-    move |error| Failure::Answered(to_error(error))
+fn failed<E>(to_error: impl Fn(E) -> Error) -> impl Fn(E) -> Failure {
+    move |error| Failure::Lost(to_error(error))
 }
 
 /// Why a connection did not open.
@@ -342,7 +376,9 @@ impl Opening {
 }
 
 /// Whether a failed handshake means the server does not speak TLS on the
-/// port: it answered with bytes that are no TLS record, or closed.
+/// port: it answered with bytes that are no TLS record, or closed. As
+/// with libpq's `prefer`, a TLS server that hangs up mid-handshake is
+/// taken for one without TLS too, so the session goes on in plain HTTP.
 fn speaks_no_tls(error: &io::Error) -> bool {
     if let Some(rustls::Error::InvalidMessage(_)) = error
         .get_ref()
@@ -497,6 +533,8 @@ impl AsyncRead for Body {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
 
     #[test]
@@ -525,29 +563,85 @@ mod tests {
         tokio::spawn(async move {
             while let Ok((mut socket, _)) = listener.accept().await {
                 tokio::spawn(async move {
-                    let mut request = Vec::new();
-                    let mut chunk = [0; 1024];
-                    // The whole request, head and body (`go`), before the
-                    // answer: closing with bytes unread would send a reset,
-                    // which on Windows can discard the answer.
-                    while !request.ends_with(b"\r\n\r\ngo") {
-                        let n = socket.read(&mut chunk).await.unwrap();
-                        if n == 0 {
-                            return;
-                        }
-                        request.extend_from_slice(&chunk[..n]);
+                    // The whole request before the answer: closing with
+                    // bytes unread would send a reset, which on Windows can
+                    // discard the answer.
+                    if read_request(&mut socket).await {
+                        let _ = socket.write_all(OK).await;
                     }
-                    let answer = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
-                    let _ = socket.write_all(answer).await;
                 });
             }
         });
         port
     }
 
-    #[tokio::test]
-    async fn a_kept_connection_the_server_closed_is_replaced() {
-        let port = closing_server().await;
+    /// Reads one request, head and body (`go`), whole. False at the end of
+    /// the connection.
+    async fn read_request(socket: &mut TcpStream) -> bool {
+        let mut request = Vec::new();
+        let mut chunk = [0; 1024];
+        while !request.ends_with(b"\r\n\r\ngo") {
+            match socket.read(&mut chunk).await {
+                Ok(0) | Err(_) => return false,
+                Ok(n) => request.extend_from_slice(&chunk[..n]),
+            }
+        }
+        true
+    }
+
+    const OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+
+    /// A server that answers each connection's first request and then
+    /// closes its side, but still reads and counts what comes after.
+    async fn half_closing_server(requests: Arc<AtomicUsize>) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let requests = Arc::clone(&requests);
+                tokio::spawn(async move {
+                    if !read_request(&mut socket).await {
+                        return;
+                    }
+                    requests.fetch_add(1, Ordering::SeqCst);
+                    let _ = socket.write_all(OK).await;
+                    let _ = socket.shutdown().await;
+                    while read_request(&mut socket).await {
+                        requests.fetch_add(1, Ordering::SeqCst);
+                    }
+                });
+            }
+        });
+        port
+    }
+
+    /// A server that answers each connection's first request, and is
+    /// silent on the second for longer than `RETRY_WINDOW`, as a long query
+    /// is, until the connection is cut.
+    async fn silent_server(requests: Arc<AtomicUsize>) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let requests = Arc::clone(&requests);
+                tokio::spawn(async move {
+                    if !read_request(&mut socket).await {
+                        return;
+                    }
+                    requests.fetch_add(1, Ordering::SeqCst);
+                    let _ = socket.write_all(OK).await;
+                    if !read_request(&mut socket).await {
+                        return;
+                    }
+                    requests.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                });
+            }
+        });
+        port
+    }
+
+    async fn connect(port: u16) -> Http {
         let endpoint = Endpoint {
             host: "127.0.0.1".into(),
             port,
@@ -560,15 +654,47 @@ mod tests {
             password: "p".into(),
             database: String::new(),
         };
-        let http = Http::connect(endpoint, login).await.unwrap();
+        Http::connect(endpoint, login).await.unwrap()
+    }
+
+    async fn post_ok(http: &Http) {
+        let mut answer = http.post("go", &[]).await.unwrap();
+        let mut body = String::new();
+        answer.body.read_to_string(&mut body).await.unwrap();
+        assert_eq!(body, "ok");
+    }
+
+    #[tokio::test]
+    async fn a_kept_connection_the_server_closed_is_replaced() {
+        let http = connect(closing_server().await).await;
         for _ in 0..3 {
-            let mut answer = http.post("go", &[]).await.unwrap();
-            let mut body = String::new();
-            answer.body.read_to_string(&mut body).await.unwrap();
-            assert_eq!(body, "ok");
+            post_ok(&http).await;
             // Let the server's close arrive before the next request.
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn a_kept_connection_the_server_closed_is_not_written_to() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let http = connect(half_closing_server(Arc::clone(&requests)).await).await;
+        for _ in 0..3 {
+            post_ok(&http).await;
+            // Time for the server's FIN to arrive before the next request.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        assert_eq!(requests.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn a_connection_cut_after_a_long_silence_is_not_sent_again() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let http = connect(silent_server(Arc::clone(&requests)).await).await;
+        post_ok(&http).await;
+        let cut = http.post("go", &[]).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+        assert!(matches!(cut, Err(Error::ConnectionLost(_))));
     }
 
     #[test]
