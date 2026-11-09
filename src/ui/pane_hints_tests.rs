@@ -243,3 +243,61 @@ fn the_other_looks_keep_their_line() {
         );
     }
 }
+
+/// Clicks the tree's filter field with the pointer.
+fn click_filter(harness: &mut Harness) {
+    let tree = harness.settle();
+    let role = egui::accesskit::Role::TextInput;
+    let field = crate::testing::bounds(&tree, "Filter", role).expect("the filter field");
+    let pos = field.center();
+    let press = |pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    harness.frame(vec![egui::Event::PointerMoved(pos)]);
+    harness.frame(vec![press(true)]);
+    harness.frame(vec![press(false)]);
+    harness.settle();
+}
+
+#[test]
+fn the_filter_clicked_from_the_grid_leaves_for_the_tree_by_enter_or_esc() {
+    for leave in [Key::Escape, Key::Enter] {
+        let (mut harness, tab, _) = covers_in(Look::omarchy());
+        assert_eq!(harness.app.workspace(tab).unwrap().pane, Pane::Grid);
+        click_filter(&mut harness);
+        assert!(
+            starts(&harness, &["enter/esc tree"]),
+            "{leave:?}: {:?}",
+            line(&harness)
+        );
+        harness.press(leave, Modifiers::NONE);
+        harness.settle();
+        assert_eq!(
+            harness.app.workspace(tab).unwrap().pane,
+            Pane::Tree,
+            "{leave:?}"
+        );
+        assert!(starts(&harness, &TREE), "{leave:?}: {:?}", line(&harness));
+    }
+}
+
+#[test]
+fn the_filter_names_its_keys_over_a_visual_selection_of_the_grid() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    assert_eq!(harness.app.workspace(tab).unwrap().pane, Pane::Grid);
+    select(&mut harness, tab, id, (0, 1));
+    type_key(&mut harness, Key::V, "v");
+    type_key(&mut harness, Key::J, "j");
+    harness.settle();
+    assert!(has(&harness, "-- VISUAL --"), "{:?}", line(&harness));
+    click_filter(&mut harness);
+    assert!(
+        starts(&harness, &["enter/esc tree"]),
+        "{:?}",
+        line(&harness)
+    );
+    assert!(!has(&harness, "-- VISUAL --"), "{:?}", line(&harness));
+}
