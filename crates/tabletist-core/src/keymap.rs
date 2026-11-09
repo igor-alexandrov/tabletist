@@ -3199,6 +3199,12 @@ impl Written {
         &self.0
     }
 
+    /// Keys a widget takes by itself, with no command of the keymap's:
+    /// a text field's Enter and Esc.
+    pub fn plain(text: &str) -> Written {
+        Written(text.to_owned())
+    }
+
     /// The key in the brackets a prompt draws round the letter that
     /// answers it: `[w]`.
     pub fn bracketed(&self) -> Written {
@@ -3646,6 +3652,15 @@ impl Keymap {
             .map_or_else(Written::default, |chord| {
                 Written(written(layout, chord.keys))
             })
+    }
+
+    /// The first key `command` has of its own in `scope`: not one that
+    /// only says where another command's key also acts (Back to grid's
+    /// ctrl+h, which is Pane to the left's). Empty where it has none.
+    pub fn own_key_in(&self, layout: Layout, command: Command, scope: Scope) -> Written {
+        self.chords(layout, command, scope)
+            .next()
+            .map_or_else(Written::default, |keys| Written(written(layout, keys)))
     }
 
     /// The `nth` keys that `first` and `second` have in `scope`, written
@@ -4964,6 +4979,10 @@ mod tests {
         assert_eq!(format(Layout::Omarchy, Scope::CellEditor), "ctrl+shift+f");
         assert_eq!(format(Layout::Mac, Scope::CellEditor), "⇧⌘F");
         assert_eq!(format(Layout::Mac, Scope::Grid), "");
+        // Back to grid's ctrl+h is Pane to the left's: its own key is Esc.
+        let back = (Command::BackToGrid, Scope::Inspector);
+        assert_eq!(keymap.key_in(Layout::Omarchy, back.0, back.1), "ctrl+h");
+        assert_eq!(keymap.own_key_in(Layout::Omarchy, back.0, back.1), "esc");
     }
 
     #[test]

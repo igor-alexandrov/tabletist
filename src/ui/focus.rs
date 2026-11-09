@@ -163,6 +163,19 @@ pub fn neighbour(
     ask(ctx, forward, Some(among), from, false)
 }
 
+/// Whether ctrl+h or ctrl+l would move the keyboard from `from`: another
+/// region of `among` was drawn the frame before, among those [`step`]
+/// steps through.
+pub fn can_step(ctx: &egui::Context, among: &[Region], from: Region) -> bool {
+    ctx.data_mut(|data| {
+        let regions: &mut Regions = data.get_temp_mut_or_default(regions_id());
+        regions
+            .before
+            .iter()
+            .any(|(region, _)| *region != from && among.contains(region))
+    })
+}
+
 /// F6's question, and its neighbour's: which region takes the keyboard
 /// next, if any. Past the end it starts over where `wrap` says so, and
 /// from a region not `among` the ones stepped among.
