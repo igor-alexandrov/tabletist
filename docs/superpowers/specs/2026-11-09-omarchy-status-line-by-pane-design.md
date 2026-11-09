@@ -43,7 +43,8 @@ Omarchy defaults.
 | Panel | `j/k field · [ ] row · i edit · gy copy as · esc grid · ctrl+h/l panes` (`i edit` only where the row can be edited) |
 | Script | `run · run all · cancel · leave editor · ctrl+j results · tables` (`complete` leads while the list is open; the vim mode starts the line) |
 | Results | `j/k row · h/l col · enter inspect · y copy · gy copy as · ctrl+k editor · ctrl+h/l panes · E export result` |
-| Structure, DDL | today's sets, with `ctrl+h/l panes` after `tables` |
+| Structure | today's set, with `ctrl+h/l panes` after `tables` |
+| DDL | today's set, with `ctrl+h/l panes` after `s structure` (it has no `tables`) |
 | Agents, History | unchanged |
 
 - The tree's set shows whatever view is in front, the start screen too.
