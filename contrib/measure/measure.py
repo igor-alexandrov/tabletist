@@ -317,7 +317,7 @@ def evict(path):
 class Launch:
     """One start of the app on the headless output."""
 
-    def __init__(self, hypr, command, app_class=APP_CLASS, env=(), fresh_profile=False):
+    def __init__(self, hypr, command, app_class=APP_CLASS, env=(), fresh_profile=False, seed=None):
         self.hypr = hypr
         self.app_class = app_class
         self.profiles = set(glob.glob(DEMO_PROFILES))
@@ -330,6 +330,10 @@ class Launch:
                 folder = os.path.join(self.profile, name.lower())
                 os.mkdir(folder)
                 environment[f"XDG_{name}_HOME"] = folder
+            # Settings the app is to start with, laid out as the profile is
+            # (config/, data/, cache/, state/).
+            if seed:
+                shutil.copytree(seed, self.profile, dirs_exist_ok=True)
         self.before = set(toplevels(hypr.wayland))
         self.identifier = None
         self.log = tempfile.TemporaryFile()
@@ -491,7 +495,7 @@ def run_startup(args):
             if args.cold:
                 for path in evicted:
                     evict(shutil.which(path) or path)
-            launch = Launch(hypr, args.command, args.app_class, args.env, args.fresh_profile)
+            launch = Launch(hypr, args.command, args.app_class, args.env, args.fresh_profile, args.seed)
             try:
                 window = launch.wait_window()
                 settled = launch.wait_settled()
@@ -523,6 +527,7 @@ def run_startup(args):
         "cold": args.cold,
         "evicted": evicted if args.cold else [],
         "fresh_profile": args.fresh_profile,
+        "seed": args.seed,
         "env": args.env,
         **describe(args.command),
         "window": summary([run["window"] for run in runs]),
@@ -581,13 +586,49 @@ def run_mount(args):
     print(json.dumps(report, indent=2))
 
 
+# What a key step may name for a character Hyprland has no key of that name for.
+KEY_NAMES = {" ": "space", ",": "comma"}
+
+
+def run_steps(launch, steps, settle, sample, shot):
+    """Drives an app through `steps`, separated by ';':
+
+    - `wait:S`: S seconds.
+    - `type:TEXT`: each character as a key.
+    - `settle`: until the picture holds still.
+    - `sample:NAME`: a memory sample (after `--idle` seconds).
+    - `shot:NAME`: the window to <SHOT>-<NAME>.png.
+    - `MODS+key` or `MODS+key*N`: a key, N times (`CTRL+t`, `Down*5`).
+    """
+    for step in filter(None, (part.strip() for part in steps.split(";"))):
+        kind, _, value = step.partition(":")
+        if kind == "wait":
+            time.sleep(float(value))
+        elif kind == "type":
+            for char in value:
+                launch.send("", KEY_NAMES.get(char, char))
+                time.sleep(0.03)
+        elif step == "settle":
+            settle()
+        elif kind == "sample":
+            sample(value)
+        elif kind == "shot":
+            shot(value)
+        else:
+            key, _, times = step.partition("*")
+            mods, _, key = key.rpartition("+")
+            for _ in range(int(times or 1)):
+                launch.send(mods.replace("+", " "), key)
+                time.sleep(0.05)
+
+
 def run_memory(args):
     """Memory idle on the demo, after opening the 100,000-row table, and
     after going to its last row."""
     hypr = Hyprland()
     steps = []
     with stage(hypr, args.app_class):
-        launch = Launch(hypr, args.command, args.app_class, args.env, args.fresh_profile)
+        launch = Launch(hypr, args.command, args.app_class, args.env, args.fresh_profile, args.seed)
         try:
             launch.wait_window()
             launch.wait_settled()
@@ -614,6 +655,8 @@ def run_memory(args):
             if args.idle_only:
                 shot("idle")
                 sample("idle after the start")
+            elif args.steps:
+                run_steps(launch, args.steps, settle, sample, shot)
             else:
                 sample("idle on the demo (users table)")
                 # Quick open, the table's name, Enter.
@@ -646,6 +689,7 @@ def run_memory(args):
                 "what": "memory",
                 **describe(args.command),
                 "fresh_profile": args.fresh_profile,
+                "seed": args.seed,
                 "env": args.env,
                 "steps": steps,
             },
@@ -688,6 +732,9 @@ def add_app_options(parser):
     parser.add_argument(
         "--fresh-profile", action="store_true", help="empty XDG config, data, cache and state for each launch"
     )
+    parser.add_argument(
+        "--seed", help="with --fresh-profile: a folder copied into each profile first (config/, data/, ...)"
+    )
 
 
 def main():
@@ -722,6 +769,7 @@ def main():
     memory.add_argument(
         "--idle-only", action="store_true", help="one sample idle after the start (any app, no keys)"
     )
+    memory.add_argument("--steps", help="keys, waits and samples for another app (see run_steps)")
     add_app_options(memory)
     memory.add_argument("command", nargs="+")
     memory.set_defaults(run=run_memory)

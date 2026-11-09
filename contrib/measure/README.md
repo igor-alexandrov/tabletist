@@ -83,9 +83,12 @@ include. On an integrated GPU that memory is system memory too (`gtt`).
 `--class` names its window class (a regular expression), `--env NAME=VALUE`
 adds to its environment, and `--fresh-profile` gives each launch empty XDG
 config, data, cache and state folders, removed afterwards, so every app
-starts as on its first run and none writes to your own. `--evict` takes a
-folder too, for an app of many files. `memory --idle-only` takes one sample
-at the first screen, with no keys. Each memory sample also adds up the
+starts as on its first run and none writes to your own. `--seed DIR` copies
+settings into each of those profiles first (`profiles/` holds the ones used
+below). `--evict` takes a folder too, for an app of many files. `memory
+--idle-only` takes one sample at the first screen, with no keys; `memory
+--steps` drives an app with keys, typing, waits, samples and pictures, as
+`run_steps` in the script describes. Each memory sample also adds up the
 whole process tree (`tree`): an Electron app is several processes. Add up
 PSS, not RSS: RSS counts a shared page once in every process that maps it.
 A process that leaves the tree (a daemon that forks away, such as the
@@ -269,3 +272,72 @@ Sizes, for the same builds:
 What this does not show: how the apps compare with a database open, or on
 another machine. TablePro for Linux is a beta, and ran here from its deb,
 not as its Flatpak.
+
+### 100,000 rows, against Beekeeper Studio and TablePro
+
+The same builds, machine and day. Each app holds the same 100,000 rows in
+its grid, and memory is taken before and after. The rows come from one
+SQLite script, `crates/tabletist-db/fixtures/sqlite.sql`, the one
+Tabletist's demo uses: its table `big` has 100,000 rows of three columns
+(`id`, `label`, `bucket`). TablePro and Beekeeper open a file made from it
+(`target/bench/bench.sqlite`, written with Python's `sqlite3` from that
+script), given on their command line; Tabletist's `--demo` writes the same
+script into a new file of its own.
+
+Each app loads the rows where it can hold all of them, with keys only, and
+its settings for that come from a seed in `profiles/` (`--seed`), copied
+into each throwaway profile:
+
+- Tabletist 0.5.0 (`--demo`): a SQL tab (Ctrl+T), `select id, label,
+  bucket from big`, Ctrl+Enter, then Escape and `a` to show all rows, past
+  the editor's limit of 1,000. Its table view pages at most 10,000 rows.
+- TablePro 0.1.0-beta.3: its table view, `big` opened from the sidebar
+  (Down five times, Enter), with `default-page-size` set to 100,000 (the
+  default is 1,000, the most 100,000). Its query results stop at "10,000+".
+  The seed also turns off `share-usage-data`, which sends usage events to
+  PostHog; it was on, as by default, for the first-start runs above.
+- Beekeeper Studio 6.2.2, on Wayland: the query editor it opens with, the
+  same query, Ctrl+Enter, with `maxResults` set to 100,000 (the default is
+  50,000). Its table view pages 100 rows, and its next page is a click. On
+  X11 it did not take the keys sent to it, so it ran on Wayland here. The
+  seed also turns off its update check.
+
+After the last key each waits 6 seconds, then for the picture to hold
+still, then 2 more seconds, and the memory is taken. The picture of every
+run shows all 100,000 rows: Tabletist's footer reads "100,000 rows",
+TablePro's "Rows 1 – 100,000", Beekeeper's "100000". Moving to the last
+row is left out: the apps' grids could not all be focused with keys from
+outside, and where they could (TablePro, Tab three times then Ctrl+End,
+during the trials), PSS did not change, as the grids draw only the rows in
+view. The raw reports are in `results/2026-11-09-100000-rows/`.
+
+Five runs each; the median of the five, the process tree added up:
+
+| App | Step | PSS | RSS (summed) | Private | GPU (VRAM + GTT) |
+|---|---|---|---|---|---|
+| Tabletist 0.5.0 | connected, `users` open | 87.9 MiB | 132.7 MiB | 78.8 MiB | 62.6 MiB |
+| Tabletist 0.5.0 | 100,000 rows loaded | 103.7 MiB | 148.5 MiB | 94.6 MiB | 57.4 MiB |
+| TablePro 0.1.0-beta.3 | connected | 114.7 MiB | 150.6 MiB | 108.9 MiB | 32.5 MiB |
+| TablePro 0.1.0-beta.3 | 100,000 rows loaded | 203.8 MiB | 240.0 MiB | 197.6 MiB | 32.6 MiB |
+| Beekeeper Studio 6.2.2 | connected | 863.5 MiB | 1,382.5 MiB | 725.4 MiB | 166.1 MiB |
+| Beekeeper Studio 6.2.2 | 100,000 rows loaded | 1,449.8 MiB | 1,971.4 MiB | 1,310.4 MiB | 93.0 MiB |
+
+Holding the 100,000 rows added 15.8 MiB of PSS in Tabletist, 89.1 MiB in
+TablePro and 586.3 MiB in Beekeeper. The five runs of each, loaded: Tabletist
+103.0 to 104.7 MiB, TablePro 203.3 to 204.1 MiB, Beekeeper 1,446.7 to
+1,452.4 MiB.
+
+The commands, with `Q` the query typed key by key:
+
+    Q="type:select id, label, bucket from big"
+    contrib/measure/measure.py memory --fresh-profile \
+      --steps "sample:connected, users table open;CTRL+t;wait:0.8;$Q;CTRL+Return;wait:2;Escape;wait:0.3;a;wait:6;settle;sample:all 100,000 rows loaded" \
+      -- ./tabletist --demo
+    contrib/measure/measure.py memory --fresh-profile --seed contrib/measure/profiles/tablepro \
+      --class '.*[Tt]able[Pp]ro.*' --env GSETTINGS_SCHEMA_DIR=<deb>/usr/share/glib-2.0/schemas --env GSETTINGS_BACKEND=keyfile \
+      --steps "sample:connected;wait:1;Down*5;Return;wait:6;settle;sample:all 100,000 rows loaded" \
+      -- <deb>/usr/bin/tablepro bench.sqlite
+    contrib/measure/measure.py memory --fresh-profile --seed contrib/measure/profiles/beekeeper \
+      --class '.*[Bb]eekeeper.*' \
+      --steps "sample:connected;wait:1;$Q;CTRL+Return;wait:6;settle;sample:all 100,000 rows loaded" \
+      -- <unpacked AppImage>/AppRun bench.sqlite --ozone-platform=wayland
