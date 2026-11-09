@@ -7804,6 +7804,27 @@ impl App {
             .as_ref()
             .and_then(|cursor| rows.iter().position(|row| &row.node == cursor));
         let last = rows.len() - 1;
+        // Up to the parent: the nearest row above that is shallower.
+        let parent = |at: usize| {
+            (0..at)
+                .rev()
+                .find(|&i| rows[i].depth < rows[at].depth)
+                .unwrap_or(at)
+        };
+        if let TreeKey::FoldAll | TreeKey::OpenAll = key {
+            let open = key == TreeKey::OpenAll;
+            // An object of a group folded now leaves its cursor to the group.
+            let target = at.map(|at| if open { at } else { parent(at) });
+            self.set_every_group(tab, show_system, open);
+            if let Some(index) = target
+                && let Some(workspace) = self.workspace_mut(tab)
+            {
+                workspace.tree.cursor = Some(rows[index].node.clone());
+                workspace.tree.reveal_cursor = true;
+                workspace.pane = Pane::Tree;
+            }
+            return;
+        }
         let target = match (key, at) {
             // No cursor, or it is on a row no longer shown: End and Up start
             // at the bottom, anything else at the top.
@@ -7826,14 +7847,23 @@ impl App {
                     self.toggle_tree_row(tab, &rows[at].node);
                     Some(at)
                 }
-                // Up to the parent: the nearest row above that is shallower.
-                _ => Some(
-                    (0..at)
-                        .rev()
-                        .find(|&i| rows[i].depth < rows[at].depth)
-                        .unwrap_or(at),
-                ),
+                _ => Some(parent(at)),
             },
+            // A group folds or unfolds; an object of one folds its group,
+            // and the cursor goes up to it.
+            (TreeKey::Fold, Some(at)) => match rows[at].expanded {
+                Some(_) => {
+                    self.toggle_tree_row(tab, &rows[at].node);
+                    Some(at)
+                }
+                None if rows[at].depth > 0 => {
+                    let group = parent(at);
+                    self.toggle_tree_row(tab, &rows[group].node);
+                    Some(group)
+                }
+                None => Some(at),
+            },
+            (TreeKey::FoldAll | TreeKey::OpenAll, Some(at)) => Some(at),
             (TreeKey::Enter, Some(at)) => {
                 match &rows[at].node {
                     TreeNode::Object(object, kind) => self.apply(Action::OpenObject {
@@ -7853,6 +7883,37 @@ impl App {
             workspace.tree.cursor = Some(rows[index].node.clone());
             workspace.tree.reveal_cursor = true;
             workspace.pane = Pane::Tree;
+        }
+    }
+
+    /// Folds every group of the schema the sidebar shows, or unfolds them
+    /// all: those a filter hides too, so they are as asked once it is
+    /// cleared. `show_system` is the setting that lists the system's
+    /// schemas.
+    fn set_every_group(&mut self, tab: ConnTabId, show_system: bool, open: bool) {
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        let Some(schema) = workspace.tree.shown_schema(workspace.driver, show_system) else {
+            return;
+        };
+        let Some(node) = workspace.tree.nodes.get_mut(&schema) else {
+            return;
+        };
+        let objects: Vec<&tabletist_db::ObjectInfo> = node.objects.value.iter().flatten().collect();
+        let prefixes: Vec<String> = crate::model::group_objects(&objects)
+            .into_iter()
+            .filter_map(|entry| match entry {
+                crate::model::Entry::Group { prefix, .. } => Some(prefix),
+                crate::model::Entry::Object(_) => None,
+            })
+            .collect();
+        for prefix in prefixes {
+            if open {
+                node.open_groups.insert(prefix);
+            } else {
+                node.open_groups.remove(&prefix);
+            }
         }
     }
 

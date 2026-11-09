@@ -538,6 +538,9 @@ commands! {
     CopyKeyValue = "copy_key_value",
     CopyKeyName = "copy_key_name",
     ToggleTree = "toggle_tree",
+    FoldGroup = "fold_group",
+    FoldAllGroups = "fold_all_groups",
+    OpenAllGroups = "open_all_groups",
     Reload = "reload",
     FilterBar = "filter_bar",
     WhereFilter = "where_filter",
@@ -963,6 +966,9 @@ impl Command {
             C::CopyKeyValue => info("Copy the key's value", "", Editing),
             C::CopyKeyName => info("Copy the key's name", "", Editing),
             C::ToggleTree => info("Tree or flat list", "", Navigation),
+            C::FoldGroup => info("Fold or open the group", "", Navigation),
+            C::FoldAllGroups => info("Fold every group", "", Navigation),
+            C::OpenAllGroups => info("Open every group", "", Navigation),
             C::Reload => info("Reload", "Reload", Navigation),
             C::FilterBar => info("Filter bar", "", Navigation),
             C::WhereFilter => info("Filter with a WHERE line", "", Navigation),
@@ -1699,6 +1705,10 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("enter")]),
         ),
         bind(C::ToggleTree, SIDEBAR, NONE, keys(&[k("t")])),
+        // Vim's folds, on the tree's groups.
+        bind(C::FoldGroup, SIDEBAR, NONE, keys(&[k("za")])),
+        bind(C::FoldAllGroups, SIDEBAR, NONE, keys(&[k("zM")])),
+        bind(C::OpenAllGroups, SIDEBAR, NONE, keys(&[k("zR")])),
         // A Redis connection's keys, and the value open.
         bind(
             C::MoveInKeys,
