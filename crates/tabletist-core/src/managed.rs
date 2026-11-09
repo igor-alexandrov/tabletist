@@ -417,12 +417,14 @@ impl MatchTable {
                 Driver::MySql,
                 Driver::Sqlite,
                 Driver::BigQuery,
+                Driver::Redis,
             ]
             .into_iter()
             .any(|known| driver_key(known) == driver)
         {
             return Err(
-                "its driver is none that Tabletist knows: postgres, mysql, sqlite or bigquery"
+                "its driver is none that Tabletist knows: postgres, mysql, sqlite, bigquery or \
+                 redis"
                     .into(),
             );
         }
@@ -761,6 +763,21 @@ access_max = "off"
         assert!(connections.contains("it has connections"), "{connections}");
         let service = problem("version = 1\n[service]\nurl = \"https://example.com\"\n");
         assert!(service.contains("it has a service"), "{service}");
+    }
+
+    #[test]
+    fn a_rule_can_name_redis_and_match_its_connections() {
+        let policy = read(
+            "version = 1\n[[rules]]\nname = \"Caches\"\n\
+             match = { driver = \"redis\", host = \"cache.*\", database = \"2\" }\n",
+        )
+        .expect("a rule for Redis reads");
+        let rule = &policy.rules[0].matches;
+        let mut spec = tabletist_db::ConnectSpec::redis("cache.example.com", 6379);
+        assert!(!rule.matches(&spec, None), "database 0 is not 2");
+        spec.redis.as_mut().unwrap().database = 2;
+        assert!(rule.matches(&spec, None));
+        assert!(!rule.matches(&postgres("cache.example.com", "2"), None));
     }
 
     #[test]

@@ -898,3 +898,139 @@ fn quick_open_lists_a_redis_windows_groups_and_keys() {
     assert_eq!(key.as_slice(), b"queue:emails");
     assert_eq!(browser(&harness, tab).tabs.len(), 1);
 }
+
+#[test]
+fn a_test_of_a_saved_redis_connection_keeps_its_key_count_for_the_list() {
+    let mut harness = Harness::new();
+    let saved = crate::testing::bookshop_cache();
+    let conn = saved.id.clone();
+    harness.app.connections.upsert(saved);
+    let mut test = |probe: tabletist_db::redis::Probe| {
+        harness.app.apply(Action::EditConnection(conn.clone()));
+        harness.click("Test");
+        let request = match form(&mut harness).test {
+            TestState::Running(request) => request,
+            ref other => panic!("a Test runs: {other:?}"),
+        };
+        harness.app.apply(Action::Backend(Event::Tested {
+            request,
+            result: Ok(Some(probe)),
+        }));
+        let counted = harness.app.redis_keys.get(&conn).copied();
+        harness.app.apply(Action::CloseDialog);
+        counted
+    };
+    // DBSIZE's count where the server gave it.
+    let probe = crate::testing::bookshop_probe(0);
+    assert_eq!(test(probe.clone()), Some((0, 65)));
+    // Else INFO keyspace's for the database.
+    let mut without = probe;
+    without.keys = None;
+    without.database = 2;
+    assert_eq!(test(without), Some((2, 38)));
+}
+
+#[test]
+fn a_half_client_pair_with_tls_off_saves_a_file_that_reads_back() {
+    let mut harness = Harness::new();
+    redis_dialog(&mut harness);
+    {
+        let form = form(&mut harness);
+        form.name = "Bookshop cache".into();
+        form.redis_tls = false;
+        form.redis_cert = "/etc/ssl/app.pem".into();
+    }
+    let saved = form(&mut harness).to_saved().expect("TLS off saves");
+    assert_eq!(saved.spec.redis_spec().tls.cert, None);
+    let dir = tempfile::tempdir().unwrap();
+    let dirs = crate::paths::AppDirs::at(dir.path());
+    let mut connections = crate::connections::SavedConnections::default();
+    connections.upsert(saved);
+    connections.save(&dirs.connections_file()).unwrap();
+    let loaded = crate::connections::SavedConnections::load(&dirs);
+    assert_eq!(loaded.store.connections.len(), 1, "{:?}", loaded.problem);
+    // With TLS on, half a pair is said, not saved.
+    form(&mut harness).redis_tls = true;
+    assert!(form(&mut harness).to_saved().is_err());
+}
+
+#[test]
+fn a_lost_redis_connection_says_so_with_reconnect() {
+    let mut harness = Harness::new();
+    let tab = harness.connect_redis();
+    assert!(!harness.app.workspace(tab).unwrap().on_start());
+    let session = harness.app.workspace(tab).unwrap().session;
+    harness.app.apply(Action::Backend(Event::Disconnected {
+        session,
+        error: tabletist_db::Error::ConnectionLost("server closed the connection".into()),
+    }));
+    assert!(harness.has("Reconnect"), "{:?}", labels(&harness.settle()));
+}
+
+#[test]
+fn the_database_menu_marks_the_one_the_window_is_on() {
+    let mut harness = Harness::new();
+    let tab = harness.connect_redis();
+    let info = super::workspace::bar_info(&harness.app, tab).unwrap();
+    assert_eq!(info.database, "0 · 65 keys");
+    assert!(info.databases.contains(&info.database));
+    // Choosing it switches nothing.
+    let before = asks(&harness).len();
+    harness.app.apply(Action::SwitchDatabase {
+        tab,
+        database: info.database.clone(),
+    });
+    assert_eq!(asks(&harness).len(), before);
+}
+
+#[test]
+fn every_window_has_its_own_group_when_quick_open_searches_them_all() {
+    let mut harness = Harness::new();
+    let first = harness.connect_redis();
+    harness.app.apply(Action::ShowConnections);
+    let second = harness.connect_redis();
+    assert_ne!(first, second);
+    harness.app.apply(Action::QuickOpenTyped("session".into()));
+    harness.app.apply(Action::QuickOpenScope);
+    harness.settle();
+    let Some(Dialog::QuickOpen(open)) = &harness.app.dialog else {
+        panic!("quick open is open");
+    };
+    assert!(open.everywhere);
+    let groups: Vec<crate::model::QuickGroup> = harness
+        .app
+        .quick_open_list(open)
+        .items()
+        .filter_map(|item| match item {
+            crate::model::QuickItem::More { group, .. } => Some(*group),
+            _ => None,
+        })
+        .collect();
+    // One "more" row each, of its own window (the one quick open was
+    // opened from first).
+    assert_eq!(groups.len(), 2);
+    assert!(groups.contains(&crate::model::QuickGroup::Connection(first)));
+    assert!(groups.contains(&crate::model::QuickGroup::Connection(second)));
+}
+
+#[test]
+fn quick_opens_group_escapes_the_globs_characters() {
+    let mut harness = Harness::new();
+    let tab = harness.connect_redis_unscanned();
+    step(
+        &mut harness,
+        &["a[b]:1", "a[b]:2", "a[b]:3"],
+        3,
+        ScanEnd::Done,
+    );
+    let results = quick_results(&mut harness, "a[b");
+    assert!(matches!(
+        results.first(),
+        Some(crate::model::QuickItem::Key { found, .. }) if found.group.is_some()
+    ));
+    harness.app.apply(Action::QuickOpenPick {
+        index: Some(0),
+        in_editor: false,
+    });
+    assert_eq!(browser(&harness, tab).filter, "a\\[b\\]:*");
+}

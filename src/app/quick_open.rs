@@ -437,10 +437,11 @@ impl App {
         else {
             return Vec::new();
         };
-        let wanted = query.to_lowercase();
+        // Where the name holds the query, without regard to case, in the
+        // name's own text: lowering can change a character's length.
         let place = |name: &[u8]| {
-            let text = crate::keyspace::lossy(name).to_lowercase();
-            text.find(&wanted).map(|at| (at, at..at + wanted.len()))
+            let span = crate::keyspace::find_folded(&crate::keyspace::lossy(name), query)?;
+            Some((span.start, span))
         };
         let mut groups: Vec<(usize, crate::model::FoundKey)> = browser
             .tree
@@ -475,7 +476,6 @@ impl App {
                     },
                 ))
             })
-            .take(KEYS_LISTED)
             .collect();
         let order = |a: &(usize, crate::model::FoundKey), b: &(usize, crate::model::FoundKey)| {
             (a.0 > 0)
@@ -530,7 +530,13 @@ impl App {
                     .into_iter()
                     .map(|found| QuickItem::Key { tab, found })
                     .collect();
-                let group = QuickGroup::Keys;
+                // Each window's own group where every one is searched, so
+                // one's "more" row is not another's.
+                let group = if open.everywhere {
+                    QuickGroup::Connection(tab)
+                } else {
+                    QuickGroup::Keys
+                };
                 list.group(group, items, whole(group));
                 continue;
             }
@@ -800,7 +806,8 @@ impl App {
                             .workspace_mut(tab)
                             .and_then(|workspace| workspace.redis.as_deref_mut())
                         {
-                            browser.filter = format!("{}*", crate::keyspace::lossy(&found.name));
+                            browser.filter =
+                                format!("{}*", crate::keyspace::glob_escaped(&found.name));
                         }
                         self.apply(Action::Redis(tab, RedisAction::Filter));
                     }

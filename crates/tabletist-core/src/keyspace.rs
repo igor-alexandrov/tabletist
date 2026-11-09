@@ -206,8 +206,15 @@ impl KeyTree {
             }
         }
         keys.extend(group.keys.iter());
-        keys.sort_by(|a, b| natural(a, b));
         let limit = shown.get(prefix).copied().unwrap_or(page).max(1);
+        // Only the keys shown are put in order: a group of a hundred
+        // thousand is not sorted whole on every frame for its first page.
+        if keys.len() > limit {
+            keys.select_nth_unstable_by(limit, |a, b| natural(a, b));
+            keys[..limit].sort_unstable_by(|a, b| natural(a, b));
+        } else {
+            keys.sort_unstable_by(|a, b| natural(a, b));
+        }
         for key in keys.iter().take(limit) {
             rows.push(Row::Key {
                 key: Box::from(key.as_ref()),
@@ -223,6 +230,43 @@ impl KeyTree {
             });
         }
     }
+}
+
+/// Where `text` first holds `query`, character by character without
+/// regard to case, as a range of `text`'s own bytes. A character that
+/// lowers to more than one (`İ`) matches only the same characters.
+pub fn find_folded(text: &str, query: &str) -> Option<std::ops::Range<usize>> {
+    let wanted: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
+    if wanted.is_empty() {
+        return None;
+    }
+    let starts = text.char_indices().map(|(at, _)| at);
+    starts.into_iter().find_map(|start| {
+        let mut lowered = Vec::new();
+        for (at, c) in text[start..].char_indices() {
+            lowered.extend(c.to_lowercase());
+            if lowered.len() > wanted.len() || lowered[..] != wanted[..lowered.len()] {
+                return None;
+            }
+            if lowered.len() == wanted.len() {
+                return Some(start..start + at + c.len_utf8());
+            }
+        }
+        None
+    })
+}
+
+/// A key's name as a `SCAN MATCH` pattern that matches it as it is: the
+/// glob's own characters (`*`, `?`, `[`, `]`, `\`) escaped.
+pub fn glob_escaped(name: &[u8]) -> String {
+    let mut out = String::new();
+    for c in lossy(name).chars() {
+        if matches!(c, '*' | '?' | '[' | ']' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// `a` before `b` as a person counts: runs of digits by their number
@@ -1249,6 +1293,22 @@ mod tests {
     }
 
     #[test]
+    fn a_match_is_found_without_regard_to_case_on_the_names_own_bytes() {
+        assert_eq!(find_folded("Book:12", "book"), Some(0..4));
+        assert_eq!(find_folded("cart:Éa", "éa"), Some(5..8));
+        // `İ` lowers to two characters: no slice of it is a match.
+        assert_eq!(find_folded("İx", "i"), None);
+        assert_eq!(find_folded("İx", "x"), Some(2..3));
+        assert_eq!(find_folded("abc", ""), None);
+    }
+
+    #[test]
+    fn a_names_glob_characters_are_escaped_for_match() {
+        assert_eq!(glob_escaped(b"book:"), "book:");
+        assert_eq!(glob_escaped(b"a[b]*?\\:"), "a\\[b\\]\\*\\?\\\\:");
+    }
+
+    #[test]
     fn keys_are_ordered_as_a_person_counts() {
         let mut names = vec!["book:10", "book:2", "book:1", "book:02", "a", "book:x"];
         names.sort_by(|a, b| natural(a.as_bytes(), b.as_bytes()));
@@ -1303,6 +1363,17 @@ mod tests {
         shown.insert(b"item:".to_vec(), 20);
         let rows = tree.rows(&open, &shown, 10);
         assert!(matches!(rows.last(), Some(Row::More { left: 5, .. })));
+        // The page shown is the first in order, and in order, though only
+        // it is sorted.
+        let keys: Vec<String> = rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Key { name, .. } => Some(lossy(name)),
+                _ => None,
+            })
+            .collect();
+        let first: Vec<String> = (0..20).map(|n| format!("{n:02}")).collect();
+        assert_eq!(keys, first);
     }
 
     fn browser() -> Browser {

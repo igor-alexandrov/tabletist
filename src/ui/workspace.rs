@@ -74,9 +74,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         app.actions.extend(asked);
         return;
     }
-    // A Redis connection's keys and values, in place of tables.
+    // A Redis connection's keys and values, in place of tables, under the
+    // strip that says its connection was lost, with Reconnect.
     let stale = !workspace.takes_commands();
     let paint = super::Paint::of(app);
+    if workspace.redis.is_some() {
+        let asked = banner(ui, paint, tab, workspace);
+        app.actions.extend(asked);
+    }
     if let Some(browser) = crate::app::workspace_in_mut(&mut app.tabs, tab)
         .and_then(|workspace| workspace.redis.as_deref_mut())
     {
@@ -900,7 +905,20 @@ pub(super) fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
             // The project.
             Driver::Postgres | Driver::MySql | Driver::BigQuery => spec.database.clone(),
             // The database the window is on, which a switch moves.
-            Driver::Redis => format!("db {}", workspace.redis_database()),
+            // As its menu names it ("0 · 1,204 keys"), so the menu marks
+            // it and never switches to it; "db 0" before the server says.
+            Driver::Redis => {
+                let number = workspace.redis_database();
+                let own = format!("{number} ");
+                workspace
+                    .databases
+                    .value
+                    .iter()
+                    .flatten()
+                    .find(|label| label.starts_with(&own) || **label == number.to_string())
+                    .cloned()
+                    .unwrap_or_else(|| format!("db {number}"))
+            }
         },
         databases: workspace.databases.value.clone().unwrap_or_default(),
         tls,

@@ -364,7 +364,13 @@ impl App {
 
     /// The database menu's choice, for a Redis window: its label's number.
     pub(super) fn redis_switch_label(&mut self, tab: ConnTabId, label: &str) {
-        if let Some(database) = database_of(label) {
+        let current = self
+            .workspace(tab)
+            .and_then(|workspace| workspace.redis.as_deref())
+            .map(|browser| browser.database);
+        // The database the window is on already is no switch: no SELECT,
+        // no scan again.
+        if let Some(database) = database_of(label).filter(|database| Some(*database) != current) {
             self.apply_redis(tab, RedisAction::SwitchDatabase(database));
         }
     }

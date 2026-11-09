@@ -2565,10 +2565,15 @@ impl ConnectionForm {
             let text = text.trim();
             (!text.is_empty()).then(|| std::path::PathBuf::from(text))
         };
-        let cert = typed(&self.redis_cert);
-        let key = typed(&self.redis_key);
-        if self.redis_tls && cert.is_some() != key.is_some() {
-            return Err("Choose both the client certificate and its key, or neither.".into());
+        let mut cert = typed(&self.redis_cert);
+        let mut key = typed(&self.redis_key);
+        if cert.is_some() != key.is_some() {
+            if self.redis_tls {
+                return Err("Choose both the client certificate and its key, or neither.".into());
+            }
+            // With TLS off the half of a pair is hidden, and the file
+            // takes a pair whole or not at all: it is dropped.
+            (cert, key) = (None, None);
         }
         let key_limit: u64 = self
             .redis_key_limit
@@ -6391,7 +6396,8 @@ impl Workspace {
     /// Whether the window shows the start screen: its schema listing has
     /// answered (listed, or failed), and no tab is open.
     pub fn on_start(&self) -> bool {
-        self.opened() && self.active_tab.is_none()
+        // A Redis window draws its keys in that place.
+        self.opened() && self.active_tab.is_none() && self.redis.is_none()
     }
 
     pub fn tab(&self, id: TabId) -> Option<&Tab> {
