@@ -14,177 +14,177 @@
   "sha256": "cf5a5638319cd06d1cfffeb4762b0f92396b69f3bc0c46602540400bbfbb9e9a",
   "window": {
     "n": 20,
-    "median": 0.4382603829999425,
-    "min": 0.43053005100045993,
-    "max": 0.4524835720003466
+    "median": 0.4314562540002953,
+    "min": 0.42428197499975795,
+    "max": 0.44224856499931775
   },
   "settled": {
     "n": 20,
-    "median": 0.4387842184996771,
-    "min": 0.4311552330000268,
-    "max": 0.45459674499943503
+    "median": 0.43204144849914883,
+    "min": 0.4248297989979619,
+    "max": 0.44282525299786357
   },
-  "capture_interval": 0.016643778500110784,
+  "capture_interval": 0.01667106674904062,
   "runs": [
     {
-      "window": 0.4524835720003466,
-      "settled": 0.4529653019999387,
+      "window": 0.42428197499975795,
+      "settled": 0.4248297989979619,
       "settled_on_first_capture": true,
       "xwayland": false,
       "windows": 1,
-      "capture_interval": 0.01673358399875724
+      "capture_interval": 0.01659654099967156
     },
     {
-      "window": 0.4384126400000241,
-      "settled": 0.45459674499943503,
-      "settled_on_first_capture": false,
-      "xwayland": false,
-      "windows": 1,
-      "capture_interval": 0.01663882400134753
-    },
-    {
-      "window": 0.43337793499995314,
-      "settled": 0.4337691939999786,
+      "window": 0.42522545699830516,
+      "settled": 0.4256822889983596,
       "settled_on_first_capture": true,
       "xwayland": false,
       "windows": 1,
-      "capture_interval": 0.01657469350084284
+      "capture_interval": 0.01674117950096843
     },
     {
-      "window": 0.4355324459993426,
-      "settled": 0.43605491400012397,
+      "window": 0.4267193669984408,
+      "settled": 0.42714728500141064,
       "settled_on_first_capture": true,
       "xwayland": false,
       "windows": 1,
-      "capture_interval": 0.016634581000289472
+      "capture_interval": 0.016614023499641917
     },
     {
-      "window": 0.4376638339999772,
-      "settled": 0.4381849790006527,
+      "window": 0.42692728000110947,
+      "settled": 0.4273905949994514,
       "settled_on_first_capture": true,
       "xwayland": false,
       "windows": 1,
-      "capture_interval": 0.016665224499774922
+      "capture_interval": 0.016666512998199323
     },
     {
-      "window": 0.43398903900015284,
-      "settled": 0.43446495799980767,
+      "window": 0.4310294150018308,
+      "settled": 0.43143954900006065,
       "settled_on_first_capture": true,
       "xwayland": false,
       "windows": 1,
-      "capture_interval": 0.016723027999432816
+      "capture_interval": 0.0166194595003617
     },
     {
-      "window": 0.44318072900023253,
-      "settled": 0.44362904599984176,
+      "window": 0.44224856499931775,
+      "settled": 0.44282525299786357,
       "settled_on_first_capture": true,
       "xwayland": false,
       "windows": 1,
-      "capture_interval": 0.01667426099993463
+      "capture_interval": 0.016629944500891725
     },
     {
-      "window": 0.44730496299962397,
-      "settled": 0.44775666699933936,
+      "window": 0.4278047979969415,
+      "settled": 0.4283072669968533,
       "settled_on_first_capture": true,
       "xwayland": false,
       "windows": 1,
-      "capture_interval": 0.016627097000309732
+      "capture_interval": 0.016790968000350404
     },
     {
-      "window": 0.4359280230000877,
-      "settled": 0.43640908199995465,
+      "window": 0.43030444699979853,
+      "settled": 0.43087438300062786,
       "settled_on_first_capture": true,
       "xwayland": false,
       "windows": 1,
-      "capture_interval": 0.016635838500405953
+      "capture_interval": 0.016684522501236643
     },
     {
-      "window": 0.43053005100045993,
-      "settled": 0.4311552330000268,
+      "window": 0.4317717480007559,
+      "settled": 0.4323851660010405,
       "settled_on_first_capture": true,
       "xwayland": false,
       "windows": 1,
-      "capture_interval": 0.01664873299887404
+      "capture_interval": 0.016680560001987033
     },
     {
-      "window": 0.435580776000279,
-      "settled": 0.4360696399999142,
+      "window": 0.4317106540001987,
+      "settled": 0.4323115279985359,
       "settled_on_first_capture": true,
       "xwayland": false,
       "windows": 1,
-      "capture_interval": 0.016604794999693695
+      "capture_interval": 0.016789801000413718
     },
     {
-      "window": 0.43815726400134736,
-      "settled": 0.43867323999984364,
+      "window": 0.43238123999981326,
+      "settled": 0.4328702630009502,
       "settled_on_first_capture": true,
       "xwayland": false,
       "windows": 1,
-      "capture_interval": 0.016659312499541556
+      "capture_interval": 0.016739611499360763
     },
     {
-      "window": 0.4353080390010291,
-      "settled": 0.4358666549996997,
+      "window": 0.433612044002075,
+      "settled": 0.4341412330031744,
       "settled_on_first_capture": true,
       "xwayland": false,
       "windows": 1,
-      "capture_interval": 0.016688322500158392
+      "capture_interval": 0.016577139500441262
     },
     {
-      "window": 0.44419976199969824,
-      "settled": 0.4448543990001781,
+      "window": 0.4298093559991685,
+      "settled": 0.4303916549979476,
       "settled_on_first_capture": true,
       "xwayland": false,
       "windows": 1,
-      "capture_interval": 0.01662156149996008
+      "capture_interval": 0.016652863001581864
     },
     {
-      "window": 0.44218601699867577,
-      "settled": 0.4427088549982727,
+      "window": 0.4312018540003919,
+      "settled": 0.43177136899976176,
       "settled_on_first_capture": true,
       "xwayland": false,
       "windows": 1,
-      "capture_interval": 0.01663405499948567
+      "capture_interval": 0.016717940497983363
     },
     {
-      "window": 0.4383635019985377,
-      "settled": 0.4388951969995105,
+      "window": 0.4311543049989268,
+      "settled": 0.4317155749995436,
       "settled_on_first_capture": true,
       "xwayland": false,
       "windows": 1,
-      "capture_interval": 0.016562224499466538
+      "capture_interval": 0.0166608580002503
     },
     {
-      "window": 0.4317252870005177,
-      "settled": 0.43230052400031127,
+      "window": 0.438047870000446,
+      "settled": 0.4387078060026397,
       "settled_on_first_capture": true,
       "xwayland": false,
       "windows": 1,
-      "capture_interval": 0.016581050000240793
+      "capture_interval": 0.016715335499611683
     },
     {
-      "window": 0.44922980699993786,
-      "settled": 0.4497714310000447,
+      "window": 0.434764831999928,
+      "settled": 0.43541062099757255,
       "settled_on_first_capture": true,
       "xwayland": false,
       "windows": 1,
-      "capture_interval": 0.016890179000256467
+      "capture_interval": 0.016624334501102567
     },
     {
-      "window": 0.4477400519990624,
-      "settled": 0.4483544830000028,
+      "window": 0.43331786199996714,
+      "settled": 0.4338609570004337,
       "settled_on_first_capture": true,
       "xwayland": false,
       "windows": 1,
-      "capture_interval": 0.016878581999662856
+      "capture_interval": 0.016556035498069832
     },
     {
-      "window": 0.44192315800137294,
-      "settled": 0.44258807500045805,
+      "window": 0.44160992599790916,
+      "settled": 0.44219959899783134,
       "settled_on_first_capture": true,
       "xwayland": false,
       "windows": 1,
-      "capture_interval": 0.016771113999311638
+      "capture_interval": 0.016675620499881916
+    },
+    {
+      "window": 0.43992974499997217,
+      "settled": 0.44059314700280083,
+      "settled_on_first_capture": true,
+      "xwayland": false,
+      "windows": 1,
+      "capture_interval": 0.016704275500160293
     }
   ]
 }

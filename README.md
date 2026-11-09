@@ -114,29 +114,32 @@ first start in an empty profile:
 | App | First screen | Cold | Memory at first screen | With 100,000 rows loaded | Download | Installed |
 |---|---|---|---|---|---|---|
 | Tabletist 0.5.0 | 89 ms | 108 ms | 134.0 MiB | 161.1 MiB | 18.6 MB | 45.3 MB |
-| DB Browser for SQLite 3.13.1 | 135 ms | 168 ms | 64.2 MiB | | 36.7 MB | 95.2 MB |
+| DB Browser for SQLite 3.13.1 | 135 ms | 168 ms | 64.2 MiB | 104.0 MiB | 36.7 MB | 95.2 MB |
 | TablePro 0.1.0-beta.3 | 230 ms | 259 ms | 144.0 MiB | 236.4 MiB | 35.2 MB | 121.4 MB |
 | HeidiSQL 12.22 | 282 ms | 298 ms | 250.4 MiB | | 7.3 MB | 17.6 MB |
-| TablePlus 2.2.0-322 | 439 ms | 463 ms | 85.2 MiB | | 63.0 MB | 188.4 MB |
-| DbGate 7.3.4 | 784 ms | 866 ms | 494.8 MiB | | 216.2 MB | 582.3 MB |
-| Valentina Studio 18.4.1 | 1,491 ms | 1,631 ms | 246.6 MiB | | 114.4 MB | 447.0 MB |
+| TablePlus 2.2.0-322 | 432 ms | 465 ms | 128.7 MiB | | 63.0 MB | 188.4 MB |
+| DbGate 7.3.4 | 784 ms | 864 ms | 494.9 MiB | | 216.2 MB | 582.3 MB |
 | DBeaver 26.2.4 | 1,979 ms | 2,251 ms | 345.0 MiB | | 129.1 MB | 216.5 MB |
-| Beekeeper Studio 6.2.2 | 2,137 ms | 2,305 ms | 965.4 MiB | 1,542.8 MiB | 362.4 MB | 1,154.8 MB |
+| Beekeeper Studio 6.2.2 | 2,175 ms | 2,344 ms | 1,036.4 MiB | 1,542.8 MiB | 362.4 MB | 1,154.8 MB |
+| Valentina Studio 18.4.1 | 3,364 ms | 3,478 ms | 246.4 MiB | | 114.4 MB | 447.0 MB |
 
 - *First screen*: from launch until the app's window settles on its first
   screen, the median of 20 runs; *Cold*: the same with the app's files
-  dropped from the page cache first. DBeaver shows a splash at 342 ms;
-  Valentina's first screen asks for a serial, and DBeaver's is a first-run
-  wizard.
+  dropped from the page cache first. DBeaver shows a splash at 342 ms and
+  then a first-run wizard; Valentina's first screen asks for a serial.
 - *Memory*: PSS (resident memory, each page that processes share divided
   among them), added up over all of an app's processes, plus the GPU memory
   it holds, which on this integrated GPU is system memory too. Median of
   three runs.
 - *With 100,000 rows loaded*: the same SQLite table held whole in each
-  app's grid, five runs; measured for three apps so far.
+  app's grid, five runs. The other five apps could not be driven to it
+  with keys on this machine's locked session; the method README says why
+  for each.
 - The apps ran unpacked from their release files, each on Wayland or
-  through XWayland as it chose. TablePro for Linux is a beta; DB Browser
-  for SQLite opens SQLite only.
+  through XWayland as Omarchy's session starts it (Beekeeper on Wayland,
+  DbGate and DB Browser's AppImage through XWayland; DB Browser's 100,000
+  rows with Arch's package, on Wayland). TablePro for Linux is a beta; DB
+  Browser for SQLite opens SQLite only.
 
 How each number was taken, the spreads, the raw reports and the script to
 take them again on your machine are in

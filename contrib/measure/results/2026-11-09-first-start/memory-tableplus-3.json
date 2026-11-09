@@ -13,16 +13,16 @@
   "steps": [
     {
       "step": "idle after the start",
-      "pid": 3067021,
-      "rss": 111673344,
-      "pss": 75478016,
-      "private": 66887680,
+      "pid": 374741,
+      "rss": 114524160,
+      "pss": 77852672,
+      "private": 69193728,
       "gpu": {},
       "tree": {
-        "processes": 7,
-        "rss": 145985536,
-        "pss": 89287680,
-        "private": 79396864,
+        "processes": 8,
+        "rss": 236871680,
+        "pss": 135407616,
+        "private": 117215232,
         "gpu": {}
       }
     }

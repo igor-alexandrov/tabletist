@@ -91,8 +91,9 @@ include. On an integrated GPU that memory is system memory too (`gtt`).
 **Other apps.** `startup` and `memory` take any Wayland or XWayland app:
 `--class` names its window class (a regular expression), `--env NAME=VALUE`
 adds to its environment, and `--fresh-profile` gives each launch empty XDG
-config, data, cache and state folders, removed afterwards, so every app
-starts as on its first run and none writes to your own. `--seed DIR` copies
+config, data, cache and state folders and a `HOME` of its own, removed
+afterwards, so every app starts as on its first run and none writes to your
+own (some apps write to `~/.name` whatever the XDG folders say). `--seed DIR` copies
 settings into each of those profiles first (`profiles/` holds the ones used
 below). `--evict` takes a folder too, for an app of many files. `memory
 --idle-only` takes one sample at the first screen, with no keys; `memory
@@ -233,9 +234,10 @@ The builds, each the latest release on 2026-11-09:
   system does not have, so the AppImage was unpacked once
   (`--appimage-extract`) and its `AppRun` run from the disk: the files its
   `.deb` and Arch `.pacman` packages install. So compare it with Tabletist's
-  unpacked binary. It runs on X11 by default, here through XWayland
-  (`--env DISPLAY=:0`); it was also run on Wayland
-  (`--ozone-platform=wayland`). A cold run drops all 1,002 of its files
+  unpacked binary. Electron runs on X11 unless told otherwise, here through
+  XWayland (`--env DISPLAY=:0`); it was also run on Wayland
+  (`--ozone-platform=wayland`), which is how it starts on Omarchy, whose
+  session sets `ELECTRON_OZONE_PLATFORM_HINT=wayland`. A cold run drops all 1,002 of its files
   from the page cache.
 
 Startup, 20 counted runs each; median, then minimum to maximum:
@@ -305,7 +307,13 @@ on AlternativeTo).
 - DbGate 7.3.4 (Electron), the `linux_x64.tar.gz`, checked against
   GitHub's digest. Its first screen asks whether to send usage analytics.
 - DB Browser for SQLite 3.13.1 (Qt), the AppImage, unpacked; its release
-  (October 2024) publishes no checksum.
+  (October 2024) publishes no checksum. Its Qt 5.12 has no Wayland plugin,
+  so it draws through XWayland. Also measured: Arch's own `sqlitebrowser`
+  3.13.1-3 package with the five it needs (`qt5-svg`, `sqlcipher`,
+  `qcustomplot`, `qhexedit2`, `qscintilla-qt5`), each checked against the
+  SHA-256 in pacman's `extra.db`, unpacked and run on the system's Qt
+  5.15.19 (`LD_LIBRARY_PATH`, `QT_PLUGIN_PATH`,
+  `QT_QPA_PLATFORM=wayland;xcb`, as Omarchy's session sets it), on Wayland.
 - HeidiSQL 12.22 (Lazarus, Qt 6), the `.deb`, checked against GitHub's
   digest. It needs `libQt6Pas`, which this system lacks: Ubuntu 26.04's
   `libqt6pas6` 2.3, checked against Ubuntu's `Packages`, was unpacked
@@ -317,6 +325,14 @@ on AlternativeTo).
   registration wizard: it runs as an unregistered copy until it gets a
   serial.
 
+TablePlus, DbGate and Valentina write to `~/.tableplus`, `~/.dbgate` and
+`~/.local/share/valentina` whatever the XDG folders say, so their first
+runs here found what the run before had left in the measuring machine's
+home. They were run again with a `HOME` of their own, and the figures below
+are those. TablePlus's memory changed most (128.7 MiB on a true first start,
+85.2 MiB when it found its settings), Valentina's settled time too (3.4 s,
+1.5 s before).
+
 Startup, 20 counted runs each; median, then minimum to maximum. The rows
 from the section above are repeated for comparison.
 
@@ -326,20 +342,23 @@ from the section above are repeated for comparison.
 | Tabletist 0.5.0, binary | Wayland | cold | 108 ms (102 to 120) | 108 ms (103 to 120) |
 | DB Browser for SQLite 3.13.1 | XWayland | warm | 130 ms (123 to 140) | 135 ms (125 to 163) |
 | DB Browser for SQLite 3.13.1 | XWayland | cold | 165 ms (153 to 186) | 168 ms (154 to 214) |
+| DB Browser for SQLite 3.13.1, Arch's package | Wayland | warm | 137 ms (129 to 146) | 138 ms (130 to 147) |
+| DB Browser for SQLite 3.13.1, Arch's package | Wayland | cold | 143 ms (138 to 151) | 144 ms (139 to 152) |
 | HeidiSQL 12.22 | Wayland | warm | 253 ms (249 to 256) | 282 ms (278 to 286) |
 | HeidiSQL 12.22 | Wayland | cold | 268 ms (259 to 464) | 298 ms (287 to 551) |
-| TablePlus 2.2.0-322 | Wayland | warm | 438 ms (431 to 452) | 439 ms (431 to 455) |
-| TablePlus 2.2.0-322 | Wayland | cold | 462 ms (455 to 480) | 463 ms (455 to 497) |
-| DbGate 7.3.4 | XWayland | warm | 138 ms (132 to 146) | 784 ms (776 to 801) |
-| DbGate 7.3.4 | XWayland | cold | 205 ms (197 to 213) | 866 ms (844 to 883) |
-| Valentina Studio 18.4.1 | Wayland | warm | 1,304 ms (1,300 to 1,308) | 1,491 ms (1,476 to 3,382) |
-| Valentina Studio 18.4.1 | Wayland | cold | 1,404 ms (1,396 to 1,411) | 1,631 ms (1,586 to 3,500) |
+| TablePlus 2.2.0-322 | Wayland | warm | 431 ms (424 to 442) | 432 ms (425 to 443) |
+| TablePlus 2.2.0-322 | Wayland | cold | 465 ms (459 to 475) | 465 ms (459 to 490) |
+| DbGate 7.3.4 | XWayland | warm | 139 ms (135 to 148) | 784 ms (762 to 805) |
+| DbGate 7.3.4 | XWayland | cold | 204 ms (196 to 211) | 864 ms (846 to 873) |
+| Valentina Studio 18.4.1 | Wayland | warm | 1,307 ms (1,300 to 1,377) | 3,364 ms (1,487 to 3,384) |
+| Valentina Studio 18.4.1 | Wayland | cold | 1,401 ms (1,395 to 1,433) | 3,478 ms (1,580 to 3,516) |
 | DBeaver 26.2.4, its splash | Wayland | warm | 342 ms (336 to 352) | |
 | DBeaver 26.2.4, its splash | Wayland | cold | 408 ms (389 to 1,075) | |
 | DBeaver 26.2.4, main window and wizard | Wayland | warm | 1,763 ms (1,738 to 5,080) | 1,979 ms (1,951 to 5,299) |
 | DBeaver 26.2.4, main window and wizard | Wayland | cold | 2,045 ms (2,014 to 2,083) | 2,251 ms (2,223 to 2,290) |
 
-DbGate maps a window at once and fills it in over the next 650 ms.
+DbGate maps a window at once and fills it in over the next 650 ms. It
+stays on XWayland even with Omarchy's `ELECTRON_OZONE_PLATFORM_HINT`.
 Valentina's first window is a splash, and its settled picture is the
 registration wizard.
 
@@ -351,14 +370,15 @@ the two, the closest single number to what each costs this machine:
 
 | App | Processes | PSS | RSS (summed) | Private | GPU (VRAM + GTT) | PSS + GPU |
 |---|---|---|---|---|---|---|
+| DB Browser for SQLite 3.13.1, Arch's package | 1 | 58.8 MiB | 112.0 MiB | 44.2 MiB | 4.8 MiB | 63.6 MiB |
 | DB Browser for SQLite 3.13.1 | 1 | 59.4 MiB | 100.2 MiB | 50.5 MiB | 4.8 MiB | 64.2 MiB |
-| TablePlus 2.2.0-322 | 7 | 85.2 MiB | 139.3 MiB | 75.7 MiB | 0.0 MiB | 85.2 MiB |
+| TablePlus 2.2.0-322 | 8 | 128.7 MiB | 228.2 MiB | 114.0 MiB | 0.0 MiB | 128.7 MiB |
 | Tabletist 0.5.0, binary | 1 | 83.4 MiB | 128.7 MiB | 74.3 MiB | 50.6 MiB | 134.0 MiB |
 | TablePro 0.1.0-beta.3 | 1 | 111.5 MiB | 147.2 MiB | 105.7 MiB | 32.5 MiB | 144.0 MiB |
-| Valentina Studio 18.4.1 | 1 | 246.6 MiB | 261.7 MiB | 241.8 MiB | 0.0 MiB | 246.6 MiB |
+| Valentina Studio 18.4.1 | 1 | 246.4 MiB | 261.7 MiB | 241.6 MiB | 0.0 MiB | 246.4 MiB |
 | HeidiSQL 12.22 | 1 | 250.4 MiB | 275.9 MiB | 238.2 MiB | 0.0 MiB | 250.4 MiB |
 | DBeaver 26.2.4 | 8 | 345.0 MiB | 411.1 MiB | 333.9 MiB | 0.0 MiB | 345.0 MiB |
-| DbGate 7.3.4 | 7 | 395.9 MiB | 800.9 MiB | 267.8 MiB | 98.9 MiB | 494.8 MiB |
+| DbGate 7.3.4 | 7 | 395.9 MiB | 800.1 MiB | 268.3 MiB | 98.9 MiB | 494.9 MiB |
 | Beekeeper Studio 6.2.2, X11 | 7 | 845.7 MiB | 1,336.3 MiB | 710.9 MiB | 119.7 MiB | 965.4 MiB |
 
 Sizes (x86_64): the download, and the unpacked files (`du -sb`). Each
@@ -374,9 +394,20 @@ also uses libraries of the system (GTK, Qt, Mesa) that are not counted.
 | DBeaver 26.2.4 | 129,127,321 bytes `.tar.gz` | 216,508,608 bytes (Java included) |
 | DbGate 7.3.4 | 216,219,957 bytes AppImage; 204,701,633 bytes `.tar.gz` | 582,293,826 bytes |
 
-The 100,000-row test below was not run for these six: it needs each app
-driven by keys to open a file and load a table, which is written for
-Tabletist, TablePro and Beekeeper only so far.
+Of these six, only DB Browser for SQLite could be given the 100,000-row
+test below. The others need keys in a window that has the keyboard, and the
+measuring machine's session was locked, so the window on the headless
+output never has it: TablePlus took its global shortcuts (Ctrl+Q quit it)
+but no typing into its connection form; HeidiSQL, Valentina and DB Browser
+took no keys at all (Qt acts on keys only in an active window), and
+neither did any app drawn through XWayland, by Hyprland's `send_shortcut`
+or by XTest; DbGate on Wayland took keys and opened `big` (its connection
+given by `CONNECTIONS`/`ENGINE_*`/`FILE_*` variables, its usage-analytics
+question answered by `USAGE_ANALYTICS=false`), but holds at most one page
+of 50,000 rows, and its "Fetch all rows" has no key and could not be
+reached through its command palette. DBeaver would also download its SQLite
+driver on first use. With an unlocked session these can be driven by keys
+sent to a focused window; that is not done here.
 
 ### 100,000 rows, against Beekeeper Studio and TablePro
 
@@ -401,6 +432,11 @@ into each throwaway profile:
   default is 1,000, the most 100,000). Its query results stop at "10,000+".
   The seed also turns off `share-usage-data`, which sends usage events to
   PostHog; it was on, as by default, for the first-start runs above.
+- DB Browser for SQLite 3.13.1, Arch's package on Wayland: no keys, its
+  own command line opens the file on the table (`-t big`), with its
+  `prefetchsize` set to 100,000 (the default is 50,000; a run with 1,000
+  took 78 MiB of PSS, one with 100,000 about 100). Its "connected" sample
+  is a separate launch with the file and no table.
 - Beekeeper Studio 6.2.2, on Wayland: the query editor it opens with, the
   same query, Ctrl+Enter, with `maxResults` set to 100,000 (the default is
   50,000). Its table view pages 100 rows, and its next page is a click. On
@@ -410,7 +446,8 @@ into each throwaway profile:
 After the last key each waits 6 seconds, then for the picture to hold
 still, then 2 more seconds, and the memory is taken. The picture of every
 run shows all 100,000 rows: Tabletist's footer reads "100,000 rows",
-TablePro's "Rows 1 – 100,000", Beekeeper's "100000". Moving to the last
+TablePro's "Rows 1 – 100,000", Beekeeper's "100000", DB Browser's "of
+100,000". Moving to the last
 row is left out: the apps' grids could not all be focused with keys from
 outside, and where they could (TablePro, Tab three times then Ctrl+End,
 during the trials), PSS did not change, as the grids draw only the rows in
@@ -426,11 +463,14 @@ Five runs each; the median of the five, the process tree added up:
 | TablePro 0.1.0-beta.3 | 100,000 rows loaded | 203.8 MiB | 240.0 MiB | 197.6 MiB | 32.6 MiB |
 | Beekeeper Studio 6.2.2 | connected | 863.5 MiB | 1,382.5 MiB | 725.4 MiB | 166.1 MiB |
 | Beekeeper Studio 6.2.2 | 100,000 rows loaded | 1,449.8 MiB | 1,971.4 MiB | 1,310.4 MiB | 93.0 MiB |
+| DB Browser for SQLite 3.13.1 | connected | 70.9 MiB | 133.6 MiB | 46.8 MiB | 4.8 MiB |
+| DB Browser for SQLite 3.13.1 | 100,000 rows loaded | 99.2 MiB | 156.7 MiB | 80.1 MiB | 4.8 MiB |
 
 Holding the 100,000 rows added 15.8 MiB of PSS in Tabletist, 89.1 MiB in
-TablePro and 586.3 MiB in Beekeeper. The five runs of each, loaded: Tabletist
-103.0 to 104.7 MiB, TablePro 203.3 to 204.1 MiB, Beekeeper 1,446.7 to
-1,452.4 MiB.
+TablePro, 586.3 MiB in Beekeeper and 28.3 MiB in DB Browser. The five runs
+of each, loaded: Tabletist 103.0 to 104.7 MiB, TablePro 203.3 to 204.1
+MiB, Beekeeper 1,446.7 to 1,452.4 MiB, DB Browser 96.6 to 106.1 MiB (its
+connected runs fall in two groups, 61 and 71 to 73 MiB).
 
 The commands, with `Q` the query typed key by key:
 
@@ -446,3 +486,9 @@ The commands, with `Q` the query typed key by key:
       --class '.*[Bb]eekeeper.*' \
       --steps "sample:connected;wait:1;$Q;CTRL+Return;wait:6;settle;sample:all 100,000 rows loaded" \
       -- <unpacked AppImage>/AppRun bench.sqlite --ozone-platform=wayland
+    contrib/measure/measure.py memory --fresh-profile --seed contrib/measure/profiles/db4s \
+      --class '.*([Ss]qlitebrowser|DB Browser).*' --env 'QT_QPA_PLATFORM=wayland;xcb' \
+      --env LD_LIBRARY_PATH=<pkgs>/usr/lib --env QT_PLUGIN_PATH=<pkgs>/usr/lib/qt/plugins:/usr/lib/qt/plugins \
+      --steps "wait:6;settle;sample:connected" -- <pkgs>/usr/bin/sqlitebrowser bench.sqlite
+    contrib/measure/measure.py memory <the same options> \
+      --steps "wait:6;settle;sample:all 100,000 rows loaded" -- <pkgs>/usr/bin/sqlitebrowser -t big bench.sqlite
