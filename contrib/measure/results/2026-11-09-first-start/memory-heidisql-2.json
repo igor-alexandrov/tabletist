@@ -1,0 +1,31 @@
+{
+  "what": "memory",
+  "command": [
+    "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/heidisql/root/usr/share/heidisql/heidisql"
+  ],
+  "path": "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/heidisql/root/usr/share/heidisql/heidisql",
+  "sha256": "065ba0fb48876b201d17767d64fa7908d23f209c0021d1da6f163ad88daf13e8",
+  "fresh_profile": true,
+  "seed": null,
+  "env": [
+    "DISPLAY=:0",
+    "LD_LIBRARY_PATH=/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/heidisql/root/usr/share/heidisql:/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/heidisql/qt6pas23/usr/lib/x86_64-linux-gnu"
+  ],
+  "steps": [
+    {
+      "step": "idle after the start",
+      "pid": 3164772,
+      "rss": 289411072,
+      "pss": 262588416,
+      "private": 249815040,
+      "gpu": {},
+      "tree": {
+        "processes": 1,
+        "rss": 289411072,
+        "pss": 262588416,
+        "private": 249815040,
+        "gpu": {}
+      }
+    }
+  ]
+}

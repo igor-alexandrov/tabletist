@@ -32,6 +32,15 @@ and again and reports, for each launch:
   first capture is already the final picture (`settled_on_first_capture`),
   the window settled then or earlier.
 
+An app that opens more than one window (a splash, then its main window,
+then a first-run dialog) settles when its newest window holds still and no
+other has opened meanwhile; *first frame* is then its first window, the
+splash if it has one, unless `--title` picks a window by its title as well
+as its class. A capture that gets no picture within 2 s counts as a window
+that went away. Each run also records whether the window was drawn on
+Wayland itself or through XWayland (`xwayland`), and how many windows it
+followed (`windows`).
+
 Each run's first launch is a warm-up and is not counted (`--warmup`). The
 report is the median, the minimum and the maximum of the counted runs, in
 JSON on standard output, with the command and the SHA-256 of the file it
@@ -272,6 +281,102 @@ Sizes, for the same builds:
 What this does not show: how the apps compare with a database open, or on
 another machine. TablePro for Linux is a beta, and ran here from its deb,
 not as its Flatpak.
+
+### First start, more apps from AlternativeTo
+
+The same method on the same day, for six more of the apps AlternativeTo
+lists as alternatives on Linux: those with a desktop build for Linux that
+runs without root. Each got an empty profile and, like a normal session,
+both `WAYLAND_DISPLAY` and `DISPLAY`, so each drew where it chooses to.
+Left out: phpMyAdmin, the PostgreSQL extension for VS Code and LibreDB
+Studio (web or editor tools, not desktop apps), MySQL Workbench (MySQL
+only, and an Ubuntu package), Querystudio (no release) and Letos (no page
+on AlternativeTo).
+
+- TablePlus 2.2.0-322 (GTK 3), the `.deb` from its apt repository
+  (`deb.tableplus.com/debian/24`), SHA-256 checked against its `Packages`,
+  unpacked and run from `opt/tableplus/tableplus`. It runs as a trial.
+- DBeaver Community 26.2.4 (Java, Eclipse SWT), the
+  `linux-x86_64.tar.gz` with its own Java, checked against GitHub's digest.
+  It opens a splash, then its main window with a first-run wizard,
+  "Configure DBeaver", over it: measured twice, to the splash (`--class
+  java`) and to the main window and the wizard (`--class DBeaver --title
+  'DBeaver\s*|Product Configuration\s*'`).
+- DbGate 7.3.4 (Electron), the `linux_x64.tar.gz`, checked against
+  GitHub's digest. Its first screen asks whether to send usage analytics.
+- DB Browser for SQLite 3.13.1 (Qt), the AppImage, unpacked; its release
+  (October 2024) publishes no checksum.
+- HeidiSQL 12.22 (Lazarus, Qt 6), the `.deb`, checked against GitHub's
+  digest. It needs `libQt6Pas`, which this system lacks: Ubuntu 26.04's
+  `libqt6pas6` 2.3, checked against Ubuntu's `Packages`, was unpacked
+  beside it and given with `LD_LIBRARY_PATH`. Its first screen is its
+  session manager.
+- Valentina Studio 18.4.1 (Qt), the `.deb` from valentina-db.com, which
+  publishes no checksum. Its `qt.conf` points at `/opt/VStudio`, so
+  `QT_PLUGIN_PATH` points Qt at the unpacked plugins. Its first screen is a
+  registration wizard: it runs as an unregistered copy until it gets a
+  serial.
+
+Startup, 20 counted runs each; median, then minimum to maximum. The rows
+from the section above are repeated for comparison.
+
+| App | Drawn on | Cache | First frame | Settled |
+|---|---|---|---|---|
+| Tabletist 0.5.0, binary | Wayland | warm | 88 ms (86 to 93) | 89 ms (87 to 93) |
+| Tabletist 0.5.0, binary | Wayland | cold | 108 ms (102 to 120) | 108 ms (103 to 120) |
+| DB Browser for SQLite 3.13.1 | XWayland | warm | 130 ms (123 to 140) | 135 ms (125 to 163) |
+| DB Browser for SQLite 3.13.1 | XWayland | cold | 165 ms (153 to 186) | 168 ms (154 to 214) |
+| HeidiSQL 12.22 | Wayland | warm | 253 ms (249 to 256) | 282 ms (278 to 286) |
+| HeidiSQL 12.22 | Wayland | cold | 268 ms (259 to 464) | 298 ms (287 to 551) |
+| TablePlus 2.2.0-322 | Wayland | warm | 438 ms (431 to 452) | 439 ms (431 to 455) |
+| TablePlus 2.2.0-322 | Wayland | cold | 462 ms (455 to 480) | 463 ms (455 to 497) |
+| DbGate 7.3.4 | XWayland | warm | 138 ms (132 to 146) | 784 ms (776 to 801) |
+| DbGate 7.3.4 | XWayland | cold | 205 ms (197 to 213) | 866 ms (844 to 883) |
+| Valentina Studio 18.4.1 | Wayland | warm | 1,304 ms (1,300 to 1,308) | 1,491 ms (1,476 to 3,382) |
+| Valentina Studio 18.4.1 | Wayland | cold | 1,404 ms (1,396 to 1,411) | 1,631 ms (1,586 to 3,500) |
+| DBeaver 26.2.4, its splash | Wayland | warm | 342 ms (336 to 352) | |
+| DBeaver 26.2.4, its splash | Wayland | cold | 408 ms (389 to 1,075) | |
+| DBeaver 26.2.4, main window and wizard | Wayland | warm | 1,763 ms (1,738 to 5,080) | 1,979 ms (1,951 to 5,299) |
+| DBeaver 26.2.4, main window and wizard | Wayland | cold | 2,045 ms (2,014 to 2,083) | 2,251 ms (2,223 to 2,290) |
+
+DbGate maps a window at once and fills it in over the next 650 ms.
+Valentina's first window is a splash, and its settled picture is the
+registration wizard.
+
+Memory idle at the first screen, three runs each, the median; the process
+tree added up. PSS does not hold what an app keeps in GPU memory, and on
+this integrated GPU that is system memory too; an app that draws on the
+CPU (GPU 0 here) holds its pictures in PSS instead. So the last column adds
+the two, the closest single number to what each costs this machine:
+
+| App | Processes | PSS | RSS (summed) | Private | GPU (VRAM + GTT) | PSS + GPU |
+|---|---|---|---|---|---|---|
+| DB Browser for SQLite 3.13.1 | 1 | 59.4 MiB | 100.2 MiB | 50.5 MiB | 4.8 MiB | 64.2 MiB |
+| TablePlus 2.2.0-322 | 7 | 85.2 MiB | 139.3 MiB | 75.7 MiB | 0.0 MiB | 85.2 MiB |
+| Tabletist 0.5.0, binary | 1 | 83.4 MiB | 128.7 MiB | 74.3 MiB | 50.6 MiB | 134.0 MiB |
+| TablePro 0.1.0-beta.3 | 1 | 111.5 MiB | 147.2 MiB | 105.7 MiB | 32.5 MiB | 144.0 MiB |
+| Valentina Studio 18.4.1 | 1 | 246.6 MiB | 261.7 MiB | 241.8 MiB | 0.0 MiB | 246.6 MiB |
+| HeidiSQL 12.22 | 1 | 250.4 MiB | 275.9 MiB | 238.2 MiB | 0.0 MiB | 250.4 MiB |
+| DBeaver 26.2.4 | 8 | 345.0 MiB | 411.1 MiB | 333.9 MiB | 0.0 MiB | 345.0 MiB |
+| DbGate 7.3.4 | 7 | 395.9 MiB | 800.9 MiB | 267.8 MiB | 98.9 MiB | 494.8 MiB |
+| Beekeeper Studio 6.2.2, X11 | 7 | 845.7 MiB | 1,336.3 MiB | 710.9 MiB | 119.7 MiB | 965.4 MiB |
+
+Sizes (x86_64): the download, and the unpacked files (`du -sb`). Each
+also uses libraries of the system (GTK, Qt, Mesa) that are not counted.
+
+| App | Download | Unpacked |
+|---|---|---|
+| HeidiSQL 12.22 | 7,307,976 bytes `.deb` | 17,570,088 bytes (and `libQt6Pas`, 2,851,235) |
+| Tabletist 0.5.0 | 18,606,584 bytes AppImage | 45,268,096 bytes |
+| DB Browser for SQLite 3.13.1 | 36,705,472 bytes AppImage | 95,188,889 bytes |
+| TablePlus 2.2.0-322 | 62,987,908 bytes `.deb` | 188,382,569 bytes |
+| Valentina Studio 18.4.1 | 114,441,768 bytes `.deb` | 447,029,433 bytes |
+| DBeaver 26.2.4 | 129,127,321 bytes `.tar.gz` | 216,508,608 bytes (Java included) |
+| DbGate 7.3.4 | 216,219,957 bytes AppImage; 204,701,633 bytes `.tar.gz` | 582,293,826 bytes |
+
+The 100,000-row test below was not run for these six: it needs each app
+driven by keys to open a file and load a table, which is written for
+Tabletist, TablePro and Beekeeper only so far.
 
 ### 100,000 rows, against Beekeeper Studio and TablePro
 

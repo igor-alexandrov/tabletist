@@ -1,0 +1,32 @@
+{
+  "what": "memory",
+  "command": [
+    "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/valentina/root/opt/VStudio/vstudio"
+  ],
+  "path": "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/valentina/root/opt/VStudio/vstudio",
+  "sha256": "0916335e3a32e1de7e07c7b38a82e36f977816ca16d5a337de2e10f89b6f6a67",
+  "fresh_profile": true,
+  "seed": null,
+  "env": [
+    "DISPLAY=:0",
+    "QT_PLUGIN_PATH=/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/valentina/root/opt/VStudio/qt/plugins",
+    "QT_QPA_PLATFORM_PLUGIN_PATH=/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/valentina/root/opt/VStudio/qt/plugins/platforms"
+  ],
+  "steps": [
+    {
+      "step": "idle after the start",
+      "pid": 3870337,
+      "rss": 274403328,
+      "pss": 258344960,
+      "private": 253300736,
+      "gpu": {},
+      "tree": {
+        "processes": 1,
+        "rss": 274403328,
+        "pss": 258344960,
+        "private": 253300736,
+        "gpu": {}
+      }
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "what": "memory",
+  "command": [
+    "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/db4s/squashfs-root/AppRun"
+  ],
+  "path": "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/db4s/squashfs-root/AppRun",
+  "sha256": "c100ea59f7d7d3a926d49f0d55148aa0cd5831147c822d5a361f6234d1a59b6e",
+  "fresh_profile": true,
+  "seed": null,
+  "env": [
+    "DISPLAY=:0"
+  ],
+  "steps": [
+    {
+      "step": "idle after the start",
+      "pid": 3131939,
+      "rss": 105074688,
+      "pss": 62267392,
+      "private": 52887552,
+      "gpu": {
+        "vram": 24576,
+        "gtt": 4980736,
+        "cpu": 0
+      },
+      "tree": {
+        "processes": 1,
+        "rss": 105074688,
+        "pss": 62267392,
+        "private": 52887552,
+        "gpu": {
+          "vram": 24576,
+          "gtt": 4980736,
+          "cpu": 0
+        }
+      }
+    }
+  ]
+}

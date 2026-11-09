@@ -1,0 +1,30 @@
+{
+  "what": "memory",
+  "command": [
+    "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/tableplus/root/opt/tableplus/tableplus"
+  ],
+  "path": "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/tableplus/root/opt/tableplus/tableplus",
+  "sha256": "cf5a5638319cd06d1cfffeb4762b0f92396b69f3bc0c46602540400bbfbb9e9a",
+  "fresh_profile": true,
+  "seed": null,
+  "env": [
+    "DISPLAY=:0"
+  ],
+  "steps": [
+    {
+      "step": "idle after the start",
+      "pid": 3067021,
+      "rss": 111673344,
+      "pss": 75478016,
+      "private": 66887680,
+      "gpu": {},
+      "tree": {
+        "processes": 7,
+        "rss": 145985536,
+        "pss": 89287680,
+        "private": 79396864,
+        "gpu": {}
+      }
+    }
+  ]
+}
