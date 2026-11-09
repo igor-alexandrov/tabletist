@@ -1,5 +1,8 @@
 """Tests of measure.py's arithmetic and parsing: python3 -m unittest discover contrib/measure"""
 
+import os
+import subprocess
+import time
 import unittest
 
 import measure
@@ -60,6 +63,24 @@ class GpuFdinfo(unittest.TestCase):
 
     def test_a_descriptor_without_a_client_is_skipped(self):
         self.assertEqual(measure.parse_gpu_fdinfo(["pos:\t0\nflags:\t02\n"]), {})
+
+
+class Descendants(unittest.TestCase):
+    def test_a_child_and_its_child_are_found(self):
+        # A shell that starts a sleep: two processes under this one.
+        shell = subprocess.Popen(["sh", "-c", "sleep 30 & wait"])
+        try:
+            for _ in range(100):
+                found = measure.descendants(os.getpid())
+                if len(found) >= 3:
+                    break
+                time.sleep(0.01)
+            self.assertEqual(found[0], os.getpid())
+            self.assertIn(shell.pid, found)
+            self.assertEqual(len(found), 3)
+        finally:
+            subprocess.run(["pkill", "-P", str(shell.pid)])
+            shell.wait()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,37 @@
+{
+  "what": "memory",
+  "command": [
+    "target/competitors/tablepro/root/usr/bin/tablepro"
+  ],
+  "path": "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/tablepro/root/usr/bin/tablepro",
+  "sha256": "a58ea13776b5f848f40fb5c7a8d5593a7d1fd467caa329b5188ce2b58a9e17ef",
+  "fresh_profile": true,
+  "env": [
+    "GSETTINGS_SCHEMA_DIR=/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/tablepro/root/usr/share/glib-2.0/schemas"
+  ],
+  "steps": [
+    {
+      "step": "idle after the start",
+      "pid": 1516762,
+      "rss": 154374144,
+      "pss": 116920320,
+      "private": 111026176,
+      "gpu": {
+        "vram": 18010112,
+        "gtt": 16105472,
+        "cpu": 0
+      },
+      "tree": {
+        "processes": 1,
+        "rss": 154374144,
+        "pss": 116920320,
+        "private": 111026176,
+        "gpu": {
+          "vram": 18010112,
+          "gtt": 16105472,
+          "cpu": 0
+        }
+      }
+    }
+  ]
+}

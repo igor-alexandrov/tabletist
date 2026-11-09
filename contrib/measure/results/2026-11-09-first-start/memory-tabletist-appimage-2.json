@@ -1,0 +1,35 @@
+{
+  "what": "memory",
+  "command": [
+    "target/measure/v0.5.0/tabletist-0.5.0-x86_64.AppImage"
+  ],
+  "path": "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/measure/v0.5.0/tabletist-0.5.0-x86_64.AppImage",
+  "sha256": "82d05d49d558384c732655668115c8213096f31ff28f406668fdfbb4bff6aebb",
+  "fresh_profile": true,
+  "env": [],
+  "steps": [
+    {
+      "step": "idle after the start",
+      "pid": 1491376,
+      "rss": 131928064,
+      "pss": 84450304,
+      "private": 74948608,
+      "gpu": {
+        "vram": 45056,
+        "gtt": 53039104,
+        "cpu": 0
+      },
+      "tree": {
+        "processes": 1,
+        "rss": 131928064,
+        "pss": 84450304,
+        "private": 74948608,
+        "gpu": {
+          "vram": 45056,
+          "gtt": 53039104,
+          "cpu": 0
+        }
+      }
+    }
+  ]
+}

@@ -79,6 +79,18 @@ and GPU memory from the `fdinfo` of the process's `/dev/dri` files
 (`drm-memory-*`, counted once per DRM client), which the three above do not
 include. On an integrated GPU that memory is system memory too (`gtt`).
 
+**Other apps.** `startup` and `memory` take any Wayland or XWayland app:
+`--class` names its window class (a regular expression), `--env NAME=VALUE`
+adds to its environment, and `--fresh-profile` gives each launch empty XDG
+config, data, cache and state folders, removed afterwards, so every app
+starts as on its first run and none writes to your own. `--evict` takes a
+folder too, for an app of many files. `memory --idle-only` takes one sample
+at the first screen, with no keys. Each memory sample also adds up the
+whole process tree (`tree`): an Electron app is several processes. Add up
+PSS, not RSS: RSS counts a shared page once in every process that maps it.
+A process that leaves the tree (a daemon that forks away, such as the
+AppImage runtime's FUSE server or a crash reporter) is not counted.
+
 **Sizes** (`measure.py sizes <tag>`) downloads a release's assets with `gh`
 and reports each one's size, and the size of the binary inside each Linux
 `.tar.gz` and Windows `.zip`. The macOS `.dmg` is not opened.
@@ -183,3 +195,77 @@ image over FUSE, is a process of its own and not counted.
 
 The Linux binaries are stripped. A release build of `main` at `e6b1577f`
 made here is 45,496,208 bytes.
+
+### First start, against Beekeeper Studio and TablePro
+
+The same machine and method, the same day: each app's first start in an
+empty profile (`--fresh-profile`), to its first frame, to its settled first
+screen, and its memory idle there. No app opened a database: Tabletist and
+TablePro show their empty connection lists, Beekeeper its welcome page
+(with its bundled demo connection listed, not opened) and a welcome toast.
+The raw reports are in `results/2026-11-09-first-start/`.
+
+The builds, each the latest release on 2026-11-09:
+
+- Tabletist 0.5.0: the AppImage, and the binary of the `.tar.gz`, as above,
+  without `--demo`.
+- TablePro for Linux 0.1.0-beta.3 (Rust, GTK 4 and libadwaita; a public
+  beta), from `tablepro-0.1.0-beta.3-ubuntu-26.10-amd64.deb`, SHA-256
+  checked against its `SHA256SUMS`. Its Flatpak needs Flatpak installed,
+  which needs root, so the deb was unpacked and its binary run against the
+  system's GTK 4.24.1 and libadwaita 1.10.0, with its GSettings schema
+  compiled beside it (`--env GSETTINGS_SCHEMA_DIR=...`).
+- Beekeeper Studio 6.2.2 (Electron, Chrome 152), from
+  `Beekeeper-Studio-6.2.2.AppImage`, SHA-512 checked against its
+  `latest-linux.yml`. Its AppImage runtime needs libfuse2, which this
+  system does not have, so the AppImage was unpacked once
+  (`--appimage-extract`) and its `AppRun` run from the disk: the files its
+  `.deb` and Arch `.pacman` packages install. So compare it with Tabletist's
+  unpacked binary. It runs on X11 by default, here through XWayland
+  (`--env DISPLAY=:0`); it was also run on Wayland
+  (`--ozone-platform=wayland`). A cold run drops all 1,002 of its files
+  from the page cache.
+
+Startup, 20 counted runs each; median, then minimum to maximum:
+
+| App | Cache | First frame | Settled |
+|---|---|---|---|
+| Tabletist 0.5.0, binary | warm | 88 ms (86 to 93) | 89 ms (87 to 93) |
+| Tabletist 0.5.0, binary | cold | 108 ms (102 to 120) | 108 ms (103 to 120) |
+| Tabletist 0.5.0, AppImage | warm | 135 ms (129 to 142) | 136 ms (129 to 142) |
+| Tabletist 0.5.0, AppImage | cold | 146 ms (143 to 155) | 146 ms (144 to 155) |
+| TablePro 0.1.0-beta.3 | warm | 228 ms (209 to 328) | 230 ms (221 to 329) |
+| TablePro 0.1.0-beta.3 | cold | 257 ms (245 to 270) | 259 ms (248 to 273) |
+| Beekeeper Studio 6.2.2, X11 | warm | 1,229 ms (1,220 to 1,252) | 2,137 ms (2,115 to 2,184) |
+| Beekeeper Studio 6.2.2, X11 | cold | 1,385 ms (1,364 to 1,405) | 2,305 ms (2,277 to 2,347) |
+| Beekeeper Studio 6.2.2, Wayland | warm | 1,336 ms (1,275 to 1,353) | 2,175 ms (2,145 to 2,196) |
+| Beekeeper Studio 6.2.2, Wayland | cold | 1,492 ms (1,471 to 1,525) | 2,344 ms (2,318 to 2,369) |
+
+Tabletist's first frame was already its settled picture in every run
+(TablePro's in 36 of 40); Beekeeper's window opens and then fills in.
+
+Memory idle at the first screen, three runs each, the median of the three;
+the process tree added up:
+
+| App | Processes | PSS | RSS (summed) | Private | GPU (VRAM + GTT) |
+|---|---|---|---|---|---|
+| Tabletist 0.5.0, binary | 1 | 83.4 MiB | 128.7 MiB | 74.3 MiB | 50.6 MiB |
+| Tabletist 0.5.0, AppImage | 1 | 80.5 MiB | 125.8 MiB | 71.5 MiB | 50.6 MiB |
+| TablePro 0.1.0-beta.3 | 1 | 111.5 MiB | 147.2 MiB | 105.7 MiB | 32.5 MiB |
+| Beekeeper Studio 6.2.2, X11 | 7 | 845.7 MiB | 1,336.3 MiB | 710.9 MiB | 119.7 MiB |
+| Beekeeper Studio 6.2.2, Wayland | 7 | 851.1 MiB | 1,362.7 MiB | 714.0 MiB | 185.3 MiB |
+
+The GPU column is the median of each run's VRAM plus GTT; on this
+integrated GPU both are system memory.
+
+Sizes, for the same builds:
+
+| App | Download (x86_64) | Unpacked |
+|---|---|---|
+| Tabletist 0.5.0 | 18,606,584 bytes AppImage; 19,286,377 bytes `.tar.gz` | 45,268,096 bytes (one binary) |
+| TablePro 0.1.0-beta.3 | 31,945,920 bytes Flatpak; 35,241,790 bytes `.deb` (Ubuntu 26.10) | 121,383,952 bytes (`du -sb` of the deb's files; the binary is 119,453,688) |
+| Beekeeper Studio 6.2.2 | 362,351,631 bytes AppImage; 276,178,024 bytes `.deb`; 242,804,048 bytes `.pacman` | 1,154,776,007 bytes (`du -sb` of the unpacked AppImage) |
+
+What this does not show: how the apps compare with a database open, or on
+another machine. TablePro for Linux is a beta, and ran here from its deb,
+not as its Flatpak.

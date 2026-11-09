@@ -19,6 +19,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 import selectors
 import shutil
 import signal
@@ -34,7 +35,9 @@ import time
 import zipfile
 
 OUTPUT = "TABLETIST-MEASURE"
-APP_CLASS = "dev.tabletist.Tabletist"
+# The window class to wait for, as a regular expression: Tabletist by
+# default, another app with --class.
+APP_CLASS = r"dev\.tabletist\.Tabletist"
 # The headless output's size: the window fills it, as a tiled window does.
 MODE = "1440x900@60"
 # How long the picture has to stay the same to count as settled.
@@ -195,7 +198,7 @@ class Hyprland:
 
 
 @contextlib.contextmanager
-def stage(hypr):
+def stage(hypr, app_class=APP_CLASS):
     """A headless output far from the real ones, and a rule sending the
     app's windows to it without taking the keyboard. Both go on exit."""
     if any(monitor["name"] == OUTPUT for monitor in hypr.json("monitors")):
@@ -210,7 +213,7 @@ def stage(hypr):
         time.sleep(0.5)
         monitor = next(m for m in hypr.json("monitors") if m["name"] == OUTPUT)
         workspace = monitor["activeWorkspace"]["id"]
-        pattern = "^" + APP_CLASS.replace(".", "\\\\.") + "$"
+        pattern = ("^(" + app_class + ")$").replace("\\", "\\\\")
         hypr.eval(
             "tabletist_measure_rule = hl.window_rule({ match = { class = "
             f'"{pattern}" }}, '
@@ -298,7 +301,15 @@ def capture(hypr, identifier):
 
 def evict(path):
     """Drops a file's pages from the page cache, as far as the kernel lets an
-    unprivileged process (pages another process has mapped stay)."""
+    unprivileged process (pages another process has mapped stay). A folder:
+    every file in it, for an app that is more than one file."""
+    if os.path.isdir(path):
+        for folder, _, names in os.walk(path):
+            for name in names:
+                full = os.path.join(folder, name)
+                if os.path.isfile(full) and not os.path.islink(full):
+                    evict(full)
+        return
     with open(path, "rb") as file:
         os.posix_fadvise(file.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
 
@@ -306,15 +317,25 @@ def evict(path):
 class Launch:
     """One start of the app on the headless output."""
 
-    def __init__(self, hypr, command):
+    def __init__(self, hypr, command, app_class=APP_CLASS, env=(), fresh_profile=False):
         self.hypr = hypr
+        self.app_class = app_class
         self.profiles = set(glob.glob(DEMO_PROFILES))
+        environment = dict(hypr.env, **dict(item.split("=", 1) for item in env))
+        # A first start in an empty profile: config, data, cache and state of
+        # its own, removed when the window closes.
+        self.profile = tempfile.mkdtemp(prefix="tabletist-measure-profile-") if fresh_profile else None
+        if self.profile:
+            for name in ("CONFIG", "DATA", "CACHE", "STATE"):
+                folder = os.path.join(self.profile, name.lower())
+                os.mkdir(folder)
+                environment[f"XDG_{name}_HOME"] = folder
         self.before = set(toplevels(hypr.wayland))
         self.identifier = None
         self.log = tempfile.TemporaryFile()
         self.start = time.monotonic()
         self.process = subprocess.Popen(
-            command, env=hypr.env, stdout=self.log, stderr=subprocess.STDOUT, start_new_session=True
+            command, env=environment, stdout=self.log, stderr=subprocess.STDOUT, start_new_session=True
         )
         self.address = None
         self.window_at = None
@@ -324,7 +345,7 @@ class Launch:
     def wait_window(self):
         def opened(line):
             name, _, data = line.partition(">>")
-            return name == "openwindow" and data.split(",")[2] == APP_CLASS
+            return name == "openwindow" and re.fullmatch(self.app_class, data.split(",")[2]) is not None
 
         try:
             self.window_at, line = self.hypr.wait_event(opened, self.start)
@@ -336,10 +357,10 @@ class Launch:
         new = [
             identifier
             for identifier, app in toplevels(self.hypr.wayland).items()
-            if app == APP_CLASS and identifier not in self.before
+            if app and re.fullmatch(self.app_class, app) and identifier not in self.before
         ]
         if len(new) != 1:
-            raise RuntimeError(f"expected one new {APP_CLASS} window, found {len(new)}")
+            raise RuntimeError(f"expected one new {self.app_class} window, found {len(new)}")
         self.identifier = new[0]
         return self.window_at - self.start
 
@@ -389,23 +410,66 @@ class Launch:
         # A killed demo leaves its profile behind: remove the ones this run made.
         for profile in set(glob.glob(DEMO_PROFILES)) - self.profiles:
             shutil.rmtree(profile, ignore_errors=True)
+        if self.profile:
+            shutil.rmtree(self.profile, ignore_errors=True)
 
 
-def memory_of(pid):
-    with open(f"/proc/{pid}/smaps_rollup") as file:
-        smaps = parse_smaps_rollup(file.read())
+def gpu_fdinfo(pid):
+    """The fdinfo of each DRM file the process has open."""
     texts = []
     for fd in glob.glob(f"/proc/{pid}/fd/*"):
         with contextlib.suppress(OSError):
             if os.readlink(fd).startswith("/dev/dri/"):
                 with open(f"/proc/{pid}/fdinfo/{os.path.basename(fd)}") as file:
                     texts.append(file.read())
+    return texts
+
+
+def memory_of(pid):
+    with open(f"/proc/{pid}/smaps_rollup") as file:
+        smaps = parse_smaps_rollup(file.read())
+    texts = gpu_fdinfo(pid)
     return {
         "rss": smaps.get("Rss", 0),
         "pss": smaps.get("Pss", 0),
         "private": smaps.get("Private_Clean", 0) + smaps.get("Private_Dirty", 0),
         "gpu": parse_gpu_fdinfo(texts),
     }
+
+
+def descendants(root):
+    """`root` and every process under it, from /proc's parent links."""
+    children = {}
+    for stat in glob.glob("/proc/[0-9]*/stat"):
+        with contextlib.suppress(OSError):
+            with open(stat) as file:
+                text = file.read()
+            # The command name is in parentheses and may hold spaces.
+            fields = text[text.rindex(")") + 2 :].split()
+            children.setdefault(int(fields[1]), []).append(int(stat.split("/")[2]))
+    found, queue = [], [root]
+    while queue:
+        pid = queue.pop()
+        found.append(pid)
+        queue.extend(children.get(pid, []))
+    return found
+
+
+def memory_of_tree(root):
+    """The memory of `root` and its descendants added up: an Electron app's
+    renderer and GPU processes, an AppImage's runtime. RSS counts a shared
+    page once per process; PSS divides it, so PSS adds up fairly."""
+    total = {"processes": 0, "rss": 0, "pss": 0, "private": 0}
+    texts = []
+    for pid in descendants(root):
+        with contextlib.suppress(OSError):
+            one = memory_of(pid)
+            total["processes"] += 1
+            for key in ("rss", "pss", "private"):
+                total[key] += one[key]
+            texts.extend(gpu_fdinfo(pid))
+    total["gpu"] = parse_gpu_fdinfo(texts)
+    return total
 
 
 def describe(command):
@@ -422,12 +486,12 @@ def run_startup(args):
     hypr = Hyprland()
     evicted = args.evict or [args.command[0]]
     runs = []
-    with stage(hypr):
+    with stage(hypr, args.app_class):
         for number in range(args.warmup + args.runs):
             if args.cold:
                 for path in evicted:
                     evict(shutil.which(path) or path)
-            launch = Launch(hypr, args.command)
+            launch = Launch(hypr, args.command, args.app_class, args.env, args.fresh_profile)
             try:
                 window = launch.wait_window()
                 settled = launch.wait_settled()
@@ -458,6 +522,8 @@ def run_startup(args):
         "what": "startup",
         "cold": args.cold,
         "evicted": evicted if args.cold else [],
+        "fresh_profile": args.fresh_profile,
+        "env": args.env,
         **describe(args.command),
         "window": summary([run["window"] for run in runs]),
         "settled": summary([run["settled"] for run in runs]),
@@ -520,8 +586,8 @@ def run_memory(args):
     after going to its last row."""
     hypr = Hyprland()
     steps = []
-    with stage(hypr):
-        launch = Launch(hypr, args.command)
+    with stage(hypr, args.app_class):
+        launch = Launch(hypr, args.command, args.app_class, args.env, args.fresh_profile)
         try:
             launch.wait_window()
             launch.wait_settled()
@@ -529,7 +595,9 @@ def run_memory(args):
             def sample(name):
                 time.sleep(args.idle)
                 pid = launch.app_pid()
-                steps.append({"step": name, "pid": pid, **memory_of(pid)})
+                steps.append(
+                    {"step": name, "pid": pid, **memory_of(pid), "tree": memory_of_tree(launch.process.pid)}
+                )
                 print(f"{name}: {json.dumps(steps[-1]['rss'])} bytes RSS", file=sys.stderr)
 
             def settle():
@@ -543,32 +611,47 @@ def run_memory(args):
                         ["grim", "-T", launch.identifier, f"{args.shot}-{name}.png"], env=hypr.env, check=True
                     )
 
-            sample("idle on the demo (users table)")
-            # Quick open, the table's name, Enter.
-            launch.send("CTRL", "p")
-            time.sleep(0.3)
-            for letter in args.table:
-                launch.send("", letter)
-            time.sleep(0.3)
-            launch.send("", "Return")
-            settle()
-            shot("opened")
-            sample(f"{args.table} opened (rows 1 to 1,000)")
-            # Page after page (Ctrl+Alt+Right, a page of 1,000 rows each) to
-            # the table's last; the largest RSS on the way is kept too.
-            pid = launch.app_pid()
-            peak = 0
-            for _ in range(args.pages):
-                launch.send("CTRL ALT", "Right")
-                time.sleep(args.page_pause)
-                peak = max(peak, memory_of(pid)["rss"])
-            settle()
-            shot("last-page")
-            sample(f"{args.table} after {args.pages} pages forward")
-            steps[-1]["peak_rss_while_paging"] = peak
+            if args.idle_only:
+                shot("idle")
+                sample("idle after the start")
+            else:
+                sample("idle on the demo (users table)")
+                # Quick open, the table's name, Enter.
+                launch.send("CTRL", "p")
+                time.sleep(0.3)
+                for letter in args.table:
+                    launch.send("", letter)
+                time.sleep(0.3)
+                launch.send("", "Return")
+                settle()
+                shot("opened")
+                sample(f"{args.table} opened (rows 1 to 1,000)")
+                # Page after page (Ctrl+Alt+Right, a page of 1,000 rows each) to
+                # the table's last; the largest RSS on the way is kept too.
+                pid = launch.app_pid()
+                peak = 0
+                for _ in range(args.pages):
+                    launch.send("CTRL ALT", "Right")
+                    time.sleep(args.page_pause)
+                    peak = max(peak, memory_of(pid)["rss"])
+                settle()
+                shot("last-page")
+                sample(f"{args.table} after {args.pages} pages forward")
+                steps[-1]["peak_rss_while_paging"] = peak
         finally:
             launch.close()
-    print(json.dumps({"what": "memory", **describe(args.command), "steps": steps}, indent=2))
+    print(
+        json.dumps(
+            {
+                "what": "memory",
+                **describe(args.command),
+                "fresh_profile": args.fresh_profile,
+                "env": args.env,
+                "steps": steps,
+            },
+            indent=2,
+        )
+    )
 
 
 def run_sizes(args):
@@ -597,6 +680,16 @@ def run_sizes(args):
     print(json.dumps({"what": "sizes", "tag": args.tag, "assets": assets}, indent=2))
 
 
+def add_app_options(parser):
+    parser.add_argument(
+        "--class", dest="app_class", default=APP_CLASS, help="the window's class, as a regular expression"
+    )
+    parser.add_argument("--env", action="append", default=[], help="NAME=VALUE for the app's environment")
+    parser.add_argument(
+        "--fresh-profile", action="store_true", help="empty XDG config, data, cache and state for each launch"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="what", required=True)
@@ -608,6 +701,7 @@ def main():
     startup.add_argument("--evict", action="append", help="a file to evict (default: the command)")
     startup.add_argument("--pause", type=float, default=1.0, help="seconds between runs")
     startup.add_argument("--shot", help="save the last run's settled picture to this PNG")
+    add_app_options(startup)
     startup.add_argument("command", nargs="+")
     startup.set_defaults(run=run_startup)
 
@@ -625,6 +719,10 @@ def main():
     memory.add_argument("--page-pause", type=float, default=0.2, help="seconds between pages")
     memory.add_argument("--idle", type=float, default=2.0, help="seconds to wait before a sample")
     memory.add_argument("--shot", help="save the output at each step as <SHOT>-<step>.png")
+    memory.add_argument(
+        "--idle-only", action="store_true", help="one sample idle after the start (any app, no keys)"
+    )
+    add_app_options(memory)
     memory.add_argument("command", nargs="+")
     memory.set_defaults(run=run_memory)
 
