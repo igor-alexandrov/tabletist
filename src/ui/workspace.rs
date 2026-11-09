@@ -2710,6 +2710,45 @@ fn shown_log(
     })
 }
 
+/// What the status line says of the object under the tree's cursor while
+/// the tree has the keys, in full though the sidebar drops its group's
+/// prefix: "book_covers · table · 13 rows", the rows where the database
+/// has an estimate. Nothing for a row the sidebar does not show (its
+/// group folded, or gone since a reload); `show_system` is the setting
+/// that lists the system's schemas.
+fn tree_summary(
+    workspace: &crate::model::Workspace,
+    locale: crate::i18n::Locale,
+    show_system: bool,
+) -> Option<String> {
+    if workspace.pane != crate::model::Pane::Tree {
+        return None;
+    }
+    let cursor = workspace.tree.cursor.as_ref()?;
+    let crate::model::TreeNode::Object(object, kind) = cursor else {
+        return None;
+    };
+    let rows = workspace.tree.visible_rows(workspace.driver, show_system);
+    if !rows.iter().any(|row| &row.node == cursor) {
+        return None;
+    }
+    let kind = super::sidebar::kind_name(locale, *kind);
+    let name = crate::format::display_safe(&object.name);
+    let rows = workspace
+        .tree
+        .object_info(object)
+        .and_then(|info| info.estimated_rows)
+        .map(|rows| {
+            let plural = u32::try_from(rows).unwrap_or(u32::MAX);
+            crate::i18n::ngettext(locale, "{n} row", "{n} rows", plural)
+                .replace("{n}", &rows.to_string())
+        });
+    Some(match rows {
+        Some(rows) => format!("{name} · {kind} · {rows}"),
+        None => format!("{name} · {kind}"),
+    })
+}
+
 /// Omarchy's bottom line: the keys that work here, and the page's range
 /// or, on a SQL editor, the cursor and what the last run did. On a table it
 /// says what is pending too, and while a cell is edited it is the mode
@@ -2801,7 +2840,8 @@ fn status_line(
     let (choose_key, back_key) = (key(Command::ChooseLabel), key(Command::CloseLabelChooser));
     // No tab: the start screen's keys, and that no table is open.
     if workspace.active_tab.is_none() {
-        super::start::status_line(ui, paint, tab, keymap);
+        let tree = tree_summary(workspace, locale, settings.show_system_schemas);
+        super::start::status_line(ui, paint, tab, keymap, tree);
         return;
     }
     let read_only = workspace.access == tabletist_db::Access::ReadOnly;
@@ -2867,7 +2907,8 @@ fn status_line(
             None => at,
         })
     });
-    let summary = editor
+    let summary = tree_summary(workspace, locale, settings.show_system_schemas)
+        .or(editor)
         .or(lines)
         .or_else(|| {
             let object = workspace.active_object_tab()?;

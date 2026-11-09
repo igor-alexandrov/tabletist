@@ -60,6 +60,35 @@ pub fn bookshop_objects() -> Vec<ObjectInfo> {
     ]
 }
 
+/// The Bookshop's objects as a larger catalog lists them, where names
+/// share prefixes: the sidebar groups `book_` and `publisher_`, and keeps
+/// `authors`, `orders` and `reviews` on their own. In schema `main`.
+pub fn bookshop_grouped_objects() -> Vec<ObjectInfo> {
+    let table = |name: &str, rows: u64| ObjectInfo {
+        name: name.into(),
+        kind: ObjectKind::Table,
+        estimated_rows: Some(rows),
+    };
+    let view = |name: &str| ObjectInfo {
+        name: name.into(),
+        kind: ObjectKind::View,
+        estimated_rows: None,
+    };
+    vec![
+        table("authors", 3_700),
+        table("book_awards", 9_100),
+        table("book_cover_sizes", 4),
+        table("book_covers", 13),
+        table("book_editions", 9_400),
+        view("book_excerpts"),
+        table("book_genres", 40),
+        table("orders", 12_300),
+        table("publisher_contacts", 18),
+        table("publisher_imprints", 9),
+        table("reviews", 48_200),
+    ]
+}
+
 /// The saved connection the fake session stands for.
 pub fn fixture_connection() -> SavedConnection {
     SavedConnection {

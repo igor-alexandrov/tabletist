@@ -135,6 +135,8 @@ mod text_settings_tests;
 mod theme_settings_tests;
 pub mod toast;
 #[cfg(test)]
+mod tree_groups_tests;
+#[cfg(test)]
 mod typing_settings_tests;
 #[cfg(test)]
 mod update_settings_tests;
@@ -3059,11 +3061,11 @@ value_tags   = true
     #[test]
     fn ctrl_b_hides_and_shows_the_sidebar() {
         let (mut harness, _tab) = tree_harness();
-        assert!(harness.has("orders"));
+        assert!(harness.has("orders, table"));
         harness.press(Key::B, Modifiers::COMMAND);
-        assert!(!harness.has("orders"));
+        assert!(!harness.has("orders, table"));
         harness.press(Key::B, Modifiers::COMMAND);
-        assert!(harness.has("orders"));
+        assert!(harness.has("orders, table"));
     }
 
     #[test]
@@ -4680,7 +4682,7 @@ value_tags   = true
         let mut harness = Harness::new();
         harness.connect_fake();
         assert!(harness.has("Schema"));
-        assert!(harness.has("active_users"));
+        assert!(harness.has("active_users, view"));
         harness.click("users");
         assert_eq!(fetches(&harness), 1);
         assert!(harness.has("users tab"));
@@ -6223,9 +6225,9 @@ value_tags   = true
         assert_eq!(harness.app.active, 1);
         harness.press(Key::Num1, Modifiers::COMMAND);
         assert_eq!(harness.app.active, 0);
-        assert!(harness.has("orders"));
+        assert!(harness.has("orders, table"));
         harness.press(Key::B, Modifiers::COMMAND);
-        assert!(!harness.has("orders"));
+        assert!(!harness.has("orders, table"));
         harness.press(Key::B, Modifiers::COMMAND);
         harness.press(Key::P, Modifiers::COMMAND);
         assert!(harness.has("Quick open"));
@@ -11321,7 +11323,7 @@ value_tags   = true
         // One flat list: in groups, all would fold into `t_`.
         harness.app.workspace_mut(tab).unwrap().tree.flat = true;
         harness.settle();
-        assert!(harness.has("t_000"));
+        assert!(harness.has("t_000, table"));
         harness.app.apply(crate::model::Action::SetTreeCursor {
             tab,
             node: crate::model::TreeNode::Object(
@@ -11331,7 +11333,7 @@ value_tags   = true
         });
         harness.press(Key::End, Modifiers::NONE);
         harness.settle();
-        assert!(harness.has("t_199"), "the cursor row is on screen");
+        assert!(harness.has("t_199, table"), "the cursor row is on screen");
     }
 
     #[test]
@@ -13062,8 +13064,12 @@ value_tags   = true
         main.objects.value = Some(vec![table(spoof), table("users"), table("users\u{200B}")]);
 
         let labels = crate::testing::labels(&harness.settle());
-        assert!(labels.iter().any(|label| label == "users_<U+202E>atad"));
-        assert!(labels.iter().any(|label| label == "users<U+200B>"));
+        assert!(
+            labels
+                .iter()
+                .any(|label| label == "users_<U+202E>atad, table")
+        );
+        assert!(labels.iter().any(|label| label == "users<U+200B>, table"));
         harness.click("users_<U+202E>atad");
         let mut page = crate::testing::page(1, false);
         page.columns[1].name = "e\u{202E}liam".into();

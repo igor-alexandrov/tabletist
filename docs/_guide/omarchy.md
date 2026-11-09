@@ -105,7 +105,9 @@ numbered; once you type, it lists what matches. Its commands stay on `:`.
 | Keys | Do |
 | --- | --- |
 | `j` `k`, arrows, Home, End | Move |
-| Enter | Open the table or view |
+| Enter | Open the table or view, or fold or open a group |
+| `za` | Fold or open the group under the cursor; on a table of a group, fold its group |
+| `zM` `zR` | Fold every group, open every group |
 | `/` | Filter the list |
 | `t` | Switch between tree and flat. The connection keeps its choice; Settings › Appearance sets the default |
 | `R` | Reload the list |
@@ -113,6 +115,10 @@ numbered; once you type, it lists what matches. Its commands stay on `:`.
 | `E` | [Export]({% link _guide/browsing-data.md %}#exporting) the table under the cursor: it opens, with the export's float over it |
 | Right-click | A table's or view's menu: open, structure, ddl, copy name, export… |
 | Ctrl+B | Hide the sidebar |
+
+A group's tables are drawn two cells in, with a `│` before them and
+without the group's prefix. The status line names the table under the
+cursor in full: `book_covers · table · 13 rows`.
 
 ### The start screen
 
