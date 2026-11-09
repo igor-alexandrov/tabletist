@@ -1625,3 +1625,30 @@ Expected: 12 in the library (11 unit tests and the tunnel test) and the 12 serve
 - [ ] **Step 3: Report what ran where**
 
 Say in the pull request which platform ran the server tests (they are not in CI yet), as AGENTS.md asks.
+
+---
+
+## Done, and what phase 2 takes from it
+
+Executed on 2026-11-09 (macOS; the server tests against ClickHouse 25.8 in
+compose): `af48136a`, `29ae72c7`, `3eabc0d1`, `1241cb05`, `bf1b12f0`. Two
+commits are beyond the tasks above, from the reviews: `3eabc0d1` checks a
+kept connection before use and resends a statement only when its write
+failed or the connection ended with no answer within a second
+(`RETRY_WINDOW`), so a long query whose connection is cut is not run
+twice; `bf1b12f0` runs the tunnel test only with the ClickHouse URL set.
+The library has 15 ClickHouse tests, not 12.
+
+The final review left these for the phase 2 plan:
+
+- A full page drops its `Body` with up to a block unread, so its
+  connection closes and the next page opens another (a TLS handshake, or
+  a tunnel's). Drain a bounded amount before dropping, so it is kept.
+- A header value that cannot be sent (a password holding CR or LF) or a
+  request line longer than the 16 KiB buffer is `ConnectionLost`; it
+  should be an error about the input, or the backend reconnects on it.
+- Under `require` and `verify-*`, a TLS server that hangs up mid-handshake
+  is reported as one that "does not speak TLS".
+- `prefer` falls back to plain HTTP on one handshake EOF, as libpq does;
+  the app should show `is_encrypted()` (phase 3).
+- `Input` grows without a bound while reading response headers.
