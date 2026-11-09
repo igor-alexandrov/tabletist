@@ -3424,8 +3424,18 @@ impl Keymap {
         if !command.info().built {
             return None;
         }
+        // A command the window runs from anywhere shows the chord that
+        // runs it anywhere: one scope's own chord (Switch database's in a
+        // Redis window) would name a key the item lacks in most windows,
+        // and the menu would hand that press to whatever else holds it.
+        let anywhere = self
+            .of(command)
+            .any(|binding| binding.scopes.contains(&Scope::Global));
         let mut found: Option<MenuKey> = None;
-        for binding in self.of(command) {
+        for binding in self
+            .of(command)
+            .filter(|binding| !anywhere || binding.scopes.contains(&Scope::Global))
+        {
             for chord in binding.bound(layout).chords {
                 if chord.kind != Kind::Own {
                     continue;
@@ -5649,15 +5659,15 @@ mod tests {
         assert_eq!(keymap.menu_key(Command::Explain, Layout::Mac), None);
         // No key on the Mac.
         assert_eq!(keymap.menu_key(Command::CheckForUpdates, Layout::Mac), None);
-        // A chord of one window's alone is still the item's: Switch
-        // database's is a Redis window's, and the menu names it.
-        assert_eq!(
-            keymap.menu_key(Command::SwitchDatabase, Layout::Mac),
-            Some(MenuKey {
-                mods: held(true, true),
-                key: Key::D
-            })
+        // Nor one the item runs from anywhere: Switch database's ⇧⌘D is a
+        // Redis window's alone (on a table's rows it reviews the pending
+        // SQL), so the menu names none.
+        assert!(
+            keymap
+                .of(Command::SwitchDatabase)
+                .any(|binding| !binding.mac.chords.is_empty())
         );
+        assert_eq!(keymap.menu_key(Command::SwitchDatabase, Layout::Mac), None);
         // A typed character, not a chord.
         assert_eq!(keymap.menu_key(Command::Help, Layout::Mac), None);
     }

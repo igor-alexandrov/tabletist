@@ -3377,9 +3377,16 @@ impl App {
                     form.message = None;
                     // A URL half typed fills nothing; one that reads fills
                     // the fields, and its password the password's.
-                    if let Ok(parsed) = tabletist_db::ParsedUrl::parse(&form.url)
-                        && parsed.spec.redis.is_some()
-                    {
+                    let parsed = tabletist_db::ParsedUrl::parse(&form.url).ok();
+                    let redis = parsed.filter(|parsed| match parsed.spec.driver {
+                        Driver::Redis => true,
+                        // Another engine's URL, typed over Redis's: it
+                        // fills nothing until Fill or Save reads it.
+                        Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => {
+                            false
+                        }
+                    });
+                    if let Some(parsed) = redis {
                         form.take_redis(&parsed.spec);
                         if let Some(password) = parsed
                             .secrets
@@ -4469,10 +4476,18 @@ impl App {
                             fingerprint,
                         },
                         Err(error) => TestState::Failed(match &form.test_spec {
-                            Some(spec) if spec.redis.is_some() => {
-                                crate::keyspace::test_failure(&error, spec, self.locale)
-                            }
-                            _ => error.to_string(),
+                            Some(spec) => match spec.driver {
+                                // Redis says the cause in words, with the
+                                // server's code.
+                                Driver::Redis => {
+                                    crate::keyspace::test_failure(&error, spec, self.locale)
+                                }
+                                Driver::Postgres
+                                | Driver::MySql
+                                | Driver::Sqlite
+                                | Driver::BigQuery => error.to_string(),
+                            },
+                            None => error.to_string(),
                         }),
                     };
                 }
