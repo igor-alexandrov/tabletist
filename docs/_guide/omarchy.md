@@ -114,6 +114,7 @@ numbered; once you type, it lists what matches. Its commands stay on `:`.
 | `za` | Fold or open the group under the cursor; on a table of a group, fold its group |
 | `zM` `zR` | Fold every group, open every group |
 | `/` | Filter the list |
+| Enter, Esc | In the filter: back to the list |
 | `t` | Switch between tree and flat. The connection keeps its choice; Settings › Appearance sets the default |
 | `R` | Reload the list |
 | `ga` | Show the Agents tab |
