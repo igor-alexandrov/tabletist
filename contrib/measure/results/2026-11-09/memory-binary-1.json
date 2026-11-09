@@ -1,0 +1,48 @@
+{
+  "what": "memory",
+  "command": [
+    "target/measure/v0.5.0/tabletist",
+    "--demo"
+  ],
+  "path": "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/measure/v0.5.0/tabletist",
+  "sha256": "ba1116f98434cf0536c795744f0f7dafc1a8e09227bbc6421983c0705f066ae8",
+  "steps": [
+    {
+      "step": "idle on the demo (users table)",
+      "pid": 1249812,
+      "rss": 137936896,
+      "pss": 92186624,
+      "private": 82214912,
+      "gpu": {
+        "vram": 45056,
+        "gtt": 65622016,
+        "cpu": 0
+      }
+    },
+    {
+      "step": "big opened (rows 1 to 1,000)",
+      "pid": 1249812,
+      "rss": 138616832,
+      "pss": 92866560,
+      "private": 82894848,
+      "gpu": {
+        "vram": 45056,
+        "gtt": 65622016,
+        "cpu": 0
+      }
+    },
+    {
+      "step": "big after 99 pages forward",
+      "pid": 1249812,
+      "rss": 140832768,
+      "pss": 95083520,
+      "private": 85110784,
+      "gpu": {
+        "vram": 45056,
+        "gtt": 57995264,
+        "cpu": 0
+      },
+      "peak_rss_while_paging": 140832768
+    }
+  ]
+}
