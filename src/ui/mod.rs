@@ -100,6 +100,9 @@ pub mod label_chooser;
 mod label_tests;
 pub mod menu;
 pub mod object_tabs;
+pub mod pane_hints;
+#[cfg(test)]
+mod pane_hints_tests;
 #[cfg(test)]
 mod pane_keys_tests;
 pub mod password_prompt;
@@ -8255,11 +8258,16 @@ value_tags   = true
             "{:?}",
             harness.painted
         );
-        // A table tab keeps its own line.
+        // A table tab keeps its own line. Clicked in the tree, the table
+        // opens with the keyboard on the tree: the tree's keys, then the
+        // rows' once they have it.
         harness.click("users");
         harness.answer_rows(crate::testing::page(5, false));
         harness.settle();
-        assert!(painted(&harness, "j/k row"));
+        assert!(painted(&harness, "j/k move"), "{:?}", harness.painted);
+        harness.press(Key::L, Modifiers::CTRL);
+        harness.settle();
+        assert!(painted(&harness, "j/k row"), "{:?}", harness.painted);
         assert!(!painted(&harness, "ctrl+enter run"));
     }
 
@@ -17916,10 +17924,11 @@ value_tags   = true
         // alone are looked at.
         harness.app.workspace_mut(tab).unwrap().row_panel = false;
         make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
-        // With the arrows on the tree the line offers `:w`, and Ctrl+S
-        // saves: so does the prompt.
+        // With the arrows on the tree the line offers `:w` while something
+        // is pending, and Ctrl+S saves: so does the prompt.
         harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Tree;
         harness.settle();
+        assert!(painted(&harness, "j/k move"), "{:?}", harness.painted);
         assert!(painted_in(&harness, ":w write", palette.text));
         type_key(&mut harness, Key::Colon, ":");
         assert_eq!(command(&harness, tab).as_deref(), Some(""));

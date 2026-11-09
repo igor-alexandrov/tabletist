@@ -37,7 +37,7 @@ Omarchy defaults.
 
 | Pane | Set |
 |---|---|
-| Tree | `j/k move · enter open · / filter · t tree · za fold · ctrl+h/l panes · E export table` |
+| Tree | `j/k move · enter open · / filter · t tree · za fold · ctrl+h/l panes · :w write · :diff review · E export table` (`:w` and `:diff` only while something is pending, `:w` on a connection that writes) |
 | Filter | `enter/esc tree` |
 | Grid | today's set, with `ctrl+h/l panes` right after `ctrl+b tables` |
 | Panel | `j/k field · [ ] row · i edit · gy copy as · esc grid · ctrl+h/l panes` (`i edit` only where the row can be edited) |
@@ -48,8 +48,8 @@ Omarchy defaults.
 | Agents, History | unchanged |
 
 - The tree's set shows whatever view is in front, the start screen too.
-- Where room runs out, hints give way from the end: export first, then fold
-  (tree), as today's rule.
+- Where room runs out, the last hint (the export) gives way first, then
+  `ctrl+h/l panes` wherever it stands, then the rest from the end.
 - The line's right end (the summary, what was just said) is unchanged.
 
 ## When `ctrl+h/l panes` shows
@@ -92,7 +92,9 @@ Approved by the user, each explicitly:
   the sidebar does while the grid has the keys.
 - **Classic look: unchanged.** Its status line has no key hints of this kind.
 - **Tree's set: `j/k move · enter open · / filter · t tree · za fold ·
-  ctrl+h/l panes · E export table`.** Export gives way first, then fold.
+  ctrl+h/l panes · E export table`.**
+- **Tree, while something is pending: `:w write` and `:diff review` before
+  the export.** Both work from the tree, as Structure and DDL offer them.
 - **Grid: `ctrl+h/l panes` after `ctrl+b tables`.** Export still the first
   to give way; the pane hint goes late.
 - **Row panel: its field keys.** `j/k field · [ ] row · i edit · gy copy as
@@ -102,4 +104,9 @@ Approved by the user, each explicitly:
 - **Filter field: `enter/esc tree`.** Both leave the field for the tree;
   the tree's letters do nothing while typing.
 - **The pane hint only where it moves.** Agents and History draw no pane.
+- **Room: export first, then the pane hint, then the rest from the end.**
+  At 1280 px with a change pending, the grid's `:w` and `:diff` keep their
+  room; the pane hint still stands after `tables`.
+- **A read-only row's panel takes no keyboard** (every field is locked), so
+  ctrl+l from it keeps the grid's keys.
 - **Design and all three canvas departures: "Yes to all".**

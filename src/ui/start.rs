@@ -1388,6 +1388,7 @@ pub fn status_line(
     tab: ConnTabId,
     keymap: &Keymap,
     tree: Option<String>,
+    own: Option<&[super::pane_hints::Owned]>,
 ) {
     let Paint {
         locale,
@@ -1416,7 +1417,10 @@ pub fn status_line(
         "back",
     ]
     .map(|word| gettext(locale, word));
-    let hints: Vec<widgets::Hint<'_>> = if searching {
+    // The tree or its filter field has the keyboard: their keys.
+    let hints: Vec<widgets::Hint<'_>> = if let Some(own) = own {
+        super::pane_hints::drawn(own)
+    } else if searching {
         vec![
             (&keys.search_move, &*words[7], true),
             (&keys.search_open, &*words[8], true),

@@ -15,7 +15,9 @@ and there is no setting that switches between them.
 
 This page lists the keys of the Omarchy look, grouped by where they
 work. The status line along the bottom shows the ones that work where you
-are. The app's own list (`?`) is shorter: it leaves out the keys of the
+are: the keys of the part that has the keyboard (the sidebar, its filter,
+the rows, the row panel, a SQL editor's script or its results), with
+`ctrl+h/l panes` wherever Ctrl+H and Ctrl+L move to another part. The app's own list (`?`) is shorter: it leaves out the keys of the
 dialogs and of the lists that open in an editor.
 
 A letter does its job when no text field has the keyboard. While a field
