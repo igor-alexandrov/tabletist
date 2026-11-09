@@ -337,6 +337,12 @@ class Launch:
                 folder = os.path.join(self.profile, name.lower())
                 os.mkdir(folder)
                 environment[f"XDG_{name}_HOME"] = folder
+            # And a home of its own: some apps write to ~/.name whatever
+            # the XDG folders say (TablePlus to ~/.tableplus, DbGate to
+            # ~/.dbgate), and would otherwise find the user's own there.
+            home = os.path.join(self.profile, "home")
+            os.mkdir(home)
+            environment["HOME"] = home
             # Settings the app is to start with, laid out as the profile is
             # (config/, data/, cache/, state/).
             if seed:
