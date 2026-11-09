@@ -35,10 +35,12 @@ fn grouped(look: Look) -> (Harness, ConnTabId) {
     (harness, tab)
 }
 
+/// The `main` schema's table `name`, as the tree's cursor holds it.
 fn table(name: &str) -> TreeNode {
     TreeNode::Object(ObjectRef::new("main", name), ObjectKind::Table)
 }
 
+/// The `main` schema's group of tables named `prefix_…`.
 fn group(prefix: &str) -> TreeNode {
     TreeNode::Group("main".into(), prefix.into())
 }
@@ -57,6 +59,7 @@ fn drawn(harness: &Harness, text: &str) -> f32 {
         .left()
 }
 
+/// Whether two places are the same, within half a point.
 fn close(a: f32, b: f32) -> bool {
     (a - b).abs() < 0.5
 }
@@ -88,10 +91,12 @@ fn cell(harness: &Harness) -> f32 {
     TextRole::OBody.width(&harness.ctx, harness.app.look.faces, " ")
 }
 
+/// The row the tree's cursor is on in `tab`.
 fn cursor(harness: &Harness, tab: ConnTabId) -> Option<TreeNode> {
     harness.app.workspace(tab).unwrap().tree.cursor.clone()
 }
 
+/// The prefixes of `main`'s open groups in `tab`, sorted.
 fn open_groups(harness: &Harness, tab: ConnTabId) -> Vec<String> {
     let mut open: Vec<String> = harness.app.workspace(tab).unwrap().tree.nodes["main"]
         .open_groups
@@ -102,6 +107,7 @@ fn open_groups(harness: &Harness, tab: ConnTabId) -> Vec<String> {
     open
 }
 
+/// Each tree item's name and the level it reports to a screen reader.
 fn levels(tree: &TreeUpdate) -> Vec<(String, Option<usize>)> {
     tree.nodes
         .iter()
@@ -110,6 +116,8 @@ fn levels(tree: &TreeUpdate) -> Vec<(String, Option<usize>)> {
         .collect()
 }
 
+/// Test 1, macOS: a group's name and single tables one step past the
+/// chevron (34), a grouped table's name further in (39).
 #[test]
 fn grouped_tables_stand_in_from_the_groups_name_and_single_tables_line_up_with_it() {
     let (mut harness, _) = grouped(Look::macos());
@@ -132,6 +140,8 @@ fn grouped_tables_stand_in_from_the_groups_name_and_single_tables_line_up_with_i
     }
 }
 
+/// Test 1, Omarchy: a group's tables two cells right of its name, single
+/// tables in their column.
 #[test]
 fn the_terminal_indents_a_groups_tables_two_cells_and_single_tables_with_them() {
     let (mut harness, _) = grouped(Look::omarchy());
@@ -147,6 +157,8 @@ fn the_terminal_indents_a_groups_tables_two_cells_and_single_tables_with_them() 
     }
 }
 
+/// A grouped table's highlight begins 4 past the guide (25); a single
+/// table's fills the tree's inset.
 #[test]
 fn a_grouped_tables_highlight_begins_inside_the_indent() {
     let (mut harness, _) = grouped(Look::macos());
@@ -172,6 +184,8 @@ fn a_grouped_tables_highlight_begins_inside_the_indent() {
     assert!(close(begins, 8.0), "{begins}");
 }
 
+/// Test 2: the drawn name drops the prefix; the screen reader's name and
+/// the tooltip keep it.
 #[test]
 fn a_grouped_table_drops_its_prefix_where_drawn_and_keeps_it_for_a_screen_reader() {
     let (mut harness, _) = grouped(Look::macos());
@@ -187,6 +201,8 @@ fn a_grouped_table_drops_its_prefix_where_drawn_and_keeps_it_for_a_screen_reader
     assert!(hover(&mut harness, at).contains(&"book_covers".to_owned()));
 }
 
+/// The sidebar is a tree: each row says its level, and a group whether
+/// it is open.
 #[test]
 fn the_tree_says_each_rows_level_and_whether_a_group_is_open() {
     let (mut harness, _) = grouped(Look::macos());
@@ -214,6 +230,8 @@ fn the_tree_says_each_rows_level_and_whether_a_group_is_open() {
     assert_eq!(expanded("orders, table"), None);
 }
 
+/// Test 3: `book_cover_sizes` sits under `book_` as `cover_sizes`; no
+/// `book_cover_` group is made.
 #[test]
 fn a_longer_prefix_stays_in_its_group_and_groups_never_nest() {
     let (harness, tab) = grouped(Look::macos());
@@ -232,6 +250,7 @@ fn a_longer_prefix_stays_in_its_group_and_groups_never_nest() {
     assert_eq!(groups, [&group("book"), &group("publisher")]);
 }
 
+/// Test 4: groups and single tables sort together by name.
 #[test]
 fn groups_and_single_tables_sort_together() {
     let (harness, tab) = grouped(Look::macos());
@@ -246,6 +265,8 @@ fn groups_and_single_tables_sort_together() {
     assert_eq!(top, ["authors", "book_", "orders", "publisher_", "reviews"]);
 }
 
+/// Test 5, macOS: Left climbs from a table to its group and closes it,
+/// Right opens it and steps to its first table.
 #[test]
 fn left_and_right_close_and_open_a_group_and_left_climbs_to_it() {
     let (mut harness, tab) = grouped(Look::macos());
@@ -260,6 +281,8 @@ fn left_and_right_close_and_open_a_group_and_left_climbs_to_it() {
     assert_eq!(cursor(&harness, tab), Some(table("book_awards")));
 }
 
+/// Test 5, Omarchy: `za` folds a table's group or opens a group, `zR` and
+/// `zM` open and fold them all, and `t` still lists them flat.
 #[test]
 fn omarchys_folds_work_on_the_groups_and_t_still_flattens() {
     let (mut harness, tab) = grouped(Look::omarchy());
@@ -292,6 +315,8 @@ fn omarchys_folds_work_on_the_groups_and_t_still_flattens() {
     assert!(harness.app.workspace(tab).unwrap().tree.flat);
 }
 
+/// Test 6: the guide spans the open group's tables, from the first to the
+/// last, and a folded group has none (macOS line, Omarchy `│`).
 #[test]
 fn the_guide_runs_along_the_open_groups_tables_and_no_further() {
     let (mut harness, tab) = grouped(Look::macos());
@@ -333,6 +358,8 @@ fn the_guide_runs_along_the_open_groups_tables_and_no_further() {
     assert!(bars.iter().all(|rect| close(rect.left(), name)));
 }
 
+/// Test 7: the flat list keeps full names, at level 1, with no groups or
+/// guides, where it always drew them.
 #[test]
 fn the_flat_list_keeps_full_names_with_no_groups_or_guides() {
     for look in [Look::macos(), Look::omarchy()] {
@@ -360,6 +387,8 @@ fn the_flat_list_keeps_full_names_with_no_groups_or_guides() {
     }
 }
 
+/// Test 8: the indent and the guide stay the same in points, so they grow
+/// on screen with the window's zoom.
 #[test]
 fn the_indent_scales_with_the_windows_zoom() {
     for zoom in [1.0, 1.5, 2.0] {
@@ -376,6 +405,8 @@ fn the_indent_scales_with_the_windows_zoom() {
     }
 }
 
+/// The Omarchy status line names the table under the cursor in full,
+/// with its kind and, where there is an estimate, its rows.
 #[test]
 fn the_terminal_status_line_names_the_table_under_the_cursor_in_full() {
     let (mut harness, tab) = grouped(Look::omarchy());
@@ -405,6 +436,8 @@ fn the_terminal_status_line_names_the_table_under_the_cursor_in_full() {
     assert!(harness.painted_rect("book_excerpts · view").is_some());
 }
 
+/// With no table open, the start screen's line names the table under
+/// the cursor in place of "no table open".
 #[test]
 fn with_no_table_open_the_start_line_names_the_table_under_the_cursor() {
     let (mut harness, tab) = grouped(Look::omarchy());
@@ -421,6 +454,8 @@ fn with_no_table_open_the_start_line_names_the_table_under_the_cursor() {
     assert!(harness.painted_rect("no table open").is_none());
 }
 
+/// After `z`, a letter that makes no fold keeps its own meaning: `?`
+/// opens help.
 #[test]
 fn a_letter_after_a_folds_first_key_is_its_own_where_no_fold_goes_on() {
     let (mut harness, tab) = grouped(Look::omarchy());
@@ -436,6 +471,7 @@ fn a_letter_after_a_folds_first_key_is_its_own_where_no_fold_goes_on() {
     );
 }
 
+/// A group's name is said as written, even with `{n}` in it.
 #[test]
 fn a_groups_name_is_said_as_it_is_written() {
     let (mut harness, tab) = grouped(Look::macos());
@@ -450,6 +486,7 @@ fn a_groups_name_is_said_as_it_is_written() {
     assert!(node(&tree, "{n}_, 2 tables", Role::TreeItem).is_some());
 }
 
+/// The status line names no table whose row is hidden in a folded group.
 #[test]
 fn the_status_line_says_nothing_of_a_row_the_sidebar_hides() {
     let (mut harness, tab) = grouped(Look::omarchy());
@@ -472,6 +509,8 @@ fn the_status_line_says_nothing_of_a_row_the_sidebar_hides() {
     assert!(harness.painted_rect("no table open").is_some());
 }
 
+/// A long name on the start line is cut with "…" inside the window and
+/// said whole to a screen reader.
 #[test]
 fn a_long_name_on_the_start_line_gives_way_at_its_end() {
     let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
@@ -506,6 +545,7 @@ fn a_long_name_on_the_start_line_gives_way_at_its_end() {
     assert!(rect.right() <= 720.0 && rect.left() >= 0.0, "{rect:?}");
 }
 
+/// `zM` and `zR` fold and open every group, the ones a filter hides too.
 #[test]
 fn folding_or_opening_every_group_reaches_those_a_filter_hides() {
     let (mut harness, tab) = grouped(Look::omarchy());
