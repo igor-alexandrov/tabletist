@@ -19,6 +19,7 @@ import glob
 import hashlib
 import json
 import os
+import selectors
 import shutil
 import signal
 import socket
@@ -466,6 +467,18 @@ def run_startup(args):
     print(json.dumps(report, indent=2))
 
 
+def stop(process):
+    """Asks the AppImage runtime to unmount and go (SIGINT), then makes it."""
+    for sent in (signal.SIGINT, signal.SIGTERM, signal.SIGKILL):
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, sent)
+        try:
+            process.wait(10)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+
+
 def run_mount(args):
     """How long the AppImage runtime takes to mount the image: from the
     launch to the mount point it prints with --appimage-mount."""
@@ -475,12 +488,22 @@ def run_mount(args):
             evict(args.appimage)
         start = time.monotonic()
         process = subprocess.Popen(
-            [args.appimage, "--appimage-mount"], stdout=subprocess.PIPE, text=True
+            [args.appimage, "--appimage-mount"],
+            stdout=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+            # A background shell can hand down SIGINT ignored; the runtime
+            # needs it to unmount.
+            restore_signals=True,
         )
-        line = process.stdout.readline()
-        took = time.monotonic() - start
-        process.send_signal(signal.SIGINT)
-        process.wait(10)
+        try:
+            # The mount point, or nothing if the runtime stalls.
+            with selectors.DefaultSelector() as ready:
+                ready.register(process.stdout, selectors.EVENT_READ)
+                line = process.stdout.readline() if ready.select(TIMEOUT) else ""
+            took = time.monotonic() - start
+        finally:
+            stop(process)
         if not line.strip():
             sys.exit("the runtime printed no mount point")
         warm_up = number < args.warmup
