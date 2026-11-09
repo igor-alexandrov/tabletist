@@ -3466,7 +3466,10 @@ fn status_line(
                 }
                 x
             };
-            if let Some((visual, held)) = &editing.visual {
+            // A pane with keys of its own (the tree, its filter, the row
+            // panel) names them over the grid's selection.
+            let visual = editing.visual.as_ref().filter(|_| own_hints.is_none());
+            if let Some((visual, held)) = visual {
                 // A visual selection: the mode, what it holds and the
                 // counts. Its keys, at the right, give way: `V`'s rows
                 // are deleted, the others' cells copied.
