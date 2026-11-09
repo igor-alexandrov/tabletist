@@ -105,6 +105,31 @@ The guide and the reference are on the website:
   font throughout). It follows the Omarchy theme live on Omarchy, and the
   system light/dark setting elsewhere.
 
+## Performance
+
+Measured on 2026-11-09 on one Linux machine (AMD Ryzen AI MAX+ 395,
+128 GB, NVMe; Omarchy on Hyprland), each app the same way: Tabletist 0.5.0,
+TablePro for Linux 0.1.0-beta.3 and Beekeeper Studio 6.2.2.
+
+| | Tabletist | TablePro | Beekeeper Studio |
+|---|---|---|---|
+| First start, to its first screen (median of 20) | 89 ms | 230 ms | 2,137 ms |
+| The same, with its files not in the page cache | 108 ms | 259 ms | 2,305 ms |
+| Memory at that first screen (PSS) | 83.4 MiB | 111.5 MiB | 845.7 MiB |
+| Memory with the same 100,000 rows loaded (PSS) | 103.7 MiB | 203.8 MiB | 1,449.8 MiB |
+| x86_64 Linux download | 18.6 MB (AppImage) | 35.2 MB (`.deb`) | 362.4 MB (AppImage) |
+| Size installed | 45.3 MB | 121.4 MB | 1,154.8 MB |
+
+PSS is resident memory with each page that processes share divided among
+them, added up over all of an app's processes (Beekeeper runs seven). The
+times are the unpacked apps; Tabletist's AppImage takes 136 ms. Beekeeper
+ran on X11, its default, and on Wayland for the 100,000 rows. TablePro for
+Linux is a beta, run from its `.deb`.
+
+How each number was taken, the spreads, the raw reports and the script to
+take them again on your machine are in
+[contrib/measure](contrib/measure/README.md).
+
 ## Install
 
 - **Arch Linux / Omarchy:** the AUR packages (`tabletist-bin` and
