@@ -1499,15 +1499,14 @@ fn scale_menu(
 ) {
     let Skin { look, palette, .. } = *skin;
     let percent = |scale: UiScale| format!("{}%", scale.percent());
-    let pixels = |scale: UiScale| format!("{} {}", scale.text_px(), skin.say("px text"));
+    let pixels = |scale: UiScale| {
+        skin.say("{px} px text")
+            .replace("{px}", &scale.text_px().to_string())
+    };
     let spoken = |scale: UiScale| {
-        format!(
-            "{} {}, {} {}",
-            scale.percent(),
-            skin.say("percent"),
-            scale.text_px(),
-            skin.say("pixel text")
-        )
+        skin.say("{percent} percent, {px} pixel text")
+            .replace("{percent}", &scale.percent().to_string())
+            .replace("{px}", &scale.text_px().to_string())
     };
     let current = settings.ui_scale;
     let shown = format!("{} · {}", percent(current), pixels(current));

@@ -295,7 +295,8 @@ impl UiScale {
             175 => "1.75",
             200 => "2.0",
             250 => "2.5",
-            _ => "1.0",
+            100 => "1.0",
+            other => unreachable!("no interface scale is {other}%"),
         }
     }
 

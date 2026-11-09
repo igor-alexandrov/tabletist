@@ -8268,14 +8268,16 @@ impl App {
         let reset = self
             .keymap
             .key(self.layout(), crate::keymap::Command::DefaultTextSize);
-        let resets = gettext(self.locale, "resets");
         if self.look.terminal {
             self.change_settings(|settings| {
                 settings.font_size = larger.map(|larger| settings.stepped_font_size(true, larger));
             });
             let size = self.settings.font_size_in(true).text();
-            let words = gettext(self.locale, "font size");
-            self.said = Some(format!("{words} {size} · {} {resets}", reset.as_str()));
+            self.said = Some(
+                gettext(self.locale, "font size {size} · {key} resets")
+                    .replace("{size}", &size)
+                    .replace("{key}", reset.as_str()),
+            );
         } else {
             self.change_settings(|settings| {
                 settings.ui_scale = larger.map_or(crate::settings::UiScale::DEFAULT, |larger| {
@@ -8283,14 +8285,15 @@ impl App {
                 });
             });
             let scale = self.settings.ui_scale;
-            self.said = Some(format!(
-                "{} {}% · {} {} · {} {resets}",
-                gettext(self.locale, "Interface"),
-                scale.percent(),
-                scale.text_px(),
-                gettext(self.locale, "px text"),
-                reset.as_str(),
-            ));
+            self.said = Some(
+                gettext(
+                    self.locale,
+                    "Interface {percent}% · {px} px text · {key} resets",
+                )
+                .replace("{percent}", &scale.percent().to_string())
+                .replace("{px}", &scale.text_px().to_string())
+                .replace("{key}", reset.as_str()),
+            );
         }
     }
 
