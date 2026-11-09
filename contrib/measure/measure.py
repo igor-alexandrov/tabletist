@@ -239,7 +239,8 @@ def wayland_string(data, at):
 
 
 def toplevels(wayland):
-    """The windows ext-foreign-toplevel-list names, as {identifier: app_id}.
+    """The windows ext-foreign-toplevel-list names, oldest first, as dicts
+    of `identifier`, `app_id` and `title`.
 
     A Wayland client in a few lines of the wire protocol: get the registry,
     bind the list, and read until two round trips are done.
@@ -281,11 +282,12 @@ def toplevels(wayland):
                 elif target == 4 and opcode == 0:  # a toplevel's handle
                     (handle,) = struct.unpack_from("<I", body)
                     handles[handle] = {}
-                elif target in handles and opcode in (3, 4):  # app_id, identifier
-                    handles[target]["app_id" if opcode == 3 else "identifier"] = wayland_string(body, 0)[0]
+                elif target in handles and opcode in (2, 3, 4):  # title, app_id, identifier
+                    field = {2: "title", 3: "app_id", 4: "identifier"}[opcode]
+                    handles[target][field] = wayland_string(body, 0)[0]
                 elif target == waiting and opcode == 0:  # wl_callback.done
                     if waiting == 5:
-                        return {h["identifier"]: h.get("app_id") for h in handles.values() if "identifier" in h}
+                        return [h for h in handles.values() if "identifier" in h]
                     wire.sendall(message(1, 0, struct.pack("<I", 5)))
                     waiting = 5
 
@@ -293,8 +295,10 @@ def toplevels(wayland):
 def capture(hypr, identifier):
     """The window's own picture, as a digest: what the app last drew,
     whatever the compositor shows over it."""
+    # grim can wait for a frame forever from a window that is going away
+    # (a splash): 2 seconds, then that window counts as gone.
     done = subprocess.run(
-        ["grim", "-T", identifier, "-t", "ppm", "-"], env=hypr.env, capture_output=True, check=True
+        ["grim", "-T", identifier, "-t", "ppm", "-"], env=hypr.env, capture_output=True, check=True, timeout=2
     )
     return hashlib.blake2b(done.stdout, digest_size=16).hexdigest()
 
@@ -317,9 +321,12 @@ def evict(path):
 class Launch:
     """One start of the app on the headless output."""
 
-    def __init__(self, hypr, command, app_class=APP_CLASS, env=(), fresh_profile=False, seed=None):
+    def __init__(
+        self, hypr, command, app_class=APP_CLASS, env=(), fresh_profile=False, seed=None, title=".*"
+    ):
         self.hypr = hypr
         self.app_class = app_class
+        self.title = title
         self.profiles = set(glob.glob(DEMO_PROFILES))
         environment = dict(hypr.env, **dict(item.split("=", 1) for item in env))
         # A first start in an empty profile: config, data, cache and state of
@@ -334,7 +341,7 @@ class Launch:
             # (config/, data/, cache/, state/).
             if seed:
                 shutil.copytree(seed, self.profile, dirs_exist_ok=True)
-        self.before = set(toplevels(hypr.wayland))
+        self.before = {window["identifier"] for window in toplevels(hypr.wayland)}
         self.identifier = None
         self.log = tempfile.TemporaryFile()
         self.start = time.monotonic()
@@ -345,11 +352,30 @@ class Launch:
         self.window_at = None
         self.captures = []
         self.settled_on_first = False
+        self.xwayland = None
+        self.windows = 0
+
+    def matches(self, app_id, title):
+        return (
+            re.fullmatch(self.app_class, app_id or "") is not None
+            and re.fullmatch(self.title, title or "") is not None
+        )
+
+    def newest(self):
+        """The app's newest window that was not there before the launch."""
+        new = [
+            window["identifier"]
+            for window in toplevels(self.hypr.wayland)
+            if window["identifier"] not in self.before
+            and self.matches(window.get("app_id"), window.get("title"))
+        ]
+        return new[-1] if new else None
 
     def wait_window(self):
         def opened(line):
             name, _, data = line.partition(">>")
-            return name == "openwindow" and re.fullmatch(self.app_class, data.split(",")[2]) is not None
+            fields = data.split(",", 3)
+            return name == "openwindow" and len(fields) == 4 and self.matches(fields[2], fields[3])
 
         try:
             self.window_at, line = self.hypr.wait_event(opened, self.start)
@@ -358,22 +384,44 @@ class Launch:
             sys.stderr.write(self.log.read().decode(errors="replace"))
             raise
         self.address = "0x" + line.partition(">>")[2].split(",")[0]
-        new = [
-            identifier
-            for identifier, app in toplevels(self.hypr.wayland).items()
-            if app and re.fullmatch(self.app_class, app) and identifier not in self.before
-        ]
-        if len(new) != 1:
-            raise RuntimeError(f"expected one new {self.app_class} window, found {len(new)}")
-        self.identifier = new[0]
+        self.identifier = self.newest()
+        if self.identifier is None:
+            raise RuntimeError(f"no {self.app_class} window in the toplevel list")
+        self.windows = 1
         return self.window_at - self.start
 
+    def check_xwayland(self):
+        """Whether the app drew through XWayland or on Wayland itself, asked
+        once the picture settled so the asking costs the timing nothing."""
+        self.xwayland = next(
+            (c.get("xwayland") for c in self.hypr.json("clients") if c["address"] == self.address), None
+        )
+
     def wait_settled(self):
-        """Seconds from the launch to the first frame of the final picture."""
+        """Seconds from the launch to the first frame of the final picture.
+
+        The picture is the newest window's: an app that opens a splash, then
+        its main window, then a first-run dialog, settles when the last of
+        them holds still and no other window has opened meanwhile."""
         deadline = time.monotonic() + TIMEOUT
+        # The window wait_window found is the newest so far.
+        checked = time.monotonic()
         while time.monotonic() < deadline:
+            if time.monotonic() - checked > 0.1:
+                checked = time.monotonic()
+                newest = self.newest()
+                if newest is not None and newest != self.identifier:
+                    self.identifier = newest
+                    self.windows += 1
+                    self.captures = []
             began = time.monotonic()
-            self.captures.append((began, capture(self.hypr, self.identifier)))
+            try:
+                digest = capture(self.hypr, self.identifier)
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                # The window closed (a splash): look for the next one.
+                checked = 0.0
+                continue
+            self.captures.append((began, digest))
             settled = settled_at(self.captures, self.window_at)
             if settled is not None:
                 # When the first capture already shows the final picture,
@@ -388,11 +436,12 @@ class Launch:
         return statistics.median(gaps) if gaps else 0.0
 
     def app_pid(self):
-        """The window's process: for an AppImage, the app, not the runtime."""
+        """The window's process: for an AppImage, the app, not the runtime.
+        The launched process, when that window is gone (a closed splash)."""
         for client in self.hypr.json("clients"):
             if client["address"] == self.address:
                 return client["pid"]
-        raise RuntimeError("the window is gone")
+        return self.process.pid
 
     def send(self, mods, key):
         self.hypr.ctl(
@@ -403,14 +452,21 @@ class Launch:
     def close(self):
         """Closes the window as a person would, so the demo removes its
         profile; kills the process group if it does not go."""
-        if self.address:
-            with contextlib.suppress(subprocess.CalledProcessError):
-                self.hypr.ctl("dispatch", f'hl.dsp.window.close({{ window = "address:{self.address}" }})')
-        try:
-            self.process.wait(10)
-        except subprocess.TimeoutExpired:
-            os.killpg(self.process.pid, signal.SIGTERM)
-            self.process.wait(10)
+        # Every window of the app, a dialog it opened on its first run too.
+        tree = set(descendants(self.process.pid))
+        for client in self.hypr.json("clients"):
+            if client["pid"] in tree or client["address"] == self.address:
+                with contextlib.suppress(subprocess.CalledProcessError):
+                    self.hypr.ctl("dispatch", f'hl.dsp.window.close({{ window = "address:{client["address"]}" }})')
+        for sent in (None, signal.SIGTERM, signal.SIGKILL):
+            if sent is not None:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(self.process.pid, sent)
+            try:
+                self.process.wait(10)
+                break
+            except subprocess.TimeoutExpired:
+                pass
         # A killed demo leaves its profile behind: remove the ones this run made.
         for profile in set(glob.glob(DEMO_PROFILES)) - self.profiles:
             shutil.rmtree(profile, ignore_errors=True)
@@ -495,11 +551,12 @@ def run_startup(args):
             if args.cold:
                 for path in evicted:
                     evict(shutil.which(path) or path)
-            launch = Launch(hypr, args.command, args.app_class, args.env, args.fresh_profile, args.seed)
+            launch = Launch(hypr, args.command, args.app_class, args.env, args.fresh_profile, args.seed, args.title)
             try:
                 window = launch.wait_window()
                 settled = launch.wait_settled()
                 interval = launch.capture_interval()
+                launch.check_xwayland()
                 if args.shot and number == args.warmup + args.runs - 1:
                     subprocess.run(["grim", "-T", launch.identifier, args.shot], env=hypr.env, check=True)
             finally:
@@ -518,6 +575,8 @@ def run_startup(args):
                         "window": window,
                         "settled": settled,
                         "settled_on_first_capture": launch.settled_on_first,
+                        "xwayland": launch.xwayland,
+                        "windows": launch.windows,
                         "capture_interval": interval,
                     }
                 )
@@ -628,7 +687,7 @@ def run_memory(args):
     hypr = Hyprland()
     steps = []
     with stage(hypr, args.app_class):
-        launch = Launch(hypr, args.command, args.app_class, args.env, args.fresh_profile, args.seed)
+        launch = Launch(hypr, args.command, args.app_class, args.env, args.fresh_profile, args.seed, args.title)
         try:
             launch.wait_window()
             launch.wait_settled()
@@ -728,6 +787,9 @@ def add_app_options(parser):
     parser.add_argument(
         "--class", dest="app_class", default=APP_CLASS, help="the window's class, as a regular expression"
     )
+    parser.add_argument(
+        "--title", default=".*", help="with --class: the window's title too, as a regular expression"
+    )
     parser.add_argument("--env", action="append", default=[], help="NAME=VALUE for the app's environment")
     parser.add_argument(
         "--fresh-profile", action="store_true", help="empty XDG config, data, cache and state for each launch"
@@ -780,6 +842,9 @@ def main():
     sizes.set_defaults(run=run_sizes)
 
     args = parser.parse_args()
+    # A SIGTERM (a `timeout` around the script) runs the clean-up too: the
+    # headless output, the window rule and the profiles go.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
     args.run(args)
 
 
