@@ -1633,12 +1633,20 @@ impl Loaded {
     /// The keys read from the older key they took the place of alone, in
     /// the order of [`Key::ALL`]: what a start writes in their new place,
     /// once, taking the old key out (`appearance.interface_size` as
-    /// `appearance.ui_scale`).
+    /// `appearance.ui_scale`). A new key on a line that was ignored is not
+    /// one of them: the old key stands for it, and both lines stay as they
+    /// were written until the setting is changed.
     pub fn migrated(&self) -> Vec<Key> {
         let read = |key: Key| self.lines.iter().any(|(line, _)| *line == key);
+        let (working, _) = readable(&self.text);
+        let ignored: Vec<Key> = self
+            .invalid
+            .iter()
+            .filter_map(|line| key_on_line(&self.text, &working, *line))
+            .collect();
         Key::ALL
             .into_iter()
-            .filter(|key| key.replaced().is_some_and(read) && !read(*key))
+            .filter(|key| key.replaced().is_some_and(read) && !read(*key) && !ignored.contains(key))
             .collect()
     }
 
@@ -5566,6 +5574,14 @@ skip = \"0.4.0\"  # a version to stop offering
         let text = "[appearance]\ninterface_size = \"large\"\nui_scale = 2.0\n";
         let loaded = Settings::from_toml(text);
         assert_eq!(loaded.settings.ui_scale, UiScale::of(2.0).unwrap());
+        assert_eq!(loaded.migrated(), Vec::<Key>::new());
+        // A scale that cannot be read is as good as absent, as every new
+        // key's is: the old key stands for it. Neither line is to move, so
+        // the one written by hand is still there to be put right.
+        let text = "[appearance]\ninterface_size = \"large\"\nui_scale = 1.3\n";
+        let loaded = Settings::from_toml(text);
+        assert_eq!(loaded.settings.ui_scale, UiScale::of(1.1).unwrap());
+        assert_eq!(loaded.invalid, vec![3]);
         assert_eq!(loaded.migrated(), Vec::<Key>::new());
         // An old value no version wrote is ignored by its line.
         let loaded = Settings::from_toml("[appearance]\ninterface_size = \"huge\"\n");

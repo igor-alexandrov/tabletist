@@ -9662,11 +9662,40 @@ mod tests {
         edited(&mut app, "[appearance]\nui_scale = 1.3\n");
         assert_eq!(app.settings.ui_scale, UiScale::of(1.75).unwrap());
         assert_eq!(app.settings_file.invalid, vec![2]);
+        // With the older key beside it, the older key stands for it.
+        edited(
+            &mut app,
+            "[appearance]\ninterface_size = \"large\"\nui_scale = 1.3\n",
+        );
+        assert_eq!(app.settings.ui_scale, UiScale::of(1.1).unwrap());
+        assert_eq!(app.settings_file.invalid, vec![3]);
         // At a start, there is none to keep: 100%, the line told too.
         let loaded = Settings::from_toml("[appearance]\nui_scale = 1.3\n");
         let app = App::new(AppDirs::at(dir.path()), loaded, Backend::recording());
         assert_eq!(app.settings.ui_scale, UiScale::DEFAULT);
         assert_eq!(app.settings_file.invalid, vec![2]);
+        // The older key beside it stands for it at a start too, and the
+        // file is not written: the line typed by hand stays to be put right.
+        let text = "[appearance]\ninterface_size = \"large\"\nui_scale = 1.3\n";
+        let app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::from_toml(text),
+            Backend::recording(),
+        );
+        assert_eq!(app.settings.ui_scale, UiScale::of(1.1).unwrap());
+        assert_eq!(app.settings_file.invalid, vec![3]);
+        assert_eq!(app.settings_file.text, text);
+        assert!(
+            !app.backend.sent.iter().any(|command| matches!(
+                command,
+                Command::Save {
+                    file: StateFile::Settings(_),
+                    ..
+                }
+            )),
+            "{:?}",
+            app.backend.sent
+        );
     }
 
     #[test]
