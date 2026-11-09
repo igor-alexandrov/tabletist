@@ -232,9 +232,10 @@ impl KeyTree {
     }
 }
 
-/// Where `text` first holds `query`, character by character without
-/// regard to case, as a range of `text`'s own bytes. A character that
-/// lowers to more than one (`İ`) matches only the same characters.
+/// Where `text` first holds `query`, without regard to case, as a range of
+/// `text`'s own bytes: whole characters, so a match that ends inside what
+/// a character lowers to (`i` in `İ`, which lowers to `i̇`) takes that
+/// character whole. A match starts where a character starts.
 pub fn find_folded(text: &str, query: &str) -> Option<std::ops::Range<usize>> {
     let wanted: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
     if wanted.is_empty() {
@@ -245,10 +246,11 @@ pub fn find_folded(text: &str, query: &str) -> Option<std::ops::Range<usize>> {
         lowered.clear();
         for (at, c) in text[start..].char_indices() {
             lowered.extend(c.to_lowercase());
-            if lowered.len() > wanted.len() || lowered[..] != wanted[..lowered.len()] {
+            let shared = lowered.len().min(wanted.len());
+            if lowered[..shared] != wanted[..shared] {
                 return None;
             }
-            if lowered.len() == wanted.len() {
+            if lowered.len() >= wanted.len() {
                 return Some(start..start + at + c.len_utf8());
             }
         }
@@ -1296,9 +1298,11 @@ mod tests {
     fn a_match_is_found_without_regard_to_case_on_the_names_own_bytes() {
         assert_eq!(find_folded("Book:12", "book"), Some(0..4));
         assert_eq!(find_folded("cart:Éa", "éa"), Some(5..8));
-        // `İ` lowers to two characters: no slice of it is a match.
-        assert_eq!(find_folded("İx", "i"), None);
+        // `İ` lowers to two characters: a match inside them takes it whole,
+        // never a slice of its bytes.
+        assert_eq!(find_folded("İx", "i"), Some(0..2));
         assert_eq!(find_folded("İx", "x"), Some(2..3));
+        assert_eq!(find_folded("aİx", "ix"), None);
         assert_eq!(find_folded("abc", ""), None);
     }
 

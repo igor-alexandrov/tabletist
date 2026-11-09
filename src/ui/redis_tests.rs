@@ -1109,3 +1109,32 @@ fn a_reconnect_goes_back_to_the_database_switched_to_and_keeps_the_keys_open() {
     assert_eq!(browser(&harness, tab).tabs.len(), 1);
     assert_eq!(browser(&harness, tab).tree.len(), 1);
 }
+
+#[test]
+fn a_letter_typed_in_a_redis_window_leaves_the_keyboard_on_the_keys() {
+    let mut harness = Harness::new();
+    let tab = harness.connect_redis();
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    assert_eq!(
+        browser(&harness, tab).cursor,
+        Some(crate::keyspace::Place::Group(b"book:".to_vec()))
+    );
+    // A letter no key takes: the start screen's search would have taken
+    // the keyboard, though a Redis window draws none.
+    // Asked on the keystroke's own frame, before a frame that does not
+    // draw the field would drop it.
+    let search = super::start::search_field_id(tab);
+    harness.frame(vec![
+        crate::testing::key(Key::Q, Modifiers::NONE),
+        egui::Event::Text("q".into()),
+    ]);
+    assert!(!harness.ctx.memory(|memory| memory.has_focus(search)));
+    harness.frame(vec![crate::testing::release(Key::Q, Modifiers::NONE)]);
+    assert!(!harness.ctx.memory(|memory| memory.has_focus(search)));
+    // And the arrows still move in the keys.
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    assert_eq!(
+        browser(&harness, tab).cursor,
+        Some(crate::keyspace::Place::Group(b"cart:".to_vec()))
+    );
+}
