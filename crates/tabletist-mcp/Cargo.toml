@@ -33,7 +33,7 @@ tokio-util = "0.7"
 serde_json = "1"
 # The log of calls, a SQLite file. The crate and its bundled SQLite that
 # tabletist-db builds: nothing new.
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 # A session's id in the log, which must not repeat from one start of the
 # app to the next.
 uuid = { version = "1", features = ["v4"] }
