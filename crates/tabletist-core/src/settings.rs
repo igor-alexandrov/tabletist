@@ -1042,8 +1042,10 @@ impl Key {
             Self::UpdatesCheck => Some("daily | weekly | never"),
             Self::UpdatesSkip => Some("a version to stop offering"),
             Self::UiScale => Some("0.9 | 1.0 | 1.1 | 1.25 | 1.5 | 1.75 | 2.0 | 2.5"),
-            // The terminal look's one size; the others' data has 11 to 16.
-            Self::FontSize if cfg!(target_os = "linux") => Some("9 to 32"),
+            // The terminal look's one size, where it is the look drawn with
+            // none chosen; the others' data has 11 to 16. A file that
+            // chooses a look has its look's.
+            Self::FontSize if cfg!(target_os = "linux") => Some(TERMINAL_SIZES),
             // The fonts of the look the platform draws, as the theme's.
             // Windows draws its data in Inter, whatever the key says.
             Self::Font if cfg!(target_os = "linux") => Some("fontconfig name"),
@@ -1058,6 +1060,9 @@ impl Key {
         }
     }
 }
+
+/// The terminal look's font sizes, as the file's note says them.
+const TERMINAL_SIZES: &str = "9 to 32";
 
 /// The values the theme takes in the terminal look (`terminal`) or the
 /// others, as the file notes them.
@@ -2491,6 +2496,12 @@ impl Settings {
             (Key::Theme, _) if self.look.is_some() => {
                 self.look.map(|look| theme_note(look.terminal()).into())
             }
+            // The terminal look's one size has its range; the others' is
+            // the data's, which the window keeps in its own.
+            (Key::FontSize, _) if self.look.is_some() => self
+                .look
+                .filter(|look| look.terminal())
+                .map(|_| TERMINAL_SIZES.into()),
             _ => key.note().map(Into::into),
         }
     }
@@ -5207,6 +5218,26 @@ skip = \"0.4.0\"  # a version to stop offering
             };
             let line = format!("theme = \"Nord\"  # {note}\n");
             assert!(settings.to_toml().contains(&line), "{look:?}");
+        }
+    }
+
+    #[test]
+    fn the_font_size_s_note_is_the_terminal_look_s_range_where_the_file_chooses_it() {
+        for (look, line) in [
+            (LookChoice::Omarchy, "font_size = 14  # 9 to 32\n"),
+            // The classic look's size is the data's, on Linux too: no note.
+            (LookChoice::Classic, "font_size = 14\n"),
+        ] {
+            let settings = Settings {
+                look: Some(look),
+                font_size: FontSize::of(14.0),
+                ..Settings::default()
+            };
+            let text = settings.to_toml();
+            assert!(text.contains(line), "{look:?}: {text}");
+            // Written into a file too, as the window writes a change.
+            let written = settings.write_into("", &[Key::FontSize]);
+            assert!(written.contains(line), "{look:?}: {written}");
         }
     }
 
