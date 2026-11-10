@@ -256,13 +256,19 @@ enum Tx {
 /// `set_config`. No lock timeout beside it: a wait for a lock is part of
 /// the statement's time.
 ///
+/// A row statement runs as a cursor (see `run_statement`), which
+/// PostgreSQL plans for the first tenth of its rows by default
+/// (`cursor_tuple_fraction`): another plan than the same query gets in
+/// psql, and at times a slower one. The transaction plans for all of them,
+/// as a plain query is; the rollback takes the setting away.
+///
 /// All of it is one message, one round trip to the server. It runs in
 /// order and stops at the first step that fails; past `BEGIN` that leaves
 /// a failed transaction, which the close rolls back as before.
 async fn open(client: &tokio_postgres::Client, sent: Option<Sent<'_>>) -> Result<Tx> {
     let timeout = sent.map(|sent| format!("SET LOCAL statement_timeout = {}; ", sent.timeout_ms()));
     let steps = format!(
-        "BEGIN READ ONLY; SELECT 1; {}SAVEPOINT tabletist_guard",
+        "BEGIN READ ONLY; SET LOCAL cursor_tuple_fraction = 1; SELECT 1; {}SAVEPOINT tabletist_guard",
         timeout.unwrap_or_default()
     );
     match client.batch_execute(&steps).await.map_err(query_error) {
@@ -916,6 +922,25 @@ mod tests {
             close(&client, Tx::Open).await.unwrap();
         }
         assert_eq!(setting(&conn, "statement_timeout").await, "0");
+    }
+
+    #[tokio::test]
+    async fn a_run_plans_its_cursors_for_every_row_in_its_transaction_only() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        assert_eq!(setting(&conn, "cursor_tuple_fraction").await, "0.1");
+        {
+            let client = conn.client.lock().await;
+            assert_eq!(open(&client, None).await, Ok(Tx::Open));
+        }
+        assert_eq!(setting(&conn, "cursor_tuple_fraction").await, "1");
+        {
+            let client = conn.client.lock().await;
+            close(&client, Tx::Open).await.unwrap();
+        }
+        assert_eq!(setting(&conn, "cursor_tuple_fraction").await, "0.1");
     }
 
     /// One test at a time uses the `probe` table: creating it twice at once
