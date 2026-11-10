@@ -930,7 +930,13 @@ mod tests {
             return;
         };
         let conn = session(&url).await;
-        assert_eq!(setting(&conn, "cursor_tuple_fraction").await, "0.1");
+        // A value of the session's own, whatever the server's default is.
+        {
+            let client = conn.client.lock().await;
+            let set = client.batch_execute("SET cursor_tuple_fraction = 0.25");
+            set.await.unwrap();
+        }
+        assert_eq!(setting(&conn, "cursor_tuple_fraction").await, "0.25");
         {
             let client = conn.client.lock().await;
             assert_eq!(open(&client, None).await, Ok(Tx::Open));
@@ -940,7 +946,7 @@ mod tests {
             let client = conn.client.lock().await;
             close(&client, Tx::Open).await.unwrap();
         }
-        assert_eq!(setting(&conn, "cursor_tuple_fraction").await, "0.1");
+        assert_eq!(setting(&conn, "cursor_tuple_fraction").await, "0.25");
     }
 
     /// One test at a time uses the `probe` table: creating it twice at once
