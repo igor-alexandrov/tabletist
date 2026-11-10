@@ -97,6 +97,20 @@ pub enum PinState {
     Missing,
 }
 
+/// A look the settings chose, on its way to being drawn: egui puts fonts
+/// set in one frame in place at the next frame's start, so the look's are
+/// installed a frame before it is drawn.
+#[derive(Clone, Copy, Debug)]
+enum LookSwitch {
+    /// Its fonts are to be installed.
+    Asked(crate::theme::Look),
+    /// The terminal look's: the desktop's monospace is being read, by the
+    /// read the counter names; its fonts are installed once it is in.
+    Reading(crate::theme::Look, u64),
+    /// Its fonts are in place from this frame: it is drawn.
+    Installed(crate::theme::Look),
+}
+
 pub struct App {
     pub dirs: AppDirs,
     pub settings: Settings,
@@ -255,6 +269,8 @@ pub struct App {
     /// The look's text changed since the last `logic`: egui's own text
     /// styles follow it.
     restyle: bool,
+    /// A look the settings chose, on its way to being drawn.
+    look_switch: Option<LookSwitch>,
     /// The zoom the window was last given: the terminal look's text size,
     /// which sizes the whole window there.
     zoom: Option<f32>,
@@ -424,7 +440,8 @@ impl App {
         };
         let writes_session = loaded_connections.problem.is_none();
         // An installed data font is read once the window exists (`attach`).
-        let look = crate::theme::Look::for_platform().with_text(&settings, false);
+        let look = crate::theme::Look::chosen(settings.look, crate::update::release::Os::current())
+            .with_text(&settings, false);
         let mut app = Self {
             dirs,
             settings,
@@ -493,6 +510,7 @@ impl App {
             font_read: false,
             fonts: egui::FontDefinitions::empty(),
             restyle: false,
+            look_switch: None,
             zoom: None,
             window_title: "Tabletist".into(),
             window_asks: Vec::new(),
@@ -1449,6 +1467,11 @@ impl App {
             Action::SetTreeCursor { tab, node } => {
                 if let Some(workspace) = self.workspace_mut(tab) {
                     workspace.tree.cursor = Some(node);
+                    workspace.pane = Pane::Tree;
+                }
+            }
+            Action::GiveTreeKeys(tab) => {
+                if let Some(workspace) = self.workspace_mut(tab) {
                     workspace.pane = Pane::Tree;
                 }
             }
@@ -5766,17 +5789,7 @@ impl App {
         self.refresh_keymap();
         let terminal = self.look.terminal;
         if old.editor_keys_in(terminal) != self.settings.editor_keys_in(terminal) {
-            // Other keybindings: every editor in normal mode, as vim
-            // starts, its history starting at its script.
-            for tab in &mut self.tabs {
-                if let ConnTabContent::Workspace(workspace) = &mut tab.content {
-                    for sql in workspace.sql_tabs_mut() {
-                        sql.vim.to_normal();
-                        let text = sql.text.clone();
-                        sql.vim.start_over(&text);
-                    }
-                }
-            }
+            self.restart_editors();
         }
         if old.timestamps != self.settings.timestamps {
             let full = self.settings.timestamps == crate::settings::Timestamps::Full;
@@ -5843,6 +5856,24 @@ impl App {
                     workspace.tree.flat = flat;
                 }
             }
+        }
+        // Another look than the one drawn or on its way: its fonts are
+        // installed at the next frame's start, and it is drawn from the
+        // frame after, with the keymap of its layout (`App::switch_look`).
+        let chosen =
+            crate::theme::Look::chosen(self.settings.look, crate::update::release::Os::current());
+        let coming = match self.look_switch {
+            Some(
+                LookSwitch::Asked(look)
+                | LookSwitch::Reading(look, _)
+                | LookSwitch::Installed(look),
+            ) => look,
+            None => self.look,
+        };
+        if old.look != self.settings.look
+            && (chosen.name, chosen.keys) != (coming.name, coming.keys)
+        {
+            self.look_switch = Some(LookSwitch::Asked(chosen));
         }
         if old.theme != self.settings.theme {
             // Reading a theme needs the window: `logic` has it.
@@ -8283,6 +8314,86 @@ impl App {
         })
     }
 
+    /// Takes the look the settings chose ([`App::apply_settings`]) a step
+    /// on, at the start of a frame: the fonts of the look drawn and of the
+    /// new one installed, which egui puts in place at the next frame's
+    /// start, and in that frame the new look drawn, in its palette and
+    /// style, its fonts alone set for the frames after, and the desktop's
+    /// theme read in `logic`. Each editor starts over where the look's
+    /// keybindings are others. Settings, open on Appearance, has the
+    /// keyboard on the look's row in the screen the new look draws.
+    fn switch_look(&mut self, ctx: &egui::Context) {
+        match self.look_switch.take() {
+            None => {}
+            // The terminal look's font is read before its first frame, as
+            // a start reads it (`attach`): one that came later would move
+            // every line. On the backend, as the app is running.
+            Some(LookSwitch::Asked(next))
+                if next.terminal && !self.look.terminal && self.follow_desktop =>
+            {
+                self.font_asked += 1;
+                self.backend.send(Command::ReadFont {
+                    font: self.settings.font.clone(),
+                    asked: self.font_asked,
+                });
+                self.look_switch = Some(LookSwitch::Reading(next, self.font_asked));
+            }
+            Some(LookSwitch::Reading(next, asked)) if self.font_taken < asked => {
+                self.look_switch = Some(LookSwitch::Reading(next, asked));
+            }
+            // The fonts of both: the next frame draws the look now, or
+            // the new one where nothing chooses again before it lands.
+            Some(LookSwitch::Asked(next) | LookSwitch::Reading(next, _)) => {
+                let next = next.with_text(&self.settings, self.installed_drawn());
+                let desktop = self.desktop_font.faces.as_ref();
+                let looks = (&self.look, &next);
+                self.fonts = style::install_both(ctx, self.follow_desktop, looks, desktop);
+                self.look_switch = Some(LookSwitch::Installed(next));
+                ctx.request_repaint();
+            }
+            Some(LookSwitch::Installed(next)) => {
+                let was = self.look.terminal;
+                self.look = next;
+                self.look = self.text_look();
+                // The terminal's was read as its fonts were set.
+                if !self.look.terminal {
+                    self.read_desktop_font();
+                }
+                // Its fonts alone from the next frame on.
+                let desktop = self.desktop_font.faces.as_ref();
+                self.fonts = style::install_with(ctx, self.follow_desktop, &self.look, desktop);
+                if self.settings.editor_keys_in(was)
+                    != self.settings.editor_keys_in(self.look.terminal)
+                {
+                    self.restart_editors();
+                }
+                crate::ui::grid::forget_marks(ctx);
+                self.palette = self.resolve_palette();
+                self.apply_style(ctx);
+                self.theme_changed = true;
+                self.list_fonts();
+                if matches!(&self.dialog, Some(Dialog::Settings(dialog)) if dialog.pane == crate::model::SettingsPane::Appearance)
+                {
+                    self.apply(Action::ShowSetting(crate::settings::OptionId::Look));
+                }
+            }
+        }
+    }
+
+    /// Other keybindings: every editor in normal mode, as vim starts, its
+    /// history starting at its script.
+    fn restart_editors(&mut self) {
+        for tab in &mut self.tabs {
+            if let ConnTabContent::Workspace(workspace) = &mut tab.content {
+                for sql in workspace.sql_tabs_mut() {
+                    sql.vim.to_normal();
+                    let text = sql.text.clone();
+                    sql.vim.start_over(&text);
+                }
+            }
+        }
+    }
+
     fn resolve_palette(&self) -> Palette {
         theme::resolve(
             &self.look,
@@ -8555,6 +8666,8 @@ impl App {
         // Before anything is drawn: a close request that pending changes
         // hold back is asked about in this frame.
         self.hold_close(ui.ctx());
+        // Before anything is drawn: a look the settings chose.
+        self.switch_look(ui.ctx());
         // Before anything names a key: the keymap its labels are read from,
         // made for the look's layout.
         if self.keymap_layout != Some(self.layout()) {

@@ -69,6 +69,9 @@ pub(super) struct Skin<'a> {
     /// When the last check for updates that worked ran, as the Updates
     /// pane's row says it: `last checked 09:12`.
     pub(super) checked: Option<&'a str>,
+    /// How far in from the left the macOS window buttons reach, in
+    /// points: the header's title starts after them.
+    pub(super) inset: f32,
 }
 
 /// What fontconfig gave for the font the settings name, which the font's
@@ -382,14 +385,20 @@ fn update_question(ui: &mut Ui, version: &str, skin: &Skin, actions: &mut Vec<Ac
 /// One tinted line: the title and the pane it shows, and at the right
 /// what a change does and the key that opens the screen.
 fn header(ui: &mut Ui, pane: SettingsPane, skin: &Skin) {
-    let Skin { look, palette, .. } = *skin;
+    let Skin {
+        look,
+        palette,
+        inset,
+        ..
+    } = *skin;
     let (rect, _) =
         ui.allocate_exact_size(vec2(ui.available_width(), HEADER + 1.0), Sense::hover());
     ui.painter()
         .rect_filled(rect, CornerRadius::ZERO, palette.panel);
     widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, palette.outline);
     let y = rect.top() + HEADER / 2.0;
-    let mut x = rect.left() + 14.0;
+    // Clear of the macOS window buttons, as the connections' header is.
+    let mut x = rect.left() + 14.0_f32.max(inset + 12.0);
     x += widgets::paint_label(
         ui,
         x,
@@ -600,7 +609,8 @@ fn appearance_rows(
     );
     let mut index = 0;
     for (heading_text, top, options) in [
-        ("Theme", 8.0, &OptionId::THEME[..]),
+        ("Interface", 8.0, &OptionId::INTERFACE[..]),
+        ("Theme", 12.0, &OptionId::THEME[..]),
         ("Text", 12.0, &OptionId::TERMINAL_TEXT[..]),
         ("Grid", 12.0, &OptionId::GRID[..]),
         ("Environment", 12.0, &OptionId::ENVIRONMENT[..]),
@@ -1203,6 +1213,7 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
         OptionId::Font => width(&font_value(settings, skin)),
         OptionId::Timestamps
         | OptionId::GroupDigits
+        | OptionId::Look
         | OptionId::Theme
         | OptionId::InterfaceSize
         | OptionId::RowHeight
@@ -1493,6 +1504,7 @@ pub(super) fn option_row(
         }
         OptionId::Timestamps
         | OptionId::GroupDigits
+        | OptionId::Look
         | OptionId::Theme
         | OptionId::InterfaceSize
         | OptionId::RowHeight
@@ -1709,6 +1721,7 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
             )
             .add(role, &format!(" {}", skin.say("shows it")), palette.dim),
         OptionId::AgentsNotify => dim(&skin.say("a desktop notification")),
+        OptionId::Look => dim(&skin.say("classic is the system's own look")),
         OptionId::Theme => theme_hint(skin),
         // macOS's and Windows's: no row of this look's.
         OptionId::InterfaceSize => Text::new(look),

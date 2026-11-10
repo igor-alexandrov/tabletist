@@ -2571,7 +2571,14 @@ fn the_agents_column_and_hint_step_back_where_the_window_has_no_room() {
     let (mut harness, _) = on_the_list(Look::omarchy());
     harness.size = egui::vec2(720.0, 600.0);
     harness.settle();
-    let note = harness.painted_rect("secrets: keyring").expect("the note");
+    // The Keychain's on macOS, the keyring's elsewhere.
+    let os = crate::update::release::Os::current();
+    let note = if Look::omarchy().keychain(os) {
+        "secrets: keychain"
+    } else {
+        "secrets: keyring"
+    };
+    let note = harness.painted_rect(note).expect("the note");
     let hints = harness
         .text_rects
         .iter()

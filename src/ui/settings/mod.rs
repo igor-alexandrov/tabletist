@@ -28,8 +28,8 @@ use crate::keymap::{Command, Keymap, Layout, Scope, Spelled, Stroke};
 use crate::model::{Action, AgentsView, Dialog, SettingsDialog, SettingsPane, SettingsRow};
 use crate::settings::{
     Autocomplete, Commas, EditorKeys, EnvBar, Idle, InterfaceSize, KeywordCase, Launch,
-    LineNumbers, Mode, NewTab, OptionId, OptionValue, RowHeight, RunScope, Settings, TableList,
-    Theme, ThemeChoice, Timestamps, UpdateCheck, Zone,
+    LineNumbers, LookChoice, Mode, NewTab, OptionId, OptionValue, RowHeight, RunScope, Settings,
+    TableList, Theme, ThemeChoice, Timestamps, UpdateCheck, Zone,
 };
 
 /// The label of an option's row. English: the caller translates, and the
@@ -50,6 +50,7 @@ pub(crate) fn label(option: OptionId) -> &'static str {
         OptionId::AgentsOn => "Let agents use Tabletist",
         OptionId::LogDays => "Keep the activity log",
         OptionId::AgentsNotify => "Notify when an agent connects",
+        OptionId::Look => "Interface",
         OptionId::Theme => "Theme",
         OptionId::InterfaceSize => "Interface size",
         OptionId::Font => "Data font",
@@ -131,6 +132,7 @@ pub(super) fn terminal_label(option: OptionId) -> &'static str {
         | OptionId::AgentsOn
         | OptionId::LogDays
         | OptionId::AgentsNotify
+        | OptionId::Look
         | OptionId::Theme
         | OptionId::InterfaceSize
         | OptionId::TableList
@@ -168,6 +170,7 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
         OptionId::ColumnTypes => Some("Second line in headers: int8, varchar, jsonb"),
         OptionId::TableList => Some("Default for new connections; the sidebar toggle overrides it"),
         OptionId::EnvBar => Some("Production always uses the full tint"),
+        OptionId::Look => Some("Omarchy: keyboard-first, square, monospace"),
         OptionId::InterfaceSize => Some("Sidebar, tabs, buttons, inspector labels"),
         OptionId::Font => Some("Grid cells, SQL editor, JSON"),
         OptionId::NewTab => Some("The badge in each tab can still switch it"),
@@ -335,10 +338,11 @@ pub(super) fn is_on(value: &OptionValue) -> bool {
 /// force, off where a change made outside the app that turned it on is
 /// held, the grouping of numbers as the look has it where it is not set,
 /// the stripes and the font's size as the look draws them while they are
-/// not set, and the theme as the look reads it: a value of the other
-/// looks' is the desktop followed.
+/// not set, the look as it is drawn, and the theme as the look reads it:
+/// a value of the other looks' is the desktop followed.
 pub(super) fn shown(app: &App) -> Settings {
     let mut settings = app.settings.clone();
+    settings.look = Some(LookChoice::of(app.look.terminal));
     settings.mcp_enabled = app.agents_on();
     settings.group_digits = Some(app.settings.grouped(app.layout()));
     settings.zebra = Some(settings.zebra_in(app.look.terminal));
@@ -445,6 +449,7 @@ fn terminal_skin<'a>(
     app: &'a App,
     launches: &'a [Launch],
     checked: Option<&'a str>,
+    zoom: f32,
 ) -> terminal::Skin<'a> {
     terminal::Skin {
         look: &app.look,
@@ -458,6 +463,7 @@ fn terminal_skin<'a>(
         desktop: desktop_shown(app),
         font: font_shown(app),
         checked,
+        inset: app.titlebar.inset / zoom,
     }
 }
 
@@ -603,6 +609,16 @@ pub(super) fn choices(
         OptionId::AgentsNotify => vec![
             (Word("off"), OptionValue::AgentsNotify(false)),
             (Word("on"), OptionValue::AgentsNotify(true)),
+        ],
+        OptionId::Look => vec![
+            (
+                Word("classic"),
+                OptionValue::Look(Some(LookChoice::Classic)),
+            ),
+            (
+                Word("omarchy"),
+                OptionValue::Look(Some(LookChoice::Omarchy)),
+            ),
         ],
         // The terminal look's: macOS and Windows draw their tiles.
         OptionId::Theme => vec![
@@ -1147,7 +1163,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         let asked = terminal_asked(app, dialog, &interrupted);
         let launches = launch_choices(&app.connections.connections);
         let checked = updates::checked_text(asked.status, &app.look, app.locale, true);
-        let skin = terminal_skin(app, &launches, checked.as_deref());
+        let skin = terminal_skin(app, &launches, checked.as_deref(), ctx.zoom_factor());
         terminal::show(ctx, &skin, dialog, asked, &mut actions);
     } else {
         let interrupted = || app.work_in_progress();

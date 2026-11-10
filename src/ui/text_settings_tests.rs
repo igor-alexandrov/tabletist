@@ -299,7 +299,9 @@ fn the_screen_shows_the_font_and_steps_the_size_with_its_keys() {
         assert!(shows(&mut harness, words), "{words}");
     }
     let saves = settings_saves(&harness);
-    // The size, under the theme and the font: a step up, then two down.
+    // The size, under the interface, the theme and the font: a step up,
+    // then two down.
+    key(&mut harness, Key::J, "j");
     key(&mut harness, Key::J, "j");
     key(&mut harness, Key::J, "j");
     assert!(shows(&mut harness, "13"));
@@ -352,7 +354,9 @@ fn the_screen_says_the_font_fontconfig_drew_and_one_it_has_not() {
     let said = "now: fira code, from fontconfig";
     assert!(shows(&mut harness, said));
     assert_eq!(harness.painted_color(said), Some(harness.app.palette.dim));
-    // R puts the system's monospace back.
+    // R puts the system's monospace back, on the font's row under the
+    // interface's and the theme's.
+    key(&mut harness, Key::J, "j");
     key(&mut harness, Key::J, "j");
     harness.press(Key::R, Modifiers::SHIFT);
     assert_eq!(harness.app.settings.font, None);

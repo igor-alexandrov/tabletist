@@ -324,6 +324,7 @@ fn the_terminal_appearances_rows_are_described_by_their_hints() {
         &mut harness,
         SettingsPane::Appearance,
         &[
+            (OptionId::Look, Some("classic is the system's own look")),
             (OptionId::Theme, Some("now: dark, from the system")),
             // The row has no control but its own: nothing is read from
             // fontconfig in a test.

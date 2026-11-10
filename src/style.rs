@@ -49,6 +49,25 @@ pub fn install_with(
     fonts
 }
 
+/// The fonts of `look` and of `next` in one set, made and set as
+/// [`install_with`] sets one look's: what a look switch sets, which egui
+/// puts in place at the next frame's start, a frame that may draw either.
+pub fn install_both(
+    ctx: &egui::Context,
+    system_fallbacks: bool,
+    (look, next): (&Look, &Look),
+    desktop: Option<&TerminalFaces>,
+) -> egui::FontDefinitions {
+    let mut fonts = fastframe_fonts::FontSetup::default()
+        .system_fallbacks(system_fallbacks)
+        .definitions();
+    crate::typography::configure(&mut fonts, look, desktop);
+    crate::typography::configure(&mut fonts, next, desktop);
+    text_rendering().apply_to(&mut fonts);
+    ctx.set_fonts(fonts.clone());
+    fonts
+}
+
 /// Draws `desktop`, the font read for the settings' name: the terminal
 /// look in the one fontconfig gave, or in the bundled one for none; macOS's
 /// data in an installed one, or in Plex Mono for none. `fonts`, the ones

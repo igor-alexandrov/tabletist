@@ -18,13 +18,14 @@ const COPYRIGHT: &str = "© 2026 Igor Alexandrov";
 
 /// The fonts this build bundles, each with its licence as the font's
 /// authors give it: the SIL Open Font License has its notice go with the
-/// font. Windows draws in fastframe's fonts, and bundles none of its own.
+/// font. Linux bundles macOS's faces for its classic look. Windows draws in
+/// fastframe's fonts, and bundles none of its own.
 const FONT_NOTICES: &[&str] = &[
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     include_str!("../../assets/fonts/IBMPlex-OFL.txt"),
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     include_str!("../../assets/fonts/JetBrainsMono-OFL.txt"),
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     include_str!("../../assets/fonts/NotoSansSymbols2-OFL.txt"),
 ];
 
@@ -273,8 +274,11 @@ mod tests {
         let shown = |harness: &Harness, words: &str| {
             harness.painted.iter().any(|(text, _)| text.contains(words))
         };
-        // This build's: JetBrains Mono on Linux, with its notice whole.
+        // This build's: JetBrains Mono, with its notice whole, and the
+        // faces of macOS's look, which Linux draws as its classic look.
         assert!(shown(&harness, "The JetBrains Mono Project Authors"));
+        assert!(shown(&harness, "IBM Corp."));
+        assert!(shown(&harness, "The Noto Project Authors"));
         assert!(shown(&harness, "SIL OPEN FONT LICENSE Version 1.1"));
         // A second press folds them, and so does a close.
         harness.click("Font licenses");

@@ -6,8 +6,11 @@ nav_order: 7
 
 On Linux, Tabletist takes the Omarchy look: square corners, the keyboard
 first, vim keys, and the desktop's monospace font throughout. Every Linux
-desktop gets it. On macOS and Windows the app has a desktop look instead,
-and there is no setting that switches between them.
+desktop gets it until you choose otherwise. On macOS and Windows the app
+starts in its classic look. **Settings › Appearance › Interface** switches
+between the two at once, on every system: on Linux the classic look is the
+macOS one with its keys written with Ctrl, as Windows writes them. In this
+look the setting is the `interface` row, first in `appearance`.
 
 {% include shot.html file="omarchy-table" alt="Tabletist in its Omarchy look: a table filtered with a WHERE line, a row open beside it, and key hints along the bottom" width="2880" height="1800" %}
 
@@ -15,7 +18,9 @@ and there is no setting that switches between them.
 
 This page lists the keys of the Omarchy look, grouped by where they
 work. The status line along the bottom shows the ones that work where you
-are. The app's own list (`?`) is shorter: it leaves out the keys of the
+are: the keys of the part that has the keyboard (the sidebar, its filter,
+the rows, the row panel, a SQL editor's script or its results), with
+`ctrl+h/l panes` wherever Ctrl+H and Ctrl+L move to another part. The app's own list (`?`) is shorter: it leaves out the keys of the
 dialogs and of the lists that open in an editor.
 
 A letter does its job when no text field has the keyboard. While a field
@@ -109,6 +114,7 @@ numbered; once you type, it lists what matches. Its commands stay on `:`.
 | `za` | Fold or open the group under the cursor; on a table of a group, fold its group |
 | `zM` `zR` | Fold every group, open every group |
 | `/` | Filter the list |
+| Enter, Esc | In the filter: back to the list |
 | `t` | Switch between tree and flat. The connection keeps its choice; Settings › Appearance sets the default |
 | `R` | Reload the list |
 | `ga` | Show the Agents tab |

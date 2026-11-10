@@ -4,7 +4,11 @@
 
 use egui::Color32;
 
-use crate::settings::{FontSize, FontSizes, InterfaceSize, Mode, RowHeight, Settings, Theme};
+use crate::keymap::Layout;
+use crate::settings::{
+    FontSize, FontSizes, InterfaceSize, LookChoice, Mode, RowHeight, Settings, Theme,
+};
+use crate::update::release::Os;
 
 /// A palette file from the themes directory.
 pub type CustomTheme = fastframe_theme::CustomTheme<Palette>;
@@ -496,6 +500,9 @@ pub struct Look {
     /// A keyboard-first terminal interface (Omarchy): lower-case labels
     /// that lead with their keys, and key hints in bars.
     pub terminal: bool,
+    /// How the look binds and writes its keys: the Mac's, Windows', or
+    /// Omarchy's.
+    pub keys: Layout,
 }
 
 impl Look {
@@ -525,6 +532,7 @@ impl Look {
             faces: Faces::of(Typeface::Inter),
             primary: PrimaryStyle::Accent,
             terminal: false,
+            keys: Layout::Windows,
         }
     }
 
@@ -553,6 +561,7 @@ impl Look {
             faces: Faces::of(Typeface::Plex),
             primary: PrimaryStyle::Ink,
             terminal: false,
+            keys: Layout::Mac,
         }
     }
 
@@ -581,6 +590,25 @@ impl Look {
             faces: Faces::of(Typeface::Terminal),
             primary: PrimaryStyle::Outline,
             terminal: true,
+            keys: Layout::Omarchy,
+        }
+    }
+
+    /// The look with `keys` for its keys.
+    pub const fn with_keys(self, keys: Layout) -> Self {
+        Self { keys, ..self }
+    }
+
+    /// The look `choice` gives on `os`: with none, the look the OS draws
+    /// (the terminal look on Linux); its classic look; or the Omarchy
+    /// experience. Linux's classic look is macOS's with Windows' keys:
+    /// Ctrl written out, never ⌘.
+    pub const fn chosen(choice: Option<LookChoice>, os: Os) -> Self {
+        match (choice, os) {
+            (Some(LookChoice::Omarchy), _) | (None, Os::Linux) => Self::omarchy(),
+            (Some(LookChoice::Classic), Os::Linux) => Self::macos().with_keys(Layout::Windows),
+            (_, Os::MacOs) => Self::macos(),
+            (_, Os::Windows | Os::Other) => Self::standard(),
         }
     }
 
@@ -630,16 +658,18 @@ impl Look {
         row.max(line)
     }
 
-    /// The look of the OS this build runs on. Every Linux desktop gets the
-    /// Omarchy look.
-    pub const fn for_platform() -> Self {
-        if cfg!(target_os = "macos") {
-            Self::macos()
-        } else if cfg!(target_os = "linux") {
-            Self::omarchy()
-        } else {
-            Self::standard()
-        }
+    /// The look of the OS this build runs on, with nothing chosen. Every
+    /// Linux desktop gets the Omarchy look.
+    pub fn for_platform() -> Self {
+        Self::chosen(None, Os::current())
+    }
+
+    /// Whether passwords are named the macOS Keychain where the look is
+    /// drawn on `os`: on macOS whatever the look, and wherever macOS's
+    /// look has the Mac's keys (its screenshots, rendered elsewhere).
+    /// Linux's classic look has Windows' keys, and the system keyring.
+    pub fn keychain(&self, os: Os) -> bool {
+        os == Os::MacOs || self.keys == Layout::Mac
     }
 
     /// `text` as this look labels things: lower case in the terminal look.
@@ -954,6 +984,46 @@ mod tests {
             Look::standard()
         };
         assert_eq!(Look::for_platform(), expected);
+    }
+
+    #[test]
+    fn each_os_chooses_its_classic_look_or_the_omarchy_one() {
+        use crate::settings::LookChoice::{Classic, Omarchy};
+        let linux_classic = Look::macos().with_keys(Layout::Windows);
+        for (choice, os, look) in [
+            (None, Os::MacOs, Look::macos()),
+            (None, Os::Windows, Look::standard()),
+            (None, Os::Linux, Look::omarchy()),
+            (None, Os::Other, Look::standard()),
+            (Some(Classic), Os::MacOs, Look::macos()),
+            (Some(Classic), Os::Windows, Look::standard()),
+            (Some(Classic), Os::Linux, linux_classic),
+            (Some(Classic), Os::Other, Look::standard()),
+            (Some(Omarchy), Os::MacOs, Look::omarchy()),
+            (Some(Omarchy), Os::Windows, Look::omarchy()),
+            (Some(Omarchy), Os::Linux, Look::omarchy()),
+        ] {
+            assert_eq!(Look::chosen(choice, os), look, "{choice:?} on {os:?}");
+        }
+        // Linux's classic look is macOS's with Windows' keys.
+        assert_eq!(linux_classic.name, "macos");
+        assert_eq!(Layout::of(&linux_classic), Layout::Windows);
+        for look in Look::ALL {
+            assert_eq!(Layout::of(&look), look.keys, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn passwords_are_named_the_keychain_on_macos_in_every_look() {
+        for look in Look::ALL {
+            assert!(look.keychain(Os::MacOs), "{}", look.name);
+        }
+        // macOS's look drawn elsewhere for its screenshots says it too.
+        assert!(Look::macos().keychain(Os::Linux));
+        let linux_classic = Look::chosen(Some(crate::settings::LookChoice::Classic), Os::Linux);
+        assert!(!linux_classic.keychain(Os::Linux));
+        assert!(!Look::omarchy().keychain(Os::Linux));
+        assert!(!Look::standard().keychain(Os::Windows));
     }
 
     #[test]

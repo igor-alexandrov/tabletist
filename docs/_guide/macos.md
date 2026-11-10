@@ -5,8 +5,9 @@ nav_order: 8
 ---
 
 On a Mac, Tabletist has the macOS look: rounded controls, IBM Plex Sans
-for the interface and IBM Plex Mono for data. There is no setting that
-switches to another look.
+for the interface and IBM Plex Mono for data. **Settings › Appearance ›
+Interface**, beside the theme, switches to
+[the Omarchy look]({% link _guide/omarchy.md %}) and back, at once.
 
 {% include shot.html file="macos-table" alt="Tabletist in its macOS look, with two connections in the bar at the top" %}
 

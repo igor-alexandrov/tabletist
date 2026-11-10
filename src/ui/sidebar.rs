@@ -321,8 +321,16 @@ pub fn show(
                         &palette,
                     );
                     field.widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, true, "Filter"));
+                    // The status line, drawn before the sidebar, asks
+                    // whether it has the keyboard.
+                    ui.data_mut(|data| data.insert_temp(filter_field_key(tab), field.id));
                     focus::region(ui, focus::Region::Search, field.rect.expand(8.0));
                     focus::claim(ui, focus::Region::Search, &field);
+                    // Clicked from another pane, the field is the tree's
+                    // all the same: its Enter and Esc leave it for the tree.
+                    if field.has_focus() && workspace.pane != crate::model::Pane::Tree {
+                        actions.push(Action::GiveTreeKeys(tab));
+                    }
                 }
             });
             ui.add_space(if look.terminal { 6.0 } else { 8.0 });
@@ -499,6 +507,18 @@ pub fn show(
         workspace.tree.reveal_cursor = false;
     }
     actions
+}
+
+/// Where the terminal look's filter field above the tree keeps its id.
+fn filter_field_key(tab: ConnTabId) -> egui::Id {
+    egui::Id::new(("tree-filter-field", tab.0))
+}
+
+/// Whether the terminal look's filter field above the tree has the
+/// keyboard: the field the last frame drew.
+pub fn filter_focused(ctx: &egui::Context, tab: ConnTabId) -> bool {
+    ctx.data(|data| data.get_temp::<egui::Id>(filter_field_key(tab)))
+        .is_some_and(|id| ctx.memory(|memory| memory.has_focus(id)))
 }
 
 /// The terminal look's key hints under the tree: what each key does, and

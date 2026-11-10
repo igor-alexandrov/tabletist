@@ -119,7 +119,10 @@ fn rows(harness: &mut Harness) -> [egui::Rect; 2] {
                     egui::pos2(rect.x1 as f32, rect.y1 as f32),
                 )
             })
-            .find(|rect| preview.contains_rect(*rect))
+            // Within the pixel the window's zoom rounds the two to: the
+            // terminal look's text size zooms its window, and the board's
+            // Interface section puts the preview on a fractional point.
+            .find(|rect| preview.expand(1.0).contains_rect(*rect))
             .expect("a row in the preview")
     };
     [row(1), row(2)]

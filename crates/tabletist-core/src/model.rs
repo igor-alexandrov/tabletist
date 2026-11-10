@@ -1055,6 +1055,9 @@ pub enum Action {
         tab: ConnTabId,
         node: TreeNode,
     },
+    /// Give the tree the keys, its cursor where it was: its filter field
+    /// took the keyboard from another pane, and leaves it to the tree.
+    GiveTreeKeys(ConnTabId),
     /// Show the keyboard shortcuts.
     ShowHelp,
     /// Show the About dialog.
@@ -3525,8 +3528,10 @@ impl SettingsPane {
                 ("Data", &OptionId::DATA),
                 ("Safety", &OptionId::SAFETY),
             ],
+            // The look's control is beside the theme's tiles, in their
+            // section: the sheet has no room for another.
             Self::Appearance => &[
-                ("Theme", &OptionId::THEME),
+                ("Theme", &[OptionId::Look, OptionId::Theme]),
                 ("Text", &OptionId::TEXT),
                 ("Grid", &OptionId::GRID),
                 ("Environment color", &OptionId::ENVIRONMENT),
@@ -3573,13 +3578,18 @@ impl SettingsPane {
 
     /// What Reset to defaults puts back: the pane's options but the
     /// server's switch, which turned off would end every agent's session
-    /// for a question about defaults. The Editor pane's are all of its
+    /// for a question about defaults, and but the look (Appearance's first),
+    /// which would change the whole window under the person. The Editor pane's are all of its
     /// keys, the ones it has no row for yet among them.
     pub fn reset_options(self) -> &'static [crate::settings::OptionId] {
         use crate::settings::OptionId;
         match self {
             Self::General => &OptionId::GENERAL,
-            Self::Appearance => &OptionId::APPEARANCE,
+            // But the look: a question about defaults would change the
+            // whole window under the person.
+            Self::Appearance => OptionId::APPEARANCE
+                .split_first()
+                .map_or(&[], |(_, rest)| rest),
             Self::Editor => &OptionId::EDITOR,
             // Reset all… of its own, which asks first.
             Self::Keyboard => &[],
@@ -3606,6 +3616,7 @@ impl SettingsPane {
                 SettingsRow::Option(OptionId::IdleDisconnect),
             ],
             Self::Appearance => &[
+                SettingsRow::Option(OptionId::Look),
                 SettingsRow::Option(OptionId::Theme),
                 SettingsRow::Option(OptionId::Font),
                 SettingsRow::Option(OptionId::FontSize),
