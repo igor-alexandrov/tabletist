@@ -936,20 +936,24 @@ fn ssh_key_hint(hints: &SshHints, skin: &Skin) -> Option<String> {
 }
 
 /// What goes under the SSH host, and its colour: the host name
-/// ~/.ssh/config resolves the typed host to, or why the tunnel cannot
-/// follow the config there. `None` when there is nothing to say.
+/// ~/.ssh/config resolves the typed host to, and the ProxyJump or
+/// ProxyCommand the tunnel goes through. `None` when there is nothing to
+/// say.
 fn ssh_host_note(hints: &SshHints, skin: &Skin) -> Option<(String, Color32)> {
-    let warning = match &hints.proxy {
-        Some(Proxy::Jump(_)) => Some("Uses ProxyJump, which Tabletist does not support yet."),
-        Some(Proxy::Command(_)) => Some("Uses ProxyCommand, which Tabletist does not support yet."),
+    let from = gettext(skin.locale, "from ~/.ssh/config");
+    let proxy = match &hints.proxy {
+        Some(Proxy::Jump(hops)) => Some(format!("ProxyJump {hops}")),
+        Some(Proxy::Command(_)) => Some(gettext(skin.locale, "a ProxyCommand").to_string()),
         Some(Proxy::Off) | None => None,
     };
-    if let Some(warning) = warning {
-        let text = gettext(skin.locale, warning).to_string();
-        return Some((text, skin.palette.warning));
-    }
-    let name = hints.host_name.as_ref()?;
-    let text = format!("{name} {}", gettext(skin.locale, "from ~/.ssh/config"));
+    let text = match (&hints.host_name, proxy) {
+        (Some(name), None) => format!("{name} {from}"),
+        (Some(name), Some(proxy)) => {
+            format!("{name} {} {proxy} {from}", gettext(skin.locale, "through"))
+        }
+        (None, Some(proxy)) => format!("{} {proxy} {from}", gettext(skin.locale, "Through")),
+        (None, None) => return None,
+    };
     Some((text, skin.palette.dim))
 }
 

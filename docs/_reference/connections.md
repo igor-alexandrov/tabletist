@@ -131,13 +131,39 @@ you type wins over the file.
 | `Port`, `User` | The port and the login name |
 | `IdentityFile` | The key file. The first one is used |
 | `IdentityAgent` | The agent's socket. This is how 1Password is found |
+| `ProxyJump` | The jump hosts the tunnel goes through |
+| `ProxyCommand` | A command the tunnel goes through |
 | `Include` | Other files to read |
 
 Without an `IdentityAgent`, the agent is the one in `SSH_AUTH_SOCK`. On
 Windows it is the OpenSSH agent, then Pageant.
 
-`Match` blocks are ignored. `ProxyJump` and `ProxyCommand` are not
-supported yet: a host that needs one cannot be used for a tunnel.
+`Match` blocks are ignored.
+
+### ProxyJump and ProxyCommand
+
+A host with a `ProxyCommand` is reached through that command, as `ssh`
+reaches it: Tabletist runs it in your shell and talks to the SSH server
+over its input and output. On Windows, Tabletist starts the command's
+program itself with no shell in between, as Windows' own `ssh` does. It takes the tokens `%h`
+(the host name), `%p` (the port), `%r` (the user), `%n` (the host as you
+typed it) and `%%`. A host name or user with a space, a quote or another
+character the shell would read is refused rather than put into the
+command. Started from the Dock on macOS, the command has the `PATH`
+macOS gives apps, not the one your shell sets up: if a program is not
+found, write its whole path (`/opt/homebrew/bin/cloudflared`).
+
+A host with a `ProxyJump` is reached the way `ssh` reaches it: Tabletist
+runs `ssh -W` through the jump hosts. The jump hosts are logged in to by
+your `ssh`, with its config, your agent and its `known_hosts`, so a jump
+host you can reach from a terminal works here too. They cannot ask for a
+password or for trust in a new key: connect to each one from a terminal
+once first. The `ssh` command has to be installed and on the `PATH`.
+
+Either way, the SSH server at the end is logged in to with the method you
+chose, and its key is checked against Tabletist's trusted keys, as for a
+direct connection. If the command fails, the error shows the last lines
+it wrote.
 
 ### Host keys
 

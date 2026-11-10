@@ -1,7 +1,7 @@
 //! What `~/.ssh/config` says about an SSH host, as OpenSSH reads it:
-//! HostName, Port, User, IdentityFile, IdentityAgent and ProxyJump, and the
-//! Host names it spells out, so a tunnel can take a Host alias the way
-//! `ssh bastion` does. Keys kept in 1Password, Secretive or another agent
+//! HostName, Port, User, IdentityFile, IdentityAgent, ProxyJump and
+//! ProxyCommand, and the Host names it spells out, so a tunnel can take a
+//! Host alias the way `ssh bastion` does. Keys kept in 1Password, Secretive or another agent
 //! work as they do in a terminal, including when the app starts from the
 //! Dock without that agent's `SSH_AUTH_SOCK`.
 //!
@@ -182,13 +182,21 @@ impl Files<'_> {
                         }
                     }
                 }
-                _ => self.set(host, &keyword, arguments, config),
+                _ => self.set(host, &keyword, arguments, line, config),
             }
         }
     }
 
-    /// A keyword's value, unless the keyword has one already.
-    fn set(&self, host: &str, keyword: &str, arguments: &[String], config: &mut HostConfig) {
+    /// A keyword's value, unless the keyword has one already. `line` is the
+    /// whole line, for ProxyCommand, which takes the rest of it as written.
+    fn set(
+        &self,
+        host: &str,
+        keyword: &str,
+        arguments: &[String],
+        line: &str,
+        config: &mut HostConfig,
+    ) {
         let Some(value) = arguments.first() else {
             return;
         };
@@ -202,7 +210,7 @@ impl Files<'_> {
                 Some(proxy(value, || Proxy::Jump(value.clone())))
             }),
             "proxycommand" => first(&mut config.proxy, || {
-                Some(proxy(value, || Proxy::Command(arguments.join(" "))))
+                Some(proxy(value, || Proxy::Command(rest(line))))
             }),
             _ => {}
         }
@@ -310,6 +318,18 @@ fn first<T>(slot: &mut Option<T>, value: impl FnOnce() -> Option<T>) {
     if slot.is_none() {
         *slot = value();
     }
+}
+
+/// What follows a line's keyword and its separator, as written: OpenSSH
+/// hands a ProxyCommand to the shell with its quotes, and a `#` in it too.
+fn rest(line: &str) -> String {
+    let line = line.trim();
+    let at = line
+        .find(|c: char| c.is_whitespace() || c == '=')
+        .unwrap_or(line.len());
+    let rest = line[at..].trim_start();
+    let rest = rest.strip_prefix('=').unwrap_or(rest);
+    rest.trim_start().to_owned()
 }
 
 /// `none`, or the proxy `set` builds.
@@ -620,6 +640,20 @@ mod tests {
         assert_eq!(
             resolve_in(config, &[], "legacy").proxy,
             Some(Proxy::Command("ssh -W %h:%p gateway".into()))
+        );
+    }
+
+    #[test]
+    fn proxy_command_keeps_the_rest_of_its_line_as_written() {
+        let config = "Host quoted\n  ProxyCommand=sh -c \"nc %h %p\"  # via nc\n\
+                      Host spaced\n  ProxyCommand   ssh  -W \"[%h]:%p\" gateway\n";
+        assert_eq!(
+            resolve_in(config, &[], "quoted").proxy,
+            Some(Proxy::Command("sh -c \"nc %h %p\"  # via nc".into()))
+        );
+        assert_eq!(
+            resolve_in(config, &[], "spaced").proxy,
+            Some(Proxy::Command("ssh  -W \"[%h]:%p\" gateway".into()))
         );
     }
 

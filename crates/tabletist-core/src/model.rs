@@ -2145,7 +2145,7 @@ pub struct SshHints {
     pub port: Option<u16>,
     pub user: Option<String>,
     pub key_file: Option<String>,
-    /// A ProxyJump or ProxyCommand the tunnel cannot follow.
+    /// The ProxyJump or ProxyCommand the tunnel goes through.
     pub proxy: Option<Proxy>,
 }
 
