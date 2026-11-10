@@ -5252,6 +5252,9 @@ pub struct SqlRun {
     pub statements: Vec<tabletist_db::sql::Statement>,
     /// The transaction the run was sent in.
     pub mode: tabletist_db::ScriptMode,
+    /// What the editor's switch showed when the run was sent. A run of
+    /// reads in Read-write is sent read-only all the same.
+    pub chosen: RunMode,
     pub outcome: tabletist_db::ScriptOutcome,
     /// Who stopped the run, if someone did.
     pub cancel: Option<crate::backend::CancelReason>,
@@ -5269,9 +5272,10 @@ pub struct SqlRun {
 
 impl SqlRun {
     fn new(
-        (statements, mode, caps, on): (
+        (statements, mode, chosen, caps, on): (
             Vec<tabletist_db::sql::Statement>,
             tabletist_db::ScriptMode,
+            RunMode,
             RunCaps,
             Option<RanOn>,
         ),
@@ -5297,6 +5301,7 @@ impl SqlRun {
         Self {
             statements,
             mode,
+            chosen,
             outcome,
             cancel,
             error_mark,
@@ -5377,6 +5382,8 @@ pub struct RunInFlight {
     pub statements: Vec<tabletist_db::sql::Statement>,
     /// The transaction the run was sent in.
     pub mode: tabletist_db::ScriptMode,
+    /// What the editor's switch showed when the run was sent.
+    pub chosen: RunMode,
     /// What the run was sent with.
     pub caps: RunCaps,
     /// Where the run went; `None` offers no link.
@@ -5705,8 +5712,9 @@ impl SqlTab {
     }
 
     /// Starts a run of `statements` as `request`, sent in a transaction
-    /// of `mode` with the editor's caps. Returns the run it replaces, if
-    /// one was still pending, for the caller to cancel.
+    /// of `mode` with the editor's caps, in the editor's own mode (or
+    /// Read-write, for a run sent to write). Returns the run it replaces,
+    /// if one was still pending, for the caller to cancel.
     #[must_use]
     pub fn start_run(
         &mut self,
@@ -5715,17 +5723,22 @@ impl SqlTab {
         mode: tabletist_db::ScriptMode,
     ) -> Option<RequestId> {
         let caps = self.caps();
-        self.start_run_with(request, statements, mode, caps, None)
+        let chosen = match mode {
+            tabletist_db::ScriptMode::Write => RunMode::ReadWrite,
+            tabletist_db::ScriptMode::ReadOnly => self.mode,
+        };
+        self.start_run_with(request, statements, (mode, chosen), caps, None)
     }
 
-    /// [`Self::start_run`], sent with `caps` in place of the editor's, to
-    /// `on`: what the results' links need to be offered.
+    /// [`Self::start_run`], sent in `mode` while the switch showed
+    /// `chosen`, with `caps` in place of the editor's, to `on`: what the
+    /// results' links need to be offered.
     #[must_use]
     pub fn start_run_with(
         &mut self,
         request: RequestId,
         statements: Vec<tabletist_db::sql::Statement>,
-        mode: tabletist_db::ScriptMode,
+        (mode, chosen): (tabletist_db::ScriptMode, RunMode),
         caps: RunCaps,
         on: Option<RanOn>,
     ) -> Option<RequestId> {
@@ -5734,6 +5747,7 @@ impl SqlTab {
         self.in_flight = Some(RunInFlight {
             statements,
             mode,
+            chosen,
             caps,
             on,
             started: std::time::Instant::now(),
@@ -5763,7 +5777,7 @@ impl SqlTab {
             self.run.loaded = None;
         }
         let ran = in_flight
-            .map(|run| (run.statements, run.mode, run.caps, run.on))
+            .map(|run| (run.statements, run.mode, run.chosen, run.caps, run.on))
             .unwrap_or_default();
         self.run.finish(
             request,
@@ -6580,7 +6594,11 @@ mod tests {
             tabletist_db::sql::statements(tabletist_db::Driver::Sqlite.dialect(), text);
         let request = crate::backend::RequestId(9);
         let on = Some(RanOn(here()));
-        let _ = sql.start_run_with(request, statements, mode, caps, on);
+        let chosen = match mode {
+            tabletist_db::ScriptMode::Write => RunMode::ReadWrite,
+            tabletist_db::ScriptMode::ReadOnly => RunMode::ReadOnly,
+        };
+        let _ = sql.start_run_with(request, statements, (mode, chosen), caps, on);
         let outcome = crate::fixtures::script_outcome(outcomes);
         assert!(sql.finish_run(request, Ok(outcome), cancel));
         sql
@@ -6681,6 +6699,7 @@ mod tests {
         let run = |mode, end, warning: Option<&str>| SqlRun {
             statements: Vec::new(),
             mode,
+            chosen: RunMode::ReadWrite,
             outcome: tabletist_db::ScriptOutcome {
                 end,
                 rollback_warning: warning.map(str::to_owned),

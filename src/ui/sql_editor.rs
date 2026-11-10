@@ -1191,15 +1191,20 @@ fn run_summary(sql: &SqlTab, locale: Locale) -> Option<String> {
     }
 }
 
-/// What became of the last run's transaction: "rolled back" for every
-/// read-only run, and for a run sent to write how it ended. Where the
-/// database could not undo everything, that is what is said, whatever the
-/// end; and a commit that failed after the database had committed part by
-/// itself reads as what it left, partly committed.
+/// What became of the last run's transaction: "rolled back" for a run of
+/// a Read-only editor, "nothing to commit" for a run of reads in
+/// Read-write (sent read-only all the same), and for a run sent to write
+/// how it ended. Where the database could not undo everything, that is
+/// what is said, whatever the end; and a commit that failed after the
+/// database had committed part by itself reads as what it left, partly
+/// committed.
 fn end_words(run: &crate::model::SqlRun) -> &'static str {
     use tabletist_db::ScriptEnd;
     if run.mode == tabletist_db::ScriptMode::ReadOnly {
-        return "rolled back";
+        return match run.chosen {
+            RunMode::ReadOnly => "rolled back",
+            RunMode::ReadWrite => "nothing to commit",
+        };
     }
     if run.outcome.rollback_warning.is_some() {
         return "not fully rolled back";
@@ -1212,17 +1217,18 @@ fn end_words(run: &crate::model::SqlRun) -> &'static str {
     }
 }
 
-/// "Read-only transaction · rolled back", "Read-write transaction ·
-/// committed": the footer's note of the last run.
+/// "Read-only · rolled back", "Read-write · committed", "Read-write ·
+/// nothing to commit": the footer's note of the last run, by the mode the
+/// switch showed when it was sent.
 fn end_note(sql: &SqlTab, locale: Locale) -> Option<String> {
     let run = sql.last_run().filter(|_| ran(sql))?;
-    let transaction = match run.mode {
-        tabletist_db::ScriptMode::ReadOnly => "Read-only transaction",
-        tabletist_db::ScriptMode::Write => "Read-write transaction",
+    let chosen = match run.chosen {
+        RunMode::ReadOnly => "Read-only",
+        RunMode::ReadWrite => "Read-write",
     };
     Some(format!(
         "{} · {}",
-        gettext(locale, transaction),
+        gettext(locale, chosen),
         gettext(locale, end_words(run))
     ))
 }
@@ -1767,7 +1773,7 @@ mod tests {
                 set_mode(&mut harness, tab, id, RunMode::ReadWrite);
                 harness.press(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT);
                 // Nothing is said of a run that is still going.
-                assert!(!harness.has("Read-write transaction · committed"));
+                assert!(!harness.has("Read-write · committed"));
                 let mut outcome = write_outcome(
                     vec![done_outcome(None), done_outcome(Some(12))],
                     end.clone(),
@@ -1788,23 +1794,52 @@ mod tests {
                     );
                 } else {
                     assert!(harness.has("12 rows affected · 14 ms"), "{context}");
-                    let note = format!("Read-write transaction · {words}");
+                    let note = format!("Read-write · {words}");
                     assert!(harness.has(&note), "{note} in {}", look.name);
-                    assert!(!harness.has("Read-only transaction · rolled back"));
+                    assert!(!harness.has("Read-only · rolled back"));
                 }
             }
         }
     }
 
     #[test]
-    fn a_run_of_reads_in_a_read_write_tab_is_said_to_be_read_only() {
+    fn a_run_of_reads_in_a_read_write_tab_has_nothing_to_commit() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editor(look, "SELECT 1");
+            set_mode(&mut harness, tab, id, RunMode::ReadWrite);
+            harness.press(Key::Enter, Modifiers::COMMAND);
+            // Sent read-only all the same.
+            let sql = harness.app.workspace(tab).unwrap().sql_tab(id).unwrap();
+            assert!(!sql.is_writing(), "{}", look.name);
+            let rows = crate::testing::script_outcome(vec![crate::testing::rows_outcome(3)]);
+            harness.answer_sql(Ok(rows), None);
+            let said = |harness: &mut Harness| {
+                if look.terminal {
+                    let workspace = harness.app.workspace(tab).unwrap();
+                    let status = status_summary(workspace, harness.app.locale);
+                    status
+                        .expect("an editor shows")
+                        .ends_with("3 rows · 14 ms · nothing to commit")
+                } else {
+                    harness.has("3 rows · 14 ms") && harness.has("Read-write · nothing to commit")
+                }
+            };
+            assert!(said(&mut harness), "{}", look.name);
+            assert!(!harness.has("Read-only · rolled back"), "{}", look.name);
+            // The note is the run's: switching the mode afterwards does
+            // not rewrite it.
+            set_mode(&mut harness, tab, id, RunMode::ReadOnly);
+            harness.settle();
+            assert!(said(&mut harness), "{}", look.name);
+        }
+        // In a Read-only tab the same run is rolled back.
         let (mut harness, tab, id) = editor(Look::standard(), "SELECT 1");
-        set_mode(&mut harness, tab, id, RunMode::ReadWrite);
+        set_mode(&mut harness, tab, id, RunMode::ReadOnly);
         harness.press(Key::Enter, Modifiers::COMMAND);
         let rows = crate::testing::script_outcome(vec![crate::testing::rows_outcome(3)]);
         harness.answer_sql(Ok(rows), None);
-        assert!(harness.has("3 rows · 14 ms"));
-        assert!(harness.has("Read-only transaction · rolled back"));
+        assert!(harness.has("Read-only · rolled back"));
+        assert!(!harness.has("Read-write · nothing to commit"));
         // A statement that counted rows in a read-only run is no change
         // that stayed: the footer does not count it.
         let (mut harness, tab, id) = editor(Look::standard(), "UPDATE notes SET n = 1");
@@ -1813,7 +1848,7 @@ mod tests {
         let counted = crate::testing::script_outcome(vec![done_outcome(Some(12))]);
         harness.answer_sql(Ok(counted), None);
         assert!(!harness.has("12 rows affected · 14 ms"));
-        assert!(harness.has("Read-only transaction · rolled back"));
+        assert!(harness.has("Read-only · rolled back"));
     }
 
     #[test]

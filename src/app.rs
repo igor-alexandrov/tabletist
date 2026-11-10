@@ -7470,10 +7470,17 @@ impl App {
         // Where the run goes: its links are offered only while the tab is
         // still there.
         let on = Some(crate::model::RanOn(workspace.spec.clone()));
+        // What the switch shows, which the footer names after the run.
+        let chosen = match mode {
+            tabletist_db::ScriptMode::Write => RunMode::ReadWrite,
+            tabletist_db::ScriptMode::ReadOnly => workspace
+                .sql_tab(id)
+                .map_or(RunMode::ReadOnly, |sql| workspace.run_mode(sql)),
+        };
         let Some(sql) = workspace.sql_tab_mut(id) else {
             return;
         };
-        let superseded = sql.start_run_with(request, statements.clone(), mode, caps, on);
+        let superseded = sql.start_run_with(request, statements.clone(), (mode, chosen), caps, on);
         // The session runs one thing at a time: the run still going must
         // stop before this one can start.
         self.cancel(session, superseded);
