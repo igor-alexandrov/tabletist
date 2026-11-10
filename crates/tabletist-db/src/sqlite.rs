@@ -163,7 +163,7 @@ fn begin(connection: &rusqlite::Connection, mode: ScriptMode) -> Result<()> {
 /// for another connection's lock does not run, and is not interrupted: so
 /// that wait is held to the run's time as well, for the run's length.
 fn script(
-    connection: &rusqlite::Connection,
+    connection: &mut rusqlite::Connection,
     fences: &Fences,
     texts: &[String],
     limit: usize,
@@ -199,21 +199,25 @@ fn script(
     }
     // SQLite calls this every 1000 virtual machine steps; `true` interrupts
     // the running statement, which fails with SQLITE_INTERRUPT (Cancelled).
-    // The deadline is SQLite's statement timeout: it has no other.
+    // The deadline is SQLite's statement timeout: it has no other. A run
+    // that cannot be stopped does not start: SQLite failing to take the
+    // handler (out of memory) ends it as an error, through the cleanup.
     let watching = stop.clone();
     let deadline = sent.and_then(|sent| deadline(Instant::now(), sent.timeout));
-    connection.progress_handler(
-        1_000,
-        Some(move || watching.is_stopped() || deadline.is_some_and(|at| Instant::now() >= at)),
-    );
+    let watched = connection
+        .progress_handler(
+            1_000,
+            Some(move || watching.is_stopped() || deadline.is_some_and(|at| Instant::now() >= at)),
+        )
+        .map_err(map_error);
     let params = sent.map(|sent| sent.params);
     // The cleanup's `set_session_pragmas` puts the session's own wait back.
-    let held = match sent {
+    let held = watched.and_then(|()| match sent {
         Some(sent) => connection
             .busy_timeout(Duration::from_millis(u64::from(sent.timeout_ms())))
             .map_err(map_error),
         None => Ok(()),
-    };
+    });
     let ran = held.and_then(|()| {
         statements(
             connection,
@@ -226,8 +230,19 @@ fn script(
             &mut outcome,
         )
     });
-    // Removed before the cleanup, so a stop cannot interrupt it.
-    connection.progress_handler(0, None::<fn() -> bool>);
+    // Removed before the cleanup, so a stop cannot interrupt it. One that
+    // stays would interrupt what the session runs next once the stop is
+    // set, so a session that cannot remove it is lost; its transaction is
+    // still rolled back, as far as the handler lets that happen.
+    if let Err(error) = connection.progress_handler(0, None::<fn() -> bool>) {
+        stop.finish();
+        // The session is reconnected, so what the cleanup found is moot.
+        let _ended = end_transaction(connection);
+        return Err(Error::ConnectionLost(format!(
+            "could not remove SQLite's progress handler: {}",
+            map_error(error)
+        )));
+    }
     if sent.is_some()
         && let Some(result) = outcome.results.last_mut()
         && let StatementOutcome::Error { error, .. } = &result.outcome
@@ -885,17 +900,17 @@ impl Conn {
     /// Runs `work` on the blocking pool with the connection.
     pub(crate) async fn run<T: Send + 'static>(
         &self,
-        work: impl FnOnce(&rusqlite::Connection) -> Result<T> + Send + 'static,
+        work: impl FnOnce(&mut rusqlite::Connection) -> Result<T> + Send + 'static,
     ) -> Result<T> {
         let inner = Arc::clone(&self.inner);
         // If the caller drops this future (a closed tab, a replaced query),
         // stop the statement instead of letting it hold the connection.
         let guard = InterruptOnDrop(Some(Arc::clone(&self.interrupt)));
         let result = tokio::task::spawn_blocking(move || {
-            let connection = inner
+            let mut connection = inner
                 .lock()
                 .map_err(|_| Error::ConnectionLost("the SQLite connection was poisoned".into()))?;
-            work(&connection)
+            work(&mut connection)
         })
         .await;
         guard.disarm();
@@ -1613,8 +1628,10 @@ fn agents_catalog(
     }
     // The table functions, SQLite's own modules read without a table
     // made of them: the pragmas are refused before this, and `dbstat` and
-    // the `sqlite_` ones are system catalogs.
-    let table_functions = connection
+    // the `sqlite_` ones are system catalogs. The JSON ones SQLite makes
+    // only when a statement first names one, so the list holds them
+    // whether or not one was named yet.
+    let mut table_functions = connection
         .prepare("SELECT name FROM pragma_module_list")
         .and_then(|mut statement| {
             statement
@@ -1622,6 +1639,11 @@ fn agents_catalog(
                 .collect::<rusqlite::Result<Vec<_>>>()
         })
         .map_err(map_error)?;
+    for name in JSON_TABLE_FUNCTIONS {
+        if !table_functions.iter().any(|listed| listed == name) {
+            table_functions.push(name.to_owned());
+        }
+    }
     Ok(Catalog {
         relations,
         table_functions,
@@ -1631,6 +1653,11 @@ fn agents_catalog(
         ..Catalog::default()
     })
 }
+
+/// SQLite's JSON table functions. From 3.54 on it makes their module when a
+/// statement first names one, as it does a pragma's, and
+/// `pragma_module_list` lists only the ones made so far.
+const JSON_TABLE_FUNCTIONS: [&str; 4] = ["json_each", "json_tree", "jsonb_each", "jsonb_tree"];
 
 fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<ColumnInfo>> {
     // A table WITHOUT ROWID has no rowid for a column to be the alias of.
@@ -2629,6 +2656,8 @@ mod tests {
             ("areas", "SELECT count(*) FROM areas WHERE min_x >= 5"),
             // SQLite's own table functions are no tables to list.
             ("notes", "SELECT count(*) FROM json_each('[1, 2]')"),
+            // One SQLite lists only once a statement has named it.
+            ("notes", "SELECT count(*) FROM jsonb_each('[1, 2]')"),
             (
                 "notes",
                 "SELECT count(*) FROM notes, json_each('[1]') WHERE notes MATCH 'shelf'",
