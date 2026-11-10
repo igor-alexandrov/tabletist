@@ -936,20 +936,32 @@ fn ssh_key_hint(hints: &SshHints, skin: &Skin) -> Option<String> {
 }
 
 /// What goes under the SSH host, and its colour: the host name
-/// ~/.ssh/config resolves the typed host to, or why the tunnel cannot
-/// follow the config there. `None` when there is nothing to say.
+/// ~/.ssh/config resolves the typed host to, and the ProxyJump or
+/// ProxyCommand the tunnel goes through. `None` when there is nothing to
+/// say.
 fn ssh_host_note(hints: &SshHints, skin: &Skin) -> Option<(String, Color32)> {
-    let warning = match &hints.proxy {
-        Some(Proxy::Jump(_)) => Some("Uses ProxyJump, which Tabletist does not support yet."),
-        Some(Proxy::Command(_)) => Some("Uses ProxyCommand, which Tabletist does not support yet."),
-        Some(Proxy::Off) | None => None,
+    let locale = skin.locale;
+    // Whole sentences, so a translation can put the host and the hops where
+    // its language wants them.
+    let sentence = match (&hints.host_name, &hints.proxy) {
+        (Some(_), Some(Proxy::Jump(_))) => "{name} through ProxyJump {hops} from ~/.ssh/config",
+        (Some(_), Some(Proxy::Command(_))) => "{name} through a ProxyCommand from ~/.ssh/config",
+        (None, Some(Proxy::Jump(_))) => "Through ProxyJump {hops} from ~/.ssh/config",
+        (None, Some(Proxy::Command(_))) => "Through a ProxyCommand from ~/.ssh/config",
+        (Some(name), Some(Proxy::Off) | None) => {
+            let text = format!("{name} {}", gettext(locale, "from ~/.ssh/config"));
+            return Some((text, skin.palette.dim));
+        }
+        (None, Some(Proxy::Off) | None) => return None,
     };
-    if let Some(warning) = warning {
-        let text = gettext(skin.locale, warning).to_string();
-        return Some((text, skin.palette.warning));
-    }
-    let name = hints.host_name.as_ref()?;
-    let text = format!("{name} {}", gettext(skin.locale, "from ~/.ssh/config"));
+    let hops = match &hints.proxy {
+        Some(Proxy::Jump(hops)) => hops.as_str(),
+        _ => "",
+    };
+    let name = hints.host_name.as_deref().unwrap_or("");
+    let text = gettext(locale, sentence)
+        .replace("{hops}", hops)
+        .replace("{name}", name);
     Some((text, skin.palette.dim))
 }
 

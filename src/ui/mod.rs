@@ -10632,7 +10632,7 @@ value_tags   = true
     }
 
     #[test]
-    fn a_config_host_behind_a_proxy_warns() {
+    fn a_config_host_behind_a_proxy_jump_says_so() {
         let jump = config_host(
             "gateway-only",
             HostConfig {
@@ -10642,7 +10642,7 @@ value_tags   = true
         );
         let mut harness = ssh_dialog(vec![jump]);
         ssh_form(&mut harness).ssh_host = "gateway-only".into();
-        assert!(harness.has("Uses ProxyJump, which Tabletist does not support yet."));
+        assert!(harness.has("Through ProxyJump bastion from ~/.ssh/config"));
     }
 
     #[test]
@@ -10707,13 +10707,11 @@ value_tags   = true
                 "{}",
                 look.name
             );
-            // The warning takes the place of the host name's line.
             assert!(
-                harness.has("Uses ProxyCommand, which Tabletist does not support yet."),
+                harness.has("10.0.0.9 through a ProxyCommand from ~/.ssh/config"),
                 "{}",
                 look.name
             );
-            assert!(!harness.has("10.0.0.9 from ~/.ssh/config"), "{}", look.name);
         }
     }
 

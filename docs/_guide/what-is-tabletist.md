@@ -77,7 +77,6 @@ Tabletist is young. These are the limits you are most likely to meet:
 - A BigQuery connection is read-only: BigQuery has no transactions to
   edit rows with. It has no DDL view, and agents cannot read it once it
   hides a table or masks a column.
-- SSH tunnels do not go through `ProxyJump` or `ProxyCommand`.
 - The app is in English only.
 
 ## Open source

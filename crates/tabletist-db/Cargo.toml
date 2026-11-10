@@ -14,8 +14,9 @@ workspace = true
 thiserror = "2"
 # Connection specs were saved in connections.json, which is still read.
 serde = { version = "1", features = ["derive"] }
-# Adapters are async; SQLite's blocking calls run on spawn_blocking.
-tokio = { version = "1", features = ["rt", "sync", "net", "io-util"] }
+# Adapters are async; SQLite's blocking calls run on spawn_blocking. An SSH
+# tunnel's ProxyCommand or ProxyJump runs as a child process.
+tokio = { version = "1", features = ["rt", "sync", "net", "io-util", "time", "process"] }
 # SSH tunnels, on ring (no aws-lc to build).
 russh = { version = "0.63", default-features = false, features = ["ring", "rsa", "flate2"] }
 # SQLite, compiled in so every platform gets the same, recent version. hooks
