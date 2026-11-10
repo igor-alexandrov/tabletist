@@ -203,6 +203,16 @@ pub(crate) fn jump(hops: &str, host: &str, port: u16) -> Result<Via, String> {
     if !plain(hops) || last.is_empty() || before.is_some_and(str::is_empty) {
         return Err(refused());
     }
+    // Each hop's host and user, not only the list's first character: `ssh`
+    // would read a last hop of `-oProxyCommand=x` as an option, and `-J`
+    // hands the others to an `ssh` of its own.
+    let dashed = |hop: &str| match self::hop(hop) {
+        Some((user, name, _)) => name.starts_with('-') || user.is_some_and(|u| u.starts_with('-')),
+        None => true,
+    };
+    if hops.split(',').any(dashed) {
+        return Err(refused());
+    }
     let (user, name, hop_port) = hop(last).ok_or_else(refused)?;
     let mut args = vec!["-o".to_owned(), "BatchMode=yes".to_owned()];
     if let Some(before) = before {
@@ -485,6 +495,12 @@ mod tests {
             "@gw",
             "[gw",
             "a b",
+            "a,-oProxyCommand=x",
+            "a,u@-oX",
+            "-u@gw",
+            "ssh://-oX",
+            "-oX,gw",
+            "gw:0,db",
         ] {
             let error = jump(hops, "db", 22).unwrap_err();
             assert!(error.contains("ProxyJump"), "{hops}: {error}");

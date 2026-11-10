@@ -940,20 +940,28 @@ fn ssh_key_hint(hints: &SshHints, skin: &Skin) -> Option<String> {
 /// ProxyCommand the tunnel goes through. `None` when there is nothing to
 /// say.
 fn ssh_host_note(hints: &SshHints, skin: &Skin) -> Option<(String, Color32)> {
-    let from = gettext(skin.locale, "from ~/.ssh/config");
-    let proxy = match &hints.proxy {
-        Some(Proxy::Jump(hops)) => Some(format!("ProxyJump {hops}")),
-        Some(Proxy::Command(_)) => Some(gettext(skin.locale, "a ProxyCommand").to_string()),
-        Some(Proxy::Off) | None => None,
-    };
-    let text = match (&hints.host_name, proxy) {
-        (Some(name), None) => format!("{name} {from}"),
-        (Some(name), Some(proxy)) => {
-            format!("{name} {} {proxy} {from}", gettext(skin.locale, "through"))
+    let locale = skin.locale;
+    // Whole sentences, so a translation can put the host and the hops where
+    // its language wants them.
+    let sentence = match (&hints.host_name, &hints.proxy) {
+        (Some(_), Some(Proxy::Jump(_))) => "{name} through ProxyJump {hops} from ~/.ssh/config",
+        (Some(_), Some(Proxy::Command(_))) => "{name} through a ProxyCommand from ~/.ssh/config",
+        (None, Some(Proxy::Jump(_))) => "Through ProxyJump {hops} from ~/.ssh/config",
+        (None, Some(Proxy::Command(_))) => "Through a ProxyCommand from ~/.ssh/config",
+        (Some(name), Some(Proxy::Off) | None) => {
+            let text = format!("{name} {}", gettext(locale, "from ~/.ssh/config"));
+            return Some((text, skin.palette.dim));
         }
-        (None, Some(proxy)) => format!("{} {proxy} {from}", gettext(skin.locale, "Through")),
-        (None, None) => return None,
+        (None, Some(Proxy::Off) | None) => return None,
     };
+    let hops = match &hints.proxy {
+        Some(Proxy::Jump(hops)) => hops.as_str(),
+        _ => "",
+    };
+    let name = hints.host_name.as_deref().unwrap_or("");
+    let text = gettext(locale, sentence)
+        .replace("{hops}", hops)
+        .replace("{name}", name);
     Some((text, skin.palette.dim))
 }
 
