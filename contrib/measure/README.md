@@ -1,0 +1,494 @@
+# Measuring startup, memory and size
+
+`measure.py` takes Tabletist's startup time, memory use and release sizes
+the same way each time, so a number quoted anywhere can be taken again by
+anyone with the same kind of machine. It needs Python 3 (standard library
+only). Startup and memory need a Hyprland session, `hyprctl` and `grim`
+1.5 or later; sizes need `gh`.
+
+The app opens on a headless output the script adds, far from the real
+monitors, through a window rule that keeps it off the screen, away from
+the keyboard and without Hyprland's open animation. The output and the rule
+are removed when the run ends, and so is every demo profile the run left
+behind. The pictures the script compares are the window's own buffer
+(`grim -T`, through `ext-foreign-toplevel-list`), not the output: what the
+app drew, with no wallpaper, animation or lock screen in it. So it works
+with the session locked too, as it was for the results below.
+
+## What each number is
+
+**Startup** (`measure.py startup -- <command>`) launches the command again
+and again and reports, for each launch:
+
+- *first frame*: from the moment the script starts the process to
+  Hyprland's `openwindow` event. A Wayland window is mapped when its first
+  frame is committed, so this is launch to first frame.
+- *settled*: from the launch to the first frame of the picture the window
+  then keeps. The script captures the window over and over (about every
+  17 ms, printed with each run) and takes the first capture whose picture
+  stays the same for the next 0.5 s. With `--demo` that picture is the
+  demo's `users` table, loaded and drawn. Captures start once the window is
+  mapped and found (a few milliseconds after its first frame), so when the
+  first capture is already the final picture (`settled_on_first_capture`),
+  the window settled then or earlier.
+
+An app that opens more than one window (a splash, then its main window,
+then a first-run dialog) settles when its newest window holds still and no
+other has opened meanwhile; *first frame* is then its first window, the
+splash if it has one, unless `--title` picks a window by its title as well
+as its class. A capture that gets no picture within 2 s counts as a window
+that went away. Each run also records whether the window was drawn on
+Wayland itself or through XWayland (`xwayland`), and how many windows it
+followed (`windows`).
+
+Each run's first launch is a warm-up and is not counted (`--warmup`). The
+report is the median, the minimum and the maximum of the counted runs, in
+JSON on standard output, with the command and the SHA-256 of the file it
+ran. `--shot` saves the last run's settled picture, to check it is the app.
+
+`--demo` does more before its first frame than a normal start: it writes a
+fresh SQLite file holding the demo's data (a 100,000-row table among them)
+into a throwaway profile, and connects to it.
+
+*Warm* runs one launch after another, so the app's files are in the page
+cache. *Cold* (`--cold`) drops the launched file from the page cache before
+each run (`posix_fadvise(POSIX_FADV_DONTNEED)`, no root needed; `fincore
+<file>` shows it worked). It cannot drop the shared libraries other
+programs have mapped (Mesa, Wayland, fontconfig) or the system fonts, so a
+cold run is "the app's file is not cached", not a first start after a
+reboot. Keep the files on a disk: a file on tmpfs cannot be dropped.
+
+**AppImage mount** (`measure.py mount <appimage>`) times the AppImage
+runtime alone: from launching it with `--appimage-mount` to the line where
+it prints its mount point. An AppImage's startup is roughly that plus the
+app's startup from the mounted image, where each page of the binary is
+read through FUSE and decompressed on first use.
+
+**Memory** (`measure.py memory -- <command> --demo`) samples the window's
+process (for an AppImage, the app, not the runtime) at three points, each
+after the picture settles and two more seconds:
+
+1. idle on the demo, its `users` table open;
+2. after opening the 100,000-row table `big` (quick open, `big`, Enter),
+   which loads its first page of 1,000 rows;
+3. after 99 pages forward (Ctrl+Alt+Right, one page of 1,000 rows each,
+   0.2 s apart), at rows 99,001 to 100,000. The largest RSS seen while
+   paging is kept too (`peak_rss_while_paging`).
+
+The keys are sent to the window with Hyprland's `send_shortcut`, which does
+not move the keyboard focus. Each sample is read from
+`/proc/<pid>/smaps_rollup`:
+
+- *RSS*: resident memory, shared library pages counted in full.
+- *PSS*: resident memory with each shared page divided among the processes
+  that map it. The fairest single number for "how much this app costs".
+- *private*: pages only this process has (`Private_Clean + Private_Dirty`).
+
+and GPU memory from the `fdinfo` of the process's `/dev/dri` files
+(`drm-memory-*`, counted once per DRM client), which the three above do not
+include. On an integrated GPU that memory is system memory too (`gtt`).
+
+**Other apps.** `startup` and `memory` take any Wayland or XWayland app:
+`--class` names its window class (a regular expression), `--env NAME=VALUE`
+adds to its environment, and `--fresh-profile` gives each launch empty XDG
+config, data, cache and state folders and a `HOME` of its own, removed
+afterwards, so every app starts as on its first run and none writes to your
+own (some apps write to `~/.name` whatever the XDG folders say). `--seed DIR` copies
+settings into each of those profiles first (`profiles/` holds the ones used
+below). `--evict` takes a folder too, for an app of many files. `memory
+--idle-only` takes one sample at the first screen, with no keys; `memory
+--steps` drives an app with keys, typing, waits, samples and pictures, as
+`run_steps` in the script describes. Each memory sample also adds up the
+whole process tree (`tree`): an Electron app is several processes. Add up
+PSS, not RSS: RSS counts a shared page once in every process that maps it.
+A process that leaves the tree (a daemon that forks away, such as the
+AppImage runtime's FUSE server or a crash reporter) is not counted.
+
+**Sizes** (`measure.py sizes <tag>`) downloads a release's assets with `gh`
+and reports each one's size, and the size of the binary inside each Linux
+`.tar.gz` and Windows `.zip`. The macOS `.dmg` is not opened.
+
+## Running it
+
+    ~/.cargo/bin/cargo build --locked --release
+    contrib/measure/measure.py startup --runs 20 -- target/release/tabletist --demo
+    contrib/measure/measure.py startup --runs 20 --cold -- target/release/tabletist --demo
+    contrib/measure/measure.py startup --runs 20 -- ./tabletist-0.5.0-x86_64.AppImage --demo
+    contrib/measure/measure.py mount --runs 20 ./tabletist-0.5.0-x86_64.AppImage
+    contrib/measure/measure.py memory -- target/release/tabletist --demo
+    contrib/measure/measure.py sizes v0.5.0
+
+Run nothing else heavy meanwhile: a build on every core doubles the spread.
+`python3 -m unittest discover contrib/measure` tests the script's
+arithmetic and parsing.
+
+## Results, 2026-11-09
+
+The raw reports are in `results/2026-11-09/`, one JSON file per command.
+
+The machine: AMD Ryzen AI MAX+ 395 (16 cores, 32 threads) with its Radeon
+8060S graphics, 128 GB of memory, a WD_BLACK SN7100 NVMe disk (btrfs),
+Omarchy on Linux 7.2.15, Hyprland 0.56.2, Mesa 26.2.5. The headless output
+was 1440x900 at scale 1, so the window was 1416x850. The session was locked
+(Omarchy locks after its automatic login), which the window captures do not
+see. Load average 0.1 to 0.8 throughout.
+
+The builds:
+
+- v0.5.0 from its release (published 2026-11-07): the x86_64 AppImage
+  (SHA-256 `82d05d49…`) and the binary of the x86_64 `.tar.gz`
+  (`ba1116f9…`), as `checksums.txt` lists them.
+- `main` at `e6b1577f`, built here with `cargo build --locked --release`
+  (`814c085d…`).
+
+### Startup, `--demo`
+
+20 counted runs each after one warm-up; median, then minimum to maximum.
+
+| Build | Cache | First frame | Settled |
+|---|---|---|---|
+| v0.5.0 AppImage | warm | 163 ms (158 to 169) | 191 ms (186 to 198) |
+| v0.5.0 AppImage | cold | 174 ms (166 to 178) | 202 ms (194 to 206) |
+| v0.5.0 binary (`.tar.gz`) | warm | 108 ms (105 to 113) | 136 ms (132 to 140) |
+| v0.5.0 binary (`.tar.gz`) | cold | 126 ms (123 to 129) | 154 ms (151 to 157) |
+| `main` at `e6b1577f` | warm | 108 ms (103 to 116) | 136 ms (131 to 144) |
+| `main` at `e6b1577f` | cold | 125 ms (121 to 422) | 153 ms (148 to 460) |
+
+In no run was the first capture already the final picture: the demo's
+table lands one or two frames after the first. The settled picture is the
+`users` table with its five rows. The warm AppImage and `.tar.gz` runs read
+their files from tmpfs; the cold ones, and a second warm AppImage run
+(`startup-appimage-disk-warm.json`: 161 ms and 189 ms), from the disk.
+
+The AppImage costs about 55 ms more than the same binary unpacked. Its
+runtime mounts the image in 3.6 ms warm (2.8 to 4.5) and 7.0 ms cold (6.4
+to 11.0), 20 runs each, so most of the difference is the binary being read
+through FUSE and decompressed as it starts.
+
+An earlier figure, "about 1.6 s to the first settled frame" for v0.4.0's
+AppImage, came from `--demo-shot`, which takes its picture on a fixed
+1.5 s timer. It measured the timer, not the startup.
+
+### Memory, `--demo`
+
+Three runs each; the median of the three. MiB is 1,048,576 bytes.
+
+| Build | Step | RSS | PSS | Private | GPU (GTT) |
+|---|---|---|---|---|---|
+| v0.5.0 AppImage | idle on the demo | 129.3 MiB | 85.6 MiB | 76.0 MiB | 62.6 MiB |
+| v0.5.0 AppImage | `big` opened (rows 1 to 1,000) | 129.9 MiB | 86.2 MiB | 76.7 MiB | 62.6 MiB |
+| v0.5.0 AppImage | `big` after 99 pages (rows 99,001 to 100,000) | 132.8 MiB | 89.1 MiB | 79.6 MiB | 55.3 MiB |
+| v0.5.0 binary | idle on the demo | 131.7 MiB | 87.9 MiB | 78.4 MiB | 62.6 MiB |
+| v0.5.0 binary | `big` opened (rows 1 to 1,000) | 132.3 MiB | 88.6 MiB | 79.1 MiB | 62.6 MiB |
+| v0.5.0 binary | `big` after 99 pages (rows 99,001 to 100,000) | 135.2 MiB | 91.5 MiB | 81.9 MiB | 55.3 MiB |
+| `main` | idle on the demo | 132.3 MiB | 88.6 MiB | 79.1 MiB | 62.6 MiB |
+| `main` | `big` opened (rows 1 to 1,000) | 132.9 MiB | 89.2 MiB | 79.7 MiB | 62.6 MiB |
+| `main` | `big` after 99 pages (rows 99,001 to 100,000) | 135.6 MiB | 91.9 MiB | 82.4 MiB | 55.3 MiB |
+
+The grid holds one page of 1,000 rows at a time, so paging through the
+100,000-row table adds about 3 MiB; the largest RSS seen while paging was
+the one at the end in every run. VRAM was 0: on this integrated GPU the
+app's GPU memory is GTT, system memory the driver maps for it. The AppImage
+figures are the app's process; the AppImage runtime, which serves the
+image over FUSE, is a process of its own and not counted.
+
+### Sizes, v0.5.0
+
+| Asset | Download | Binary inside |
+|---|---|---|
+| `tabletist-v0.5.0-x86_64-unknown-linux-gnu.tar.gz` | 19,286,377 bytes (18.4 MiB) | 45,268,096 bytes (43.2 MiB) |
+| `tabletist-0.5.0-x86_64.AppImage` | 18,606,584 bytes (17.7 MiB) | |
+| `tabletist-v0.5.0-aarch64-unknown-linux-gnu.tar.gz` | 18,045,583 bytes (17.2 MiB) | 38,910,992 bytes (37.1 MiB) |
+| `tabletist-0.5.0-aarch64.AppImage` | 17,476,104 bytes (16.7 MiB) | |
+| `tabletist-v0.5.0-x86_64-pc-windows-msvc.zip` | 15,479,905 bytes (14.8 MiB) | 35,911,168 bytes (34.2 MiB) |
+| `tabletist-v0.5.0-x86_64-pc-windows-msvc-setup.exe` | 13,591,997 bytes (13.0 MiB) | |
+| `tabletist-v0.5.0-aarch64-pc-windows-msvc.zip` | 14,414,653 bytes (13.7 MiB) | 31,119,872 bytes (29.7 MiB) |
+| `tabletist-v0.5.0-aarch64-pc-windows-msvc-setup.exe` | 12,556,123 bytes (12.0 MiB) | |
+| `tabletist-v0.5.0-macos-universal.dmg` | 36,571,091 bytes (34.9 MiB) | |
+
+The Linux binaries are stripped. A release build of `main` at `e6b1577f`
+made here is 45,496,208 bytes.
+
+### First start, against Beekeeper Studio and TablePro
+
+The same machine and method, the same day: each app's first start in an
+empty profile (`--fresh-profile`), to its first frame, to its settled first
+screen, and its memory idle there. No app opened a database: Tabletist and
+TablePro show their empty connection lists, Beekeeper its welcome page
+(with its bundled demo connection listed, not opened) and a welcome toast.
+The raw reports are in `results/2026-11-09-first-start/`.
+
+The builds, each the latest release on 2026-11-09:
+
+- Tabletist 0.5.0: the AppImage, and the binary of the `.tar.gz`, as above,
+  without `--demo`.
+- TablePro for Linux 0.1.0-beta.3 (Rust, GTK 4 and libadwaita; a public
+  beta), from `tablepro-0.1.0-beta.3-ubuntu-26.10-amd64.deb`, SHA-256
+  checked against its `SHA256SUMS`. Its Flatpak needs Flatpak installed,
+  which needs root, so the deb was unpacked and its binary run against the
+  system's GTK 4.24.1 and libadwaita 1.10.0, with its GSettings schema
+  compiled beside it (`--env GSETTINGS_SCHEMA_DIR=...`).
+- Beekeeper Studio 6.2.2 (Electron, Chrome 152), from
+  `Beekeeper-Studio-6.2.2.AppImage`, SHA-512 checked against its
+  `latest-linux.yml`. Its AppImage runtime needs libfuse2, which this
+  system does not have, so the AppImage was unpacked once
+  (`--appimage-extract`) and its `AppRun` run from the disk: the files its
+  `.deb` and Arch `.pacman` packages install. So compare it with Tabletist's
+  unpacked binary. Electron runs on X11 unless told otherwise, here through
+  XWayland (`--env DISPLAY=:0`); it was also run on Wayland
+  (`--ozone-platform=wayland`), which is how it starts on Omarchy, whose
+  session sets `ELECTRON_OZONE_PLATFORM_HINT=wayland`. A cold run drops all 1,002 of its files
+  from the page cache.
+
+Startup, 20 counted runs each; median, then minimum to maximum:
+
+| App | Cache | First frame | Settled |
+|---|---|---|---|
+| Tabletist 0.5.0, binary | warm | 88 ms (86 to 93) | 89 ms (87 to 93) |
+| Tabletist 0.5.0, binary | cold | 108 ms (102 to 120) | 108 ms (103 to 120) |
+| Tabletist 0.5.0, AppImage | warm | 135 ms (129 to 142) | 136 ms (129 to 142) |
+| Tabletist 0.5.0, AppImage | cold | 146 ms (143 to 155) | 146 ms (144 to 155) |
+| TablePro 0.1.0-beta.3 | warm | 228 ms (209 to 328) | 230 ms (221 to 329) |
+| TablePro 0.1.0-beta.3 | cold | 257 ms (245 to 270) | 259 ms (248 to 273) |
+| Beekeeper Studio 6.2.2, X11 | warm | 1,229 ms (1,220 to 1,252) | 2,137 ms (2,115 to 2,184) |
+| Beekeeper Studio 6.2.2, X11 | cold | 1,385 ms (1,364 to 1,405) | 2,305 ms (2,277 to 2,347) |
+| Beekeeper Studio 6.2.2, Wayland | warm | 1,336 ms (1,275 to 1,353) | 2,175 ms (2,145 to 2,196) |
+| Beekeeper Studio 6.2.2, Wayland | cold | 1,492 ms (1,471 to 1,525) | 2,344 ms (2,318 to 2,369) |
+
+Tabletist's first frame was already its settled picture in every run
+(TablePro's in 36 of 40); Beekeeper's window opens and then fills in.
+
+Memory idle at the first screen, three runs each, the median of the three;
+the process tree added up:
+
+| App | Processes | PSS | RSS (summed) | Private | GPU (VRAM + GTT) |
+|---|---|---|---|---|---|
+| Tabletist 0.5.0, binary | 1 | 83.4 MiB | 128.7 MiB | 74.3 MiB | 50.6 MiB |
+| Tabletist 0.5.0, AppImage | 1 | 80.5 MiB | 125.8 MiB | 71.5 MiB | 50.6 MiB |
+| TablePro 0.1.0-beta.3 | 1 | 111.5 MiB | 147.2 MiB | 105.7 MiB | 32.5 MiB |
+| Beekeeper Studio 6.2.2, X11 | 7 | 845.7 MiB | 1,336.3 MiB | 710.9 MiB | 119.7 MiB |
+| Beekeeper Studio 6.2.2, Wayland | 7 | 851.1 MiB | 1,362.7 MiB | 714.0 MiB | 185.3 MiB |
+
+The GPU column is the median of each run's VRAM plus GTT; on this
+integrated GPU both are system memory.
+
+Sizes, for the same builds:
+
+| App | Download (x86_64) | Unpacked |
+|---|---|---|
+| Tabletist 0.5.0 | 18,606,584 bytes AppImage; 19,286,377 bytes `.tar.gz` | 45,268,096 bytes (one binary) |
+| TablePro 0.1.0-beta.3 | 31,945,920 bytes Flatpak; 35,241,790 bytes `.deb` (Ubuntu 26.10) | 121,383,952 bytes (`du -sb` of the deb's files; the binary is 119,453,688) |
+| Beekeeper Studio 6.2.2 | 362,351,631 bytes AppImage; 276,178,024 bytes `.deb`; 242,804,048 bytes `.pacman` | 1,154,776,007 bytes (`du -sb` of the unpacked AppImage) |
+
+What this does not show: how the apps compare with a database open, or on
+another machine. TablePro for Linux is a beta, and ran here from its deb,
+not as its Flatpak.
+
+### First start, more apps from AlternativeTo
+
+The same method on the same day, for six more of the apps AlternativeTo
+lists as alternatives on Linux: those with a desktop build for Linux that
+runs without root. Each got an empty profile and, like a normal session,
+both `WAYLAND_DISPLAY` and `DISPLAY`, so each drew where it chooses to.
+Left out: phpMyAdmin, the PostgreSQL extension for VS Code and LibreDB
+Studio (web or editor tools, not desktop apps), MySQL Workbench (MySQL
+only, and an Ubuntu package), Querystudio (no release) and Letos (no page
+on AlternativeTo).
+
+- TablePlus 2.2.0-322 (GTK 3), the `.deb` from its apt repository
+  (`deb.tableplus.com/debian/24`), SHA-256 checked against its `Packages`,
+  unpacked and run from `opt/tableplus/tableplus`. It runs as a trial.
+- DBeaver Community 26.2.4 (Java, Eclipse SWT), the
+  `linux-x86_64.tar.gz` with its own Java, checked against GitHub's digest.
+  It opens a splash, then its main window with a first-run wizard,
+  "Configure DBeaver", over it: measured twice, to the splash (`--class
+  java`) and to the main window and the wizard (`--class DBeaver --title
+  'DBeaver\s*|Product Configuration\s*'`).
+- DbGate 7.3.4 (Electron), the `linux_x64.tar.gz`, checked against
+  GitHub's digest. Its first screen asks whether to send usage analytics.
+- DB Browser for SQLite 3.13.1 (Qt), the AppImage, unpacked; its release
+  (October 2024) publishes no checksum. Its Qt 5.12 has no Wayland plugin,
+  so it draws through XWayland. Also measured: Arch's own `sqlitebrowser`
+  3.13.1-3 package with the five it needs (`qt5-svg`, `sqlcipher`,
+  `qcustomplot`, `qhexedit2`, `qscintilla-qt5`), each checked against the
+  SHA-256 in pacman's `extra.db`, unpacked and run on the system's Qt
+  5.15.19 (`LD_LIBRARY_PATH`, `QT_PLUGIN_PATH`,
+  `QT_QPA_PLATFORM=wayland;xcb`, as Omarchy's session sets it), on Wayland.
+- HeidiSQL 12.22 (Lazarus, Qt 6), the `.deb`, checked against GitHub's
+  digest. It needs `libQt6Pas`, which this system lacks: Ubuntu 26.04's
+  `libqt6pas6` 2.3, checked against Ubuntu's `Packages`, was unpacked
+  beside it and given with `LD_LIBRARY_PATH`. Its first screen is its
+  session manager.
+- Valentina Studio 18.4.1 (Qt), the `.deb` from valentina-db.com, which
+  publishes no checksum. Its `qt.conf` points at `/opt/VStudio`, so
+  `QT_PLUGIN_PATH` points Qt at the unpacked plugins. Its first screen is a
+  registration wizard: it runs as an unregistered copy until it gets a
+  serial.
+
+TablePlus, DbGate and Valentina write to `~/.tableplus`, `~/.dbgate` and
+`~/.local/share/valentina` whatever the XDG folders say, so their first
+runs here found what the run before had left in the measuring machine's
+home. They were run again with a `HOME` of their own, and the figures below
+are those. TablePlus's memory changed most (128.7 MiB on a true first start,
+85.2 MiB when it found its settings), Valentina's settled time too (3.4 s,
+1.5 s before).
+
+Startup, 20 counted runs each; median, then minimum to maximum. The rows
+from the section above are repeated for comparison.
+
+| App | Drawn on | Cache | First frame | Settled |
+|---|---|---|---|---|
+| Tabletist 0.5.0, binary | Wayland | warm | 88 ms (86 to 93) | 89 ms (87 to 93) |
+| Tabletist 0.5.0, binary | Wayland | cold | 108 ms (102 to 120) | 108 ms (103 to 120) |
+| DB Browser for SQLite 3.13.1 | XWayland | warm | 130 ms (123 to 140) | 135 ms (125 to 163) |
+| DB Browser for SQLite 3.13.1 | XWayland | cold | 165 ms (153 to 186) | 168 ms (154 to 214) |
+| DB Browser for SQLite 3.13.1, Arch's package | Wayland | warm | 137 ms (129 to 146) | 138 ms (130 to 147) |
+| DB Browser for SQLite 3.13.1, Arch's package | Wayland | cold | 143 ms (138 to 151) | 144 ms (139 to 152) |
+| HeidiSQL 12.22 | Wayland | warm | 253 ms (249 to 256) | 282 ms (278 to 286) |
+| HeidiSQL 12.22 | Wayland | cold | 268 ms (259 to 464) | 298 ms (287 to 551) |
+| TablePlus 2.2.0-322 | Wayland | warm | 431 ms (424 to 442) | 432 ms (425 to 443) |
+| TablePlus 2.2.0-322 | Wayland | cold | 465 ms (459 to 475) | 465 ms (459 to 490) |
+| DbGate 7.3.4 | XWayland | warm | 139 ms (135 to 148) | 784 ms (762 to 805) |
+| DbGate 7.3.4 | XWayland | cold | 204 ms (196 to 211) | 864 ms (846 to 873) |
+| Valentina Studio 18.4.1 | Wayland | warm | 1,307 ms (1,300 to 1,377) | 3,364 ms (1,487 to 3,384) |
+| Valentina Studio 18.4.1 | Wayland | cold | 1,401 ms (1,395 to 1,433) | 3,478 ms (1,580 to 3,516) |
+| DBeaver 26.2.4, its splash | Wayland | warm | 342 ms (336 to 352) | |
+| DBeaver 26.2.4, its splash | Wayland | cold | 408 ms (389 to 1,075) | |
+| DBeaver 26.2.4, main window and wizard | Wayland | warm | 1,763 ms (1,738 to 5,080) | 1,979 ms (1,951 to 5,299) |
+| DBeaver 26.2.4, main window and wizard | Wayland | cold | 2,045 ms (2,014 to 2,083) | 2,251 ms (2,223 to 2,290) |
+
+DbGate maps a window at once and fills it in over the next 650 ms. It
+stays on XWayland even with Omarchy's `ELECTRON_OZONE_PLATFORM_HINT`.
+Valentina's first window is a splash, and its settled picture is the
+registration wizard.
+
+Memory idle at the first screen, three runs each, the median; the process
+tree added up. PSS does not hold what an app keeps in GPU memory, and on
+this integrated GPU that is system memory too; an app that draws on the
+CPU (GPU 0 here) holds its pictures in PSS instead. So the last column adds
+the two, the closest single number to what each costs this machine:
+
+| App | Processes | PSS | RSS (summed) | Private | GPU (VRAM + GTT) | PSS + GPU |
+|---|---|---|---|---|---|---|
+| DB Browser for SQLite 3.13.1, Arch's package | 1 | 58.8 MiB | 112.0 MiB | 44.2 MiB | 4.8 MiB | 63.6 MiB |
+| DB Browser for SQLite 3.13.1 | 1 | 59.4 MiB | 100.2 MiB | 50.5 MiB | 4.8 MiB | 64.2 MiB |
+| TablePlus 2.2.0-322 | 8 | 128.7 MiB | 228.2 MiB | 114.0 MiB | 0.0 MiB | 128.7 MiB |
+| Tabletist 0.5.0, binary | 1 | 83.4 MiB | 128.7 MiB | 74.3 MiB | 50.6 MiB | 134.0 MiB |
+| TablePro 0.1.0-beta.3 | 1 | 111.5 MiB | 147.2 MiB | 105.7 MiB | 32.5 MiB | 144.0 MiB |
+| Valentina Studio 18.4.1 | 1 | 246.4 MiB | 261.7 MiB | 241.6 MiB | 0.0 MiB | 246.4 MiB |
+| HeidiSQL 12.22 | 1 | 250.4 MiB | 275.9 MiB | 238.2 MiB | 0.0 MiB | 250.4 MiB |
+| DBeaver 26.2.4 | 8 | 345.0 MiB | 411.1 MiB | 333.9 MiB | 0.0 MiB | 345.0 MiB |
+| DbGate 7.3.4 | 7 | 395.9 MiB | 800.1 MiB | 268.3 MiB | 98.9 MiB | 494.9 MiB |
+| Beekeeper Studio 6.2.2, X11 | 7 | 845.7 MiB | 1,336.3 MiB | 710.9 MiB | 119.7 MiB | 965.4 MiB |
+
+Sizes (x86_64): the download, and the unpacked files (`du -sb`). Each
+also uses libraries of the system (GTK, Qt, Mesa) that are not counted.
+
+| App | Download | Unpacked |
+|---|---|---|
+| HeidiSQL 12.22 | 7,307,976 bytes `.deb` | 17,570,088 bytes (and `libQt6Pas`, 2,851,235) |
+| Tabletist 0.5.0 | 18,606,584 bytes AppImage | 45,268,096 bytes |
+| DB Browser for SQLite 3.13.1 | 36,705,472 bytes AppImage | 95,188,889 bytes |
+| TablePlus 2.2.0-322 | 62,987,908 bytes `.deb` | 188,382,569 bytes |
+| Valentina Studio 18.4.1 | 114,441,768 bytes `.deb` | 447,029,433 bytes |
+| DBeaver 26.2.4 | 129,127,321 bytes `.tar.gz` | 216,508,608 bytes (Java included) |
+| DbGate 7.3.4 | 216,219,957 bytes AppImage; 204,701,633 bytes `.tar.gz` | 582,293,826 bytes |
+
+Of these six, only DB Browser for SQLite could be given the 100,000-row
+test below. The others need keys in a window that has the keyboard, and the
+measuring machine's session was locked, so the window on the headless
+output never has it: TablePlus took its global shortcuts (Ctrl+Q quit it)
+but no typing into its connection form; HeidiSQL, Valentina and DB Browser
+took no keys at all (Qt acts on keys only in an active window), and
+neither did any app drawn through XWayland, by Hyprland's `send_shortcut`
+or by XTest; DbGate on Wayland took keys and opened `big` (its connection
+given by `CONNECTIONS`/`ENGINE_*`/`FILE_*` variables, its usage-analytics
+question answered by `USAGE_ANALYTICS=false`), but holds at most one page
+of 50,000 rows, and its "Fetch all rows" has no key and could not be
+reached through its command palette. DBeaver would also download its SQLite
+driver on first use. With an unlocked session these can be driven by keys
+sent to a focused window; that is not done here.
+
+### 100,000 rows, against Beekeeper Studio and TablePro
+
+The same builds, machine and day. Each app holds the same 100,000 rows in
+its grid, and memory is taken before and after. The rows come from one
+SQLite script, `crates/tabletist-db/fixtures/sqlite.sql`, the one
+Tabletist's demo uses: its table `big` has 100,000 rows of three columns
+(`id`, `label`, `bucket`). TablePro and Beekeeper open a file made from it
+(`target/bench/bench.sqlite`, written with Python's `sqlite3` from that
+script), given on their command line; Tabletist's `--demo` writes the same
+script into a new file of its own.
+
+Each app loads the rows where it can hold all of them, with keys only, and
+its settings for that come from a seed in `profiles/` (`--seed`), copied
+into each throwaway profile:
+
+- Tabletist 0.5.0 (`--demo`): a SQL tab (Ctrl+T), `select id, label,
+  bucket from big`, Ctrl+Enter, then Escape and `a` to show all rows, past
+  the editor's limit of 1,000. Its table view pages at most 10,000 rows.
+- TablePro 0.1.0-beta.3: its table view, `big` opened from the sidebar
+  (Down five times, Enter), with `default-page-size` set to 100,000 (the
+  default is 1,000, the most 100,000). Its query results stop at "10,000+".
+  The seed also turns off `share-usage-data`, which sends usage events to
+  PostHog; it was on, as by default, for the first-start runs above.
+- DB Browser for SQLite 3.13.1, Arch's package on Wayland: no keys, its
+  own command line opens the file on the table (`-t big`), with its
+  `prefetchsize` set to 100,000 (the default is 50,000; a run with 1,000
+  took 78 MiB of PSS, one with 100,000 about 100). Its "connected" sample
+  is a separate launch with the file and no table.
+- Beekeeper Studio 6.2.2, on Wayland: the query editor it opens with, the
+  same query, Ctrl+Enter, with `maxResults` set to 100,000 (the default is
+  50,000). Its table view pages 100 rows, and its next page is a click. On
+  X11 it did not take the keys sent to it, so it ran on Wayland here. The
+  seed also turns off its update check.
+
+After the last key each waits 6 seconds, then for the picture to hold
+still, then 2 more seconds, and the memory is taken. The picture of every
+run shows all 100,000 rows: Tabletist's footer reads "100,000 rows",
+TablePro's "Rows 1 – 100,000", Beekeeper's "100000", DB Browser's "of
+100,000". Moving to the last
+row is left out: the apps' grids could not all be focused with keys from
+outside, and where they could (TablePro, Tab three times then Ctrl+End,
+during the trials), PSS did not change, as the grids draw only the rows in
+view. The raw reports are in `results/2026-11-09-100000-rows/`.
+
+Five runs each; the median of the five, the process tree added up:
+
+| App | Step | PSS | RSS (summed) | Private | GPU (VRAM + GTT) |
+|---|---|---|---|---|---|
+| Tabletist 0.5.0 | connected, `users` open | 87.9 MiB | 132.7 MiB | 78.8 MiB | 62.6 MiB |
+| Tabletist 0.5.0 | 100,000 rows loaded | 103.7 MiB | 148.5 MiB | 94.6 MiB | 57.4 MiB |
+| TablePro 0.1.0-beta.3 | connected | 114.7 MiB | 150.6 MiB | 108.9 MiB | 32.5 MiB |
+| TablePro 0.1.0-beta.3 | 100,000 rows loaded | 203.8 MiB | 240.0 MiB | 197.6 MiB | 32.6 MiB |
+| Beekeeper Studio 6.2.2 | connected | 863.5 MiB | 1,382.5 MiB | 725.4 MiB | 166.1 MiB |
+| Beekeeper Studio 6.2.2 | 100,000 rows loaded | 1,449.8 MiB | 1,971.4 MiB | 1,310.4 MiB | 93.0 MiB |
+| DB Browser for SQLite 3.13.1 | connected | 70.9 MiB | 133.6 MiB | 46.8 MiB | 4.8 MiB |
+| DB Browser for SQLite 3.13.1 | 100,000 rows loaded | 99.2 MiB | 156.7 MiB | 80.1 MiB | 4.8 MiB |
+
+Holding the 100,000 rows added 15.8 MiB of PSS in Tabletist, 89.1 MiB in
+TablePro, 586.3 MiB in Beekeeper and 28.3 MiB in DB Browser. The five runs
+of each, loaded: Tabletist 103.0 to 104.7 MiB, TablePro 203.3 to 204.1
+MiB, Beekeeper 1,446.7 to 1,452.4 MiB, DB Browser 96.6 to 106.1 MiB (its
+connected runs fall in two groups, 61 and 71 to 73 MiB).
+
+The commands, with `Q` the query typed key by key:
+
+    Q="type:select id, label, bucket from big"
+    contrib/measure/measure.py memory --fresh-profile \
+      --steps "sample:connected, users table open;CTRL+t;wait:0.8;$Q;CTRL+Return;wait:2;Escape;wait:0.3;a;wait:6;settle;sample:all 100,000 rows loaded" \
+      -- ./tabletist --demo
+    contrib/measure/measure.py memory --fresh-profile --seed contrib/measure/profiles/tablepro \
+      --class '.*[Tt]able[Pp]ro.*' --env GSETTINGS_SCHEMA_DIR=<deb>/usr/share/glib-2.0/schemas --env GSETTINGS_BACKEND=keyfile \
+      --steps "sample:connected;wait:1;Down*5;Return;wait:6;settle;sample:all 100,000 rows loaded" \
+      -- <deb>/usr/bin/tablepro bench.sqlite
+    contrib/measure/measure.py memory --fresh-profile --seed contrib/measure/profiles/beekeeper \
+      --class '.*[Bb]eekeeper.*' \
+      --steps "sample:connected;wait:1;$Q;CTRL+Return;wait:6;settle;sample:all 100,000 rows loaded" \
+      -- <unpacked AppImage>/AppRun bench.sqlite --ozone-platform=wayland
+    contrib/measure/measure.py memory --fresh-profile --seed contrib/measure/profiles/db4s \
+      --class '.*([Ss]qlitebrowser|DB Browser).*' --env 'QT_QPA_PLATFORM=wayland;xcb' \
+      --env LD_LIBRARY_PATH=<pkgs>/usr/lib --env QT_PLUGIN_PATH=<pkgs>/usr/lib/qt/plugins:/usr/lib/qt/plugins \
+      --steps "wait:6;settle;sample:connected" -- <pkgs>/usr/bin/sqlitebrowser bench.sqlite
+    contrib/measure/measure.py memory <the same options> \
+      --steps "wait:6;settle;sample:all 100,000 rows loaded" -- <pkgs>/usr/bin/sqlitebrowser -t big bench.sqlite

@@ -1,0 +1,36 @@
+{
+  "what": "memory",
+  "command": [
+    "target/competitors/beekeeper/squashfs-root/AppRun",
+    "--ozone-platform=wayland"
+  ],
+  "path": "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/beekeeper/squashfs-root/AppRun",
+  "sha256": "ef34b780c570542a45f6fcc914207c22b5f320e0f41ae1b9494e3cb151ba4db4",
+  "fresh_profile": true,
+  "env": [],
+  "steps": [
+    {
+      "step": "idle after the start",
+      "pid": 1611836,
+      "rss": 337788928,
+      "pss": 208655360,
+      "private": 171339776,
+      "gpu": {
+        "vram": 12288,
+        "gtt": 2097152,
+        "cpu": 0
+      },
+      "tree": {
+        "processes": 7,
+        "rss": 1442349056,
+        "pss": 894923776,
+        "private": 751230976,
+        "gpu": {
+          "vram": 19361792,
+          "gtt": 172838912,
+          "cpu": 0
+        }
+      }
+    }
+  ]
+}

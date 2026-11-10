@@ -1,0 +1,34 @@
+{
+  "what": "memory",
+  "command": [
+    "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/dbgate/dbgate-7.3.4-linux_x64/dbgate"
+  ],
+  "path": "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/dbgate/dbgate-7.3.4-linux_x64/dbgate",
+  "sha256": "433b343850ed9087fdb6548c48e1bb30011a87210cc3609f7b03061a7ac36c4f",
+  "fresh_profile": true,
+  "seed": null,
+  "env": [
+    "DISPLAY=:0"
+  ],
+  "steps": [
+    {
+      "step": "idle after the start",
+      "pid": 419902,
+      "rss": 242970624,
+      "pss": 152235008,
+      "private": 120811520,
+      "gpu": {},
+      "tree": {
+        "processes": 7,
+        "rss": 844566528,
+        "pss": 417352704,
+        "private": 283774976,
+        "gpu": {
+          "vram": 21811200,
+          "gtt": 97370112,
+          "cpu": 0
+        }
+      }
+    }
+  ]
+}

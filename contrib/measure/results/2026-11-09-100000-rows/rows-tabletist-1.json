@@ -1,0 +1,60 @@
+{
+  "what": "memory",
+  "command": [
+    "target/measure/v0.5.0/tabletist",
+    "--demo"
+  ],
+  "path": "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/measure/v0.5.0/tabletist",
+  "sha256": "ba1116f98434cf0536c795744f0f7dafc1a8e09227bbc6421983c0705f066ae8",
+  "fresh_profile": true,
+  "seed": null,
+  "env": [],
+  "steps": [
+    {
+      "step": "connected, users table open",
+      "pid": 2118756,
+      "rss": 139333632,
+      "pss": 92380160,
+      "private": 82841600,
+      "gpu": {
+        "vram": 45056,
+        "gtt": 65622016,
+        "cpu": 0
+      },
+      "tree": {
+        "processes": 1,
+        "rss": 139333632,
+        "pss": 92380160,
+        "private": 82841600,
+        "gpu": {
+          "vram": 45056,
+          "gtt": 65622016,
+          "cpu": 0
+        }
+      }
+    },
+    {
+      "step": "all 100,000 rows loaded",
+      "pid": 2118756,
+      "rss": 155729920,
+      "pss": 108776448,
+      "private": 99237888,
+      "gpu": {
+        "vram": 45056,
+        "gtt": 60092416,
+        "cpu": 0
+      },
+      "tree": {
+        "processes": 1,
+        "rss": 155729920,
+        "pss": 108776448,
+        "private": 99237888,
+        "gpu": {
+          "vram": 45056,
+          "gtt": 60092416,
+          "cpu": 0
+        }
+      }
+    }
+  ]
+}

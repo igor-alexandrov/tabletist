@@ -105,6 +105,89 @@ The guide and the reference are on the website:
   font throughout). It follows the Omarchy theme live on Omarchy, and the
   system light/dark setting elsewhere.
 
+## Performance
+
+Measured on 2026-11-09 on one Linux machine (AMD Ryzen AI MAX+ 395,
+128 GB, NVMe; Omarchy on Hyprland), every app the same way, each from its
+first start in an empty profile with a home folder of its own. How each
+number was taken, the spreads, the raw reports and the script to take them
+again on your machine are in [contrib/measure](contrib/measure/README.md).
+
+### Startup
+
+From launch until the app's window settles on its first screen, the median
+of 20 runs. *Cold* is the same with the app's files dropped from the page
+cache first.
+
+| App | First screen | Cold |
+|---|---|---|
+| Tabletist 0.5.0 | 89 ms | 108 ms |
+| DB Browser for SQLite 3.13.1 | 135 ms | 168 ms |
+| TablePro 0.1.0-beta.3 | 230 ms | 259 ms |
+| HeidiSQL 12.22 | 282 ms | 298 ms |
+| TablePlus 2.2.0-322 | 432 ms | 465 ms |
+| DbGate 7.3.4 | 784 ms | 864 ms |
+| DBeaver 26.2.4 | 1,979 ms (a splash at 342 ms) | 2,251 ms |
+| Beekeeper Studio 6.2.2 | 2,175 ms | 2,344 ms |
+| Valentina Studio 18.4.1 | 3,364 ms (to its registration wizard) | 3,478 ms |
+
+Tabletist's AppImage takes 136 ms; the row above is its unpacked binary.
+
+### Memory at the first screen
+
+The median of three runs. PSS is resident memory with each page that
+processes share divided among them, added up over all of an app's
+processes. GPU memory is shown beside it: on this integrated GPU it is
+system memory too, and an app that draws on the CPU (GPU 0) holds its
+pictures in PSS instead.
+
+| App | Processes | PSS | GPU | PSS + GPU |
+|---|---|---|---|---|
+| DB Browser for SQLite | 1 | 59.4 MiB | 4.8 MiB | 64.2 MiB |
+| TablePlus | 8 | 128.7 MiB | 0.0 MiB | 128.7 MiB |
+| Tabletist | 1 | 83.4 MiB | 50.6 MiB | 134.0 MiB |
+| TablePro | 1 | 111.5 MiB | 32.5 MiB | 144.0 MiB |
+| Valentina Studio | 1 | 246.4 MiB | 0.0 MiB | 246.4 MiB |
+| HeidiSQL | 1 | 250.4 MiB | 0.0 MiB | 250.4 MiB |
+| DBeaver | 8 | 345.0 MiB | 0.0 MiB | 345.0 MiB |
+| DbGate | 7 | 395.9 MiB | 98.9 MiB | 494.9 MiB |
+| Beekeeper Studio | 7 | 851.1 MiB | 185.3 MiB | 1,036.4 MiB |
+
+### Memory with the same 100,000 rows loaded
+
+The same SQLite table held whole in each app's grid, PSS + GPU, the median
+of five runs. The other five apps could not be driven to it with keys on
+this machine's locked session; the method README says why for each.
+
+| App | Connected | 100,000 rows loaded | PSS added by the rows |
+|---|---|---|---|
+| DB Browser for SQLite | 75.7 MiB | 104.0 MiB | 28.3 MiB |
+| Tabletist | 150.6 MiB | 161.1 MiB | 15.8 MiB |
+| TablePro | 147.2 MiB | 236.4 MiB | 89.1 MiB |
+| Beekeeper Studio | 1,029.6 MiB | 1,542.9 MiB | 586.3 MiB |
+
+### Size
+
+x86_64 Linux. The download, and the files it unpacks to.
+
+| App | Download | Installed |
+|---|---|---|
+| HeidiSQL | 7.3 MB | 17.6 MB |
+| Tabletist | 18.6 MB | 45.3 MB |
+| TablePro | 35.2 MB | 121.4 MB |
+| DB Browser for SQLite | 36.7 MB | 95.2 MB |
+| TablePlus | 63.0 MB | 188.4 MB |
+| Valentina Studio | 114.4 MB | 447.0 MB |
+| DBeaver | 129.1 MB | 216.5 MB |
+| DbGate | 216.2 MB | 582.3 MB |
+| Beekeeper Studio | 362.4 MB | 1,154.8 MB |
+
+The apps ran unpacked from their release files, each on Wayland or through
+XWayland as Omarchy's session starts it (Beekeeper on Wayland, DbGate and
+DB Browser's AppImage through XWayland; DB Browser's 100,000 rows with
+Arch's package, on Wayland). TablePro for Linux is a beta; DB Browser for
+SQLite opens SQLite only.
+
 ## Install
 
 - **Arch Linux / Omarchy:** the AUR packages (`tabletist-bin` and

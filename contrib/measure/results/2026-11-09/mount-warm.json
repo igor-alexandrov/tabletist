@@ -1,0 +1,15 @@
+{
+  "what": "mount",
+  "cold": false,
+  "command": [
+    "target/measure/v0.5.0/tabletist-0.5.0-x86_64.AppImage"
+  ],
+  "path": "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/measure/v0.5.0/tabletist-0.5.0-x86_64.AppImage",
+  "sha256": "82d05d49d558384c732655668115c8213096f31ff28f406668fdfbb4bff6aebb",
+  "mount": {
+    "n": 20,
+    "median": 0.0035547214997677656,
+    "min": 0.0028462480004236568,
+    "max": 0.004546279999885883
+  }
+}
