@@ -39,7 +39,11 @@ look) sets what a run may do.
 - **Read-write.** A run that changes data is one transaction. It is
   committed when every statement succeeded, and rolled back on the first
   error, on cancel and on timeout. A run that only reads is still
-  read-only.
+  read-only, and the footer says it had nothing to commit.
+
+After a run the footer names the mode it ran in and how it ended:
+"Read-only · rolled back", "Read-write · committed", "Read-write ·
+nothing to commit".
 
 {% include shot.html file="macos-sql-committed" alt="A read-write run of two statements, with Messages saying how many rows each changed and that the run was committed" %}
 

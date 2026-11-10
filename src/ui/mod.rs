@@ -8173,7 +8173,7 @@ value_tags   = true
             assert!(harness.has("Ln 2, Col 3"), "{}", look.name);
             assert!(harness.has("SQLite 3.46.0"), "{}", look.name);
             // Nothing ran yet, so nothing was rolled back.
-            assert!(!harness.has("Read-only transaction · rolled back"));
+            assert!(!harness.has("Read-only · rolled back"));
             let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
             harness.app.apply(crate::model::Action::RunSql {
                 tab,
@@ -8181,7 +8181,7 @@ value_tags   = true
                 all: false,
             });
             // Nor while the run is on its way.
-            assert!(!harness.has("Read-only transaction · rolled back"));
+            assert!(!harness.has("Read-only · rolled back"));
             harness.answer_sql(
                 Ok(crate::testing::script_outcome(vec![
                     crate::testing::rows_outcome(3),
@@ -8189,7 +8189,7 @@ value_tags   = true
                 None,
             );
             assert!(harness.has("3 rows · 14 ms"), "{}", look.name);
-            assert!(harness.has("Read-only transaction · rolled back"));
+            assert!(harness.has("Read-only · rolled back"));
             // A run that failed as a whole ran nothing, and the rows of
             // the run before it are gone with it.
             harness.app.apply(crate::model::Action::RunSql {
@@ -8199,7 +8199,7 @@ value_tags   = true
             });
             harness.answer_sql(Err(tabletist_db::Error::query("no such server")), None);
             assert!(!harness.has("3 rows · 14 ms"), "{}", look.name);
-            assert!(!harness.has("Read-only transaction · rolled back"));
+            assert!(!harness.has("Read-only · rolled back"));
             // Nor do they come back with a run that is never answered
             // (its session went away), which leaves no error either.
             harness.app.apply(crate::model::Action::RunSql {
@@ -8212,7 +8212,7 @@ value_tags   = true
             let sql = active_sql(&harness, tab);
             assert!(!sql.is_running() && sql.run.error.is_none());
             assert!(!harness.has("3 rows · 14 ms"), "{}", look.name);
-            assert!(!harness.has("Read-only transaction · rolled back"));
+            assert!(!harness.has("Read-only · rolled back"));
         }
     }
 
