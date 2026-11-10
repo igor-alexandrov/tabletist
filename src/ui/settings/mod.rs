@@ -449,6 +449,7 @@ fn terminal_skin<'a>(
     app: &'a App,
     launches: &'a [Launch],
     checked: Option<&'a str>,
+    zoom: f32,
 ) -> terminal::Skin<'a> {
     terminal::Skin {
         look: &app.look,
@@ -462,6 +463,7 @@ fn terminal_skin<'a>(
         desktop: desktop_shown(app),
         font: font_shown(app),
         checked,
+        inset: app.titlebar.inset / zoom,
     }
 }
 
@@ -1161,7 +1163,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         let asked = terminal_asked(app, dialog, &interrupted);
         let launches = launch_choices(&app.connections.connections);
         let checked = updates::checked_text(asked.status, &app.look, app.locale, true);
-        let skin = terminal_skin(app, &launches, checked.as_deref());
+        let skin = terminal_skin(app, &launches, checked.as_deref(), ctx.zoom_factor());
         terminal::show(ctx, &skin, dialog, asked, &mut actions);
     } else {
         let interrupted = || app.work_in_progress();

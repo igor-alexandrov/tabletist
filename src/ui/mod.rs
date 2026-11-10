@@ -11410,6 +11410,32 @@ value_tags   = true
     }
 
     #[test]
+    fn the_omarchy_settings_title_starts_after_the_mac_window_buttons() {
+        // The screen covers the window, its header under the buttons.
+        for look in crate::theme::Look::ALL
+            .into_iter()
+            .filter(|look| look.terminal)
+        {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            mac_title_bar(&mut harness);
+            harness.app.apply(Action::ShowSettings);
+            harness.settle();
+            let title = harness
+                .text_rects
+                .iter()
+                .find(|(text, rect)| text.eq_ignore_ascii_case("settings") && rect.top() < 40.0)
+                .map(|(_, rect)| *rect)
+                .unwrap_or_else(|| panic!("{}: no Settings title", look.name));
+            assert!(
+                title.left() >= 80.0,
+                "{}: the title starts after the buttons: {title:?}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
     fn every_looks_connection_bar_starts_after_the_mac_window_buttons() {
         // The Omarchy look runs on macOS too, under the same buttons.
         for look in crate::theme::Look::ALL {
