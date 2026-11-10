@@ -1519,8 +1519,9 @@ async fn a_script_keeps_no_advisory_lock() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cancelled_script_keeps_earlier_results_and_the_session() {
-    // A row query sleeps in its FETCH, which does not hold the script's
-    // text. A limit no other test uses makes the FETCH this test's own.
+    // A row query sleeps in its FETCH, which is sent in one message with
+    // its DECLARE. A limit no other test uses makes the FETCH this test's
+    // own.
     let Some(outcome) = cancelled_while_running(
         "SELECT 1; SELECT pg_sleep(30)",
         7,
