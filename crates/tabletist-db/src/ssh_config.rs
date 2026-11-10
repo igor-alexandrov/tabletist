@@ -1,9 +1,9 @@
 //! What `~/.ssh/config` says about an SSH host, as OpenSSH reads it:
 //! HostName, Port, User, IdentityFile, IdentityAgent, ProxyJump and
 //! ProxyCommand, and the Host names it spells out, so a tunnel can take a
-//! Host alias the way `ssh bastion` does. Keys kept in 1Password, Secretive or another agent
-//! work as they do in a terminal, including when the app starts from the
-//! Dock without that agent's `SSH_AUTH_SOCK`.
+//! Host alias the way `ssh bastion` does. Keys kept in 1Password, Secretive
+//! or another agent work as they do in a terminal, including when the app
+//! starts from the Dock without that agent's `SSH_AUTH_SOCK`.
 //!
 //! The rules OpenSSH follows, and so this: the first value a keyword gets
 //! wins; a `Host` line applies to the host when one of its patterns (`*`,

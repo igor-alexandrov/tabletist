@@ -32,7 +32,7 @@ pub(crate) enum Via {
 pub(crate) struct Tokens<'a> {
     /// `%h`: the host name the tunnel connects to.
     pub host: &'a str,
-    /// `%p`.
+    /// `%p`: the port the tunnel connects to.
     pub port: u16,
     /// `%r`: the user the tunnel logs in as.
     pub user: &'a str,
@@ -41,7 +41,9 @@ pub(crate) struct Tokens<'a> {
 }
 
 impl Via {
-    /// The way `proxy` names to `tokens`'s server, `None` for none.
+    /// How the tunnel reaches `tokens`'s server through `proxy`: `None`
+    /// when it connects directly, and an error for a ProxyCommand or
+    /// ProxyJump the tunnel refuses.
     pub fn new(proxy: Option<&Proxy>, tokens: &Tokens<'_>) -> Result<Option<Self>, String> {
         match proxy {
             None | Some(Proxy::Off) => Ok(None),
@@ -50,7 +52,7 @@ impl Via {
         }
     }
 
-    /// How a message names it.
+    /// How an error names it: `its ProxyCommand`, `ProxyJump gateway`.
     pub fn describe(&self) -> String {
         match self {
             Self::Command(_) => "its ProxyCommand".to_owned(),
@@ -425,7 +427,7 @@ mod tests {
             let tokens = Tokens { alias, ..tokens() };
             let error = expand("nc %n 22", &tokens).unwrap_err();
             assert!(error.contains("characters"), "{alias}: {error}");
-            // A command that does not name the alias does not mind it.
+            // The same alias is fine in a command without `%n`.
             assert!(expand("nc %h %p", &tokens).is_ok());
         }
         assert!(jump("gateway", "a;b", 22).is_err());

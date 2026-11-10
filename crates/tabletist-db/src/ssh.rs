@@ -19,8 +19,8 @@ use crate::ssh_config::{AgentSocket, HostConfig};
 use crate::{Error, Result, Secrets, SshAuth, SshSpec, SshStage};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-/// A proxy has a connection of its own to make first, and a jump host to
-/// log in to.
+/// Longer than `CONNECT_TIMEOUT`: a proxy makes its own connection first,
+/// and a ProxyJump also logs in to the jump host.
 const PROXY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Trusted SSH host keys: `host:port` to a `SHA256:` fingerprint.
@@ -80,7 +80,8 @@ pub(crate) struct Endpoint {
 }
 
 impl Endpoint {
-    /// The server, and how it is reached, for a message.
+    /// The server and the proxy it is reached through, as an error names
+    /// them: `db:22 through ProxyJump gateway`.
     fn reach(&self) -> String {
         match &self.via {
             None => format!("{}:{}", self.host, self.port),
@@ -327,8 +328,9 @@ async fn authenticate(
     }
 }
 
-/// Stops the proxy of a session that failed, and what it said, which says
-/// why: ` (it said: Permission denied)`, or nothing.
+/// Stops a failed session's proxy, and returns what the proxy wrote to its
+/// standard error, for the error: ` (it said: Permission denied)`, or an
+/// empty string.
 async fn stop(running: &mut Option<proxy::Running>, said: Option<proxy::Said>) -> String {
     drop(running.take());
     let words = match said {
@@ -375,8 +377,8 @@ impl Tunnel {
         Self::open_to(&endpoint, ssh, target, secrets, host_keys, PROXY_TIMEOUT).await
     }
 
-    /// [`Tunnel::open`] once `~/.ssh/config` has had its say, waiting
-    /// `proxy_timeout` for a session through a proxy.
+    /// [`Tunnel::open`] with the endpoint already read from
+    /// `~/.ssh/config`. A session through a proxy gets `proxy_timeout`.
     async fn open_to(
         endpoint: &Endpoint,
         ssh: &SshSpec,

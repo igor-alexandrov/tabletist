@@ -10707,7 +10707,6 @@ value_tags   = true
                 "{}",
                 look.name
             );
-            // The host name's line says the tunnel goes through it.
             assert!(
                 harness.has("10.0.0.9 through a ProxyCommand from ~/.ssh/config"),
                 "{}",
