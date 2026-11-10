@@ -52,10 +52,10 @@ impl Via {
         }
     }
 
-    /// How an error names it: `its ProxyCommand`, `ProxyJump gateway`.
+    /// How an error names it: `the ProxyCommand`, `ProxyJump gateway`.
     pub fn describe(&self) -> String {
         match self {
-            Self::Command(_) => "its ProxyCommand".to_owned(),
+            Self::Command(_) => "the ProxyCommand".to_owned(),
             Self::Jump { hops, .. } => format!("ProxyJump {hops}"),
         }
     }
@@ -100,7 +100,7 @@ impl Via {
             stdin: Some(stdin),
             stdout,
         };
-        Ok((stream, Said::collect(stderr), Running(child)))
+        Ok((stream, Said::collect(stderr), Running { _child: child }))
     }
 }
 
@@ -130,7 +130,7 @@ fn shell(line: &str) -> Command {
 }
 
 /// A command line's program, quoted or not, and what follows it.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 fn program(line: &str) -> (&str, &str) {
     let line = line.trim();
     let (program, rest) = match line.strip_prefix('"') {
@@ -268,7 +268,9 @@ fn hop(text: &str) -> Option<(Option<&str>, &str, Option<u16>)> {
 }
 
 /// A started proxy command, stopped when this is dropped.
-pub(crate) struct Running(#[allow(dead_code, reason = "kept to be dropped")] Child);
+pub(crate) struct Running {
+    _child: Child,
+}
 
 /// The proxy's standard input and output, as one stream for the SSH
 /// session.
@@ -381,6 +383,7 @@ fn last_lines(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn tokens() -> Tokens<'static> {
@@ -517,7 +520,7 @@ mod tests {
         );
         assert_eq!(
             Via::Command("nc db 22".into()).describe(),
-            "its ProxyCommand"
+            "the ProxyCommand"
         );
     }
 

@@ -162,8 +162,9 @@ once first. The `ssh` command has to be installed and on the `PATH`.
 
 Either way, the SSH server at the end is logged in to with the method you
 chose, and its key is checked against Tabletist's trusted keys, as for a
-direct connection. If the command fails, the error shows the last lines
-it wrote.
+direct connection. The login through a proxy has two minutes, time
+enough to approve an agent's prompt. If the command fails, or the login
+runs out of time, the error shows the last lines the command wrote.
 
 ### Host keys
 

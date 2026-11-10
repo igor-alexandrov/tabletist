@@ -19,9 +19,24 @@ use crate::ssh_config::{AgentSocket, HostConfig};
 use crate::{Error, Result, Secrets, SshAuth, SshSpec, SshStage};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-/// Longer than `CONNECT_TIMEOUT`: a proxy makes its own connection first,
-/// and a ProxyJump also logs in to the jump host.
-const PROXY_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a session through a proxy waits for the server's hello, and
+/// then to log in. The hello gets longer than `CONNECT_TIMEOUT`: a proxy
+/// makes its own connection first, and a ProxyJump also logs in to the
+/// jump host. The login gets minutes: an agent can ask the person before
+/// it signs (1Password, Secretive). Without a limit, a proxy that stops
+/// passing anything on after the hello would hold the login, and the proxy,
+/// for as long as the app runs: russh sends no keepalives before a login.
+#[derive(Debug, Clone, Copy)]
+struct ProxyWaits {
+    hello: Duration,
+    login: Duration,
+}
+
+const PROXY_WAITS: ProxyWaits = ProxyWaits {
+    hello: Duration::from_secs(30),
+    login: Duration::from_secs(120),
+};
 
 /// Trusted SSH host keys: `host:port` to a `SHA256:` fingerprint.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -374,18 +389,18 @@ impl Tunnel {
         let login = crate::ssh_config::login();
         let endpoint = endpoint(ssh, &host_config, login.as_deref())?;
         let target = (target_host, target_port);
-        Self::open_to(&endpoint, ssh, target, secrets, host_keys, PROXY_TIMEOUT).await
+        Self::open_to(&endpoint, ssh, target, secrets, host_keys, PROXY_WAITS).await
     }
 
     /// [`Tunnel::open`] with the endpoint already read from
-    /// `~/.ssh/config`. A session through a proxy gets `proxy_timeout`.
+    /// `~/.ssh/config`. A session through a proxy waits as `waits` says.
     async fn open_to(
         endpoint: &Endpoint,
         ssh: &SshSpec,
         (target_host, target_port): (&str, u16),
         secrets: &Secrets,
         host_keys: &HostKeys,
-        proxy_timeout: Duration,
+        waits: ProxyWaits,
     ) -> Result<Self> {
         let seen = Arc::new(Mutex::new(None));
         let client = Client {
@@ -400,30 +415,25 @@ impl Tunnel {
             keepalive_interval: Some(Duration::from_secs(30)),
             ..Default::default()
         });
-        let (connected, said, mut running) = match &endpoint.via {
+        let (connected, said, mut running, timeout) = match &endpoint.via {
             None => {
                 let address = (endpoint.host.clone(), endpoint.port);
                 let connected =
                     tokio::time::timeout(CONNECT_TIMEOUT, client::connect(config, address, client))
                         .await;
-                (connected, None, None)
+                (connected, None, None, CONNECT_TIMEOUT)
             }
             Some(via) => {
                 let (stream, said, running) = via
                     .spawn()
                     .map_err(|error| ssh_error(SshStage::Connect, error))?;
                 let connected = tokio::time::timeout(
-                    proxy_timeout,
+                    waits.hello,
                     client::connect_stream(config, stream, client),
                 )
                 .await;
-                (connected, Some(said), Some(running))
+                (connected, Some(said), Some(running), waits.hello)
             }
-        };
-        let timeout = if endpoint.via.is_some() {
-            proxy_timeout
-        } else {
-            CONNECT_TIMEOUT
         };
         let connected = match connected {
             Ok(connected) => connected,
@@ -485,7 +495,22 @@ impl Tunnel {
                 ));
             }
         };
-        authenticate(&mut handle, ssh, endpoint, secrets).await?;
+        let login = authenticate(&mut handle, ssh, endpoint, secrets);
+        if endpoint.via.is_none() {
+            login.await?;
+        } else if let Ok(logged_in) = tokio::time::timeout(waits.login, login).await {
+            logged_in?;
+        } else {
+            return Err(ssh_error(
+                SshStage::Auth,
+                format!(
+                    "no answer from {} to the login within {} seconds{}",
+                    endpoint.reach(),
+                    waits.login.as_secs(),
+                    stop(&mut running, said).await
+                ),
+            ));
+        }
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .map_err(|error| ssh_error(SshStage::Forward, error.to_string()))?;
@@ -620,6 +645,7 @@ mod tests {
     }
 
     /// An endpoint at `host:port` reached through `command`.
+    #[cfg(unix)]
     fn proxied(host: &str, port: u16, user: &str, command: &str) -> Endpoint {
         let config = HostConfig {
             proxy: Some(Proxy::Command(command.into())),
@@ -645,7 +671,7 @@ mod tests {
             ("db", 5432),
             &Secrets::default(),
             &HostKeys::default(),
-            PROXY_TIMEOUT,
+            PROXY_WAITS,
         )
         .await
         .err()
@@ -657,7 +683,7 @@ mod tests {
         else {
             panic!("{error:?}");
         };
-        assert!(message.contains("through its ProxyCommand"), "{message}");
+        assert!(message.contains("through the ProxyCommand"), "{message}");
         assert!(message.contains("it said: no route to db"), "{message}");
     }
 
@@ -681,7 +707,10 @@ mod tests {
             ("db", 5432),
             &Secrets::default(),
             &HostKeys::default(),
-            Duration::from_secs(1),
+            ProxyWaits {
+                hello: Duration::from_secs(1),
+                login: PROXY_WAITS.login,
+            },
         )
         .await
         .err()
@@ -692,24 +721,120 @@ mod tests {
         );
         let pid = std::fs::read_to_string(&pid_file).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
-        // Gone, or a zombie nobody has reaped yet: not running.
+        stops(pid.trim()).await;
+    }
+
+    /// Waits up to five seconds for the process `pid` to stop: gone, or a
+    /// zombie nobody has reaped yet.
+    #[cfg(unix)]
+    async fn stops(pid: &str) {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             let state = std::process::Command::new("ps")
-                .args(["-o", "stat=", "-p", pid.trim()])
+                .args(["-o", "stat=", "-p", pid])
                 .output()
                 .unwrap();
             let state = String::from_utf8_lossy(&state.stdout);
             if state.trim().is_empty() || state.trim_start().starts_with('Z') {
-                break;
+                return;
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "the proxy {} is still {state}",
-                pid.trim()
+                "the proxy {pid} is still {state}"
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+
+    /// An SSH server that takes the handshake and then never answers a
+    /// login.
+    #[cfg(unix)]
+    struct Silent;
+
+    #[cfg(unix)]
+    impl russh::server::Handler for Silent {
+        type Error = russh::Error;
+
+        async fn auth_password(
+            &mut self,
+            _user: &str,
+            _password: &str,
+        ) -> std::result::Result<russh::server::Auth, Self::Error> {
+            std::future::pending().await
+        }
+    }
+
+    /// A proxy that passes the hello on and then nothing of the login:
+    /// the login stops at its limit, and the proxy with it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_login_through_a_proxy_that_never_answers_stops_at_its_limit() {
+        let found = std::process::Command::new("sh")
+            .args(["-c", "command -v nc"])
+            .output()
+            .is_ok_and(|output| output.status.success());
+        if !found {
+            eprintln!("skipped: nc is not installed");
+            return;
+        }
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let config = Arc::new(russh::server::Config {
+            keys: vec![russh::keys::load_secret_key(key("id_ed25519"), None).unwrap()],
+            ..Default::default()
+        });
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                let config = Arc::clone(&config);
+                tokio::spawn(async move {
+                    if let Ok(session) = russh::server::run_stream(config, socket, Silent).await {
+                        let _ = session.await;
+                    }
+                });
+            }
+        });
+        let dir = std::env::temp_dir().join(format!("tabletist-login-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid_file = dir.join("pid");
+        let command = format!("sh -c 'echo $$ > {}; exec nc %h %p'", pid_file.display());
+        let endpoint = proxied("127.0.0.1", port, "me", &command);
+        let spec = SshSpec {
+            host: "127.0.0.1".into(),
+            port: Some(port),
+            user: "me".into(),
+            auth: SshAuth::Password,
+        };
+        let secrets = Secrets {
+            ssh_password: Some("secret".into()),
+            ..Secrets::default()
+        };
+        let waits = ProxyWaits {
+            hello: Duration::from_secs(5),
+            login: Duration::from_secs(1),
+        };
+        let open = |keys: HostKeys| {
+            let (endpoint, spec, secrets) = (&endpoint, &spec, &secrets);
+            async move { Tunnel::open_to(endpoint, spec, ("db", 5432), secrets, &keys, waits).await }
+        };
+        let fingerprint = match open(HostKeys::default()).await {
+            Err(Error::Ssh {
+                stage: SshStage::HostKeyUnknown { fingerprint, .. },
+                ..
+            }) => fingerprint,
+            other => panic!("{:?}", other.err()),
+        };
+        let mut keys = HostKeys::default();
+        keys.trust("127.0.0.1", port, &fingerprint);
+        let error = open(keys).await.err().unwrap();
+        assert!(
+            matches!(&error, Error::Ssh { stage: SshStage::Auth, message } if message.contains("to the login within 1 seconds")),
+            "{error:?}"
+        );
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        stops(pid.trim()).await;
     }
 
     /// Opens a tunnel to the compose `ssh` service through `nc` as a
@@ -743,7 +868,7 @@ mod tests {
             let (endpoint, spec, secrets) = (&endpoint, &spec, &secrets);
             async move {
                 let target = ("postgres", 5432);
-                Tunnel::open_to(endpoint, spec, target, secrets, &keys, PROXY_TIMEOUT).await
+                Tunnel::open_to(endpoint, spec, target, secrets, &keys, PROXY_WAITS).await
             }
         };
         // The server's key is checked through the proxy as without one.
@@ -859,7 +984,7 @@ mod tests {
                 "nc -X connect 10.0.0.5 2200 # ops@bastion".into()
             ))
         );
-        assert_eq!(endpoint.reach(), "10.0.0.5:2200 through its ProxyCommand");
+        assert_eq!(endpoint.reach(), "10.0.0.5:2200 through the ProxyCommand");
     }
 
     #[test]
