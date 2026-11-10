@@ -71,7 +71,9 @@ features:
 The picture above is the macOS look, and Windows gets a close relative of
 it. On Linux, Tabletist takes the Omarchy look: square, keyboard first,
 with vim keys and the desktop's monospace font throughout. On Omarchy it
-follows the desktop's theme and recolors when you switch themes.
+follows the desktop's theme and recolors when you switch themes. Each
+system can have the other look too: **Settings › Appearance › Interface**
+switches between the classic look and the Omarchy one at once.
 Read about [the Omarchy look]({% link _guide/omarchy.md %}) and
 [Tabletist on macOS]({% link _guide/macos.md %}).
 

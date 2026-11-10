@@ -99,7 +99,7 @@ notify = "8.2"
 # The query history's file (src/history.rs), SQLite as the Agents Log's is.
 # The version and the features tabletist-mcp already brings in: nothing new
 # is built.
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 # The person's clock and time zone, for the times of agents' calls, and the
 # zone database a `timestamptz` value is shown in. The version and the
 # features env_logger already brings in: nothing new is built.

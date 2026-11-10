@@ -15,7 +15,7 @@
 
 use egui::Key;
 
-use crate::theme::{Look, Typeface};
+use crate::theme::Look;
 
 mod overrides;
 pub use overrides::{Bind, Line, Never, Overrides, Refused, Unbind, Why, intern, refuse_key};
@@ -25,7 +25,8 @@ pub use overrides::{Bind, Line, Never, Overrides, Refused, Unbind, Why, intern, 
 pub enum Layout {
     /// The macOS look: its own keys, written with glyphs.
     Mac,
-    /// The Windows look: the Mac's keys with Ctrl for Cmd, written out.
+    /// The Windows look, and Linux's classic look (macOS's drawn with
+    /// these): the Mac's keys with Ctrl for Cmd, written out.
     Windows,
     /// The Omarchy look: vim keys and the `:` prompt, in lower case.
     Omarchy,
@@ -34,14 +35,9 @@ pub enum Layout {
 impl Layout {
     pub const ALL: [Layout; 3] = [Layout::Mac, Layout::Windows, Layout::Omarchy];
 
+    /// The layout `look` binds and writes its keys in.
     pub fn of(look: &Look) -> Self {
-        if look.terminal {
-            Self::Omarchy
-        } else if look.faces.typeface == Typeface::Plex {
-            Self::Mac
-        } else {
-            Self::Windows
-        }
+        look.keys
     }
 }
 
@@ -413,6 +409,13 @@ impl Bound {
         }
     }
 
+    const fn insert(self) -> Self {
+        Self {
+            mode: Mode::Insert,
+            ..self
+        }
+    }
+
     const fn any(self) -> Self {
         Self {
             mode: Mode::Any,
@@ -490,6 +493,7 @@ commands! {
     // Navigation.
     FindObject = "find_object",
     FilterObjects = "filter_objects",
+    LeaveFilter = "leave_filter",
     NewSqlTab = "new_sql_tab",
     ReopenClosedTab = "reopen_closed_tab",
     ShowAgents = "show_agents",
@@ -856,9 +860,9 @@ impl Command {
             C::SwitchDatabase => info("Switch database", "Switch database", Window),
             C::Settings => info("Settings", "Settings", Window),
             C::CheckForUpdates => info("Check for Updates…", "", Window),
-            C::LargerText => info("Larger text", "", Window),
-            C::SmallerText => info("Smaller text", "", Window),
-            C::DefaultTextSize => info("Default text size", "", Window),
+            C::LargerText => info("Larger", "", Window),
+            C::SmallerText => info("Smaller", "", Window),
+            C::DefaultTextSize => info("Actual size", "", Window),
             C::CloseConnection => info("Close connection", "", Window),
             C::NextConnection => info("Next connection", "", Window),
             C::PreviousConnection => info("Previous connection", "", Window),
@@ -875,6 +879,7 @@ impl Command {
             C::FilterConnections => info("Filter the connections", "", Window),
             C::FindObject => info("Find any object", "Find any object", Navigation),
             C::FilterObjects => info("Filter the sidebar's objects", "", Navigation),
+            C::LeaveFilter => info("Leave the filter for the tree", "", Navigation),
             C::NewSqlTab => info("New SQL editor tab", "New SQL editor tab", Navigation),
             // Nothing reopens a closed tab yet: the start screen opens a
             // recent by its number.
@@ -1438,8 +1443,9 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("cmd+,")]),
             keys(&[k("ctrl+,")]),
         ),
-        // The text's size, under a dialog too: the Settings window shows
-        // what it changes. The terminal look resets it from that window.
+        // The window's size, under a dialog too: the Settings window shows
+        // what it changes. macOS's and Windows's interface scale, the
+        // terminal look's one font size.
         bind(
             C::LargerText,
             ANYWHERE,
@@ -1452,7 +1458,12 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("cmd+-")]),
             keys(&[k("ctrl+-")]),
         ),
-        bind(C::DefaultTextSize, ANYWHERE, keys(&[k("cmd+0")]), NONE),
+        bind(
+            C::DefaultTextSize,
+            ANYWHERE,
+            keys(&[k("cmd+0")]),
+            keys(&[k("ctrl+0")]),
+        ),
         bind(
             C::CloseConnection,
             GLOBAL,
@@ -1549,6 +1560,14 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("ctrl+p")]),
         ),
         bind(C::FilterObjects, SIDEBAR, NONE, keys(&[k("/")])),
+        // The filter field's own Enter and Esc: the field reads them, and
+        // they are listed here to be written in its hint.
+        bind(
+            C::LeaveFilter,
+            SIDEBAR,
+            NONE,
+            keys(&[k("enter"), k("esc")]).insert().shown("enter/esc"),
+        ),
         bind(
             C::NewSqlTab,
             GLOBAL,
@@ -3723,6 +3742,15 @@ impl Keymap {
             })
     }
 
+    /// The first key `command` has of its own in `scope`: not one that
+    /// only says where another command's key also acts (Back to grid's
+    /// ctrl+h, which is Pane to the left's). Empty where it has none.
+    pub fn own_key_in(&self, layout: Layout, command: Command, scope: Scope) -> Written {
+        self.chords(layout, command, scope)
+            .next()
+            .map_or_else(Written::default, |keys| Written(written(layout, keys)))
+    }
+
     /// The `nth` keys that `first` and `second` have in `scope`, written
     /// as one hint of two keys that do opposite things: either side of a
     /// stroke (`j/k`), and what they hold written once where they hold
@@ -3984,20 +4012,19 @@ const DIRECTIONS: [Command; 9] = [
 ];
 
 /// The commands read where nothing asks the keymap for another key.
-const OWN: [Command; 2] = [Command::Help, Command::LeaveEditor];
+const OWN: [Command; 3] = [Command::Help, Command::LeaveEditor, Command::LeaveFilter];
 
 /// The rows with no key in one look whose chords the key handler reads in
 /// every look: there a chord can be given them. Any other row with no key
 /// in a look is read by that look's letters or prompt, or by the other
 /// look's handler alone, and nothing would answer a key given it.
-const ANY_LOOK: [(Command, Scope); 15] = [
+const ANY_LOOK: [(Command, Scope); 14] = [
     (Command::SwitchDatabase, Scope::Global),
     (Command::ExportTable, Scope::Global),
     (Command::PaneLeft, Scope::Global),
     (Command::PaneRight, Scope::Global),
     (Command::PaneUp, Scope::Global),
     (Command::PaneDown, Scope::Global),
-    (Command::DefaultTextSize, Scope::Global),
     (Command::ExtendUp, Scope::Grid),
     (Command::ExtendDown, Scope::Grid),
     (Command::CopyRow, Scope::Grid),
@@ -5039,6 +5066,10 @@ mod tests {
         assert_eq!(format(Layout::Omarchy, Scope::CellEditor), "ctrl+shift+f");
         assert_eq!(format(Layout::Mac, Scope::CellEditor), "⇧⌘F");
         assert_eq!(format(Layout::Mac, Scope::Grid), "");
+        // Back to grid's ctrl+h is Pane to the left's: its own key is Esc.
+        let back = (Command::BackToGrid, Scope::Inspector);
+        assert_eq!(keymap.key_in(Layout::Omarchy, back.0, back.1), "ctrl+h");
+        assert_eq!(keymap.own_key_in(Layout::Omarchy, back.0, back.1), "esc");
     }
 
     #[test]

@@ -31,6 +31,9 @@ pub struct Harness {
     pub painted: Vec<(String, egui::Color32)>,
     /// Where the last frame painted each piece of text, in points.
     pub text_rects: Vec<(String, egui::Rect)>,
+    /// Each piece of text the last frame painted, where, and the rect it
+    /// was clipped to: what shows it.
+    pub clipped_text: Vec<(String, egui::Rect, egui::Rect)>,
     /// Where the last frame drew each row of a grid, as a screen reader
     /// has it: what [`Harness::is_row_number`] reads.
     pub grid_rows: Vec<egui::Rect>,
@@ -210,12 +213,20 @@ impl Harness {
     fn collect(&mut self, output: &egui::FullOutput) {
         self.painted.clear();
         self.text_rects.clear();
+        self.clipped_text.clear();
         self.slanted.clear();
         self.struck.clear();
         self.fills.clear();
         self.strokes.clear();
         self.outlines.clear();
         for clipped in &output.shapes {
+            let mut rects = Vec::new();
+            collect_text(&clipped.shape, &mut Vec::new(), &mut rects);
+            self.clipped_text.extend(
+                rects
+                    .into_iter()
+                    .map(|(text, rect)| (text, rect, clipped.clip_rect)),
+            );
             collect_text(&clipped.shape, &mut self.painted, &mut self.text_rects);
             collect_slanted(&clipped.shape, &mut self.slanted);
             collect_struck(&clipped.shape, &mut self.struck);
@@ -1205,6 +1216,7 @@ impl Harness {
             close_requested: false,
             painted: Vec::new(),
             text_rects: Vec::new(),
+            clipped_text: Vec::new(),
             grid_rows: Vec::new(),
             slanted: Vec::new(),
             struck: Vec::new(),

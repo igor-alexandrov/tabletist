@@ -1359,10 +1359,13 @@ fn top_bar(
             }
             widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, border);
             if look.terminal {
+                // Its row starts after the window buttons, as the picker's
+                // header does.
+                let row = Rect::from_min_max(pos2(rect.left() + inset, rect.top()), rect.max);
                 terminal_bar(
                     ui,
                     tab,
-                    rect,
+                    row,
                     info,
                     &env,
                     &look,
@@ -2895,9 +2898,26 @@ fn status_line(
     let label_key = key(Command::ChangeLabelColumn);
     let (choose_key, back_key) = (key(Command::ChooseLabel), key(Command::CloseLabelChooser));
     // No tab: the start screen's keys, and that no table is open.
+    // The pane that has the keyboard: the tree, its filter field and the
+    // row panel name their own keys in the place of the view's.
+    use super::pane_hints::{self, Held};
+    let held = Held::of(ui.ctx(), tab, workspace);
+    let own = |editable: bool, pending: pane_hints::Pending| match held {
+        Held::Filter => Some(pane_hints::filter(keymap, layout, locale)),
+        Held::Panel => Some(pane_hints::panel(
+            ui.ctx(),
+            keymap,
+            layout,
+            locale,
+            editable,
+        )),
+        Held::Tree => Some(pane_hints::tree(ui.ctx(), keymap, layout, locale, pending)),
+        Held::View => None,
+    };
     if workspace.active_tab.is_none() {
         let tree = tree_summary(workspace, locale, settings.show_system_schemas);
-        super::start::status_line(ui, paint, tab, keymap, tree);
+        let own = own(false, pane_hints::Pending::default());
+        super::start::status_line(ui, paint, tab, keymap, tree, own.as_deref());
         return;
     }
     let read_only = workspace.access == tabletist_db::Access::ReadOnly;
@@ -3059,6 +3079,22 @@ fn status_line(
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(500));
     }
+    let pending = editing.pending.is_some() || editing.added.is_some() || editing.deleted.is_some();
+    let pending = pane_hints::Pending {
+        write: pending && !read_only,
+        review: pending,
+    };
+    let own = own(editing.can_edit, pending);
+    // Ctrl+h/l, where it moves from the rows (a table's, or a result's).
+    let grid_panes = pane_hints::panes(ui.ctx(), keymap, layout, super::focus::Region::Grid);
+    let panes_hint = grid_panes
+        .as_ref()
+        .map(|(key, word)| -> widgets::Hint<'_> { (key, word.as_str(), true) });
+    // A SQL editor's results, with a grid to step down to from its script.
+    let results_shown = workspace
+        .active_sql_tab()
+        .is_some_and(crate::ui::keys::shows_grid);
+    let (results_key, editor_key) = (key(Command::FocusResults), key(Command::PaneUp));
     egui::Panel::bottom(egui::Id::new(("status-line", tab.0)))
         .exact_size(STATUS_LINE)
         .resizable(false)
@@ -3066,6 +3102,7 @@ fn status_line(
         .frame(Frame::new().fill(palette.panel))
         .show(ui, |ui| {
             let rect = ui.max_rect();
+            let own_hints = own.as_deref().map(pane_hints::drawn);
             // Where a question that takes the line's place stands.
             let line = super::every_row_prompt::status_line_id(tab);
             ui.ctx().data_mut(|data| data.insert_temp(line, rect));
@@ -3095,9 +3132,9 @@ fn status_line(
             table_hints.extend([
                 (&filter_key, "filter", true),
                 (&sidebar_key, "tables", true),
-                (&copy_key, "copy", true),
-                (&copy_as_key, "copy as", true),
             ]);
+            table_hints.extend(panes_hint);
+            table_hints.extend([(&copy_key, "copy", true), (&copy_as_key, "copy as", true)]);
             // The prompt's line that saves, where a save can be made.
             let write = gettext(locale, "write");
             if !read_only {
@@ -3121,30 +3158,44 @@ fn status_line(
                 if to_normal { "normal" } else { "leave editor" },
                 "tables",
                 "complete",
+                "results",
+                "editor",
             ]
             .map(|word| gettext(locale, word));
-            let mut editor_hints: Vec<widgets::Hint<'_>> = vec![
-                (&run_key, &*words[0], true),
-                (&run_all_key, &*words[1], true),
-                (&cancel_key, &*words[2], true),
-                (&leave_key, &*words[3], true),
-                (&sidebar_key, &*words[4], true),
-            ];
+            // The result's rows have the keys: their own, the way back up
+            // to the script, its copy in a format, and its export (spec
+            // 4), the first to give way.
+            let result_keys = !ui.ctx().text_edit_focused() && results_shown;
+            let mut editor_hints: Vec<widgets::Hint<'_>> = if result_keys {
+                vec![
+                    (&rows_key, "row", true),
+                    (&cols_key, "col", true),
+                    (&inspect_key, "inspect", true),
+                    (&copy_key, "copy", true),
+                    (&copy_as_key, "copy as", true),
+                    (&editor_key, &*words[7], true),
+                ]
+            } else {
+                vec![
+                    (&run_key, &*words[0], true),
+                    (&run_all_key, &*words[1], true),
+                    (&cancel_key, &*words[2], true),
+                    (&leave_key, &*words[3], true),
+                ]
+            };
+            if result_keys {
+                editor_hints.extend(panes_hint);
+                editor_hints.push((&export_key, "export result", true));
+            } else {
+                // The script's: down to the results, where they show rows.
+                if results_shown {
+                    editor_hints.push((&results_key, &*words[6], true));
+                }
+                editor_hints.push((&sidebar_key, &*words[4], true));
+            }
             // An open completion list: its key leads.
             if completing {
                 editor_hints.insert(0, (&complete_key, &*words[5], true));
-            }
-            // The result's rows have the keys: its copy in a format, and
-            // its export (spec 4), the first to give way.
-            let result_keys = !ui.ctx().text_edit_focused()
-                && workspace
-                    .active_sql_tab()
-                    .is_some_and(crate::ui::keys::shows_grid);
-            if result_keys {
-                editor_hints.extend([
-                    (&copy_as_key, "copy as", true),
-                    (&export_key, "export result", true),
-                ]);
             }
             // The Structure view's keys: a row's do nothing on it.
             let structure_words =
@@ -3161,6 +3212,7 @@ fn status_line(
                 ]);
             }
             structure_hints.push((&sidebar_key, &*structure_words[3], true));
+            structure_hints.extend(panes_hint);
             // What is pending in the table's rows is saved and reviewed
             // from here too, as from the rows.
             if !read_only {
@@ -3195,6 +3247,14 @@ fn status_line(
                 })
                 .map(|(_, (key, word))| (key, &**word, true))
                 .collect();
+            // The pane keys after the views' (`r rows`, `s structure`).
+            if let Some(hint) = panes_hint {
+                let views = ddl_hints
+                    .iter()
+                    .position(|(_, word, _)| *word == &*ddl_words[6])
+                    .map_or(ddl_hints.len(), |at| at + 1);
+                ddl_hints.insert(views, hint);
+            }
             if !read_only {
                 ddl_hints.push((&save_key, &*write, true));
             }
@@ -3283,15 +3343,16 @@ fn status_line(
                     (4, Some((_, source, _))) => *source == crate::history::Source::Filter,
                     _ => false,
                 };
-                let hints: Vec<widgets::Hint<'_>> = history_keys
+                let history_hints: Vec<widgets::Hint<'_>> = history_keys
                     .iter()
                     .zip(&history_words)
                     .enumerate()
                     .filter(|(index, _)| offered(*index))
                     .map(|(_, (key, word))| (key, &**word, true))
                     .collect();
+                let hints = own_hints.as_deref().unwrap_or(&history_hints);
                 let left = rect.left() + 12.0;
-                widgets::key_hints(ui, (left, y), &hints, 18.0, &look, &palette);
+                widgets::key_hints(ui, (left, y), hints, 18.0, &look, &palette);
                 // Why a key did nothing, or what was just done, at the
                 // line's end: this look floats no toast.
                 // Else how many it shows: ":history · 184 statements".
@@ -3322,7 +3383,8 @@ fn status_line(
             }
             if agents.is_some() {
                 let left = rect.left() + 12.0;
-                widgets::key_hints(ui, (left, y), &agents_hints, 18.0, &look, &palette);
+                let hints = own_hints.as_deref().unwrap_or(&agents_hints);
+                widgets::key_hints(ui, (left, y), hints, 18.0, &look, &palette);
                 // What was just done (the command copied), at the line's
                 // end: this look floats no toast.
                 if let Some(said) = &editing.said {
@@ -3337,7 +3399,12 @@ fn status_line(
                 }
                 return;
             }
-            let hints: &[widgets::Hint<'_>] = if on_editor {
+            // The SQL editor's own line (its mode, its summary) only while
+            // a pane of its own has the keys.
+            let on_editor = on_editor && own_hints.is_none();
+            let hints: &[widgets::Hint<'_>] = if let Some(own) = &own_hints {
+                own
+            } else if on_editor {
                 &editor_hints
             } else if structure.is_some() {
                 &structure_hints
@@ -3350,18 +3417,14 @@ fn status_line(
             let measure = |text: &str| widgets::measure(ui, label_copy(&look, role, text));
             let summary_width = measure(&summary);
             // Everything 18 apart, 12 in from the ends. What does not fit
-            // before the range gives way from the end.
+            // before the range gives way: the last hint (the export), then
+            // the pane keys, then the rest from the end.
             let gap = 18.0;
             let fit = |limit: f32| {
-                (0..=hints.len())
-                    .rev()
-                    .find(|&count| {
-                        rect.left()
-                            + 12.0
-                            + widgets::key_hints_width(ui, &hints[..count], gap, &look, &palette)
-                            <= limit
-                    })
-                    .unwrap_or(0)
+                pane_hints::giving_way(hints, |shown| {
+                    rect.left() + 12.0 + widgets::key_hints_width(ui, shown, gap, &look, &palette)
+                        <= limit
+                })
             };
             if on_editor {
                 // The toolbar says the transaction is read-only; the line
@@ -3423,7 +3486,7 @@ fn status_line(
                         - gap
                         - (left - rect.left() - 12.0));
                     let at = (left, y);
-                    widgets::key_hints(ui, at, &hints[..shown], gap, &look, &palette);
+                    widgets::key_hints(ui, at, &shown, gap, &look, &palette);
                 }
                 let text = Text::one(&look, role, &summary, summary_color);
                 let width = widgets::paint_text_right(ui, rect.right() - 12.0, y, text);
@@ -3459,7 +3522,10 @@ fn status_line(
                 }
                 x
             };
-            if let Some((visual, held)) = &editing.visual {
+            // A pane with keys of its own (the tree, its filter, the row
+            // panel) names them over the grid's selection.
+            let visual = editing.visual.as_ref().filter(|_| own_hints.is_none());
+            if let Some((visual, held)) = visual {
                 // A visual selection: the mode, what it holds and the
                 // counts. Its keys, at the right, give way: `V`'s rows
                 // are deleted, the others' cells copied.
@@ -3734,12 +3800,13 @@ fn status_line(
                 + 14.0 * disabled.len().saturating_sub(1) as f32;
             let mut x = left;
             let shown = fit(limit);
-            if shown > 0 {
-                x += widgets::key_hints(ui, (x, y), &hints[..shown], gap, &look, &palette) + gap;
+            if !shown.is_empty() {
+                x += widgets::key_hints(ui, (x, y), &shown, gap, &look, &palette) + gap;
             }
             let separator = measure("│");
             let struck = !disabled.is_empty();
-            if struck && shown == hints.len() && x + separator + gap + disabled_width <= limit {
+            if struck && shown.len() == hints.len() && x + separator + gap + disabled_width <= limit
+            {
                 x += widgets::paint_text(ui, x, y, Text::one(&look, role, "│", palette.outline))
                     + gap;
                 // Editing's keys, struck through at half strength.

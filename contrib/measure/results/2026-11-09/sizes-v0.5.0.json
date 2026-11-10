@@ -1,0 +1,58 @@
+{
+  "what": "sizes",
+  "tag": "v0.5.0",
+  "assets": [
+    {
+      "asset": "checksums.txt",
+      "download": 1082
+    },
+    {
+      "asset": "checksums.txt.sig",
+      "download": 64
+    },
+    {
+      "asset": "tabletist-0.5.0-aarch64.AppImage",
+      "download": 17476104
+    },
+    {
+      "asset": "tabletist-0.5.0-x86_64.AppImage",
+      "download": 18606584
+    },
+    {
+      "asset": "tabletist-v0.5.0-aarch64-pc-windows-msvc-setup.exe",
+      "download": 12556123
+    },
+    {
+      "asset": "tabletist-v0.5.0-aarch64-pc-windows-msvc.zip",
+      "download": 14414653,
+      "binary": 31119872
+    },
+    {
+      "asset": "tabletist-v0.5.0-aarch64-unknown-linux-gnu.tar.gz",
+      "download": 18045583,
+      "binary": 38910992
+    },
+    {
+      "asset": "tabletist-v0.5.0-macos-universal.dmg",
+      "download": 36571091
+    },
+    {
+      "asset": "tabletist-v0.5.0-source.tar.gz",
+      "download": 15427856
+    },
+    {
+      "asset": "tabletist-v0.5.0-x86_64-pc-windows-msvc-setup.exe",
+      "download": 13591997
+    },
+    {
+      "asset": "tabletist-v0.5.0-x86_64-pc-windows-msvc.zip",
+      "download": 15479905,
+      "binary": 35911168
+    },
+    {
+      "asset": "tabletist-v0.5.0-x86_64-unknown-linux-gnu.tar.gz",
+      "download": 19286377,
+      "binary": 45268096
+    }
+  ]
+}

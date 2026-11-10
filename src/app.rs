@@ -98,6 +98,20 @@ pub enum PinState {
     Missing,
 }
 
+/// A look the settings chose, on its way to being drawn: egui puts fonts
+/// set in one frame in place at the next frame's start, so the look's are
+/// installed a frame before it is drawn.
+#[derive(Clone, Copy, Debug)]
+enum LookSwitch {
+    /// Its fonts are to be installed.
+    Asked(crate::theme::Look),
+    /// The terminal look's: the desktop's monospace is being read, by the
+    /// read the counter names; its fonts are installed once it is in.
+    Reading(crate::theme::Look, u64),
+    /// Its fonts are in place from this frame: it is drawn.
+    Installed(crate::theme::Look),
+}
+
 pub struct App {
     pub dirs: AppDirs,
     pub settings: Settings,
@@ -260,6 +274,8 @@ pub struct App {
     /// The look's text changed since the last `logic`: egui's own text
     /// styles follow it.
     restyle: bool,
+    /// A look the settings chose, on its way to being drawn.
+    look_switch: Option<LookSwitch>,
     /// The zoom the window was last given: the terminal look's text size,
     /// which sizes the whole window there.
     zoom: Option<f32>,
@@ -391,6 +407,7 @@ impl App {
 
     fn opened(dirs: AppDirs, loaded: Loaded, backend: Backend, relaunched: bool) -> Self {
         let source = loaded.source;
+        let migrated = loaded.migrated();
         let (settings, settings_file) = loaded.into_parts();
         let loaded_connections = SavedConnections::load(&dirs);
         let connections = loaded_connections.store;
@@ -429,7 +446,8 @@ impl App {
         };
         let writes_session = loaded_connections.problem.is_none();
         // An installed data font is read once the window exists (`attach`).
-        let look = crate::theme::Look::for_platform().with_text(&settings, false);
+        let look = crate::theme::Look::chosen(settings.look, crate::update::release::Os::current())
+            .with_text(&settings, false);
         let mut app = Self {
             dirs,
             settings,
@@ -499,6 +517,7 @@ impl App {
             font_read: false,
             fonts: egui::FontDefinitions::empty(),
             restyle: false,
+            look_switch: None,
             zoom: None,
             window_title: "Tabletist".into(),
             window_asks: Vec::new(),
@@ -550,6 +569,17 @@ impl App {
         // So are settings that were read from the old settings.json.
         if source == Source::Json {
             app.save_settings();
+        }
+        // And a key read from the older one it took the place of, once:
+        // `interface_size` as `ui_scale`, the old line taken out. Where
+        // that would write the file whole (the key in a table written
+        // inline), it is not written: nobody asked, and the file's other
+        // keys and comments would go. The old key is read as it is.
+        if !migrated.is_empty() {
+            let settings = app.settings.clone();
+            if let Some(text) = settings.write_kept(&app.settings_file.text, &migrated) {
+                app.take_written(text, settings);
+            }
         }
         app
     }
@@ -1462,6 +1492,11 @@ impl App {
             Action::SetTreeCursor { tab, node } => {
                 if let Some(workspace) = self.workspace_mut(tab) {
                     workspace.tree.cursor = Some(node);
+                    workspace.pane = Pane::Tree;
+                }
+            }
+            Action::GiveTreeKeys(tab) => {
+                if let Some(workspace) = self.workspace_mut(tab) {
                     workspace.pane = Pane::Tree;
                 }
             }
@@ -2676,13 +2711,7 @@ impl App {
                     self.dialog = Some(Dialog::About);
                 }
             }
-            Action::TextSize(larger) => {
-                let terminal = self.look.terminal;
-                self.change_settings(|settings| {
-                    settings.font_size =
-                        larger.map(|larger| settings.stepped_font_size(terminal, larger));
-                });
-            }
+            Action::TextSize(larger) => self.resize(larger),
             Action::ShowSettings => {
                 // Asked for while it is open, it stays as it is.
                 if self.settings_may_open() {
@@ -5863,17 +5892,7 @@ impl App {
         self.refresh_keymap();
         let terminal = self.look.terminal;
         if old.editor_keys_in(terminal) != self.settings.editor_keys_in(terminal) {
-            // Other keybindings: every editor in normal mode, as vim
-            // starts, its history starting at its script.
-            for tab in &mut self.tabs {
-                if let ConnTabContent::Workspace(workspace) = &mut tab.content {
-                    for sql in workspace.sql_tabs_mut() {
-                        sql.vim.to_normal();
-                        let text = sql.text.clone();
-                        sql.vim.start_over(&text);
-                    }
-                }
-            }
+            self.restart_editors();
         }
         if old.timestamps != self.settings.timestamps {
             let full = self.settings.timestamps == crate::settings::Timestamps::Full;
@@ -5940,6 +5959,24 @@ impl App {
                     workspace.tree.flat = flat;
                 }
             }
+        }
+        // Another look than the one drawn or on its way: its fonts are
+        // installed at the next frame's start, and it is drawn from the
+        // frame after, with the keymap of its layout (`App::switch_look`).
+        let chosen =
+            crate::theme::Look::chosen(self.settings.look, crate::update::release::Os::current());
+        let coming = match self.look_switch {
+            Some(
+                LookSwitch::Asked(look)
+                | LookSwitch::Reading(look, _)
+                | LookSwitch::Installed(look),
+            ) => look,
+            None => self.look,
+        };
+        if old.look != self.settings.look
+            && (chosen.name, chosen.keys) != (coming.name, coming.keys)
+        {
+            self.look_switch = Some(LookSwitch::Asked(chosen));
         }
         if old.theme != self.settings.theme {
             // Reading a theme needs the window: `logic` has it.
@@ -7562,10 +7599,17 @@ impl App {
         // Where the run goes: its links are offered only while the tab is
         // still there.
         let on = Some(crate::model::RanOn(workspace.spec.clone()));
+        // What the switch shows, which the footer names after the run.
+        let chosen = match mode {
+            tabletist_db::ScriptMode::Write => RunMode::ReadWrite,
+            tabletist_db::ScriptMode::ReadOnly => workspace
+                .sql_tab(id)
+                .map_or(RunMode::ReadOnly, |sql| workspace.run_mode(sql)),
+        };
         let Some(sql) = workspace.sql_tab_mut(id) else {
             return;
         };
-        let superseded = sql.start_run_with(request, statements.clone(), mode, caps, on);
+        let superseded = sql.start_run_with(request, statements.clone(), (mode, chosen), caps, on);
         // The session runs one thing at a time: the run still going must
         // stop before this one can start.
         self.cancel(session, superseded);
@@ -8343,14 +8387,62 @@ impl App {
         });
     }
 
-    /// How large the window draws everything: the terminal look's text
-    /// size against its 13 points. The other looks size their text by
-    /// role, and draw at 1.
+    /// How large the window draws everything, on top of the display's own
+    /// scale (egui multiplies its native pixels per point by it): the
+    /// terminal look's text size against its 13 points, the others'
+    /// interface scale.
     pub fn zoom_factor(&self) -> f32 {
         if self.look.terminal {
             self.settings.font_size_in(true).points() / 13.0
         } else {
-            1.0
+            self.settings.ui_scale.factor()
+        }
+    }
+
+    /// The keys' and the View menu's Larger, Smaller and Actual Size
+    /// (`larger`, or none for the last): the interface scale a step or back
+    /// to 100% on macOS and Windows, the terminal look's one font size a
+    /// point or back to 13. Saved at once, and told for 4 s in the toast
+    /// or the status line. The Settings window changes them unsaid.
+    fn resize(&mut self, larger: Option<bool>) {
+        use crate::i18n::gettext;
+        let reset = self
+            .keymap
+            .key(self.layout(), crate::keymap::Command::DefaultTextSize);
+        if self.look.terminal {
+            self.change_settings(|settings| {
+                settings.font_size = larger.map(|larger| settings.stepped_font_size(true, larger));
+            });
+            let size = self.settings.font_size_in(true).text();
+            // A key that resets it is named; a `[keys]` line can leave none.
+            let words = if reset.as_str().is_empty() {
+                "font size {size}"
+            } else {
+                "font size {size} · {key} resets"
+            };
+            self.said = Some(
+                gettext(self.locale, words)
+                    .replace("{size}", &size)
+                    .replace("{key}", reset.as_str()),
+            );
+        } else {
+            self.change_settings(|settings| {
+                settings.ui_scale = larger.map_or(crate::settings::UiScale::DEFAULT, |larger| {
+                    settings.ui_scale.stepped(larger)
+                });
+            });
+            let scale = self.settings.ui_scale;
+            let words = if reset.as_str().is_empty() {
+                "Interface {percent}% · {px} px text"
+            } else {
+                "Interface {percent}% · {px} px text · {key} resets"
+            };
+            self.said = Some(
+                gettext(self.locale, words)
+                    .replace("{percent}", &scale.percent().to_string())
+                    .replace("{px}", &scale.text_px().to_string())
+                    .replace("{key}", reset.as_str()),
+            );
         }
     }
 
@@ -8411,6 +8503,86 @@ impl App {
         } else {
             PinState::Reading
         })
+    }
+
+    /// Takes the look the settings chose ([`App::apply_settings`]) a step
+    /// on, at the start of a frame: the fonts of the look drawn and of the
+    /// new one installed, which egui puts in place at the next frame's
+    /// start, and in that frame the new look drawn, in its palette and
+    /// style, its fonts alone set for the frames after, and the desktop's
+    /// theme read in `logic`. Each editor starts over where the look's
+    /// keybindings are others. Settings, open on Appearance, has the
+    /// keyboard on the look's row in the screen the new look draws.
+    fn switch_look(&mut self, ctx: &egui::Context) {
+        match self.look_switch.take() {
+            None => {}
+            // The terminal look's font is read before its first frame, as
+            // a start reads it (`attach`): one that came later would move
+            // every line. On the backend, as the app is running.
+            Some(LookSwitch::Asked(next))
+                if next.terminal && !self.look.terminal && self.follow_desktop =>
+            {
+                self.font_asked += 1;
+                self.backend.send(Command::ReadFont {
+                    font: self.settings.font.clone(),
+                    asked: self.font_asked,
+                });
+                self.look_switch = Some(LookSwitch::Reading(next, self.font_asked));
+            }
+            Some(LookSwitch::Reading(next, asked)) if self.font_taken < asked => {
+                self.look_switch = Some(LookSwitch::Reading(next, asked));
+            }
+            // The fonts of both: the next frame draws the look now, or
+            // the new one where nothing chooses again before it lands.
+            Some(LookSwitch::Asked(next) | LookSwitch::Reading(next, _)) => {
+                let next = next.with_text(&self.settings, self.installed_drawn());
+                let desktop = self.desktop_font.faces.as_ref();
+                let looks = (&self.look, &next);
+                self.fonts = style::install_both(ctx, self.follow_desktop, looks, desktop);
+                self.look_switch = Some(LookSwitch::Installed(next));
+                ctx.request_repaint();
+            }
+            Some(LookSwitch::Installed(next)) => {
+                let was = self.look.terminal;
+                self.look = next;
+                self.look = self.text_look();
+                // The terminal's was read as its fonts were set.
+                if !self.look.terminal {
+                    self.read_desktop_font();
+                }
+                // Its fonts alone from the next frame on.
+                let desktop = self.desktop_font.faces.as_ref();
+                self.fonts = style::install_with(ctx, self.follow_desktop, &self.look, desktop);
+                if self.settings.editor_keys_in(was)
+                    != self.settings.editor_keys_in(self.look.terminal)
+                {
+                    self.restart_editors();
+                }
+                crate::ui::grid::forget_marks(ctx);
+                self.palette = self.resolve_palette();
+                self.apply_style(ctx);
+                self.theme_changed = true;
+                self.list_fonts();
+                if matches!(&self.dialog, Some(Dialog::Settings(dialog)) if dialog.pane == crate::model::SettingsPane::Appearance)
+                {
+                    self.apply(Action::ShowSetting(crate::settings::OptionId::Look));
+                }
+            }
+        }
+    }
+
+    /// Other keybindings: every editor in normal mode, as vim starts, its
+    /// history starting at its script.
+    fn restart_editors(&mut self) {
+        for tab in &mut self.tabs {
+            if let ConnTabContent::Workspace(workspace) = &mut tab.content {
+                for sql in workspace.sql_tabs_mut() {
+                    sql.vim.to_normal();
+                    let text = sql.text.clone();
+                    sql.vim.start_over(&text);
+                }
+            }
+        }
     }
 
     fn resolve_palette(&self) -> Palette {
@@ -8685,6 +8857,8 @@ impl App {
         // Before anything is drawn: a close request that pending changes
         // hold back is asked about in this frame.
         self.hold_close(ui.ctx());
+        // Before anything is drawn: a look the settings chose.
+        self.switch_look(ui.ctx());
         // Before anything names a key: the keymap its labels are read from,
         // made for the look's layout.
         if self.keymap_layout != Some(self.layout()) {
@@ -9564,6 +9738,154 @@ mod tests {
             );
             assert_eq!(saves(&app), 0, "{source:?}");
         }
+    }
+
+    #[test]
+    fn an_older_interface_size_is_written_as_its_scale_once_at_the_start() {
+        use crate::settings::{Key, UiScale};
+        let saved = |app: &App| -> Vec<String> {
+            app.backend
+                .sent
+                .iter()
+                .filter_map(|command| match command {
+                    Command::Save {
+                        file: StateFile::Settings(text),
+                        ..
+                    } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        for (size, scale) in [("small", 0.9), ("default", 1.0), ("large", 1.1)] {
+            let dir = tempfile::tempdir().unwrap();
+            let text = format!(
+                "# mine\n[appearance]\ninterface_size = \"{size}\"  # small | default | large\n\
+                 font_size = 14\n"
+            );
+            let app = App::new(
+                AppDirs::at(dir.path()),
+                Settings::from_toml(&text),
+                Backend::recording(),
+            );
+            let scale = UiScale::of(scale).unwrap();
+            assert_eq!(app.settings.ui_scale, scale, "{size}");
+            // Written once, off the UI thread: the old line out, the scale
+            // in where it is not 100%, the rest as it was.
+            let saved = saved(&app);
+            assert_eq!(saved.len(), 1, "{size}");
+            let written = &saved[0];
+            assert_eq!(written, &app.settings_file.text);
+            assert!(!written.contains("interface_size"), "{written}");
+            assert!(written.starts_with("# mine\n[appearance]\n"), "{written}");
+            assert!(written.contains("font_size = 14"), "{written}");
+            assert_eq!(
+                written.contains(&format!("ui_scale = {}", scale.name())),
+                scale != UiScale::DEFAULT,
+                "{written}"
+            );
+            // Read back, it is what it was, and nothing more is to move.
+            let again = Settings::from_toml(written);
+            assert_eq!(again.settings.ui_scale, scale);
+            assert_eq!(again.migrated(), Vec::<Key>::new());
+            let app = App::new(AppDirs::at(dir.path()), again, Backend::recording());
+            assert!(saved_none(&app), "{size}");
+        }
+        // The editor's older keys are not moved at a start: they give way
+        // the first time the limit or the timeout is set.
+        let dir = tempfile::tempdir().unwrap();
+        let text = "[editor]\nsql_limit = 300\nsql_timeout_secs = 7200\n";
+        let app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::from_toml(text),
+            Backend::recording(),
+        );
+        assert_eq!(app.settings.sql_limit, 300);
+        assert!(saved_none(&app), "{:?}", app.backend.sent);
+        assert_eq!(app.settings_file.text, text);
+        // An inline table could only be written whole, losing the keys and
+        // comments this version does not know: the start leaves it alone,
+        // and the old key is read as it is.
+        let text = "appearance = { interface_size = \"large\", future = 1 } # mine\n";
+        let app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::from_toml(text),
+            Backend::recording(),
+        );
+        assert_eq!(app.settings.ui_scale, UiScale::of(1.1).unwrap());
+        assert!(saved_none(&app), "{:?}", app.backend.sent);
+        assert_eq!(app.settings_file.text, text);
+        fn saved_none(app: &App) -> bool {
+            !app.backend.sent.iter().any(|command| {
+                matches!(
+                    command,
+                    Command::Save {
+                        file: StateFile::Settings(_),
+                        ..
+                    }
+                )
+            })
+        }
+    }
+
+    #[test]
+    fn the_interface_scale_reloads_live_and_one_it_cannot_be_is_told() {
+        use crate::settings::UiScale;
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::default().into(),
+            Backend::recording(),
+        );
+        app.look = crate::theme::Look::macos();
+        let edited = |app: &mut App, text: &str| {
+            app.apply_event(Event::SettingsFile {
+                text: text.to_owned(),
+                own: false,
+            });
+        };
+        edited(&mut app, "[appearance]\nui_scale = 1.75\n");
+        assert_eq!(app.settings.ui_scale, UiScale::of(1.75).unwrap());
+        assert_eq!(app.zoom_factor(), 1.75);
+        assert_eq!(app.settings_file.invalid, Vec::<usize>::new());
+        // No scale of the menu's: its line told as ignored, and the scale
+        // stays as it was, as every key's does while the file is edited.
+        edited(&mut app, "[appearance]\nui_scale = 1.3\n");
+        assert_eq!(app.settings.ui_scale, UiScale::of(1.75).unwrap());
+        assert_eq!(app.settings_file.invalid, vec![2]);
+        // With the older key beside it, the older key stands for it.
+        edited(
+            &mut app,
+            "[appearance]\ninterface_size = \"large\"\nui_scale = 1.3\n",
+        );
+        assert_eq!(app.settings.ui_scale, UiScale::of(1.1).unwrap());
+        assert_eq!(app.settings_file.invalid, vec![3]);
+        // At a start, there is none to keep: 100%, the line told too.
+        let loaded = Settings::from_toml("[appearance]\nui_scale = 1.3\n");
+        let app = App::new(AppDirs::at(dir.path()), loaded, Backend::recording());
+        assert_eq!(app.settings.ui_scale, UiScale::DEFAULT);
+        assert_eq!(app.settings_file.invalid, vec![2]);
+        // The older key beside it stands for it at a start too, and the
+        // file is not written: the line typed by hand stays to be put right.
+        let text = "[appearance]\ninterface_size = \"large\"\nui_scale = 1.3\n";
+        let app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::from_toml(text),
+            Backend::recording(),
+        );
+        assert_eq!(app.settings.ui_scale, UiScale::of(1.1).unwrap());
+        assert_eq!(app.settings_file.invalid, vec![3]);
+        assert_eq!(app.settings_file.text, text);
+        assert!(
+            !app.backend.sent.iter().any(|command| matches!(
+                command,
+                Command::Save {
+                    file: StateFile::Settings(_),
+                    ..
+                }
+            )),
+            "{:?}",
+            app.backend.sent
+        );
     }
 
     #[test]

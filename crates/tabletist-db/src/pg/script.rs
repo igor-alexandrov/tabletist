@@ -255,20 +255,27 @@ enum Tx {
 /// statement cannot lift it: the refusal stops every `SET`, and the check
 /// `set_config`. No lock timeout beside it: a wait for a lock is part of
 /// the statement's time.
+///
+/// A row statement runs as a cursor (see `run_statement`), which
+/// PostgreSQL plans for the first tenth of its rows by default
+/// (`cursor_tuple_fraction`): another plan than the same query gets in
+/// psql, and at times a slower one. The transaction plans for all of them,
+/// as a plain query is; the rollback takes the setting away.
+///
+/// All of it is one message, one round trip to the server. It runs in
+/// order and stops at the first step that fails; past `BEGIN` that leaves
+/// a failed transaction, which the close rolls back as before.
 async fn open(client: &tokio_postgres::Client, sent: Option<Sent<'_>>) -> Result<Tx> {
-    let timeout = sent.map(|sent| format!("SET LOCAL statement_timeout = {}", sent.timeout_ms()));
-    let steps = ["BEGIN READ ONLY", "SELECT 1"]
-        .into_iter()
-        .chain(timeout.as_deref())
-        .chain(["SAVEPOINT tabletist_guard"]);
-    for step in steps {
-        match client.batch_execute(step).await.map_err(query_error) {
-            Ok(()) => {}
-            Err(Error::Cancelled) => return Ok(Tx::Aborted),
-            Err(error) => return Err(error),
-        }
+    let timeout = sent.map(|sent| format!("SET LOCAL statement_timeout = {}; ", sent.timeout_ms()));
+    let steps = format!(
+        "BEGIN READ ONLY; SET LOCAL cursor_tuple_fraction = 1; SELECT 1; {}SAVEPOINT tabletist_guard",
+        timeout.unwrap_or_default()
+    );
+    match client.batch_execute(&steps).await.map_err(query_error) {
+        Ok(()) => Ok(Tx::Open),
+        Err(Error::Cancelled) => Ok(Tx::Aborted),
+        Err(error) => Err(error),
     }
-    Ok(Tx::Open)
 }
 
 /// Runs the statements in order, up to the first that fails or is
@@ -376,22 +383,29 @@ fn unlocked(released: Result<()>) -> Result<()> {
 /// Where a transaction the run believes open really stands, asked after
 /// the last statement: a statement in last position may have ended it, and
 /// what a `COMMIT` kept (a setting) must not reach later browsing.
+///
+/// The guard's check (see `in_transaction`) and the question whether the
+/// transaction is still read-only go in one message. The question is only
+/// answered when the check passed: a failed step stops the rest.
 async fn confirm(client: &tokio_postgres::Client) -> Result<Tx> {
-    match in_transaction(client).await {
-        Ok(Tx::Open) => {}
-        Ok(Tx::Left) => return Ok(Tx::Left),
-        // A failed block, or a cancel on the check, which fails the block
-        // if there is one: the check cannot say whose it is.
-        Ok(Tx::Aborted) | Err(Error::Cancelled) => return retry_cancelled!(own_failed(client)),
-        Err(error) => return Err(error),
-    }
-    match still_read_only(client).await {
-        Ok(true) => Ok(Tx::Open),
-        Ok(false) => Ok(Tx::Left),
-        // The session is inside the script's transaction (the check
-        // above), and the cancel aborted it: it cannot write.
-        Err(Error::Cancelled) => Ok(Tx::Aborted),
-        Err(error) => Err(error),
+    let asked = client
+        .simple_query(
+            "RELEASE tabletist_guard; SAVEPOINT tabletist_guard; SHOW transaction_read_only",
+        )
+        .await;
+    let messages = match asked.map_err(standing) {
+        Ok(messages) => messages,
+        Err(Ok(Tx::Left)) => return Ok(Tx::Left),
+        // A failed block, or a cancel, which fails the block if there is
+        // one, whether it landed on the check or on the question: neither
+        // says whose block it is.
+        Err(Ok(_) | Err(Error::Cancelled)) => return retry_cancelled!(own_failed(client)),
+        Err(Err(error)) => return Err(error),
+    };
+    // Only an explicit `off` says it is no longer read-only.
+    match first_text(&messages).as_deref() {
+        Some("off") => Ok(Tx::Left),
+        _ => Ok(Tx::Open),
     }
 }
 
@@ -435,12 +449,19 @@ async fn own_failed(client: &tokio_postgres::Client) -> Result<Tx> {
 ///
 /// `Err` is a cancel that landed on the check, or a lost session.
 async fn in_transaction(client: &tokio_postgres::Client) -> Result<Tx> {
-    let Err(error) = client
+    match client
         .batch_execute("RELEASE tabletist_guard; SAVEPOINT tabletist_guard")
         .await
-    else {
-        return Ok(Tx::Open);
-    };
+    {
+        Ok(()) => Ok(Tx::Open),
+        Err(error) => standing(error),
+    }
+}
+
+/// Where the session stands after the guard's swap failed with `error`:
+/// `Aborted` in the script's own failed transaction, `Left` anywhere else.
+/// `Err` is a cancel, or a lost session.
+fn standing(error: tokio_postgres::Error) -> Result<Tx> {
     if error.code() == Some(&SqlState::IN_FAILED_SQL_TRANSACTION) {
         return Ok(Tx::Aborted);
     }
@@ -467,16 +488,6 @@ async fn unlock(client: &tokio_postgres::Client) -> Result<()> {
         .map_err(query_error)
 }
 
-/// Whether the script's transaction is still read-only: only an explicit
-/// `off` says it is not.
-async fn still_read_only(client: &tokio_postgres::Client) -> Result<bool> {
-    let messages = client
-        .simple_query("SHOW transaction_read_only")
-        .await
-        .map_err(query_error)?;
-    Ok(first_text(&messages).as_deref() != Some("off"))
-}
-
 /// A statement the server failed, as its outcome: the transaction is
 /// aborted. `offset` is how many characters of wrapping precede the user's
 /// text in what the server saw; `None` drops the position (it points into
@@ -493,6 +504,25 @@ fn failed(error: tokio_postgres::Error, offset: Option<usize>) -> Result<(Statem
         .and_then(|(position, offset)| position.checked_sub(offset))
         .filter(|position| *position > 0);
     Ok((statement_failed(query_error(error), position)?, Tx::Aborted))
+}
+
+/// [`failed`] for the message that declares, fetches and closes the
+/// cursor: the user's text follows the cursor prefix, and a position past
+/// it points into the `FETCH` or `CLOSE` after it, so it is dropped.
+fn failed_in_cursor(error: tokio_postgres::Error, text: &str) -> Result<(StatementOutcome, Tx)> {
+    let (outcome, tx) = failed(error, Some(CURSOR_PREFIX.chars().count()))?;
+    Ok((within_text(outcome, text), tx))
+}
+
+/// `outcome` without an error position that falls past `text`.
+fn within_text(outcome: StatementOutcome, text: &str) -> StatementOutcome {
+    match outcome {
+        StatementOutcome::Error { error, position } => StatementOutcome::Error {
+            error,
+            position: position.filter(|position| *position <= text.chars().count()),
+        },
+        outcome => outcome,
+    }
 }
 
 /// Whether a statement that returns rows can run as a cursor: its first
@@ -652,32 +682,38 @@ async fn run_statement(
     // keep that. There every statement runs to its end, and `DECLARE`
     // would refuse a data-modifying `WITH` anyway.
     if mode == ScriptMode::ReadOnly && cursor_statement(text) {
-        // Its own call, and a newline, so a trailing -- comment ends there.
+        // A newline, so a trailing -- comment ends there.
         let declare = format!("{CURSOR_PREFIX}{text}\n");
-        // Values are bound where the cursor is declared, which takes the
-        // other protocol: the cursor keeps them, and its rows are fetched
-        // as text like any other's.
-        let declared = if params.is_empty() {
-            client.batch_execute(&declare).await
+        let fetch = format!(
+            "FETCH {} FROM tabletist_sql; CLOSE tabletist_sql",
+            fetch_count(limit)
+        );
+        let messages = if params.is_empty() {
+            // The three in one message, one round trip to the server. The
+            // text cannot reach into what follows it: it prepared above, so
+            // it is one statement with no quote or comment left open but a
+            // -- one. The server stops at the first that fails.
+            match client.simple_query(&format!("{declare};{fetch}")).await {
+                Ok(messages) => messages,
+                Err(error) => return failed_in_cursor(error, text),
+            }
         } else {
-            let bound = client.execute(declare.as_str(), &values(params)).await;
-            bound.map(drop)
+            // Values are bound where the cursor is declared, which takes
+            // the other protocol: the cursor keeps them, and its rows are
+            // fetched as text like any other's.
+            let declared = client.execute(declare.as_str(), &values(params)).await;
+            if let Err(error) = declared {
+                return failed(error, Some(CURSOR_PREFIX.chars().count()));
+            }
+            // Nothing failed: the transaction is still usable.
+            if stop.is_stopped() {
+                return Ok((StatementOutcome::Cancelled, Tx::Open));
+            }
+            match client.simple_query(&fetch).await {
+                Ok(messages) => messages,
+                Err(error) => return failed(error, None),
+            }
         };
-        if let Err(error) = declared {
-            return failed(error, Some(CURSOR_PREFIX.chars().count()));
-        }
-        // Nothing failed: the transaction is still usable.
-        if stop.is_stopped() {
-            return Ok((StatementOutcome::Cancelled, Tx::Open));
-        }
-        let fetch = format!("FETCH {} FROM tabletist_sql", fetch_count(limit));
-        let messages = match client.simple_query(&fetch).await {
-            Ok(messages) => messages,
-            Err(error) => return failed(error, None),
-        };
-        if let Err(error) = client.batch_execute("CLOSE tabletist_sql").await {
-            return failed(error, None);
-        }
         kept.extend(messages.into_iter().filter_map(|message| match message {
             SimpleQueryMessage::Row(row) => Some(row),
             _ => None,
@@ -764,6 +800,22 @@ mod tests {
         ] {
             assert!(!counts_rows(text), "{text}");
         }
+    }
+
+    #[test]
+    fn a_cursor_error_keeps_a_position_only_inside_the_users_text() {
+        let error = |position| StatementOutcome::Error {
+            error: Error::query("boom"),
+            position,
+        };
+        let text = "SELECT é";
+        // The last character of the text, counted in characters.
+        assert_eq!(within_text(error(Some(8)), text), error(Some(8)));
+        // Past it: the FETCH or CLOSE that follow.
+        assert_eq!(within_text(error(Some(9)), text), error(None));
+        assert_eq!(within_text(error(None), text), error(None));
+        let other = StatementOutcome::Cancelled;
+        assert_eq!(within_text(other.clone(), text), other);
     }
 
     #[test]
@@ -870,6 +922,31 @@ mod tests {
             close(&client, Tx::Open).await.unwrap();
         }
         assert_eq!(setting(&conn, "statement_timeout").await, "0");
+    }
+
+    #[tokio::test]
+    async fn a_run_plans_its_cursors_for_every_row_in_its_transaction_only() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        // A value of the session's own, whatever the server's default is.
+        {
+            let client = conn.client.lock().await;
+            let set = client.batch_execute("SET cursor_tuple_fraction = 0.25");
+            set.await.unwrap();
+        }
+        assert_eq!(setting(&conn, "cursor_tuple_fraction").await, "0.25");
+        {
+            let client = conn.client.lock().await;
+            assert_eq!(open(&client, None).await, Ok(Tx::Open));
+        }
+        assert_eq!(setting(&conn, "cursor_tuple_fraction").await, "1");
+        {
+            let client = conn.client.lock().await;
+            close(&client, Tx::Open).await.unwrap();
+        }
+        assert_eq!(setting(&conn, "cursor_tuple_fraction").await, "0.25");
     }
 
     /// One test at a time uses the `probe` table: creating it twice at once

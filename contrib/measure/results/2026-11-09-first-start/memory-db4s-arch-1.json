@@ -1,0 +1,41 @@
+{
+  "what": "memory",
+  "command": [
+    "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/db4s-arch/root/usr/bin/sqlitebrowser"
+  ],
+  "path": "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/db4s-arch/root/usr/bin/sqlitebrowser",
+  "sha256": "d0ca0e60167404b6149499f775b734388deb27e4a1258fb96d6e996f3197e73a",
+  "fresh_profile": true,
+  "seed": "contrib/measure/profiles/db4s",
+  "env": [
+    "DISPLAY=:0",
+    "QT_QPA_PLATFORM=wayland;xcb",
+    "LD_LIBRARY_PATH=/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/db4s-arch/root/usr/lib",
+    "QT_PLUGIN_PATH=/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/db4s-arch/root/usr/lib/qt/plugins:/usr/lib/qt/plugins"
+  ],
+  "steps": [
+    {
+      "step": "idle after the start",
+      "pid": 198155,
+      "rss": 117538816,
+      "pss": 61708288,
+      "private": 46362624,
+      "gpu": {
+        "vram": 24576,
+        "gtt": 4980736,
+        "cpu": 0
+      },
+      "tree": {
+        "processes": 1,
+        "rss": 117538816,
+        "pss": 61708288,
+        "private": 46362624,
+        "gpu": {
+          "vram": 24576,
+          "gtt": 4980736,
+          "cpu": 0
+        }
+      }
+    }
+  ]
+}

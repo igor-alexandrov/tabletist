@@ -1,13 +1,13 @@
-//! Settings › Appearance, its Text section: the interface's size and the
+//! Settings › Appearance, its Text section: the interface's scale and the
 //! data font of macOS and Windows, the terminal look's one font and size,
-//! and the keys that change the size wherever the keyboard is.
+//! and the keys that change the scale or the size wherever the keyboard is.
 
 use egui::{Key, Modifiers};
 
 use super::appearance_settings_tests::{on_the_pane, settings_saves, shows};
 use crate::font_files::desktop_font::Read;
 use crate::model::Action;
-use crate::settings::{FontSize, InterfaceSize, OptionValue};
+use crate::settings::{FontSize, OptionValue, UiScale};
 use crate::testing::Harness;
 use crate::theme::{DataFace, Look};
 
@@ -55,7 +55,14 @@ fn the_terminal_look_draws_the_whole_window_at_its_size() {
     logic(&mut harness);
     // To a whole point, as the look steps.
     assert_eq!(harness.ctx.zoom_factor(), 20.0 / 13.0);
-    // The other looks size their text by role, at 1.
+    // Up to 32.
+    harness
+        .app
+        .change_settings(|settings| settings.font_size = FontSize::of(32.0));
+    logic(&mut harness);
+    assert_eq!(harness.ctx.zoom_factor(), 32.0 / 13.0);
+    // The other looks' data size does not zoom the window: their scale
+    // does.
     let mut harness = sheet(Look::macos());
     harness
         .app
@@ -65,11 +72,38 @@ fn the_terminal_look_draws_the_whole_window_at_its_size() {
 }
 
 #[test]
-fn egui_text_styles_follow_the_interface_size() {
+fn each_interface_scale_sets_the_zoom_factor_to_its_own() {
+    for look in [Look::macos(), Look::standard()] {
+        let mut harness = sheet(look);
+        for scale in UiScale::ALL {
+            harness
+                .app
+                .apply(Action::SetOption(OptionValue::InterfaceScale(scale)));
+            logic(&mut harness);
+            assert_eq!(harness.ctx.zoom_factor(), scale.factor(), "{}", look.name);
+            // egui multiplies the display's own scale by it.
+            let native = harness.ctx.native_pixels_per_point().unwrap_or(1.0);
+            assert_eq!(harness.ctx.pixels_per_point(), native * scale.factor());
+        }
+    }
+    // On a display of 2 pixels a point too.
     let mut harness = sheet(Look::macos());
+    harness.scale = 2.0;
     harness
         .app
-        .change_settings(|settings| settings.interface_size = InterfaceSize::Large);
+        .apply(Action::SetOption(OptionValue::InterfaceScale(
+            UiScale::of(1.25).unwrap(),
+        )));
+    logic(&mut harness);
+    assert_eq!(harness.ctx.pixels_per_point(), 2.5);
+}
+
+#[test]
+fn the_interface_keeps_the_designs_sizes_and_the_scale_zooms_them() {
+    let mut harness = sheet(Look::macos());
+    harness.app.change_settings(|settings| {
+        settings.ui_scale = UiScale::of(1.5).unwrap();
+    });
     logic(&mut harness);
     let body = harness
         .ctx
@@ -77,7 +111,32 @@ fn egui_text_styles_follow_the_interface_size() {
         .text_styles
         .get(&egui::TextStyle::Body)
         .map(|font| font.size);
-    assert_eq!(body, Some(14.0));
+    // 13 points, at 1.5 points a pixel's worth: 19.5 pixels.
+    assert_eq!(body, Some(13.0));
+    assert_eq!(harness.ctx.zoom_factor(), 1.5);
+}
+
+#[test]
+fn the_data_font_size_multiplies_with_the_scale() {
+    for look in [Look::macos(), Look::standard()] {
+        let mut harness = sheet(look);
+        harness.app.change_settings(|settings| {
+            settings.ui_scale = UiScale::of(1.5).unwrap();
+            settings.font_size = FontSize::of(12.5);
+        });
+        logic(&mut harness);
+        let faces = harness.app.look.faces;
+        let cell = crate::typography::TextRole::GridCell.size(faces);
+        // 12.5 points at 1.5: 18.75 pixels on a display of one a point.
+        assert_eq!(cell * harness.ctx.zoom_factor(), 18.75, "{}", look.name);
+        harness.app.change_settings(|settings| {
+            settings.font_size = FontSize::of(16.0);
+        });
+        logic(&mut harness);
+        let faces = harness.app.look.faces;
+        let cell = crate::typography::TextRole::GridCell.size(faces);
+        assert_eq!(cell * harness.ctx.zoom_factor(), 24.0, "{}", look.name);
+    }
 }
 
 #[test]
@@ -107,34 +166,180 @@ fn a_grid_row_holds_a_line_of_its_data_at_every_size() {
     assert_eq!(Look::standard().with_grid(&compact).row(), 18.0);
 }
 
+/// The interface scale the app has, in percent.
+fn percent(harness: &Harness) -> u16 {
+    harness.app.settings.ui_scale.percent()
+}
+
 #[test]
-fn the_mac_keys_step_and_reset_the_data_size_and_write_it() {
+fn the_mac_keys_step_through_the_scales_stop_at_the_ends_and_write_it() {
+    // macOS's Cmd, and Windows's and Linux's Ctrl, which egui-winit sends
+    // there with its command flag.
+    let ctrl = Modifiers {
+        ctrl: true,
+        command: true,
+        ..Modifiers::NONE
+    };
+    for (look, chord) in [
+        (Look::macos(), Modifiers::COMMAND),
+        (Look::standard(), ctrl),
+    ] {
+        let mut harness = sheet(look);
+        let saves = settings_saves(&harness);
+        harness.press(Key::Equals, chord);
+        assert_eq!(percent(&harness), 110, "{}", look.name);
+        assert!(file(&harness).contains("ui_scale = 1.1"));
+        harness.press(Key::Equals, chord);
+        assert_eq!(percent(&harness), 125);
+        for _ in 0..8 {
+            harness.press(Key::Equals, chord);
+        }
+        assert_eq!(percent(&harness), 250, "stops at the top");
+        harness.press(Key::Num0, chord);
+        assert_eq!(percent(&harness), 100);
+        assert!(!file(&harness).contains("ui_scale"));
+        harness.press(Key::Minus, chord);
+        harness.press(Key::Minus, chord);
+        assert_eq!(percent(&harness), 90, "stops at the bottom");
+        assert!(file(&harness).contains("ui_scale = 0.9"));
+        // A save each time it changed: two up, the four left to the top,
+        // 100%, and 90%. None at an end.
+        assert_eq!(settings_saves(&harness), saves + 8);
+        // The data's size stays as it is: it has no key.
+        assert_eq!(harness.app.settings.font_size, None);
+        // egui zooms nothing by itself: the keys are the keymap's.
+        assert!(!harness.ctx.options(|options| options.zoom_with_keyboard));
+        logic(&mut harness);
+        assert_eq!(harness.ctx.zoom_factor(), 0.9);
+    }
+}
+
+#[test]
+fn a_key_that_changes_the_scale_says_so_in_the_toast() {
     let mut harness = sheet(Look::macos());
-    let saves = settings_saves(&harness);
     harness.press(Key::Equals, Modifiers::COMMAND);
-    assert_eq!(harness.app.settings.font_size, FontSize::of(13.0));
-    assert!(file(&harness).contains("font_size = 13\n"));
-    harness.press(Key::Minus, Modifiers::COMMAND);
-    harness.press(Key::Minus, Modifiers::COMMAND);
-    assert_eq!(harness.app.settings.font_size, FontSize::of(12.0));
-    harness.press(Key::Num0, Modifiers::COMMAND);
-    assert_eq!(harness.app.settings.font_size, None);
-    assert!(!file(&harness).contains("font_size"));
-    assert_eq!(settings_saves(&harness), saves + 4);
-    // egui zooms nothing: the keys are the keymap's.
-    logic(&mut harness);
-    assert_eq!(harness.ctx.zoom_factor(), 1.0);
-    assert!(!harness.ctx.options(|options| options.zoom_with_keyboard));
-    // Under the Settings window too, which shows the size.
+    harness.press(Key::Equals, Modifiers::COMMAND);
+    harness.press(Key::Equals, Modifiers::COMMAND);
+    let reset = harness.app.keymap.key(
+        harness.app.layout(),
+        crate::keymap::Command::DefaultTextSize,
+    );
+    let said = format!("Interface 150% · 20 px text · {} resets", reset.as_str());
+    assert!(shows(&mut harness, &said), "{said}: {:?}", harness.painted);
+    // For the toast's 4 seconds.
+    assert_eq!(crate::ui::toast::SECONDS, 4.0);
+}
+
+/// The keymap's key for Actual size, which the toast and the status line
+/// name.
+fn reset_key(harness: &Harness) -> String {
+    let reset = harness.app.keymap.key(
+        harness.app.layout(),
+        crate::keymap::Command::DefaultTextSize,
+    );
+    reset.as_str().to_owned()
+}
+
+/// A `[keys.unbind]` line that leaves Actual size no key, asked of the
+/// keymap: its scope's table and its default keys there.
+fn unbind_actual_size(harness: &Harness) -> String {
+    use crate::keymap::{BINDINGS, Command, Row, defaults};
+    let layout = harness.app.layout();
+    let row = BINDINGS
+        .iter()
+        .map(Row::of)
+        .find(|row| row.command == Command::DefaultTextSize)
+        .unwrap();
+    let keys: Vec<String> = defaults(layout, row)
+        .into_iter()
+        .map(|keys| format!("{keys:?}"))
+        .collect();
+    format!(
+        "[keys.unbind]\n{} = [{}]\n",
+        row.scope.table(layout),
+        keys.join(", ")
+    )
+}
+
+/// The settings file edited to `text`, as a live edit reaches the app.
+fn edited(harness: &mut Harness, text: &str) {
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::SettingsFile {
+            text: text.to_owned(),
+            own: false,
+        }));
+    harness.settle();
+}
+
+#[test]
+fn with_no_key_for_actual_size_the_toast_names_none() {
+    let mut harness = sheet(Look::macos());
+    let unbind = unbind_actual_size(&harness);
+    edited(&mut harness, &unbind);
+    assert_eq!(
+        reset_key(&harness),
+        "",
+        "{:?}",
+        harness.app.settings_file.invalid
+    );
+    harness.press(Key::Equals, Modifiers::COMMAND);
+    let said = "Interface 110% · 14 px text";
+    assert!(shows(&mut harness, said), "{:?}", harness.painted);
+    assert!(
+        !harness
+            .painted
+            .iter()
+            .any(|(text, _)| text.contains("resets")),
+        "{:?}",
+        harness.painted
+    );
+}
+
+#[test]
+fn with_no_key_for_actual_size_the_status_line_names_none() {
+    let mut harness = terminal();
+    let unbind = unbind_actual_size(&harness);
+    edited(&mut harness, &unbind);
+    assert_eq!(
+        reset_key(&harness),
+        "",
+        "{:?}",
+        harness.app.settings_file.invalid
+    );
+    harness.press(Key::Equals, Modifiers::CTRL);
+    assert!(shows(&mut harness, "font size 14"), "{:?}", harness.painted);
+    assert!(
+        !harness
+            .painted
+            .iter()
+            .any(|(text, _)| text.contains("resets")),
+        "{:?}",
+        harness.painted
+    );
+}
+
+#[test]
+fn the_scale_keys_work_under_the_settings_window_which_shows_it_unsaid() {
+    let mut harness = sheet(Look::macos());
     on_the_pane(&mut harness);
     harness.press(Key::Equals, Modifiers::COMMAND);
-    assert_eq!(harness.app.settings.font_size, FontSize::of(13.0));
-    assert!(harness.has("Data font size"));
+    assert_eq!(percent(&harness), 110);
     let tree = harness.settle();
-    let menu = crate::testing::node(&tree, "Data font size", egui::accesskit::Role::ComboBox)
+    let menu = crate::testing::node(&tree, "Interface scale", egui::accesskit::Role::ComboBox)
         .and_then(|id| tree.nodes.iter().find(|(node, _)| *node == id))
         .map(|(_, node)| node.value().map(str::to_owned));
-    assert_eq!(menu, Some(Some("13 pt".to_owned())));
+    assert_eq!(menu, Some(Some("110 percent, 14 pixel text".to_owned())));
+    // Picked in the window, it is said nowhere: the window shows it.
+    let mut harness = sheet(Look::macos());
+    on_the_pane(&mut harness);
+    harness.click("Interface scale");
+    harness.click("150 percent, 20 pixel text");
+    assert_eq!(percent(&harness), 150);
+    assert!(!shows(&mut harness, "Interface 150%"));
+    logic(&mut harness);
+    assert_eq!(harness.ctx.zoom_factor(), 1.5);
+    assert!(harness.app.dialog.is_some(), "the window stays open");
 }
 
 #[test]
@@ -153,48 +358,114 @@ fn the_terminal_keys_step_the_size_anywhere_and_stop_at_its_ends() {
         .change_settings(|settings| settings.font_size = FontSize::of(9.0));
     harness.press(Key::Minus, Modifiers::CTRL);
     assert_eq!(harness.app.settings.font_size, FontSize::of(9.0));
-    // No key resets it here: `R` on its row does.
+    harness
+        .app
+        .change_settings(|settings| settings.font_size = FontSize::of(31.0));
+    harness.press(Key::Equals, Modifiers::CTRL);
+    harness.press(Key::Equals, Modifiers::CTRL);
+    assert_eq!(harness.app.settings.font_size, FontSize::of(32.0));
+    // Ctrl+0 takes it back to 13, out of the file.
     harness.press(Key::Num0, Modifiers::CTRL);
-    assert_eq!(harness.app.settings.font_size, FontSize::of(9.0));
+    assert_eq!(harness.app.settings.font_size, None);
+    assert_eq!(
+        harness.app.settings.font_size_in(true),
+        FontSize::of(13.0).unwrap()
+    );
+    assert!(!file(&harness).contains("font_size"));
+    // The scale is the other looks': the terminal's keys leave it.
+    assert_eq!(percent(&harness), 100);
 }
 
 #[test]
-fn the_sheet_sets_the_interface_size_and_the_data_font() {
+fn a_terminal_key_that_changes_the_size_says_so_on_the_status_line() {
+    let mut harness = terminal();
+    let reset = harness.app.keymap.key(
+        harness.app.layout(),
+        crate::keymap::Command::DefaultTextSize,
+    );
+    let said = |size: u8| format!("font size {size} · {} resets", reset.as_str());
+    for _ in 0..5 {
+        harness.press(Key::Equals, Modifiers::CTRL);
+    }
+    // On the connections' screen,
+    assert!(shows(&mut harness, &said(18)), "{:?}", harness.painted);
+    // on a connection's start screen,
+    let tab = harness.connect_fake();
+    harness.press(Key::Minus, Modifiers::CTRL);
+    assert!(shows(&mut harness, &said(17)));
+    // and with a SQL tab open.
+    harness.add_sql_tab(tab);
+    harness.press(Key::Minus, Modifiers::CTRL);
+    assert!(shows(&mut harness, &said(16)), "{:?}", harness.painted);
+}
+
+#[test]
+fn the_sheet_sets_the_interface_scale_and_the_data_font() {
     let mut harness = sheet(Look::macos());
     on_the_pane(&mut harness);
     // The board's words.
+    let keys = |command| {
+        crate::ui::keys::written(&harness.ctx, &harness.app.look, command)
+            .as_str()
+            .to_owned()
+    };
+    let hint = format!(
+        "{} larger · {} smaller · {} back to 100%",
+        keys(crate::keymap::Command::LargerText),
+        keys(crate::keymap::Command::SmallerText),
+        keys(crate::keymap::Command::DefaultTextSize),
+    );
     for words in [
         "TEXT",
-        "Sidebar, tabs, buttons, inspector labels",
-        "Grid cells, SQL editor, JSON",
+        "Everything in the window: text, controls, rows and spacing",
+        "Grid cells, SQL editor, JSON · scales with the interface",
+        "100% · 13 px text",
+        &hint,
     ] {
         assert!(shows(&mut harness, words), "{words}");
     }
-    for size in ["Small · 12", "Default · 13", "Large · 14"] {
-        assert!(harness.has(&format!("Interface size: {size}")), "{size}");
+    // Every scale in the menu, read out with the size of its text.
+    harness.click("Interface scale");
+    for (percent, pixels) in [
+        (90, 12),
+        (100, 13),
+        (110, 14),
+        (125, 16),
+        (150, 20),
+        (175, 23),
+        (200, 26),
+        (250, 33),
+    ] {
+        let name = format!("{percent} percent, {pixels} pixel text");
+        assert!(harness.has(&name), "{name}");
+        assert!(shows(&mut harness, &format!("{percent}%")), "{percent}");
     }
+    assert_eq!(
+        current(&mut harness, "100 percent, 13 pixel text"),
+        Some(true)
+    );
     let saves = settings_saves(&harness);
-    harness.click("Interface size: Large · 14");
+    harness.click("125 percent, 16 pixel text");
     harness.click("Data font");
     harness.click("Data font JetBrains Mono");
     harness.click("Data font size");
     harness.click("Data font size 14 pt");
     harness.settle();
     let settings = &harness.app.settings;
-    assert_eq!(settings.interface_size, InterfaceSize::Large);
+    assert_eq!(settings.ui_scale, UiScale::of(1.25).unwrap());
     assert_eq!(settings.font.as_deref(), Some("JetBrains Mono"));
     assert_eq!(settings.font_size, FontSize::of(14.0));
     assert_eq!(settings_saves(&harness), saves + 3);
     for line in [
-        "interface_size = \"large\"",
+        "ui_scale = 1.25",
         "font = \"JetBrains Mono\"",
-        "font_size = 14\n",
+        "font_size = 14",
     ] {
         assert!(file(&harness).contains(line), "{line}");
     }
+    assert!(shows(&mut harness, "125% · 16 px text"));
     // Every role drawn from here on has them.
     let faces = harness.app.look.faces;
-    assert_eq!(faces.interface, InterfaceSize::Large);
     assert_eq!(faces.data, DataFace::JetBrainsMono);
     assert_eq!(faces.data_size, FontSize::halves(28));
     // The default face is no value: the file leaves it out.
@@ -206,12 +477,49 @@ fn the_sheet_sets_the_interface_size_and_the_data_font() {
 }
 
 #[test]
+fn changing_the_scale_keeps_the_keyboard_where_it_was() {
+    let mut harness = sheet(Look::macos());
+    on_the_pane(&mut harness);
+    harness.click("Data font size");
+    harness.press(Key::Escape, Modifiers::NONE);
+    let focused = |harness: &mut Harness| {
+        let tree = harness.settle();
+        tree.focus
+    };
+    let before = focused(&mut harness);
+    for _ in 0..5 {
+        harness.press(Key::Equals, Modifiers::COMMAND);
+    }
+    logic(&mut harness);
+    assert_eq!(harness.ctx.zoom_factor(), 2.0);
+    assert_eq!(focused(&mut harness), before);
+}
+
+#[test]
 fn windows_sizes_its_data_and_has_no_face_to_pick() {
     let mut harness = sheet(Look::standard());
     on_the_pane(&mut harness);
-    assert!(harness.has("Interface size: Default · 13"));
+    assert!(shows(&mut harness, "100% · 13 px text"));
     let tree = harness.settle();
     let menu = |name| crate::testing::node(&tree, name, egui::accesskit::Role::ComboBox);
+    assert!(menu("Interface scale").is_some());
+    // The keys alone beside it: with Ctrl's, the words have no room.
+    let keys = [
+        crate::keymap::Command::LargerText,
+        crate::keymap::Command::SmallerText,
+        crate::keymap::Command::DefaultTextSize,
+    ]
+    .map(|command| {
+        crate::ui::keys::written(&harness.ctx, &harness.app.look, command)
+            .as_str()
+            .to_owned()
+    });
+    assert!(
+        shows(&mut harness, &keys.join(" / ")),
+        "{:?}",
+        harness.painted
+    );
+    assert!(!shows(&mut harness, "back to 100%"));
     assert!(menu("Data font size").is_some());
     assert!(menu("Data font").is_none(), "its data is drawn in Inter");
     harness.click("Data font size");
@@ -262,7 +570,7 @@ fn the_data_font_row_fits_the_smallest_sheet() {
 fn reset_to_defaults_puts_the_text_back() {
     let mut harness = sheet(Look::macos());
     for value in [
-        OptionValue::InterfaceSize(InterfaceSize::Small),
+        OptionValue::InterfaceScale(UiScale::of(2.0).unwrap()),
         OptionValue::Font(Some("JetBrains Mono".into())),
         OptionValue::FontSize(FontSize::of(15.0)),
     ] {
@@ -272,7 +580,7 @@ fn reset_to_defaults_puts_the_text_back() {
     harness.app.apply(Action::ResetSettings);
     harness.app.apply(Action::ConfirmResetSettings(true));
     let settings = &harness.app.settings;
-    assert_eq!(settings.interface_size, InterfaceSize::Default);
+    assert_eq!(settings.ui_scale, UiScale::DEFAULT);
     assert_eq!(settings.font, None);
     assert_eq!(settings.font_size, None);
 }
@@ -286,26 +594,30 @@ fn the_screen_shows_the_font_and_steps_the_size_with_its_keys() {
     let keymap = crate::keymap::Keymap::default();
     let written = |command| keymap.label(crate::keymap::Layout::Omarchy, command);
     let keys = format!(
-        "{} / {} anywhere",
+        "{} / {} / {} anywhere · rows and panes grow with it",
         written(crate::keymap::Command::LargerText),
-        written(crate::keymap::Command::SmallerText)
+        written(crate::keymap::Command::SmallerText),
+        written(crate::keymap::Command::DefaultTextSize)
     );
     for words in [
         "text",
         "system monospace",
+        "9 to 32",
         "now: jetbrains mono, bundled",
         &keys,
     ] {
         assert!(shows(&mut harness, words), "{words}");
     }
     let saves = settings_saves(&harness);
-    // The size, under the theme and the font: a step up, then two down.
+    // The size, under the interface, the theme and the font: a step up,
+    // then two down.
+    key(&mut harness, Key::J, "j");
     key(&mut harness, Key::J, "j");
     key(&mut harness, Key::J, "j");
     assert!(shows(&mut harness, "13"));
     key(&mut harness, Key::L, "l");
     assert_eq!(harness.app.settings.font_size, FontSize::of(14.0));
-    assert!(file(&harness).contains("font_size = 14\n"));
+    assert!(file(&harness).contains("font_size = 14"));
     key(&mut harness, Key::H, "h");
     key(&mut harness, Key::H, "h");
     assert_eq!(harness.app.settings.font_size, FontSize::of(12.0));
@@ -352,7 +664,9 @@ fn the_screen_says_the_font_fontconfig_drew_and_one_it_has_not() {
     let said = "now: fira code, from fontconfig";
     assert!(shows(&mut harness, said));
     assert_eq!(harness.painted_color(said), Some(harness.app.palette.dim));
-    // R puts the system's monospace back.
+    // R puts the system's monospace back, on the font's row under the
+    // interface's and the theme's.
+    key(&mut harness, Key::J, "j");
     key(&mut harness, Key::J, "j");
     harness.press(Key::R, Modifiers::SHIFT);
     assert_eq!(harness.app.settings.font, None);

@@ -6,7 +6,7 @@ resolver = "3"
 # The app's version, which every release bumps (AGENTS.md, Releasing).
 # Each package whose `CARGO_PKG_VERSION` is the app's takes it from here,
 # so they cannot disagree.
-version = "0.5.0"
+version = "0.6.1"
 edition = "2024"
 rust-version = "1.98"
 

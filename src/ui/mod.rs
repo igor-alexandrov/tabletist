@@ -98,8 +98,13 @@ pub mod keys;
 pub mod label_chooser;
 #[cfg(test)]
 mod label_tests;
+#[cfg(test)]
+mod look_switch_tests;
 pub mod menu;
 pub mod object_tabs;
+pub mod pane_hints;
+#[cfg(test)]
+mod pane_hints_tests;
 #[cfg(test)]
 mod pane_keys_tests;
 pub mod password_prompt;
@@ -116,6 +121,8 @@ mod redis_tests;
 pub mod review;
 pub mod row_form;
 pub mod row_panel;
+#[cfg(test)]
+mod scale_layout_tests;
 #[cfg(test)]
 mod selection_tests;
 pub mod settings;
@@ -8169,7 +8176,7 @@ value_tags   = true
             assert!(harness.has("Ln 2, Col 3"), "{}", look.name);
             assert!(harness.has("SQLite 3.46.0"), "{}", look.name);
             // Nothing ran yet, so nothing was rolled back.
-            assert!(!harness.has("Read-only transaction · rolled back"));
+            assert!(!harness.has("Read-only · rolled back"));
             let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
             harness.app.apply(crate::model::Action::RunSql {
                 tab,
@@ -8177,7 +8184,7 @@ value_tags   = true
                 all: false,
             });
             // Nor while the run is on its way.
-            assert!(!harness.has("Read-only transaction · rolled back"));
+            assert!(!harness.has("Read-only · rolled back"));
             harness.answer_sql(
                 Ok(crate::testing::script_outcome(vec![
                     crate::testing::rows_outcome(3),
@@ -8185,7 +8192,7 @@ value_tags   = true
                 None,
             );
             assert!(harness.has("3 rows · 14 ms"), "{}", look.name);
-            assert!(harness.has("Read-only transaction · rolled back"));
+            assert!(harness.has("Read-only · rolled back"));
             // A run that failed as a whole ran nothing, and the rows of
             // the run before it are gone with it.
             harness.app.apply(crate::model::Action::RunSql {
@@ -8195,7 +8202,7 @@ value_tags   = true
             });
             harness.answer_sql(Err(tabletist_db::Error::query("no such server")), None);
             assert!(!harness.has("3 rows · 14 ms"), "{}", look.name);
-            assert!(!harness.has("Read-only transaction · rolled back"));
+            assert!(!harness.has("Read-only · rolled back"));
             // Nor do they come back with a run that is never answered
             // (its session went away), which leaves no error either.
             harness.app.apply(crate::model::Action::RunSql {
@@ -8208,7 +8215,7 @@ value_tags   = true
             let sql = active_sql(&harness, tab);
             assert!(!sql.is_running() && sql.run.error.is_none());
             assert!(!harness.has("3 rows · 14 ms"), "{}", look.name);
-            assert!(!harness.has("Read-only transaction · rolled back"));
+            assert!(!harness.has("Read-only · rolled back"));
         }
     }
 
@@ -8258,11 +8265,16 @@ value_tags   = true
             "{:?}",
             harness.painted
         );
-        // A table tab keeps its own line.
+        // A table tab keeps its own line. Clicked in the tree, the table
+        // opens with the keyboard on the tree: the tree's keys, then the
+        // rows' once they have it.
         harness.click("users");
         harness.answer_rows(crate::testing::page(5, false));
         harness.settle();
-        assert!(painted(&harness, "j/k row"));
+        assert!(painted(&harness, "j/k move"), "{:?}", harness.painted);
+        harness.press(Key::L, Modifiers::CTRL);
+        harness.settle();
+        assert!(painted(&harness, "j/k row"), "{:?}", harness.painted);
         assert!(!painted(&harness, "ctrl+enter run"));
     }
 
@@ -8978,6 +8990,16 @@ value_tags   = true
         }
     }
 
+    /// The password box's name in `look`: the Keychain on macOS, in every
+    /// look, the keyring elsewhere ([`crate::theme::Look::keychain`]).
+    fn keyring_word(look: &crate::theme::Look) -> &'static str {
+        if look.keychain(crate::update::release::Os::current()) {
+            "Keychain"
+        } else {
+            "Keyring"
+        }
+    }
+
     /// Tabs until the widget named `name` has the keyboard.
     fn tab_to(harness: &mut Harness, name: &str) {
         for _ in 0..80 {
@@ -9010,7 +9032,8 @@ value_tags   = true
                 })
                 .count()
         };
-        for name in ["Keyring", "Connect through SSH tunnel", "Open read-only"] {
+        let keyring = keyring_word(&crate::theme::Look::omarchy());
+        for name in [keyring, "Connect through SSH tunnel", "Open read-only"] {
             tab_to(&mut harness, name);
             assert_eq!(rings(&mut harness, name), 1, "{name}");
         }
@@ -9488,9 +9511,10 @@ value_tags   = true
         new_connection(&mut harness);
         harness.click("PostgreSQL");
         assert_eq!(form(&harness).password_mode, PasswordMode::Keyring);
-        harness.click("Keyring");
+        let keyring = keyring_word(&harness.app.look);
+        harness.click(keyring);
         assert_eq!(form(&harness).password_mode, PasswordMode::Ask);
-        harness.click("Keyring");
+        harness.click(keyring);
         assert_eq!(form(&harness).password_mode, PasswordMode::Keyring);
     }
 
@@ -9511,7 +9535,7 @@ value_tags   = true
                 saved.password = PasswordMode::Keyring;
                 harness.app.connections.upsert(saved);
                 harness.app.apply(crate::model::Action::EditConnection(id));
-                let hint = look.label(if look.faces.typeface == crate::theme::Typeface::Plex {
+                let hint = look.label(if keyring_word(&look) == "Keychain" {
                     "Saved in the keychain"
                 } else {
                     "Saved in the keyring"
@@ -9762,11 +9786,7 @@ value_tags   = true
     fn each_keyring_box_says_which_secret_it_keeps() {
         use crate::connections::PasswordMode;
         for look in crate::theme::Look::ALL {
-            let keyring = if look.faces.typeface == crate::theme::Typeface::Plex {
-                "Keychain"
-            } else {
-                "Keyring"
-            };
+            let keyring = keyring_word(&look);
             let ssh = format!("{keyring} for the SSH secret");
             let mut harness = Harness::new();
             harness.set_look(look);
@@ -10615,7 +10635,7 @@ value_tags   = true
     }
 
     #[test]
-    fn a_config_host_behind_a_proxy_warns() {
+    fn a_config_host_behind_a_proxy_jump_says_so() {
         let jump = config_host(
             "gateway-only",
             HostConfig {
@@ -10625,7 +10645,7 @@ value_tags   = true
         );
         let mut harness = ssh_dialog(vec![jump]);
         ssh_form(&mut harness).ssh_host = "gateway-only".into();
-        assert!(harness.has("Uses ProxyJump, which Tabletist does not support yet."));
+        assert!(harness.has("Through ProxyJump bastion from ~/.ssh/config"));
     }
 
     #[test]
@@ -10690,13 +10710,11 @@ value_tags   = true
                 "{}",
                 look.name
             );
-            // The warning takes the place of the host name's line.
             assert!(
-                harness.has("Uses ProxyCommand, which Tabletist does not support yet."),
+                harness.has("10.0.0.9 through a ProxyCommand from ~/.ssh/config"),
                 "{}",
                 look.name
             );
-            assert!(!harness.has("10.0.0.9 from ~/.ssh/config"), "{}", look.name);
         }
     }
 
@@ -11392,6 +11410,50 @@ value_tags   = true
         );
         let chip = bounds_of(&tree, "Switch to Fixture · dev");
         assert!(chip.x0 > button.x1, "the chips follow: {chip:?}");
+    }
+
+    #[test]
+    fn the_omarchy_settings_title_starts_after_the_mac_window_buttons() {
+        // The screen covers the window, its header under the buttons.
+        for look in crate::theme::Look::ALL
+            .into_iter()
+            .filter(|look| look.terminal)
+        {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            mac_title_bar(&mut harness);
+            harness.app.apply(Action::ShowSettings);
+            harness.settle();
+            let title = harness
+                .text_rects
+                .iter()
+                .find(|(text, rect)| text.eq_ignore_ascii_case("settings") && rect.top() < 40.0)
+                .map(|(_, rect)| *rect)
+                .unwrap_or_else(|| panic!("{}: no Settings title", look.name));
+            assert!(
+                title.left() >= 80.0,
+                "{}: the title starts after the buttons: {title:?}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn every_looks_connection_bar_starts_after_the_mac_window_buttons() {
+        // The Omarchy look runs on macOS too, under the same buttons.
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            mac_title_bar(&mut harness);
+            harness.connect_fake();
+            let tree = harness.settle();
+            let button = bounds_of(&tree, "Connections");
+            assert!(
+                button.x0 >= 80.0,
+                "{}: the bar starts after the buttons: {button:?}",
+                look.name
+            );
+        }
     }
 
     /// The middle of the node labelled (or valued) `label`.
@@ -17919,10 +17981,11 @@ value_tags   = true
         // alone are looked at.
         harness.app.workspace_mut(tab).unwrap().row_panel = false;
         make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
-        // With the arrows on the tree the line offers `:w`, and Ctrl+S
-        // saves: so does the prompt.
+        // With the arrows on the tree the line offers `:w` while something
+        // is pending, and Ctrl+S saves: so does the prompt.
         harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Tree;
         harness.settle();
+        assert!(painted(&harness, "j/k move"), "{:?}", harness.painted);
         assert!(painted_in(&harness, ":w write", palette.text));
         type_key(&mut harness, Key::Colon, ":");
         assert_eq!(command(&harness, tab).as_deref(), Some(""));

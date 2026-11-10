@@ -11,11 +11,12 @@ use crate::i18n::gettext;
 use crate::keymap::Command;
 use crate::model::{Action, ConnTabContent, PickerState};
 use crate::style::Icon;
-use crate::theme::{self, Look, Palette};
+use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::menu;
 use crate::ui::states;
 use crate::ui::widgets::{self, ButtonSpec};
+use crate::update::release::Os;
 
 /// The header's height, per look (its rule below included).
 fn header_height(look: &Look) -> f32 {
@@ -170,8 +171,14 @@ fn ssh_label(connection: &SavedConnection) -> String {
     }
 }
 
-/// The terminal look's note at the footer's right.
-const TERMINAL_SECRETS: &str = "secrets: keyring";
+/// The terminal look's note at the footer's right, where its passwords go.
+fn terminal_secrets(look: &Look) -> &'static str {
+    if look.keychain(Os::current()) {
+        "secrets: keychain"
+    } else {
+        "secrets: keyring"
+    }
+}
 
 /// What the picker's body asks of the app, answered by its router before
 /// the picker's tab is lent.
@@ -519,6 +526,14 @@ fn body(
         question.show(ui, (footer, footer_side, footer_y), tab, skin, &mut actions);
     } else {
         let small = widgets::secondary(&look);
+        // The terminal look floats no toast: what was just done (the font
+        // size a key changed) takes the keyring's note's place while it is
+        // said.
+        let said = look
+            .terminal
+            .then(|| super::toast::said(ui.ctx()))
+            .flatten()
+            .map(|said| look.label(&said));
         if look.terminal {
             let mut hints = vec![
                 (&moves, "move", true),
@@ -535,7 +550,8 @@ fn body(
             }
             // What does not fit beside the keyring's note gives way, from the
             // end: the window may be as narrow as 720.
-            let note = widgets::measure(ui, Text::one(&look, small, TERMINAL_SECRETS, palette.dim));
+            let note = said.as_deref().unwrap_or(terminal_secrets(&look));
+            let note = widgets::measure(ui, Text::one(&look, small, note, palette.dim));
             let room = footer.width() - 2.0 * footer_side - note - 24.0;
             while hints.len() > 1
                 && widgets::key_hints_width(ui, &hints, 16.0, &look, &palette) > room
@@ -564,14 +580,18 @@ fn body(
                     + 18.0;
             }
         }
-        let secrets = if look.terminal {
-            TERMINAL_SECRETS.to_owned()
-        } else if look.faces.typeface == theme::Typeface::Plex {
+        let secrets = if let Some(said) = said.clone() {
+            said
+        } else if look.terminal {
+            terminal_secrets(&look).to_owned()
+        } else if look.keychain(Os::current()) {
             gettext(locale, "Passwords are stored in the macOS Keychain").into_owned()
         } else {
             gettext(locale, "Passwords are stored in the system keyring").into_owned()
         };
-        let color = if look.terminal {
+        let color = if said.is_some() {
+            palette.text
+        } else if look.terminal {
             palette.dim
         } else {
             palette.secondary.lerp_to_gamma(palette.dim, 0.5)
@@ -595,7 +615,7 @@ fn body(
     let found = saved.search(search);
     if saved.connections.is_empty() {
         // First launch: why the list is empty, and the one next step.
-        let keyring = if look.faces.typeface == theme::Typeface::Plex {
+        let keyring = if look.keychain(Os::current()) {
             gettext(locale, "Tabletist stores passwords in the macOS Keychain.")
         } else {
             gettext(locale, "Tabletist stores passwords in the system keyring.")

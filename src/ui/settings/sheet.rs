@@ -12,9 +12,9 @@ use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::{Command, Keymap, Layout};
 use crate::model::{Action, SettingsDialog, SettingsPane};
 use crate::settings::{
-    Autocomplete, Commas, EditorKeys, EnvBar, FontSizes, Idle, Indent, InterfaceSize, KeywordCase,
-    Launch, LineNumbers, Mode, NewTab, OptionId, OptionValue, RowHeight, RunScope, Settings,
-    TableList, ThemeChoice, Timestamps, UpdateCheck, Zone,
+    Autocomplete, Commas, EditorKeys, EnvBar, FontSizes, Idle, Indent, KeywordCase, Launch,
+    LineNumbers, LookChoice, Mode, NewTab, OptionId, OptionValue, RowHeight, RunScope, Settings,
+    TableList, ThemeChoice, Timestamps, UiScale, UpdateCheck, Zone,
 };
 use crate::theme::{DataFace, Look, Palette, Typeface};
 use crate::typography::{Laid, Text, TextRole};
@@ -50,6 +50,9 @@ const CONTROLS: f32 = 210.0;
 const HINT_GAP: f32 = 12.0;
 /// The page size menu's button.
 const MENU: f32 = 120.0;
+/// What a dropdown's words leave of its width: its insets, its mark and
+/// the gap before the mark.
+const MENU_CHROME: f32 = 38.0;
 /// The zone's menu: as wide as the artboard's, for `System · America/…`.
 const ZONE_MENU: f32 = 220.0;
 /// The data font's menu and its size's, as wide as the artboard's. A
@@ -57,6 +60,8 @@ const ZONE_MENU: f32 = 220.0;
 const FONT_MENU: f32 = 220.0;
 const FONT_MENU_MIN: f32 = 100.0;
 const SIZE_MENU: f32 = 90.0;
+/// The interface scale's menu, as wide as the board's.
+const SCALE_MENU: f32 = 200.0;
 /// Between the data font's menu and its size's.
 const MENU_GAP: f32 = 12.0;
 /// How tall the zone menu's list of zones is at most: it scrolls.
@@ -493,8 +498,23 @@ fn content(
                     ui.add_space(2.0);
                 }
                 for option in options.iter().copied() {
-                    if option == OptionId::Theme {
-                        tiles(ui, settings, skin, actions);
+                    if option == OptionId::Look {
+                        // Beside the theme's tiles: see `tiles`.
+                    } else if option == OptionId::Theme {
+                        // A sheet too narrow to have the look's control
+                        // beside the tiles has its row under them.
+                        if !tiles(ui, settings, skin, actions) {
+                            row(
+                                ui,
+                                OptionId::Look,
+                                true,
+                                column,
+                                settings,
+                                skin,
+                                actions,
+                                None,
+                            );
+                        }
                     } else {
                         // The button after the one row that has one.
                         let beside = after
@@ -534,10 +554,12 @@ fn content(
 }
 
 /// The Theme section: a tile for each mode, a radio group named by the
-/// option, the one set ringed in the accent, and what System does after
+/// option, the one set ringed in the accent, and what System does under
 /// them. Each tile draws a window in its palette: the sidebar's colour
-/// round the content's, System's half one and half the other.
-fn tiles(ui: &mut Ui, settings: &Settings, skin: &Skin, actions: &mut Vec<Action>) {
+/// round the content's, System's half one and half the other. The look's
+/// control is at the section's right, where the sheet is wide enough for
+/// it: false where it is not, and the control is not drawn.
+fn tiles(ui: &mut Ui, settings: &Settings, skin: &Skin, actions: &mut Vec<Action>) -> bool {
     let Skin { look, palette, .. } = *skin;
     let name = skin.say(label(OptionId::Theme));
     let label_role = TextRole::UiBody;
@@ -546,8 +568,10 @@ fn tiles(ui: &mut Ui, settings: &Settings, skin: &Skin, actions: &mut Vec<Action
         TILE.x + 2.0 * TILE_PAD,
         TILE_PAD + TILE.y + 6.0 + line + TILE_PAD,
     );
-    let height = 6.0 + tile.y + 12.0 + 1.0;
+    let hint_line = TextRole::Secondary.row_height(ui.ctx(), look.faces);
+    let height = 6.0 + tile.y + 4.0 + hint_line + 12.0 + 1.0;
     let ground = ui.painter().add(egui::Shape::Noop);
+    let look_ground = ui.painter().add(egui::Shape::Noop);
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
     widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, palette.surface);
     // The tiles in a Ui of their own, whose node is their parent in the
@@ -575,6 +599,12 @@ fn tiles(ui: &mut Ui, settings: &Settings, skin: &Skin, actions: &mut Vec<Action
         let button = group.interact(area, group.id().with(word.as_str()), Sense::click());
         button.widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, true, set, &word));
         focus::hint(&group, &button, area, Ring::Outer { radius: 10 });
+        // Tab comes round to them from the pane's last control, scrolled
+        // out of view in a short window or a large scale: they come to
+        // the keyboard, as a row does.
+        if button.gained_focus() {
+            group.scroll_to_rect_animation(rect, None, egui::style::ScrollAnimation::none());
+        }
         if button.clicked() && !set {
             let choice = match mode {
                 Mode::System => ThemeChoice::System,
@@ -652,18 +682,95 @@ fn tiles(ui: &mut Ui, settings: &Settings, skin: &Skin, actions: &mut Vec<Action
             window.bottom() + 6.0 + line / 2.0,
         );
     }
-    let hint = if cfg!(target_os = "windows") {
-        "System follows Windows."
-    } else {
-        "System follows macOS, including Auto."
-    };
+    let hint = theme_hint(look);
     let hint = Text::one(look, TextRole::Secondary, &skin.say(hint), palette.dim).layout(ui.ctx());
-    let at = x - 12.0 + 8.0;
+    let at = rect.left() + TILE_PAD;
     if at + hint.width() <= rect.right() {
-        write(ui, at, top + tile.y / 2.0, &hint);
+        write(ui, at, top + tile.y + 4.0 + hint_line / 2.0, &hint);
     }
+    let tiles_end = x - 12.0;
+    let beside = Rect::from_min_max(pos2(tiles_end + GAP, top), pos2(rect.right(), top + tile.y));
+    let drawn = look_beside(ui, beside, settings, skin, actions);
     let row = rect.with_max_y(rect.bottom() - 1.0);
-    asked(ui, ground, (row, place), OptionId::Theme, skin, actions);
+    let theme_place = place.with_max_x(tiles_end);
+    asked(
+        ui,
+        ground,
+        (row, theme_place),
+        OptionId::Theme,
+        skin,
+        actions,
+    );
+    // The look's own ground: the block, not the tiles beside it.
+    if let Some(block) = drawn {
+        let ground = block.expand2(vec2(10.0, 8.0));
+        asked(
+            ui,
+            look_ground,
+            (ground, block),
+            OptionId::Look,
+            skin,
+            actions,
+        );
+    }
+    drawn.is_some()
+}
+
+/// What the System tile follows, under the tiles: the OS of the look's
+/// keys. Linux's classic look, macOS's with Windows' keys off Windows,
+/// follows the desktop.
+fn theme_hint(look: &Look) -> &'static str {
+    if cfg!(target_os = "windows") {
+        "System follows Windows."
+    } else if look.keys == Layout::Mac {
+        "System follows macOS, including Auto."
+    } else {
+        "System follows the desktop's light or dark."
+    }
+}
+
+/// The look's control in `place`, beside the theme's tiles: its label over
+/// its small print, and its segments under them, at the place's right and
+/// in its middle. Where it is drawn; `None` where `place` is too narrow.
+fn look_beside(
+    ui: &mut Ui,
+    place: Rect,
+    settings: &Settings,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) -> Option<Rect> {
+    let Skin { look, palette, .. } = *skin;
+    let name = said(ui.ctx(), look, skin.locale, label(OptionId::Look));
+    let name = Text::one(look, TextRole::UiBody, &name, palette.text).layout(ui.ctx());
+    let description = small_print(OptionId::Look).map(|print| skin.say(print));
+    let print = description.as_deref().unwrap_or_default();
+    let print = Text::one(look, TextRole::Secondary, print, palette.dim).layout(ui.ctx());
+    let control = vec2(CONTROLS, SEGMENT + 4.0);
+    let width = name.width().max(print.width()).max(control.x).ceil();
+    if width > place.width() {
+        return None;
+    }
+    let height = name.height() + 2.0 + print.height() + 8.0 + control.y;
+    let min = pos2(place.right() - width, place.center().y - height / 2.0);
+    let block = Rect::from_min_size(min, vec2(width, height));
+    write(ui, min.x, min.y + name.height() / 2.0, &name);
+    let print_y = min.y + name.height() + 2.0;
+    write(ui, min.x, print_y + print.height() / 2.0, &print);
+    let at = Rect::from_min_size(pos2(min.x, print_y + print.height() + 8.0), control);
+    let builder = egui::UiBuilder::new()
+        .id_salt("look")
+        .max_rect(at)
+        .layout(egui::Layout::left_to_right(egui::Align::Center));
+    let mut child = ui.new_child(builder);
+    let helper = super::helper(OptionId::Look).map(|text| skin.say(text));
+    self::control(
+        &mut child,
+        (OptionId::Look, helper.as_deref()),
+        settings,
+        skin,
+        actions,
+    );
+    Some(block)
 }
 
 /// How wide the rows' labels have it: `LABEL`, or what the widest small
@@ -935,9 +1042,10 @@ fn control_height(option: OptionId, look: &Look) -> f32 {
         OptionId::PageSize | OptionId::Tz | OptionId::OnLaunch => look.control_height,
         // The track has 2 over its segments and under them.
         OptionId::Timestamps | OptionId::GroupDigits => SEGMENT + 4.0,
-        OptionId::RowHeight | OptionId::TableList | OptionId::EnvBar => SEGMENT + 4.0,
-        OptionId::InterfaceSize => SEGMENT + 4.0,
-        OptionId::Font | OptionId::FontSize => look.control_height,
+        OptionId::Look | OptionId::RowHeight | OptionId::TableList | OptionId::EnvBar => {
+            SEGMENT + 4.0
+        }
+        OptionId::InterfaceScale | OptionId::Font | OptionId::FontSize => look.control_height,
         OptionId::NewTab
         | OptionId::RunScope
         | OptionId::EditorKeys
@@ -1220,27 +1328,7 @@ fn control(
                 )));
             }
         }
-        OptionId::InterfaceSize => {
-            // Each with the size of its body text, as the board writes
-            // them.
-            let words = InterfaceSize::ALL.map(|size| {
-                let word = match size {
-                    InterfaceSize::Small => "Small",
-                    InterfaceSize::Default => "Default",
-                    InterfaceSize::Large => "Large",
-                };
-                format!("{} · {}", skin.say(word), size.points())
-            });
-            let selected = InterfaceSize::ALL
-                .iter()
-                .position(|size| *size == settings.interface_size)
-                .unwrap_or(1);
-            if let Some(picked) = segments(ui, (&name, description), &words, selected, skin) {
-                actions.push(Action::SetOption(OptionValue::InterfaceSize(
-                    InterfaceSize::ALL[picked],
-                )));
-            }
-        }
+        OptionId::InterfaceScale => scale_menu(ui, (&name, description), settings, skin, actions),
         // The face's menu where the look draws data in a face of its own
         // (macOS), then the size's. Windows draws its data in Inter, the
         // interface's face: the size's alone.
@@ -1261,6 +1349,16 @@ fn control(
                 actions.push(Action::SetOption(OptionValue::TableList(TableList::of(
                     picked == 1,
                 ))));
+            }
+        }
+        // Classic is the look of the OS: macOS's on macOS and Linux, the
+        // standard look on Windows.
+        OptionId::Look => {
+            let words = [skin.say("Classic"), skin.say("Omarchy")];
+            let selected = usize::from(settings.look.is_some_and(LookChoice::terminal));
+            if let Some(picked) = segments(ui, (&name, description), &words, selected, skin) {
+                let choice = [LookChoice::Classic, LookChoice::Omarchy][picked];
+                actions.push(Action::SetOption(OptionValue::Look(Some(choice))));
             }
         }
         OptionId::EnvBar => {
@@ -1385,6 +1483,54 @@ fn font_menu(
     menu.response.widget_info(|| {
         let mut info = WidgetInfo::labeled(WidgetType::ComboBox, true, name);
         info.current_text_value = Some(shown.to_owned());
+        info
+    });
+}
+
+/// The interface scale: a menu of every scale, each with the size of the
+/// body text it comes to (`125% · 16 px text`), read out in words (`125
+/// percent, 16 pixel text`).
+fn scale_menu(
+    ui: &mut Ui,
+    (name, description): (&str, Option<&str>),
+    settings: &Settings,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
+    let Skin { look, palette, .. } = *skin;
+    let percent = |scale: UiScale| format!("{}%", scale.percent());
+    let pixels = |scale: UiScale| {
+        skin.say("{px} px text")
+            .replace("{px}", &scale.text_px().to_string())
+    };
+    let spoken = |scale: UiScale| {
+        skin.say("{percent} percent, {px} pixel text")
+            .replace("{percent}", &scale.percent().to_string())
+            .replace("{px}", &scale.text_px().to_string())
+    };
+    let current = settings.ui_scale;
+    let shown = format!("{} · {}", percent(current), pixels(current));
+    let dropdown =
+        menu::Dropdown::new("interface-scale", &shown, SCALE_MENU).description(description);
+    let default = skin.say("default");
+    let menu = dropdown.show(ui, look, palette, |ui| {
+        for scale in UiScale::ALL {
+            let (text, note, entry_name) = (percent(scale), pixels(scale), spoken(scale));
+            let mut entry = menu::Item::choice(&text, scale == current)
+                .note(&note)
+                .name(&entry_name);
+            if scale == UiScale::DEFAULT {
+                entry = entry.detail(&default);
+            }
+            if entry.show(ui, look, palette).clicked() {
+                actions.push(Action::SetOption(OptionValue::InterfaceScale(scale)));
+                ui.close();
+            }
+        }
+    });
+    menu.response.widget_info(|| {
+        let mut info = WidgetInfo::labeled(WidgetType::ComboBox, true, name);
+        info.current_text_value = Some(spoken(current));
         info
     });
 }
@@ -1623,6 +1769,30 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
             palette.dim,
         ),
         OptionId::ValueTags => return tags(ui, at, right, settings.value_tags, skin),
+        // The keys that step it, from the keymap: `⌘= larger · ⌘- smaller
+        // · ⌘0 back to 100%`. Windows's longer keys leave no room for the
+        // words: the keys alone, `Ctrl+= / Ctrl+- / Ctrl+0`.
+        OptionId::InterfaceScale => {
+            let key = |command| crate::ui::keys::written(ui.ctx(), look, command);
+            let [larger, smaller, actual] = [
+                Command::LargerText,
+                Command::SmallerText,
+                Command::DefaultTextSize,
+            ]
+            .map(|command| key(command).as_str().to_owned());
+            let said = format!(
+                "{larger} {} · {smaller} {} · {actual} {}",
+                skin.say("larger"),
+                skin.say("smaller"),
+                skin.say("back to 100%")
+            );
+            let said = Text::one(look, TextRole::Secondary, &said, palette.dim).layout(ui.ctx());
+            if at.x + said.width() <= right {
+                return write(ui, at.x, at.y, &said);
+            }
+            let keys = format!("{larger} / {smaller} / {actual}");
+            Text::one(look, TextRole::Secondary, &keys, palette.dim)
+        }
         OptionId::RunScope => Text::one(
             look,
             TextRole::Secondary,
@@ -1640,7 +1810,8 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
         }
         // What the Appearance pane's rows say is their small print, and its
         // tiles have their own line.
-        OptionId::Theme
+        OptionId::Look
+        | OptionId::Theme
         | OptionId::OnLaunch
         | OptionId::RestoreTabs
         | OptionId::ProductionReadOnly
@@ -1650,7 +1821,6 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
         | OptionId::AgentsOn
         | OptionId::LogDays
         | OptionId::AgentsNotify
-        | OptionId::InterfaceSize
         | OptionId::Font
         | OptionId::FontSize
         | OptionId::RowHeight
@@ -1691,7 +1861,17 @@ fn choice_menu(
     actions: &mut Vec<Action>,
 ) {
     let Skin { look, palette, .. } = *skin;
-    let dropdown = menu::Dropdown::new(id, shown, MENU).description(description);
+    let choices: Vec<(String, bool, OptionValue)> = choices.collect();
+    // As wide as its widest choice needs, past its own 120: `Last 1,000
+    // queries` was cut short. The field's insets, its mark and the gap
+    // before it are what the words leave.
+    let role = widgets::body(look);
+    let widest = choices
+        .iter()
+        .map(|(text, _, _)| role.width(ui.ctx(), look.faces, text))
+        .fold(0.0, f32::max);
+    let width = MENU.max((widest + MENU_CHROME).ceil());
+    let dropdown = menu::Dropdown::new(id, shown, width).description(description);
     let menu = dropdown.show(ui, look, palette, |ui| {
         for (text, chosen, value) in choices {
             let entry_name = format!("{name} {text}");

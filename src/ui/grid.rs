@@ -792,8 +792,15 @@ pub fn show<'a>(
         .flatten();
     // A cell being edited stays in view, as a selection that just moved
     // comes into it: egui takes the keyboard from a field that is not
-    // drawn.
-    let reveal = editing.or(selection.filter(|cell| Some(*cell) != last));
+    // drawn. So does the selection when the grid's room changes size (a
+    // larger interface scale, a resized window): it stays in sight.
+    let room_id = id.with("room");
+    let room = ui.available_size();
+    let resized = ui
+        .data(|data| data.get_temp::<egui::Vec2>(room_id))
+        .is_some_and(|before| (before - room).length() >= 0.5);
+    ui.data_mut(|data| data.insert_temp(room_id, room));
+    let reveal = editing.or(selection.filter(|cell| Some(*cell) != last || resized));
     let total = gutter + widths.iter().sum::<f32>();
     let hairline = crate::ui::widgets::hairline(ui);
     let visible = ui.max_rect();

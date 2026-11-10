@@ -5,8 +5,9 @@ nav_order: 8
 ---
 
 On a Mac, Tabletist has the macOS look: rounded controls, IBM Plex Sans
-for the interface and IBM Plex Mono for data. There is no setting that
-switches to another look.
+for the interface and IBM Plex Mono for data. **Settings › Appearance ›
+Interface**, beside the theme, switches to
+[the Omarchy look]({% link _guide/omarchy.md %}) and back, at once.
 
 {% include shot.html file="macos-table" alt="Tabletist in its macOS look, with two connections in the bar at the top" %}
 
@@ -59,19 +60,24 @@ disk image as the
   do not apply now, while it is open. Its keys do what they do where you
   are: Cmd+N in the grid still adds a row, and the menu's **New
   Connection** is a click away. Settings, New Connection, Connections,
-  Keyboard Shortcuts and the text sizes work from the connection picker
+  Keyboard Shortcuts and View's Larger, Smaller and Actual Size work from the connection picker
   too. Previous Tab and Next Tab show no key in the menu, and their keys
   work all the same.
 - **The sidebar's SQL Editor button has a clock.** Its main part opens a
   new SQL editor; the clock at its right shows the History tab, and looks
   pressed while that tab is in front.
-- **Text has two sizes.** **Settings › Appearance** sizes the interface
-  (Small, Default or Large) and the data apart: grid cells, the SQL
-  editor and JSON, from 11 to 16 points, in IBM Plex Mono or JetBrains
-  Mono, which Tabletist bundles, or in a monospace font installed on the
-  Mac (Menlo, or one of your own), which the menu lists after them.
-  Cmd+= and Cmd+- change the data's size wherever you are, and Cmd+0
-  puts back 12.5.
+- **The window has a scale, and the data a size of its own.**
+  **Settings › Appearance › Interface scale** draws everything in the
+  window larger or smaller, from 90% to 250%, on top of the Mac's own
+  display scale: text, controls, rows and spacing together, so the
+  layout keeps its shape. Cmd+= and Cmd+- step through the scales
+  wherever you are (also **View → Larger** and **View → Smaller**), a
+  toast says the one you reached, and Cmd+0 (**View → Actual Size**)
+  puts back 100%. The data, grid cells, the SQL editor and JSON, has its
+  size apart, from 11 to 16 points, which the scale multiplies, in IBM
+  Plex Mono or JetBrains Mono, which Tabletist bundles, or in a monospace
+  font installed on the Mac (Menlo, or one of your own), which the menu
+  lists after them.
 
 {% include shot.html file="macos-table-dark" alt="The same window in the dark appearance" %}
 
@@ -109,7 +115,7 @@ Cmd+A): none of them can be given to a command.
 | F6, Shift+F6 | Next and previous part of the window |
 | Cmd+, | Settings |
 | Cmd+Shift+' | Move the keyboard to the newest [export's toast]({% link _guide/browsing-data.md %}#exporting). Tab goes round every toast's buttons, Esc gives the keyboard back |
-| Cmd+=, Cmd+-, Cmd+0 | Larger, smaller and default data text |
+| Cmd+=, Cmd+-, Cmd+0 | The interface scale a step larger, a step smaller, or back to 100% |
 | `?` | The list of keys |
 
 ### Quick open

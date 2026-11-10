@@ -6,8 +6,11 @@ nav_order: 7
 
 On Linux, Tabletist takes the Omarchy look: square corners, the keyboard
 first, vim keys, and the desktop's monospace font throughout. Every Linux
-desktop gets it. On macOS and Windows the app has a desktop look instead,
-and there is no setting that switches between them.
+desktop gets it until you choose otherwise. On macOS and Windows the app
+starts in its classic look. **Settings › Appearance › Interface** switches
+between the two at once, on every system: on Linux the classic look is the
+macOS one with its keys written with Ctrl, as Windows writes them. In this
+look the setting is the `interface` row, first in `appearance`.
 
 {% include shot.html file="omarchy-table" alt="Tabletist in its Omarchy look: a table filtered with a WHERE line, a row open beside it, and key hints along the bottom" width="2880" height="1800" %}
 
@@ -15,7 +18,9 @@ and there is no setting that switches between them.
 
 This page lists the keys of the Omarchy look, grouped by where they
 work. The status line along the bottom shows the ones that work where you
-are. The app's own list (`?`) is shorter: it leaves out the keys of the
+are: the keys of the part that has the keyboard (the sidebar, its filter,
+the rows, the row panel, a SQL editor's script or its results), with
+`ctrl+h/l panes` wherever Ctrl+H and Ctrl+L move to another part. The app's own list (`?`) is shorter: it leaves out the keys of the
 dialogs and of the lists that open in an editor.
 
 A letter does its job when no text field has the keyboard. While a field
@@ -41,7 +46,7 @@ second Esc gives the keyboard back.
 | Ctrl+K, Ctrl+J | In a SQL editor: up to the script, down to its results |
 | F6, Shift+F6 | Next and previous part of the window |
 | Ctrl+, | Settings |
-| Ctrl+=, Ctrl+- | Larger and smaller text: the whole window, under a dialog too |
+| Ctrl+=, Ctrl+-, Ctrl+0 | Larger and smaller text, or back to 13: the whole window, under a dialog too |
 | `:agents` | Show the Agents tab |
 | `:agents log` | Show the Agents tab's log |
 | `:history` | Show the [History tab]({% link _guide/sql-editor.md %}#history) |
@@ -109,6 +114,7 @@ numbered; once you type, it lists what matches. Its commands stay on `:`.
 | `za` | Fold or open the group under the cursor; on a table of a group, fold its group |
 | `zM` `zR` | Fold every group, open every group |
 | `/` | Filter the list |
+| Enter, Esc | In the filter: back to the list |
 | `t` | Switch between tree and flat. The connection keeps its choice; Settings › Appearance sets the default |
 | `R` | Reload the list |
 | `ga` | Show the Agents tab |
@@ -514,8 +520,9 @@ font = "Fira Code"
 font_size = 15
 ```
 
-The size, 9 to 24, sizes the whole window, as a terminal's font size
-does. `h` and `l` on the size row change it, and so do Ctrl+= and Ctrl+-
-anywhere in the window; `R` on the row puts back 13.
+The size, 9 to 32, sizes the whole window, as a terminal's font size
+does: rows and panes grow with it. `h` and `l` on the size row change it,
+and so do Ctrl+= and Ctrl+- anywhere in the window, which the status line
+says for 4 seconds; Ctrl+0, or `R` on the row, puts back 13.
 
 {% include shot.html file="omarchy-settings" alt="The Settings screen in the Omarchy look: the options on the left and settings.toml on the right" width="2880" height="1800" %}

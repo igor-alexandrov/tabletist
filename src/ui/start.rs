@@ -1393,6 +1393,7 @@ pub fn status_line(
     tab: ConnTabId,
     keymap: &Keymap,
     tree: Option<String>,
+    own: Option<&[super::pane_hints::Owned]>,
 ) {
     let Paint {
         locale,
@@ -1421,7 +1422,10 @@ pub fn status_line(
         "back",
     ]
     .map(|word| gettext(locale, word));
-    let hints: Vec<widgets::Hint<'_>> = if searching {
+    // The tree or its filter field has the keyboard: their keys.
+    let hints: Vec<widgets::Hint<'_>> = if let Some(own) = own {
+        super::pane_hints::drawn(own)
+    } else if searching {
         vec![
             (&keys.search_move, &*words[7], true),
             (&keys.search_open, &*words[8], true),
@@ -1454,15 +1458,23 @@ pub fn status_line(
             let left = rect.left() + 12.0;
             let x = left + widgets::paint_label(ui, left, y, mode) + gap;
             let right = rect.right() - 12.0;
-            let said = tree
-                .clone()
+            // What was just done (the font size a key changed) in the
+            // summary's place while it is said: this look floats no toast.
+            let toast = super::toast::said(ui.ctx()).map(|said| look.label(&said));
+            let color = if toast.is_some() {
+                palette.text
+            } else {
+                palette.dim
+            };
+            let said = toast
+                .or_else(|| tree.clone())
                 .unwrap_or_else(|| gettext(locale, "no table open").into_owned());
             // A long name gives way at its end, never over the mode; a
             // screen reader hears the whole of it.
             let fits = crate::ui::grid::ellipsize(&said, (right - x).max(0.0), false, |text| {
                 role.width(ui.ctx(), look.faces, text)
             });
-            let summary = || Text::one(&look, role, &fits, palette.dim);
+            let summary = || Text::one(&look, role, &fits, color);
             let summary_width = widgets::measure(ui, summary());
             // Everything 18 apart. What does not fit before the summary
             // gives way from the end.

@@ -1007,7 +1007,7 @@ fn the_prefix_lists_the_commands_that_apply() {
         "> Edit connection",
         "> Hide sidebar",
         "> Settings",
-        "> Larger text",
+        "> Larger",
     ] {
         assert!(shown.contains(&offered.to_owned()), "{offered}: {shown:?}");
     }
@@ -1021,7 +1021,7 @@ fn the_prefix_lists_the_commands_that_apply() {
         "> Save changes",
         "> Run all",
         "> Next connection",
-        "> Default text size",
+        "> Actual size",
         "> Cancel running query",
     ] {
         assert!(!shown.contains(&hidden.to_owned()), "{hidden}: {shown:?}");
@@ -1162,10 +1162,11 @@ fn listed_commands_do_what_they_name() {
     assert!(harness.app.workspace(tab).unwrap().sidebar_hidden);
     run(&mut harness, "Show sidebar");
     assert!(!harness.app.workspace(tab).unwrap().sidebar_hidden);
-    run(&mut harness, "Larger text");
-    assert!(harness.app.settings.font_size.is_some());
-    run(&mut harness, "Default text size");
-    assert!(harness.app.settings.font_size.is_none());
+    // macOS's: the interface scale.
+    run(&mut harness, "Larger");
+    assert_eq!(harness.app.settings.ui_scale.percent(), 110);
+    run(&mut harness, "Actual size");
+    assert_eq!(harness.app.settings.ui_scale.percent(), 100);
     open_table(&mut harness, tab, "book_covers");
     open_table(&mut harness, tab, "authors");
     let panel = harness.app.workspace(tab).unwrap().row_panel;
@@ -1331,20 +1332,20 @@ fn commands_with_nothing_to_do_are_not_listed() {
     assert!(!shown.contains(&"> Run all".to_owned()), "{shown:?}");
     assert!(shown.contains(&"> Format SQL".to_owned()), "{shown:?}");
     harness.press(Key::Escape, Modifiers::NONE);
-    // The text's size: no larger at the largest, and no default where
-    // the size set is the look's own.
+    // The interface scale: no larger at the largest, and no actual size
+    // where it is 100% already.
     for _ in 0..20 {
         harness.app.apply(Action::TextSize(Some(true)));
     }
     ask(&mut harness, look, ">");
-    assert!(!listed(&harness).contains(&"> Larger text".to_owned()));
+    assert!(!listed(&harness).contains(&"> Larger".to_owned()));
     harness.press(Key::Escape, Modifiers::NONE);
     harness.app.apply(Action::TextSize(None));
     harness.app.apply(Action::TextSize(Some(true)));
     harness.app.apply(Action::TextSize(Some(false)));
-    assert!(harness.app.settings.font_size.is_some());
+    assert_eq!(harness.app.settings.ui_scale.percent(), 100);
     ask(&mut harness, look, ">");
-    assert!(!listed(&harness).contains(&"> Default text size".to_owned()));
+    assert!(!listed(&harness).contains(&"> Actual size".to_owned()));
 }
 
 /// The Windows look lists the commands after `>` as macOS does; Omarchy

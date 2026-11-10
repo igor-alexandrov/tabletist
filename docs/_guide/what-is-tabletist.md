@@ -80,7 +80,6 @@ Tabletist is young. These are the limits you are most likely to meet:
 - A Redis connection is read-only, to a standalone server: no Sentinel,
   Cluster or Unix socket, no editing of values or expiries, no command
   console, and no agents yet.
-- SSH tunnels do not go through `ProxyJump` or `ProxyCommand`.
 - The app is in English only.
 
 ## Open source

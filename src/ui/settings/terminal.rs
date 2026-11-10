@@ -69,6 +69,9 @@ pub(super) struct Skin<'a> {
     /// When the last check for updates that worked ran, as the Updates
     /// pane's row says it: `last checked 09:12`.
     pub(super) checked: Option<&'a str>,
+    /// How far in from the left the macOS window buttons reach, in
+    /// points: the header's title starts after them.
+    pub(super) inset: f32,
 }
 
 /// What fontconfig gave for the font the settings name, which the font's
@@ -382,14 +385,20 @@ fn update_question(ui: &mut Ui, version: &str, skin: &Skin, actions: &mut Vec<Ac
 /// One tinted line: the title and the pane it shows, and at the right
 /// what a change does and the key that opens the screen.
 fn header(ui: &mut Ui, pane: SettingsPane, skin: &Skin) {
-    let Skin { look, palette, .. } = *skin;
+    let Skin {
+        look,
+        palette,
+        inset,
+        ..
+    } = *skin;
     let (rect, _) =
         ui.allocate_exact_size(vec2(ui.available_width(), HEADER + 1.0), Sense::hover());
     ui.painter()
         .rect_filled(rect, CornerRadius::ZERO, palette.panel);
     widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, palette.outline);
     let y = rect.top() + HEADER / 2.0;
-    let mut x = rect.left() + 14.0;
+    // Clear of the macOS window buttons, as the connections' header is.
+    let mut x = rect.left() + 14.0_f32.max(inset + 12.0);
     x += widgets::paint_label(
         ui,
         x,
@@ -600,7 +609,8 @@ fn appearance_rows(
     );
     let mut index = 0;
     for (heading_text, top, options) in [
-        ("Theme", 8.0, &OptionId::THEME[..]),
+        ("Interface", 8.0, &OptionId::INTERFACE[..]),
+        ("Theme", 12.0, &OptionId::THEME[..]),
         ("Text", 12.0, &OptionId::TERMINAL_TEXT[..]),
         ("Grid", 12.0, &OptionId::GRID[..]),
         ("Environment", 12.0, &OptionId::ENVIRONMENT[..]),
@@ -1183,6 +1193,20 @@ pub(super) fn columns(
     (LABEL - share * spare[0], VALUE - share * spare[1])
 }
 
+/// What the stepper of `option` says after its chevrons: the font size's
+/// range, `9 to 32`.
+fn range(option: OptionId, skin: &Skin) -> Option<String> {
+    (option == OptionId::FontSize).then(|| {
+        let sizes = crate::settings::FontSizes::of(true);
+        format!(
+            "{} {} {}",
+            sizes.min.text(),
+            skin.say("to"),
+            sizes.max.text()
+        )
+    })
+}
+
 /// How wide `option`'s value is drawn, at its widest.
 fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f32 {
     let role = TextRole::OBody;
@@ -1199,12 +1223,19 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
         | OptionId::Timeout
         | OptionId::Indent
         | OptionId::HistoryKeep
-        | OptionId::UpdatesCheck => width(&format!("‹ {} ›", stepped_text(option, settings, skin))),
+        | OptionId::UpdatesCheck => {
+            let value = stepped_text(option, settings, skin);
+            match range(option, skin) {
+                Some(range) => width(&format!("‹ {value} › {range}")),
+                None => width(&format!("‹ {value} ›")),
+            }
+        }
         OptionId::Font => width(&font_value(settings, skin)),
         OptionId::Timestamps
         | OptionId::GroupDigits
+        | OptionId::Look
         | OptionId::Theme
-        | OptionId::InterfaceSize
+        | OptionId::InterfaceScale
         | OptionId::RowHeight
         | OptionId::TableList
         | OptionId::EnvBar
@@ -1493,8 +1524,9 @@ pub(super) fn option_row(
         }
         OptionId::Timestamps
         | OptionId::GroupDigits
+        | OptionId::Look
         | OptionId::Theme
-        | OptionId::InterfaceSize
+        | OptionId::InterfaceScale
         | OptionId::RowHeight
         | OptionId::TableList
         | OptionId::EnvBar
@@ -1589,6 +1621,11 @@ fn stepper(
             .add(role, "›", chevron(&more))
     } else {
         Text::one(look, role, &value, palette.text)
+    };
+    // The size's range after it, as the board writes it: `‹ 13 › 9 to 32`.
+    let text = match range(option, skin) {
+        Some(range) => text.add(role, &format!(" {range}"), palette.dim),
+        None => text,
     };
     widgets::paint_text(ui, cell.left, y, text);
     // The chevrons' buttons are on every row. On the cursor's row each is
@@ -1709,9 +1746,10 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
             )
             .add(role, &format!(" {}", skin.say("shows it")), palette.dim),
         OptionId::AgentsNotify => dim(&skin.say("a desktop notification")),
+        OptionId::Look => dim(&skin.say("classic is the system's own look")),
         OptionId::Theme => theme_hint(skin),
         // macOS's and Windows's: no row of this look's.
-        OptionId::InterfaceSize => Text::new(look),
+        OptionId::InterfaceScale => Text::new(look),
         OptionId::Font => font_hint(skin),
         // The keys that change it, from the keymap, wherever the keyboard
         // is.
@@ -1719,7 +1757,21 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
             .add(role, &key(ui, look, Command::LargerText), palette.accent)
             .add(role, " / ", palette.dim)
             .add(role, &key(ui, look, Command::SmallerText), palette.accent)
-            .add(role, &format!(" {}", skin.say("anywhere")), palette.dim),
+            .add(role, " / ", palette.dim)
+            .add(
+                role,
+                &key(ui, look, Command::DefaultTextSize),
+                palette.accent,
+            )
+            .add(
+                role,
+                &format!(
+                    " {} · {}",
+                    skin.say("anywhere"),
+                    skin.say("rows and panes grow with it")
+                ),
+                palette.dim,
+            ),
         OptionId::RowHeight => dim(&skin.say("1 · 1.5 · 2 lines")),
         OptionId::Zebra => Text::new(look),
         OptionId::ColumnTypes => dim(&skin.say("second header line")),
