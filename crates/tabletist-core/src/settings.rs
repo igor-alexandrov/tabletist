@@ -3606,16 +3606,15 @@ mod tests {
 
     #[test]
     fn only_what_is_not_the_default_is_written_each_table_in_its_place() {
-        // The theme's note names the values of the look the file chooses,
-        // the terminal's; the font's those of the look this platform draws
-        // with none chosen, and Windows has none for the font.
+        // The theme's and the size's notes name the values of the look the
+        // file chooses, the terminal's, on every platform; the font's those
+        // of the look this platform draws with none chosen, and Windows has
+        // none for the font.
         let note = theme_note(true);
         let fonts = Key::Font
             .note()
             .map_or(String::new(), |note| format!("  # {note}"));
-        let sizes = Key::FontSize
-            .note()
-            .map_or(String::new(), |note| format!("  # {note}"));
+        let sizes = format!("  # {TERMINAL_SIZES}");
         assert_eq!(
             all_set().to_toml(),
             format!(
