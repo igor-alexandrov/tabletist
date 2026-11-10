@@ -248,41 +248,94 @@ impl LookChoice {
     }
 }
 
-/// How large macOS's and Windows's own text is: the sidebar, the tabs,
-/// the buttons and the inspector's labels. The data has a size of its own.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum InterfaceSize {
-    Small,
-    #[default]
-    Default,
-    Large,
+/// How large macOS's and Windows's window draws everything: its text, its
+/// controls, its rows and its spacing, as one zoom on top of the display's
+/// own scale. The data's size applies on top of it. In percent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct UiScale(u16);
+
+impl UiScale {
+    /// Every scale the window offers, smallest first: the menu's and the
+    /// steps of the keys.
+    pub const ALL: [UiScale; 8] = [
+        Self(90),
+        Self(100),
+        Self(110),
+        Self(125),
+        Self(150),
+        Self(175),
+        Self(200),
+        Self(250),
+    ];
+
+    pub const DEFAULT: UiScale = Self(100);
+
+    pub fn percent(self) -> u16 {
+        self.0
+    }
+
+    /// What egui's zoom factor is set to.
+    pub fn factor(self) -> f32 {
+        f32::from(self.0) / 100.0
+    }
+
+    /// The body text's size at this scale, in whole pixels: the design's
+    /// 13 times the scale, to the nearest.
+    pub fn text_px(self) -> u16 {
+        (13 * self.0 + 50) / 100
+    }
+
+    /// As the file says it: `1.25`.
+    pub fn name(self) -> &'static str {
+        match self.0 {
+            90 => "0.9",
+            110 => "1.1",
+            125 => "1.25",
+            150 => "1.5",
+            175 => "1.75",
+            200 => "2.0",
+            250 => "2.5",
+            100 => "1.0",
+            other => unreachable!("no interface scale is {other}%"),
+        }
+    }
+
+    /// The scale `value` is, one of [`Self::ALL`]: `None` for any other.
+    pub fn of(value: f64) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|scale| (f64::from(scale.0) - value * 100.0).abs() < 1e-6)
+    }
+
+    /// The scale a step larger or smaller, no further than the ends.
+    pub fn stepped(self, larger: bool) -> Self {
+        let at = Self::ALL
+            .iter()
+            .position(|scale| *scale == self)
+            .unwrap_or(1);
+        let at = if larger {
+            (at + 1).min(Self::ALL.len() - 1)
+        } else {
+            at.saturating_sub(1)
+        };
+        Self::ALL[at]
+    }
+
+    /// What an older version's `appearance.interface_size` comes to: the
+    /// body's 12, 13 and 14 points.
+    fn from_size_name(name: &str) -> Option<Self> {
+        match name {
+            "small" => Some(Self(90)),
+            "default" => Some(Self(100)),
+            "large" => Some(Self(110)),
+            _ => None,
+        }
+    }
 }
 
-impl InterfaceSize {
-    /// In the order the window draws them.
-    pub const ALL: [InterfaceSize; 3] = [Self::Small, Self::Default, Self::Large];
-
-    /// As the file says it.
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Small => "small",
-            Self::Default => "default",
-            Self::Large => "large",
-        }
-    }
-
-    pub fn from_name(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|choice| choice.name() == name)
-    }
-
-    /// The size of the body text in points: 12, 13 or 14. Every other
-    /// style of the interface keeps its size to it.
-    pub fn points(self) -> f32 {
-        match self {
-            Self::Small => 12.0,
-            Self::Default => 13.0,
-            Self::Large => 14.0,
-        }
+impl Default for UiScale {
+    fn default() -> Self {
+        Self::DEFAULT
     }
 }
 
@@ -319,7 +372,7 @@ impl FontSize {
 
 /// The sizes a look's text can take, and the step between them. macOS and
 /// Windows size the data from 11 to 16 points by halves, 12.5 to start
-/// with; the terminal look sizes everything from 9 to 24 by whole points,
+/// with; the terminal look sizes everything from 9 to 32 by whole points,
 /// 13 to start with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FontSizes {
@@ -335,7 +388,7 @@ impl FontSizes {
         if terminal {
             Self {
                 min: FontSize(18),
-                max: FontSize(48),
+                max: FontSize(64),
                 default: FontSize(26),
                 step: 2,
             }
@@ -697,9 +750,9 @@ pub struct Settings {
     /// name here, which the terminal look still reads.
     #[serde(rename = "custom_theme")]
     pub theme: Theme,
-    /// How large the interface's own text is, on macOS and Windows.
+    /// How large macOS's and Windows's window draws everything.
     #[serde(skip)]
-    pub interface_size: InterfaceSize,
+    pub ui_scale: UiScale,
     /// The font the data is drawn in on macOS (a bundled one, by name), or
     /// the terminal look's one font (a fontconfig name). `None` until the
     /// user sets it: the look's own, IBM Plex Mono or the system's
@@ -834,7 +887,10 @@ pub enum Key {
     McpNotify,
     Look,
     Theme,
-    InterfaceSize,
+    /// `appearance.interface_size`, which older versions wrote: read
+    /// into the scale, never written.
+    OldInterfaceSize,
+    UiScale,
     Font,
     FontSize,
     RowHeight,
@@ -850,7 +906,7 @@ impl Key {
     /// In the order the file has them: a table's keys together.
     /// An old key comes before the one that took its place: the new one
     /// is read over it.
-    pub const ALL: [Key; 44] = [
+    pub const ALL: [Key; 45] = [
         Self::OnLaunch,
         Self::RestoreTabs,
         Self::PageSize,
@@ -885,7 +941,8 @@ impl Key {
         Self::McpNotify,
         Self::Look,
         Self::Theme,
-        Self::InterfaceSize,
+        Self::OldInterfaceSize,
+        Self::UiScale,
         Self::Font,
         Self::FontSize,
         Self::RowHeight,
@@ -934,7 +991,8 @@ impl Key {
             Self::McpNotify => ("mcp", "notify"),
             Self::Look => ("appearance", "look"),
             Self::Theme => ("appearance", "theme"),
-            Self::InterfaceSize => ("appearance", "interface_size"),
+            Self::OldInterfaceSize => ("appearance", "interface_size"),
+            Self::UiScale => ("appearance", "ui_scale"),
             Self::Font => ("appearance", "font"),
             Self::FontSize => ("appearance", "font_size"),
             Self::RowHeight => ("appearance.grid", "row_height"),
@@ -952,6 +1010,7 @@ impl Key {
         match self {
             Self::SqlLimit => Some(Self::OldSqlLimit),
             Self::SqlTimeoutSecs => Some(Self::OldSqlTimeoutSecs),
+            Self::UiScale => Some(Self::OldInterfaceSize),
             _ => None,
         }
     }
@@ -982,7 +1041,11 @@ impl Key {
             Self::EnvBar => Some("tint | label"),
             Self::UpdatesCheck => Some("daily | weekly | never"),
             Self::UpdatesSkip => Some("a version to stop offering"),
-            Self::InterfaceSize => Some("small | default | large"),
+            Self::UiScale => Some("0.9 | 1.0 | 1.1 | 1.25 | 1.5 | 1.75 | 2.0 | 2.5"),
+            // The terminal look's one size, where it is the look drawn with
+            // none chosen; the others' data has 11 to 16. A file that
+            // chooses a look has its look's.
+            Self::FontSize if cfg!(target_os = "linux") => Some(TERMINAL_SIZES),
             // The fonts of the look the platform draws, as the theme's.
             // Windows draws its data in Inter, whatever the key says.
             Self::Font if cfg!(target_os = "linux") => Some("fontconfig name"),
@@ -997,6 +1060,9 @@ impl Key {
         }
     }
 }
+
+/// The terminal look's font sizes, as the file's note says them.
+const TERMINAL_SIZES: &str = "9 to 32";
 
 /// The values the theme takes in the terminal look (`terminal`) or the
 /// others, as the file notes them.
@@ -1040,8 +1106,8 @@ pub enum OptionId {
     /// The classic look or the Omarchy experience: `appearance.look`.
     Look,
     Theme,
-    /// macOS's and Windows's Interface size: `appearance.interface_size`.
-    InterfaceSize,
+    /// macOS's and Windows's Interface scale: `appearance.ui_scale`.
+    InterfaceScale,
     /// The data font, or the terminal look's font: `appearance.font`.
     Font,
     /// The size that goes with it: `appearance.font_size`.
@@ -1096,7 +1162,7 @@ impl OptionId {
         Self::IdleDisconnect,
         Self::Look,
         Self::Theme,
-        Self::InterfaceSize,
+        Self::InterfaceScale,
         Self::Font,
         Self::FontSize,
         Self::RowHeight,
@@ -1162,7 +1228,7 @@ impl OptionId {
     pub const APPEARANCE: [OptionId; 10] = [
         Self::Look,
         Self::Theme,
-        Self::InterfaceSize,
+        Self::InterfaceScale,
         Self::Font,
         Self::FontSize,
         Self::RowHeight,
@@ -1175,7 +1241,7 @@ impl OptionId {
     pub const THEME: [OptionId; 1] = [Self::Theme];
     /// macOS's and Windows's Text section: the interface's size, and the
     /// data font's row, which has the size's menu beside the font's.
-    pub const TEXT: [OptionId; 2] = [Self::InterfaceSize, Self::Font];
+    pub const TEXT: [OptionId; 2] = [Self::InterfaceScale, Self::Font];
     /// The terminal look's: one font and one size for everything.
     pub const TERMINAL_TEXT: [OptionId; 2] = [Self::Font, Self::FontSize];
     pub const GRID: [OptionId; 4] = [
@@ -1261,7 +1327,7 @@ impl OptionId {
             Self::AgentsNotify => Key::McpNotify,
             Self::Look => Key::Look,
             Self::Theme => Key::Theme,
-            Self::InterfaceSize => Key::InterfaceSize,
+            Self::InterfaceScale => Key::UiScale,
             Self::Font => Key::Font,
             Self::FontSize => Key::FontSize,
             Self::RowHeight => Key::RowHeight,
@@ -1315,7 +1381,7 @@ pub enum OptionValue {
     /// `None` is the OS's own look.
     Look(Option<LookChoice>),
     Theme(ThemeChoice),
-    InterfaceSize(InterfaceSize),
+    InterfaceScale(UiScale),
     /// `None` is the look's own font.
     Font(Option<String>),
     /// `None` is the look's own size.
@@ -1400,7 +1466,7 @@ impl OptionValue {
             Self::AgentsNotify(_) => OptionId::AgentsNotify,
             Self::Look(_) => OptionId::Look,
             Self::Theme(_) => OptionId::Theme,
-            Self::InterfaceSize(_) => OptionId::InterfaceSize,
+            Self::InterfaceScale(_) => OptionId::InterfaceScale,
             Self::Font(_) => OptionId::Font,
             Self::FontSize(_) => OptionId::FontSize,
             Self::RowHeight(_) => OptionId::RowHeight,
@@ -1457,7 +1523,7 @@ impl OptionValue {
                     ThemeChoice::Pinned => return,
                 }
             }
-            Self::InterfaceSize(size) => settings.interface_size = size,
+            Self::InterfaceScale(scale) => settings.ui_scale = scale,
             Self::Font(font) => settings.font = font,
             Self::FontSize(size) => settings.font_size = size,
             Self::RowHeight(height) => settings.row_height = height,
@@ -1569,6 +1635,31 @@ impl Loaded {
 }
 
 impl Loaded {
+    /// The keys a start writes in their new place, once, taking the old key
+    /// out: of [`Self::MOVED_AT_START`], those read from the older key
+    /// alone (`appearance.interface_size` as `appearance.ui_scale`). A new
+    /// key on a line that was ignored is not one of them: the old key
+    /// stands for it, and both lines stay as they were written until the
+    /// setting is changed.
+    pub fn migrated(&self) -> Vec<Key> {
+        let read = |key: Key| self.lines.iter().any(|(line, _)| *line == key);
+        let (working, _) = readable(&self.text);
+        let ignored: Vec<Key> = self
+            .invalid
+            .iter()
+            .filter_map(|line| key_on_line(&self.text, &working, *line))
+            .collect();
+        Self::MOVED_AT_START
+            .into_iter()
+            .filter(|key| key.replaced().is_some_and(read) && !read(*key) && !ignored.contains(key))
+            .collect()
+    }
+
+    /// The new keys a start moves an older one to. The editor's older
+    /// `sql_limit` and `sql_timeout_secs` are not: they give way the first
+    /// time the limit or the timeout is set, as they always have.
+    pub const MOVED_AT_START: [Key; 1] = [Key::UiScale];
+
     /// Says in the log which lines of `path` were ignored. Until a window
     /// shows them, the log is where a typo is told. More of them than
     /// anyone would look up are told by their number alone.
@@ -2116,7 +2207,7 @@ impl Settings {
             OptionId::AgentsNotify => OptionValue::AgentsNotify(self.mcp_notify),
             OptionId::Look => OptionValue::Look(self.look),
             OptionId::Theme => OptionValue::Theme(self.theme.choice()),
-            OptionId::InterfaceSize => OptionValue::InterfaceSize(self.interface_size),
+            OptionId::InterfaceScale => OptionValue::InterfaceScale(self.ui_scale),
             OptionId::Font => OptionValue::Font(self.font.clone()),
             OptionId::FontSize => OptionValue::FontSize(self.font_size),
             OptionId::RowHeight => OptionValue::RowHeight(self.row_height),
@@ -2237,18 +2328,7 @@ impl Settings {
             } else {
                 ThemeChoice::Omarchy
             }),
-            OptionId::InterfaceSize => {
-                let at = InterfaceSize::ALL
-                    .iter()
-                    .position(|choice| *choice == self.interface_size)
-                    .unwrap_or(1);
-                let next = if forward {
-                    (at + 1).min(InterfaceSize::ALL.len() - 1)
-                } else {
-                    at.saturating_sub(1)
-                };
-                OptionValue::InterfaceSize(InterfaceSize::ALL[next])
-            }
+            OptionId::InterfaceScale => OptionValue::InterfaceScale(self.ui_scale.stepped(forward)),
             // A name is set in the file: the window has none to step to.
             OptionId::Font => OptionValue::Font(self.font.clone()),
             // The terminal look's steps: the window steps the size there.
@@ -2416,6 +2496,12 @@ impl Settings {
             (Key::Theme, _) if self.look.is_some() => {
                 self.look.map(|look| theme_note(look.terminal()).into())
             }
+            // The terminal look's one size has its range; the others' is
+            // the data's, which the window keeps in its own.
+            (Key::FontSize, _) if self.look.is_some() => self
+                .look
+                .filter(|look| look.terminal())
+                .map(|_| TERMINAL_SIZES.into()),
             _ => key.note().map(Into::into),
         }
     }
@@ -2479,7 +2565,7 @@ impl Settings {
                 Some(_) => ThemeChoice::Omarchy,
                 None => ThemeChoice::Pinned,
             })),
-            OptionId::InterfaceSize | OptionId::Font | OptionId::FontSize => None,
+            OptionId::InterfaceScale | OptionId::Font | OptionId::FontSize => None,
             OptionId::RowHeight => None,
             // Unset, it is flipped from off: the window flips the
             // settings as it shows them, with the look's default in.
@@ -2567,7 +2653,9 @@ impl Settings {
             Key::McpNotify => self.mcp_notify.to_string(),
             Key::Look => toml_string(self.look?.name()),
             Key::Theme => toml_string(self.theme.text()?),
-            Key::InterfaceSize => toml_string(self.interface_size.name()),
+            // Read, never written: the scale is.
+            Key::OldInterfaceSize => return None,
+            Key::UiScale => self.ui_scale.name().to_owned(),
             Key::Font => toml_string(self.font.as_deref()?),
             Key::FontSize => self.font_size?.text(),
             Key::RowHeight => toml_string(self.row_height.name()),
@@ -2632,8 +2720,17 @@ impl Settings {
     /// more: a key to add or take out there gets the file written as
     /// [`Settings::to_toml`] has it. So does a text too long to be read.
     pub fn write_into(&self, text: &str, keys: &[Key]) -> String {
+        self.write_kept(text, keys)
+            .unwrap_or_else(|| self.to_toml())
+    }
+
+    /// [`Self::write_into`] where it keeps the rest of `text` as it was,
+    /// and `None` where it would write the file whole instead: what a
+    /// change nobody asked for (a start moving an older key) writes, or
+    /// leaves the file alone.
+    pub fn write_kept(&self, text: &str, keys: &[Key]) -> Option<String> {
         if text.len() > MAX_BYTES || text.lines().count() > MAX_LINES {
-            return self.to_toml();
+            return None;
         }
         let text = if text.trim_matches([' ', '\t', '\r', '\n']).is_empty() {
             HEADER
@@ -2685,7 +2782,7 @@ impl Settings {
                         // or with dotted keys, a header of its own would
                         // define it again: the file is written whole.
                         if !headed_parents(&document, &working, table_name) {
-                            return self.to_toml();
+                            return None;
                         }
                         new_tables.push((table_name, line(key, &literal)));
                     }
@@ -2734,7 +2831,7 @@ impl Settings {
                 (Some((found, value)), None) => {
                     let whole = found.span().start..value.span().end;
                     if !headed || !own_lines(&working, whole.clone()) {
-                        return self.to_toml();
+                        return None;
                     }
                     let lines = line_start(&working, whole.start)..line_end(&working, whole.end);
                     edits.push((lines, String::new()));
@@ -2746,7 +2843,7 @@ impl Settings {
                 }
                 (None, Some(literal)) => {
                     if !headed {
-                        return self.to_toml();
+                        return None;
                     }
                     // After the table's last key, or under its header. A
                     // table under it (`[data.more]`) is no key of it.
@@ -2803,7 +2900,7 @@ impl Settings {
             }
             out.push_str(&added);
         }
-        out
+        Some(out)
     }
 
     /// The settings with every number in its range.
@@ -2907,9 +3004,12 @@ impl Settings {
             Key::Theme => text
                 .filter(|text| !text.is_empty())
                 .map(|text| self.theme = Theme::of(text)),
-            Key::InterfaceSize => text
-                .and_then(InterfaceSize::from_name)
-                .map(|size| self.interface_size = size),
+            Key::OldInterfaceSize => text
+                .and_then(UiScale::from_size_name)
+                .map(|scale| self.ui_scale = scale),
+            Key::UiScale => points
+                .and_then(UiScale::of)
+                .map(|scale| self.ui_scale = scale),
             Key::Font => text
                 .filter(|text| !text.trim().is_empty())
                 .map(|text| self.font = Some(text.to_owned())),
@@ -3103,7 +3203,7 @@ impl Settings {
             Key::McpNotify => self.mcp_notify = other.mcp_notify,
             Key::Look => self.look = other.look,
             Key::Theme => self.theme = other.theme.clone(),
-            Key::InterfaceSize => self.interface_size = other.interface_size,
+            Key::OldInterfaceSize | Key::UiScale => self.ui_scale = other.ui_scale,
             Key::Font => self.font = other.font.clone(),
             Key::FontSize => self.font_size = other.font_size,
             Key::RowHeight => self.row_height = other.row_height,
@@ -3171,7 +3271,7 @@ impl Default for Settings {
             idle_disconnect: Idle::default(),
             show_system_schemas: false,
             theme: Theme::Unset,
-            interface_size: InterfaceSize::Default,
+            ui_scale: UiScale::DEFAULT,
             font: None,
             font_size: None,
             sql_limit: 1_000,
@@ -3472,7 +3572,7 @@ mod tests {
             show_system_schemas: true,
             look: Some(LookChoice::Omarchy),
             theme: Theme::Pinned("My \"Nord\".json".into()),
-            interface_size: InterfaceSize::Large,
+            ui_scale: UiScale::of(1.25).unwrap(),
             font: Some("JetBrains Mono".into()),
             font_size: FontSize::of(14.5),
             sql_limit: 0,
@@ -3506,13 +3606,15 @@ mod tests {
 
     #[test]
     fn only_what_is_not_the_default_is_written_each_table_in_its_place() {
-        // The theme's note names the values of the look the file chooses,
-        // the terminal's; the font's those of the look this platform draws
-        // with none chosen, and Windows has none for the font.
+        // The theme's and the size's notes name the values of the look the
+        // file chooses, the terminal's, on every platform; the font's those
+        // of the look this platform draws with none chosen, and Windows has
+        // none for the font.
         let note = theme_note(true);
         let fonts = Key::Font
             .note()
             .map_or(String::new(), |note| format!("  # {note}"));
+        let sizes = format!("  # {TERMINAL_SIZES}");
         assert_eq!(
             all_set().to_toml(),
             format!(
@@ -3569,9 +3671,9 @@ notify = false
 [appearance]
 look = \"omarchy\"  # classic | omarchy
 theme = \"My \\\"Nord\\\".json\"  # {note}
-interface_size = \"large\"  # small | default | large
+ui_scale = 1.25  # 0.9 | 1.0 | 1.1 | 1.25 | 1.5 | 1.75 | 2.0 | 2.5
 font = \"JetBrains Mono\"{fonts}
-font_size = 14.5
+font_size = 14.5{sizes}
 
 [appearance.grid]
 row_height = \"roomy\"  # compact | regular | roomy
@@ -3678,7 +3780,7 @@ skip = \"0.4.0\"  # a version to stop offering
                 (Key::McpNotify, 48),
                 (Key::Look, 51),
                 (Key::Theme, 52),
-                (Key::InterfaceSize, 53),
+                (Key::UiScale, 53),
                 (Key::Font, 54),
                 (Key::FontSize, 55),
                 (Key::RowHeight, 58),
@@ -3801,14 +3903,13 @@ skip = \"0.4.0\"  # a version to stop offering
             assert_eq!(loaded.settings.sql_timeout_secs, Some(10), "{set}");
         }
         // Appearance's grid under an inline `appearance` too.
-        let set = written(
-            "appearance = { interface_size = \"large\" }\n",
-            |settings| settings.row_height = RowHeight::Roomy,
-        );
+        let set = written("appearance = { ui_scale = 1.1 }\n", |settings| {
+            settings.row_height = RowHeight::Roomy
+        });
         let loaded = Settings::from_toml(&set);
         assert_eq!(loaded.invalid, Vec::<usize>::new(), "{set}");
         assert_eq!(loaded.settings.row_height, RowHeight::Roomy, "{set}");
-        assert_eq!(loaded.settings.interface_size, InterfaceSize::Large);
+        assert_eq!(loaded.settings.ui_scale, UiScale::of(1.1).unwrap());
     }
 
     #[test]
@@ -4788,7 +4889,7 @@ skip = \"0.4.0\"  # a version to stop offering
                 Key::IdleDisconnect,
                 Key::Look,
                 Key::Theme,
-                Key::InterfaceSize,
+                Key::UiScale,
                 Key::Font,
                 Key::FontSize,
                 Key::RowHeight,
@@ -5120,6 +5221,26 @@ skip = \"0.4.0\"  # a version to stop offering
     }
 
     #[test]
+    fn the_font_size_s_note_is_the_terminal_look_s_range_where_the_file_chooses_it() {
+        for (look, line) in [
+            (LookChoice::Omarchy, "font_size = 14  # 9 to 32\n"),
+            // The classic look's size is the data's, on Linux too: no note.
+            (LookChoice::Classic, "font_size = 14\n"),
+        ] {
+            let settings = Settings {
+                look: Some(look),
+                font_size: FontSize::of(14.0),
+                ..Settings::default()
+            };
+            let text = settings.to_toml();
+            assert!(text.contains(line), "{look:?}: {text}");
+            // Written into a file too, as the window writes a change.
+            let written = settings.write_into("", &[Key::FontSize]);
+            assert!(written.contains(line), "{look:?}: {written}");
+        }
+    }
+
+    #[test]
     fn the_look_steps_to_its_side_and_the_one_drawn_unset_stays_unset() {
         let settings = Settings::default();
         assert_eq!(
@@ -5278,11 +5399,11 @@ skip = \"0.4.0\"  # a version to stop offering
         assert_eq!(loaded.settings.font.as_deref(), Some("monospace"));
         assert_eq!(loaded.settings.font_size, FontSize::of(13.0));
         assert_eq!(loaded.lines[1..], [(Key::Font, 3), (Key::FontSize, 4)]);
-        // macOS's: a size between two points, and the interface's size.
-        let text = "[appearance]\ninterface_size = \"small\"\nfont = \"JetBrains Mono\"\n\
+        // macOS's: a size between two points, and the interface's scale.
+        let text = "[appearance]\nui_scale = 1.25\nfont = \"JetBrains Mono\"\n\
                     font_size = 12.5\n";
         let settings = Settings::from_toml(text).settings;
-        assert_eq!(settings.interface_size, InterfaceSize::Small);
+        assert_eq!(settings.ui_scale, UiScale::of(1.25).unwrap());
         assert_eq!(settings.font.as_deref(), Some("JetBrains Mono"));
         assert_eq!(settings.font_size, FontSize::of(12.5));
         // Neither look's font and size is written until it is set.
@@ -5291,16 +5412,22 @@ skip = \"0.4.0\"  # a version to stop offering
             font_size: FontSize::of(16.0),
             ..Settings::default()
         };
-        assert!(set.to_toml().ends_with("[appearance]\nfont_size = 16\n"));
+        let note = Key::FontSize
+            .note()
+            .map_or(String::new(), |note| format!("  # {note}"));
+        assert!(
+            set.to_toml()
+                .ends_with(&format!("[appearance]\nfont_size = 16{note}\n"))
+        );
     }
 
     #[test]
     fn a_text_key_with_no_value_it_can_have_is_ignored_by_its_line() {
-        let text = "[appearance]\ninterface_size = \"huge\"\nfont = \"\"\nfont_size = \"big\"\n\
+        let text = "[appearance]\nui_scale = 1.3\nfont = \"\"\nfont_size = \"big\"\n\
                     [editor]\nsql_limit = 100\n";
         let loaded = Settings::from_toml(text);
         assert_eq!(loaded.invalid, vec![2, 3, 4]);
-        assert_eq!(loaded.settings.interface_size, InterfaceSize::Default);
+        assert_eq!(loaded.settings.ui_scale, UiScale::DEFAULT);
         assert_eq!(loaded.settings.font, None);
         assert_eq!(loaded.settings.font_size, None);
         assert_eq!(loaded.settings.sql_limit, 100);
@@ -5324,9 +5451,10 @@ skip = \"0.4.0\"  # a version to stop offering
         assert_eq!(read("14").as_deref(), Some("14"));
         // Past both looks' ranges: brought to the nearest end of them, as
         // a number of the other keys is.
-        assert_eq!(read("30").as_deref(), Some("24"));
-        assert_eq!(read("100.5").as_deref(), Some("24"));
-        assert_eq!(read("99999999999").as_deref(), Some("24"));
+        assert_eq!(read("32").as_deref(), Some("32"));
+        assert_eq!(read("40").as_deref(), Some("32"));
+        assert_eq!(read("100.5").as_deref(), Some("32"));
+        assert_eq!(read("99999999999").as_deref(), Some("32"));
         assert_eq!(read("4").as_deref(), Some("9"));
     }
 
@@ -5340,11 +5468,12 @@ skip = \"0.4.0\"  # a version to stop offering
         // Each look's own, before any is set.
         assert_eq!(drawn(&at(None), false), "12.5");
         assert_eq!(drawn(&at(None), true), "13");
-        // macOS and Windows: 11 to 16, by halves. The terminal: 9 to 24,
+        // macOS and Windows: 11 to 16, by halves. The terminal: 9 to 32,
         // by whole points.
         assert_eq!(drawn(&at(Some(20.0)), false), "16");
         assert_eq!(drawn(&at(Some(9.0)), false), "11");
         assert_eq!(drawn(&at(Some(20.0)), true), "20");
+        assert_eq!(drawn(&at(Some(32.0)), true), "32");
         assert_eq!(drawn(&at(Some(12.5)), true), "13");
         assert_eq!(drawn(&at(Some(13.5)), false), "13.5");
         // Every size macOS's menu lists.
@@ -5375,7 +5504,9 @@ skip = \"0.4.0\"  # a version to stop offering
         assert_eq!(step(16.0, false, true), "16");
         assert_eq!(step(11.0, false, false), "11");
         assert_eq!(step(13.0, true, true), "14");
-        assert_eq!(step(24.0, true, true), "24");
+        assert_eq!(step(24.0, true, true), "25");
+        assert_eq!(step(31.0, true, true), "32");
+        assert_eq!(step(32.0, true, true), "32");
         assert_eq!(step(9.0, true, false), "9");
         // The window's steps are the terminal look's.
         let settings = Settings::default();
@@ -5386,27 +5517,119 @@ skip = \"0.4.0\"  # a version to stop offering
     }
 
     #[test]
-    fn the_interface_size_steps_through_its_three() {
-        let step = |size: InterfaceSize, forward: bool| {
+    fn the_interface_scale_steps_through_the_menu_and_stops_at_its_ends() {
+        let step = |scale: f64, forward: bool| {
             let settings = Settings {
-                interface_size: size,
+                ui_scale: UiScale::of(scale).unwrap(),
                 ..Settings::default()
             };
-            settings.stepped(OptionId::InterfaceSize, forward)
+            settings.stepped(OptionId::InterfaceScale, forward)
+        };
+        let scale = |value: f64| OptionValue::InterfaceScale(UiScale::of(value).unwrap());
+        assert_eq!(step(1.0, true), scale(1.1));
+        assert_eq!(step(1.1, true), scale(1.25));
+        assert_eq!(step(2.0, true), scale(2.5));
+        assert_eq!(step(2.5, true), scale(2.5));
+        assert_eq!(step(1.0, false), scale(0.9));
+        assert_eq!(step(0.9, false), scale(0.9));
+        // Each with its zoom factor and the body text's size it comes to:
+        // 13 times the scale, to the nearest pixel.
+        let each: Vec<(u16, f32, u16)> = UiScale::ALL
+            .into_iter()
+            .map(|scale| (scale.percent(), scale.factor(), scale.text_px()))
+            .collect();
+        assert_eq!(
+            each,
+            [
+                (90, 0.9, 12),
+                (100, 1.0, 13),
+                (110, 1.1, 14),
+                (125, 1.25, 16),
+                (150, 1.5, 20),
+                (175, 1.75, 23),
+                (200, 2.0, 26),
+                (250, 2.5, 33),
+            ]
+        );
+        for scale in UiScale::ALL {
+            assert_eq!(scale.text_px(), (13.0 * scale.factor()).round() as u16);
+        }
+    }
+
+    #[test]
+    fn the_interface_scale_is_one_of_the_menus_and_reads_back_as_written() {
+        for scale in UiScale::ALL {
+            let set = Settings {
+                ui_scale: scale,
+                ..Settings::default()
+            };
+            let loaded = Settings::from_toml(&set.to_toml());
+            assert_eq!(loaded.invalid, Vec::<usize>::new(), "{}", scale.name());
+            assert_eq!(loaded.settings.ui_scale, scale);
+        }
+        // At its default the file leaves it out; a whole number reads too.
+        assert_eq!(Settings::default().to_toml(), HEADER);
+        let read =
+            |value: &str| Settings::from_toml(&format!("[appearance]\nui_scale = {value}\n"));
+        assert_eq!(read("2").settings.ui_scale, UiScale::of(2.0).unwrap());
+        assert_eq!(read("1.25").lines, [(Key::UiScale, 2)]);
+        // Anything else is no scale: told by its line, and 100% drawn.
+        for value in ["1.3", "3", "0", "-1", "\"large\"", "true", "nan"] {
+            let loaded = read(value);
+            assert_eq!(loaded.invalid, vec![2], "{value}");
+            assert_eq!(loaded.settings.ui_scale, UiScale::DEFAULT, "{value}");
+        }
+    }
+
+    #[test]
+    fn an_older_interface_size_is_read_as_its_scale_and_goes_when_written() {
+        for (size, scale) in [("small", 0.9), ("default", 1.0), ("large", 1.1)] {
+            let text =
+                format!("[appearance]\ninterface_size = \"{size}\"\nfont = \"JetBrains Mono\"\n");
+            let loaded = Settings::from_toml(&text);
+            assert_eq!(loaded.invalid, Vec::<usize>::new(), "{size}");
+            assert_eq!(loaded.settings.ui_scale, UiScale::of(scale).unwrap());
+            // Read from the old key alone: the scale is to be written.
+            assert_eq!(loaded.migrated(), [Key::UiScale], "{size}");
+            let written = loaded.settings.write_into(&text, &loaded.migrated());
+            assert!(!written.contains("interface_size"), "{written}");
+            let again = Settings::from_toml(&written);
+            assert_eq!(again.settings.ui_scale, loaded.settings.ui_scale);
+            assert_eq!(again.migrated(), Vec::<Key>::new(), "{written}");
+            assert_eq!(again.settings.font.as_deref(), Some("JetBrains Mono"));
+        }
+        let written = |size: &str| {
+            let text = format!("[appearance]\ninterface_size = \"{size}\"\n");
+            let loaded = Settings::from_toml(&text);
+            loaded.settings.write_into(&text, &loaded.migrated())
         };
         assert_eq!(
-            step(InterfaceSize::Default, true),
-            OptionValue::InterfaceSize(InterfaceSize::Large)
+            written("large"),
+            "[appearance]\nui_scale = 1.1  # 0.9 | 1.0 | 1.1 | 1.25 | 1.5 | 1.75 | 2.0 | 2.5\n"
         );
         assert_eq!(
-            step(InterfaceSize::Large, true),
-            OptionValue::InterfaceSize(InterfaceSize::Large)
+            written("small").lines().nth(1),
+            Some("ui_scale = 0.9  # 0.9 | 1.0 | 1.1 | 1.25 | 1.5 | 1.75 | 2.0 | 2.5")
         );
-        assert_eq!(
-            step(InterfaceSize::Small, false),
-            OptionValue::InterfaceSize(InterfaceSize::Small)
-        );
-        let points = InterfaceSize::ALL.map(InterfaceSize::points);
-        assert_eq!(points, [12.0, 13.0, 14.0]);
+        // 13, the default: nothing is left to say, and the table goes.
+        assert_eq!(written("default"), "");
+        // The scale, where the file has it too, is read over the old key,
+        // and nothing is to be written.
+        let text = "[appearance]\ninterface_size = \"large\"\nui_scale = 2.0\n";
+        let loaded = Settings::from_toml(text);
+        assert_eq!(loaded.settings.ui_scale, UiScale::of(2.0).unwrap());
+        assert_eq!(loaded.migrated(), Vec::<Key>::new());
+        // A scale that cannot be read is as good as absent, as every new
+        // key's is: the old key stands for it. Neither line is to move, so
+        // the one written by hand is still there to be put right.
+        let text = "[appearance]\ninterface_size = \"large\"\nui_scale = 1.3\n";
+        let loaded = Settings::from_toml(text);
+        assert_eq!(loaded.settings.ui_scale, UiScale::of(1.1).unwrap());
+        assert_eq!(loaded.invalid, vec![3]);
+        assert_eq!(loaded.migrated(), Vec::<Key>::new());
+        // An old value no version wrote is ignored by its line.
+        let loaded = Settings::from_toml("[appearance]\ninterface_size = \"huge\"\n");
+        assert_eq!(loaded.invalid, vec![2]);
+        assert_eq!(loaded.migrated(), Vec::<Key>::new());
     }
 }

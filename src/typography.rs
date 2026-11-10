@@ -8,11 +8,12 @@
 //! look's faces (Plex on macOS, the terminal's monospace on Omarchy, Inter
 //! elsewhere).
 //!
-//! A role's size in [`TextRole::spec`] is the design's. The settings size
-//! the text on macOS and Windows ([`TextRole::spec_in`]): the data roles
-//! keep to the data's size, 12.5 points in the design, and the others to
-//! the interface's, 13. The terminal look draws the whole window larger or
-//! smaller instead, its roles as they are.
+//! A role's size in [`TextRole::spec`] is the design's. On macOS and
+//! Windows the data roles keep to the data's size the settings give
+//! ([`TextRole::spec_in`]), 12.5 points in the design, and the others keep
+//! the design's. Every look draws the whole window larger or smaller on
+//! top: the terminal look by its font size, the others by their interface
+//! scale (egui's zoom factor), the data's size multiplied by it.
 //!
 //! Text is built with [`Text`] and drawn from the [`Laid`] it lays out.
 
@@ -29,10 +30,9 @@ use egui::{
 
 use crate::theme::{DataFace, Faces, Look, Typeface};
 
-/// The data's size and the interface's in the design: what a role's size
-/// in [`TextRole::spec`] is drawn at before the settings change them.
+/// The data's size in the design: what a data role's size in
+/// [`TextRole::spec`] is drawn at before the settings change it.
 const DESIGN_DATA: f32 = 12.5;
-const DESIGN_INTERFACE: f32 = 13.0;
 
 /// Sans or monospace: what a role asks for. The Omarchy look has one
 /// monospace face for both.
@@ -329,18 +329,16 @@ impl TextRole {
 
     /// The role as `faces` draw it: [`Self::spec`] at the settings' sizes.
     /// A data role keeps to the data's size as the design's keeps to 12.5
-    /// points, and the others to the interface's as the design's to 13.
-    /// The terminal look's are the design's.
+    /// points; the others, and the terminal look's, are the design's (the
+    /// interface scale zooms them with the rest of the window).
     pub fn spec_in(self, faces: Faces) -> Spec {
         let mut spec = self.spec();
-        let (size, design) = match faces.typeface {
-            Typeface::Terminal => return spec,
+        match faces.typeface {
             Typeface::Inter | Typeface::Plex if self.is_data() => {
-                (faces.data_size.points(), DESIGN_DATA)
+                spec.size = spec.size * faces.data_size.points() / DESIGN_DATA;
             }
-            Typeface::Inter | Typeface::Plex => (faces.interface.points(), DESIGN_INTERFACE),
-        };
-        spec.size = spec.size * size / design;
+            Typeface::Terminal | Typeface::Inter | Typeface::Plex => {}
+        }
         spec
     }
 
@@ -759,13 +757,13 @@ pub fn text_styles(faces: Faces) -> std::collections::BTreeMap<egui::TextStyle, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::{FontSize, InterfaceSize, Settings};
+    use crate::settings::{FontSize, Settings, UiScale};
 
-    /// The settings with the interface's size, the data font and its size
+    /// The settings with the interface's scale, the data font and its size
     /// as given.
-    fn text(interface: InterfaceSize, font: Option<&str>, size: f64) -> Settings {
+    fn text(scale: f64, font: Option<&str>, size: f64) -> Settings {
         Settings {
-            interface_size: interface,
+            ui_scale: UiScale::of(scale).unwrap(),
             font: font.map(str::to_owned),
             font_size: FontSize::of(size),
             ..Settings::default()
@@ -773,16 +771,15 @@ mod tests {
     }
 
     #[test]
-    fn the_settings_size_the_interface_and_the_data_apart() {
+    fn the_data_is_sized_apart_and_the_interface_keeps_the_designs_sizes() {
         for look in [Look::macos(), Look::standard()] {
-            let faces = look
-                .with_text(&text(InterfaceSize::Large, None, 16.0), false)
-                .faces;
-            // The interface's roles keep to the body's 14 as the design's
-            // to 13, the data's to 16 as the design's to 12.5.
-            assert_eq!(TextRole::UiBody.size(faces), 14.0, "{}", look.name);
-            assert_eq!(TextRole::Secondary.size(faces), 12.0 * 14.0 / 13.0);
-            assert_eq!(TextRole::MonoSecondary.size(faces), 12.0 * 14.0 / 13.0);
+            let faces = look.with_text(&text(1.5, None, 16.0), false).faces;
+            // The interface's roles are the design's whatever the scale:
+            // the zoom draws them larger. The data's keep to 16 as the
+            // design's to 12.5.
+            assert_eq!(TextRole::UiBody.size(faces), 13.0, "{}", look.name);
+            assert_eq!(TextRole::Secondary.size(faces), 12.0);
+            assert_eq!(TextRole::MonoSecondary.size(faces), 12.0);
             assert_eq!(TextRole::GridCell.size(faces), 16.0);
             assert_eq!(TextRole::DataBody.size(faces), 13.0 * 16.0 / 12.5);
             assert_eq!(TextRole::Code.size(faces), 13.0 * 16.0 / 12.5);
@@ -795,7 +792,7 @@ mod tests {
         for faces in [
             Look::macos().faces,
             Look::omarchy()
-                .with_text(&text(InterfaceSize::Large, Some("Fira Code"), 20.0), true)
+                .with_text(&text(2.5, Some("Fira Code"), 20.0), true)
                 .faces,
         ] {
             for role in TextRole::ALL {

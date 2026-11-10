@@ -402,6 +402,7 @@ impl App {
 
     fn opened(dirs: AppDirs, loaded: Loaded, backend: Backend, relaunched: bool) -> Self {
         let source = loaded.source;
+        let migrated = loaded.migrated();
         let (settings, settings_file) = loaded.into_parts();
         let loaded_connections = SavedConnections::load(&dirs);
         let connections = loaded_connections.store;
@@ -562,6 +563,17 @@ impl App {
         // So are settings that were read from the old settings.json.
         if source == Source::Json {
             app.save_settings();
+        }
+        // And a key read from the older one it took the place of, once:
+        // `interface_size` as `ui_scale`, the old line taken out. Where
+        // that would write the file whole (the key in a table written
+        // inline), it is not written: nobody asked, and the file's other
+        // keys and comments would go. The old key is read as it is.
+        if !migrated.is_empty() {
+            let settings = app.settings.clone();
+            if let Some(text) = settings.write_kept(&app.settings_file.text, &migrated) {
+                app.take_written(text, settings);
+            }
         }
         app
     }
@@ -2686,13 +2698,7 @@ impl App {
                     self.dialog = Some(Dialog::About);
                 }
             }
-            Action::TextSize(larger) => {
-                let terminal = self.look.terminal;
-                self.change_settings(|settings| {
-                    settings.font_size =
-                        larger.map(|larger| settings.stepped_font_size(terminal, larger));
-                });
-            }
+            Action::TextSize(larger) => self.resize(larger),
             Action::ShowSettings => {
                 // Asked for while it is open, it stays as it is.
                 if self.settings_may_open() {
@@ -8244,14 +8250,62 @@ impl App {
         });
     }
 
-    /// How large the window draws everything: the terminal look's text
-    /// size against its 13 points. The other looks size their text by
-    /// role, and draw at 1.
+    /// How large the window draws everything, on top of the display's own
+    /// scale (egui multiplies its native pixels per point by it): the
+    /// terminal look's text size against its 13 points, the others'
+    /// interface scale.
     pub fn zoom_factor(&self) -> f32 {
         if self.look.terminal {
             self.settings.font_size_in(true).points() / 13.0
         } else {
-            1.0
+            self.settings.ui_scale.factor()
+        }
+    }
+
+    /// The keys' and the View menu's Larger, Smaller and Actual Size
+    /// (`larger`, or none for the last): the interface scale a step or back
+    /// to 100% on macOS and Windows, the terminal look's one font size a
+    /// point or back to 13. Saved at once, and told for 4 s in the toast
+    /// or the status line. The Settings window changes them unsaid.
+    fn resize(&mut self, larger: Option<bool>) {
+        use crate::i18n::gettext;
+        let reset = self
+            .keymap
+            .key(self.layout(), crate::keymap::Command::DefaultTextSize);
+        if self.look.terminal {
+            self.change_settings(|settings| {
+                settings.font_size = larger.map(|larger| settings.stepped_font_size(true, larger));
+            });
+            let size = self.settings.font_size_in(true).text();
+            // A key that resets it is named; a `[keys]` line can leave none.
+            let words = if reset.as_str().is_empty() {
+                "font size {size}"
+            } else {
+                "font size {size} · {key} resets"
+            };
+            self.said = Some(
+                gettext(self.locale, words)
+                    .replace("{size}", &size)
+                    .replace("{key}", reset.as_str()),
+            );
+        } else {
+            self.change_settings(|settings| {
+                settings.ui_scale = larger.map_or(crate::settings::UiScale::DEFAULT, |larger| {
+                    settings.ui_scale.stepped(larger)
+                });
+            });
+            let scale = self.settings.ui_scale;
+            let words = if reset.as_str().is_empty() {
+                "Interface {percent}% · {px} px text"
+            } else {
+                "Interface {percent}% · {px} px text · {key} resets"
+            };
+            self.said = Some(
+                gettext(self.locale, words)
+                    .replace("{percent}", &scale.percent().to_string())
+                    .replace("{px}", &scale.text_px().to_string())
+                    .replace("{key}", reset.as_str()),
+            );
         }
     }
 
@@ -9530,6 +9584,154 @@ mod tests {
             );
             assert_eq!(saves(&app), 0, "{source:?}");
         }
+    }
+
+    #[test]
+    fn an_older_interface_size_is_written_as_its_scale_once_at_the_start() {
+        use crate::settings::{Key, UiScale};
+        let saved = |app: &App| -> Vec<String> {
+            app.backend
+                .sent
+                .iter()
+                .filter_map(|command| match command {
+                    Command::Save {
+                        file: StateFile::Settings(text),
+                        ..
+                    } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        for (size, scale) in [("small", 0.9), ("default", 1.0), ("large", 1.1)] {
+            let dir = tempfile::tempdir().unwrap();
+            let text = format!(
+                "# mine\n[appearance]\ninterface_size = \"{size}\"  # small | default | large\n\
+                 font_size = 14\n"
+            );
+            let app = App::new(
+                AppDirs::at(dir.path()),
+                Settings::from_toml(&text),
+                Backend::recording(),
+            );
+            let scale = UiScale::of(scale).unwrap();
+            assert_eq!(app.settings.ui_scale, scale, "{size}");
+            // Written once, off the UI thread: the old line out, the scale
+            // in where it is not 100%, the rest as it was.
+            let saved = saved(&app);
+            assert_eq!(saved.len(), 1, "{size}");
+            let written = &saved[0];
+            assert_eq!(written, &app.settings_file.text);
+            assert!(!written.contains("interface_size"), "{written}");
+            assert!(written.starts_with("# mine\n[appearance]\n"), "{written}");
+            assert!(written.contains("font_size = 14"), "{written}");
+            assert_eq!(
+                written.contains(&format!("ui_scale = {}", scale.name())),
+                scale != UiScale::DEFAULT,
+                "{written}"
+            );
+            // Read back, it is what it was, and nothing more is to move.
+            let again = Settings::from_toml(written);
+            assert_eq!(again.settings.ui_scale, scale);
+            assert_eq!(again.migrated(), Vec::<Key>::new());
+            let app = App::new(AppDirs::at(dir.path()), again, Backend::recording());
+            assert!(saved_none(&app), "{size}");
+        }
+        // The editor's older keys are not moved at a start: they give way
+        // the first time the limit or the timeout is set.
+        let dir = tempfile::tempdir().unwrap();
+        let text = "[editor]\nsql_limit = 300\nsql_timeout_secs = 7200\n";
+        let app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::from_toml(text),
+            Backend::recording(),
+        );
+        assert_eq!(app.settings.sql_limit, 300);
+        assert!(saved_none(&app), "{:?}", app.backend.sent);
+        assert_eq!(app.settings_file.text, text);
+        // An inline table could only be written whole, losing the keys and
+        // comments this version does not know: the start leaves it alone,
+        // and the old key is read as it is.
+        let text = "appearance = { interface_size = \"large\", future = 1 } # mine\n";
+        let app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::from_toml(text),
+            Backend::recording(),
+        );
+        assert_eq!(app.settings.ui_scale, UiScale::of(1.1).unwrap());
+        assert!(saved_none(&app), "{:?}", app.backend.sent);
+        assert_eq!(app.settings_file.text, text);
+        fn saved_none(app: &App) -> bool {
+            !app.backend.sent.iter().any(|command| {
+                matches!(
+                    command,
+                    Command::Save {
+                        file: StateFile::Settings(_),
+                        ..
+                    }
+                )
+            })
+        }
+    }
+
+    #[test]
+    fn the_interface_scale_reloads_live_and_one_it_cannot_be_is_told() {
+        use crate::settings::UiScale;
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::default().into(),
+            Backend::recording(),
+        );
+        app.look = crate::theme::Look::macos();
+        let edited = |app: &mut App, text: &str| {
+            app.apply_event(Event::SettingsFile {
+                text: text.to_owned(),
+                own: false,
+            });
+        };
+        edited(&mut app, "[appearance]\nui_scale = 1.75\n");
+        assert_eq!(app.settings.ui_scale, UiScale::of(1.75).unwrap());
+        assert_eq!(app.zoom_factor(), 1.75);
+        assert_eq!(app.settings_file.invalid, Vec::<usize>::new());
+        // No scale of the menu's: its line told as ignored, and the scale
+        // stays as it was, as every key's does while the file is edited.
+        edited(&mut app, "[appearance]\nui_scale = 1.3\n");
+        assert_eq!(app.settings.ui_scale, UiScale::of(1.75).unwrap());
+        assert_eq!(app.settings_file.invalid, vec![2]);
+        // With the older key beside it, the older key stands for it.
+        edited(
+            &mut app,
+            "[appearance]\ninterface_size = \"large\"\nui_scale = 1.3\n",
+        );
+        assert_eq!(app.settings.ui_scale, UiScale::of(1.1).unwrap());
+        assert_eq!(app.settings_file.invalid, vec![3]);
+        // At a start, there is none to keep: 100%, the line told too.
+        let loaded = Settings::from_toml("[appearance]\nui_scale = 1.3\n");
+        let app = App::new(AppDirs::at(dir.path()), loaded, Backend::recording());
+        assert_eq!(app.settings.ui_scale, UiScale::DEFAULT);
+        assert_eq!(app.settings_file.invalid, vec![2]);
+        // The older key beside it stands for it at a start too, and the
+        // file is not written: the line typed by hand stays to be put right.
+        let text = "[appearance]\ninterface_size = \"large\"\nui_scale = 1.3\n";
+        let app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::from_toml(text),
+            Backend::recording(),
+        );
+        assert_eq!(app.settings.ui_scale, UiScale::of(1.1).unwrap());
+        assert_eq!(app.settings_file.invalid, vec![3]);
+        assert_eq!(app.settings_file.text, text);
+        assert!(
+            !app.backend.sent.iter().any(|command| matches!(
+                command,
+                Command::Save {
+                    file: StateFile::Settings(_),
+                    ..
+                }
+            )),
+            "{:?}",
+            app.backend.sent
+        );
     }
 
     #[test]

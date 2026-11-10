@@ -517,6 +517,14 @@ fn body(
         question.show(ui, (footer, footer_side, footer_y), tab, skin, &mut actions);
     } else {
         let small = widgets::secondary(&look);
+        // The terminal look floats no toast: what was just done (the font
+        // size a key changed) takes the keyring's note's place while it is
+        // said.
+        let said = look
+            .terminal
+            .then(|| super::toast::said(ui.ctx()))
+            .flatten()
+            .map(|said| look.label(&said));
         if look.terminal {
             let mut hints = vec![
                 (&moves, "move", true),
@@ -533,8 +541,8 @@ fn body(
             }
             // What does not fit beside the keyring's note gives way, from the
             // end: the window may be as narrow as 720.
-            let secrets = terminal_secrets(&look);
-            let note = widgets::measure(ui, Text::one(&look, small, secrets, palette.dim));
+            let note = said.as_deref().unwrap_or(terminal_secrets(&look));
+            let note = widgets::measure(ui, Text::one(&look, small, note, palette.dim));
             let room = footer.width() - 2.0 * footer_side - note - 24.0;
             while hints.len() > 1
                 && widgets::key_hints_width(ui, &hints, 16.0, &look, &palette) > room
@@ -563,14 +571,18 @@ fn body(
                     + 18.0;
             }
         }
-        let secrets = if look.terminal {
+        let secrets = if let Some(said) = said.clone() {
+            said
+        } else if look.terminal {
             terminal_secrets(&look).to_owned()
         } else if look.keychain(Os::current()) {
             gettext(locale, "Passwords are stored in the macOS Keychain").into_owned()
         } else {
             gettext(locale, "Passwords are stored in the system keyring").into_owned()
         };
-        let color = if look.terminal {
+        let color = if said.is_some() {
+            palette.text
+        } else if look.terminal {
             palette.dim
         } else {
             palette.secondary.lerp_to_gamma(palette.dim, 0.5)

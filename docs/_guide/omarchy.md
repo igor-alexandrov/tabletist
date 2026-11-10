@@ -46,7 +46,7 @@ second Esc gives the keyboard back.
 | Ctrl+K, Ctrl+J | In a SQL editor: up to the script, down to its results |
 | F6, Shift+F6 | Next and previous part of the window |
 | Ctrl+, | Settings |
-| Ctrl+=, Ctrl+- | Larger and smaller text: the whole window, under a dialog too |
+| Ctrl+=, Ctrl+-, Ctrl+0 | Larger and smaller text, or back to 13: the whole window, under a dialog too |
 | `:agents` | Show the Agents tab |
 | `:agents log` | Show the Agents tab's log |
 | `:history` | Show the [History tab]({% link _guide/sql-editor.md %}#history) |
@@ -507,8 +507,9 @@ font = "Fira Code"
 font_size = 15
 ```
 
-The size, 9 to 24, sizes the whole window, as a terminal's font size
-does. `h` and `l` on the size row change it, and so do Ctrl+= and Ctrl+-
-anywhere in the window; `R` on the row puts back 13.
+The size, 9 to 32, sizes the whole window, as a terminal's font size
+does: rows and panes grow with it. `h` and `l` on the size row change it,
+and so do Ctrl+= and Ctrl+- anywhere in the window, which the status line
+says for 4 seconds; Ctrl+0, or `R` on the row, puts back 13.
 
 {% include shot.html file="omarchy-settings" alt="The Settings screen in the Omarchy look: the options on the left and settings.toml on the right" width="2880" height="1800" %}

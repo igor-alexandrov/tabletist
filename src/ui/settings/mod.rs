@@ -27,9 +27,9 @@ use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::{Command, Keymap, Layout, Scope, Spelled, Stroke};
 use crate::model::{Action, AgentsView, Dialog, SettingsDialog, SettingsPane, SettingsRow};
 use crate::settings::{
-    Autocomplete, Commas, EditorKeys, EnvBar, Idle, InterfaceSize, KeywordCase, Launch,
-    LineNumbers, LookChoice, Mode, NewTab, OptionId, OptionValue, RowHeight, RunScope, Settings,
-    TableList, Theme, ThemeChoice, Timestamps, UpdateCheck, Zone,
+    Autocomplete, Commas, EditorKeys, EnvBar, Idle, KeywordCase, Launch, LineNumbers, LookChoice,
+    Mode, NewTab, OptionId, OptionValue, RowHeight, RunScope, Settings, TableList, Theme,
+    ThemeChoice, Timestamps, UpdateCheck, Zone,
 };
 
 /// The label of an option's row. English: the caller translates, and the
@@ -52,7 +52,7 @@ pub(crate) fn label(option: OptionId) -> &'static str {
         OptionId::AgentsNotify => "Notify when an agent connects",
         OptionId::Look => "Interface",
         OptionId::Theme => "Theme",
-        OptionId::InterfaceSize => "Interface size",
+        OptionId::InterfaceScale => "Interface scale",
         OptionId::Font => "Data font",
         OptionId::FontSize => "Data font size",
         OptionId::RowHeight => "Row density",
@@ -134,7 +134,7 @@ pub(super) fn terminal_label(option: OptionId) -> &'static str {
         | OptionId::AgentsNotify
         | OptionId::Look
         | OptionId::Theme
-        | OptionId::InterfaceSize
+        | OptionId::InterfaceScale
         | OptionId::TableList
         | OptionId::NewTab
         | OptionId::RowLimit
@@ -171,8 +171,10 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
         OptionId::TableList => Some("Default for new connections; the sidebar toggle overrides it"),
         OptionId::EnvBar => Some("Production always uses the full tint"),
         OptionId::Look => Some("Omarchy: keyboard-first, square, monospace"),
-        OptionId::InterfaceSize => Some("Sidebar, tabs, buttons, inspector labels"),
-        OptionId::Font => Some("Grid cells, SQL editor, JSON"),
+        OptionId::InterfaceScale => {
+            Some("Everything in the window: text, controls, rows and spacing")
+        }
+        OptionId::Font => Some("Grid cells, SQL editor, JSON · scales with the interface"),
         OptionId::NewTab => Some("The badge in each tab can still switch it"),
         // Igor's words (2026-10-19), in place of the board's "Adds LIMIT to
         // results you browse; exports get everything": the rows are capped
@@ -628,19 +630,10 @@ pub(super) fn choices(
             ),
             (Word("pin"), OptionValue::Theme(ThemeChoice::Pinned)),
         ],
-        OptionId::InterfaceSize => vec![
-            (
-                Word("small"),
-                OptionValue::InterfaceSize(InterfaceSize::Small),
-            ),
-            (
-                Word("default"),
-                OptionValue::InterfaceSize(InterfaceSize::Default),
-            ),
-            (
-                Word("large"),
-                OptionValue::InterfaceSize(InterfaceSize::Large),
-            ),
+        // macOS's and Windows's menu: the terminal look has no row of it.
+        OptionId::InterfaceScale => vec![
+            (Word("smaller"), settings.stepped(option, false)),
+            (Word("larger"), settings.stepped(option, true)),
         ],
         // A name is set in the file: the window offers none.
         OptionId::Font => Vec::new(),

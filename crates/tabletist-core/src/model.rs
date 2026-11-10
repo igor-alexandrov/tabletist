@@ -1064,8 +1064,9 @@ pub enum Action {
     ShowAbout,
     /// Show the Settings window.
     ShowSettings,
-    /// The font size a step larger (`Some(true)`), smaller, or back to the
-    /// look's own (`None`), written to the settings.
+    /// The window a step larger (`Some(true)`), smaller, or back to its
+    /// own size (`None`), written to the settings: the interface scale on
+    /// macOS and Windows, the terminal look's font size.
     TextSize(Option<bool>),
     /// Show the Settings window on its Agents pane: from the Agents tab.
     ShowAgentSettings,
