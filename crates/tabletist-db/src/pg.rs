@@ -429,6 +429,10 @@ impl Conn {
         self.database_listing(PROBE_TIMEOUT)
     }
 
+    /// The probe itself, on a connection of its own to the `pgbouncer`
+    /// database of the server `config` names: the console's aliases, `None`
+    /// where the server is PostgreSQL itself, or only `requested` (the
+    /// alias that connected) where the answer is unclear.
     async fn pgbouncer_databases(
         mut config: tokio_postgres::Config,
         tls: MakeRustlsConnect,
