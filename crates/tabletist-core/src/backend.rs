@@ -965,6 +965,16 @@ struct Running {
     /// The worker closed the session: it starts no further command, not
     /// even one it has already taken off its queue.
     closed: bool,
+    /// The running command is a read that is cheap to let finish (a page,
+    /// a structure, a definition, a lookup): a Cancel of it waits `grace`
+    /// before it sends one (see `cancel_request`).
+    read: bool,
+    /// A Cancel of the running read is waiting out its grace.
+    deferred: bool,
+    /// What a cancel costs this session, about: the time its connection
+    /// took to open, at most `MAX_GRACE`. A read still running after that
+    /// long is cancelled; one that ends sooner was cheaper to wait for.
+    grace: Duration,
     /// The request at which a test has the session's task panic.
     #[cfg(test)]
     panics: Option<RequestId>,
@@ -2000,6 +2010,7 @@ impl Worker {
                 let outbox = self.outbox.clone();
                 let ready = self.ready.clone();
                 tokio::spawn(async move {
+                    let started = tokio::time::Instant::now();
                     let outcome = Connection::connect_with(&spec, &secrets, &host_keys, access)
                         .await
                         .map(|connection| {
@@ -2011,7 +2022,10 @@ impl Worker {
                             let cancel = connection.cancel_handle();
                             let (queue, commands) = tokio_mpsc::unbounded_channel();
                             let (stop, stopped) = tokio::sync::oneshot::channel();
-                            let running = Arc::new(Mutex::new(Running::default()));
+                            let running = Arc::new(Mutex::new(Running {
+                                grace: grace_after(started.elapsed()),
+                                ..Running::default()
+                            }));
                             tokio::spawn(run_session(
                                 session,
                                 connection,
@@ -2618,6 +2632,13 @@ async fn run_session(
                 // right after the run starts always finds the flag.
                 running.stop = matches!(command, Command::RunSql { .. }).then(|| run_stop.clone());
                 running.save = matches!(command, Command::Write { .. }).then(|| run_stop.clone());
+                running.read = matches!(
+                    command,
+                    Command::FetchRows { .. }
+                        | Command::Describe { .. }
+                        | Command::ReadDdl { .. }
+                        | Command::Lookup { .. }
+                );
             }
             skipped
         };
@@ -2754,14 +2775,7 @@ async fn run_session(
                 lost
             }
             Command::ListDatabases { session, request } => {
-                let result = connection.list_databases().await;
-                let lost = lost_error(&result);
-                outbox.emit(Event::Databases {
-                    session: *session,
-                    request: *request,
-                    result,
-                });
-                lost
+                list_databases(&connection, *session, *request, &outbox).await
             }
             Command::RunSql {
                 session,
@@ -2855,6 +2869,8 @@ async fn run_session(
             running.stop = None;
             running.save = None;
             running.cancelling = false;
+            running.read = false;
+            running.deferred = false;
         }
         if let Some(error) = lost {
             fail_queued(&mut end.commands, &outbox, &error);
@@ -2864,6 +2880,54 @@ async fn run_session(
     }
     end.finished = true;
     let _ = connection.close().await;
+}
+
+/// Answers `ListDatabases`. On PostgreSQL the check for PgBouncer opens a
+/// connection of its own, several round trips: it runs beside the session,
+/// which only reads its catalog, and the answer follows when the check is
+/// over (the check's aliases if it found PgBouncer). A lost connection is
+/// answered at once, before the session says it is gone.
+async fn list_databases(
+    connection: &Connection,
+    session: SessionId,
+    request: RequestId,
+    outbox: &Outbox,
+) -> Option<Error> {
+    let Some(probe) = connection.database_probe() else {
+        let result = connection.list_databases().await;
+        let lost = lost_error(&result);
+        outbox.emit(Event::Databases {
+            session,
+            request,
+            result,
+        });
+        return lost;
+    };
+    let probe = tokio::spawn(probe);
+    let catalog = connection.catalog_databases().await;
+    let lost = lost_error(&catalog);
+    if lost.is_some() {
+        probe.abort();
+        outbox.emit(Event::Databases {
+            session,
+            request,
+            result: catalog,
+        });
+        return lost;
+    }
+    let outbox = outbox.clone();
+    tokio::spawn(async move {
+        let result = match probe.await {
+            Ok(Some(aliases)) => Ok(aliases),
+            Ok(None) | Err(_) => catalog,
+        };
+        outbox.emit(Event::Databases {
+            session,
+            request,
+            result,
+        });
+    });
+    None
 }
 
 fn lost_error<T>(result: &Result<T, Error>) -> Option<Error> {
@@ -2893,12 +2957,23 @@ fn send_cancel(cancel: &CancelHandle) -> impl Future<Output = ()> + Send + 'stat
     }
 }
 
+/// The longest a cheap read runs on after its Cancel before it takes one.
+const MAX_GRACE: Duration = Duration::from_secs(2);
+
+/// How long a Cancel lets a cheap read run on, on a session whose
+/// connection took `connect` to open: a cancel opens a connection too.
+fn grace_after(connect: Duration) -> Duration {
+    connect.min(MAX_GRACE)
+}
+
 /// The user's cancel of `request`. For what the session runs now: a script
 /// is stopped and cancelled until it is finishing (see `keep_sending`); one
-/// that is being cancelled already takes one more cancel at once. Any other
-/// command takes one cancel, and a save is stopped before it: the cancel
-/// may find it between two statements. A request that is not running is
-/// skipped when its turn comes.
+/// that is being cancelled already takes one more cancel at once. A cheap
+/// read takes one cancel only if it still runs after the session's grace
+/// (see `cancel_after`). Any other command takes one cancel at once, and a
+/// save is stopped before it: the cancel may find it between two
+/// statements. A request that is not running is skipped when its turn
+/// comes.
 fn cancel_request<C>(
     running: &Arc<Mutex<Running>>,
     request: RequestId,
@@ -2921,6 +2996,15 @@ fn cancel_request<C>(
         // between two of the script's queries is lost, and without a
         // timeout the statement would run until the user cancels again.
         tokio::spawn(keep_sending(send, Arc::clone(running), request));
+    } else if state.read && !state.grace.is_zero() {
+        // A cancel is a new connection, and the next command waits for it
+        // to land: far from the server it costs more than the page or the
+        // structure it would stop. One timer is enough.
+        if !state.deferred {
+            state.deferred = true;
+            let grace = state.grace;
+            tokio::spawn(cancel_after(grace, send, Arc::clone(running), request));
+        }
     } else if state.stop.is_none() || state.script_takes_a_cancel() {
         // Anything but a script takes one cancel while it runs. So does a
         // script whose cancels already go out, at once: the next of those
@@ -2929,6 +3013,28 @@ fn cancel_request<C>(
         state.cancels.retain(|task| !task.is_finished());
         state.cancels.push(tokio::spawn(send()));
     }
+}
+
+/// Cancels the read `request` if it still runs after `grace`. The timer is
+/// kept by no one: the session waits for the cancel only once it is sent,
+/// and one that ends in time is answered, and its answer dropped by the UI,
+/// without any. Checked and sent under the lock the session takes when a
+/// command ends, so the cancel never reaches the command after it.
+async fn cancel_after<C>(
+    grace: Duration,
+    send: impl Fn() -> C + Send + 'static,
+    running: Arc<Mutex<Running>>,
+    request: RequestId,
+) where
+    C: Future<Output = ()> + Send + 'static,
+{
+    tokio::time::sleep(grace).await;
+    let mut running = lock(&running);
+    if running.request != Some(request) || running.closed {
+        return;
+    }
+    running.cancels.retain(|task| !task.is_finished());
+    running.cancels.push(tokio::spawn(send()));
 }
 
 /// Sends the session's cancel until the script `request` runs reaches its
@@ -4253,6 +4359,93 @@ mod tests {
             assert_eq!(sent_at(&sent, start), [0]);
             assert!(lock(&running).skip.contains(&RequestId(3)));
         });
+    }
+
+    /// A session running request 2, a cheap read, whose cancels wait 800 ms.
+    fn running_read() -> Running {
+        Running {
+            request: Some(RequestId(2)),
+            read: true,
+            grace: Duration::from_millis(800),
+            ..Running::default()
+        }
+    }
+
+    #[test]
+    fn a_read_still_running_after_its_grace_takes_one_cancel() {
+        paused().block_on(async {
+            let running = Arc::new(Mutex::new(running_read()));
+            let sent = Arc::new(Mutex::new(Vec::new()));
+            let start = tokio::time::Instant::now();
+            cancel_request(&running, RequestId(2), noting(&sent));
+            // Nothing for the next command to wait on yet.
+            assert!(lock(&running).cancels.is_empty());
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            // Asked again: still the one timer.
+            cancel_request(&running, RequestId(2), noting(&sent));
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            assert_eq!(sent_at(&sent, start), [800]);
+            // Kept for the session to wait for before its next command.
+            assert_eq!(lock(&running).cancels.len(), 1);
+        });
+    }
+
+    #[test]
+    fn a_read_that_ends_within_its_grace_is_never_cancelled() {
+        paused().block_on(async {
+            let running = Arc::new(Mutex::new(running_read()));
+            let sent = Arc::new(Mutex::new(Vec::new()));
+            cancel_request(&running, RequestId(2), noting(&sent));
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            // The read answers and the session starts the next one, as
+            // `run_session` does.
+            {
+                let mut running = lock(&running);
+                running.request = Some(RequestId(3));
+                running.deferred = false;
+            }
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            assert!(lock(&sent).is_empty(), "none for the next read");
+            assert!(lock(&running).cancels.is_empty());
+        });
+    }
+
+    #[test]
+    fn a_closed_session_sends_no_late_cancel_of_a_read() {
+        paused().block_on(async {
+            let running = Arc::new(Mutex::new(running_read()));
+            let sent = Arc::new(Mutex::new(Vec::new()));
+            cancel_request(&running, RequestId(2), noting(&sent));
+            // Close cancels on its own, at once.
+            lock(&running).close();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            assert!(lock(&sent).is_empty());
+        });
+    }
+
+    #[test]
+    fn a_count_is_cancelled_at_once_whatever_the_grace() {
+        paused().block_on(async {
+            let count = Running {
+                read: false,
+                ..running_read()
+            };
+            let running = Arc::new(Mutex::new(count));
+            let sent = Arc::new(Mutex::new(Vec::new()));
+            let start = tokio::time::Instant::now();
+            cancel_request(&running, RequestId(2), noting(&sent));
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            assert_eq!(sent_at(&sent, start), [0]);
+        });
+    }
+
+    #[test]
+    fn the_grace_is_the_connect_time_up_to_two_seconds() {
+        assert_eq!(
+            grace_after(Duration::from_millis(30)),
+            Duration::from_millis(30)
+        );
+        assert_eq!(grace_after(Duration::from_secs(9)), MAX_GRACE);
     }
 
     #[test]

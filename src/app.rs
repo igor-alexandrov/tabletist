@@ -6166,6 +6166,11 @@ impl App {
     /// After a (re)connect: load the tree, restart everything that waited on
     /// the old session, and open anything queued for this connection.
     pub fn after_connect(&mut self, tab: ConnTabId) {
+        self.ask_server_version(tab);
+        self.ask_session_zone(tab);
+        self.refresh_tree(tab);
+        // After the tree: the databases' listing waits on a check of its
+        // own for PgBouncer.
         if let Some(workspace) = self.workspace(tab) {
             match workspace.driver {
                 // The one driver with other databases to switch to.
@@ -6181,9 +6186,6 @@ impl App {
                 Driver::MySql | Driver::Sqlite | Driver::BigQuery => {}
             }
         }
-        self.ask_server_version(tab);
-        self.ask_session_zone(tab);
-        self.refresh_tree(tab);
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
@@ -16993,6 +16995,17 @@ masked = ["orders.email"]
             access: crate::testing::asked_access(app),
         }));
         tab
+    }
+
+    #[test]
+    fn postgres_tabs_ask_for_the_tree_before_the_databases() {
+        let (mut app, _dir) = app();
+        connected_postgres(&mut app);
+        let at = |wanted: fn(&Command) -> bool| app.backend.sent.iter().position(wanted);
+        let schemas = at(|c| matches!(c, Command::ListSchemas { .. })).expect("ListSchemas");
+        let databases = at(|c| matches!(c, Command::ListDatabases { .. })).expect("ListDatabases");
+        // The listing waits on a check for PgBouncer: the tree goes first.
+        assert!(schemas < databases);
     }
 
     #[test]
