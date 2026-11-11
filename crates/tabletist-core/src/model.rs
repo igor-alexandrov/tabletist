@@ -1381,6 +1381,9 @@ pub struct Workspace {
     pub secrets: tabletist_db::Secrets,
     /// Databases on the server (PostgreSQL), for the switcher.
     pub databases: Fetch<Vec<String>>,
+    /// A listing of `databases` started by a connect and not sent yet: it
+    /// goes once the schemas answer, after the default schema's objects.
+    pub databases_after_tree: Option<RequestId>,
     /// Save the typed password in the keyring once the server accepts it.
     pub save_password: bool,
     /// Why the next connect must ask for the password (the saved or typed
@@ -6169,6 +6172,7 @@ impl Workspace {
             password_mode: saved.password,
             secrets,
             databases: Fetch::default(),
+            databases_after_tree: None,
             save_password: false,
             needs_prompt: None,
             keyring_empty: false,
