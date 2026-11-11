@@ -47,6 +47,7 @@ type ColumnRow = (
 const BINARY_CHARSET: u16 = 63;
 const ACCESS_DENIED: u16 = 1045;
 const QUERY_INTERRUPTED: u16 = 1317;
+const NO_SUCH_THREAD: u16 = 1094;
 const UNKNOWN_SYSTEM_VARIABLE: u16 = 1193;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -71,7 +72,31 @@ pub(crate) struct Conn {
     pub(crate) version: String,
     /// What the session was opened as: a script puts it back.
     pub(crate) access: Access,
+    /// A second connection kept for KILL QUERY (see [`cancel`]).
+    pub(crate) spare: Spare,
+    /// The spare's open beside the session, stopped when the session is.
+    _opening: Opening,
 }
+
+/// The task that opens a session's spare. Dropped with the session, it is
+/// stopped: a session closed straight after it opened (a test of the
+/// connection) does not go on signing in a second one. A spare it had
+/// opened closes with the last cancel handle that holds it.
+struct Opening(tokio::task::AbortHandle);
+
+impl Drop for Opening {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// The connection a session's cancels go through, signed in and checked
+/// to have reached the session's server, kept between cancels: MySQL has
+/// no cancel in its protocol, and a new connection for each cancel is a
+/// sign-in, a check and the KILL, several round trips far from the server.
+/// `None` until it is open, and after the server closed it. The lock also
+/// keeps one cancel at a time.
+pub(crate) type Spare = std::sync::Arc<tokio::sync::Mutex<Option<mysql_async::Conn>>>;
 
 impl Conn {
     /// An export's rows through a prepared statement inside a read-only
@@ -167,6 +192,19 @@ impl Conn {
         // mysql_async fails rather than go on in plain text when it was
         // given TLS options, so the options that connected say it.
         let encrypted = opts.ssl_opts().is_some();
+        let spare = Spare::default();
+        // Opened beside the session, so connecting waits for none of it. A
+        // cancel that comes first waits for it, or opens it itself. One
+        // that cannot open (a limit on connections, say) leaves each cancel
+        // to open its own.
+        let opening = (std::sync::Arc::clone(&spare), opts.clone(), server.clone());
+        let opening = tokio::spawn(async move {
+            let (spare, opts, server) = opening;
+            let mut slot = spare.lock().await;
+            if slot.is_none() {
+                *slot = open_spare(&opts, &server).await.ok();
+            }
+        });
         Ok(Self {
             conn: tokio::sync::Mutex::new(conn),
             opts,
@@ -175,6 +213,8 @@ impl Conn {
             server,
             version,
             access,
+            spare,
+            _opening: Opening(opening.abort_handle()),
         })
     }
 
@@ -230,6 +270,7 @@ impl Adapter for Conn {
             opts: self.opts.clone(),
             id: self.id,
             server: self.server.clone(),
+            spare: std::sync::Arc::clone(&self.spare),
         })
     }
 
@@ -1371,29 +1412,68 @@ pub(crate) fn query_error(error: mysql_async::Error) -> Error {
     }
 }
 
-/// Stops the query thread `id` runs on the server named `server`. The cancel
-/// connection resolves the host again, and behind round robin DNS or a load
-/// balancer it can reach another server, where `id` is someone else's
-/// session: so it kills only after checking it reached the same server.
-pub(crate) async fn cancel(opts: &Opts, id: u32, server: &str) -> Result<()> {
-    let failed = |error: mysql_async::Error| Error::Connect(format!("could not cancel: {error}"));
+/// Stops the query thread `id` runs on the server named `server`, through
+/// the session's `spare` connection: one round trip, the KILL, where it is
+/// open. Where it is not, or the server closed it (`wait_timeout`, a
+/// restart), a new one is opened and checked, and kept for the next cancel.
+pub(crate) async fn cancel(opts: &Opts, id: u32, server: &str, spare: &Spare) -> Result<()> {
+    let kill = format!("KILL QUERY {id}");
+    let mut slot = spare.lock().await;
+    if let Some(conn) = slot.as_mut() {
+        let killed = conn.query_drop(&kill).await;
+        if spare_answered(&killed) {
+            return killed.map_err(cancel_failed);
+        }
+        // Anything else may be a connection the server has closed, which
+        // can answer with an error of its own first (an idle one past
+        // `wait_timeout`, say): a new one below.
+        *slot = None;
+    }
+    let mut conn = open_spare(opts, server).await?;
+    let killed = conn.query_drop(&kill).await;
+    if spare_answered(&killed) {
+        *slot = Some(conn);
+    }
+    killed.map_err(cancel_failed)
+}
+
+/// Whether a KILL's answer shows its connection works: it was done, or the
+/// server knows no such thread (the session is gone).
+fn spare_answered(killed: &mysql_async::Result<()>) -> bool {
+    match killed {
+        Ok(()) => true,
+        Err(mysql_async::Error::Server(error)) => error.code == NO_SUCH_THREAD,
+        Err(_) => false,
+    }
+}
+
+/// A connection for [`cancel`], checked to have reached the server named
+/// `server`. It resolves the host again, and behind round robin DNS or a
+/// load balancer it can reach another server, where the session's thread
+/// id is someone else's: so it is used only after that check. A connection
+/// stays with the server it reached, so the check holds for as long as it
+/// is kept.
+async fn open_spare(opts: &Opts, server: &str) -> Result<mysql_async::Conn> {
     let mut conn =
         match tokio::time::timeout(CONNECT_TIMEOUT, mysql_async::Conn::new(opts.clone())).await {
             Err(_) => return Err(Error::Timeout),
-            Ok(result) => result.map_err(failed)?,
+            Ok(result) => result.map_err(cancel_failed)?,
         };
-    let result = async {
-        let (reached, _) = server_identity(&mut conn, "")
-            .await
-            .map_err(|error| Error::Connect(format!("could not cancel: {error}")))?;
-        same_server(server, &reached)?;
-        conn.query_drop(format!("KILL QUERY {id}"))
-            .await
-            .map_err(failed)
+    let checked = match server_identity(&mut conn, "").await {
+        Ok((reached, _)) => same_server(server, &reached),
+        Err(error) => Err(Error::Connect(format!("could not cancel: {error}"))),
+    };
+    match checked {
+        Ok(()) => Ok(conn),
+        Err(error) => {
+            let _ = conn.disconnect().await;
+            Err(error)
+        }
     }
-    .await;
-    let _ = conn.disconnect().await;
-    result
+}
+
+fn cancel_failed(error: mysql_async::Error) -> Error {
+    Error::Connect(format!("could not cancel: {error}"))
 }
 
 /// Names the server a connection reached, with its `VERSION()`: by
@@ -1826,14 +1906,88 @@ mod tests {
             })
         };
         tokio::time::sleep(Duration::from_millis(300)).await;
+        // The check is made where a spare opens: a new one, for a session
+        // on another server, refuses.
         let other = "uuid 00000000-0000-0000-0000-000000000000";
+        let spare = Spare::default();
         assert_eq!(
-            cancel(&session.opts, session.id, other).await,
+            cancel(&session.opts, session.id, other, &spare).await,
             Err(Error::Connect(
                 "could not cancel: reached a different server".into()
             ))
         );
+        assert!(spare.lock().await.is_none());
         assert_eq!(running.await.unwrap().unwrap(), Some(0));
+    }
+
+    /// The thread id of the session's spare, once the connect has opened it.
+    async fn spare_id(session: &Conn) -> u32 {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(conn) = session.spare.lock().await.as_ref() {
+                return conn.id();
+            }
+            assert!(Instant::now() < deadline, "the spare never opened");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Cancels go through one spare connection, opened beside the session;
+    /// one the server closed is replaced by the next cancel, which still
+    /// stops the query.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancels_reuse_one_spare_and_replace_a_closed_one() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let session = std::sync::Arc::new(session(&url).await);
+        let first = spare_id(&session).await;
+        assert_ne!(first, session.id);
+        let (opts, id, server) = (&session.opts, session.id, session.server.as_str());
+        // Nothing runs: the KILL does nothing, and the spare stays.
+        for _ in 0..3 {
+            cancel(opts, id, server, &session.spare).await.unwrap();
+        }
+        assert_eq!(spare_id(&session).await, first);
+
+        // The server closes it, as `wait_timeout` would.
+        let admin_opts =
+            mysql_async::Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+        let mut admin = mysql_async::Conn::new(admin_opts).await.unwrap();
+        admin.query_drop(format!("KILL {first}")).await.unwrap();
+        admin.disconnect().await.unwrap();
+
+        let running = {
+            let session = std::sync::Arc::clone(&session);
+            tokio::spawn(async move {
+                let mut conn = session.conn.lock().await;
+                // SLEEP answers 1 when a KILL QUERY interrupts it.
+                conn.query_first::<i64, _>("SELECT SLEEP(5)").await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        cancel(opts, id, server, &session.spare).await.unwrap();
+        assert_eq!(running.await.unwrap().unwrap(), Some(1));
+        let second = spare_id(&session).await;
+        assert_ne!(second, first);
+    }
+
+    /// A session closed straight after it connected stops its spare's
+    /// open: nothing signs in for a session that is gone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_closed_session_stops_opening_its_spare() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let session = session(&url).await;
+        let spare = std::sync::Arc::clone(&session.spare);
+        drop(session);
+        // Longer than the open takes here, so it would have finished.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let slot = tokio::time::timeout(Duration::from_secs(1), spare.lock())
+            .await
+            .expect("the stopped open still holds the lock");
+        assert!(slot.is_none());
     }
 
     #[test]
