@@ -2590,6 +2590,9 @@ async fn run_session(
     outbox: Outbox,
 ) {
     let mut end = SessionEnd::new(session, Arc::clone(&running), commands, outbox.clone());
+    // Dropped when this task ends, however it ends: a PgBouncer probe still
+    // running then is stopped (see `list_databases`).
+    let (_ending, ended) = tokio::sync::watch::channel(());
     loop {
         let command = tokio::select! {
             biased;
@@ -2775,7 +2778,7 @@ async fn run_session(
                 lost
             }
             Command::ListDatabases { session, request } => {
-                list_databases(&connection, *session, *request, &outbox).await
+                list_databases(&connection, *session, *request, &outbox, ended.clone()).await
             }
             Command::RunSql {
                 session,
@@ -2886,12 +2889,14 @@ async fn run_session(
 /// connection of its own, several round trips: it runs beside the session,
 /// which only reads its catalog, and the answer follows when the check is
 /// over (the check's aliases if it found PgBouncer). A lost connection is
-/// answered at once, before the session says it is gone.
+/// answered at once, before the session says it is gone. `ended` closes
+/// when the session's task ends.
 async fn list_databases(
     connection: &Connection,
     session: SessionId,
     request: RequestId,
     outbox: &Outbox,
+    ended: tokio::sync::watch::Receiver<()>,
 ) -> Option<Error> {
     let Some(probe) = connection.database_probe() else {
         let result = connection.list_databases().await;
@@ -2917,10 +2922,7 @@ async fn list_databases(
     }
     let outbox = outbox.clone();
     tokio::spawn(async move {
-        let result = match probe.await {
-            Ok(Some(aliases)) => Ok(aliases),
-            Ok(None) | Err(_) => catalog,
-        };
+        let result = answer_after_probe(probe, catalog, ended).await;
         outbox.emit(Event::Databases {
             session,
             request,
@@ -2928,6 +2930,26 @@ async fn list_databases(
         });
     });
     None
+}
+
+/// The databases' listing once `probe` is over: its aliases if it found
+/// PgBouncer, else `catalog`. If the session ends first, the probe is
+/// stopped, closing its connection, and the catalog answers.
+async fn answer_after_probe(
+    mut probe: tokio::task::JoinHandle<Option<Vec<String>>>,
+    catalog: Result<Vec<String>, Error>,
+    mut ended: tokio::sync::watch::Receiver<()>,
+) -> Result<Vec<String>, Error> {
+    // Nothing is ever sent: `changed` returns only once the sender is
+    // dropped.
+    let found = tokio::select! {
+        found = &mut probe => found.ok().flatten(),
+        _ = ended.changed() => {
+            probe.abort();
+            None
+        }
+    };
+    found.map_or(catalog, Ok)
 }
 
 fn lost_error<T>(result: &Result<T, Error>) -> Option<Error> {
@@ -4359,6 +4381,37 @@ mod tests {
             assert_eq!(sent_at(&sent, start), [0]);
             assert!(lock(&running).skip.contains(&RequestId(3)));
         });
+    }
+
+    #[tokio::test]
+    async fn a_probe_still_running_when_the_session_ends_is_stopped() {
+        let (ending, ended) = tokio::sync::watch::channel(());
+        let (stopped, dropped) = tokio::sync::oneshot::channel::<()>();
+        let probe = tokio::spawn(async move {
+            // Dropped, and with it `stopped`, when the task is aborted.
+            let _stopped = stopped;
+            std::future::pending::<Option<Vec<String>>>().await
+        });
+        let answer = tokio::spawn(answer_after_probe(probe, Ok(vec!["app".into()]), ended));
+        drop(ending);
+        let answered = tokio::time::timeout(WAIT, answer).await.unwrap().unwrap();
+        assert_eq!(answered.unwrap(), ["app"]);
+        assert!(
+            tokio::time::timeout(WAIT, dropped).await.is_ok(),
+            "the probe stops"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_probe_that_finds_pgbouncer_answers_with_its_aliases() {
+        let (_ending, ended) = tokio::sync::watch::channel(());
+        let probe = tokio::spawn(async { Some(vec!["app_pool".to_owned()]) });
+        let answered = answer_after_probe(probe, Ok(vec!["app".into()]), ended).await;
+        assert_eq!(answered.unwrap(), ["app_pool"]);
+        let (_ending, ended) = tokio::sync::watch::channel(());
+        let none = tokio::spawn(async { None });
+        let answered = answer_after_probe(none, Ok(vec!["app".into()]), ended).await;
+        assert_eq!(answered.unwrap(), ["app"]);
     }
 
     /// A session running request 2, a cheap read, whose cancels wait 800 ms.
