@@ -3055,6 +3055,10 @@ async fn cancel_after<C>(
     if running.request != Some(request) || running.closed {
         return;
     }
+    // No longer a read that is cheap to wait for: should this cancel fail,
+    // the next Cancel sends another at once.
+    running.read = false;
+    running.deferred = false;
     running.cancels.retain(|task| !task.is_finished());
     running.cancels.push(tokio::spawn(send()));
 }
@@ -4440,6 +4444,13 @@ mod tests {
             assert_eq!(sent_at(&sent, start), [800]);
             // Kept for the session to wait for before its next command.
             assert_eq!(lock(&running).cancels.len(), 1);
+            // That cancel failed and the read runs on: the next Cancel
+            // sends another, at once.
+            let again = tokio::time::Instant::now();
+            lock(&sent).clear();
+            cancel_request(&running, RequestId(2), noting(&sent));
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            assert_eq!(sent_at(&sent, again), [0]);
         });
     }
 
