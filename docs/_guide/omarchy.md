@@ -55,7 +55,7 @@ second Esc gives the keyboard back.
 | `:keys cheatsheet` | Save the keys in force as a Markdown cheat sheet, where you say |
 | `:set calendar`, `:set nocalendar` | Show or hide the [calendar]({% link _guide/editing-data.md %}#the-calendar) under a date's editor, saved as its switch in Settings is |
 | `:update` | Show Settings › Updates, and check for a newer version there. Where Tabletist can install it, the footer asks `install <version> and restart?`: `y` downloads it and, once it is ready, restarts as Restart now does: with work open, the block lists the work, and `U` restarts when it is done; `n`, `N` or Esc does not |
-| `?` | The list of keys |
+| `?` | The list of keys. Type to filter it by name, group or keys (`ctrl+r`), or press keys with Ctrl or Alt held to list the commands they are keys of. Esc clears the filter, then closes |
 
 Ctrl+P opens quick open from any pane: a picker at the top of the
 window that finds a table or view by name, in this connection or (Tab)
@@ -415,7 +415,7 @@ they do nothing until it is built; `:keys default` marks its lines so.
 | Enter | Record new keys for the command |
 | `dd` | Unbind it: none of its keys does anything |
 | `R` | Put its keys back |
-| `/` | Filter the commands by name. Enter or Esc gives the keys back to the list |
+| `/` | Filter the commands by name, group or keys typed (`ctrl+r`). Enter or Esc gives the keys back to the list |
 | `?` | Then press keys: list the commands they are keys of. Esc lists them all again |
 | Ctrl+E | Open `settings.toml` in your editor |
 | Esc | Close |

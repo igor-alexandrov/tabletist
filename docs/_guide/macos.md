@@ -116,7 +116,7 @@ Cmd+A): none of them can be given to a command.
 | Cmd+, | Settings |
 | Cmd+Shift+' | Move the keyboard to the newest [export's toast]({% link _guide/browsing-data.md %}#exporting). Tab goes round every toast's buttons, Esc gives the keyboard back |
 | Cmd+=, Cmd+-, Cmd+0 | The interface scale a step larger, a step smaller, or back to 100% |
-| `?` | The list of keys |
+| `?` | The list of keys. Type to search it by name, group or keys (`cmd+r`, `⌘R`), or press keys to list the commands they are keys of. Esc clears the search, then closes |
 
 ### Quick open
 

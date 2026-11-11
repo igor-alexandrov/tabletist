@@ -1060,6 +1060,12 @@ pub enum Action {
     GiveTreeKeys(ConnTabId),
     /// Show the keyboard shortcuts.
     ShowHelp,
+    /// The keyboard shortcuts' search: what its field holds. A chord
+    /// looked for is dropped.
+    HelpSearch(String),
+    /// List the commands a chord is a key of; none lists them all again.
+    /// The words typed are dropped.
+    HelpFind(Option<&'static str>),
     /// Show the About dialog.
     ShowAbout,
     /// Show the Settings window.
@@ -2847,8 +2853,8 @@ pub enum Dialog {
     Password(Box<PasswordPrompt>),
     HostKey(Box<HostKeyPrompt>),
     QuickOpen(Box<QuickOpen>),
-    /// The keyboard shortcuts.
-    Help,
+    /// The keyboard shortcuts, with their search.
+    Help(HelpSearch),
     /// The app's name, version and where it lives.
     About,
     /// The Settings window.
@@ -3378,6 +3384,15 @@ pub struct SettingsDialog {
     pub reveal: bool,
     /// The Keyboard pane's.
     pub keyboard: KeyboardPage,
+}
+
+/// The keyboard shortcuts dialog's search.
+#[derive(Debug, Default)]
+pub struct HelpSearch {
+    /// What its field holds.
+    pub search: String,
+    /// A chord pressed in the field, to list what it does.
+    pub found: Option<&'static str>,
 }
 
 /// What the Keyboard pane lists, and what it records.

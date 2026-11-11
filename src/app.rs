@@ -949,7 +949,7 @@ impl App {
     /// shortcuts dialog, which offers it and gives way to it. Every way
     /// in (its key, quick open, a menu item, a pane asked for) holds to it.
     fn settings_may_open(&self) -> bool {
-        matches!(self.dialog, None | Some(Dialog::Help))
+        matches!(self.dialog, None | Some(Dialog::Help(_)))
     }
 
     fn tab_index(&self, id: ConnTabId) -> Option<usize> {
@@ -2689,12 +2689,24 @@ impl App {
             Action::CountRows { tab, object_tab } => self.count_rows(tab, object_tab),
             Action::ShowHelp => {
                 if self.dialog.is_none() {
-                    self.dialog = Some(Dialog::Help);
+                    self.dialog = Some(Dialog::Help(crate::model::HelpSearch::default()));
+                }
+            }
+            Action::HelpSearch(text) => {
+                if let Some(Dialog::Help(help)) = &mut self.dialog {
+                    help.search = text;
+                    help.found = None;
+                }
+            }
+            Action::HelpFind(keys) => {
+                if let Some(Dialog::Help(help)) = &mut self.dialog {
+                    help.found = keys;
+                    help.search.clear();
                 }
             }
             Action::ShowAbout => {
                 // The shortcuts dialog offers it, and gives way to it.
-                if matches!(self.dialog, None | Some(Dialog::Help)) {
+                if matches!(self.dialog, None | Some(Dialog::Help(_))) {
                     self.dialog = Some(Dialog::About);
                 }
             }
@@ -21469,7 +21481,7 @@ masked = ["orders.email"]
             type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
             harness.app.apply(Action::ShowHelp);
             harness.app.apply(Action::CloseTab { tab, id });
-            assert!(matches!(harness.app.dialog, Some(Dialog::Help)));
+            assert!(matches!(harness.app.dialog, Some(Dialog::Help(_))));
             assert!(harness.app.notice.is_some());
             assert!(harness.app.workspace(tab).unwrap().object_tab(id).is_some());
             harness.app.apply(Action::CloseDialog);
@@ -23042,7 +23054,7 @@ masked = ["orders.email"]
                 Action::CancelWrite,
             ] {
                 harness.app.apply(answer);
-                assert!(matches!(harness.app.dialog, Some(Dialog::Help)));
+                assert!(matches!(harness.app.dialog, Some(Dialog::Help(_))));
             }
             assert_eq!(object(&harness, tab, id).edits.cells.len(), 1);
             assert_eq!(writes(&harness), 0);
@@ -23055,7 +23067,7 @@ masked = ["orders.email"]
             type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
             harness.app.apply(Action::ShowHelp);
             harness.app.apply(Action::WriteEdits { tab, id });
-            assert!(matches!(harness.app.dialog, Some(Dialog::Help)));
+            assert!(matches!(harness.app.dialog, Some(Dialog::Help(_))));
             assert_eq!(writes(&harness), 0);
             assert!(object(&harness, tab, id).edits.saving.is_none());
             // With the dialog closed it asks.
@@ -23671,7 +23683,7 @@ masked = ["orders.email"]
                 at: 0,
                 answer: Answer::UseServer,
             });
-            assert!(matches!(harness.app.dialog, Some(Dialog::Help)));
+            assert!(matches!(harness.app.dialog, Some(Dialog::Help(_))));
             assert_eq!(pending(&harness, tab, id), [(1, 1), (3, 1)]);
         }
 
@@ -23884,7 +23896,7 @@ masked = ["orders.email"]
                 2,
                 "eve@example.com",
             )])));
-            assert!(matches!(harness.app.dialog, Some(Dialog::Help)));
+            assert!(matches!(harness.app.dialog, Some(Dialog::Help(_))));
             let line = Some(crate::edit::Note::Conflict {
                 row: 1,
                 gone: false,
