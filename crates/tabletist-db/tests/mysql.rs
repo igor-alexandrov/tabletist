@@ -914,6 +914,21 @@ async fn a_running_query_can_be_cancelled() {
     assert!(connection.fetch_rows(&users(1)).await.is_ok());
 }
 
+/// A cancel is over once the server has acted on it: `KILL QUERY` waits
+/// for its answer. One that finds the session idle does not stop what it
+/// runs next.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancel_of_an_idle_session_does_not_stop_its_next_query() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let all = connection.count_rows(&users(5)).await.unwrap();
+    connection.cancel_handle().cancel().await.unwrap();
+    let mut query = users(5);
+    query.raw_where = Some("(SELECT SLEEP(0.5)) = 0".into());
+    assert_eq!(connection.count_rows(&query).await, Ok(all));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cancel_on_an_idle_session_leaves_other_sessions_alone() {
     let Some(connection) = connect().await else {

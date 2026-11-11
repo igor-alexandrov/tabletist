@@ -602,17 +602,20 @@ impl Connection {
 }
 
 /// Cancels the query a session is running. Cancelling when nothing runs
-/// does nothing.
+/// does nothing. A cancel returns once the server has acted on it, so it
+/// cannot stop what the session runs after: PostgreSQL's waits for the
+/// server to close the cancel's connection (see `pg::Cancel`), MySQL's
+/// `KILL QUERY` for its answer. Not always on PostgreSQL: a cancel that
+/// hears nothing for ten seconds gives up with [`Error::Timeout`], and a
+/// session over a Unix socket, or on a host the session could not resolve
+/// itself, takes the driver's cancel, which does not wait.
 #[derive(Clone)]
 pub struct CancelHandle(CancelInner);
 
 #[derive(Clone)]
 enum CancelInner {
     Sqlite(Arc<rusqlite::InterruptHandle>),
-    Postgres {
-        token: tokio_postgres::CancelToken,
-        tls: tokio_postgres_rustls::MakeRustlsConnect,
-    },
+    Postgres(pg::Cancel),
     MySql {
         opts: mysql_async::Opts,
         id: u32,
@@ -631,10 +634,7 @@ impl CancelHandle {
                 Ok(())
             }
             CancelInner::MySql { opts, id, server } => mysql::cancel(opts, *id, server).await,
-            CancelInner::Postgres { token, tls } => token
-                .cancel_query(tls.clone())
-                .await
-                .map_err(|error| Error::Connect(format!("could not cancel: {error}"))),
+            CancelInner::Postgres(cancel) => cancel.cancel().await,
             CancelInner::BigQuery(cancel) => cancel.cancel().await,
         }
     }

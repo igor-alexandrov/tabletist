@@ -24,6 +24,8 @@ use crate::{
 use tokio_postgres::error::SqlState;
 use tokio_postgres_rustls::MakeRustlsConnect;
 
+mod cancel;
+pub(crate) use cancel::Cancel;
 mod ddl;
 mod hidden;
 mod script;
@@ -42,7 +44,7 @@ const PRINTS_EXACTLY: &str = "SET extra_float_digits = 3; SET DateStyle = 'ISO'"
 
 pub(crate) struct Conn {
     pub(crate) client: tokio::sync::Mutex<tokio_postgres::Client>,
-    pub(crate) cancel: tokio_postgres::CancelToken,
+    cancel: Cancel,
     pub(crate) tls: MakeRustlsConnect,
     config: tokio_postgres::Config,
     requested_database: String,
@@ -144,6 +146,63 @@ fn database_name(spec: &ConnectSpec) -> &str {
     } else {
         &spec.database
     }
+}
+
+/// A session the driver opened, the config that opened it, and where its
+/// cancels go.
+type Pinned = (
+    (
+        tokio_postgres::Client,
+        tokio_postgres::Connection<Socket, <Noted as MakeTlsConnect<Socket>>::Stream>,
+    ),
+    tokio_postgres::Config,
+    Option<(std::net::SocketAddr, String)>,
+);
+
+/// Opens a session on one address of the host, tried in the order the
+/// driver tries them, and says which one: a cancel must reach the same
+/// server. A host this cannot resolve (or a Unix socket) is left to the
+/// driver, which says why it cannot connect.
+async fn connect_pinned(
+    config: tokio_postgres::Config,
+    tls: &MakeRustlsConnect,
+    handshake: &Arc<AtomicBool>,
+) -> std::result::Result<Pinned, tokio_postgres::Error> {
+    let noted = || Noted {
+        inner: tls.clone(),
+        handshake: Arc::clone(handshake),
+    };
+    let port = config.get_ports().first().copied().unwrap_or(5432);
+    if let [tokio_postgres::config::Host::Tcp(host)] = config.get_hosts() {
+        let addresses = match config.get_hostaddrs() {
+            // Through a tunnel: the address its local port listens on.
+            [address] => vec![*address],
+            [] => tokio::net::lookup_host((host.as_str(), port))
+                .await
+                .map(|found| found.map(|address| address.ip()).collect())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let mut failed = None;
+        for address in addresses {
+            let mut pinned = config.clone();
+            if pinned.get_hostaddrs().is_empty() {
+                pinned.hostaddr(address);
+            }
+            match pinned.connect(noted()).await {
+                Ok(pair) => {
+                    let to = (std::net::SocketAddr::new(address, port), host.clone());
+                    return Ok((pair, pinned, Some(to)));
+                }
+                Err(error) => failed = Some(error),
+            }
+        }
+        if let Some(error) = failed {
+            return Err(error);
+        }
+    }
+    let pair = config.connect(noted()).await?;
+    Ok((pair, config, None))
 }
 
 pub(crate) fn connect_error(error: tokio_postgres::Error) -> Error {
@@ -354,14 +413,12 @@ impl Conn {
         // The config's own timeout covers only the TCP connect, which is
         // instant to a tunnel's local port: bound the whole startup instead.
         let handshake = Arc::new(AtomicBool::new(false));
-        let connecting = config.connect(Noted {
-            inner: tls.clone(),
-            handshake: Arc::clone(&handshake),
-        });
-        let (client, connection) = tokio::time::timeout(Duration::from_secs(10), connecting)
-            .await
-            .map_err(|_| Error::Timeout)?
-            .map_err(connect_error)?;
+        let connecting = connect_pinned(config, &tls, &handshake);
+        let ((client, connection), config, address) =
+            tokio::time::timeout(Duration::from_secs(10), connecting)
+                .await
+                .map_err(|_| Error::Timeout)?
+                .map_err(connect_error)?;
         tokio::spawn(async move {
             if let Err(error) = connection.await {
                 log::info!("PostgreSQL connection ended: {error}");
@@ -371,7 +428,11 @@ impl Conn {
             .batch_execute(&session_setup(access))
             .await
             .map_err(query_error)?;
-        let cancel = client.cancel_token();
+        let cancel = Cancel {
+            token: client.cancel_token(),
+            tls: tls.clone(),
+            to: address,
+        };
         Ok(Self {
             client: tokio::sync::Mutex::new(client),
             cancel,
@@ -647,10 +708,7 @@ impl Adapter for Conn {
     }
 
     fn cancel_handle(&self) -> CancelHandle {
-        CancelHandle(CancelInner::Postgres {
-            token: self.cancel.clone(),
-            tls: self.tls.clone(),
-        })
+        CancelHandle(CancelInner::Postgres(self.cancel.clone()))
     }
 
     /// None: a `timestamptz` comes with its offset, and the app shows it in
