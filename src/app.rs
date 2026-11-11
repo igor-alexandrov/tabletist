@@ -2395,7 +2395,20 @@ impl App {
             Action::CancelQuery(tab) => {
                 if let Some(workspace) = self.workspace(tab) {
                     let session = workspace.session;
-                    let pending = self.cancellable(tab);
+                    let mut pending = self.cancellable(tab);
+                    // The databases' listing a connect still holds back is
+                    // not with the session, so the session cannot skip it:
+                    // it ends here, as a skipped one answers.
+                    if let Some(workspace) = self.workspace_mut(tab)
+                        && let Some(request) = workspace.databases_after_tree
+                        && pending.contains(&request)
+                    {
+                        workspace.databases_after_tree = None;
+                        workspace
+                            .databases
+                            .finish(request, Err(tabletist_db::Error::Cancelled));
+                        pending.retain(|id| *id != request);
+                    }
                     self.cancel(session, pending);
                 }
             }
@@ -17061,6 +17074,30 @@ masked = ["orders.email"]
         let objects = at(|c| matches!(c, Command::ListObjects { .. })).expect("ListObjects");
         let databases = at(|c| matches!(c, Command::ListDatabases { .. })).expect("ListDatabases");
         assert!(objects < databases);
+    }
+
+    #[test]
+    fn a_cancel_before_the_schemas_answer_keeps_the_databases_from_being_listed() {
+        let (mut app, _dir) = app();
+        let tab = connected_postgres_unanswered(&mut app);
+        let held = app.workspace(tab).unwrap().databases.pending;
+        app.apply(Action::CancelQuery(tab));
+        // Not sent to the session: it never had it.
+        assert!(
+            !app.backend
+                .sent
+                .iter()
+                .any(|c| matches!(c, Command::Cancel { request, .. } if Some(*request) == held))
+        );
+        let databases = &app.workspace(tab).unwrap().databases;
+        assert!(!databases.is_loading());
+        assert!(matches!(
+            databases.error,
+            Some(tabletist_db::Error::Cancelled)
+        ));
+        // The schemas' answer the cancel came too late for.
+        answer_schemas(&mut app, Ok(vec!["public".into()]));
+        assert_eq!(sent_databases(&app), 0);
     }
 
     #[test]
