@@ -1,6 +1,8 @@
 # A MariaDB cancel by query ID: design note
 
-Status: for a decision. Nothing is built.
+Status: decided on 2026-11-11. `KILL QUERY ID` is dropped. Alternative 1 is
+built, stacked on the spare connection (#310). Alternative 2 waits for
+measurements.
 
 ## The question
 
@@ -141,11 +143,14 @@ fewer cancels to wait for at all.
 
 ## Alternatives
 
-1. **Keep the spare from going stale.** Send `SET SESSION wait_timeout = 28800`
-   on the spare when it opens, in the same message as its server check. No
-   privilege is needed for the session's own setting, and it costs no round
-   trip. This makes the costly case above rare, on MySQL and MariaDB alike. It
-   is small enough to go on the spare branch, or straight after it.
+1. **Keep the spare from going stale.** When the spare opens, send
+   `SET SESSION wait_timeout = CAST(GREATEST(@@session.wait_timeout, 28800) AS UNSIGNED)`
+   in the same message as its server check. It raises the timeout to MySQL's
+   default of eight hours and never lowers it. No privilege is needed for the
+   session's own setting, and it costs no round trip. This makes the costly
+   case above rare, on MySQL and MariaDB alike. MySQL 8.4 refuses
+   `GREATEST(...)` without the cast (error 1232). A server that refuses the
+   setting still gets its spare: the check is sent again without it.
 2. **Redo a read that a stray cancel stopped.** Drop the wait only before the
    app's own reads: a page, a structure, a definition, a lookup, a count. If
    such a read comes back `Cancelled` and no cancel was sent for it, run it
@@ -182,9 +187,8 @@ fewer cancels to wait for at all.
 
 ## Decision
 
-- **Drop** `KILL QUERY ID` (recommended), and
-- do **1** now, beside the spare branch, and
-- do **2** only if measurements still show the wait after #306 and 1.
+Decided on 2026-11-11:
 
-Or do **3** in full, knowing it saves at most one round trip on MariaDB and
-needs the MariaDB service first.
+- **Drop** `KILL QUERY ID`;
+- do **1** now, on top of the spare branch;
+- do **2** only if measurements still show the wait after #306 and 1.
