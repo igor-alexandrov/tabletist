@@ -17,7 +17,7 @@ trips to 4. This plan does the same for the table view.
 
 ## Steps, one PR each
 
-### 1. A page in 3 trips (this PR)
+### 1. A page in 3 trips (#304)
 
 - A trip counter for tests: a proxy in front of the test server that holds
   back the server's answers a little, so what the client sends together
@@ -39,22 +39,24 @@ trips to 4. This plan does the same for the table view.
 - Result: a page 6–8 → 3, a count 4–6 → 2–3, a lookup 4 → 2, the structure
   14 → 7.
 
-### 2. The structure in 2 trips
+### 2. The structure in 1 trip
 
-- The relation's oid first (1 trip), then the columns, indexes, keys, keys
-  pointing here and the comment sent together under the one lock
-  (`try_join!`), 1 trip.
+- The five catalog queries go out together under the one lock
+  (`try_join!`). Each finds the table by its schema and name itself, so
+  none waits for the relation's oid; the comment's query also says whether
+  the table is there.
 - The primary key from the index rows, which carry `primary` and
   `key_columns`; no query of its own.
 - A test counts the trips of opening a table: structure and page.
-- Result: the structure 7 → 2.
+- Result: the structure 7 → 1, opening a table 10 → 4.
 
 ### 3. Rows first (app)
 
 - `open_object` and the reopened-tab branch of `fetch_rows` send FetchRows
   before Describe, as Reload does: the first rows wait on nothing. MySQL
   gains too.
-- Result: opening a table shows rows after 3 trips; 20 before the plan.
+- Result: opening a table shows rows after 3 trips, and its structure
+  after 4; 20 before the plan.
 
 ## Later, not in this plan
 
