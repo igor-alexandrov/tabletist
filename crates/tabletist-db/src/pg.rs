@@ -593,10 +593,34 @@ impl Conn {
 /// so a text of two statements is refused before either runs, and it runs
 /// inside the transaction, which keeps a writable session's writes out.
 ///
-/// The future must be awaited to its end: a read that is dropped leaves
-/// the session inside the transaction. The backend never drops one; it
-/// ends the whole session instead.
+/// A read that is dropped before it ends sends its `ROLLBACK` all the
+/// same, as the driver's own `Transaction` does.
 async fn read_statement(
+    client: &tokio_postgres::Client,
+    text: &str,
+) -> Result<(Vec<ColumnMeta>, Vec<SimpleQueryMessage>)> {
+    let mut open = Open(Some(client));
+    let read = read_in_transaction(client, text).await;
+    open.0 = None;
+    read
+}
+
+/// The client of a [`read_statement`] still running.
+struct Open<'a>(Option<&'a tokio_postgres::Client>);
+
+impl Drop for Open<'_> {
+    fn drop(&mut self) {
+        if let Some(client) = self.0 {
+            // Polled once, the query is on its way: the driver sends a
+            // request when it is first polled, and nothing waits for this
+            // one's answer. It goes after whatever the read has sent.
+            let _ = futures_util::FutureExt::now_or_never(client.batch_execute("ROLLBACK"));
+        }
+    }
+}
+
+/// [`read_statement`]'s steps.
+async fn read_in_transaction(
     client: &tokio_postgres::Client,
     text: &str,
 ) -> Result<(Vec<ColumnMeta>, Vec<SimpleQueryMessage>)> {
@@ -1536,6 +1560,31 @@ mod tests {
         assert_eq!(found.unwrap().rows.len(), 2);
         assert_eq!(asked, 2);
         assert!(outside_a_transaction(&conn).await);
+    }
+
+    /// A read dropped between its `BEGIN` and its statement leaves no
+    /// transaction behind: the proxy holds the prepare's answer back, and
+    /// the read is dropped while it waits.
+    #[tokio::test]
+    async fn a_dropped_read_leaves_no_transaction_behind() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let (conn, _) = trip_counted(&url).await;
+        let read = async {
+            let client = conn.client.lock().await;
+            read_statement(&client, "SELECT 1").await
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), read)
+                .await
+                .is_err()
+        );
+        assert!(outside_a_transaction(&conn).await);
+        // And the session reads on.
+        let client = conn.client.lock().await;
+        let (_, messages) = read_statement(&client, "SELECT 2").await.unwrap();
+        assert_eq!(first_text(&messages).as_deref(), Some("2"));
     }
 
     /// A read that fails rolls its transaction back by hand: one round
