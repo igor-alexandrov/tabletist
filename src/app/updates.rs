@@ -2165,7 +2165,7 @@ mod tests {
         harness.app.apply(Action::RestartToUpdate);
         harness.app.apply(Action::RestartWhenDone);
         harness.app.apply(Action::DiscardEdits { tab, id });
-        harness.app.dialog = Some(Dialog::Help);
+        harness.app.dialog = Some(Dialog::Help(Default::default()));
         harness.app.apply_actions();
         assert!(installs(&harness).is_empty());
         harness.app.dialog = None;

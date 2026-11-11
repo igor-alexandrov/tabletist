@@ -215,7 +215,7 @@ fn search_row(
     // A chord pressed in the field finds the rows it is a key of, in place
     // of being typed: read before the field reads the frame's keys.
     if ui.memory(|memory| memory.has_focus(search_id()))
-        && let Some(keys) = keyboard::find_chord(ui.ctx(), Layout::of(look))
+        && let Some(keys) = crate::ui::key_search::find_chord(ui.ctx(), Layout::of(look))
     {
         actions.push(Action::KeyboardFind(Some(keys)));
     }

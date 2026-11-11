@@ -7,11 +7,10 @@
 use egui::{Event, Key, Modifiers};
 
 use crate::i18n::{Locale, gettext};
-use crate::keymap::{
-    Group, Keymap, Layout, Mods, Never, Row, Spelled, Why, intern, same, spell, spelling,
-};
+use crate::keymap::{Group, Keymap, Layout, Mods, Never, Row, Why, intern, spelling};
 use crate::model::{Action, KeyboardPage, Recorded, Recording};
 use crate::theme::Look;
+use crate::ui::key_search::{Search, held};
 
 /// A group of the pane, with the rows it lists now.
 pub(super) struct Listed {
@@ -20,43 +19,29 @@ pub(super) struct Listed {
 }
 
 /// The rows the pane lists now, by group: those the search's words name
-/// (by the command's name or its group's), those a key looked for is a
-/// key of (in every scope), the changed ones alone where the switch says.
+/// (by the command's name or its group's, or by its keys: [`Search`]),
+/// those a key looked for is a key of (in every scope), the changed ones
+/// alone where the switch says.
 pub(super) fn listed(
     keymap: &Keymap,
     layout: Layout,
     locale: Locale,
     page: &KeyboardPage,
 ) -> Vec<Listed> {
-    let words = page.search.trim().to_lowercase();
-    let found = page.found.and_then(|keys| spell(keys).ok());
+    let search = Search::new(&page.search, page.found);
     let mut listed: Vec<Listed> = Vec::new();
     for row in keymap.rows(layout) {
         if page.changed_only && !keymap.changed(layout, row) {
             continue;
         }
         let group = row.command.info().group;
-        if !words.is_empty() {
-            let name = gettext(locale, row.command.info().name).to_lowercase();
-            let heading = gettext(locale, group.name(layout)).to_lowercase();
-            if !name.contains(&words) && !heading.contains(&words) {
-                continue;
-            }
-        }
-        if let Some(found) = &found {
-            let has = keymap
-                .keys_of(layout, row)
-                .iter()
-                .filter_map(|keys| spell(keys).ok())
-                // A range of digits is a key for each of them: ⌘3 is one of
-                // ⌘1…9.
-                .any(|keys| match keys {
-                    Spelled::Digits(_) => crate::keymap::clash(layout, &keys, found),
-                    _ => same(layout, &keys, found),
-                });
-            if !has {
-                continue;
-            }
+        let name = gettext(locale, row.command.info().name);
+        let heading = gettext(locale, group.name(layout));
+        let caps = keymap.row_keys(layout, row);
+        let caps: Vec<&str> = caps.iter().map(|cap| cap.as_str()).collect();
+        let keys = keymap.keys_of(layout, row);
+        if !search.keeps(layout, (&name, &heading), &keys, &caps) {
+            continue;
         }
         match listed.last_mut() {
             Some(last) if last.group == group => last.rows.push(row),
@@ -159,31 +144,6 @@ pub(super) fn refusal(
         .replace("{scope}", &scope)
 }
 
-/// What is held, as `layout` spells it: on macOS Cmd and Control apart,
-/// on Windows one Ctrl for both (the keymap's `cmd`), on Omarchy Ctrl.
-fn held(layout: Layout, modifiers: Modifiers) -> Mods {
-    match layout {
-        Layout::Mac => Mods {
-            cmd: modifiers.mac_cmd || modifiers.command,
-            ctrl: modifiers.ctrl,
-            alt: modifiers.alt,
-            shift: modifiers.shift,
-        },
-        Layout::Windows => Mods {
-            cmd: modifiers.ctrl || modifiers.command,
-            ctrl: false,
-            alt: modifiers.alt,
-            shift: modifiers.shift,
-        },
-        Layout::Omarchy => Mods {
-            cmd: false,
-            ctrl: modifiers.ctrl || (modifiers.command && !modifiers.mac_cmd),
-            alt: modifiers.alt,
-            shift: modifiers.shift,
-        },
-    }
-}
-
 /// The key the window sends a clipboard event in place of, held with the
 /// command key: it turns C, X and V into a copy, a cut and a paste before
 /// any key event is made.
@@ -194,44 +154,6 @@ fn clipboard_key(event: &Event) -> Option<Key> {
         Event::Paste(_) => Some(Key::V),
         _ => None,
     }
-}
-
-/// The chord the frame's first press with Cmd, Ctrl or Alt held makes,
-/// taken from the frame: what the macOS search field reads as a key to
-/// find, in place of typing it. None, and nothing taken, where there is
-/// none, or where it is the field's own (the system's text editing).
-pub(super) fn find_chord(ctx: &egui::Context, layout: Layout) -> Option<&'static str> {
-    ctx.input_mut(|input| {
-        let at = input.events.iter().position(|event| {
-            matches!(event, Event::Key { pressed: true, modifiers, .. }
-                if modifiers.command || modifiers.ctrl || modifiers.alt || modifiers.mac_cmd)
-        })?;
-        let Event::Key { key, modifiers, .. } = input.events[at] else {
-            return None;
-        };
-        // The keys that move and delete in the field's text, with whatever
-        // held, are the field's own.
-        if matches!(
-            key,
-            Key::Backspace
-                | Key::Delete
-                | Key::ArrowLeft
-                | Key::ArrowRight
-                | Key::ArrowUp
-                | Key::ArrowDown
-                | Key::Home
-                | Key::End
-        ) {
-            return None;
-        }
-        let keys = intern(&spelling(held(layout, modifiers), key)?);
-        let spelled = spell(keys).ok()?;
-        if crate::keymap::reserved_by(layout, &spelled).is_some() {
-            return None;
-        }
-        input.events.remove(at);
-        Some(keys)
-    })
 }
 
 /// Whether `event` is a key that presses a focused button: Return, Space

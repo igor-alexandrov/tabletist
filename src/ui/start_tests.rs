@@ -700,7 +700,7 @@ fn a_typed_command_key_leaves_the_keyboard_where_it_was() {
         Modifiers::NONE,
     )]);
     harness.settle();
-    assert!(matches!(harness.app.dialog, Some(Dialog::Help)));
+    assert!(matches!(harness.app.dialog, Some(Dialog::Help(_))));
     assert_eq!(harness.app.workspace(tab).unwrap().start_search, "");
 }
 
