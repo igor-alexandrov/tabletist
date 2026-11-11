@@ -244,6 +244,15 @@ fn what_an_alt_chord_types_does_not_drop_it() {
     harness.frame(vec![crate::testing::release(Key::R, alt)]);
     harness.settle();
     assert_eq!(search(&harness), (String::new(), Some("alt+r")));
+    // A chord with Cmd types nothing: text after it is typed.
+    let cmd = command_held(&Look::macos());
+    harness.frame(vec![
+        crate::testing::key(Key::R, cmd),
+        Event::Text("x".into()),
+    ]);
+    harness.frame(vec![crate::testing::release(Key::R, cmd)]);
+    harness.settle();
+    assert_eq!(search(&harness).0, "x");
 }
 
 #[test]

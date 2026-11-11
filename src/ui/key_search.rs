@@ -203,9 +203,11 @@ pub(crate) fn find_chord(ctx: &egui::Context, layout: Layout) -> Option<&'static
             return None;
         }
         input.events.remove(at);
-        // What the chord types (Alt+R's `®`) is taken with it: the field
-        // would take it as words, which drop the chord.
-        if let Some(Event::Text(_)) = input.events.get(at) {
+        // What an Alt chord types (Alt+R's `®`) is taken with it: the field
+        // would take it as words, which drop the chord. A chord with Cmd
+        // or Ctrl types nothing, so text after one is the person's own.
+        let types = modifiers.alt && !modifiers.command && !modifiers.ctrl && !modifiers.mac_cmd;
+        if types && let Some(Event::Text(_)) = input.events.get(at) {
             input.events.remove(at);
         }
         Some(keys)
