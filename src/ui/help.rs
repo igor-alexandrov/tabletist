@@ -1,6 +1,6 @@
 //! The keyboard shortcuts dialog (`?`): the keymap, as the look in use
 //! has it, and a search over it. The search is Settings › Keyboard's
-//! ([`key_search`]): words name a command, its group or its keys, and a
+//! (`key_search`): words name a command, its group or its keys, and a
 //! chord pressed in the field finds the commands it is a key of.
 
 use egui::{Key, Modifiers, Rect, Sense, pos2, vec2};
@@ -124,6 +124,13 @@ fn last_field_id() -> egui::Id {
     field_id().with("last")
 }
 
+/// Whether the dialog's field had the keyboard last frame: a chord pressed
+/// there is one to find, which no shortcut takes first.
+pub(crate) fn field_has_keyboard(ctx: &egui::Context) -> bool {
+    let last: Option<egui::Id> = ctx.data(|data| data.get_temp(last_field_id()));
+    last.is_some_and(|id| ctx.memory(|memory| memory.has_focus(id)))
+}
+
 /// Forgets the dialog's frame state once it is closed: the next one gives
 /// its field the keyboard again.
 pub fn fold(ctx: &egui::Context) {
@@ -169,8 +176,7 @@ pub fn show(
         }
         // A chord pressed in the field finds what it does, in place of
         // being typed: read before the field reads the frame's keys.
-        let last: Option<egui::Id> = ui.ctx().data(|data| data.get_temp(last_field_id()));
-        if last.is_some_and(|id| ui.memory(|memory| memory.has_focus(id)))
+        if field_has_keyboard(ui.ctx())
             && let Some(keys) = key_search::find_chord(ui.ctx(), layout)
         {
             actions.push(Action::HelpFind(Some(keys)));
@@ -348,17 +354,7 @@ fn field(
         let field = widgets::search_field(ui, &mut text, &hint, &look)
             .id(field_id())
             .desired_width(width);
-        let response = widgets::add_search(ui, field, &look);
-        // Windows draws a field's focus as an accent line along its foot.
-        if paint.layout() == Layout::Windows && response.has_focus() {
-            let rect = response.rect;
-            ui.painter().hline(
-                rect.x_range().shrink(1.0),
-                rect.bottom() - 1.0,
-                egui::Stroke::new(2.0, palette.accent),
-            );
-        }
-        response
+        widgets::add_search(ui, field, &look)
     };
     if response.changed() {
         actions.push(Action::HelpSearch(text));

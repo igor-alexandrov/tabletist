@@ -192,6 +192,61 @@ fn a_chord_pressed_in_the_field_finds_its_commands() {
 }
 
 #[test]
+fn the_fields_editing_chords_edit_its_text() {
+    for look in Look::ALL {
+        let name = look.name;
+        let mut harness = opened(look);
+        type_text(&mut harness, "row");
+        // Select all, then type over it.
+        harness.press(Key::A, command_held(&look));
+        assert_eq!(search(&harness), ("row".into(), None), "{name}");
+        type_text(&mut harness, "sql");
+        assert_eq!(search(&harness), ("sql".into(), None), "{name}");
+        // Ctrl+U deletes back to the line's start.
+        harness.press(Key::U, Modifiers::CTRL);
+        assert_eq!(search(&harness), (String::new(), None), "{name}");
+    }
+}
+
+#[test]
+fn a_text_size_chord_is_found_not_done() {
+    for (look, found) in [
+        (Look::macos(), "cmd+="),
+        (Look::standard(), "cmd+="),
+        (Look::omarchy(), "ctrl+="),
+    ] {
+        let mut harness = opened(look);
+        let sizes = |harness: &Harness| {
+            let settings = &harness.app.settings;
+            format!("{:?} {:?}", settings.ui_scale, settings.font_size)
+        };
+        let before = sizes(&harness);
+        harness.press(Key::Equals, command_held(&look));
+        assert_eq!(
+            search(&harness),
+            (String::new(), Some(found)),
+            "{}",
+            look.name
+        );
+        assert_eq!(sizes(&harness), before, "{}", look.name);
+    }
+}
+
+#[test]
+fn what_an_alt_chord_types_does_not_drop_it() {
+    let mut harness = opened(Look::macos());
+    type_text(&mut harness, "row");
+    let alt = Modifiers::ALT;
+    harness.frame(vec![
+        crate::testing::key(Key::R, alt),
+        Event::Text("®".into()),
+    ]);
+    harness.frame(vec![crate::testing::release(Key::R, alt)]);
+    harness.settle();
+    assert_eq!(search(&harness), (String::new(), Some("alt+r")));
+}
+
+#[test]
 fn a_search_that_keeps_nothing_says_so() {
     for look in Look::ALL {
         let mut harness = opened(look);

@@ -1443,6 +1443,12 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
 /// The text size keys, wherever the keyboard is: under a dialog too, where
 /// [`handle`] reads no key. The Settings window shows what they change.
 pub fn text_size(app: &mut App, ctx: &egui::Context) {
+    // The shortcuts' search field finds them instead.
+    if matches!(app.dialog, Some(crate::model::Dialog::Help(_)))
+        && crate::ui::help::field_has_keyboard(ctx)
+    {
+        return;
+    }
     let layout = app.layout();
     // In a field as out of one: no field takes these chords.
     let normal = !ctx.text_edit_focused();

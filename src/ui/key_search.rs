@@ -170,8 +170,9 @@ pub(crate) fn held(layout: Layout, modifiers: Modifiers) -> Mods {
 /// The chord the frame's first press with Cmd, Ctrl or Alt held makes,
 /// taken from the frame: what a search field reads as a key to find, in
 /// place of typing it. None, and nothing taken, where there is none, or
-/// where it is the field's own (the system's text editing).
+/// where it is the field's own (the system's or the field's text editing).
 pub(crate) fn find_chord(ctx: &egui::Context, layout: Layout) -> Option<&'static str> {
+    let mac = ctx.os() == egui::os::OperatingSystem::Mac;
     ctx.input_mut(|input| {
         let at = input.events.iter().position(|event| {
             matches!(event, Event::Key { pressed: true, modifiers, .. }
@@ -192,7 +193,8 @@ pub(crate) fn find_chord(ctx: &egui::Context, layout: Layout) -> Option<&'static
                 | Key::ArrowDown
                 | Key::Home
                 | Key::End
-        ) {
+        ) || edits_text(key, modifiers, mac)
+        {
             return None;
         }
         let keys = intern(&spelling(held(layout, modifiers), key)?);
@@ -201,8 +203,25 @@ pub(crate) fn find_chord(ctx: &egui::Context, layout: Layout) -> Option<&'static
             return None;
         }
         input.events.remove(at);
+        // What the chord types (Alt+R's `®`) is taken with it: the field
+        // would take it as words, which drop the chord.
+        if let Some(Event::Text(_)) = input.events.get(at) {
+            input.events.remove(at);
+        }
         Some(keys)
     })
+}
+
+/// Whether the field does something with this chord in its text: select
+/// all, undo and redo, the Ctrl deletes, and on macOS Control's moves.
+fn edits_text(key: Key, modifiers: Modifiers, mac: bool) -> bool {
+    let command = matches!(key, Key::A | Key::Z | Key::Y) && modifiers.command;
+    let deletes = matches!(key, Key::H | Key::K | Key::U | Key::W) && modifiers.ctrl;
+    let moves = mac
+        && modifiers.ctrl
+        && !modifiers.shift
+        && matches!(key, Key::P | Key::N | Key::B | Key::F | Key::A | Key::E);
+    command || deletes || moves
 }
 
 #[cfg(test)]

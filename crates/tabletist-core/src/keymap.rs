@@ -3045,10 +3045,23 @@ pub fn spell_typed(text: &str) -> Option<Spelled> {
             other => expanded.push(other),
         }
     }
-    let parts: Vec<&str> = expanded
-        .split(|char: char| char == '+' || char == '-' || char.is_whitespace())
+    let joins = |char: char| char == '+' || char == '-' || char.is_whitespace();
+    let expanded = expanded.trim();
+    // A `-` or `+` at the end after a join is the key itself (`cmd+-`,
+    // `⌘-`), not one more join.
+    let last = expanded
+        .char_indices()
+        .last()
+        .filter(|(at, char)| joins(*char) && expanded[..*at].chars().last().is_none_or(joins));
+    let (held_text, key) = match last {
+        Some((at, _)) => (&expanded[..at], Some(&expanded[at..])),
+        None => (expanded, None),
+    };
+    let mut parts: Vec<&str> = held_text
+        .split(joins)
         .filter(|part| !part.is_empty())
         .collect();
+    parts.extend(key);
     let (key, held) = parts.split_last()?;
     if held.is_empty() {
         if let Some(key) = named(&key.to_lowercase()) {
@@ -4442,6 +4455,15 @@ mod tests {
             let spelled = spell(spelled).unwrap();
             assert!(same(Layout::Mac, &typed, &spelled), "{spelled:?}");
         }
+        // A `-` or `+` at the end is the key, whatever joins it.
+        let smaller = spell("cmd+-").unwrap();
+        for text in ["cmd+-", "cmd -", "cmd--", "⌘-", "command+-"] {
+            let typed = spell_typed(text).unwrap_or_else(|| panic!("{text}"));
+            assert!(same(Layout::Mac, &typed, &smaller), "{text}");
+        }
+        let typed = spell_typed("ctrl+-").unwrap();
+        assert!(same(Layout::Omarchy, &typed, &spell("ctrl+-").unwrap()));
+        assert!(spell_typed("cmd-").is_none());
         // A key alone keeps its case: Omarchy's R is not its r.
         let shift_r = spell_typed("R").unwrap();
         assert!(same(Layout::Omarchy, &shift_r, &spell("R").unwrap()));
