@@ -728,9 +728,9 @@ async fn stream_into(
 
 /// Where an export's stream failed.
 enum StreamFailed {
-    /// Before the server sent a row: nothing is left to read.
+    /// Before the statement ran: nothing is left to read.
     Before(Error),
-    /// Part-way, with rows still on their way.
+    /// Once it ran, with rows still on their way, read or not.
     PartWay(Error),
 }
 
@@ -1898,6 +1898,16 @@ mod tests {
         url: &str,
         access: Access,
     ) -> (Conn, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        proxied_session(url, access, None).await
+    }
+
+    /// [`counted_session`], whose proxy cuts the connection at the first
+    /// query whose text starts with `cut`, before the server hears it.
+    async fn proxied_session(
+        url: &str,
+        access: Access,
+        cut: Option<&'static str>,
+    ) -> (Conn, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1920,7 +1930,7 @@ mod tests {
             let upstream = tokio::net::TcpStream::connect(server).await.unwrap();
             let (mut from_client, mut to_client) = client.into_split();
             let (mut from_server, mut to_server) = upstream.into_split();
-            tokio::spawn(async move {
+            let answers = tokio::spawn(async move {
                 tokio::io::copy(&mut from_server, &mut to_client).await.ok();
             });
             loop {
@@ -1941,6 +1951,17 @@ mod tests {
                 );
                 if header[3] == 0 && answered {
                     count.fetch_add(1, Ordering::SeqCst);
+                }
+                const QUERY: u8 = 0x03;
+                let cut_here = cut.is_some_and(|cut| {
+                    header[3] == 0
+                        && body.first() == Some(&QUERY)
+                        && body[1..].starts_with(cut.as_bytes())
+                });
+                if cut_here {
+                    // Both ways: the client reads the end of the stream.
+                    answers.abort();
+                    return;
                 }
                 if to_server.write_all(&header).await.is_err()
                     || to_server.write_all(&body).await.is_err()
@@ -2149,5 +2170,49 @@ mod tests {
             );
         }
         assert_eq!(ended::<i32>(Err(lost()), Err(refused())), Err(lost()));
+    }
+
+    /// A read whose rollback fails loses the session: the proxy cuts the
+    /// connection at the read's `ROLLBACK`.
+    #[tokio::test]
+    async fn a_read_whose_rollback_fails_loses_the_session() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = trips(&url).await;
+        let (conn, _) = proxied_session(&url, Access::ReadOnly, Some("ROLLBACK")).await;
+        let failed = conn.fetch_rows(&RowQuery::new(object, 10)).await;
+        assert!(
+            matches!(
+                &failed,
+                Err(Error::ConnectionLost(message))
+                    if message.starts_with("could not end the read's transaction")
+            ),
+            "{failed:?}"
+        );
+    }
+
+    /// An export whose statement ran has its rows on their way, read or
+    /// not: here its receiver is gone before the columns are sent. It ends
+    /// as cancelled with its transaction open, for the caller to close the
+    /// connection (`Connection::stream_rows`). A read on it all the same
+    /// still reads: the driver reads what is on its way first, and the
+    /// read's start ends the transaction, which wrote nothing.
+    #[tokio::test]
+    async fn an_export_whose_statement_ran_leaves_its_end_to_the_caller() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = trips(&url).await;
+        let conn = session(&url).await;
+        let (to, from) = tokio::sync::mpsc::channel(4);
+        drop(from);
+        let failed = conn
+            .stream_statement("SELECT * FROM trips", 10, &to, &StopFlag::new())
+            .await;
+        assert_eq!(failed, Err(Error::Cancelled));
+        let page = conn.fetch_rows(&RowQuery::new(object, 10)).await.unwrap();
+        assert_eq!(page.rows.len(), 3);
+        assert!(!in_transaction(&conn).await);
     }
 }
