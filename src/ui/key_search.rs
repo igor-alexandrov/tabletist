@@ -22,6 +22,8 @@ pub(crate) struct Search {
 }
 
 impl Search {
+    /// The search for `text` typed and the chord `found` pressed, if one
+    /// was.
     pub(crate) fn new(text: &str, found: Option<&'static str>) -> Self {
         let words = text.trim().to_owned();
         Search {
