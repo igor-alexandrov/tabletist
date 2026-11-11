@@ -3069,9 +3069,9 @@ async fn cancel_after<C>(
 /// another would only interrupt the rollback.
 ///
 /// The next cancel waits for the one before it to finish, and a little
-/// longer each time: on MySQL every cancel is a new authenticated
-/// connection, and failing ones in quick succession can get this host
-/// blocked (`max_connect_errors`).
+/// longer each time: on MySQL a cancel whose spare connection is gone opens
+/// a new authenticated one, and failing ones in quick succession can get
+/// this host blocked (`max_connect_errors`).
 async fn keep_cancelling(cancel: CancelHandle, running: Arc<Mutex<Running>>, request: RequestId) {
     keep_sending(move || send_cancel(&cancel), running, request).await;
 }

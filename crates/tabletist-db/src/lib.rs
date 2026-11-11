@@ -653,6 +653,8 @@ enum CancelInner {
         id: u32,
         /// The server that thread id belongs to.
         server: String,
+        /// The connection the cancels go through (see `mysql::cancel`).
+        spare: mysql::Spare,
     },
     /// Boxed: a BigQuery client is much larger than the other handles.
     BigQuery(Box<bigquery::Cancel>),
@@ -665,7 +667,12 @@ impl CancelHandle {
                 handle.interrupt();
                 Ok(())
             }
-            CancelInner::MySql { opts, id, server } => mysql::cancel(opts, *id, server).await,
+            CancelInner::MySql {
+                opts,
+                id,
+                server,
+                spare,
+            } => mysql::cancel(opts, *id, server, spare).await,
             CancelInner::Postgres(cancel) => cancel.cancel().await,
             CancelInner::BigQuery(cancel) => cancel.cancel().await,
         }

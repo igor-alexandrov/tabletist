@@ -1433,7 +1433,9 @@ mod tests {
             runs_on_the_server(&mut admin, sleep).await;
             stop.stop();
             while !running.is_finished() && (keep_cancelling || !stop.is_finishing()) {
-                cancel(&conn.opts, conn.id, &conn.server).await.unwrap();
+                cancel(&conn.opts, conn.id, &conn.server, &conn.spare)
+                    .await
+                    .unwrap();
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
             match running.await.unwrap() {
@@ -1490,7 +1492,9 @@ mod tests {
             runs_on_the_server(&mut admin, sleep).await;
             stop.stop();
             while !running.is_finished() && !stop.is_finishing() {
-                cancel(&conn.opts, conn.id, &conn.server).await.unwrap();
+                cancel(&conn.opts, conn.id, &conn.server, &conn.spare)
+                    .await
+                    .unwrap();
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
             let outcome = running.await.unwrap().unwrap();
