@@ -466,19 +466,6 @@ impl Conn {
         Some(aliases)
     }
 
-    async fn relation(&self, object: &ObjectRef) -> Result<u32> {
-        let rows = self
-            .catalog(
-                "SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
-                 WHERE n.nspname = $1 AND c.relname = $2",
-                &[(&object.schema, Type::TEXT), (&object.name, Type::TEXT)],
-            )
-            .await?;
-        rows.first()
-            .map(|row| column(row, 0))
-            .ok_or_else(|| Error::query(format!("no such table or view: {}", object.name)))?
-    }
-
     pub async fn primary_key(&self, object: &ObjectRef) -> Result<Vec<String>> {
         let rows = self
             .catalog(
@@ -745,10 +732,31 @@ impl Adapter for Conn {
         self.read_ddl(object).await
     }
 
+    /// The table's structure in one round trip: its five catalog queries
+    /// go out together, each finding the table by its schema and name.
     async fn describe(&self, object: &ObjectRef) -> Result<Structure> {
-        let oid = self.relation(object).await?;
-        let columns = self
-            .catalog(
+        /// The table's oid, from the parameters every query of `describe`
+        /// takes: its schema and its name.
+        macro_rules! relation {
+            () => {
+                "(SELECT rc.oid FROM pg_class rc \
+                  JOIN pg_namespace rn ON rn.oid = rc.relnamespace \
+                  WHERE rn.nspname = $1 AND rc.relname = $2)"
+            };
+        }
+        let params: &[(&(dyn ToSql + Sync), Type)] =
+            &[(&object.schema, Type::TEXT), (&object.name, Type::TEXT)];
+        let client = self.client.lock().await;
+        let (relation, columns, indexes, foreign_keys, referenced_by) = tokio::try_join!(
+            // The comment on the table or view itself, and a row only when
+            // there is a table or view.
+            client.query_typed(
+                "SELECT obj_description(c.oid, 'pg_class') \
+                 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE n.nspname = $1 AND c.relname = $2",
+                params,
+            ),
+            client.query_typed(
                 // An enum's labels in their sort order; a text column's
                 // single-column CHECK constraints, by name. Whether the
                 // column is generated is read through `to_jsonb`, for
@@ -756,7 +764,8 @@ impl Adapter for Conn {
                 // naming a column the server lacks would fail the whole
                 // Structure view. Nothing older is spared by it: the index
                 // query below names `indnkeyatts`, which 11 brought.
-                "SELECT a.attname::text, format_type(a.atttypid, a.atttypmod), NOT a.attnotnull, \
+                concat!(
+                    "SELECT a.attname::text, format_type(a.atttypid, a.atttypmod), NOT a.attnotnull, \
                         pg_get_expr(d.adbin, d.adrelid), col_description(a.attrelid, a.attnum), \
                         CASE WHEN t.typtype = 'e' THEN \
                             ARRAY(SELECT e.enumlabel::text FROM pg_enum e \
@@ -778,11 +787,104 @@ impl Adapter for Conn {
                  FROM pg_attribute a \
                  JOIN pg_type t ON t.oid = a.atttypid \
                  LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
-                 WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped \
-                 ORDER BY a.attnum",
-                &[(&oid, Type::OID)],
-            )
-            .await?
+                 WHERE a.attrelid = ", relation!(), " AND a.attnum > 0 AND NOT a.attisdropped \
+                 ORDER BY a.attnum"
+                ),
+                params,
+            ),
+            client.query_typed(
+                // An index that is not valid (a `CREATE UNIQUE INDEX
+                // CONCURRENTLY` that failed) does not hold its rows unique,
+                // whatever it is called. The last column is the key's
+                // columns by name, or NULL when an entry is not one whole
+                // column compared as the column compares: an expression (0
+                // in `indkey`), another collation than the column's, or an
+                // operator class that is not the default one. The text
+                // `pg_get_indexdef` shows tells none of these apart.
+                concat!(
+                    "SELECT ic.relname::text, i.indisunique AND i.indisvalid, i.indisprimary, \
+                        am.amname::text, \
+                        ARRAY(SELECT pg_get_indexdef(i.indexrelid, k, true) \
+                              FROM generate_series(1, i.indnkeyatts::int) AS k ORDER BY k), \
+                        i.indpred IS NOT NULL, \
+                        CASE WHEN NOT EXISTS ( \
+                                 SELECT 1 FROM generate_series(1, i.indnkeyatts::int) AS k \
+                                 LEFT JOIN pg_attribute a \
+                                   ON a.attrelid = i.indrelid AND a.attnum = i.indkey[k - 1] \
+                                 LEFT JOIN pg_opclass oc ON oc.oid = i.indclass[k - 1] \
+                                 WHERE i.indkey[k - 1] = 0 \
+                                    OR a.attcollation <> i.indcollation[k - 1] \
+                                    OR NOT oc.opcdefault) \
+                             THEN ARRAY(SELECT a.attname::text \
+                                        FROM generate_series(1, i.indnkeyatts::int) AS k \
+                                        JOIN pg_attribute a \
+                                          ON a.attrelid = i.indrelid AND a.attnum = i.indkey[k - 1] \
+                                        ORDER BY k) END \
+                 FROM pg_index i \
+                 JOIN pg_class ic ON ic.oid = i.indexrelid \
+                 JOIN pg_am am ON am.oid = ic.relam \
+                 WHERE i.indrelid = ", relation!(), " ORDER BY ic.relname"
+                ),
+                params,
+            ),
+            client.query_typed(
+                concat!(
+                    "SELECT con.conname::text, \
+                        ARRAY(SELECT a.attname::text FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) \
+                              JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum \
+                              ORDER BY k.ord), \
+                        rn.nspname::text, rc.relname::text, \
+                        ARRAY(SELECT a.attname::text FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, ord) \
+                              JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum \
+                              ORDER BY k.ord), \
+                        con.confupdtype::text, con.confdeltype::text \
+                 FROM pg_constraint con \
+                 JOIN pg_class rc ON rc.oid = con.confrelid \
+                 JOIN pg_namespace rn ON rn.oid = rc.relnamespace \
+                 WHERE con.conrelid = ", relation!(), " AND con.contype = 'f' ORDER BY con.conname"
+                ),
+                params,
+            ),
+            // The keys that point at the table: the same catalog, read from
+            // the other end. A partitioned table that has such a key has a
+            // row for each of its partitions too, all pointing here: only the
+            // key itself is listed. The copies name their parent in a column
+            // servers before version 11 do not have.
+            client.query_typed(
+                concat!(
+                    "SELECT con.conname::text, cn.nspname::text, cc.relname::text, \
+                        ARRAY(SELECT a.attname::text FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) \
+                              JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum \
+                              ORDER BY k.ord), \
+                        ARRAY(SELECT a.attname::text FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, ord) \
+                              JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum \
+                              ORDER BY k.ord), \
+                        con.confdeltype::text \
+                 FROM pg_constraint con \
+                 JOIN pg_class cc ON cc.oid = con.conrelid \
+                 JOIN pg_namespace cn ON cn.oid = cc.relnamespace \
+                 WHERE con.confrelid = ", relation!(), " AND con.contype = 'f' \
+                   AND COALESCE((to_jsonb(con) ->> 'conparentid')::oid, 0) = 0 \
+                 ORDER BY cn.nspname, cc.relname, con.conname"
+                ),
+                params,
+            ),
+        )
+        .map_err(query_error)?;
+        drop(client);
+        // PostgreSQL keeps no empty comment (`COMMENT ON ... IS ''` drops
+        // it), and an empty one would be none.
+        let comment: Option<String> = match relation.first() {
+            Some(row) => column(row, 0)?,
+            None => {
+                return Err(Error::query(format!(
+                    "no such table or view: {}",
+                    object.name
+                )));
+            }
+        };
+        let comment = comment.filter(|comment| !comment.is_empty());
+        let columns: Vec<_> = columns
             .iter()
             .map(|row| {
                 let name: String = column(row, 0)?;
@@ -811,41 +913,7 @@ impl Adapter for Conn {
                 })
             })
             .collect::<Result<_>>()?;
-        let indexes = self
-            .catalog(
-                // An index that is not valid (a `CREATE UNIQUE INDEX
-                // CONCURRENTLY` that failed) does not hold its rows unique,
-                // whatever it is called. The last column is the key's
-                // columns by name, or NULL when an entry is not one whole
-                // column compared as the column compares: an expression (0
-                // in `indkey`), another collation than the column's, or an
-                // operator class that is not the default one. The text
-                // `pg_get_indexdef` shows tells none of these apart.
-                "SELECT ic.relname::text, i.indisunique AND i.indisvalid, i.indisprimary, \
-                        am.amname::text, \
-                        ARRAY(SELECT pg_get_indexdef(i.indexrelid, k, true) \
-                              FROM generate_series(1, i.indnkeyatts::int) AS k ORDER BY k), \
-                        i.indpred IS NOT NULL, \
-                        CASE WHEN NOT EXISTS ( \
-                                 SELECT 1 FROM generate_series(1, i.indnkeyatts::int) AS k \
-                                 LEFT JOIN pg_attribute a \
-                                   ON a.attrelid = i.indrelid AND a.attnum = i.indkey[k - 1] \
-                                 LEFT JOIN pg_opclass oc ON oc.oid = i.indclass[k - 1] \
-                                 WHERE i.indkey[k - 1] = 0 \
-                                    OR a.attcollation <> i.indcollation[k - 1] \
-                                    OR NOT oc.opcdefault) \
-                             THEN ARRAY(SELECT a.attname::text \
-                                        FROM generate_series(1, i.indnkeyatts::int) AS k \
-                                        JOIN pg_attribute a \
-                                          ON a.attrelid = i.indrelid AND a.attnum = i.indkey[k - 1] \
-                                        ORDER BY k) END \
-                 FROM pg_index i \
-                 JOIN pg_class ic ON ic.oid = i.indexrelid \
-                 JOIN pg_am am ON am.oid = ic.relam \
-                 WHERE i.indrelid = $1 ORDER BY ic.relname",
-                &[(&oid, Type::OID)],
-            )
-            .await?
+        let indexes: Vec<_> = indexes
             .iter()
             .map(|row| {
                 Ok(IndexInfo {
@@ -859,24 +927,7 @@ impl Adapter for Conn {
                 })
             })
             .collect::<Result<_>>()?;
-        let foreign_keys = self
-            .catalog(
-                "SELECT con.conname::text, \
-                        ARRAY(SELECT a.attname::text FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) \
-                              JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum \
-                              ORDER BY k.ord), \
-                        rn.nspname::text, rc.relname::text, \
-                        ARRAY(SELECT a.attname::text FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, ord) \
-                              JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum \
-                              ORDER BY k.ord), \
-                        con.confupdtype::text, con.confdeltype::text \
-                 FROM pg_constraint con \
-                 JOIN pg_class rc ON rc.oid = con.confrelid \
-                 JOIN pg_namespace rn ON rn.oid = rc.relnamespace \
-                 WHERE con.conrelid = $1 AND con.contype = 'f' ORDER BY con.conname",
-                &[(&oid, Type::OID)],
-            )
-            .await?
+        let foreign_keys: Vec<_> = foreign_keys
             .iter()
             .map(|row| {
                 let on_update: String = column(row, 5)?;
@@ -892,30 +943,7 @@ impl Adapter for Conn {
                 })
             })
             .collect::<Result<_>>()?;
-        // The keys that point at the table: the same catalog, read from
-        // the other end. A partitioned table that has such a key has a
-        // row for each of its partitions too, all pointing here: only the
-        // key itself is listed. The copies name their parent in a column
-        // servers before version 11 do not have.
-        let referenced_by = self
-            .catalog(
-                "SELECT con.conname::text, cn.nspname::text, cc.relname::text, \
-                        ARRAY(SELECT a.attname::text FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) \
-                              JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum \
-                              ORDER BY k.ord), \
-                        ARRAY(SELECT a.attname::text FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, ord) \
-                              JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum \
-                              ORDER BY k.ord), \
-                        con.confdeltype::text \
-                 FROM pg_constraint con \
-                 JOIN pg_class cc ON cc.oid = con.conrelid \
-                 JOIN pg_namespace cn ON cn.oid = cc.relnamespace \
-                 WHERE con.confrelid = $1 AND con.contype = 'f' \
-                   AND COALESCE((to_jsonb(con) ->> 'conparentid')::oid, 0) = 0 \
-                 ORDER BY cn.nspname, cc.relname, con.conname",
-                &[(&oid, Type::OID)],
-            )
-            .await?
+        let referenced_by: Vec<_> = referenced_by
             .iter()
             .map(|row| {
                 let on_delete: String = column(row, 5)?;
@@ -929,24 +957,20 @@ impl Adapter for Conn {
                 })
             })
             .collect::<Result<_>>()?;
-        // The comment on the table or view itself. PostgreSQL keeps no empty
-        // one (`COMMENT ON ... IS ''` drops it), and an empty one would be
-        // none.
-        let comment: Option<String> = match self
-            .catalog(
-                "SELECT obj_description($1, 'pg_class')",
-                &[(&oid, Type::OID)],
-            )
-            .await?
-            .first()
-        {
-            Some(row) => column(row, 0)?,
-            None => None,
-        }
-        .filter(|comment: &String| !comment.is_empty());
+        // The key is the primary index's columns, in key order. An entry
+        // the index rows name no column for, which PostgreSQL does not let
+        // a primary key have, sends the key's own query.
+        let primary_key = match indexes.iter().find(|index: &&IndexInfo| index.primary) {
+            None => Vec::new(),
+            Some(IndexInfo {
+                key_columns: Some(columns),
+                ..
+            }) => columns.clone(),
+            Some(_) => self.primary_key(object).await?,
+        };
         Ok(Structure {
             columns,
-            primary_key: self.primary_key(object).await?,
+            primary_key,
             indexes,
             foreign_keys,
             referenced_by,
@@ -1610,17 +1634,54 @@ mod tests {
         }
     }
 
-    /// The structure's catalog queries each ask the server once.
+    /// The structure asks the server once: its queries go out together.
+    /// A table that is not there is still said to be missing.
     #[tokio::test]
-    async fn the_structure_asks_the_server_once_a_catalog_query() {
+    async fn the_structure_asks_the_server_once() {
         let Some(url) = test_url() else {
             return;
         };
         let object = round_trips_table(&url).await;
         let (conn, trips) = trip_counted(&url).await;
         let (structure, asked) = counted(&trips, conn.describe(&object)).await;
-        assert_eq!(structure.unwrap().primary_key, ["shelf", "id"]);
-        assert_eq!(asked, 7);
+        let structure = structure.unwrap();
+        assert_eq!(structure.primary_key, ["shelf", "id"]);
+        assert_eq!(
+            structure
+                .columns
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
+            ["id", "body", "shelf", "name"]
+        );
+        assert_eq!(asked, 1);
+        let missing = ObjectRef::new("public", "no_round_trips");
+        let (structure, asked) = counted(&trips, conn.describe(&missing)).await;
+        let error = structure.unwrap_err().to_string();
+        assert!(error.contains("no such table or view"), "{error}");
+        assert_eq!(asked, 1);
+    }
+
+    /// Opening a table asks the server four times: once for its
+    /// structure, three times for its first page.
+    #[tokio::test]
+    async fn opening_a_table_asks_the_server_four_times() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = round_trips_table(&url).await;
+        let (conn, trips) = trip_counted(&url).await;
+        let (opened, asked) = counted(&trips, async {
+            let structure = conn.describe(&object).await.unwrap();
+            let page = conn
+                .fetch_rows(&RowQuery::new(object.clone(), 10))
+                .await
+                .unwrap();
+            (structure, page)
+        })
+        .await;
+        assert_eq!(opened.1.rows.len(), 2);
+        assert_eq!(asked, 4);
     }
 
     /// A server that declines TLS and accepts anyone, answering every
