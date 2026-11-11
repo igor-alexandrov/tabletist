@@ -1336,6 +1336,11 @@ mod tests {
     /// statement's close that goes out on its own is waited on by nobody
     /// and does not count.
     pub(super) async fn trip_counted(url: &str) -> (Conn, Trips) {
+        trip_counted_as(url, Access::ReadOnly).await
+    }
+
+    /// A [`trip_counted`] session opened as `access`.
+    pub(super) async fn trip_counted_as(url: &str, access: Access) -> (Conn, Trips) {
         use std::collections::VecDeque;
         use std::sync::atomic::AtomicUsize;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1428,9 +1433,7 @@ mod tests {
                 }
             }
         });
-        let conn = Conn::connect(&spec, &secrets, None, Access::ReadOnly)
-            .await
-            .unwrap();
+        let conn = Conn::connect(&spec, &secrets, None, access).await.unwrap();
         (conn, Trips(trips))
     }
 
@@ -1564,27 +1567,49 @@ mod tests {
 
     /// A read dropped between its `BEGIN` and its statement leaves no
     /// transaction behind: the proxy holds the prepare's answer back, and
-    /// the read is dropped while it waits.
+    /// the read is dropped while it waits. A writable session's next
+    /// script writes: its transaction is its own, not the read's read-only
+    /// one. And the session reads on.
     #[tokio::test]
     async fn a_dropped_read_leaves_no_transaction_behind() {
         let Some(url) = test_url() else {
             return;
         };
-        let (conn, _) = trip_counted(&url).await;
-        let read = async {
-            let client = conn.client.lock().await;
-            read_statement(&client, "SELECT 1").await
-        };
-        assert!(
-            tokio::time::timeout(Duration::from_millis(10), read)
-                .await
-                .is_err()
-        );
-        assert!(outside_a_transaction(&conn).await);
-        // And the session reads on.
-        let client = conn.client.lock().await;
-        let (_, messages) = read_statement(&client, "SELECT 2").await.unwrap();
-        assert_eq!(first_text(&messages).as_deref(), Some("2"));
+        for access in [Access::ReadOnly, Access::Writable] {
+            let (conn, _) = trip_counted_as(&url, access).await;
+            let read = async {
+                let client = conn.client.lock().await;
+                read_statement(&client, "SELECT 1").await
+            };
+            assert!(
+                tokio::time::timeout(Duration::from_millis(10), read)
+                    .await
+                    .is_err()
+            );
+            assert!(outside_a_transaction(&conn).await, "{access:?}");
+            if access == Access::Writable {
+                let texts = ["CREATE TEMP TABLE dropped_read (n int)".to_owned()];
+                let outcome = conn
+                    .script(&texts, 10, ScriptMode::Write, &StopFlag::new())
+                    .await
+                    .unwrap();
+                assert!(
+                    matches!(
+                        outcome.results[..],
+                        [crate::StatementResult {
+                            outcome: crate::StatementOutcome::Done { .. },
+                            ..
+                        }]
+                    ),
+                    "{outcome:?}"
+                );
+            }
+            {
+                let client = conn.client.lock().await;
+                let (_, messages) = read_statement(&client, "SELECT 2").await.unwrap();
+                assert_eq!(first_text(&messages).as_deref(), Some("2"));
+            }
+        }
     }
 
     /// A read that fails rolls its transaction back by hand: one round
