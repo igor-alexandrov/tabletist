@@ -578,3 +578,20 @@ index 0075c4b1..92d4892e 100644
  impl Conn {
      /// See [`crate::Connection::write`]. The transaction is started and
 ````
+
+---
+
+## Step 2: the session's settings, and who the server is, in one message
+
+Built on step 1's branch (PR stacked on igor-alexandrov/tabletist#305).
+
+- `session_settings(access)` is the four `SET`s as one text of statements, in the same order (read-only first, read-write last). `prepare_session` sends it as one message, run once more after a cancel. The server runs a message's statements in order and stops at the first that fails, so no `SET` runs after one that failed.
+- `server_identity(conn, before)` sends `before` and then `SELECT @@server_uuid, VERSION()` as one message. At connect, `before` is the settings. On MariaDB (no `server_uuid`, error 1193) it asks `SELECT @@hostname, @@port, VERSION()` with `before` again, so that a failing `SET` is never taken for the missing UUID. The cancel connection calls it with nothing before.
+- `last_row` reads a message's answer: the last row of the last result set that has one. **mysql_async keeps the error of a statement after the first as a pending result, and `is_empty()` already says `true`: only `drop_result` gives the error.** `last_row` ends with it. (`query_drop`, which `prepare_session` uses, already does.) Step 3 reads its messages through `last_row`.
+
+Measured: connect 7 → 2 trips; a one-`SELECT` SQL editor run 13 → 10 on a writable session, 12 → 9 on a read-only one.
+
+Tests (`mysql::tests`, in `--lib`):
+
+- `a_session_is_prepared_and_named_in_one_message`: connect asks twice (the driver's own question, then ours); the server is named by UUID and the version is MySQL's; the settings hold after connect and again after a run, which asks 9 or 10 times. On step 1's code: `left: 7`, `right: 2`.
+- `a_message_of_statements_stops_at_the_first_that_fails`: `last_row` gives the last row, and the error of a statement in the middle or at the end (1305). Statements after the failing one did not run.

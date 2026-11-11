@@ -159,17 +159,14 @@ impl Conn {
                 }
                 Ok(Err(error)) => return Err(connect_error(error)),
             };
-        prepare_session(&mut conn, access).await?;
+        // The settings and the question who the server is go as one
+        // message: the settings run first, and the server stops at the
+        // first statement that fails.
+        let (server, version) = server_identity(&mut conn, &session_settings(access)).await?;
         let id = conn.id();
         // mysql_async fails rather than go on in plain text when it was
         // given TLS options, so the options that connected say it.
         let encrypted = opts.ssl_opts().is_some();
-        let server = server_identity(&mut conn).await.map_err(query_error)?;
-        let version: Option<mysql_async::Row> = conn
-            .query_first("SELECT VERSION()")
-            .await
-            .map_err(query_error)?;
-        let version = version.map(from_row).transpose()?.unwrap_or_default();
         Ok(Self {
             conn: tokio::sync::Mutex::new(conn),
             opts,
@@ -1002,13 +999,12 @@ const LEXING_MODES: [&str; 8] = [
 ];
 
 /// The session settings every connection runs with, set at connect and
-/// again after a SQL editor script's reset, which undoes them. A read-only
-/// session says so first, so nothing here runs in a session that could
-/// write; a writable one says read-write last. After a reset a cancel
-/// meant for a statement can land here, so a statement it interrupts runs
-/// once more: the session is not left in the wrong mode because a `SET`
-/// was interrupted.
-async fn prepare_session(conn: &mut mysql_async::Conn, access: Access) -> Result<()> {
+/// again after a SQL editor script's reset, which undoes them: one
+/// message of fixed statements, each ending in `; `, which the server
+/// runs in order and stops at the first that fails. A read-only session
+/// says so first, so nothing here runs in a session that could write; a
+/// writable one says read-write last.
+fn session_settings(access: Access) -> String {
     let sql_mode = LEXING_MODES
         .iter()
         .fold("@@SESSION.sql_mode".to_owned(), |mode, name| {
@@ -1019,11 +1015,39 @@ async fn prepare_session(conn: &mut mysql_async::Conn, access: Access) -> Result
         Access::ReadOnly => [READ_ONLY, NAMES, sql_mode.as_str(), NOTES],
         Access::Writable => [NAMES, sql_mode.as_str(), NOTES, READ_WRITE],
     };
+    statements
+        .map(|statement| format!("{statement}; "))
+        .concat()
+}
+
+/// Sets [`session_settings`]. After a reset a cancel meant for a
+/// statement can land here, so a message it interrupts runs once more: the
+/// session is not left in the wrong mode because a `SET` was interrupted.
+async fn prepare_session(conn: &mut mysql_async::Conn, access: Access) -> Result<()> {
     // Fixed statements: safe to send through the text protocol.
-    for statement in statements {
-        retry_cancelled!(execute(conn, statement))?;
+    let settings = session_settings(access);
+    retry_cancelled!(execute(conn, settings.trim_end_matches("; ")))
+}
+
+/// The row a message of several statements answers last: the last row of
+/// the last result set that has one. The driver keeps the error of a
+/// statement after the first as a pending result, which `is_empty` does
+/// not count: only `drop_result` gives it.
+async fn last_row(
+    conn: &mut mysql_async::Conn,
+    text: &str,
+) -> mysql_async::Result<Option<mysql_async::Row>> {
+    let mut result = conn.query_iter(text).await?;
+    let mut last = None;
+    loop {
+        let rows: Vec<mysql_async::Row> = result.collect().await?;
+        last = rows.into_iter().last().or(last);
+        if result.is_empty() {
+            break;
+        }
     }
-    Ok(())
+    result.drop_result().await?;
+    Ok(last)
 }
 
 /// Runs one of the driver's own statements, through the text protocol.
@@ -1359,7 +1383,9 @@ pub(crate) async fn cancel(opts: &Opts, id: u32, server: &str) -> Result<()> {
             Ok(result) => result.map_err(failed)?,
         };
     let result = async {
-        let reached = server_identity(&mut conn).await.map_err(failed)?;
+        let (reached, _) = server_identity(&mut conn, "")
+            .await
+            .map_err(|error| Error::Connect(format!("could not cancel: {error}")))?;
         same_server(server, &reached)?;
         conn.query_drop(format!("KILL QUERY {id}"))
             .await
@@ -1370,19 +1396,36 @@ pub(crate) async fn cancel(opts: &Opts, id: u32, server: &str) -> Result<()> {
     result
 }
 
-/// Names the server a connection reached: `@@server_uuid`, or host name and
-/// port on MariaDB, which has no server UUID.
-async fn server_identity(conn: &mut mysql_async::Conn) -> mysql_async::Result<String> {
-    match conn.query_first::<String, _>("SELECT @@server_uuid").await {
-        Ok(Some(uuid)) => return Ok(format!("uuid {uuid}")),
+/// Names the server a connection reached, with its `VERSION()`: by
+/// `@@server_uuid`, or by host name and port on MariaDB, which has no
+/// server UUID. `before` is statements sent in the same message, which run
+/// first ([`session_settings`]); they are sent again with MariaDB's
+/// question, so that one of them failing is never taken for the missing
+/// UUID.
+async fn server_identity(conn: &mut mysql_async::Conn, before: &str) -> Result<(String, String)> {
+    let asked = last_row(conn, &format!("{before}SELECT @@server_uuid, VERSION()")).await;
+    match asked {
+        Ok(Some(row)) => {
+            if let (Some(uuid), version) = from_row::<(Option<String>, String)>(row)? {
+                return Ok((format!("uuid {uuid}"), version));
+            }
+        }
         Ok(None) => {}
         Err(mysql_async::Error::Server(error)) if error.code == UNKNOWN_SYSTEM_VARIABLE => {}
-        Err(error) => return Err(error),
+        Err(error) => return Err(query_error(error)),
     }
-    let found: Option<(String, u16)> = conn.query_first("SELECT @@hostname, @@port").await?;
-    Ok(found
-        .map(|(host, port)| format!("host {host}:{port}"))
-        .unwrap_or_default())
+    let found = last_row(
+        conn,
+        &format!("{before}SELECT @@hostname, @@port, VERSION()"),
+    )
+    .await
+    .map_err(query_error)?;
+    Ok(
+        match found.map(from_row::<(String, u16, String)>).transpose()? {
+            Some((host, port, version)) => (format!("host {host}:{port}"), version),
+            None => Default::default(),
+        },
+    )
 }
 
 /// Whether a cancel connection reached the session's server. An unknown
@@ -2214,5 +2257,94 @@ mod tests {
         let page = conn.fetch_rows(&RowQuery::new(object, 10)).await.unwrap();
         assert_eq!(page.rows.len(), 3);
         assert!(!in_transaction(&conn).await);
+    }
+
+    /// A session is prepared, and says which server it reached and its
+    /// version, in one message: two with the driver's own question at
+    /// connect. A SQL editor run's close prepares it again in one.
+    #[tokio::test]
+    async fn a_session_is_prepared_and_named_in_one_message() {
+        use std::sync::atomic::Ordering;
+        let Some(url) = test_url() else {
+            return;
+        };
+        for (access, read_only, run) in [(Access::ReadOnly, 1, 9), (Access::Writable, 0, 10)] {
+            let (conn, asked) = counted_session(&url, access).await;
+            assert_eq!(asked.load(Ordering::SeqCst), 2, "{access:?}");
+            assert!(conn.server.starts_with("uuid "), "{}", conn.server);
+            assert!(
+                version_name(&conn.version).starts_with("MySQL 8."),
+                "{}",
+                conn.version
+            );
+            let settings = || async {
+                let mut conn = conn.conn.lock().await;
+                let settings: Option<(i64, i64, String)> = conn
+                    .query_first(
+                        "SELECT @@session.transaction_read_only, @@session.sql_notes, \
+                                @@session.collation_connection",
+                    )
+                    .await
+                    .unwrap();
+                settings.unwrap()
+            };
+            let expected = (read_only, 1, "utf8mb4_general_ci".to_owned());
+            assert_eq!(settings().await, expected, "{access:?}");
+            let before = asked.load(Ordering::SeqCst);
+            let outcome = conn
+                .script(
+                    &["SELECT 1".to_owned()],
+                    10,
+                    ScriptMode::ReadOnly,
+                    &StopFlag::new(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                matches!(
+                    outcome.results[..],
+                    [crate::StatementResult {
+                        outcome: crate::StatementOutcome::Rows { .. },
+                        ..
+                    }]
+                ),
+                "{outcome:?}"
+            );
+            assert_eq!(asked.load(Ordering::SeqCst) - before, run, "{access:?}");
+            assert_eq!(settings().await, expected, "{access:?}");
+        }
+    }
+
+    /// A message of statements runs them in order and stops at the first
+    /// that fails, which the session settings rely on; its answer is the
+    /// last row that came.
+    #[tokio::test]
+    async fn a_message_of_statements_stops_at_the_first_that_fails() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        let mut conn = conn.conn.lock().await;
+        let row = last_row(
+            &mut conn,
+            "SET @a = 1; SELECT 5; DO 1; SELECT @a + 1; SET @b = 1",
+        )
+        .await
+        .unwrap();
+        assert_eq!(row.map(from_row::<i64>), Some(Ok(2)));
+        for failing in [
+            "SET @a = 2; SELECT no_such_function(); SET @a = 3",
+            "SET @a = 2; SELECT 1; SELECT no_such_function()",
+        ] {
+            let failed = last_row(&mut conn, failing).await;
+            assert!(
+                matches!(&failed, Err(mysql_async::Error::Server(error)) if error.code == 1305),
+                "{failing}: {failed:?}"
+            );
+        }
+        let a: Option<i64> = conn.query_first("SELECT @a").await.unwrap();
+        assert_eq!(a, Some(2));
+        let none = last_row(&mut conn, "SET @a = 4; DO 1").await.unwrap();
+        assert!(none.is_none());
     }
 }
