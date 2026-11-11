@@ -76,6 +76,10 @@ gcp-bigquery-client = { version = "0.28", default-features = false, features = [
 # seconds since the epoch (both already in the tree).
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["std", "alloc"] }
+# Files connections: DuckDB, compiled in, reads CSV, Parquet, JSON and
+# .duckdb files as tables. `parquet` and `json` build those readers into
+# the library; the rest install on first use.
+duckdb = { version = "1.20000.1", features = ["bundled", "parquet", "json"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }

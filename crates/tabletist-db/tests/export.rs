@@ -1,7 +1,8 @@
 //! An export's stream (`Connection::stream_rows`, and
 //! `Connection::stream_statement` for a SQL result) on each engine, on the
-//! Bookshop. PostgreSQL and MySQL need their servers (see compose.yaml):
-//! without the variables those tests print "skipped" and pass.
+//! Bookshop, and on a Files connection over its exports. PostgreSQL and
+//! MySQL need their servers (see compose.yaml): without the variables
+//! those tests print "skipped" and pass.
 
 // `allow-unwrap-in-tests` does not cover helpers in an integration-test crate.
 #![allow(clippy::unwrap_used)]
@@ -675,5 +676,61 @@ mod mysql {
             return;
         };
         a_stop_ends_the_stream(&connection, "bookshop", "mysql").await;
+    }
+}
+
+mod files {
+    use super::*;
+    use tabletist_db::files::Source;
+
+    /// The Bookshop's exports in a folder of their own, and a Files
+    /// connection over it: `books.json` is `main.books`, in the id order
+    /// it was written in.
+    async fn exports() -> (Connection, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        tabletist_db::fixtures::write_bookshop_files(dir.path()).unwrap();
+        let spec = ConnectSpec::files(Source::Folder(dir.path().to_owned()));
+        let connection = Connection::connect(&spec, &Secrets::default())
+            .await
+            .unwrap();
+        (connection, dir)
+    }
+
+    #[tokio::test]
+    async fn the_books_stream_on_files() {
+        let (connection, _dir) = exports().await;
+        streams_the_books(&connection, "main", "files").await;
+    }
+
+    #[tokio::test]
+    async fn the_export_session_cannot_write_on_files() {
+        let (connection, _dir) = exports().await;
+        the_export_session_cannot_write(&connection, "files").await;
+    }
+
+    #[tokio::test]
+    async fn a_stop_ends_the_stream_on_files() {
+        let (connection, _dir) = exports().await;
+        a_stop_ends_the_stream(&connection, "main", "files").await;
+    }
+
+    #[tokio::test]
+    async fn a_statement_streams_on_files() {
+        let (connection, _dir) = exports().await;
+        streams_a_statement(&connection, "files").await;
+    }
+
+    /// The statement history keeps for an export of a file: the view's
+    /// select, with no key to order by.
+    #[tokio::test]
+    async fn an_export_of_a_file_says_its_statement() {
+        let (connection, _dir) = exports().await;
+        let statement = connection
+            .export_statement(&books("main"), &["id".to_owned(), "title".to_owned()])
+            .await
+            .unwrap();
+        assert!(statement.starts_with("SELECT"), "{statement}");
+        assert!(statement.contains("\"books\""), "{statement}");
+        assert!(!statement.contains("LIMIT"), "{statement}");
     }
 }
