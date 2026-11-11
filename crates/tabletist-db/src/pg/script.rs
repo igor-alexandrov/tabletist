@@ -282,6 +282,13 @@ async fn open(client: &tokio_postgres::Client, sent: Option<Sent<'_>>) -> Result
 /// stopped, and says where that leaves the transaction. `Err` is a lost
 /// session. `params` are an agent's values for its one statement: a script
 /// has none.
+///
+/// The caller has just set the guard's savepoint, and nothing of the
+/// script has run since, so the first statement goes without the guard's
+/// swap: it would only find what `open` left. What may run in between, an
+/// agent's check against what its connection hides, is the run's own
+/// queries, which can fail the transaction but not end it, and a failure
+/// there runs no statement.
 async fn statements(
     client: &tokio_postgres::Client,
     texts: &[String],
@@ -291,9 +298,11 @@ async fn statements(
     params: Option<&[Param]>,
     outcome: &mut ScriptOutcome,
 ) -> Result<Tx> {
-    for text in texts {
+    for (index, text) in texts.iter().enumerate() {
         let ready = if stop.is_stopped() {
             Err(Error::Cancelled)
+        } else if index == 0 {
+            Ok(Tx::Open)
         } else {
             in_transaction(client).await
         };
@@ -351,19 +360,51 @@ async fn statements(
 /// or a failed rollback closes the session (they count as a lost
 /// connection).
 async fn close(client: &tokio_postgres::Client, tx: Tx) -> Result<()> {
-    let tx = match tx {
+    let ended = match tx {
         Tx::Open => confirm(client).await,
-        known => Ok(known),
+        known => Ended {
+            tx: Ok(known),
+            rolled_back: None,
+            released: None,
+        },
     };
     // Whatever is open is rolled back as far as that works, also when the
-    // session is closed anyway.
-    let rolled_back = retry_cancelled!(rollback(client));
-    match (tx, rolled_back) {
+    // session is closed anyway. A step the close's message did not reach
+    // runs on its own; one a cancel landed on runs once more.
+    let rolled_back = match ended.rolled_back {
+        Some(Err(Error::Cancelled)) => rollback(client).await,
+        Some(answer) => answer,
+        None => retry_cancelled!(rollback(client)),
+    };
+    match (ended.tx, rolled_back) {
         (Ok(Tx::Left), _) => Err(Error::LeftReadOnly),
         (Err(error), _) | (_, Err(error)) => Err(cleanup_failed(ScriptMode::ReadOnly, &error)),
-        (Ok(_), Ok(())) => unlocked(retry_cancelled!(unlock(client))),
+        (Ok(_), Ok(())) => unlocked(match ended.released {
+            Some(Err(Error::Cancelled)) => unlock(client).await,
+            Some(answer) => answer,
+            None => retry_cancelled!(unlock(client)),
+        }),
     }
 }
+
+/// How far the close got: where the transaction stood, and the answers to
+/// the rollback and the release of the advisory locks where they ran
+/// (`None` where they did not).
+struct Ended {
+    tx: Result<Tx>,
+    rolled_back: Option<Result<()>>,
+    released: Option<Result<()>>,
+}
+
+/// The close of a transaction the run believes open, as one message: the
+/// guard's check, the question, the rollback and the release (see
+/// `confirm`). Each step is one answer the server completes, in this order.
+const CONFIRM_AND_END: &str = "RELEASE tabletist_guard; SAVEPOINT tabletist_guard; \
+     SHOW transaction_read_only; ROLLBACK; SELECT pg_advisory_unlock_all()";
+
+/// Where in [`CONFIRM_AND_END`] the rollback is: the steps before it are
+/// the check and the question.
+const ROLLBACK_STEP: usize = 3;
 
 /// What a failed release of the advisory locks means for a run whose
 /// transaction did end: nothing, unless the session is lost. The outcome
@@ -384,29 +425,80 @@ fn unlocked(released: Result<()>) -> Result<()> {
 /// the last statement: a statement in last position may have ended it, and
 /// what a `COMMIT` kept (a setting) must not reach later browsing.
 ///
-/// The guard's check (see `in_transaction`) and the question whether the
-/// transaction is still read-only go in one message. The question is only
-/// answered when the check passed: a failed step stops the rest.
-async fn confirm(client: &tokio_postgres::Client) -> Result<Tx> {
-    let asked = client
-        .simple_query(
-            "RELEASE tabletist_guard; SAVEPOINT tabletist_guard; SHOW transaction_read_only",
-        )
-        .await;
-    let messages = match asked.map_err(standing) {
-        Ok(messages) => messages,
-        Err(Ok(Tx::Left)) => return Ok(Tx::Left),
-        // A failed block, or a cancel, which fails the block if there is
-        // one, whether it landed on the check or on the question: neither
-        // says whose block it is.
-        Err(Ok(_) | Err(Error::Cancelled)) => return retry_cancelled!(own_failed(client)),
-        Err(Err(error)) => return Err(error),
-    };
+/// The guard's check (see `in_transaction`), the question whether the
+/// transaction is still read-only, the rollback and the release of the
+/// advisory locks go in one message, one round trip to the server. The
+/// rollback runs whatever the answer is, as it does after the steps one by
+/// one. A failed step stops the rest, so the question is only answered
+/// when the check passed, and the steps the message did not reach are
+/// left to [`close`], which runs them on their own.
+async fn confirm(client: &tokio_postgres::Client) -> Ended {
+    let (messages, failure) = answers(client, CONFIRM_AND_END).await;
+    let completed = messages
+        .iter()
+        .filter(|message| matches!(message, SimpleQueryMessage::CommandComplete(_)))
+        .count();
+    if completed < ROLLBACK_STEP {
+        // The check or the question failed. Without a failure the server
+        // answered something other than the five steps.
+        let error = match failure {
+            Some(error) => standing(error),
+            None => Err(Error::query(
+                "the server did not answer the close step by step",
+            )),
+        };
+        let tx = match error {
+            Ok(Tx::Left) => Ok(Tx::Left),
+            // A failed block, or a cancel, which fails the block if there
+            // is one, whether it landed on the check or on the question:
+            // neither says whose block it is.
+            Ok(_) | Err(Error::Cancelled) => retry_cancelled!(own_failed(client)),
+            Err(error) => Err(error),
+        };
+        return Ended {
+            tx,
+            rolled_back: None,
+            released: None,
+        };
+    }
     // Only an explicit `off` says it is no longer read-only.
-    match first_text(&messages).as_deref() {
+    let tx = match first_text(&messages).as_deref() {
         Some("off") => Ok(Tx::Left),
         _ => Ok(Tx::Open),
+    };
+    // Past the question only the rollback or the release can fail.
+    let (rolled_back, released) = match failure.map(query_error) {
+        None => (Some(Ok(())), Some(Ok(()))),
+        Some(error) if completed == ROLLBACK_STEP => (Some(Err(error)), None),
+        Some(error) => (Some(Ok(())), Some(Err(error))),
+    };
+    Ended {
+        tx,
+        rolled_back,
+        released,
     }
+}
+
+/// What the server answered to `sql`, a message of several steps, up to the
+/// step that failed, and that step's error.
+async fn answers(
+    client: &tokio_postgres::Client,
+    sql: &str,
+) -> (Vec<SimpleQueryMessage>, Option<tokio_postgres::Error>) {
+    use futures_util::StreamExt;
+    let stream = match client.simple_query_raw(sql).await {
+        Ok(stream) => stream,
+        Err(error) => return (Vec::new(), Some(error)),
+    };
+    let mut stream = std::pin::pin!(stream);
+    let mut messages = Vec::new();
+    while let Some(message) = stream.next().await {
+        match message {
+            Ok(message) => messages.push(message),
+            Err(error) => return (messages, Some(error)),
+        }
+    }
+    (messages, None)
 }
 
 /// Whether a failed transaction block is the script's own (`Aborted`) or
@@ -1000,6 +1092,136 @@ mod tests {
         )
         .await
         .expect("the run hung")
+    }
+
+    /// A read-only session through a proxy in front of the test server,
+    /// with a count of what the client asks the server and waits on: its
+    /// simple queries and its prepares. Far from the server each is a round
+    /// trip.
+    async fn counted_session(url: &str) -> (Conn, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (mut spec, secrets) = crate::ConnectSpec::from_url(url).unwrap();
+        spec.tls = crate::TlsMode::Disable;
+        let server = (spec.host.clone(), spec.port);
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        spec.host = "127.0.0.1".to_owned();
+        spec.port = listener.local_addr().unwrap().port();
+        let asked = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&asked);
+        tokio::spawn(async move {
+            let (client, _) = listener.accept().await.unwrap();
+            let upstream = tokio::net::TcpStream::connect(server).await.unwrap();
+            let (mut from_client, mut to_client) = client.into_split();
+            let (mut from_server, mut to_server) = upstream.into_split();
+            tokio::spawn(async move {
+                tokio::io::copy(&mut from_server, &mut to_client).await.ok();
+            });
+            // The startup message has no kind byte; every one after it has.
+            let mut kind = None;
+            loop {
+                let Ok(length) = from_client.read_u32().await else {
+                    return;
+                };
+                let mut body = vec![0; length as usize - 4];
+                if from_client.read_exact(&mut body).await.is_err() {
+                    return;
+                }
+                if matches!(kind, Some(b'Q' | b'P')) {
+                    count.fetch_add(1, Ordering::SeqCst);
+                }
+                let mut message = Vec::from_iter(kind);
+                message.extend_from_slice(&length.to_be_bytes());
+                message.extend_from_slice(&body);
+                if to_server.write_all(&message).await.is_err() {
+                    return;
+                }
+                let Ok(next) = from_client.read_u8().await else {
+                    return;
+                };
+                kind = Some(next);
+            }
+        });
+        let conn = Conn::connect(&spec, &secrets, None, crate::Access::ReadOnly)
+            .await
+            .unwrap();
+        (conn, asked)
+    }
+
+    /// A SELECT asks the server four times: the opening, the prepare, the
+    /// cursor and the close. The first statement needs no guard's swap, and
+    /// the close's check, rollback and release go as one message. Each
+    /// statement after it adds the swap, the prepare and the cursor.
+    #[tokio::test]
+    async fn a_select_asks_the_server_four_times() {
+        use std::sync::atomic::Ordering;
+        let Some(url) = test_url() else {
+            return;
+        };
+        let (conn, asked) = counted_session(&url).await;
+        for (script, expected) in [(&["SELECT 1"][..], 4), (&["SELECT 1", "SELECT 2"][..], 7)] {
+            let before = asked.load(Ordering::SeqCst);
+            let outcome = past_the_refusal(&conn, script, &StopFlag::new())
+                .await
+                .unwrap();
+            assert_eq!(outcome.results.len(), script.len(), "{outcome:?}");
+            assert!(
+                outcome
+                    .results
+                    .iter()
+                    .all(|result| matches!(result.outcome, StatementOutcome::Rows { .. })),
+                "{outcome:?}"
+            );
+            assert_eq!(
+                asked.load(Ordering::SeqCst) - before,
+                expected,
+                "{script:?}"
+            );
+        }
+        // The close left no transaction behind.
+        let client = conn.client.lock().await;
+        assert_eq!(in_transaction(&client).await, Ok(Tx::Left));
+    }
+
+    /// The close's one message ends the transaction and releases a lock a
+    /// statement took, and a transaction that is no longer read-only still
+    /// fails the run, rolled back.
+    #[tokio::test]
+    async fn the_close_ends_the_transaction_and_releases_locks_in_one_message() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        let other = session(&url).await;
+        let client = conn.client.lock().await;
+        assert_eq!(open(&client, None).await, Ok(Tx::Open));
+        client
+            .batch_execute("SELECT pg_advisory_lock(424243)")
+            .await
+            .unwrap();
+        assert_eq!(close(&client, Tx::Open).await, Ok(()));
+        assert_eq!(in_transaction(&client).await, Ok(Tx::Left));
+        let taken = other
+            .client
+            .lock()
+            .await
+            .simple_query("SELECT pg_try_advisory_lock(424243)")
+            .await
+            .unwrap();
+        assert_eq!(first_text(&taken).as_deref(), Some("t"));
+
+        // A block with the guard's savepoint that is not read-only, as the
+        // close would find one a statement the refusal missed had made.
+        client
+            .batch_execute("BEGIN READ WRITE; SAVEPOINT tabletist_guard")
+            .await
+            .unwrap();
+        assert_eq!(close(&client, Tx::Open).await, Err(Error::LeftReadOnly));
+        assert_eq!(in_transaction(&client).await, Ok(Tx::Left));
     }
 
     /// Statements the refusal stops long before they get here. Run past
