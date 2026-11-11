@@ -87,20 +87,22 @@ impl Conn {
     ) -> Result<u64> {
         let mut conn = self.conn.lock().await;
         let streamed = async {
-            begin_read(&mut conn).await?;
+            begin_read(&mut conn).await.map_err(StreamFailed::Before)?;
             stream_into(&mut conn, sql, batch, to, stop).await
         }
         .await;
+        stop.finish();
         match streamed {
-            Ok(sent) => {
-                stop.finish();
-                end_read(&mut conn, Ok(sent)).await
-            }
+            Ok(sent) => end_read(&mut conn, Ok(sent)).await,
+            // Nothing is on its way: the transaction ends here.
+            Err(StreamFailed::Before(error)) => end_read(&mut conn, Err(error))
+                .await
+                .map_err(crate::agent::over_its_time),
             // Rows the stream did not read are still on their way: a
             // rollback now would read every one of them first. The
             // export's connection is closed after a failure, which ends
-            // the transaction with it.
-            Err(error) => Err(crate::agent::over_its_time(error)),
+            // the transaction with it (see `Connection::stream_rows`).
+            Err(StreamFailed::PartWay(error)) => Err(crate::agent::over_its_time(error)),
         }
     }
 
@@ -713,12 +715,32 @@ async fn stream_into(
     batch: usize,
     to: &tokio::sync::mpsc::Sender<crate::Streamed>,
     stop: &StopFlag,
-) -> Result<u64> {
-    let statement = prepare(conn, sql).await?;
+) -> std::result::Result<u64, StreamFailed> {
+    let statement = prepare(conn, sql).await.map_err(StreamFailed::Before)?;
     let mut result = conn
         .exec_iter(&statement, params(&sql.params))
         .await
-        .map_err(query_error)?;
+        .map_err(|error| StreamFailed::Before(query_error(error)))?;
+    sent_on(&mut result, batch, to, stop)
+        .await
+        .map_err(StreamFailed::PartWay)
+}
+
+/// Where an export's stream failed.
+enum StreamFailed {
+    /// Before the server sent a row: nothing is left to read.
+    Before(Error),
+    /// Part-way, with rows still on their way.
+    PartWay(Error),
+}
+
+/// The rows of a statement that runs, sent on to `to` a batch at a time.
+async fn sent_on(
+    result: &mut mysql_async::QueryResult<'_, '_, mysql_async::BinaryProtocol>,
+    batch: usize,
+    to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+    stop: &StopFlag,
+) -> Result<u64> {
     let columns = column_metas(result.columns_ref());
     crate::stream::send(to, crate::Streamed::Columns(columns.clone())).await?;
     let mut sent = 0u64;
@@ -908,7 +930,15 @@ async fn nth_text(conn: &mut mysql_async::Conn, sql: &str, index: usize) -> Resu
 /// backend runs a session's commands one at a time and drops none. One
 /// dropped half-way would leave the session inside this transaction,
 /// which the driver's own would have rolled back on the next query.
+///
+/// `START TRANSACTION` commits a transaction that is open, so one left
+/// open (by a dropped save, say) is rolled back first, as the save's own
+/// start does: the server's status after the last query says so, with no
+/// question of its own.
 async fn begin_read(conn: &mut mysql_async::Conn) -> Result<()> {
+    if status(conn).contains(StatusFlags::SERVER_STATUS_IN_TRANS) {
+        execute(conn, write::ROLLBACK).await?;
+    }
     execute(conn, "START TRANSACTION READ ONLY").await
 }
 
@@ -920,6 +950,12 @@ async fn begin_read(conn: &mut mysql_async::Conn) -> Result<()> {
 /// closed (a lost connection).
 async fn end_read<T>(conn: &mut mysql_async::Conn, outcome: Result<T>) -> Result<T> {
     let rolled_back = retry_cancelled!(execute(conn, write::ROLLBACK));
+    ended(outcome, rolled_back)
+}
+
+/// What a read comes to, from its outcome and its rollback's (see
+/// [`end_read`]).
+fn ended<T>(outcome: Result<T>, rolled_back: Result<()>) -> Result<T> {
     match (outcome, rolled_back) {
         (outcome, Ok(())) => outcome,
         (Err(lost), Err(_)) if lost.is_connection_lost() => Err(lost),
@@ -2034,5 +2070,84 @@ mod tests {
         assert_eq!(fetched.unwrap_err(), Error::Cancelled);
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(!in_transaction(&conn).await);
+    }
+
+    /// A read rolls back a transaction left open before it starts its
+    /// own: `START TRANSACTION` would commit what that one wrote.
+    #[tokio::test]
+    async fn a_read_does_not_commit_what_a_transaction_left_open_wrote() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = trips(&url).await;
+        {
+            let _turn = TRIPS.lock().await;
+            let opts = Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+            let mut admin = mysql_async::Conn::new(opts).await.unwrap();
+            admin
+                .query_drop("CREATE TABLE IF NOT EXISTS trips_left_open (id int PRIMARY KEY)")
+                .await
+                .unwrap();
+            admin.query_drop("TRUNCATE trips_left_open").await.unwrap();
+        }
+        let conn = session(&url).await;
+        {
+            let mut conn = conn.conn.lock().await;
+            conn.query_drop("START TRANSACTION READ WRITE")
+                .await
+                .unwrap();
+            conn.query_drop("INSERT INTO trips_left_open VALUES (1)")
+                .await
+                .unwrap();
+        }
+        let page = conn.fetch_rows(&RowQuery::new(object, 10)).await.unwrap();
+        assert_eq!(page.rows.len(), 3);
+        assert!(!in_transaction(&conn).await);
+        let opts = Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+        let mut admin = mysql_async::Conn::new(opts).await.unwrap();
+        let left: Option<i64> = admin
+            .query_first("SELECT count(*) FROM trips_left_open")
+            .await
+            .unwrap();
+        assert_eq!(left, Some(0));
+    }
+
+    /// An export whose statement fails before a row is sent ends its
+    /// transaction: nothing is on its way.
+    #[tokio::test]
+    async fn an_export_that_fails_before_its_rows_ends_its_transaction() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        let (to, _from) = tokio::sync::mpsc::channel(4);
+        let failed = conn
+            .stream_statement("SELECT * FROM no_such_table", 10, &to, &StopFlag::new())
+            .await;
+        assert!(matches!(failed, Err(Error::Query { .. })), "{failed:?}");
+        assert!(!in_transaction(&conn).await);
+    }
+
+    /// A read's error wins over its rollback's, unless the rollback failed:
+    /// a session left inside the read's transaction is lost.
+    #[test]
+    fn a_read_whose_rollback_failed_loses_the_session() {
+        let refused = || Error::query("refused");
+        let lost = || Error::ConnectionLost("gone".into());
+        assert_eq!(ended(Ok(1), Ok(())), Ok(1));
+        assert_eq!(ended::<i32>(Err(refused()), Ok(())), Err(refused()));
+        assert_eq!(
+            ended::<i32>(Err(Error::Cancelled), Ok(())),
+            Err(Error::Cancelled)
+        );
+        for outcome in [Ok(1), Err(refused()), Err(Error::Cancelled)] {
+            assert_eq!(
+                ended(outcome, Err(refused())),
+                Err(Error::ConnectionLost(
+                    "could not end the read's transaction: refused".into()
+                ))
+            );
+        }
+        assert_eq!(ended::<i32>(Err(lost()), Err(refused())), Err(lost()));
     }
 }
