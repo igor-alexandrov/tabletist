@@ -884,6 +884,66 @@ async fn a_running_query_can_be_cancelled() {
     assert!(connection.fetch_rows(&users(1)).await.is_ok());
 }
 
+/// The first eight bytes of a CancelRequest: its length, then its code.
+const CANCEL_REQUEST: [u8; 8] = [0, 0, 0, 16, 0x04, 0xd2, 0x16, 0x2e];
+
+/// A local port in front of the test server that holds back what a cancel
+/// connection sends by `delay`, as a slow network would: the server acts
+/// on the cancel only that long after it was sent. Other connections pass
+/// as they are.
+async fn holding_back_cancels(delay: Duration) -> u16 {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (spec, _) = spec().unwrap();
+    let server = (spec.host.clone(), spec.port);
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut client, _)) = listener.accept().await {
+            let server = server.clone();
+            tokio::spawn(async move {
+                let mut upstream = tokio::net::TcpStream::connect(server).await.unwrap();
+                let mut first = [0u8; 8];
+                if client.read_exact(&mut first).await.is_err() {
+                    return;
+                }
+                if first == CANCEL_REQUEST {
+                    tokio::time::sleep(delay).await;
+                }
+                upstream.write_all(&first).await.unwrap();
+                let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+            });
+        }
+    });
+    port
+}
+
+/// A cancel is over only once the server has acted on it: one that came
+/// later would stop whatever the session runs next. The session waits for
+/// its cancels before its next command for just that reason.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancel_lands_before_it_returns() {
+    let Some((mut spec, secrets)) = spec() else {
+        eprintln!("skipped: TABLETIST_TEST_PG_URL is not set");
+        return;
+    };
+    load_fixture().await;
+    spec.port = holding_back_cancels(Duration::from_millis(500)).await;
+    spec.host = "127.0.0.1".into();
+    let connection =
+        Connection::connect_with(&spec, &secrets, &HostKeys::default(), Access::ReadOnly)
+            .await
+            .unwrap();
+    // Nothing runs: the cancel is for a command that has ended already,
+    // and the server finds the session idle when it gets it.
+    connection.cancel_handle().cancel().await.unwrap();
+    // The next command runs for longer than the cancel is held back.
+    let mut query = users(5);
+    query.raw_where = Some("(SELECT pg_sleep(1)) IS NOT NULL".into());
+    assert_eq!(connection.count_rows(&query).await, Ok(5));
+}
+
 use tabletist_db::{Dialect, ScriptEnd, ScriptMode, ScriptOutcome, StatementOutcome, StopFlag};
 
 /// A writable session for arranging and probing, outside the adapter.
