@@ -1123,6 +1123,38 @@ pub fn kind(dialect: Dialect, statement: &str) -> StatementKind {
     }
 }
 
+/// The words a statement that changes what the database holds (its
+/// schemas, tables, views, columns) starts with, on every engine.
+const DEFINES: [&str; 4] = ["CREATE", "DROP", "ALTER", "RENAME"];
+
+/// Whether `statement` may change the database's catalog, which the
+/// sidebar and the completion lists show: a `CREATE`, `DROP`, `ALTER` or
+/// `RENAME` by its first word, and SQLite's `ATTACH` and `DETACH`, which
+/// add and remove a schema. It errs toward yes: a MySQL executable comment
+/// counts, since it can hold any of them. What it misses is a statement
+/// that makes a table by another name (PostgreSQL's `SELECT ... INTO`).
+pub fn changes_catalog(dialect: Dialect, statement: &str) -> bool {
+    let tokens = tokenize(dialect, statement);
+    if tokens
+        .iter()
+        .any(|token| token.kind == TokenKind::ExecutableComment)
+    {
+        return true;
+    }
+    let Some(first) = tokens
+        .iter()
+        .find(|token| !matches!(token.kind, TokenKind::Whitespace | TokenKind::Comment))
+        .and_then(|token| bare_word(statement, token))
+    else {
+        return false;
+    };
+    DEFINES.contains(&first.as_str())
+        || match dialect {
+            Dialect::Sqlite => first == "ATTACH" || first == "DETACH",
+            Dialect::Postgres | Dialect::MySql | Dialect::BigQuery => false,
+        }
+}
+
 /// A statement that changes or removes every row of a table: what
 /// [`unbounded`] and [`every_row`] name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2714,6 +2746,49 @@ mod tests {
                     "{dialect:?} {text}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn a_statement_that_defines_something_changes_the_catalog() {
+        for dialect in DIALECTS {
+            for text in [
+                "CREATE TABLE notes (id int)",
+                "create view cheap as select * from books",
+                "DROP TABLE books",
+                "drop table if exists books",
+                "ALTER TABLE books ADD COLUMN pages int",
+                "CREATE INDEX books_title ON books (title)",
+                "-- a new one\nCREATE TABLE notes (id int)",
+                "/* gone */ DROP VIEW cheap",
+            ] {
+                assert!(changes_catalog(dialect, text), "{dialect:?} {text}");
+            }
+            for text in [
+                "SELECT * FROM books",
+                "INSERT INTO books VALUES (1)",
+                "UPDATE books SET title = 'create'",
+                "DELETE FROM books",
+                "TRUNCATE books",
+                "SELECT 'DROP TABLE books'",
+                "-- DROP TABLE books",
+                "",
+            ] {
+                assert!(!changes_catalog(dialect, text), "{dialect:?} {text}");
+            }
+        }
+        assert!(changes_catalog(
+            Dialect::MySql,
+            "RENAME TABLE books TO tomes"
+        ));
+        assert!(changes_catalog(
+            Dialect::MySql,
+            "/*!40101 CREATE TABLE t (id int) */"
+        ));
+        // SQLite adds and removes a schema with these.
+        for text in ["ATTACH DATABASE 'shop.db' AS shop", "DETACH shop"] {
+            assert!(changes_catalog(Dialect::Sqlite, text), "{text}");
+            assert!(!changes_catalog(Dialect::Postgres, text), "{text}");
         }
     }
 
