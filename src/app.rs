@@ -5070,6 +5070,10 @@ impl App {
                         cancel,
                     )
                 });
+                let catalog_changed = sql
+                    .in_flight
+                    .as_ref()
+                    .is_some_and(|run| changed_catalog(dialect, &run.statements, &result));
                 let messages = opens_messages(&result, cancel);
                 if sql.finish_run(request, result, cancel) {
                     sql.set_cursor(None, Reach::End);
@@ -5081,6 +5085,11 @@ impl App {
                 }
                 for entry in ran.unwrap_or_default() {
                     self.record(entry);
+                }
+                // A table made or dropped shows in the sidebar without a
+                // click on its refresh.
+                if catalog_changed && let Some(tab) = self.tab_for_session(session) {
+                    self.refresh_tree(tab);
                 }
             }
         }
@@ -8965,6 +8974,38 @@ fn script_mode(
 /// is written, its commit failed, the database could not undo all of it,
 /// or its session had to be closed. A run the user stopped after rows came
 /// back stays on Results.
+/// Whether a run left a change to the catalog behind: one of the
+/// statements whose work remains once its transaction ended creates, drops
+/// or alters something. A run rolled back leaves none, unless the database
+/// could not say so (MySQL's DDL that failed half done): then any statement
+/// that started counts.
+fn changed_catalog(
+    dialect: tabletist_db::Dialect,
+    statements: &[tabletist_db::sql::Statement],
+    result: &Result<tabletist_db::ScriptOutcome, Error>,
+) -> bool {
+    use tabletist_db::ScriptEnd;
+    let Ok(outcome) = result else {
+        return false;
+    };
+    let started = outcome.results.len();
+    let kept = if outcome.rollback_warning.is_some() {
+        started
+    } else {
+        match outcome.end {
+            ScriptEnd::RolledBack => 0,
+            ScriptEnd::Committed => started,
+            ScriptEnd::Partly { committed } | ScriptEnd::CommitFailed { committed, .. } => {
+                committed
+            }
+        }
+    };
+    statements
+        .iter()
+        .take(kept.min(started))
+        .any(|statement| tabletist_db::sql::changes_catalog(dialect, &statement.text))
+}
+
 fn opens_messages(
     result: &Result<tabletist_db::ScriptOutcome, Error>,
     cancel: Option<CancelReason>,
@@ -15050,6 +15091,55 @@ masked = ["orders.email"]
             run(&mut harness, tab, id, true);
             assert_eq!(sent_mode(&harness), mode, "{text}");
             harness.answer_sql(Ok(crate::testing::script_outcome(Vec::new())), None);
+        }
+    }
+
+    #[test]
+    fn a_run_that_made_or_dropped_a_table_refreshes_the_sidebar() {
+        use crate::testing::{done_outcome, error_outcome, write_outcome};
+        use tabletist_db::ScriptEnd;
+        let mut harness = Harness::new();
+        let (tab, id) = writable_sql(&mut harness);
+        set_mode(&mut harness, tab, id, RunMode::ReadWrite);
+        let done = || done_outcome(None);
+        let failed = || error_outcome("no", None);
+        for (text, outcome, refreshes) in [
+            (
+                "CREATE TABLE notes (seen int)",
+                write_outcome(vec![done()], ScriptEnd::Committed),
+                true,
+            ),
+            (
+                "DELETE FROM users WHERE id = 1; DROP TABLE users",
+                write_outcome(vec![done(), done()], ScriptEnd::Committed),
+                true,
+            ),
+            // Rolled back: the tables are as they were.
+            (
+                "CREATE TABLE notes (seen int); SELECT x",
+                write_outcome(vec![done(), failed()], ScriptEnd::RolledBack),
+                false,
+            ),
+            // MySQL committed the first on its own; the DROP never ran.
+            (
+                "INSERT INTO users (email) VALUES ('a'); SELECT x; DROP TABLE users",
+                write_outcome(vec![done(), failed()], ScriptEnd::Partly { committed: 1 }),
+                false,
+            ),
+            (
+                "UPDATE users SET email = 'x' WHERE id = 1",
+                write_outcome(vec![done()], ScriptEnd::Committed),
+                false,
+            ),
+        ] {
+            type_sql(&mut harness, tab, id, text, 0);
+            run(&mut harness, tab, id, true);
+            let sent = harness.app.backend.sent.len();
+            harness.answer_sql(Ok(outcome), None);
+            let listed = harness.app.backend.sent[sent..]
+                .iter()
+                .any(|command| matches!(command, Command::ListSchemas { .. }));
+            assert_eq!(listed, refreshes, "{text}");
         }
     }
 
