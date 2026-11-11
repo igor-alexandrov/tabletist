@@ -2395,7 +2395,20 @@ impl App {
             Action::CancelQuery(tab) => {
                 if let Some(workspace) = self.workspace(tab) {
                     let session = workspace.session;
-                    let pending = self.cancellable(tab);
+                    let mut pending = self.cancellable(tab);
+                    // The databases' listing a connect still holds back is
+                    // not with the session, so the session cannot skip it:
+                    // it ends here, as a skipped one answers.
+                    if let Some(workspace) = self.workspace_mut(tab)
+                        && let Some(request) = workspace.databases_after_tree
+                        && pending.contains(&request)
+                    {
+                        workspace.databases_after_tree = None;
+                        workspace
+                            .databases
+                            .finish(request, Err(tabletist_db::Error::Cancelled));
+                        pending.retain(|id| *id != request);
+                    }
                     self.cancel(session, pending);
                 }
             }
@@ -4506,6 +4519,7 @@ impl App {
                 if let Some(schema) = default {
                     self.expand_schema(tab, &schema);
                 }
+                self.send_databases_after_tree(tab);
             }
             Event::Objects {
                 session,
@@ -6166,24 +6180,29 @@ impl App {
     /// After a (re)connect: load the tree, restart everything that waited on
     /// the old session, and open anything queued for this connection.
     pub fn after_connect(&mut self, tab: ConnTabId) {
+        self.ask_server_version(tab);
+        self.ask_session_zone(tab);
+        self.refresh_tree(tab);
+        // After the tree: the databases' listing waits on a check of its
+        // own for PgBouncer, and its catalog query would hold up the
+        // default schema's objects, so it goes when the schemas answer.
         if let Some(workspace) = self.workspace(tab) {
             match workspace.driver {
                 // The one driver with other databases to switch to.
                 Driver::Postgres => {
-                    let session = workspace.session;
+                    let waits = workspace.tree.schemas.is_loading();
                     let request = RequestId(self.next_id());
                     if let Some(workspace) = self.workspace_mut(tab) {
                         workspace.databases.start(request);
+                        workspace.databases_after_tree = Some(request);
                     }
-                    self.backend
-                        .send(Command::ListDatabases { session, request });
+                    if !waits {
+                        self.send_databases_after_tree(tab);
+                    }
                 }
                 Driver::MySql | Driver::Sqlite | Driver::BigQuery => {}
             }
         }
-        self.ask_server_version(tab);
-        self.ask_session_zone(tab);
-        self.refresh_tree(tab);
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
@@ -6439,6 +6458,22 @@ impl App {
             request,
             schema: schema.to_owned(),
         });
+    }
+
+    /// Sends the databases' listing a connect held back for the tree, if
+    /// it is still the one the switcher waits for.
+    fn send_databases_after_tree(&mut self, tab: ConnTabId) {
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        let Some(request) = workspace.databases_after_tree.take() else {
+            return;
+        };
+        if workspace.databases.pending == Some(request) {
+            let session = workspace.session;
+            self.backend
+                .send(Command::ListDatabases { session, request });
+        }
     }
 
     pub fn expand_schema(&mut self, tab: ConnTabId, schema: &str) {
@@ -16974,7 +17009,7 @@ masked = ["orders.email"]
         }
     }
 
-    fn connected_postgres(app: &mut App) -> ConnTabId {
+    fn connected_postgres_unanswered(app: &mut App) -> ConnTabId {
         let conn = postgres_saved(app, PasswordMode::None);
         let tab = app.active_tab_id();
         app.apply(Action::Connect { tab, conn });
@@ -16993,6 +17028,86 @@ masked = ["orders.email"]
             access: crate::testing::asked_access(app),
         }));
         tab
+    }
+
+    /// [`connected_postgres_unanswered`], with the schemas answered: the
+    /// databases' listing is sent.
+    fn connected_postgres(app: &mut App) -> ConnTabId {
+        let tab = connected_postgres_unanswered(app);
+        answer_schemas(app, Ok(vec!["public".into()]));
+        tab
+    }
+
+    /// Answers the schemas' listing the last connect sent.
+    fn answer_schemas(app: &mut App, result: Result<Vec<String>, tabletist_db::Error>) {
+        let Some((session, request)) = app.backend.sent.iter().rev().find_map(|c| match c {
+            Command::ListSchemas { session, request } => Some((*session, *request)),
+            _ => None,
+        }) else {
+            panic!("expected ListSchemas");
+        };
+        app.apply(Action::Backend(Event::Schemas {
+            session,
+            request,
+            result,
+        }));
+    }
+
+    fn sent_databases(app: &App) -> usize {
+        app.backend
+            .sent
+            .iter()
+            .filter(|c| matches!(c, Command::ListDatabases { .. }))
+            .count()
+    }
+
+    #[test]
+    fn postgres_tabs_ask_for_the_default_schema_before_the_databases() {
+        let (mut app, _dir) = app();
+        let tab = connected_postgres_unanswered(&mut app);
+        // The listing waits for the schemas, while the switcher shows it
+        // loading.
+        assert_eq!(sent_databases(&app), 0);
+        assert!(app.workspace(tab).unwrap().databases.is_loading());
+        answer_schemas(&mut app, Ok(vec!["public".into()]));
+        let at = |wanted: fn(&Command) -> bool| app.backend.sent.iter().position(wanted);
+        let objects = at(|c| matches!(c, Command::ListObjects { .. })).expect("ListObjects");
+        let databases = at(|c| matches!(c, Command::ListDatabases { .. })).expect("ListDatabases");
+        assert!(objects < databases);
+    }
+
+    #[test]
+    fn a_cancel_before_the_schemas_answer_keeps_the_databases_from_being_listed() {
+        let (mut app, _dir) = app();
+        let tab = connected_postgres_unanswered(&mut app);
+        let held = app.workspace(tab).unwrap().databases.pending;
+        app.apply(Action::CancelQuery(tab));
+        // Not sent to the session: it never had it.
+        assert!(
+            !app.backend
+                .sent
+                .iter()
+                .any(|c| matches!(c, Command::Cancel { request, .. } if Some(*request) == held))
+        );
+        let databases = &app.workspace(tab).unwrap().databases;
+        assert!(!databases.is_loading());
+        assert!(matches!(
+            databases.error,
+            Some(tabletist_db::Error::Cancelled)
+        ));
+        // The schemas' answer the cancel came too late for.
+        answer_schemas(&mut app, Ok(vec!["public".into()]));
+        assert_eq!(sent_databases(&app), 0);
+    }
+
+    #[test]
+    fn postgres_tabs_list_their_databases_when_the_schemas_fail_or_are_empty() {
+        for result in [Err(tabletist_db::Error::query("denied")), Ok(Vec::new())] {
+            let (mut app, _dir) = app();
+            connected_postgres_unanswered(&mut app);
+            answer_schemas(&mut app, result);
+            assert_eq!(sent_databases(&app), 1);
+        }
     }
 
     #[test]

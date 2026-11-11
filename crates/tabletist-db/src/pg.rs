@@ -250,6 +250,9 @@ fn session_setup(access: Access) -> String {
 /// name.
 const EXPORT_CURSOR: &str = "tabletist_export";
 
+/// How long the PgBouncer probe may take, startup and SHOW together.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// [`query_error`], where the server's own `statement_timeout` (which
 /// PostgreSQL reports as a cancel) is [`Error::Timeout`]: an export sets no
 /// timeout of its own, so a cancel that names it was the server's.
@@ -458,19 +461,48 @@ impl Conn {
     /// its routing aliases. A stats/admin user can list them. PostgreSQL's
     /// missing-database response allows the ordinary catalog listing. If
     /// the probe is denied or inconclusive, keep only the working alias.
-    async fn database_listing(&self, timeout: Duration) -> Option<Vec<String>> {
-        // Bound both startup and SHOW. Driving the connection in this future
-        // also closes the probe socket when it finishes or is cancelled.
-        tokio::time::timeout(timeout, self.pgbouncer_databases())
-            .await
-            .unwrap_or_else(|_| Some(vec![self.requested_database.clone()]))
+    ///
+    /// Owns all it needs and runs on a connection of its own, so that it
+    /// can run beside the session's commands (see `database_probe`).
+    fn database_listing(
+        &self,
+        timeout: Duration,
+    ) -> impl Future<Output = Option<Vec<String>>> + Send + 'static + use<> {
+        let config = self.config.clone();
+        let tls = self.tls.clone();
+        let requested = self.requested_database.clone();
+        async move {
+            // Bound both startup and SHOW. Driving the connection in this
+            // future also closes the probe socket when it finishes or is
+            // cancelled.
+            tokio::time::timeout(timeout, Self::pgbouncer_databases(config, tls, &requested))
+                .await
+                .unwrap_or_else(|_| Some(vec![requested.clone()]))
+        }
     }
 
-    async fn pgbouncer_databases(&self) -> Option<Vec<String>> {
-        let mut config = self.config.clone();
+    /// The PgBouncer probe of `list_databases`, to run apart from the
+    /// session: `Some` aliases answer the listing, `None` leaves it to
+    /// `catalog_databases`.
+    pub(crate) fn database_probe(
+        &self,
+    ) -> impl Future<Output = Option<Vec<String>>> + Send + 'static + use<> {
+        self.database_listing(PROBE_TIMEOUT)
+    }
+
+    /// The probe itself, on a connection of its own to the `pgbouncer`
+    /// database of the server `config` names: the console's aliases, `None`
+    /// where the server is PostgreSQL itself, or only `requested` (the
+    /// alias that connected) where the answer is unclear.
+    async fn pgbouncer_databases(
+        mut config: tokio_postgres::Config,
+        tls: MakeRustlsConnect,
+        requested: &str,
+    ) -> Option<Vec<String>> {
+        let working = || Some(vec![requested.to_owned()]);
         config.dbname("pgbouncer");
         let connecting = config.connect(Noted {
-            inner: self.tls.clone(),
+            inner: tls,
             handshake: Arc::new(AtomicBool::new(false)),
         });
         let (client, connection) = match connecting.await {
@@ -484,7 +516,7 @@ impl Conn {
             }
             // An auth, transport or proxy error does not establish that the
             // backend catalog's names are valid routes on this endpoint.
-            Err(_) => return Some(vec![self.requested_database.clone()]),
+            Err(_) => return working(),
         };
         let messages = tokio::select! {
             result = client.simple_query("SHOW DATABASES") => match result {
@@ -494,9 +526,9 @@ impl Conn {
                     // configuration parameter named databases.
                     error.code() == &SqlState::UNDEFINED_OBJECT
                 }) => return None,
-                Err(_) => return Some(vec![self.requested_database.clone()]),
+                Err(_) => return working(),
             },
-            _ = connection => return Some(vec![self.requested_database.clone()]),
+            _ = connection => return working(),
         };
         let has_database_columns = messages.iter().any(|message| {
             matches!(message, SimpleQueryMessage::RowDescription(columns)
@@ -504,7 +536,7 @@ impl Conn {
                     && columns.iter().any(|column| column.name() == "database"))
         });
         if !has_database_columns {
-            return Some(vec![self.requested_database.clone()]);
+            return working();
         }
         let mut aliases: Vec<String> = messages
             .iter()
@@ -521,10 +553,23 @@ impl Conn {
             .collect();
         // Keep the alias that already connected, including after a reload
         // removes or disables its entry in the console's listing.
-        aliases.push(self.requested_database.clone());
+        aliases.push(requested.to_owned());
         aliases.sort();
         aliases.dedup();
         Some(aliases)
+    }
+
+    /// The databases the server's catalog names: the listing where the
+    /// probe found no PgBouncer.
+    pub(crate) async fn catalog_databases(&self) -> Result<Vec<String>> {
+        let rows = self
+            .catalog(
+                "SELECT datname::text FROM pg_database \
+                 WHERE datallowconn AND NOT datistemplate ORDER BY datname",
+                &[],
+            )
+            .await?;
+        rows.iter().map(|row| column(row, 0)).collect()
     }
 
     pub async fn primary_key(&self, object: &ObjectRef) -> Result<Vec<String>> {
@@ -731,17 +776,10 @@ impl Adapter for Conn {
     }
 
     async fn list_databases(&self) -> Result<Vec<String>> {
-        if let Some(aliases) = self.database_listing(Duration::from_secs(10)).await {
+        if let Some(aliases) = self.database_probe().await {
             return Ok(aliases);
         }
-        let rows = self
-            .catalog(
-                "SELECT datname::text FROM pg_database \
-                 WHERE datallowconn AND NOT datistemplate ORDER BY datname",
-                &[],
-            )
-            .await?;
-        rows.iter().map(|row| column(row, 0)).collect()
+        self.catalog_databases().await
     }
 
     async fn list_schemas(&self) -> Result<Vec<String>> {

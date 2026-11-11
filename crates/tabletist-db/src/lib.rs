@@ -39,6 +39,12 @@ mod write;
 use std::fmt;
 use std::sync::Arc;
 
+/// The PgBouncer check of a PostgreSQL session (see
+/// `Connection::database_probe`): it owns what it needs, so it can run
+/// apart from the session.
+pub type DatabaseProbe =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<String>>> + Send>>;
+
 use adapter::Adapter;
 pub use catalog::{
     Acts, ColumnInfo, ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef,
@@ -356,6 +362,26 @@ impl Connection {
             Inner::Postgres(conn) => conn.list_databases().await,
             Inner::MySql(conn) => conn.list_databases().await,
             Inner::BigQuery(conn) => conn.list_databases().await,
+        }
+    }
+
+    /// The part of `list_databases` that needs no turn on this session:
+    /// on PostgreSQL, the check for PgBouncer, on a connection of its own.
+    /// `Some` aliases are the listing; `None` leaves it to
+    /// `catalog_databases`. No probe on the other engines.
+    pub fn database_probe(&self) -> Option<DatabaseProbe> {
+        match &self.inner {
+            Inner::Postgres(conn) => Some(Box::pin(conn.database_probe())),
+            Inner::Sqlite(_) | Inner::MySql(_) | Inner::BigQuery(_) => None,
+        }
+    }
+
+    /// The rest of `list_databases`, on this session: what its catalog
+    /// lists, for when `database_probe` found no PgBouncer.
+    pub async fn catalog_databases(&self) -> Result<Vec<String>> {
+        match &self.inner {
+            Inner::Postgres(conn) => conn.catalog_databases().await,
+            Inner::Sqlite(_) | Inner::MySql(_) | Inner::BigQuery(_) => self.list_databases().await,
         }
     }
 
