@@ -110,9 +110,10 @@ impl AsyncWrite for UntilClosed {
     }
 
     /// Shuts the write half, then reads until the server closes. What it
-    /// sends before that (its own close_notify) is of no use. A read that
-    /// fails is a close too: a server that exits with bytes unread (a
-    /// client's close_notify) resets the connection.
+    /// sends before that (its own close_notify) is of no use. A reset is a
+    /// close too: under TLS the server exits with the driver's close_notify
+    /// unread, and that resets the connection. Any other failed read says
+    /// nothing of the server, and is the cancel's error.
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         if !self.shut {
             ready!(Pin::new(&mut self.socket).poll_shutdown(cx))?;
@@ -124,7 +125,10 @@ impl AsyncWrite for UntilClosed {
             match ready!(Pin::new(&mut self.socket).poll_read(cx, &mut buf)) {
                 Ok(()) if buf.filled().is_empty() => return Poll::Ready(Ok(())),
                 Ok(()) => {}
-                Err(_) => return Poll::Ready(Ok(())),
+                Err(error) if error.kind() == io::ErrorKind::ConnectionReset => {
+                    return Poll::Ready(Ok(()));
+                }
+                Err(error) => return Poll::Ready(Err(error)),
             }
         }
     }

@@ -605,7 +605,10 @@ impl Connection {
 /// does nothing. A cancel returns once the server has acted on it, so it
 /// cannot stop what the session runs after: PostgreSQL's waits for the
 /// server to close the cancel's connection (see `pg::Cancel`), MySQL's
-/// `KILL QUERY` for its answer.
+/// `KILL QUERY` for its answer. Not always on PostgreSQL: a cancel that
+/// hears nothing for ten seconds gives up with [`Error::Timeout`], and a
+/// session over a Unix socket, or on a host the session could not resolve
+/// itself, takes the driver's cancel, which does not wait.
 #[derive(Clone)]
 pub struct CancelHandle(CancelInner);
 

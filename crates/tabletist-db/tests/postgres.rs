@@ -884,13 +884,10 @@ async fn a_running_query_can_be_cancelled() {
     assert!(connection.fetch_rows(&users(1)).await.is_ok());
 }
 
-/// The first eight bytes of a CancelRequest: its length, then its code.
-const CANCEL_REQUEST: [u8; 8] = [0, 0, 0, 16, 0x04, 0xd2, 0x16, 0x2e];
-
-/// A local port in front of the test server that holds back what a cancel
-/// connection sends by `delay`, as a slow network would: the server acts
-/// on the cancel only that long after it was sent. Other connections pass
-/// as they are.
+/// A local port in front of the test server that holds back what every
+/// connection but the first sends by `delay`, each piece as it comes, as
+/// a slow network would. The first is the session; a cancel opens one of
+/// its own, so the server acts on it only that long after it was sent.
 async fn holding_back_cancels(delay: Duration) -> u16 {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let (spec, _) = spec().unwrap();
@@ -900,19 +897,44 @@ async fn holding_back_cancels(delay: Duration) -> u16 {
         .unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
+        let mut first = true;
         while let Ok((mut client, _)) = listener.accept().await {
-            let server = server.clone();
+            let mut upstream = tokio::net::TcpStream::connect(server.clone())
+                .await
+                .unwrap();
+            if std::mem::take(&mut first) {
+                tokio::spawn(async move {
+                    let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+                });
+                continue;
+            }
+            let (mut from_client, mut to_client) = client.into_split();
+            let (mut from_server, mut to_server) = upstream.into_split();
+            // Each piece, or the end (empty), with the time it may go on.
+            let (pieces, mut held) = tokio::sync::mpsc::unbounded_channel();
             tokio::spawn(async move {
-                let mut upstream = tokio::net::TcpStream::connect(server).await.unwrap();
-                let mut first = [0u8; 8];
-                if client.read_exact(&mut first).await.is_err() {
-                    return;
+                let mut buf = vec![0u8; 16 * 1024];
+                loop {
+                    let read = from_client.read(&mut buf).await.unwrap_or(0);
+                    let due = tokio::time::Instant::now() + delay;
+                    let _ = pieces.send((due, buf[..read].to_vec()));
+                    if read == 0 {
+                        return;
+                    }
                 }
-                if first == CANCEL_REQUEST {
-                    tokio::time::sleep(delay).await;
+            });
+            tokio::spawn(async move {
+                while let Some((due, piece)) = held.recv().await {
+                    tokio::time::sleep_until(due).await;
+                    if piece.is_empty() || to_server.write_all(&piece).await.is_err() {
+                        let _ = to_server.shutdown().await;
+                        return;
+                    }
                 }
-                upstream.write_all(&first).await.unwrap();
-                let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+            });
+            tokio::spawn(async move {
+                let _ = tokio::io::copy(&mut from_server, &mut to_client).await;
+                let _ = to_client.shutdown().await;
             });
         }
     });
@@ -922,26 +944,41 @@ async fn holding_back_cancels(delay: Duration) -> u16 {
 /// A cancel is over only once the server has acted on it: one that came
 /// later would stop whatever the session runs next. The session waits for
 /// its cancels before its next command for just that reason.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_cancel_lands_before_it_returns() {
+async fn a_cancel_lands_before_it_returns(tls: TlsMode) {
     let Some((mut spec, secrets)) = spec() else {
         eprintln!("skipped: TABLETIST_TEST_PG_URL is not set");
         return;
     };
     load_fixture().await;
-    spec.port = holding_back_cancels(Duration::from_millis(500)).await;
+    let hold = Duration::from_millis(500);
+    spec.port = holding_back_cancels(hold).await;
     spec.host = "127.0.0.1".into();
+    spec.tls = tls;
     let connection =
         Connection::connect_with(&spec, &secrets, &HostKeys::default(), Access::ReadOnly)
             .await
             .unwrap();
     // Nothing runs: the cancel is for a command that has ended already,
     // and the server finds the session idle when it gets it.
+    let sent = std::time::Instant::now();
     connection.cancel_handle().cancel().await.unwrap();
+    assert!(sent.elapsed() >= hold, "{:?}", sent.elapsed());
     // The next command runs for longer than the cancel is held back.
     let mut query = users(5);
     query.raw_where = Some("(SELECT pg_sleep(1)) IS NOT NULL".into());
     assert_eq!(connection.count_rows(&query).await, Ok(5));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancel_lands_before_it_returns_in_plain_text() {
+    a_cancel_lands_before_it_returns(TlsMode::Disable).await;
+}
+
+/// Under TLS the driver ends the cancel's connection with a close_notify
+/// the server does not read before it closes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancel_lands_before_it_returns_over_tls() {
+    a_cancel_lands_before_it_returns(TlsMode::Require).await;
 }
 
 use tabletist_db::{Dialect, ScriptEnd, ScriptMode, ScriptOutcome, StatementOutcome, StopFlag};
