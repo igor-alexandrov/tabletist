@@ -462,6 +462,11 @@ impl Connection {
     /// a batch is read ahead of what `to` has taken. Returns the rows sent.
     /// `stop`, or `to` closing, ends it as [`Error::Cancelled`]; a
     /// statement the server's own timeout ended is [`Error::Timeout`].
+    /// A connection whose stream failed once its statement ran (a closed
+    /// `to` included, before any row was sent) is to be closed: on MySQL
+    /// the rows not yet read are still on their way, and the read-only
+    /// transaction they come in is left open, which a rollback could end
+    /// only by reading them all.
     pub async fn stream_rows(
         &self,
         query: &RowQuery,
@@ -489,7 +494,8 @@ impl Connection {
     /// [`Error::Cancelled`], and the server's own timeout as
     /// [`Error::Timeout`]. On PostgreSQL it runs as a cursor, so a
     /// statement no cursor holds (`SHOW`, `EXPLAIN`) fails with the
-    /// server's words.
+    /// server's words. A connection whose stream failed once its statement
+    /// ran is to be closed, as for [`Self::stream_rows`].
     pub async fn stream_statement(
         &self,
         statement: &sql::Statement,

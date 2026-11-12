@@ -41,7 +41,7 @@ struct Deletion {
 /// `completion_type` says a `COMMIT` or a `ROLLBACK` does next: chained,
 /// the session would be left inside a read-write transaction.
 const COMMIT: &str = "COMMIT AND NO CHAIN NO RELEASE";
-const ROLLBACK: &str = "ROLLBACK AND NO CHAIN NO RELEASE";
+pub(super) const ROLLBACK: &str = "ROLLBACK AND NO CHAIN NO RELEASE";
 
 impl Conn {
     /// See [`crate::Connection::write`]. The transaction is started and
