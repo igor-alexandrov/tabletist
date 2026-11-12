@@ -98,7 +98,8 @@ impl Drop for Opening {
 /// no cancel in its protocol, and a new connection for each cancel is a
 /// sign-in, a check and the KILL, several round trips far from the server.
 /// `None` until it is open, and after the server closed it. The lock also
-/// keeps one cancel at a time.
+/// keeps one cancel at a time: only a cancel holds it while it waits on
+/// the server, and each of a cancel's waits has a limit (see [`cancel`]).
 pub(crate) type Spare = std::sync::Arc<tokio::sync::Mutex<Option<mysql_async::Conn>>>;
 
 /// Every session's spare in this app, for [`give_up`]: a spare
@@ -142,7 +143,7 @@ async fn give_up(spares: Vec<Spare>, refused: &Opts) -> bool {
     let closing: Vec<mysql_async::Conn> = spares
         .iter()
         .filter_map(|spare| {
-            // A held lock is a cancel on its way, or a spare being opened.
+            // A held lock is a cancel on its way.
             let mut slot = spare.try_lock().ok()?;
             if !same(slot.as_ref()?.opts()) {
                 return None;
@@ -287,17 +288,24 @@ impl Conn {
         let encrypted = opts.ssl_opts().is_some();
         let spare = Spare::default();
         kept_spares(&spare);
-        // Opened beside the session, so connecting waits for none of it. A
-        // cancel that comes first waits for it, or opens it itself. One
+        // Opened beside the session, so connecting waits for none of it,
+        // and without the lock: a cancel that comes first opens a spare of
+        // its own rather than wait for this one, which is then let go. One
         // that cannot open (a limit on connections, say) leaves each cancel
         // to open its own; one that took the slot a later session needs is
         // closed by that session's connect (see `sign_in`).
         let opening = (std::sync::Arc::clone(&spare), opts.clone(), server.clone());
         let opening = tokio::spawn(async move {
             let (spare, opts, server) = opening;
+            let Ok(opened) = open_spare(&opts, &server).await else {
+                return;
+            };
             let mut slot = spare.lock().await;
             if slot.is_none() {
-                *slot = open_spare(&opts, &server).await.ok();
+                *slot = Some(opened);
+            } else {
+                drop(slot);
+                let _ = tokio::time::timeout(GOODBYE, opened.disconnect()).await;
             }
         });
         Ok(Self {
@@ -1513,10 +1521,12 @@ pub(crate) fn query_error(error: mysql_async::Error) -> Error {
 /// restart), or it does not answer in [`CONNECT_TIMEOUT`], a new one is
 /// opened and checked, and kept for the next cancel.
 ///
-/// Every wait on a spare has that limit: one kept idle between cancels can
-/// sit on a path that a NAT or firewall, or a laptop's sleep, dropped
-/// without a word, and the wait for it would last minutes, while later
-/// cancels wait on the lock and `run_session` on the cancels.
+/// Every wait on the server has that limit: a spare kept idle between
+/// cancels can sit on a path that a NAT or firewall, or a laptop's sleep,
+/// dropped without a word, and the wait for it would last minutes, while
+/// later cancels wait on the lock and `run_session` on the cancels. The
+/// wait on the lock is for an earlier cancel alone, which has the same
+/// limits: the spare's open beside the session does not hold it.
 pub(crate) async fn cancel(opts: &Opts, id: u32, server: &str, spare: &Spare) -> Result<()> {
     let kill = format!("KILL QUERY {id}");
     let mut slot = spare.lock().await;
@@ -2162,6 +2172,21 @@ mod tests {
         assert_eq!(running.await.unwrap().unwrap(), Some(1));
         let second = spare_id(&session).await;
         assert_ne!(second, first);
+    }
+
+    /// The spare's open beside the session leaves the lock free: a cancel
+    /// that comes while a slow server signs it in does not wait for it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_spare_being_opened_does_not_hold_up_a_cancel() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        // The proxy takes one connection, the session's: the spare's waits
+        // for a greeting that does not come.
+        let (session, _) = counted_session(&url, Access::ReadOnly).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let slot = session.spare.try_lock().expect("the open holds the lock");
+        assert!(slot.is_none());
     }
 
     /// A session closed straight after it connected stops its spare's
