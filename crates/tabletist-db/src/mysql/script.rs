@@ -657,14 +657,20 @@ impl Unfinished {
     /// Finishes in a task of its own that holds the session's lock: what
     /// uses the session next waits for the reset and the settings, and the
     /// run's outcome does not. Where they fail, the session is closed (see
-    /// `Session`), as a run that fails at them is.
+    /// `Session`), as a run that fails at them is, and its connection hung
+    /// up: nothing the script left on the server outlasts the close.
     fn finish_later(self, mut session: tokio::sync::OwnedMutexGuard<Session>) {
         tokio::spawn(async move {
             let Ok(conn) = session.conn() else {
                 return;
             };
-            if let Err(error) = self.finish(conn).await {
-                session.close(error);
+            if let Err(error) = self.finish(conn).await
+                && let Some(conn) = session.close(error)
+            {
+                // Closed first: what waits for the session gets the error
+                // without waiting for the goodbye.
+                drop(session);
+                super::hang_up(conn).await;
             }
         });
     }
@@ -1569,6 +1575,7 @@ mod tests {
             (settings_after_the_reset(), refused),
         )
         .await;
+        let id = conn.conn.lock().await.id();
         let outcome = past_the_refusal(&conn, &["SELECT 1"], &StopFlag::new())
             .await
             .unwrap();
@@ -1609,6 +1616,24 @@ mod tests {
             "{read:?}"
         );
         assert_eq!(count.load(Ordering::SeqCst), asked);
+        // The connection is hung up, not kept for the session's close.
+        let mut admin = admin(&url).await;
+        let mut left = true;
+        for _ in 0..50 {
+            let found: Option<u64> = admin
+                .exec_first(
+                    "SELECT ID FROM information_schema.PROCESSLIST WHERE ID = ?",
+                    (id,),
+                )
+                .await
+                .unwrap();
+            left = found.is_some();
+            if !left {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(!left, "connection {id} is still on the server");
     }
 
     /// A setting the server knows only under its other name, or in its

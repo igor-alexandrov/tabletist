@@ -380,48 +380,71 @@ pub(crate) struct Conn {
 /// back its outcome, and where they fail the session is closed from then
 /// on. Every use asks for the connection through `conn`, which then
 /// answers that error, a lost connection: the backend closes the session.
-pub(crate) struct Session {
-    conn: mysql_async::Conn,
-    closed: Option<Error>,
+/// The connection itself is hung up as the session closes (see `close`),
+/// so nothing it holds on the server waits for the session's next use.
+pub(crate) enum Session {
+    Open(mysql_async::Conn),
+    Closed(Error),
 }
 
 impl Session {
     fn new(conn: mysql_async::Conn) -> Self {
-        Self { conn, closed: None }
+        Self::Open(conn)
     }
 
     /// The connection, unless the session is closed (see `close`).
     pub(crate) fn conn(&mut self) -> Result<&mut mysql_async::Conn> {
-        match &self.closed {
-            Some(error) => Err(error.clone()),
-            None => Ok(&mut self.conn),
+        match self {
+            Self::Open(conn) => Ok(conn),
+            Self::Closed(error) => Err(error.clone()),
         }
     }
 
     /// Closes the session with `error`, which must be a lost connection:
-    /// no use of it gets the connection any more.
-    fn close(&mut self, error: Error) {
+    /// no use of it gets the connection any more. Gives the connection
+    /// back, for `hang_up`; a session closed already keeps its first
+    /// error.
+    fn close(&mut self, error: Error) -> Option<mysql_async::Conn> {
         debug_assert!(error.is_connection_lost(), "{error:?}");
-        self.closed.get_or_insert(error);
+        match std::mem::replace(self, Self::Closed(error)) {
+            Self::Open(conn) => Some(conn),
+            closed => {
+                *self = closed;
+                None
+            }
+        }
     }
 }
 
-/// Tests look at the connection itself, closed or not. Only there: the
-/// crate's own uses must go through `Session::conn`, and a build without
-/// tests fails where one does not.
+/// Says goodbye on a connection given up, given [`GOODBYE`]: whatever it
+/// holds on the server (a script's named lock, a reset that did not run)
+/// goes with it.
+async fn hang_up(conn: mysql_async::Conn) {
+    let _ = tokio::time::timeout(GOODBYE, conn.disconnect()).await;
+}
+
+/// Tests look at the connection itself. Only there: the crate's own uses
+/// must go through `Session::conn`, and a build without tests fails where
+/// one does not.
 #[cfg(test)]
 impl std::ops::Deref for Session {
     type Target = mysql_async::Conn;
 
     fn deref(&self) -> &mysql_async::Conn {
-        &self.conn
+        match self {
+            Self::Open(conn) => conn,
+            Self::Closed(error) => panic!("the session is closed: {error:?}"),
+        }
     }
 }
 
 #[cfg(test)]
 impl std::ops::DerefMut for Session {
     fn deref_mut(&mut self) -> &mut mysql_async::Conn {
-        &mut self.conn
+        match self {
+            Self::Open(conn) => conn,
+            Self::Closed(error) => panic!("the session is closed: {error:?}"),
+        }
     }
 }
 

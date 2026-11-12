@@ -1,4 +1,4 @@
-# MySQL round trips, step 5: the SQL editor run's reset off the wait — Implementation Plan
+# MySQL round trips, step 5: the SQL editor run's reset off the wait (implementation plan)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use rubypowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
