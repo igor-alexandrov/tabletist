@@ -127,18 +127,19 @@ fn all_spares() -> Vec<Spare> {
         .collect()
 }
 
-/// Closes the `spares` on the server `refused` names (its host, port and
-/// user) that no cancel is using, and says whether it closed one. Each
+/// Closes the `spares` on the server `refused` names that no cancel is
+/// using, and says whether it closed one: those of its host and port, and
+/// of its user too where the limit that is `full` is one user's. Each
 /// holds a connection there, which counts towards the server's limit on
 /// connections (often a few for one user on hosted MySQL): a session is
 /// worth more than a quicker cancel. A cancel after this opens its spare
 /// again, which a full server refuses, and then the cancel goes without
 /// one.
-async fn give_up(spares: Vec<Spare>, refused: &Opts) -> bool {
+async fn give_up(spares: Vec<Spare>, refused: &Opts, full: Full) -> bool {
     let same = |opts: &Opts| {
         opts.ip_or_hostname() == refused.ip_or_hostname()
             && opts.tcp_port() == refused.tcp_port()
-            && opts.user() == refused.user()
+            && (full == Full::Server || opts.user() == refused.user())
     };
     let closing: Vec<mysql_async::Conn> = spares
         .iter()
@@ -174,7 +175,10 @@ const GOODBYE: Duration = Duration::from_secs(1);
 /// go only a moment after the connection said goodbye.
 async fn sign_in(opts: Opts) -> mysql_async::Result<mysql_async::Conn> {
     let signed_in = mysql_async::Conn::new(opts.clone()).await;
-    if !matches!(&signed_in, Err(error) if is_full(error)) || !give_up(all_spares(), &opts).await {
+    let Some(limit) = signed_in.as_ref().err().and_then(full) else {
+        return signed_in;
+    };
+    if !give_up(all_spares(), &opts, limit).await {
         return signed_in;
     }
     let mut tries = 0;
@@ -182,7 +186,7 @@ async fn sign_in(opts: Opts) -> mysql_async::Result<mysql_async::Conn> {
         let signed_in = mysql_async::Conn::new(opts.clone()).await;
         tries += 1;
         match signed_in {
-            Err(error) if is_full(&error) && tries < 5 => {
+            Err(error) if full(&error).is_some() && tries < 5 => {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             signed_in => return signed_in,
@@ -190,13 +194,27 @@ async fn sign_in(opts: Opts) -> mysql_async::Result<mysql_async::Conn> {
     }
 }
 
-/// Whether the server refused a sign-in for its limit on connections.
-fn is_full(error: &mysql_async::Error) -> bool {
-    matches!(
-        error,
-        mysql_async::Error::Server(server)
-            if server.code == TOO_MANY_CONNECTIONS || server.code == TOO_MANY_USER_CONNECTIONS
-    )
+/// The limit on connections a server refused a sign-in for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Full {
+    /// All of the server's (1040): any user's connection holds a slot.
+    Server,
+    /// One user's (1203).
+    User,
+}
+
+/// The limit on connections the server refused a sign-in for, if that is
+/// what it refused it for.
+fn full(error: &mysql_async::Error) -> Option<Full> {
+    match error {
+        mysql_async::Error::Server(server) if server.code == TOO_MANY_CONNECTIONS => {
+            Some(Full::Server)
+        }
+        mysql_async::Error::Server(server) if server.code == TOO_MANY_USER_CONNECTIONS => {
+            Some(Full::User)
+        }
+        _ => None,
+    }
 }
 
 impl Conn {
@@ -2189,22 +2207,162 @@ mod tests {
         assert!(slot.is_none());
     }
 
-    /// A session closed straight after it connected stops its spare's
-    /// open: nothing signs in for a session that is gone.
+    /// A session through a proxy in front of the test server that takes
+    /// every connection the client makes. Where `no_uuid`, a query that
+    /// asks for `@@server_uuid` is answered as MariaDB answers it, with
+    /// error 1193, and the server never hears it. The connections after
+    /// the session's (its spare's) wait at the proxy until `gate` says
+    /// true; the count is of those that came.
+    async fn scripted_session(
+        url: &str,
+        no_uuid: bool,
+        gate: tokio::sync::watch::Receiver<bool>,
+    ) -> (Conn, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (mut spec, secrets) = ConnectSpec::from_url(url).unwrap();
+        spec.tls = TlsMode::Disable;
+        let server = (spec.host.clone(), spec.port);
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        spec.host = "127.0.0.1".to_owned();
+        spec.port = listener.local_addr().unwrap().port();
+        let came = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&came);
+        tokio::spawn(async move {
+            let mut first = true;
+            while let Ok((client, _)) = listener.accept().await {
+                let later = !std::mem::replace(&mut first, false);
+                if later {
+                    count.fetch_add(1, Ordering::SeqCst);
+                }
+                let (mut gate, server) = (gate.clone(), server.clone());
+                tokio::spawn(async move {
+                    if later && gate.wait_for(|open| *open).await.is_err() {
+                        return;
+                    }
+                    let upstream = tokio::net::TcpStream::connect(server).await.unwrap();
+                    let (mut from_client, to_client) = client.into_split();
+                    let (mut from_server, mut to_server) = upstream.into_split();
+                    let to_client = Arc::new(tokio::sync::Mutex::new(to_client));
+                    let answers = Arc::clone(&to_client);
+                    tokio::spawn(async move {
+                        let mut buffer = vec![0; 16 << 10];
+                        while let Ok(read @ 1..) = from_server.read(&mut buffer).await {
+                            let mut to_client = answers.lock().await;
+                            if to_client.write_all(&buffer[..read]).await.is_err() {
+                                return;
+                            }
+                        }
+                    });
+                    loop {
+                        let mut header = [0; 4];
+                        if from_client.read_exact(&mut header).await.is_err() {
+                            return;
+                        }
+                        let length = u32::from_le_bytes([header[0], header[1], header[2], 0]);
+                        let mut body = vec![0; length as usize];
+                        if from_client.read_exact(&mut body).await.is_err() {
+                            return;
+                        }
+                        const QUERY: u8 = 0x03;
+                        let asks_uuid = header[3] == 0
+                            && body.first() == Some(&QUERY)
+                            && body.windows(13).any(|part| part == b"@@server_uuid");
+                        if no_uuid && asks_uuid {
+                            let mut error = vec![0xff];
+                            error.extend(UNKNOWN_SYSTEM_VARIABLE.to_le_bytes());
+                            error.extend(b"#HY000Unknown system variable 'server_uuid'");
+                            let length = u32::try_from(error.len()).unwrap().to_le_bytes();
+                            let mut packet = vec![length[0], length[1], length[2], 1];
+                            packet.extend(error);
+                            if to_client.lock().await.write_all(&packet).await.is_err() {
+                                return;
+                            }
+                            continue;
+                        }
+                        if to_server.write_all(&header).await.is_err()
+                            || to_server.write_all(&body).await.is_err()
+                        {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        let conn = Conn::connect(&spec, &secrets, None, Access::ReadOnly)
+            .await
+            .unwrap();
+        (conn, came)
+    }
+
+    /// Waits for the spare's connection to come to the proxy.
+    async fn came(count: &std::sync::atomic::AtomicUsize) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while count.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            assert!(Instant::now() < deadline, "the spare never came");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// A session closed while its spare's open waits for the server stops
+    /// that open: nothing signs in for a session that is gone.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_closed_session_stops_opening_its_spare() {
         let Some(url) = test_url() else {
             return;
         };
-        let session = session(&url).await;
+        // A session that stays: its spare opens once the proxy lets it on.
+        let (open, gate) = tokio::sync::watch::channel(false);
+        let (kept, count) = scripted_session(&url, false, gate).await;
+        came(&count).await;
+        open.send(true).unwrap();
+        spare_id(&kept).await;
+
+        let (open, gate) = tokio::sync::watch::channel(false);
+        let (session, count) = scripted_session(&url, false, gate).await;
+        came(&count).await;
         let spare = std::sync::Arc::clone(&session.spare);
         drop(session);
+        open.send(true).unwrap();
         // Longer than the open takes here, so it would have finished.
         tokio::time::sleep(Duration::from_millis(500)).await;
-        let slot = tokio::time::timeout(Duration::from_secs(1), spare.lock())
+        assert!(spare.lock().await.is_none());
+    }
+
+    /// A server with no `@@server_uuid` (MariaDB) is named by its host
+    /// and port, with the settings sent again before that question, and
+    /// its spare is checked by that name.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_server_without_a_uuid_is_named_by_its_host_and_port() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let (_, gate) = tokio::sync::watch::channel(true);
+        let (session, _) = scripted_session(&url, true, gate).await;
+        let admin_opts =
+            mysql_async::Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+        let mut admin = mysql_async::Conn::new(admin_opts).await.unwrap();
+        let (host, port, version): (String, u16, String) = admin
+            .query_first("SELECT @@hostname, @@port, VERSION()")
             .await
-            .expect("the stopped open still holds the lock");
-        assert!(slot.is_none());
+            .unwrap()
+            .unwrap();
+        admin.disconnect().await.unwrap();
+        assert_eq!(session.server, format!("host {host}:{port}"));
+        assert_eq!(session.version, version);
+        let read_only: Option<i64> = session
+            .conn
+            .lock()
+            .await
+            .query_first("SELECT @@session.transaction_read_only")
+            .await
+            .unwrap();
+        assert_eq!(read_only, Some(1));
+        spare_id(&session).await;
     }
 
     /// Spares give up their connections for a session that a full server
@@ -2228,9 +2386,14 @@ mod tests {
         let elsewhere: Opts = mysql_async::OptsBuilder::from_opts(idle.opts.clone())
             .tcp_port(idle.opts.tcp_port().wrapping_add(1))
             .into();
-        assert!(!give_up(spares.clone(), &elsewhere).await);
+        assert!(!give_up(spares.clone(), &elsewhere, Full::Server).await);
+        // Another user's limit is no matter of these; the server's is.
+        let someone: Opts = mysql_async::OptsBuilder::from_opts(idle.opts.clone())
+            .user(Some("someone"))
+            .into();
+        assert!(!give_up(spares.clone(), &someone, Full::User).await);
         assert!(idle.spare.lock().await.is_some());
-        assert!(give_up(spares.clone(), &idle.opts).await);
+        assert!(give_up(spares.clone(), &someone, Full::Server).await);
         assert!(idle.spare.lock().await.is_none());
         assert!(cancelling.is_some());
         drop(cancelling);
@@ -2287,9 +2450,9 @@ mod tests {
                 state: "08004".into(),
             })
         };
-        assert!(is_full(&refused(TOO_MANY_CONNECTIONS)));
-        assert!(is_full(&refused(TOO_MANY_USER_CONNECTIONS)));
-        assert!(!is_full(&refused(ACCESS_DENIED)));
+        assert_eq!(full(&refused(TOO_MANY_CONNECTIONS)), Some(Full::Server));
+        assert_eq!(full(&refused(TOO_MANY_USER_CONNECTIONS)), Some(Full::User));
+        assert_eq!(full(&refused(ACCESS_DENIED)), None);
     }
 
     /// Options that reach the test server through a proxy that passes the
@@ -2920,9 +3083,9 @@ mod tests {
                 matches!(&failed, Err(mysql_async::Error::Server(error)) if error.code == 1305),
                 "{failing}: {failed:?}"
             );
+            let a: Option<i64> = conn.query_first("SELECT @a").await.unwrap();
+            assert_eq!(a, Some(2), "{failing}");
         }
-        let a: Option<i64> = conn.query_first("SELECT @a").await.unwrap();
-        assert_eq!(a, Some(2));
         let none = last_row(&mut conn, "SET @a = 4; DO 1").await.unwrap();
         assert!(none.is_none());
     }
