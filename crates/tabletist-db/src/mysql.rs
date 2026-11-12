@@ -2238,6 +2238,30 @@ pub(crate) fn connect_error(error: mysql_async::Error) -> Error {
     }
 }
 
+/// The names `message` quotes in backticks, in order, a doubled backtick
+/// read as one.
+fn backticked(message: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut letters = message.chars().peekable();
+    while let Some(letter) = letters.next() {
+        if letter != '`' {
+            continue;
+        }
+        let mut name = String::new();
+        while let Some(letter) = letters.next() {
+            if letter != '`' {
+                name.push(letter);
+            } else if letters.next_if_eq(&'`').is_some() {
+                name.push('`');
+            } else {
+                names.push(name);
+                break;
+            }
+        }
+    }
+    names
+}
+
 /// What the server's error `number` with this `message` is of. MySQL says
 /// it only in the message, so the parts it quotes are read by the number:
 /// never by the message's words, which follow the server's language.
@@ -2295,11 +2319,24 @@ pub(crate) fn named(number: u32, message: &str) -> Named {
         // ER_CHECK_CONSTRAINT_VIOLATED: the constraint, quoted.
         3819 => (quoted(message, '\''), Vec::new()),
         // MariaDB's ER_CONSTRAINT_FAILED, its CHECK refusing a row:
-        // "CONSTRAINT `name` failed for `db`.`table`". The constraint comes
-        // first in every language the server speaks. MySQL's 4025 is
+        // "CONSTRAINT `name` failed for `db`.`table`". The constraint is what
+        // it quotes first, in every language the server speaks, and the
+        // table what it quotes last; a column's own CHECK is named
+        // `table.column` there, and `column` in the catalog. MySQL's 4025 is
         // ER_INNODB_AUTOEXTEND_SIZE_OUT_OF_RANGE, which quotes no name, and
         // so names nothing here.
-        4025 => (quoted(message, '`'), Vec::new()),
+        4025 => {
+            let names = backticked(message);
+            let constraint = names.first().map(|name| match names.last() {
+                Some(table) if names.len() > 1 => name
+                    .strip_prefix(table.as_str())
+                    .and_then(|rest| rest.strip_prefix('.'))
+                    .unwrap_or(name)
+                    .to_owned(),
+                _ => name.clone(),
+            });
+            (constraint, Vec::new())
+        }
         _ => (None, Vec::new()),
     };
     Named {
@@ -2593,18 +2630,34 @@ mod tests {
                 vec![]
             )
         );
-        // MariaDB's CHECK, by another number and in other words.
+        // MariaDB's CHECK, by another number and in other words, in any
+        // language it is told to speak.
+        for message in [
+            "CONSTRAINT `audit_book_covers_kind_check` failed for \
+             `tabletist`.`audit_book_covers`",
+            "No se cumple la RESTRICCIÓN `audit_book_covers_kind_check` para \
+             `tabletist`.`audit_book_covers`",
+        ] {
+            assert_eq!(
+                of(4025, message),
+                (
+                    Some(4025),
+                    Some("audit_book_covers_kind_check".into()),
+                    vec![]
+                )
+            );
+        }
+        // A column's own CHECK, by the column's name, as the catalog has it.
         assert_eq!(
             of(
                 4025,
-                "CONSTRAINT `audit_book_covers_kind_check` failed for \
-                 `tabletist`.`audit_book_covers`"
+                "CONSTRAINT `covers.kind` failed for `tabletist`.`covers`"
             ),
-            (
-                Some(4025),
-                Some("audit_book_covers_kind_check".into()),
-                vec![]
-            )
+            (Some(4025), Some("kind".into()), vec![])
+        );
+        assert_eq!(
+            of(4025, "CONSTRAINT `we``ird` failed for `tabletist`.`t`"),
+            (Some(4025), Some("we`ird".into()), vec![])
         );
         // MySQL's 4025 is another error, of a table's AUTOEXTEND_SIZE.
         assert_eq!(
