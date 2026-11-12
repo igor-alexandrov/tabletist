@@ -2,8 +2,12 @@
 //! has it, and a search over it. The search is Settings › Keyboard's
 //! (`key_search`): words name a command, its group or its keys, and a
 //! chord pressed in the field finds the commands it is a key of.
+//!
+//! The list is Settings › Keyboard's: each group under its section label,
+//! with room above it, and each command's name with its keys at the right.
+//! The heading of the group the list is scrolled into stays on top.
 
-use egui::{Key, Modifiers, Rect, Sense, pos2, vec2};
+use egui::{CornerRadius, Key, Modifiers, Rect, Sense, Stroke, pos2, vec2};
 
 use crate::i18n::{Locale, gettext};
 use crate::keymap::{Command, Group, Keymap, Layout, Written, key_written};
@@ -42,7 +46,7 @@ pub(crate) fn rows(keymap: &Keymap, layout: Layout) -> Vec<(Group, Command, Writ
 }
 
 /// A group's heading, in English: the caller translates.
-fn heading(group: Group) -> &'static str {
+pub(crate) fn heading(group: Group) -> &'static str {
     GROUPS
         .iter()
         .find(|(of, _)| *of == group)
@@ -99,11 +103,30 @@ pub(crate) fn listed(
         .collect()
 }
 
-/// Space between the keys and what they do.
-const GAP: f32 = 16.0;
+/// Space between a command's name and its keys, at the least.
+const GAP: f32 = 24.0;
 
 /// Space between the rows of the list.
 const ROW_GAP: f32 = 6.0;
+
+/// A group's heading band, Settings › Keyboard's: its name near the foot,
+/// room above it.
+const HEADING: f32 = 30.0;
+
+/// The room above a heading that the list's first one goes without.
+const ABOVE: f32 = 12.0;
+
+/// The band the list's first heading takes, and the one pinned at its top.
+const PINNED: f32 = HEADING - ABOVE;
+
+/// Where a heading's name centres, above its band's foot.
+const NAME_ABOVE_FOOT: f32 = 8.0;
+
+/// Room at the list's right for the scroll bar, which floats over it.
+const BAR_ROOM: f32 = 12.0;
+
+/// Space between Omarchy's heading and the rule after it.
+const RULE_GAP: f32 = 10.0;
 
 /// The height of the line a chord looked for shows.
 const FOUND_LINE: f32 = 20.0;
@@ -156,7 +179,6 @@ pub fn show(
     let layout = paint.layout();
     let all = rows(keymap, layout);
     let listed = listed(keymap, layout, locale, search);
-    let heading_role = TextRole::pick(&look, TextRole::UiBodySemibold, TextRole::OGroup);
     let say = |words: &'static str| look.label(&gettext(locale, words));
     let searching = !search.search.is_empty() || search.found.is_some();
     let mut actions = Vec::new();
@@ -181,11 +203,11 @@ pub fn show(
         {
             actions.push(Action::HelpFind(Some(keys)));
         }
-        // As wide as its widest keys and description side by side, and no
-        // wider or taller than the window leaves room for: the list scrolls
-        // when the window is small, so the buttons stay on screen. Measured
-        // on the whole list, so that nothing moves while it is searched.
-        let (mut keys_width, mut what_width) = (0.0_f32, 0.0_f32);
+        // As wide as its widest row, a name and its keys, and no wider or
+        // taller than the window leaves room for: the list scrolls when the
+        // window is small, so the buttons stay on screen. Measured on the
+        // whole list, so that nothing moves while it is searched.
+        let mut natural = 0.0_f32;
         // The look's own keys: none that only another look has.
         for (_, command, keys) in &all {
             let keys = Text::one(&look, widgets::code(&look), keys, palette.text);
@@ -195,12 +217,16 @@ pub fn show(
                 &gettext(locale, command.info().name),
                 palette.text,
             );
-            keys_width = keys_width.max(widgets::measure(ui, keys));
-            what_width = what_width.max(widgets::measure(ui, what));
+            natural = natural.max(widgets::measure(ui, what) + GAP + widgets::measure(ui, keys));
         }
+        for (group, _) in GROUPS {
+            let name = look.label(&gettext(locale, heading(group)));
+            let label = widgets::section_label(&name, &look, &palette);
+            natural = natural.max(widgets::measure(ui, label));
+        }
+        let natural = natural.ceil();
         let screen = ui.ctx().content_rect();
-        let width = (keys_width + GAP + what_width).ceil();
-        let width = width.min(screen.width() - 80.0).max(120.0);
+        let width = (natural + BAR_ROOM).min(screen.width() - 80.0).max(120.0);
         ui.set_width(width);
         widgets::label(
             ui,
@@ -223,7 +249,7 @@ pub fn show(
             groups.len()
         };
         let line = widgets::body(&look).row_height(ui.ctx(), look.faces) + ROW_GAP;
-        let full = (all.len() + groups) as f32 * line;
+        let full = all.len() as f32 * line + groups as f32 * HEADING - ABOVE;
         // The found line takes its place from the list's.
         let found = if search.found.is_some() {
             6.0 + FOUND_LINE + ui.spacing().item_spacing.y
@@ -234,44 +260,21 @@ pub fn show(
         // The list's place is kept whatever the search leaves in it.
         let (place, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
         let mut list = ui.new_child(egui::UiBuilder::new().max_rect(place));
-        egui::ScrollArea::both()
+        let output = egui::ScrollArea::both()
             .max_height(height)
             .auto_shrink([false, false])
             .show(&mut list, |ui| {
                 if listed.is_empty() {
                     nothing_listed(ui, paint, search);
-                    return;
+                    return Vec::new();
                 }
-                egui::Grid::new("shortcuts")
-                    .num_columns(2)
-                    .spacing([GAP, ROW_GAP])
-                    .show(ui, |ui| {
-                        let mut last = None;
-                        for row in &listed {
-                            // Each group under its name, in the first
-                            // column: the keys' own.
-                            if last != Some(row.group) {
-                                last = Some(row.group);
-                                let name = look.label(&gettext(locale, heading(row.group)));
-                                widgets::label(ui, heading_role, &name, palette.dim, &look);
-                                ui.end_row();
-                            }
-                            let code = widgets::code(&look);
-                            let hit: Vec<_> = row.keys_hit.iter().cloned().collect();
-                            let marks = (code, palette.secondary, code, palette.accent_hover);
-                            crate::ui::start::marked(&look, &row.keys, &hit, marks)
-                                .layout(ui.ctx())
-                                .label(ui);
-                            let body = widgets::body(&look);
-                            let name = gettext(locale, row.command.info().name);
-                            let marks = (body, palette.text, heading_role, palette.accent_hover);
-                            crate::ui::start::marked(&look, &name, &row.spans, marks)
-                                .layout(ui.ctx())
-                                .label(ui);
-                            ui.end_row();
-                        }
-                    });
+                listed
+                    .chunk_by(|a, b| a.group == b.group)
+                    .enumerate()
+                    .map(|(at, rows)| group_rows(ui, paint, rows, natural, at == 0))
+                    .collect()
             });
+        pin(&list, paint, output.inner_rect, &output.inner, natural);
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if widgets::button(ui, &gettext(locale, "About Tabletist"), &look).clicked() {
@@ -307,6 +310,128 @@ pub fn show(
         }
     });
     actions
+}
+
+/// Where a group's heading stands in the list as drawn.
+struct Placed {
+    group: Group,
+    left: f32,
+    /// The foot of its band.
+    foot: f32,
+}
+
+/// A group, `width` wide: its heading, then its rows, as one row group
+/// named by the heading, as Settings › Keyboard has them. The list's
+/// first heading goes without the room above.
+fn group_rows(ui: &mut egui::Ui, paint: Paint, rows: &[Listed], width: f32, first: bool) -> Placed {
+    let Paint { locale, look, .. } = paint;
+    let group = rows[0].group;
+    let name = look.label(&gettext(locale, heading(group)));
+    let builder = egui::UiBuilder::new().id_salt(("help-group", heading(group)));
+    ui.scope_builder(builder, |ui| {
+        ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+            node.set_role(egui::accesskit::Role::RowGroup);
+            node.set_label(name.as_str());
+        });
+        let band = if first { PINNED } else { HEADING };
+        let (rect, _) = ui.allocate_exact_size(vec2(width, band), Sense::hover());
+        // Painted only: the row group names it for a screen reader.
+        heading_label(ui, ui.painter(), rect, &name, paint);
+        for row in rows {
+            row_line(ui, paint, row, width);
+        }
+        Placed {
+            group,
+            left: rect.left(),
+            foot: rect.bottom(),
+        }
+    })
+    .inner
+}
+
+/// A group's name in the look's section label, near the foot of `band`;
+/// Omarchy's runs on in a rule to the band's right edge, its lower case
+/// alone telling it from a row too little.
+fn heading_label(ui: &egui::Ui, painter: &egui::Painter, band: Rect, name: &str, paint: Paint) {
+    let Paint { palette, look, .. } = paint;
+    let middle = band.bottom() - NAME_ABOVE_FOOT;
+    let width = widgets::section_label(name, &look, &palette)
+        .layout(ui.ctx())
+        .paint_left(painter, band.left(), middle);
+    let from = band.left() + width + RULE_GAP;
+    if look.terminal && from < band.right() {
+        let stroke = Stroke::new(1.0 / ui.pixels_per_point(), palette.border);
+        let y = painter.round_to_pixel_center(middle);
+        painter.hline(egui::Rangef::new(from, band.right()), y, stroke);
+    }
+}
+
+/// A command's row, `width` wide: its name at the left and its keys at the
+/// right, with what the search matched marked in each, and in macOS and
+/// Windows Settings › Keyboard's hairline under it.
+fn row_line(ui: &mut egui::Ui, paint: Paint, row: &Listed, width: f32) {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let body = widgets::body(&look);
+    let line = body.row_height(ui.ctx(), look.faces) + ROW_GAP;
+    let (rect, _) = ui.allocate_exact_size(vec2(width, line), Sense::hover());
+    let layout = egui::Layout::left_to_right(egui::Align::Center);
+    let mut cells = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout));
+    let marked = TextRole::pick(&look, TextRole::UiBodySemibold, TextRole::OGroup);
+    let name = gettext(locale, row.command.info().name);
+    let marks = (body, palette.text, marked, palette.accent_hover);
+    crate::ui::start::marked(&look, &name, &row.spans, marks)
+        .layout(ui.ctx())
+        .label(&mut cells);
+    let layout = egui::Layout::right_to_left(egui::Align::Center);
+    cells.with_layout(layout, |ui| {
+        let code = widgets::code(&look);
+        let hit: Vec<_> = row.keys_hit.iter().cloned().collect();
+        let marks = (code, palette.secondary, code, palette.accent_hover);
+        crate::ui::start::marked(&look, &row.keys, &hit, marks)
+            .layout(ui.ctx())
+            .label(ui);
+    });
+    if !look.terminal {
+        widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, palette.surface);
+    }
+}
+
+/// Pins the heading of the group the list is scrolled into over the top of
+/// `view`, the rows scrolling under it; the next heading pushes it out.
+/// Nothing while the list is at its top.
+fn pin(ui: &egui::Ui, paint: Paint, view: Rect, placed: &[Placed], width: f32) {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    // The last group whose own heading has gone under the top.
+    let Some(at) = placed
+        .iter()
+        .rposition(|group| group.foot - PINNED < view.top())
+    else {
+        return;
+    };
+    let mut foot = view.top() + PINNED;
+    if let Some(next) = placed.get(at + 1) {
+        foot = foot.min(next.foot - PINNED);
+    }
+    let painter = ui.painter_at(view);
+    let band = Rect::from_x_y_ranges(view.x_range(), (foot - PINNED)..=foot);
+    painter.rect_filled(band, CornerRadius::ZERO, palette.overlay);
+    let name = look.label(&gettext(locale, heading(placed[at].group)));
+    let left = placed[at].left;
+    let label = Rect::from_x_y_ranges(left..=left + width, band.y_range());
+    heading_label(ui, &painter, label, &name, paint);
+    if !look.terminal {
+        let stroke = Stroke::new(1.0 / ui.pixels_per_point(), palette.border);
+        let y = painter.round_to_pixel_center(foot - 0.5);
+        painter.hline(view.x_range(), y, stroke);
+    }
 }
 
 /// The search field: the look's search field, or Omarchy's `/` line with
