@@ -1521,7 +1521,9 @@ async fn a_script_keeps_no_lock() {
         .unwrap();
     // A named lock outlives a ROLLBACK, and a transaction left open would
     // keep the table's metadata lock: after a run that worked and one that
-    // failed, the session holds neither.
+    // failed, the session holds neither. The rollback comes before the
+    // outcome; the reset that drops the named lock follows it, before the
+    // session's next use, which waits for it.
     for (text, results) in [
         (
             "SELECT * FROM script_lock_probe; SELECT GET_LOCK('tabletist_script_lock', 0)",
@@ -1534,6 +1536,7 @@ async fn a_script_keeps_no_lock() {
     ] {
         let outcome = run(&connection, text, 10).await.unwrap();
         assert_eq!(outcome.results.len(), results, "{text}: {outcome:?}");
+        connection.list_schemas().await.unwrap();
         let free: Option<i64> = admin
             .query_first("SELECT IS_FREE_LOCK('tabletist_script_lock')")
             .await

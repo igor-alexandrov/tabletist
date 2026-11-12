@@ -655,6 +655,9 @@ enum CancelInner {
         server: String,
         /// The connection the cancels go through (see `mysql::cancel`).
         spare: mysql::Spare,
+        /// Whether a run's reset goes on, which a cancel waits for (see
+        /// `mysql::Resetting`).
+        resetting: tokio::sync::watch::Receiver<bool>,
     },
     /// Boxed: a BigQuery client is much larger than the other handles.
     BigQuery(Box<bigquery::Cancel>),
@@ -672,7 +675,8 @@ impl CancelHandle {
                 id,
                 server,
                 spare,
-            } => mysql::cancel(opts, *id, server, spare).await,
+                resetting,
+            } => mysql::cancel_session(opts, *id, server, spare, resetting).await,
             CancelInner::Postgres(cancel) => cancel.cancel().await,
             CancelInner::BigQuery(cancel) => cancel.cancel().await,
         }

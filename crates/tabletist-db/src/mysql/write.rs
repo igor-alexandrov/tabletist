@@ -91,18 +91,19 @@ impl Conn {
             deletes: &deletes,
             hold: hold.as_ref(),
         };
-        let mut conn = self.conn.lock().await;
+        let mut session = self.conn.lock().await;
+        let conn = session.conn()?;
         // Stopped before it began: nothing is sent.
         not_stopped(stop)?;
         let started = Instant::now();
         // Asked before the transaction, so that the usual refusal costs no
         // lock; asked again inside it, where the answer holds (see `apply`).
-        transactional(&mut conn, &changes.object).await?;
+        transactional(conn, &changes.object).await?;
         not_stopped(stop)?;
         // From here every path ends the transaction, whatever of it began:
         // a `begin` whose status check failed has one open too.
-        let applied = match begin(&mut conn).await {
-            Ok(()) => apply(&mut conn, changes, written, stop).await,
+        let applied = match begin(conn).await {
+            Ok(()) => apply(conn, changes, written, stop).await,
             Err(error) => Err(error),
         };
         // The last moment a stop is heard. Once COMMIT is sent the save is
@@ -115,13 +116,11 @@ impl Conn {
         // after it. A cancel meant for a statement can land on a rollback:
         // it runs once more.
         let ended = match &applied {
-            Ok(Applied::Rows(_)) => match execute(&mut conn, COMMIT).await {
+            Ok(Applied::Rows(_)) => match execute(conn, COMMIT).await {
                 Ok(()) => Ok(None),
-                Err(refused) => {
-                    retry_cancelled!(execute(&mut conn, ROLLBACK)).map(|()| Some(refused))
-                }
+                Err(refused) => retry_cancelled!(execute(conn, ROLLBACK)).map(|()| Some(refused)),
             },
-            _ => retry_cancelled!(execute(&mut conn, ROLLBACK)).map(|()| None),
+            _ => retry_cancelled!(execute(conn, ROLLBACK)).map(|()| None),
         };
         // Looked at before `applied`: a transaction that could not be ended
         // closes the session whatever the save itself came to. Left open, it
