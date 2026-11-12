@@ -387,9 +387,9 @@ fn opened(read_only: Option<i64>, status: StatusFlags) -> Result<()> {
 
 /// One statement's answer in a message of several.
 #[derive(Debug)]
-struct Answer {
+pub(super) struct Answer {
     /// Its rows: none for a statement that answers without.
-    rows: Vec<mysql_async::Row>,
+    pub(super) rows: Vec<mysql_async::Row>,
     /// The server's status as the driver had it once the answer was read.
     /// For a statement without rows that is its own; for one with rows only
     /// when it is the message's last, since reading its end also reads the
@@ -400,7 +400,7 @@ struct Answer {
 /// What the server answered to `steps`, sent as one message: an answer for
 /// each statement up to the one that failed, and that one's error. The
 /// server runs them in order and stops at the first that fails.
-async fn answers(
+pub(super) async fn answers(
     conn: &mut mysql_async::Conn,
     steps: &[String],
 ) -> (Vec<Answer>, Option<mysql_async::Error>) {
