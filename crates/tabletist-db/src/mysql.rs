@@ -2394,7 +2394,8 @@ mod tests {
     }
 
     /// A spare that signs in and then does not answer its server check is
-    /// given up on in time: the session's open holds the lock meanwhile.
+    /// given up on in time: a cancel that opens its own spare holds the lock
+    /// meanwhile.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_spare_whose_check_does_not_answer_is_given_up_in_time() {
         let Some(url) = test_url() else {
