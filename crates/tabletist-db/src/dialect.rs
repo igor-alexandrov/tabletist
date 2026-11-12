@@ -1279,11 +1279,23 @@ impl Dialect {
     ) -> Result<Sql> {
         let mut binds = Binds::default();
         let mut text = self.rows_statement(query, key, classes, &mut binds)?;
-        text.push_str(&format!(
-            " LIMIT {} OFFSET {}",
-            u64::from(query.limit) + 1,
-            query.offset
-        ));
+        let limit = u64::from(query.limit) + 1;
+        match self {
+            // Bound: every page of a query is then one statement, which
+            // the driver keeps prepared, so a next page is not prepared
+            // again (a round trip far from the server).
+            Self::MySql => {
+                text.push_str(" LIMIT ? OFFSET ?");
+                for number in [limit, query.offset] {
+                    binds
+                        .params
+                        .push(Value::Int(i64::try_from(number).unwrap_or(i64::MAX)));
+                }
+            }
+            Self::Postgres | Self::Sqlite | Self::BigQuery => {
+                text.push_str(&format!(" LIMIT {limit} OFFSET {}", query.offset));
+            }
+        }
         Ok(Sql {
             text,
             params: binds.params,
@@ -1777,13 +1789,16 @@ mod tests {
             column: "email".into(),
             dir: SortDir::Desc,
         }];
+        q.offset = 600;
         let sql = Dialect::MySql
             .select_rows(&q, &["id".into()], &[])
             .expect("a test's filters read");
         assert_eq!(
             sql.text,
-            "SELECT * FROM `public`.`users` ORDER BY `email` DESC, `id` ASC LIMIT 301 OFFSET 0"
+            "SELECT * FROM `public`.`users` ORDER BY `email` DESC, `id` ASC LIMIT ? OFFSET ?"
         );
+        // Bound, so every page of the query is one prepared statement.
+        assert_eq!(sql.params, [Value::Int(301), Value::Int(600)]);
     }
 
     #[test]
@@ -1910,7 +1925,11 @@ mod tests {
             "{}",
             my.text
         );
-        assert_eq!(my.params, vec![text("18"), text("bob")]);
+        // Then the page's LIMIT and OFFSET.
+        assert_eq!(
+            my.params,
+            vec![text("18"), text("bob"), Value::Int(301), Value::Int(0)]
+        );
     }
 
     #[test]
@@ -2042,13 +2061,22 @@ mod tests {
                 "{}",
                 sql.text
             );
-            assert_eq!(sql.params, vec![bytes(&UUID_BYTES), text(UUID)]);
+            // MySQL binds the page's LIMIT and OFFSET after them.
+            let page = match dialect {
+                Dialect::MySql => vec![Value::Int(301), Value::Int(0)],
+                Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => Vec::new(),
+            };
+            assert_eq!(
+                sql.params,
+                [vec![bytes(&UUID_BYTES), text(UUID)], page].concat()
+            );
             // The count asks the same.
             let count = dialect
                 .count_rows(&q, &binary)
                 .expect("a test's filters read");
             assert!(count.text.ends_with(&format!("WHERE {id} IN (?, ?)")));
-            assert_eq!(count.params, sql.params);
+            // Without the page's.
+            assert_eq!(count.params, [bytes(&UUID_BYTES), text(UUID)]);
         }
         let pg = Dialect::Postgres
             .select_rows(&q, &[], &binary)
@@ -2102,6 +2130,8 @@ mod tests {
                 text("7"),
                 bytes(&[0xca, 0xfe]),
                 text("0xcafe"),
+                Value::Int(301),
+                Value::Int(0),
             ]
         );
     }

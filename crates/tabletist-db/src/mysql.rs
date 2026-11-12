@@ -1,6 +1,9 @@
 //! MySQL 8.0+. Rows and catalog queries use prepared statements (the binary
 //! protocol): typed values, column types, and never more than one statement.
-//! Rows are read inside a read-only transaction. A SQL editor script runs
+//! The catalog questions about a table that go out together (its structure,
+//! what a page is built from) are the exception: fixed text, sent several
+//! to a message, with the names in them as hex literals (`inlined`). Rows
+//! are read inside a read-only transaction. A SQL editor script runs
 //! its statements the same way, in one read-only transaction, and the
 //! session is reset afterwards: MySQL session state is not transactional.
 //!
@@ -42,6 +45,293 @@ type ColumnRow = (
     String,
     String,
 );
+
+// The catalog questions about a table. Each has a `?` for the schema and
+// then one for the table, and no other `?`: bound one by one, or given as
+// literals in a message of several (see `inlined`).
+
+/// A table's columns, as [`ColumnRow`]s.
+const COLUMNS: &str = "SELECT column_name, column_type, is_nullable, column_default, column_comment, \
+                              COALESCE(extra, ''), COALESCE(collation_name, '') \
+                       FROM information_schema.columns \
+                       WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position";
+
+/// A table's indexes, a row for each entry, as [`IndexRow`]s. The last
+/// column: whether the entry is one whole column. An expression has no
+/// column name, and an index over the first characters of a column
+/// (`sub_part`) names the column all the same.
+const INDEXES: &str = "SELECT index_name, non_unique, COALESCE(column_name, '<expression>'), \
+                              index_type, column_name IS NOT NULL AND sub_part IS NULL \
+                       FROM information_schema.statistics \
+                       WHERE table_schema = ? AND table_name = ? ORDER BY index_name, seq_in_index";
+
+/// A table's foreign keys, a row for each column, as [`KeyRow`]s.
+const KEYS_OUT: &str = "SELECT k.constraint_name, k.column_name, k.referenced_table_schema, \
+                               k.referenced_table_name, k.referenced_column_name, r.update_rule, \
+                               r.delete_rule \
+                        FROM information_schema.key_column_usage k \
+                        JOIN information_schema.referential_constraints r \
+                          ON r.constraint_schema = k.constraint_schema \
+                         AND r.constraint_name = k.constraint_name \
+                         AND r.table_name = k.table_name \
+                        WHERE k.table_schema = ? AND k.table_name = ? \
+                          AND k.referenced_table_name IS NOT NULL \
+                        ORDER BY k.constraint_name, k.ordinal_position";
+
+/// The keys that point at a table, as [`ReferencingRow`]s: the same views
+/// as [`KEYS_OUT`], asked by what a key refers to.
+const KEYS_IN: &str = "SELECT k.constraint_name, k.table_schema, k.table_name, k.column_name, \
+                              k.referenced_column_name, r.delete_rule \
+                       FROM information_schema.key_column_usage k \
+                       JOIN information_schema.referential_constraints r \
+                         ON r.constraint_schema = k.constraint_schema \
+                        AND r.constraint_name = k.constraint_name \
+                        AND r.table_name = k.table_name \
+                       WHERE k.referenced_table_schema = ? AND k.referenced_table_name = ? \
+                       ORDER BY k.table_schema, k.table_name, k.constraint_name, k.ordinal_position";
+
+/// The comment on the table itself. MySQL writes `VIEW` there for every
+/// view, and a warning for one that no longer works: nobody wrote either,
+/// so a view has none. A system view is one too, as the listing takes it.
+const COMMENT: &str = "SELECT CASE WHEN table_type LIKE '%VIEW' THEN '' \
+                              ELSE COALESCE(table_comment, '') END \
+                       FROM information_schema.tables \
+                       WHERE table_schema = ? AND table_name = ?";
+
+/// A table's primary key, its columns in the key's order.
+const PRIMARY_KEY: &str = "SELECT column_name FROM information_schema.key_column_usage \
+                           WHERE table_schema = ? AND table_name = ? \
+                             AND constraint_name = 'PRIMARY' \
+                           ORDER BY ordinal_position";
+
+/// The conditions of a table's CHECK constraints, MariaDB's way: by the
+/// table's name, since its constraint names are a table's own, so that
+/// [`MYSQL_CHECKS`] could answer with another table's. MySQL has no such
+/// column there and refuses it. A server with no list at all (MySQL
+/// before 8.0.16) refuses both, and has no CHECK that holds either.
+const MARIADB_CHECKS: &str = "SELECT check_clause FROM information_schema.check_constraints \
+                              WHERE constraint_schema = ? AND table_name = ? \
+                              ORDER BY constraint_name";
+
+/// The conditions of a table's CHECK constraints that hold, MySQL's way
+/// (see [`MARIADB_CHECKS`]).
+const MYSQL_CHECKS: &str = "SELECT cc.check_clause \
+                            FROM information_schema.table_constraints tc \
+                            JOIN information_schema.check_constraints cc \
+                              ON cc.constraint_schema = tc.constraint_schema \
+                             AND cc.constraint_name = tc.constraint_name \
+                            WHERE tc.table_schema = ? AND tc.table_name = ? \
+                              AND tc.constraint_type = 'CHECK' AND tc.enforced = 'YES' \
+                            ORDER BY cc.constraint_name";
+
+/// A table's byte string columns.
+const BINARY_COLUMNS: &str = "SELECT column_name FROM information_schema.columns \
+                              WHERE table_schema = ? AND table_name = ? AND data_type IN \
+                                    ('binary', 'varbinary', 'tinyblob', 'blob', 'mediumblob', \
+                                     'longblob')";
+
+/// An index entry as [`INDEXES`] reads it: the index, whether it allows
+/// duplicates, the column, the method, whether the entry is a whole column.
+type IndexRow = (String, i64, String, String, i64);
+
+/// A foreign key's column as [`KEYS_OUT`] reads it: the key, the column,
+/// the schema, table and column it refers to, its update and delete rules.
+type KeyRow = (String, String, String, String, String, String, String);
+
+/// A column of a key that points at the table, as [`KEYS_IN`] reads it:
+/// the key, its schema, table and column, the column it refers to, its
+/// delete rule.
+type ReferencingRow = (String, String, String, String, String, String);
+
+/// `sql`, one of the catalog questions, with each `?` in turn given as a
+/// literal of `values`: so that several go in one message, which cannot
+/// bind. The literal is the value's UTF-8 in hex after the `utf8mb4`
+/// introducer. Hex holds no quote or backslash, so no value and no
+/// `sql_mode` can change where it ends; and it is a string of the
+/// character set a bound parameter has (`NAMES`), which a column compared
+/// with it outranks just the same.
+fn inlined(sql: &str, values: &[&str]) -> String {
+    use std::fmt::Write;
+    let mut values = values.iter();
+    let mut text = String::with_capacity(sql.len() + 64);
+    for (at, piece) in sql.split('?').enumerate() {
+        if at > 0 {
+            let value = values.next().copied().unwrap_or_default();
+            text.push_str("_utf8mb4 X'");
+            for byte in value.bytes() {
+                let _ = write!(text, "{byte:02x}");
+            }
+            text.push('\'');
+        }
+        text.push_str(piece);
+    }
+    text
+}
+
+/// The questions [`Adapter::describe`] sends as one message, with the
+/// CHECK constraints asked last the way of the server `version` names;
+/// and the other way's question, asked alone where that one is refused.
+fn structure_questions(version: &str, object: &ObjectRef) -> (Vec<String>, &'static str) {
+    let (checks_first, checks_then) = if version.contains("MariaDB") {
+        (MARIADB_CHECKS, MYSQL_CHECKS)
+    } else {
+        (MYSQL_CHECKS, MARIADB_CHECKS)
+    };
+    let at = [object.schema.as_str(), object.name.as_str()];
+    let steps = [
+        COLUMNS,
+        INDEXES,
+        KEYS_OUT,
+        KEYS_IN,
+        COMMENT,
+        PRIMARY_KEY,
+        checks_first,
+    ]
+    .iter()
+    .map(|sql| inlined(sql, &at))
+    .collect();
+    (steps, checks_then)
+}
+
+/// Each row as `T` (see [`from_row`]).
+fn typed<T: mysql_async::prelude::FromRow>(rows: Vec<mysql_async::Row>) -> Result<Vec<T>> {
+    rows.into_iter().map(from_row).collect()
+}
+
+fn no_such_object(object: &ObjectRef) -> Error {
+    Error::query(format!("no such table or view: {}", object.name))
+}
+
+/// What [`Adapter::describe`] reads of a table, but its CHECK constraints.
+struct Described {
+    columns: Vec<ColumnRow>,
+    indexes: Vec<IndexRow>,
+    keys_out: Vec<KeyRow>,
+    keys_in: Vec<ReferencingRow>,
+    comment: Vec<String>,
+    primary_key: Vec<String>,
+}
+
+impl Described {
+    /// The table's structure, with the conditions of its CHECK
+    /// constraints that hold.
+    fn structure(self, checks: &[String]) -> Structure {
+        let columns = self
+            .columns
+            .into_iter()
+            .map(
+                |(name, type_name, nullable, default, comment, extra, collation)| {
+                    // A list is the app's to hold a typed value to, letter
+                    // for letter. MySQL's default collations take `Print`
+                    // for `print`, so only a text column that tells them
+                    // apart has one here.
+                    let class = column_class(Dialect::MySql, &type_name);
+                    let text = matches!(class, ColumnClass::Text { .. });
+                    let allowed_values = (text && compares_exactly(&collation))
+                        .then(|| {
+                            checks
+                                .iter()
+                                .find_map(|check| crate::check::mysql_allowed_values(check, &name))
+                        })
+                        .flatten();
+                    ColumnInfo {
+                        name,
+                        type_name,
+                        nullable: nullable == "YES",
+                        default,
+                        comment: (!comment.is_empty()).then_some(comment),
+                        allowed_values,
+                        // `VIRTUAL GENERATED`, `STORED GENERATED`, and on an older
+                        // MariaDB `VIRTUAL` or `PERSISTENT`. Not `DEFAULT_GENERATED`,
+                        // which MySQL 8 says of a default that is an expression.
+                        generated: ["VIRTUAL", "STORED", "PERSISTENT"]
+                            .iter()
+                            .any(|word| extra.to_ascii_uppercase().contains(word)),
+                        identity: extra.to_ascii_lowercase().contains("auto_increment"),
+                    }
+                },
+            )
+            .collect();
+        let mut indexes: Vec<IndexInfo> = Vec::new();
+        for (name, non_unique, column, method, whole) in self.indexes {
+            if indexes.last().is_none_or(|index| index.name != name) {
+                indexes.push(IndexInfo {
+                    primary: name == "PRIMARY",
+                    unique: non_unique == 0,
+                    method: Some(method.to_lowercase()),
+                    columns: Vec::new(),
+                    key_columns: Some(Vec::new()),
+                    partial: false,
+                    name,
+                });
+            }
+            if let Some(index) = indexes.last_mut() {
+                if whole == 0 {
+                    index.key_columns = None;
+                } else if let Some(key) = &mut index.key_columns {
+                    key.push(column.clone());
+                }
+                index.columns.push(column);
+            }
+        }
+        let mut foreign_keys: Vec<ForeignKeyInfo> = Vec::new();
+        for (name, column, ref_schema, ref_table, ref_column, on_update, on_delete) in self.keys_out
+        {
+            if foreign_keys
+                .last()
+                .is_none_or(|key| key.name.as_deref() != Some(name.as_str()))
+            {
+                foreign_keys.push(ForeignKeyInfo {
+                    name: Some(name),
+                    columns: Vec::new(),
+                    ref_schema,
+                    ref_table,
+                    ref_columns: Vec::new(),
+                    on_update,
+                    on_delete,
+                });
+            }
+            if let Some(key) = foreign_keys.last_mut() {
+                key.columns.push(column);
+                key.ref_columns.push(ref_column);
+            }
+        }
+        let mut referenced_by: Vec<ReferencingKey> = Vec::new();
+        for (name, schema, table, column, ref_column, on_delete) in self.keys_in {
+            let same = referenced_by.last().is_some_and(|key| {
+                key.name.as_deref() == Some(name.as_str())
+                    && key.schema == schema
+                    && key.table == table
+            });
+            if !same {
+                referenced_by.push(ReferencingKey {
+                    name: Some(name),
+                    schema,
+                    table,
+                    columns: Vec::new(),
+                    ref_columns: Vec::new(),
+                    on_delete,
+                });
+            }
+            if let Some(key) = referenced_by.last_mut() {
+                key.columns.push(column);
+                key.ref_columns.push(ref_column);
+            }
+        }
+        Structure {
+            columns,
+            primary_key: self.primary_key,
+            indexes,
+            foreign_keys,
+            referenced_by,
+            comment: self
+                .comment
+                .into_iter()
+                .next()
+                .filter(|comment| !comment.is_empty()),
+        }
+    }
+}
 
 /// MySQL's `binary` character set: bytes, not text.
 const BINARY_CHARSET: u16 = 63;
@@ -382,13 +672,45 @@ impl Conn {
     }
 
     pub async fn primary_key(&self, object: &ObjectRef) -> Result<Vec<String>> {
-        self.catalog(
-            "SELECT column_name FROM information_schema.key_column_usage \
-             WHERE table_schema = ? AND table_name = ? AND constraint_name = 'PRIMARY' \
-             ORDER BY ordinal_position",
-            (&object.schema, &object.name),
-        )
-        .await
+        self.catalog(PRIMARY_KEY, (&object.schema, &object.name))
+            .await
+    }
+
+    /// The conditions of `object`'s CHECK constraints as `sql` asks them
+    /// ([`MARIADB_CHECKS`] or [`MYSQL_CHECKS`]); none where the server
+    /// refuses the question.
+    async fn checks(&self, sql: &str, object: &ObjectRef) -> Result<Vec<String>> {
+        match self.catalog(sql, (&object.schema, &object.name)).await {
+            Ok(checks) => Ok(checks),
+            Err(Error::Query { .. }) => Ok(Vec::new()),
+            Err(other) => Err(other),
+        }
+    }
+
+    /// [`Adapter::describe`] as it asked before its questions went in one
+    /// message: each bound and prepared on its own, MariaDB's checks first.
+    /// What the tests hold the message's answer to.
+    #[cfg(test)]
+    async fn describe_one_by_one(&self, object: &ObjectRef) -> Result<Structure> {
+        let at = (&object.schema, &object.name);
+        let columns: Vec<ColumnRow> = self.catalog(COLUMNS, at).await?;
+        if columns.is_empty() {
+            return Err(no_such_object(object));
+        }
+        let checks = match self.catalog::<String>(MARIADB_CHECKS, at).await {
+            Ok(checks) => checks,
+            Err(Error::Query { .. }) => self.checks(MYSQL_CHECKS, object).await?,
+            Err(other) => return Err(other),
+        };
+        let described = Described {
+            columns,
+            indexes: self.catalog(INDEXES, at).await?,
+            keys_out: self.catalog(KEYS_OUT, at).await?,
+            keys_in: self.catalog(KEYS_IN, at).await?,
+            comment: self.catalog(COMMENT, at).await?,
+            primary_key: self.primary_key(object).await?,
+        };
+        Ok(described.structure(&checks))
     }
 
     /// The byte string columns a filter of `query` compares as bytes when
@@ -399,12 +721,7 @@ impl Conn {
             return Ok(Vec::new());
         }
         let names: Vec<String> = self
-            .catalog(
-                "SELECT column_name FROM information_schema.columns \
-                 WHERE table_schema = ? AND table_name = ? AND data_type IN \
-                       ('binary', 'varbinary', 'tinyblob', 'blob', 'mediumblob', 'longblob')",
-                (&query.object.schema, &query.object.name),
-            )
+            .catalog(BINARY_COLUMNS, (&query.object.schema, &query.object.name))
             .await?;
         Ok(names
             .into_iter()
@@ -488,224 +805,56 @@ impl Adapter for Conn {
             .collect())
     }
 
+    /// The structure's questions as one message (see [`inlined`]): one
+    /// round trip, where each asked on its own took one (two the first
+    /// time, to prepare it). The CHECK constraints go last: a server with
+    /// no list of them refuses that question, and everything before it has
+    /// answered by then.
     async fn describe(&self, object: &ObjectRef) -> Result<Structure> {
-        let at = (&object.schema, &object.name);
-        let columns: Vec<ColumnRow> = self
-            .catalog(
-                "SELECT column_name, column_type, is_nullable, column_default, column_comment, \
-                        COALESCE(extra, ''), COALESCE(collation_name, '') \
-                 FROM information_schema.columns \
-                 WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position",
-                at,
-            )
-            .await?;
-        if columns.is_empty() {
-            return Err(Error::query(format!(
-                "no such table or view: {}",
-                object.name
-            )));
-        }
-        // The conditions of the table's CHECK constraints that hold.
-        // MariaDB is asked first, by the table's name: its constraint
-        // names are a table's own, so MySQL's question below could answer
-        // with another table's. MySQL has no such column there and
-        // refuses, and is asked its own way. A server with no list at all
-        // (MySQL before 8.0.16) has no CHECK that holds either.
-        let of_table = self
-            .catalog::<String>(
-                "SELECT check_clause FROM information_schema.check_constraints \
-                 WHERE constraint_schema = ? AND table_name = ? \
-                 ORDER BY constraint_name",
-                at,
-            )
-            .await;
-        let checks: Vec<String> = match of_table {
-            Ok(checks) => checks,
-            Err(Error::Query { .. }) => match self
-                .catalog(
-                    "SELECT cc.check_clause \
-                     FROM information_schema.table_constraints tc \
-                     JOIN information_schema.check_constraints cc \
-                       ON cc.constraint_schema = tc.constraint_schema \
-                      AND cc.constraint_name = tc.constraint_name \
-                     WHERE tc.table_schema = ? AND tc.table_name = ? \
-                       AND tc.constraint_type = 'CHECK' AND tc.enforced = 'YES' \
-                     ORDER BY cc.constraint_name",
-                    at,
-                )
-                .await
-            {
-                Ok(checks) => checks,
-                Err(Error::Query { .. }) => Vec::new(),
-                Err(other) => return Err(other),
-            },
-            Err(other) => return Err(other),
+        let (steps, checks_then) = structure_questions(&self.version, object);
+        let (answers, error) = {
+            let mut conn = self.conn.lock().await;
+            script::answers(&mut conn, &steps).await
         };
-        let columns = columns
-            .into_iter()
-            .map(
-                |(name, type_name, nullable, default, comment, extra, collation)| {
-                    // A list is the app's to hold a typed value to, letter
-                    // for letter. MySQL's default collations take `Print`
-                    // for `print`, so only a text column that tells them
-                    // apart has one here.
-                    let class = column_class(Dialect::MySql, &type_name);
-                    let text = matches!(class, ColumnClass::Text { .. });
-                    let allowed_values = (text && compares_exactly(&collation))
-                        .then(|| {
-                            checks
-                                .iter()
-                                .find_map(|check| crate::check::mysql_allowed_values(check, &name))
-                        })
-                        .flatten();
-                    ColumnInfo {
-                        name,
-                        type_name,
-                        nullable: nullable == "YES",
-                        default,
-                        comment: (!comment.is_empty()).then_some(comment),
-                        allowed_values,
-                        // `VIRTUAL GENERATED`, `STORED GENERATED`, and on an older
-                        // MariaDB `VIRTUAL` or `PERSISTENT`. Not `DEFAULT_GENERATED`,
-                        // which MySQL 8 says of a default that is an expression.
-                        generated: ["VIRTUAL", "STORED", "PERSISTENT"]
-                            .iter()
-                            .any(|word| extra.to_ascii_uppercase().contains(word)),
-                        identity: extra.to_ascii_lowercase().contains("auto_increment"),
-                    }
-                },
-            )
-            .collect();
-        let index_rows: Vec<(String, i64, String, String, i64)> = self
-            .catalog(
-                // The last column: whether the entry is one whole column. An
-                // expression has no column name, and an index over the first
-                // characters of a column (`sub_part`) names the column all
-                // the same.
-                "SELECT index_name, non_unique, COALESCE(column_name, '<expression>'), index_type, \
-                        column_name IS NOT NULL AND sub_part IS NULL \
-                 FROM information_schema.statistics \
-                 WHERE table_schema = ? AND table_name = ? ORDER BY index_name, seq_in_index",
-                at,
-            )
-            .await?;
-        let mut indexes: Vec<IndexInfo> = Vec::new();
-        for (name, non_unique, column, method, whole) in index_rows {
-            if indexes.last().is_none_or(|index| index.name != name) {
-                indexes.push(IndexInfo {
-                    primary: name == "PRIMARY",
-                    unique: non_unique == 0,
-                    method: Some(method.to_lowercase()),
-                    columns: Vec::new(),
-                    key_columns: Some(Vec::new()),
-                    partial: false,
-                    name,
-                });
-            }
-            if let Some(index) = indexes.last_mut() {
-                if whole == 0 {
-                    index.key_columns = None;
-                } else if let Some(key) = &mut index.key_columns {
-                    key.push(column.clone());
-                }
-                index.columns.push(column);
-            }
+        let mut sets: Vec<Vec<mysql_async::Row>> =
+            answers.into_iter().map(|answer| answer.rows).collect();
+        let checks = (sets.len() == steps.len()).then(|| sets.pop()).flatten();
+        let Ok([columns, indexes, keys_out, keys_in, comment, primary_key]) =
+            <[_; 6]>::try_from(sets)
+        else {
+            // A question before the checks failed: that is the error.
+            return Err(error.map_or_else(
+                || Error::query("unexpected data from the server: an answer is missing"),
+                query_error,
+            ));
+        };
+        let described = Described {
+            columns: typed(columns)?,
+            indexes: typed(indexes)?,
+            keys_out: typed(keys_out)?,
+            keys_in: typed(keys_in)?,
+            comment: typed(comment)?,
+            primary_key: typed(primary_key)?,
+        };
+        if described.columns.is_empty() {
+            return Err(no_such_object(object));
         }
-        let key_rows: Vec<(String, String, String, String, String, String, String)> = self
-            .catalog(
-                "SELECT k.constraint_name, k.column_name, k.referenced_table_schema, \
-                        k.referenced_table_name, k.referenced_column_name, r.update_rule, r.delete_rule \
-                 FROM information_schema.key_column_usage k \
-                 JOIN information_schema.referential_constraints r \
-                   ON r.constraint_schema = k.constraint_schema AND r.constraint_name = k.constraint_name \
-                  AND r.table_name = k.table_name \
-                 WHERE k.table_schema = ? AND k.table_name = ? AND k.referenced_table_name IS NOT NULL \
-                 ORDER BY k.constraint_name, k.ordinal_position",
-                at,
-            )
-            .await?;
-        let mut foreign_keys: Vec<ForeignKeyInfo> = Vec::new();
-        for (name, column, ref_schema, ref_table, ref_column, on_update, on_delete) in key_rows {
-            if foreign_keys
-                .last()
-                .is_none_or(|key| key.name.as_deref() != Some(name.as_str()))
-            {
-                foreign_keys.push(ForeignKeyInfo {
-                    name: Some(name),
-                    columns: Vec::new(),
-                    ref_schema,
-                    ref_table,
-                    ref_columns: Vec::new(),
-                    on_update,
-                    on_delete,
-                });
+        // The server's own question for its checks answered, or it was
+        // refused: the other kind's, alone, then none (see
+        // `MARIADB_CHECKS`).
+        let checks = match (checks, error) {
+            (Some(checks), None) => typed(checks)?,
+            (_, Some(error)) => match query_error(error) {
+                Error::Query { .. } => self.checks(checks_then, object).await?,
+                other => return Err(other),
+            },
+            (None, None) => {
+                return Err(Error::query(
+                    "unexpected data from the server: an answer is missing",
+                ));
             }
-            if let Some(key) = foreign_keys.last_mut() {
-                key.columns.push(column);
-                key.ref_columns.push(ref_column);
-            }
-        }
-        // The keys that point at the table: the same views, asked by what
-        // a key refers to.
-        let referencing: Vec<(String, String, String, String, String, String)> = self
-            .catalog(
-                "SELECT k.constraint_name, k.table_schema, k.table_name, k.column_name, \
-                        k.referenced_column_name, r.delete_rule \
-                 FROM information_schema.key_column_usage k \
-                 JOIN information_schema.referential_constraints r \
-                   ON r.constraint_schema = k.constraint_schema AND r.constraint_name = k.constraint_name \
-                  AND r.table_name = k.table_name \
-                 WHERE k.referenced_table_schema = ? AND k.referenced_table_name = ? \
-                 ORDER BY k.table_schema, k.table_name, k.constraint_name, k.ordinal_position",
-                at,
-            )
-            .await?;
-        let mut referenced_by: Vec<ReferencingKey> = Vec::new();
-        for (name, schema, table, column, ref_column, on_delete) in referencing {
-            let same = referenced_by.last().is_some_and(|key| {
-                key.name.as_deref() == Some(name.as_str())
-                    && key.schema == schema
-                    && key.table == table
-            });
-            if !same {
-                referenced_by.push(ReferencingKey {
-                    name: Some(name),
-                    schema,
-                    table,
-                    columns: Vec::new(),
-                    ref_columns: Vec::new(),
-                    on_delete,
-                });
-            }
-            if let Some(key) = referenced_by.last_mut() {
-                key.columns.push(column);
-                key.ref_columns.push(ref_column);
-            }
-        }
-        // The comment on the table itself. MySQL writes `VIEW` there for
-        // every view, and a warning for one that no longer works: nobody
-        // wrote either, so a view has none. A system view is one too, as
-        // the listing takes it.
-        let comment = self
-            .catalog::<String>(
-                "SELECT CASE WHEN table_type LIKE '%VIEW' THEN '' \
-                        ELSE COALESCE(table_comment, '') END \
-                 FROM information_schema.tables \
-                 WHERE table_schema = ? AND table_name = ?",
-                at,
-            )
-            .await?
-            .into_iter()
-            .next()
-            .filter(|comment| !comment.is_empty());
-        Ok(Structure {
-            columns,
-            primary_key: self.primary_key(object).await?,
-            indexes,
-            foreign_keys,
-            referenced_by,
-            comment,
-        })
+        };
+        Ok(described.structure(&checks))
     }
 
     /// `SHOW CREATE TABLE`, or `SHOW CREATE VIEW` for a view, as the
@@ -725,19 +874,21 @@ impl Adapter for Conn {
 
     /// One page, through a prepared statement inside a read-only
     /// transaction. Reading stops after `limit + 1` rows.
+    ///
+    /// The primary key, and the byte string columns a filter needs, are
+    /// asked in the message that starts the transaction.
     async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
-        let key = self.primary_key(&query.object).await?;
-        let binary = self.binary_columns(query).await?;
-        let sql = Dialect::MySql.select_rows(query, &key, &binary)?;
         let limit = query.limit as usize;
         let mut conn = self.conn.lock().await;
         let started = Instant::now();
         let outcome = async {
-            begin_read(&mut conn).await?;
-            read_page(&mut conn, &sql, limit).await
+            let (key, binary) = begin_shaped(&mut conn, query, true).await?;
+            let sql = Dialect::MySql.select_rows(query, &key, &binary)?;
+            let page = read_page(&mut conn, &sql, limit).await?;
+            Ok((page, key))
         }
         .await;
-        let (columns, mut rows) = end_read(&mut conn, outcome).await?;
+        let ((columns, mut rows), key) = end_read(&mut conn, outcome).await?;
         let has_more = rows.len() > limit;
         rows.truncate(limit);
         Ok(RowPage {
@@ -786,11 +937,10 @@ impl Adapter for Conn {
     }
 
     async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
-        let binary = self.binary_columns(query).await?;
-        let sql = Dialect::MySql.count_rows(query, &binary)?;
         let mut conn = self.conn.lock().await;
         let outcome = async {
-            begin_read(&mut conn).await?;
+            let (_, binary) = begin_shaped(&mut conn, query, false).await?;
+            let sql = Dialect::MySql.count_rows(query, &binary)?;
             count(&mut conn, &sql).await
         }
         .await;
@@ -1127,10 +1277,72 @@ async fn nth_text(conn: &mut mysql_async::Conn, sql: &str, index: usize) -> Resu
 /// start does: the server's status after the last query says so, with no
 /// question of its own.
 async fn begin_read(conn: &mut mysql_async::Conn) -> Result<()> {
+    begin_read_asking(conn, &[]).await.map(drop)
+}
+
+/// [`begin_read`], with catalog `questions` asked inside the transaction
+/// in the same message: their rows, a set for each. They run only once
+/// the transaction has started: the server stops a message at the first
+/// statement that fails. The rollback of a transaction left open goes in
+/// the message too.
+async fn begin_read_asking(
+    conn: &mut mysql_async::Conn,
+    questions: &[String],
+) -> Result<Vec<Vec<mysql_async::Row>>> {
+    let mut steps = Vec::with_capacity(questions.len() + 2);
     if status(conn).contains(StatusFlags::SERVER_STATUS_IN_TRANS) {
-        execute(conn, write::ROLLBACK).await?;
+        steps.push(write::ROLLBACK.to_owned());
     }
-    execute(conn, "START TRANSACTION READ ONLY").await
+    steps.push("START TRANSACTION READ ONLY".to_owned());
+    let started = steps.len();
+    steps.extend_from_slice(questions);
+    let (answers, error) = script::answers(conn, &steps).await;
+    if let Some(error) = error {
+        return Err(query_error(error));
+    }
+    if answers.len() != steps.len() {
+        return Err(Error::query(
+            "unexpected data from the server: an answer is missing",
+        ));
+    }
+    Ok(answers
+        .into_iter()
+        .skip(started)
+        .map(|answer| answer.rows)
+        .collect())
+}
+
+/// Starts a read of `query` (see [`begin_read_asking`]), asking in the
+/// same message what its statement is built from: the primary key, when
+/// `key`, and the byte string columns when a filter's value reads as
+/// bytes.
+async fn begin_shaped(
+    conn: &mut mysql_async::Conn,
+    query: &RowQuery,
+    key: bool,
+) -> Result<(Vec<String>, Vec<(String, ColumnClass)>)> {
+    let at = [query.object.schema.as_str(), query.object.name.as_str()];
+    let binary = crate::dialect::reads_bytes(query);
+    let questions: Vec<String> = [(key, PRIMARY_KEY), (binary, BINARY_COLUMNS)]
+        .into_iter()
+        .filter(|(asked, _)| *asked)
+        .map(|(_, sql)| inlined(sql, &at))
+        .collect();
+    let mut sets = begin_read_asking(conn, &questions).await?.into_iter();
+    let key = if key {
+        typed(sets.next().unwrap_or_default())?
+    } else {
+        Vec::new()
+    };
+    let binary = if binary {
+        typed::<String>(sets.next().unwrap_or_default())?
+            .into_iter()
+            .map(|name| (name, ColumnClass::Binary))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Ok((key, binary))
 }
 
 /// Ends a read's transaction whatever happened inside it, so that a failed
@@ -3058,8 +3270,9 @@ mod tests {
     }
 
     /// Each read starts its read-only transaction in one statement and ends
-    /// it with one: a page is the key, the start, the statement and the
-    /// end, once the driver has its statements prepared.
+    /// it with one: a page is the start (with the key asked in its
+    /// message), the statement and the end, once the driver has its
+    /// statements prepared.
     #[tokio::test]
     async fn a_read_starts_its_transaction_in_one_statement() {
         use std::sync::atomic::Ordering;
@@ -3096,12 +3309,208 @@ mod tests {
                     // The DDL: its kind, `SHOW CREATE TABLE`, its triggers.
                     assert_eq!(
                         (fetched, counted_rows, looked_up, shown),
-                        (4, 3, 3, 5),
+                        (3, 3, 3, 5),
                         "{access:?}"
                     );
                 }
             }
             assert!(!in_transaction(&conn).await, "{access:?}");
+        }
+    }
+
+    /// Opening a table asks the server four times: its structure in one
+    /// message, then a page in three (the start with the key asked inside
+    /// it, the execute, the rollback), and once more for the page's prepare
+    /// the first time. A next page is the same prepared statement.
+    #[tokio::test]
+    async fn opening_a_table_asks_the_server_four_times() {
+        use std::sync::atomic::Ordering;
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = trips(&url).await;
+        for access in [Access::ReadOnly, Access::Writable] {
+            let (conn, asked) = counted_session(&url, access).await;
+            let mut trips = Vec::new();
+            // A fresh session, the same table again, then its next page.
+            for (describe, offset) in [(true, 0), (true, 0), (false, 1)] {
+                let before = asked.load(Ordering::SeqCst);
+                if describe {
+                    let structure = conn.describe(&object).await.unwrap();
+                    assert_eq!(structure.primary_key, ["id"]);
+                }
+                let described = asked.load(Ordering::SeqCst) - before;
+                let before = asked.load(Ordering::SeqCst);
+                let mut page = RowQuery::new(object.clone(), 1);
+                page.offset = offset;
+                let rows = conn.fetch_rows(&page).await.unwrap();
+                assert_eq!(rows.rows.len(), 1);
+                assert!(rows.has_more && rows.ordered_by_key);
+                assert_eq!(rows.rows[0][0], Value::Int(offset as i64 + 1));
+                trips.push((described, asked.load(Ordering::SeqCst) - before));
+            }
+            assert_eq!(trips, [(1, 4), (1, 3), (0, 3)], "{access:?}");
+            assert!(!in_transaction(&conn).await, "{access:?}");
+        }
+    }
+
+    /// A table with a name only hex keeps whole: a quote, a double quote,
+    /// backticks, a backslash, non-ASCII letters.
+    const ODD: &str = r#"it's "odd" `tick` \ é✓"#;
+
+    /// The structure read in one message is the one each question bound
+    /// and prepared on its own read, as `describe` did before: on a table
+    /// with CHECK constraints (one a list of values), a generated and an
+    /// auto-increment column, comments, a composite primary key out of
+    /// column order, indexes over a prefix and over two columns, a foreign
+    /// key out and one in; on its parent and its child, a view, a missing
+    /// table, and a name in the wrong case. One round trip each.
+    #[tokio::test]
+    async fn the_structure_is_the_same_in_one_message() {
+        use std::sync::atomic::Ordering;
+        let Some(url) = test_url() else {
+            return;
+        };
+        let odd = format!("`{}`", ODD.replace('`', "``"));
+        let schema = {
+            let _turn = TRIPS.lock().await;
+            let opts = Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+            let mut admin = mysql_async::Conn::new(opts).await.unwrap();
+            admin
+                .query_drop(format!(
+                    r#"DROP VIEW IF EXISTS open_view;
+                       DROP TABLE IF EXISTS open_child, {odd}, open_parent;
+                       CREATE TABLE open_parent (
+                           a int NOT NULL, b varchar(10) NOT NULL, PRIMARY KEY (b, a)
+                       ) COMMENT 'the parent''s';
+                       CREATE TABLE {odd} (
+                           id int NOT NULL AUTO_INCREMENT,
+                           pa int NOT NULL,
+                           pb varchar(10) NOT NULL,
+                           kind varchar(10) COLLATE utf8mb4_bin NOT NULL DEFAULT 'print'
+                               COMMENT 'it''s the kind',
+                           name varchar(40) NULL,
+                           twice int AS (pa * 2) VIRTUAL,
+                           PRIMARY KEY (pb, id),
+                           KEY by_id (id),
+                           UNIQUE KEY by_name (name(5)),
+                           KEY by_kind (kind, pa),
+                           CONSTRAINT kind_ok CHECK (kind IN ('print', 'ebook')),
+                           CONSTRAINT pa_positive CHECK (pa > 0),
+                           CONSTRAINT to_parent FOREIGN KEY (pb, pa) REFERENCES open_parent (b, a)
+                               ON DELETE CASCADE ON UPDATE RESTRICT
+                       ) COMMENT 'odd ''one'' \\ ✓';
+                       CREATE TABLE open_child (
+                           x int PRIMARY KEY, odd_pb varchar(10), odd_id int,
+                           CONSTRAINT to_odd FOREIGN KEY (odd_pb, odd_id) REFERENCES {odd} (pb, id)
+                               ON DELETE SET NULL
+                       );
+                       CREATE VIEW open_view AS SELECT * FROM open_parent"#
+                ))
+                .await
+                .unwrap();
+            admin
+                .query_first::<String, _>("SELECT DATABASE()")
+                .await
+                .unwrap()
+                .unwrap()
+        };
+        let (conn, asked) = counted_session(&url, Access::ReadOnly).await;
+        let object = |name: &str| ObjectRef {
+            schema: schema.clone(),
+            name: name.to_owned(),
+        };
+        let odd = conn.describe(&object(ODD)).await.unwrap();
+        assert_eq!(odd.primary_key, ["pb", "id"]);
+        assert_eq!(odd.comment.as_deref(), Some(r"odd 'one' \ ✓"));
+        let kind = &odd.columns[3];
+        assert_eq!(kind.comment.as_deref(), Some("it's the kind"));
+        assert_eq!(
+            kind.allowed_values.as_deref(),
+            Some(&["print".to_owned(), "ebook".to_owned()][..])
+        );
+        assert!(odd.columns[0].identity && odd.columns[5].generated);
+        // InnoDB's own index for the key to the parent is the fifth.
+        assert_eq!(odd.indexes.len(), 5);
+        assert_eq!(odd.foreign_keys[0].ref_columns, ["b", "a"]);
+        assert_eq!(odd.referenced_by[0].columns, ["odd_pb", "odd_id"]);
+        for name in [
+            ODD,
+            "open_parent",
+            "open_child",
+            "open_view",
+            "open_nope",
+            "OPEN_PARENT",
+        ] {
+            let before = asked.load(Ordering::SeqCst);
+            let described = conn.describe(&object(name)).await;
+            assert_eq!(asked.load(Ordering::SeqCst) - before, 1, "{name}");
+            assert_eq!(
+                described,
+                conn.describe_one_by_one(&object(name)).await,
+                "{name}"
+            );
+        }
+    }
+
+    /// A server that refuses the checks question (one with no list of
+    /// them) still gives the rest of the structure, after asking the other
+    /// way; one that refuses a question before it fails the structure.
+    /// The proxy swaps the message for one whose question names a view
+    /// that does not exist.
+    #[tokio::test]
+    async fn a_refused_question_in_the_structure_s_message() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = trips(&url).await;
+        let (checked, _) = counted_session(&url, Access::ReadOnly).await;
+        let expected = checked.describe_one_by_one(&object).await.unwrap();
+        let (steps, _) = structure_questions(&checked.version, &object);
+        let sent: &'static str = Box::leak(steps.join("; ").into_boxed_str());
+        for (view, fails) in [
+            ("information_schema.check_constraints", false),
+            ("information_schema.columns", true),
+        ] {
+            let instead: &'static str = Box::leak(
+                sent.replace(view, "information_schema.no_such_view")
+                    .into_boxed_str(),
+            );
+            assert_ne!(instead, sent);
+            let (conn, _) = swapping_session(&url, Access::ReadOnly, (sent, instead)).await;
+            let described = conn.describe(&object).await;
+            if fails {
+                assert!(
+                    matches!(described, Err(Error::Query { .. })),
+                    "{described:?}"
+                );
+            } else {
+                // `trips` has no CHECK, so no list of values either way.
+                assert_eq!(described.as_ref(), Ok(&expected));
+            }
+        }
+    }
+
+    /// Each value goes in as hex after the `utf8mb4` introducer, in turn.
+    #[test]
+    fn a_catalog_question_takes_its_values_as_hex() {
+        assert_eq!(
+            inlined("a = ? AND b = ? ORDER BY c", &["x'", "é"]),
+            "a = _utf8mb4 X'7827' AND b = _utf8mb4 X'c3a9' ORDER BY c"
+        );
+        for sql in [
+            COLUMNS,
+            INDEXES,
+            KEYS_OUT,
+            KEYS_IN,
+            COMMENT,
+            PRIMARY_KEY,
+            MARIADB_CHECKS,
+            MYSQL_CHECKS,
+            BINARY_COLUMNS,
+        ] {
+            assert_eq!(sql.matches('?').count(), 2, "{sql}");
+            assert!(!inlined(sql, &["s", "t"]).contains('?'), "{sql}");
         }
     }
 
