@@ -231,6 +231,39 @@ async fn a_user_is_required() {
 
 use tabletist_db::ObjectRef;
 
+/// A binary column's default is in hex on both servers, as MySQL gives
+/// it: MariaDB's quoted literal is read, and a BINARY(n)'s without the
+/// zero bytes it is padded with.
+#[tokio::test]
+async fn a_binary_default_is_hex_on_both_servers() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    on_its_own_tables(
+        "binary_defaults",
+        &["CREATE TABLE binary_defaults (
+               id INT PRIMARY KEY,
+               fixed BINARY(4) DEFAULT 'ab',
+               blank BINARY(3) DEFAULT '',
+               vary VARBINARY(4) DEFAULT 'ab'
+           )"],
+        async {
+            let structure = connection
+                .describe(&ObjectRef::new("tabletist", "binary_defaults"))
+                .await
+                .unwrap();
+            let default = |name: &str| {
+                let column = structure.columns.iter().find(|c| c.name == name);
+                column.unwrap().default.clone()
+            };
+            assert_eq!(default("fixed").as_deref(), Some("0x6162"));
+            assert_eq!(default("blank").as_deref(), Some("0x"));
+            assert_eq!(default("vary").as_deref(), Some("0x6162"));
+        },
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn users_structure_has_full_types_comments_key_and_indexes() {
     let Some(connection) = connect().await else {
@@ -251,20 +284,17 @@ async fn users_structure_has_full_types_comments_key_and_indexes() {
     assert_eq!(column("id").type_name, int);
     assert!(!column("id").nullable);
     assert!(column("name").nullable);
+    // No default: MariaDB says `NULL`, which is none.
+    assert_eq!(column("name").default, None);
     assert_eq!(column("email").type_name, "varchar(255)");
     assert_eq!(column("email").comment.as_deref(), Some("Login address"));
     assert_eq!(column("balance").type_name, "decimal(14,2)");
     assert_eq!(column("counter").type_name, bigint);
     assert_eq!(column("mood").type_name, "enum('happy','sad')");
-    // As the catalog writes it: MariaDB quotes a literal, as PostgreSQL
-    // does, and a new row shows it without the quotes.
-    let created = if mariadb {
-        "'2026-01-01 00:00:00"
-    } else {
-        "2026-01-01 00:00:00"
-    };
+    // As MySQL writes it: MariaDB's quoted literal is read without its
+    // quotes.
     let default = column("created_at").default.clone().unwrap();
-    assert!(default.starts_with(created), "{default}");
+    assert!(default.starts_with("2026-01-01 00:00:00"), "{default}");
     assert_eq!(structure.primary_key, vec!["id".to_owned()]);
     let primary = structure
         .indexes
