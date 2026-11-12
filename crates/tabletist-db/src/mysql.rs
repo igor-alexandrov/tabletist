@@ -1415,22 +1415,30 @@ pub(crate) fn query_error(error: mysql_async::Error) -> Error {
 /// Stops the query thread `id` runs on the server named `server`, through
 /// the session's `spare` connection: one round trip, the KILL, where it is
 /// open. Where it is not, or the server closed it (`wait_timeout`, a
-/// restart), a new one is opened and checked, and kept for the next cancel.
+/// restart), or it does not answer in [`CONNECT_TIMEOUT`], a new one is
+/// opened and checked, and kept for the next cancel.
+///
+/// Every wait on a spare has that limit: one kept idle between cancels can
+/// sit on a path that a NAT or firewall, or a laptop's sleep, dropped
+/// without a word, and the wait for it would last minutes, while later
+/// cancels wait on the lock and `run_session` on the cancels.
 pub(crate) async fn cancel(opts: &Opts, id: u32, server: &str, spare: &Spare) -> Result<()> {
     let kill = format!("KILL QUERY {id}");
     let mut slot = spare.lock().await;
     if let Some(conn) = slot.as_mut() {
-        let killed = conn.query_drop(&kill).await;
-        if spare_answered(&killed) {
-            return killed.map_err(cancel_failed);
+        match tokio::time::timeout(CONNECT_TIMEOUT, conn.query_drop(&kill)).await {
+            Ok(killed) if spare_answered(&killed) => return killed.map_err(cancel_failed),
+            // Anything else may be a connection the server has closed,
+            // which can answer with an error of its own first (an idle one
+            // past `wait_timeout`, say), or one whose path is gone: a new
+            // one below.
+            _ => *slot = None,
         }
-        // Anything else may be a connection the server has closed, which
-        // can answer with an error of its own first (an idle one past
-        // `wait_timeout`, say): a new one below.
-        *slot = None;
     }
     let mut conn = open_spare(opts, server).await?;
-    let killed = conn.query_drop(&kill).await;
+    let Ok(killed) = tokio::time::timeout(CONNECT_TIMEOUT, conn.query_drop(&kill)).await else {
+        return Err(Error::Timeout);
+    };
     if spare_answered(&killed) {
         *slot = Some(conn);
     }
@@ -1464,15 +1472,21 @@ async fn open_checked(opts: &Opts, server: &str, settings: &str) -> Result<mysql
             Err(_) => return Err(Error::Timeout),
             Ok(result) => result.map_err(cancel_failed)?,
         };
-    let mut identity = server_identity(&mut conn, settings).await;
-    if matches!(identity, Err(Error::Query { .. })) {
-        // A server that refuses the setting still gets its spare, which
-        // then goes stale on the server's own timeout.
-        identity = server_identity(&mut conn, "").await;
-    }
+    let identity = tokio::time::timeout(CONNECT_TIMEOUT, async {
+        let identity = server_identity(&mut conn, settings).await;
+        if matches!(identity, Err(Error::Query { .. })) {
+            // A server that refuses the setting still gets its spare,
+            // which then goes stale on the server's own timeout.
+            return server_identity(&mut conn, "").await;
+        }
+        identity
+    })
+    .await;
     let checked = match identity {
-        Ok((reached, _)) => same_server(server, &reached),
-        Err(error) => Err(Error::Connect(format!("could not cancel: {error}"))),
+        // Dropped, not disconnected: the goodbye would wait as long.
+        Err(_) => return Err(Error::Timeout),
+        Ok(Ok((reached, _))) => same_server(server, &reached),
+        Ok(Err(error)) => Err(Error::Connect(format!("could not cancel: {error}"))),
     };
     match checked {
         Ok(()) => Ok(conn),
@@ -2071,6 +2085,128 @@ mod tests {
             .await
             .expect("the stopped open still holds the lock");
         assert!(slot.is_none());
+    }
+
+    /// Options that reach the test server through a proxy that passes the
+    /// sign-in, then holds back every command without closing: a path that
+    /// a NAT, or a laptop's sleep, dropped without a word.
+    async fn held_back(url: &str) -> Opts {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (spec, _) = ConnectSpec::from_url(url).unwrap();
+        let server = (spec.host.clone(), spec.port);
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (client, _) = listener.accept().await.unwrap();
+            let upstream = tokio::net::TcpStream::connect(server).await.unwrap();
+            let (mut from_client, mut to_client) = client.into_split();
+            let (mut from_server, mut to_server) = upstream.into_split();
+            tokio::spawn(async move {
+                tokio::io::copy(&mut from_server, &mut to_client).await.ok();
+            });
+            loop {
+                let mut header = [0; 4];
+                if from_client.read_exact(&mut header).await.is_err() {
+                    return;
+                }
+                let length = u32::from_le_bytes([header[0], header[1], header[2], 0]);
+                let mut body = vec![0; length as usize];
+                if from_client.read_exact(&mut body).await.is_err() {
+                    return;
+                }
+                // Every packet 0 the client sends after the handshake is a
+                // command: from the first, nothing goes on.
+                if header[3] == 0 {
+                    break;
+                }
+                if to_server.write_all(&header).await.is_err()
+                    || to_server.write_all(&body).await.is_err()
+                {
+                    return;
+                }
+            }
+            tokio::io::copy(&mut from_client, &mut tokio::io::sink())
+                .await
+                .ok();
+            drop(to_server);
+        });
+        let opts = Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+        // Given, so the driver does not ask the server for them, a command
+        // of its own, once it signed in.
+        mysql_async::OptsBuilder::from_opts(opts)
+            .ip_or_hostname("127.0.0.1")
+            .tcp_port(port)
+            .max_allowed_packet(Some(16 << 20))
+            .wait_timeout(Some(28800))
+            .into()
+    }
+
+    /// A kept spare that no longer answers is given up on in time, and the
+    /// cancel goes through a new one: it neither waits for the path to
+    /// time out nor holds the lock the next cancel waits on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_spare_that_does_not_answer_is_replaced_in_time() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let session = std::sync::Arc::new(session(&url).await);
+        // The spare's open beside the session is done.
+        spare_id(&session).await;
+        let held = tokio::time::timeout(
+            Duration::from_secs(5),
+            mysql_async::Conn::new(held_back(&url).await),
+        )
+        .await
+        .expect("the proxy held back the sign-in")
+        .unwrap();
+        let held_id = held.id();
+        *session.spare.lock().await = Some(held);
+
+        let running = {
+            let session = std::sync::Arc::clone(&session);
+            tokio::spawn(async move {
+                let mut conn = session.conn.lock().await;
+                // SLEEP answers 1 when a KILL QUERY interrupts it.
+                conn.query_first::<i64, _>("SELECT SLEEP(30)").await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let (opts, id, server) = (&session.opts, session.id, session.server.as_str());
+        let started = Instant::now();
+        tokio::time::timeout(
+            Duration::from_secs(25),
+            cancel(opts, id, server, &session.spare),
+        )
+        .await
+        .expect("the cancel waited on a spare that does not answer")
+        .unwrap();
+        assert!(started.elapsed() < CONNECT_TIMEOUT + Duration::from_secs(5));
+        assert_eq!(running.await.unwrap().unwrap(), Some(1));
+        assert_ne!(spare_id(&session).await, held_id);
+    }
+
+    /// A spare that signs in and then does not answer its server check is
+    /// given up on in time: the session's open holds the lock meanwhile.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_spare_whose_check_does_not_answer_is_given_up_in_time() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let opts = held_back(&url).await;
+        // It signs in, so it is the check that is given up on.
+        let signed_in = tokio::time::timeout(
+            Duration::from_secs(5),
+            mysql_async::Conn::new(held_back(&url).await),
+        )
+        .await;
+        assert!(signed_in.is_ok_and(|conn| conn.is_ok()));
+        let opened = tokio::time::timeout(Duration::from_secs(25), open_spare(&opts, "uuid x"))
+            .await
+            .expect("the open waited on a check that does not answer");
+        assert_eq!(opened.err(), Some(Error::Timeout));
     }
 
     #[test]
