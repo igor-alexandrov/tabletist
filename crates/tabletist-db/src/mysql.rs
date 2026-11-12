@@ -1454,12 +1454,23 @@ fn spare_answered(killed: &mysql_async::Result<()>) -> bool {
 /// stays with the server it reached, so the check holds for as long as it
 /// is kept.
 async fn open_spare(opts: &Opts, server: &str) -> Result<mysql_async::Conn> {
+    open_checked(opts, server, SPARE_SETTINGS).await
+}
+
+/// [`open_spare`] with `settings` sent before the check.
+async fn open_checked(opts: &Opts, server: &str, settings: &str) -> Result<mysql_async::Conn> {
     let mut conn =
         match tokio::time::timeout(CONNECT_TIMEOUT, mysql_async::Conn::new(opts.clone())).await {
             Err(_) => return Err(Error::Timeout),
             Ok(result) => result.map_err(cancel_failed)?,
         };
-    let checked = match server_identity(&mut conn, "").await {
+    let mut identity = server_identity(&mut conn, settings).await;
+    if matches!(identity, Err(Error::Query { .. })) {
+        // A server that refuses the setting still gets its spare, which
+        // then goes stale on the server's own timeout.
+        identity = server_identity(&mut conn, "").await;
+    }
+    let checked = match identity {
         Ok((reached, _)) => same_server(server, &reached),
         Err(error) => Err(Error::Connect(format!("could not cancel: {error}"))),
     };
@@ -1471,6 +1482,16 @@ async fn open_spare(opts: &Opts, server: &str) -> Result<mysql_async::Conn> {
         }
     }
 }
+
+/// Sent with the spare's server check, in the same message. The server
+/// closes a connection idle past `wait_timeout`, which a hosted server
+/// often sets to minutes, and a spare is idle between cancels: the cancel
+/// after that signs in again, several round trips, and is the late one
+/// that `run_session` waits for longest. Raised to MySQL's default of
+/// eight hours, never lowered. The session's own setting needs no
+/// privilege.
+const SPARE_SETTINGS: &str =
+    "SET SESSION wait_timeout = CAST(GREATEST(@@session.wait_timeout, 28800) AS UNSIGNED); ";
 
 fn cancel_failed(error: mysql_async::Error) -> Error {
     Error::Connect(format!("could not cancel: {error}"))
@@ -1918,6 +1939,68 @@ mod tests {
         );
         assert!(spare.lock().await.is_none());
         assert_eq!(running.await.unwrap().unwrap(), Some(0));
+    }
+
+    /// The session's options with `init` run as each connection opens:
+    /// the spare's server sets that session's timeout so.
+    fn opts_with(session: &Conn, init: &str) -> Opts {
+        mysql_async::OptsBuilder::from_opts(session.opts.clone())
+            .init(vec![init])
+            .into()
+    }
+
+    /// A spare stays open past a short `wait_timeout`: a hosted server's
+    /// can be minutes, and a cancel after it would sign in again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_spare_outlives_a_short_wait_timeout() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let session = session(&url).await;
+        let opts = opts_with(&session, "SET SESSION wait_timeout = 1");
+        let mut spare = open_spare(&opts, &session.server).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        let timeout: Option<u64> = spare
+            .query_first("SELECT @@session.wait_timeout")
+            .await
+            .unwrap();
+        assert_eq!(timeout, Some(28800));
+    }
+
+    /// A server whose timeout is longer than the spare's keeps its own.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_spare_keeps_a_longer_wait_timeout() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let session = session(&url).await;
+        let opts = opts_with(&session, "SET SESSION wait_timeout = 100000");
+        let mut spare = open_spare(&opts, &session.server).await.unwrap();
+        let timeout: Option<u64> = spare
+            .query_first("SELECT @@session.wait_timeout")
+            .await
+            .unwrap();
+        assert_eq!(timeout, Some(100000));
+    }
+
+    /// A server that refuses the spare's setting still gets a spare, with
+    /// the server's check made all the same.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refused_setting_still_opens_a_checked_spare() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let session = session(&url).await;
+        let refused = "SET SESSION no_such_setting = 1; ";
+        let spare = open_checked(&session.opts, &session.server, refused).await;
+        assert!(spare.is_ok(), "{:?}", spare.err());
+        let other = "uuid 00000000-0000-0000-0000-000000000000";
+        assert_eq!(
+            open_checked(&session.opts, other, refused).await.err(),
+            Some(Error::Connect(
+                "could not cancel: reached a different server".into()
+            ))
+        );
     }
 
     /// The thread id of the session's spare, once the connect has opened it.
