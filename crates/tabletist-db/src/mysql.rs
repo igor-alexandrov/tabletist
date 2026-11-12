@@ -1585,8 +1585,17 @@ fn spare_answered(killed: &mysql_async::Result<()>) -> bool {
 /// stays with the server it reached, so the check holds for as long as it
 /// is kept.
 async fn open_spare(opts: &Opts, server: &str) -> Result<mysql_async::Conn> {
-    open_checked(opts, server, SPARE_SETTINGS).await
+    let opts = OptsBuilder::from_opts(opts.clone())
+        .tcp_keepalive(Some(SPARE_KEEPALIVE))
+        .into();
+    open_checked(&opts, server, SPARE_SETTINGS).await
 }
+
+/// How long a spare is idle before the OS probes its connection. A NAT or
+/// firewall drops a quiet flow after a few minutes, often without a word,
+/// and a cancel through it then waits out `CONNECT_TIMEOUT` before it
+/// opens a new spare; probes inside that time keep the flow alive.
+const SPARE_KEEPALIVE: Duration = Duration::from_secs(60);
 
 /// [`open_spare`] with `settings` sent before the check.
 async fn open_checked(opts: &Opts, server: &str, settings: &str) -> Result<mysql_async::Conn> {
@@ -2102,6 +2111,19 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(timeout, Some(28800));
+    }
+
+    /// A spare asks the OS to probe its idle connection, so that a NAT or
+    /// firewall does not drop it between cancels.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_spare_keeps_its_idle_connection_alive() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let session = session(&url).await;
+        assert_eq!(session.opts.tcp_keepalive(), None);
+        let spare = open_spare(&session.opts, &session.server).await.unwrap();
+        assert_eq!(spare.opts().tcp_keepalive(), Some(SPARE_KEEPALIVE));
     }
 
     /// A server whose timeout is longer than the spare's keeps its own.
