@@ -93,6 +93,9 @@ SSH agent tests also need `TABLETIST_TEST_SSH_AGENT=1` and the test key in a run
 `chmod 600 crates/tabletist-db/tests/ssh/id_ed25519 && ssh-add crates/tabletist-db/tests/ssh/id_ed25519`
 (then `cargo test -p tabletist-db --lib ssh::tests::the_agent_lists_its_keys -- --ignored`).
 Without the variables those tests print "skipped" and pass; CI runs all three suites on Linux.
+The MySQL tests also run against MariaDB: `docker compose up -d --wait mariadb`, then the same
+command with `TABLETIST_TEST_MYSQL_URL=mysql://tabletist:tabletist@localhost:53307/tabletist`
+(CI's `mariadb` job). A test that expects what only one of them does asks the server's version.
 The native keyring test is `#[ignore]`d; run it by hand on a desktop session.
 
 Views draw text only through `TextRole`s (`src/typography.rs`); a view never

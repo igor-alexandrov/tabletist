@@ -16,8 +16,8 @@
   <img src="https://img.shields.io/badge/databases-PostgreSQL%20%7C%20MySQL%20%7C%20SQLite%20%7C%20BigQuery-336791" alt="Databases: PostgreSQL, MySQL, SQLite, BigQuery">
 </p>
 
-A fast, native database client for **PostgreSQL**, **MySQL**,
-**SQLite** and **BigQuery**. Written in Rust with egui; runs on
+A fast, native database client for **PostgreSQL**, **MySQL** (and
+**MariaDB**), **SQLite** and **BigQuery**. Written in Rust with egui; runs on
 Linux (Omarchy and Hyprland first), macOS and Windows. BigQuery
 connections sign in with a service-account key file or Google Cloud's
 default credentials, and open read-only (browse, filter and run SELECTs;
@@ -234,8 +234,8 @@ Tabletist's palette.
 
 ## Development
 
-See [AGENTS.md](AGENTS.md) for the test suites (including PostgreSQL, MySQL
-and SSH integration tests against `compose.yaml`) and the release process.
+See [AGENTS.md](AGENTS.md) for the test suites (including PostgreSQL, MySQL,
+MariaDB and SSH integration tests against `compose.yaml`) and the release process.
 
 ## License
 

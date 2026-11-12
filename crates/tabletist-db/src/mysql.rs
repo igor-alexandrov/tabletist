@@ -10,11 +10,11 @@
 //! its statements the same way, in one read-only transaction, and the
 //! session is reset afterwards: MySQL session state is not transactional.
 //!
-//! MariaDB is meant to work, but the tests run against MySQL only. What is
-//! written for MariaDB alone (in `script`) has never met a MariaDB server:
-//! the older name of the read-only setting (`READ_ONLY_SETTINGS`), its
-//! version for the session reset (`can_reset`), and its marking of a
-//! read-only transaction in the server status (`begin`).
+//! MariaDB too: the tests run against MariaDB 11.4 as well as MySQL. What
+//! is written for an older MariaDB alone (in `script`) has not met one
+//! yet: the older name of the read-only setting (`READ_ONLY_SETTINGS`),
+//! which MariaDB before 11.1 knows only, and the lowest version
+//! `can_reset` lets reset a session.
 
 use std::borrow::Cow;
 use std::path::Path;
