@@ -49,6 +49,9 @@ const ACCESS_DENIED: u16 = 1045;
 const QUERY_INTERRUPTED: u16 = 1317;
 const NO_SUCH_THREAD: u16 = 1094;
 const UNKNOWN_SYSTEM_VARIABLE: u16 = 1193;
+/// The server's limit on connections, all of them or one user's.
+const TOO_MANY_CONNECTIONS: u16 = 1040;
+const TOO_MANY_USER_CONNECTIONS: u16 = 1203;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -97,6 +100,84 @@ impl Drop for Opening {
 /// `None` until it is open, and after the server closed it. The lock also
 /// keeps one cancel at a time.
 pub(crate) type Spare = std::sync::Arc<tokio::sync::Mutex<Option<mysql_async::Conn>>>;
+
+/// Every session's spare in this app, for [`give_up`]: a spare
+/// holds a connection for as long as its session's cancel handles live.
+static SPARES: std::sync::Mutex<
+    Vec<std::sync::Weak<tokio::sync::Mutex<Option<mysql_async::Conn>>>>,
+> = std::sync::Mutex::new(Vec::new());
+
+/// Puts `spare` on [`SPARES`], and takes off those whose sessions are gone.
+fn kept_spares(spare: &Spare) {
+    let mut spares = SPARES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    spares.retain(|kept| kept.strong_count() > 0);
+    spares.push(std::sync::Arc::downgrade(spare));
+}
+
+/// The spares on [`SPARES`] whose sessions are still there.
+fn all_spares() -> Vec<Spare> {
+    SPARES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .filter_map(std::sync::Weak::upgrade)
+        .collect()
+}
+
+/// Closes the `spares` no cancel is using, and says whether it closed one.
+/// Each holds a connection on its server, which counts towards the
+/// server's limit on connections (often a few for one user on hosted
+/// MySQL): a session is worth more than a quicker cancel. A cancel after
+/// this opens its spare again, which a full server refuses, and then the
+/// cancel goes without one.
+async fn give_up(spares: Vec<Spare>) -> bool {
+    let mut closed = false;
+    for spare in spares {
+        // A held lock is a cancel on its way, or a spare being opened.
+        let Ok(mut slot) = spare.try_lock() else {
+            continue;
+        };
+        if let Some(conn) = slot.take() {
+            let _ = tokio::time::timeout(CONNECT_TIMEOUT, conn.disconnect()).await;
+            closed = true;
+        }
+    }
+    closed
+}
+
+/// A session's sign-in. A server at its limit on connections, where this
+/// app's spares hold some, is asked again once they are closed (see
+/// [`give_up`]): a few
+/// times, since the server lets a connection's slot go only a moment
+/// after the connection said goodbye.
+async fn sign_in(opts: Opts) -> mysql_async::Result<mysql_async::Conn> {
+    let signed_in = mysql_async::Conn::new(opts.clone()).await;
+    if !matches!(&signed_in, Err(error) if is_full(error)) || !give_up(all_spares()).await {
+        return signed_in;
+    }
+    let mut tries = 0;
+    loop {
+        let signed_in = mysql_async::Conn::new(opts.clone()).await;
+        tries += 1;
+        match signed_in {
+            Err(error) if is_full(&error) && tries < 5 => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            signed_in => return signed_in,
+        }
+    }
+}
+
+/// Whether the server refused a sign-in for its limit on connections.
+fn is_full(error: &mysql_async::Error) -> bool {
+    matches!(
+        error,
+        mysql_async::Error::Server(server)
+            if server.code == TOO_MANY_CONNECTIONS || server.code == TOO_MANY_USER_CONNECTIONS
+    )
+}
 
 impl Conn {
     /// An export's rows through a prepared statement inside a read-only
@@ -165,9 +246,7 @@ impl Conn {
         let builder = builder(spec, secrets, via);
         let with_tls: Opts = with_tls(builder.clone(), spec, via).into();
         let (mut conn, opts) =
-            match tokio::time::timeout(CONNECT_TIMEOUT, mysql_async::Conn::new(with_tls.clone()))
-                .await
-            {
+            match tokio::time::timeout(CONNECT_TIMEOUT, sign_in(with_tls.clone())).await {
                 Err(_) => return Err(Error::Timeout),
                 Ok(Ok(conn)) => (conn, with_tls),
                 // `prefer`: a server without TLS gets a plain connection.
@@ -175,12 +254,7 @@ impl Conn {
                     if spec.tls == TlsMode::Prefer =>
                 {
                     let plain: Opts = builder.ssl_opts(None::<mysql_async::SslOpts>).into();
-                    (
-                        mysql_async::Conn::new(plain.clone())
-                            .await
-                            .map_err(connect_error)?,
-                        plain,
-                    )
+                    (sign_in(plain.clone()).await.map_err(connect_error)?, plain)
                 }
                 Ok(Err(error)) => return Err(connect_error(error)),
             };
@@ -193,10 +267,12 @@ impl Conn {
         // given TLS options, so the options that connected say it.
         let encrypted = opts.ssl_opts().is_some();
         let spare = Spare::default();
+        kept_spares(&spare);
         // Opened beside the session, so connecting waits for none of it. A
         // cancel that comes first waits for it, or opens it itself. One
         // that cannot open (a limit on connections, say) leaves each cancel
-        // to open its own.
+        // to open its own; one that took the slot a later session needs is
+        // closed by that session's connect (see `sign_in`).
         let opening = (std::sync::Arc::clone(&spare), opts.clone(), server.clone());
         let opening = tokio::spawn(async move {
             let (spare, opts, server) = opening;
@@ -2085,6 +2161,85 @@ mod tests {
             .await
             .expect("the stopped open still holds the lock");
         assert!(slot.is_none());
+    }
+
+    /// Spares give up their connections for a session that a full server
+    /// refused, all but one a cancel is using; a cancel after that opens
+    /// its own again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn spares_give_their_slots_to_a_session() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let idle = session(&url).await;
+        let busy = session(&url).await;
+        let idle_id = spare_id(&idle).await;
+        spare_id(&busy).await;
+        let cancelling = busy.spare.lock().await;
+        let spares = vec![
+            std::sync::Arc::clone(&idle.spare),
+            std::sync::Arc::clone(&busy.spare),
+        ];
+        assert!(give_up(spares.clone()).await);
+        assert!(idle.spare.lock().await.is_none());
+        assert!(cancelling.is_some());
+        drop(cancelling);
+        // The server let the connection go.
+        let admin_opts =
+            mysql_async::Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+        let mut admin = mysql_async::Conn::new(admin_opts).await.unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let left: Option<u64> = admin
+                .exec_first(
+                    "SELECT id FROM information_schema.PROCESSLIST WHERE id = ?",
+                    (idle_id,),
+                )
+                .await
+                .unwrap();
+            if left.is_none() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the spare's connection stayed");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        admin.disconnect().await.unwrap();
+
+        let (opts, id, server) = (&idle.opts, idle.id, idle.server.as_str());
+        cancel(opts, id, server, &idle.spare).await.unwrap();
+        assert_ne!(spare_id(&idle).await, idle_id);
+    }
+
+    /// The list of spares lets go of the sessions that are gone.
+    #[test]
+    fn the_spares_kept_are_the_sessions_still_there() {
+        let gone = Spare::default();
+        kept_spares(&gone);
+        let weak = std::sync::Arc::downgrade(&gone);
+        drop(gone);
+        let there = Spare::default();
+        kept_spares(&there);
+        let spares = SPARES.lock().unwrap();
+        assert!(!spares.iter().any(|kept| kept.ptr_eq(&weak)));
+        assert!(
+            spares
+                .iter()
+                .any(|kept| kept.ptr_eq(&std::sync::Arc::downgrade(&there)))
+        );
+    }
+
+    #[test]
+    fn a_sign_in_the_limit_refused_is_full() {
+        let refused = |code| {
+            mysql_async::Error::Server(mysql_async::ServerError {
+                code,
+                message: String::new(),
+                state: "08004".into(),
+            })
+        };
+        assert!(is_full(&refused(TOO_MANY_CONNECTIONS)));
+        assert!(is_full(&refused(TOO_MANY_USER_CONNECTIONS)));
+        assert!(!is_full(&refused(ACCESS_DENIED)));
     }
 
     /// Options that reach the test server through a proxy that passes the
