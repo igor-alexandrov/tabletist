@@ -1099,6 +1099,17 @@ mod tests {
     /// simple queries and its prepares. Far from the server each is a round
     /// trip.
     async fn counted_session(url: &str) -> (Conn, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        proxied_session(url, None).await
+    }
+
+    /// [`counted_session`], whose proxy also sends the server `instead` for
+    /// a simple query that is exactly `sql`, given as `(sql, instead)`.
+    /// Connections after the session's, a cancel's, pass through as they
+    /// are.
+    async fn proxied_session(
+        url: &str,
+        swap: Option<(&'static str, &'static str)>,
+    ) -> (Conn, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1115,7 +1126,22 @@ mod tests {
         let count = Arc::clone(&asked);
         tokio::spawn(async move {
             let (client, _) = listener.accept().await.unwrap();
-            let upstream = tokio::net::TcpStream::connect(server).await.unwrap();
+            let upstream = tokio::net::TcpStream::connect(server.clone())
+                .await
+                .unwrap();
+            tokio::spawn(async move {
+                while let Ok((mut other, _)) = listener.accept().await {
+                    let Ok(mut upstream) = tokio::net::TcpStream::connect(server.clone()).await
+                    else {
+                        return;
+                    };
+                    tokio::spawn(async move {
+                        tokio::io::copy_bidirectional(&mut other, &mut upstream)
+                            .await
+                            .ok();
+                    });
+                }
+            });
             let (mut from_client, mut to_client) = client.into_split();
             let (mut from_server, mut to_server) = upstream.into_split();
             tokio::spawn(async move {
@@ -1134,6 +1160,13 @@ mod tests {
                 if matches!(kind, Some(b'Q' | b'P')) {
                     count.fetch_add(1, Ordering::SeqCst);
                 }
+                if let Some((sql, instead)) = swap
+                    && kind == Some(b'Q')
+                    && body.strip_suffix(b"\0") == Some(sql.as_bytes())
+                {
+                    body = [instead.as_bytes(), b"\0"].concat();
+                }
+                let length = body.len() as u32 + 4;
                 let mut message = Vec::from_iter(kind);
                 message.extend_from_slice(&length.to_be_bytes());
                 message.extend_from_slice(&body);
@@ -1214,14 +1247,80 @@ mod tests {
             .unwrap();
         assert_eq!(first_text(&taken).as_deref(), Some("t"));
 
+        other
+            .client
+            .lock()
+            .await
+            .batch_execute("SELECT pg_advisory_unlock(424243)")
+            .await
+            .unwrap();
+
         // A block with the guard's savepoint that is not read-only, as the
-        // close would find one a statement the refusal missed had made.
+        // close would find one a statement the refusal missed had made. Its
+        // lock goes too.
         client
-            .batch_execute("BEGIN READ WRITE; SAVEPOINT tabletist_guard")
+            .batch_execute(
+                "BEGIN READ WRITE; SAVEPOINT tabletist_guard; SELECT pg_advisory_lock(424244)",
+            )
             .await
             .unwrap();
         assert_eq!(close(&client, Tx::Open).await, Err(Error::LeftReadOnly));
         assert_eq!(in_transaction(&client).await, Ok(Tx::Left));
+        let taken = other
+            .client
+            .lock()
+            .await
+            .simple_query("SELECT pg_try_advisory_lock(424244), pg_advisory_unlock(424244)")
+            .await
+            .unwrap();
+        assert_eq!(first_text(&taken).as_deref(), Some("t"));
+    }
+
+    /// A cancel that lands on the close's rollback, or on its release of the
+    /// advisory locks, stops the rest of the close's message; the close runs
+    /// that step once more, so the transaction ends and the lock goes all the
+    /// same. A real `ROLLBACK` is over too soon to cancel on cue, so the
+    /// proxy sends the server a slow statement in the step's place.
+    #[tokio::test]
+    async fn a_cancel_on_the_close_runs_the_cancelled_step_again() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let other = session(&url).await;
+        let slow_rollback = "RELEASE tabletist_guard; SAVEPOINT tabletist_guard; \
+             SHOW transaction_read_only; SELECT pg_sleep(10); SELECT pg_advisory_unlock_all()";
+        let slow_release = "RELEASE tabletist_guard; SAVEPOINT tabletist_guard; \
+             SHOW transaction_read_only; ROLLBACK; SELECT pg_sleep(10)";
+        for (step, slow) in [("rollback", slow_rollback), ("release", slow_release)] {
+            let (conn, _) = proxied_session(&url, Some((CONFIRM_AND_END, slow))).await;
+            let cancel = conn.cancel_handle();
+            let client = conn.client.lock().await;
+            assert_eq!(open(&client, None).await, Ok(Tx::Open), "{step}");
+            client
+                .batch_execute("SELECT pg_advisory_lock(424245)")
+                .await
+                .unwrap();
+            let cancelling = async {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                cancel.cancel().await
+            };
+            let (closed, cancelled) = tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::join!(close(&client, Tx::Open), cancelling)
+            })
+            .await
+            .expect(step);
+            assert_eq!(cancelled, Ok(()), "{step}");
+            assert_eq!(closed, Ok(()), "{step}");
+            assert_eq!(in_transaction(&client).await, Ok(Tx::Left), "{step}");
+            let taken = other
+                .client
+                .lock()
+                .await
+                .simple_query("SELECT pg_try_advisory_lock(424245), pg_advisory_unlock(424245)")
+                .await
+                .unwrap();
+            assert_eq!(first_text(&taken).as_deref(), Some("t"), "{step}");
+        }
     }
 
     /// Statements the refusal stops long before they get here. Run past
