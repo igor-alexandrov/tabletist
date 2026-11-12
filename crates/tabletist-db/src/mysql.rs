@@ -126,35 +126,54 @@ fn all_spares() -> Vec<Spare> {
         .collect()
 }
 
-/// Closes the `spares` no cancel is using, and says whether it closed one.
-/// Each holds a connection on its server, which counts towards the
-/// server's limit on connections (often a few for one user on hosted
-/// MySQL): a session is worth more than a quicker cancel. A cancel after
-/// this opens its spare again, which a full server refuses, and then the
-/// cancel goes without one.
-async fn give_up(spares: Vec<Spare>) -> bool {
-    let mut closed = false;
-    for spare in spares {
-        // A held lock is a cancel on its way, or a spare being opened.
-        let Ok(mut slot) = spare.try_lock() else {
-            continue;
-        };
-        if let Some(conn) = slot.take() {
-            let _ = tokio::time::timeout(CONNECT_TIMEOUT, conn.disconnect()).await;
-            closed = true;
-        }
-    }
+/// Closes the `spares` on the server `refused` names (its host, port and
+/// user) that no cancel is using, and says whether it closed one. Each
+/// holds a connection there, which counts towards the server's limit on
+/// connections (often a few for one user on hosted MySQL): a session is
+/// worth more than a quicker cancel. A cancel after this opens its spare
+/// again, which a full server refuses, and then the cancel goes without
+/// one.
+async fn give_up(spares: Vec<Spare>, refused: &Opts) -> bool {
+    let same = |opts: &Opts| {
+        opts.ip_or_hostname() == refused.ip_or_hostname()
+            && opts.tcp_port() == refused.tcp_port()
+            && opts.user() == refused.user()
+    };
+    let closing: Vec<mysql_async::Conn> = spares
+        .iter()
+        .filter_map(|spare| {
+            // A held lock is a cancel on its way, or a spare being opened.
+            let mut slot = spare.try_lock().ok()?;
+            if !same(slot.as_ref()?.opts()) {
+                return None;
+            }
+            slot.take()
+        })
+        .collect();
+    let closed = !closing.is_empty();
+    // All at once, each given [`GOODBYE`]: the slot is free once the
+    // server reads the goodbye, and one sent on a path that is gone must
+    // not take the session's own time to sign in.
+    futures_util::future::join_all(
+        closing
+            .into_iter()
+            .map(|conn| tokio::time::timeout(GOODBYE, conn.disconnect())),
+    )
+    .await;
     closed
 }
 
+/// How long a spare given up is given to say goodbye. It waits for no
+/// answer: the goodbye is written, and the connection closed.
+const GOODBYE: Duration = Duration::from_secs(1);
+
 /// A session's sign-in. A server at its limit on connections, where this
 /// app's spares hold some, is asked again once they are closed (see
-/// [`give_up`]): a few
-/// times, since the server lets a connection's slot go only a moment
-/// after the connection said goodbye.
+/// [`give_up`]): a few times, since the server lets a connection's slot
+/// go only a moment after the connection said goodbye.
 async fn sign_in(opts: Opts) -> mysql_async::Result<mysql_async::Conn> {
     let signed_in = mysql_async::Conn::new(opts.clone()).await;
-    if !matches!(&signed_in, Err(error) if is_full(error)) || !give_up(all_spares()).await {
+    if !matches!(&signed_in, Err(error) if is_full(error)) || !give_up(all_spares(), &opts).await {
         return signed_in;
     }
     let mut tries = 0;
@@ -2180,7 +2199,13 @@ mod tests {
             std::sync::Arc::clone(&idle.spare),
             std::sync::Arc::clone(&busy.spare),
         ];
-        assert!(give_up(spares.clone()).await);
+        // Those of another server are left.
+        let elsewhere: Opts = mysql_async::OptsBuilder::from_opts(idle.opts.clone())
+            .tcp_port(idle.opts.tcp_port().wrapping_add(1))
+            .into();
+        assert!(!give_up(spares.clone(), &elsewhere).await);
+        assert!(idle.spare.lock().await.is_some());
+        assert!(give_up(spares.clone(), &idle.opts).await);
         assert!(idle.spare.lock().await.is_none());
         assert!(cancelling.is_some());
         drop(cancelling);
