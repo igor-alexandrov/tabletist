@@ -102,28 +102,50 @@ impl Drop for Opening {
 /// the server, and each of a cancel's waits has a limit (see [`cancel`]).
 pub(crate) type Spare = std::sync::Arc<tokio::sync::Mutex<Option<mysql_async::Conn>>>;
 
-/// Every session's spare in this app, for [`give_up`]: a spare
-/// holds a connection for as long as its session's cancel handles live.
-static SPARES: std::sync::Mutex<
-    Vec<std::sync::Weak<tokio::sync::Mutex<Option<mysql_async::Conn>>>>,
-> = std::sync::Mutex::new(Vec::new());
+/// The server a session is to and the user it signs in as: the spec's
+/// host and port, whatever tunnel the session runs through. Each session
+/// opens a tunnel of its own, so a tunnel's local port names no server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Target {
+    host: String,
+    port: u16,
+    user: String,
+}
+
+impl Target {
+    fn of(spec: &ConnectSpec) -> Self {
+        Self {
+            host: spec.host.clone(),
+            port: spec.port,
+            user: spec.user.clone(),
+        }
+    }
+}
+
+/// Every session's spare in this app, with its session's target, for
+/// [`give_up`]: a spare holds a connection for as long as its session's
+/// cancel handles live.
+static SPARES: std::sync::Mutex<Vec<(WeakSpare, Target)>> = std::sync::Mutex::new(Vec::new());
+
+/// A [`Spare`] that leaves its session to say how long it lives.
+type WeakSpare = std::sync::Weak<tokio::sync::Mutex<Option<mysql_async::Conn>>>;
 
 /// Puts `spare` on [`SPARES`], and takes off those whose sessions are gone.
-fn kept_spares(spare: &Spare) {
+fn kept_spares(spare: &Spare, target: Target) {
     let mut spares = SPARES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    spares.retain(|kept| kept.strong_count() > 0);
-    spares.push(std::sync::Arc::downgrade(spare));
+    spares.retain(|(kept, _)| kept.strong_count() > 0);
+    spares.push((std::sync::Arc::downgrade(spare), target));
 }
 
 /// The spares on [`SPARES`] whose sessions are still there.
-fn all_spares() -> Vec<Spare> {
+fn all_spares() -> Vec<(Spare, Target)> {
     SPARES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
-        .filter_map(std::sync::Weak::upgrade)
+        .filter_map(|(kept, target)| Some((kept.upgrade()?, target.clone())))
         .collect()
 }
 
@@ -135,22 +157,17 @@ fn all_spares() -> Vec<Spare> {
 /// worth more than a quicker cancel. A cancel after this opens its spare
 /// again, which a full server refuses, and then the cancel goes without
 /// one.
-async fn give_up(spares: Vec<Spare>, refused: &Opts, full: Full) -> bool {
-    let same = |opts: &Opts| {
-        opts.ip_or_hostname() == refused.ip_or_hostname()
-            && opts.tcp_port() == refused.tcp_port()
-            && (full == Full::Server || opts.user() == refused.user())
+async fn give_up(spares: Vec<(Spare, Target)>, refused: &Target, full: Full) -> bool {
+    let same = |target: &Target| {
+        target.host == refused.host
+            && target.port == refused.port
+            && (full == Full::Server || target.user == refused.user)
     };
     let closing: Vec<mysql_async::Conn> = spares
         .iter()
-        .filter_map(|spare| {
-            // A held lock is a cancel on its way.
-            let mut slot = spare.try_lock().ok()?;
-            if !same(slot.as_ref()?.opts()) {
-                return None;
-            }
-            slot.take()
-        })
+        .filter(|(_, target)| same(target))
+        // A held lock is a cancel on its way.
+        .filter_map(|(spare, _)| spare.try_lock().ok()?.take())
         .collect();
     let closed = !closing.is_empty();
     // All at once, each given [`GOODBYE`]: the slot is free once the
@@ -173,20 +190,21 @@ const GOODBYE: Duration = Duration::from_secs(1);
 /// app's spares hold some, is asked again once they are closed (see
 /// [`give_up`]): a few times, since the server lets a connection's slot
 /// go only a moment after the connection said goodbye.
-async fn sign_in(opts: Opts) -> mysql_async::Result<mysql_async::Conn> {
-    sign_in_freeing(opts, all_spares).await
+async fn sign_in(opts: Opts, target: &Target) -> mysql_async::Result<mysql_async::Conn> {
+    sign_in_freeing(opts, target, all_spares).await
 }
 
 /// [`sign_in`], freeing the slots of the `spares` it is given.
 async fn sign_in_freeing(
     opts: Opts,
-    spares: impl FnOnce() -> Vec<Spare>,
+    target: &Target,
+    spares: impl FnOnce() -> Vec<(Spare, Target)>,
 ) -> mysql_async::Result<mysql_async::Conn> {
     let signed_in = mysql_async::Conn::new(opts.clone()).await;
     let Some(limit) = signed_in.as_ref().err().and_then(full) else {
         return signed_in;
     };
-    if !give_up(spares(), &opts, limit).await {
+    if !give_up(spares(), target, limit).await {
         return signed_in;
     }
     let mut tries = 0;
@@ -291,8 +309,9 @@ impl Conn {
         }
         let builder = builder(spec, secrets, via);
         let with_tls: Opts = with_tls(builder.clone(), spec, via).into();
+        let target = Target::of(spec);
         let (mut conn, opts) =
-            match tokio::time::timeout(CONNECT_TIMEOUT, sign_in(with_tls.clone())).await {
+            match tokio::time::timeout(CONNECT_TIMEOUT, sign_in(with_tls.clone(), &target)).await {
                 Err(_) => return Err(Error::Timeout),
                 Ok(Ok(conn)) => (conn, with_tls),
                 // `prefer`: a server without TLS gets a plain connection.
@@ -300,7 +319,12 @@ impl Conn {
                     if spec.tls == TlsMode::Prefer =>
                 {
                     let plain: Opts = builder.ssl_opts(None::<mysql_async::SslOpts>).into();
-                    (sign_in(plain.clone()).await.map_err(connect_error)?, plain)
+                    (
+                        sign_in(plain.clone(), &target)
+                            .await
+                            .map_err(connect_error)?,
+                        plain,
+                    )
                 }
                 Ok(Err(error)) => return Err(connect_error(error)),
             };
@@ -313,7 +337,7 @@ impl Conn {
         // given TLS options, so the options that connected say it.
         let encrypted = opts.ssl_opts().is_some();
         let spare = Spare::default();
-        kept_spares(&spare);
+        kept_spares(&spare, target);
         // Opened beside the session, so connecting waits for none of it,
         // and without the lock: a cancel that comes first opens a spare of
         // its own rather than wait for this one, which is then let go. One
@@ -2408,19 +2432,22 @@ mod tests {
         let idle_id = spare_id(&idle).await;
         spare_id(&busy).await;
         let cancelling = busy.spare.lock().await;
+        let target = Target::of(&ConnectSpec::from_url(&url).unwrap().0);
         let spares = vec![
-            std::sync::Arc::clone(&idle.spare),
-            std::sync::Arc::clone(&busy.spare),
+            (std::sync::Arc::clone(&idle.spare), target.clone()),
+            (std::sync::Arc::clone(&busy.spare), target.clone()),
         ];
         // Those of another server are left.
-        let elsewhere: Opts = mysql_async::OptsBuilder::from_opts(idle.opts.clone())
-            .tcp_port(idle.opts.tcp_port().wrapping_add(1))
-            .into();
+        let elsewhere = Target {
+            port: target.port.wrapping_add(1),
+            ..target.clone()
+        };
         assert!(!give_up(spares.clone(), &elsewhere, Full::Server).await);
         // Another user's limit is no matter of these; the server's is.
-        let someone: Opts = mysql_async::OptsBuilder::from_opts(idle.opts.clone())
-            .user(Some("someone"))
-            .into();
+        let someone = Target {
+            user: "someone".into(),
+            ..target.clone()
+        };
         assert!(!give_up(spares.clone(), &someone, Full::User).await);
         assert!(idle.spare.lock().await.is_some());
         assert!(give_up(spares.clone(), &someone, Full::Server).await);
@@ -2522,6 +2549,7 @@ mod tests {
         let Some(url) = test_url() else {
             return;
         };
+        let target = Target::of(&ConnectSpec::from_url(&url).unwrap().0);
         for code in [TOO_MANY_CONNECTIONS, TOO_MANY_USER_CONNECTIONS] {
             let refusals = Arc::new(AtomicUsize::new(0));
             let (opts, came) = refusing(&url, code, Arc::clone(&refusals)).await;
@@ -2531,14 +2559,16 @@ mod tests {
             };
             let opened = mysql_async::Conn::new(opts.clone()).await.unwrap();
             let spare: Spare = Arc::new(tokio::sync::Mutex::new(Some(opened)));
-            let spares = || vec![Arc::clone(&spare)];
+            let spares = || vec![(Arc::clone(&spare), target.clone())];
 
             // Refused twice: the spare is closed, and the third ask, 100 ms
             // after the second, signs in.
             refusals.store(2, SeqCst);
             let before = came.load(SeqCst);
             let started = Instant::now();
-            let conn = sign_in_freeing(opts.clone(), spares).await.unwrap();
+            let conn = sign_in_freeing(opts.clone(), &target, spares)
+                .await
+                .unwrap();
             assert!(started.elapsed() >= Duration::from_millis(100));
             assert_eq!(came.load(SeqCst) - before, 3, "{code}");
             assert!(spare.lock().await.is_none());
@@ -2547,7 +2577,9 @@ mod tests {
             // No spare left to close: the refusal, asked once.
             refusals.store(1, SeqCst);
             let before = came.load(SeqCst);
-            let refused = sign_in_freeing(opts.clone(), spares).await.unwrap_err();
+            let refused = sign_in_freeing(opts.clone(), &target, spares)
+                .await
+                .unwrap_err();
             assert!(refusal(refused), "{code}");
             assert_eq!(came.load(SeqCst) - before, 1, "{code}");
 
@@ -2557,28 +2589,70 @@ mod tests {
             *spare.lock().await = Some(opened);
             refusals.store(usize::MAX, SeqCst);
             let before = came.load(SeqCst);
-            let refused = sign_in_freeing(opts.clone(), spares).await.unwrap_err();
+            let refused = sign_in_freeing(opts.clone(), &target, spares)
+                .await
+                .unwrap_err();
             assert!(refusal(refused), "{code}");
             assert_eq!(came.load(SeqCst) - before, 6, "{code}");
             assert!(spare.lock().await.is_none());
         }
     }
 
+    /// A session through a tunnel frees the spare of a session that reaches
+    /// the same server through a tunnel of its own: each tunnel has a local
+    /// port of its own, and a spare is kept with its spec's server.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tunneled_sign_in_frees_a_spare_through_another_tunnel() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+
+        let Some(url) = test_url() else {
+            return;
+        };
+        let (mut spec, secrets) = ConnectSpec::from_url(&url).unwrap();
+        spec.tls = TlsMode::Disable;
+        // A tunnel that lets every sign-in on.
+        let (tunnel, _) = refusing(&url, TOO_MANY_USER_CONNECTIONS, Arc::default()).await;
+        let session = Conn::connect(&spec, &secrets, Some(tunnel.tcp_port()), Access::ReadOnly)
+            .await
+            .unwrap();
+        spare_id(&session).await;
+        let kept: Vec<(Spare, Target)> = all_spares()
+            .into_iter()
+            .filter(|(spare, _)| Arc::ptr_eq(spare, &session.spare))
+            .collect();
+        let target = Target::of(&spec);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].1, target);
+        // Another session's tunnel, to a server at its user's limit.
+        let refusals = Arc::new(AtomicUsize::new(1));
+        let (other, _) = refusing(&url, TOO_MANY_USER_CONNECTIONS, Arc::clone(&refusals)).await;
+        assert_ne!(other.tcp_port(), tunnel.tcp_port());
+        let conn = sign_in_freeing(other, &target, || kept).await.unwrap();
+        assert!(session.spare.lock().await.is_none());
+        conn.disconnect().await.unwrap();
+    }
+
     /// The list of spares lets go of the sessions that are gone.
     #[test]
     fn the_spares_kept_are_the_sessions_still_there() {
+        let target = Target {
+            host: "db".into(),
+            port: 3306,
+            user: "app".into(),
+        };
         let gone = Spare::default();
-        kept_spares(&gone);
+        kept_spares(&gone, target.clone());
         let weak = std::sync::Arc::downgrade(&gone);
         drop(gone);
         let there = Spare::default();
-        kept_spares(&there);
+        kept_spares(&there, target);
         let spares = SPARES.lock().unwrap();
-        assert!(!spares.iter().any(|kept| kept.ptr_eq(&weak)));
+        assert!(!spares.iter().any(|(kept, _)| kept.ptr_eq(&weak)));
         assert!(
             spares
                 .iter()
-                .any(|kept| kept.ptr_eq(&std::sync::Arc::downgrade(&there)))
+                .any(|(kept, _)| kept.ptr_eq(&std::sync::Arc::downgrade(&there)))
         );
     }
 
