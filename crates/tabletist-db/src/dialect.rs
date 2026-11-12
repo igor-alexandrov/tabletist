@@ -2064,7 +2064,7 @@ mod tests {
             // MySQL binds the page's LIMIT and OFFSET after them.
             let page = match dialect {
                 Dialect::MySql => vec![Value::Int(301), Value::Int(0)],
-                _ => Vec::new(),
+                Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => Vec::new(),
             };
             assert_eq!(
                 sql.params,
