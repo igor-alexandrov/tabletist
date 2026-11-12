@@ -350,7 +350,11 @@ mod script;
 mod write;
 
 pub(crate) struct Conn {
-    pub(crate) conn: tokio::sync::Mutex<mysql_async::Conn>,
+    /// The session's connection, behind the lock every use of it takes. A
+    /// SQL editor run hands its outcome back before it lets go: the reset
+    /// that ends the run goes on under the lock in a task of its own (see
+    /// `script`), so the lock is shared with it.
+    pub(crate) conn: std::sync::Arc<tokio::sync::Mutex<Session>>,
     /// For KILL QUERY from a second connection.
     pub(crate) opts: Opts,
     /// This session's thread id on the server.
@@ -369,6 +373,56 @@ pub(crate) struct Conn {
     pub(crate) spare: Spare,
     /// The spare's open beside the session, stopped when the session is.
     _opening: Opening,
+}
+
+/// A session's connection, and whether it may still be used: the reset
+/// and the settings that end a SQL editor run go on after the run handed
+/// back its outcome, and where they fail the session is closed from then
+/// on. Every use asks for the connection through `conn`, which then
+/// answers that error, a lost connection: the backend closes the session.
+pub(crate) struct Session {
+    conn: mysql_async::Conn,
+    closed: Option<Error>,
+}
+
+impl Session {
+    fn new(conn: mysql_async::Conn) -> Self {
+        Self { conn, closed: None }
+    }
+
+    /// The connection, unless the session is closed (see `close`).
+    pub(crate) fn conn(&mut self) -> Result<&mut mysql_async::Conn> {
+        match &self.closed {
+            Some(error) => Err(error.clone()),
+            None => Ok(&mut self.conn),
+        }
+    }
+
+    /// Closes the session with `error`, which must be a lost connection:
+    /// no use of it gets the connection any more.
+    fn close(&mut self, error: Error) {
+        debug_assert!(error.is_connection_lost(), "{error:?}");
+        self.closed.get_or_insert(error);
+    }
+}
+
+/// Tests look at the connection itself, closed or not. Only there: the
+/// crate's own uses must go through `Session::conn`, and a build without
+/// tests fails where one does not.
+#[cfg(test)]
+impl std::ops::Deref for Session {
+    type Target = mysql_async::Conn;
+
+    fn deref(&self) -> &mysql_async::Conn {
+        &self.conn
+    }
+}
+
+#[cfg(test)]
+impl std::ops::DerefMut for Session {
+    fn deref_mut(&mut self) -> &mut mysql_async::Conn {
+        &mut self.conn
+    }
 }
 
 /// The task that opens a session's spare. Dropped with the session, it is
@@ -545,17 +599,18 @@ impl Conn {
         to: &tokio::sync::mpsc::Sender<crate::Streamed>,
         stop: &StopFlag,
     ) -> Result<u64> {
-        let mut conn = self.conn.lock().await;
+        let mut session = self.conn.lock().await;
+        let conn = session.conn()?;
         let streamed = async {
-            begin_read(&mut conn).await.map_err(StreamFailed::Before)?;
-            stream_into(&mut conn, sql, batch, to, stop).await
+            begin_read(conn).await.map_err(StreamFailed::Before)?;
+            stream_into(conn, sql, batch, to, stop).await
         }
         .await;
         stop.finish();
         match streamed {
-            Ok(sent) => end_read(&mut conn, Ok(sent)).await,
+            Ok(sent) => end_read(conn, Ok(sent)).await,
             // Nothing is on its way: the transaction ends here.
-            Err(StreamFailed::Before(error)) => end_read(&mut conn, Err(error))
+            Err(StreamFailed::Before(error)) => end_read(conn, Err(error))
                 .await
                 .map_err(crate::agent::over_its_time),
             // Rows the stream did not read are still on their way: a
@@ -649,7 +704,7 @@ impl Conn {
             }
         });
         Ok(Self {
-            conn: tokio::sync::Mutex::new(conn),
+            conn: std::sync::Arc::new(tokio::sync::Mutex::new(Session::new(conn))),
             opts,
             id,
             encrypted,
@@ -666,7 +721,8 @@ impl Conn {
     where
         T: mysql_async::prelude::FromRow + Send + 'static,
     {
-        let mut conn = self.conn.lock().await;
+        let mut session = self.conn.lock().await;
+        let conn = session.conn()?;
         let rows: Vec<mysql_async::Row> = conn.exec(sql, params).await.map_err(query_error)?;
         rows.into_iter().map(from_row).collect()
     }
@@ -813,8 +869,9 @@ impl Adapter for Conn {
     async fn describe(&self, object: &ObjectRef) -> Result<Structure> {
         let (steps, checks_then) = structure_questions(&self.version, object);
         let (answers, error) = {
-            let mut conn = self.conn.lock().await;
-            script::answers(&mut conn, &steps).await
+            let mut session = self.conn.lock().await;
+            let conn = session.conn()?;
+            script::answers(conn, &steps).await
         };
         let mut sets: Vec<Vec<mysql_async::Row>> =
             answers.into_iter().map(|answer| answer.rows).collect();
@@ -861,13 +918,14 @@ impl Adapter for Conn {
     /// server returns it, then `SHOW CREATE TRIGGER` for each of the
     /// table's triggers by name, in one read-only transaction.
     async fn ddl(&self, object: &ObjectRef) -> Result<Ddl> {
-        let mut conn = self.conn.lock().await;
+        let mut session = self.conn.lock().await;
+        let conn = session.conn()?;
         let outcome = async {
-            begin_read(&mut conn).await?;
-            show_create(&mut conn, object).await
+            begin_read(conn).await?;
+            show_create(conn, object).await
         }
         .await;
-        let parts = end_read(&mut conn, outcome).await?;
+        let parts = end_read(conn, outcome).await?;
         let server = version_name(&self.version);
         Ok(Ddl::new(crate::Driver::MySql, server, None, parts))
     }
@@ -879,16 +937,17 @@ impl Adapter for Conn {
     /// asked in the message that starts the transaction.
     async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
         let limit = query.limit as usize;
-        let mut conn = self.conn.lock().await;
+        let mut session = self.conn.lock().await;
+        let conn = session.conn()?;
         let started = Instant::now();
         let outcome = async {
-            let (key, binary) = begin_shaped(&mut conn, query, true).await?;
+            let (key, binary) = begin_shaped(conn, query, true).await?;
             let sql = Dialect::MySql.select_rows(query, &key, &binary)?;
-            let page = read_page(&mut conn, &sql, limit).await?;
+            let page = read_page(conn, &sql, limit).await?;
             Ok((page, key))
         }
         .await;
-        let ((columns, mut rows), key) = end_read(&mut conn, outcome).await?;
+        let ((columns, mut rows), key) = end_read(conn, outcome).await?;
         let has_more = rows.len() > limit;
         rows.truncate(limit);
         Ok(RowPage {
@@ -937,14 +996,15 @@ impl Adapter for Conn {
     }
 
     async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
-        let mut conn = self.conn.lock().await;
+        let mut session = self.conn.lock().await;
+        let conn = session.conn()?;
         let outcome = async {
-            let (_, binary) = begin_shaped(&mut conn, query, false).await?;
+            let (_, binary) = begin_shaped(conn, query, false).await?;
             let sql = Dialect::MySql.count_rows(query, &binary)?;
-            count(&mut conn, &sql).await
+            count(conn, &sql).await
         }
         .await;
-        let row = end_read(&mut conn, outcome).await?;
+        let row = end_read(conn, outcome).await?;
         row.map(from_row::<u64>)
             .transpose()?
             .ok_or_else(|| Error::query("the count returned no number"))
@@ -952,14 +1012,15 @@ impl Adapter for Conn {
 
     async fn lookup(&self, lookup: &Lookup) -> Result<LookupPage> {
         let sql = Dialect::MySql.lookup(lookup);
-        let mut conn = self.conn.lock().await;
+        let mut session = self.conn.lock().await;
+        let conn = session.conn()?;
         // `read_page` stops one row past the limit.
         let outcome = async {
-            begin_read(&mut conn).await?;
-            read_page(&mut conn, &sql, lookup.limit as usize).await
+            begin_read(conn).await?;
+            read_page(conn, &sql, lookup.limit as usize).await
         }
         .await;
-        let (_, rows) = end_read(&mut conn, outcome).await?;
+        let (_, rows) = end_read(conn, outcome).await?;
         crate::lookup::page(rows, lookup)
     }
 
@@ -984,8 +1045,9 @@ impl Adapter for Conn {
     }
 
     async fn agents_catalog(&self, masked: &[ColumnName]) -> Result<Catalog> {
-        let mut conn = self.conn.lock().await;
-        hidden::catalog(&mut conn, masked).await
+        let mut session = self.conn.lock().await;
+        let conn = session.conn()?;
+        hidden::catalog(conn, masked).await
     }
 
     async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
@@ -3123,8 +3185,9 @@ mod tests {
         proxy(url, access, cut, None).await
     }
 
-    /// [`counted_session`], whose proxy sends the server `instead` for a
-    /// query whose text is exactly `sql`, given as `(sql, instead)`.
+    /// [`counted_session`], whose proxy sends the server `instead` for the
+    /// first query whose text is exactly `sql`, given as `(sql, instead)`.
+    /// The same text sent again goes through as it is.
     /// Connections after the session's, the spare a cancel uses, pass
     /// through as they are.
     pub(super) async fn swapping_session(
@@ -3159,6 +3222,7 @@ mod tests {
         spec.port = listener.local_addr().unwrap().port();
         let asked = Arc::new(AtomicUsize::new(0));
         let count = Arc::clone(&asked);
+        let mut swap = swap;
         tokio::spawn(async move {
             let (client, _) = listener.accept().await.unwrap();
             let upstream = tokio::net::TcpStream::connect(server.clone())
@@ -3219,6 +3283,7 @@ mod tests {
                     && body.first() == Some(&QUERY)
                     && &body[1..] == sql.as_bytes()
                 {
+                    swap = None;
                     body = [&[QUERY][..], instead.as_bytes()].concat();
                     let length = (body.len() as u32).to_le_bytes();
                     header[..3].copy_from_slice(&length[..3]);
@@ -3724,6 +3789,9 @@ mod tests {
                 ),
                 "{outcome:?}"
             );
+            // The reset and the settings go on after the outcome is back,
+            // and are done once the session's lock is free.
+            drop(conn.conn.lock().await);
             assert_eq!(asked.load(Ordering::SeqCst) - before, run, "{access:?}");
             assert_eq!(settings().await, expected, "{access:?}");
         }

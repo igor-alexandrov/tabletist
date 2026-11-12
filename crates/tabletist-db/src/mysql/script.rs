@@ -11,8 +11,8 @@ use mysql_async::{Params, QueryResult, TextProtocol};
 use mysql_common::named_params::ParsedNamedParams;
 
 use super::{
-    Conn, READ_ONLY, UNKNOWN_SYSTEM_VARIABLE, column_metas, execute, from_row, prepare_session,
-    query_error, row_values, status,
+    Conn, READ_ONLY, Session, UNKNOWN_SYSTEM_VARIABLE, column_metas, execute, from_row,
+    prepare_session, query_error, row_values, status,
 };
 use crate::agent::{Limits, Param, Read, Sent, count_mismatch};
 use crate::script::{cannot_start, cleanup_failed, retry_cancelled, statement_failed};
@@ -28,7 +28,9 @@ impl Conn {
     /// prepared protocol, which cannot hold two, and `sql_select_limit`
     /// makes the server stop at `limit + 1` rows. The transaction is
     /// managed by hand, and the session is reset afterwards: what a script
-    /// set must not reach table browsing or the next run.
+    /// set must not reach table browsing or the next run. A run that only
+    /// reads hands its outcome back before the reset, which goes on under
+    /// the session's lock (`Unfinished`).
     ///
     /// The future must be awaited to its end: a run that is dropped leaves
     /// the session inside the transaction, with the script's settings. The
@@ -41,7 +43,8 @@ impl Conn {
         mode: ScriptMode,
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
-        let mut conn = self.conn.lock().await;
+        let mut session = std::sync::Arc::clone(&self.conn).lock_owned().await;
+        let conn = session.conn()?;
         let kind = self.kind();
         // Said before anything runs, not found out by the cleanup, which
         // would close the session after every run.
@@ -51,10 +54,12 @@ impl Conn {
             ));
         }
         if mode == ScriptMode::Write {
-            return write::run(&mut conn, texts, limit as usize, stop).await;
+            return write::run(conn, texts, limit as usize, stop).await;
         }
-        let ended = read_only(&mut conn, texts, limit, kind, stop, None, None).await;
-        ended.map(|(outcome, _)| outcome)
+        let (outcome, _, unfinished) =
+            read_only(conn, texts, limit, kind, stop, None, None).await?;
+        unfinished.finish_later(session);
+        Ok(outcome)
     }
 
     /// See [`crate::Connection::run_agent_read`]: the run of a script of
@@ -70,7 +75,8 @@ impl Conn {
         sources: &crate::agent::Sources,
         stop: &StopFlag,
     ) -> Result<(ScriptOutcome, Vec<bool>)> {
-        let mut conn = self.conn.lock().await;
+        let mut session = std::sync::Arc::clone(&self.conn).lock_owned().await;
+        let conn = session.conn()?;
         let kind = self.kind();
         if !can_reset(kind.mariadb, conn.server_version()) {
             return Err(Error::Unsupported(
@@ -85,16 +91,10 @@ impl Conn {
         let hiding = sources
             .guards_anything()
             .then_some(Hiding { read, sources });
-        read_only(
-            &mut conn,
-            &texts,
-            limits.rows,
-            kind,
-            stop,
-            Some(sent),
-            hiding,
-        )
-        .await
+        let (outcome, masked, unfinished) =
+            read_only(conn, &texts, limits.rows, kind, stop, Some(sent), hiding).await?;
+        unfinished.finish_later(session);
+        Ok((outcome, masked))
     }
 
     /// What a run needs to know of this session from the start.
@@ -152,7 +152,8 @@ struct Hiding<'a> {
 /// `hiding` when its connection hides tables or masks columns: the
 /// statement is checked against them in the transaction, and runs only if
 /// it reads nothing it may not. With the outcome, which of the statement's
-/// result columns are a masked column's (none where nothing is masked).
+/// result columns are a masked column's (none where nothing is masked),
+/// and the reset that is still to come where the run ended cleanly.
 async fn read_only(
     conn: &mut mysql_async::Conn,
     texts: &[String],
@@ -161,7 +162,7 @@ async fn read_only(
     stop: &StopFlag,
     sent: Option<Sent<'_>>,
     hiding: Option<Hiding<'_>>,
-) -> Result<(ScriptOutcome, Vec<bool>)> {
+) -> Result<(ScriptOutcome, Vec<bool>, Unfinished)> {
     let mut outcome = ScriptOutcome::default();
     let mut masked = Vec::new();
     let names = kind.read_only_names(conn.server_version());
@@ -197,8 +198,8 @@ async fn read_only(
     // From here on a cancel would land on the cleanup: tell the
     // backend to stop repeating its cancel.
     stop.finish();
-    close(conn, ended, kind).await?;
-    Ok((outcome, masked))
+    let unfinished = end(conn, ended, kind).await?;
+    Ok((outcome, masked, unfinished))
 }
 
 /// Why an agent's statement may not run on a connection that hides tables
@@ -607,8 +608,10 @@ fn stands(read_only: Option<i64>, status: StatusFlags) -> Result<Standing> {
 /// closes the session (they count as a lost connection).
 ///
 /// The check and the rollback go as one message (`confirm`); a step it did
-/// not reach runs on its own.
-async fn close(conn: &mut mysql_async::Conn, ended: Ended, kind: SessionKind) -> Result<()> {
+/// not reach runs on its own. Where they leave the run clean, the outcome
+/// is known: the reset and the settings change nothing of it, and are left
+/// to the caller (`Unfinished`). Otherwise they run here, before the error.
+async fn end(conn: &mut mysql_async::Conn, ended: Ended, kind: SessionKind) -> Result<Unfinished> {
     let (ended, rolled_back) = match ended {
         Ended::Unconfirmed => confirm(conn, kind.read_only_names(conn.server_version())).await,
         known => (known, None),
@@ -620,23 +623,79 @@ async fn close(conn: &mut mysql_async::Conn, ended: Ended, kind: SessionKind) ->
         Some(answer) => answer,
         None => retry_cancelled!(execute(conn, ROLLBACK)),
     };
-    let reset = retry_cancelled!(reset(conn));
+    let error = match (ended, rolled_back) {
+        (Ended::Unconfirmed | Ended::Unopened, Ok(())) => {
+            return Ok(Unfinished {
+                access: kind.access,
+            });
+        }
+        (Ended::Unconfirmed | Ended::Unopened, Err(error)) => {
+            cleanup_failed(ScriptMode::ReadOnly, &error)
+        }
+        (Ended::Left, _) => Error::LeftReadOnly,
+        (Ended::Broken(error), _) => error,
+    };
     // A run that did not end cleanly leaves the session read-only, whatever
     // it was opened as: it is about to be closed, and until then nothing
     // may write on it.
-    let clean = matches!(ended, Ended::Unconfirmed | Ended::Unopened)
-        && rolled_back.is_ok()
-        && reset.is_ok();
-    let access = if clean { kind.access } else { Access::ReadOnly };
-    let prepared = prepare_session(conn, access).await;
-    match ended {
-        Ended::Left => Err(Error::LeftReadOnly),
-        Ended::Broken(error) => Err(error),
-        Ended::Unconfirmed | Ended::Unopened => rolled_back
-            .and(reset)
-            .and(prepared)
-            .map_err(|error| cleanup_failed(ScriptMode::ReadOnly, &error)),
+    let _ = put_back(conn, Access::ReadOnly).await;
+    Err(error)
+}
+
+/// The reset and the settings that end a run which ended cleanly: its
+/// transaction is rolled back, its outcome known. Until they are done the
+/// session is the script's (its settings, its variables, read-write after
+/// the reset), so nothing else may use it in between.
+#[must_use = "the session keeps what the script set until it is finished"]
+#[derive(Debug)]
+struct Unfinished {
+    /// What the session was opened as, which the settings put back.
+    access: Access,
+}
+
+impl Unfinished {
+    /// Finishes in a task of its own that holds the session's lock: what
+    /// uses the session next waits for the reset and the settings, and the
+    /// run's outcome does not. Where they fail, the session is closed (see
+    /// `Session`), as a run that fails at them is.
+    fn finish_later(self, mut session: tokio::sync::OwnedMutexGuard<Session>) {
+        tokio::spawn(async move {
+            let Ok(conn) = session.conn() else {
+                return;
+            };
+            if let Err(error) = self.finish(conn).await {
+                session.close(error);
+            }
+        });
     }
+
+    /// Resets the session and applies the settings it was opened with.
+    /// `Err` closes it.
+    async fn finish(self, conn: &mut mysql_async::Conn) -> Result<()> {
+        put_back(conn, self.access)
+            .await
+            .map_err(|error| cleanup_failed(ScriptMode::ReadOnly, &error))
+    }
+}
+
+/// Resets the session and applies the connect-time settings as `access`;
+/// as `Access::ReadOnly` where the reset fails, since the session is then
+/// closed. Each runs once more after a cancel.
+async fn put_back(conn: &mut mysql_async::Conn, access: Access) -> Result<()> {
+    let reset = retry_cancelled!(reset(conn));
+    let access = if reset.is_ok() {
+        access
+    } else {
+        Access::ReadOnly
+    };
+    let prepared = prepare_session(conn, access).await;
+    reset.and(prepared)
+}
+
+/// `end` and the reset after it, waited for.
+#[cfg(test)]
+async fn close(conn: &mut mysql_async::Conn, ended: Ended, kind: SessionKind) -> Result<()> {
+    end(conn, ended, kind).await?.finish(conn).await
 }
 
 /// The close's check and rollback, as one message: where the session
@@ -1425,6 +1484,8 @@ mod tests {
                 .await
                 .unwrap();
             let outcome = running.await.unwrap().unwrap();
+            // Counted once the reset after the outcome is done.
+            drop(conn.conn.lock().await);
             assert_eq!(count.load(Ordering::SeqCst) - before, asked, "{sleep}");
             assert!(!outcome.stopped, "{outcome:?}");
             assert!(
@@ -1439,6 +1500,115 @@ mod tests {
             );
             assert_eq!(settings(&conn).await, connected, "{sleep}");
         }
+    }
+
+    /// The settings a read-only session gets back after the reset that
+    /// ends a run, as the close sends them.
+    fn settings_after_the_reset() -> &'static str {
+        let settings = super::super::session_settings(Access::ReadOnly);
+        settings.trim_end_matches("; ").to_owned().leak()
+    }
+
+    /// The outcome is back before the reset and the settings: a cancel that
+    /// lands on the settings, slowed down here by the proxy, finds the run
+    /// already answered. The settings run once more, and the session is as
+    /// it connected.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cancel_on_the_settings_after_the_outcome_runs_them_again() {
+        use std::sync::atomic::Ordering;
+        let Some(url) = test_url() else {
+            return;
+        };
+        let mut admin = admin(&url).await;
+        let slow = "SELECT 1 FROM DUAL WHERE SLEEP(49) = 0";
+        let (conn, count) = super::super::tests::swapping_session(
+            &url,
+            Access::ReadOnly,
+            (settings_after_the_reset(), slow),
+        )
+        .await;
+        let connected = settings(&conn).await;
+        let before = count.load(Ordering::SeqCst);
+        let outcome = past_the_refusal(&conn, &["SELECT 1"], &StopFlag::new())
+            .await
+            .unwrap();
+        assert!(!outcome.stopped, "{outcome:?}");
+        assert!(
+            matches!(
+                outcome.results.as_slice(),
+                [StatementResult {
+                    outcome: StatementOutcome::Rows { .. },
+                    ..
+                }]
+            ),
+            "{outcome:?}"
+        );
+        runs_on_the_server(&mut admin, "SLEEP(49)").await;
+        cancel(&conn.opts, conn.id, &conn.server, &conn.spare)
+            .await
+            .unwrap();
+        // The run's six, and the settings again.
+        drop(conn.conn.lock().await);
+        assert_eq!(count.load(Ordering::SeqCst) - before, 7);
+        assert_eq!(settings(&conn).await, connected);
+    }
+
+    /// Settings that fail after the outcome is back close the session: the
+    /// outcome stands, and whatever uses the session next is told it is
+    /// lost, without a word to the server.
+    #[tokio::test]
+    async fn settings_that_fail_after_the_outcome_close_the_session() {
+        use std::sync::atomic::Ordering;
+        let Some(url) = test_url() else {
+            return;
+        };
+        let refused = "SET SESSION tabletist_no_such_setting = 1";
+        let (conn, count) = super::super::tests::swapping_session(
+            &url,
+            Access::ReadOnly,
+            (settings_after_the_reset(), refused),
+        )
+        .await;
+        let outcome = past_the_refusal(&conn, &["SELECT 1"], &StopFlag::new())
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                outcome.results.as_slice(),
+                [StatementResult {
+                    outcome: StatementOutcome::Rows { .. },
+                    ..
+                }]
+            ),
+            "{outcome:?}"
+        );
+        let lost = past_the_refusal(&conn, &["SELECT 1"], &StopFlag::new()).await;
+        let asked = count.load(Ordering::SeqCst);
+        assert!(
+            matches!(&lost, Err(error) if error.is_connection_lost()),
+            "{lost:?}"
+        );
+        let listed = conn.list_schemas().await;
+        assert!(
+            matches!(&listed, Err(error) if error.is_connection_lost()),
+            "{listed:?}"
+        );
+        let read = conn
+            .agent_read(
+                &crate::agent::check_read(Dialect::MySql, "SELECT 1", &[]).unwrap(),
+                Limits {
+                    rows: 5,
+                    timeout: Duration::from_secs(10),
+                },
+                &crate::agent::Sources::default(),
+                &StopFlag::new(),
+            )
+            .await;
+        assert!(
+            matches!(&read, Err(error) if error.is_connection_lost()),
+            "{read:?}"
+        );
+        assert_eq!(count.load(Ordering::SeqCst), asked);
     }
 
     /// A setting the server knows only under its other name, or in its
@@ -1464,7 +1634,7 @@ mod tests {
         for sent in [Some(sent), None] {
             let stop = StopFlag::new();
             let mut session = conn.conn.lock().await;
-            let (outcome, _) = read_only(
+            let (outcome, _, unfinished) = read_only(
                 &mut session,
                 std::slice::from_ref(&asked),
                 5,
@@ -1475,6 +1645,7 @@ mod tests {
             )
             .await
             .unwrap();
+            unfinished.finish(&mut session).await.unwrap();
             drop(session);
             let [result] = outcome.results.as_slice() else {
                 panic!("{outcome:?}");
@@ -1505,7 +1676,7 @@ mod tests {
             timeout: Duration::from_secs(10),
         };
         let stop = StopFlag::new();
-        let (outcome, _) = read_only(
+        let (outcome, _, unfinished) = read_only(
             &mut conn,
             &[left.to_owned()],
             5,
@@ -1516,6 +1687,7 @@ mod tests {
         )
         .await
         .unwrap();
+        unfinished.finish(&mut conn).await.unwrap();
         let [result] = outcome.results.as_slice() else {
             panic!("{outcome:?}");
         };
@@ -1565,13 +1737,19 @@ mod tests {
 
     const INSERT: &str = "INSERT INTO probe VALUES (1)";
 
-    /// A SELECT asks the server six times: the open, the prepare, the
-    /// execute, the close's check with its rollback, the reset and the
-    /// settings. The first statement needs no check of its own: the open
-    /// asked. Each statement after it adds the check, the prepare and the
-    /// execute. A writable session's fence goes in the open's message.
-    #[tokio::test]
-    async fn a_select_asks_the_server_six_times() {
+    /// A SELECT's outcome is back after four round trips: the open, the
+    /// prepare, the execute, the close's check with its rollback. The
+    /// reset and the settings follow before anything else uses the
+    /// session: six in all. The first statement needs no check of its own:
+    /// the open asked. Each statement after it adds the check, the prepare
+    /// and the execute. A writable session's fence goes in the open's
+    /// message.
+    ///
+    /// On one thread, so the task that resets the session cannot run
+    /// before the count is read: a test that waits for nothing yields
+    /// nothing.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_select_waits_for_four_answers() {
         use std::sync::atomic::Ordering;
         let Some(url) = test_url() else {
             return;
@@ -1579,12 +1757,15 @@ mod tests {
         for access in [Access::ReadOnly, Access::Writable] {
             let (conn, asked) = super::super::tests::counted_session(&url, access).await;
             let connected = settings(&conn).await;
-            for (script, expected) in [(&["SELECT 1"][..], 6), (&["SELECT 1", "SELECT 2"][..], 9)] {
+            for (script, waited, all) in [
+                (&["SELECT 1"][..], 4, 6),
+                (&["SELECT 1", "SELECT 2"][..], 7, 9),
+            ] {
                 let before = asked.load(Ordering::SeqCst);
                 let outcome = past_the_refusal(&conn, script, &StopFlag::new())
                     .await
                     .unwrap();
-                let asked = asked.load(Ordering::SeqCst) - before;
+                let answered = asked.load(Ordering::SeqCst) - before;
                 assert_eq!(outcome.results.len(), script.len(), "{outcome:?}");
                 assert!(
                     outcome
@@ -1593,7 +1774,11 @@ mod tests {
                         .all(|result| matches!(result.outcome, StatementOutcome::Rows { .. })),
                     "{outcome:?}"
                 );
-                assert_eq!(asked, expected, "{access:?} {script:?}");
+                assert_eq!(answered, waited, "{access:?} {script:?}");
+                // The next use waits for the reset and the settings.
+                let _ = conn.conn.lock().await;
+                let reset = asked.load(Ordering::SeqCst) - before;
+                assert_eq!(reset, all, "{access:?} {script:?}");
                 assert_eq!(settings(&conn).await, connected, "{access:?} {script:?}");
             }
         }
