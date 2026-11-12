@@ -174,11 +174,19 @@ const GOODBYE: Duration = Duration::from_secs(1);
 /// [`give_up`]): a few times, since the server lets a connection's slot
 /// go only a moment after the connection said goodbye.
 async fn sign_in(opts: Opts) -> mysql_async::Result<mysql_async::Conn> {
+    sign_in_freeing(opts, all_spares).await
+}
+
+/// [`sign_in`], freeing the slots of the `spares` it is given.
+async fn sign_in_freeing(
+    opts: Opts,
+    spares: impl FnOnce() -> Vec<Spare>,
+) -> mysql_async::Result<mysql_async::Conn> {
     let signed_in = mysql_async::Conn::new(opts.clone()).await;
     let Some(limit) = signed_in.as_ref().err().and_then(full) else {
         return signed_in;
     };
-    if !give_up(all_spares(), &opts, limit).await {
+    if !give_up(spares(), &opts, limit).await {
         return signed_in;
     }
     let mut tries = 0;
@@ -2443,6 +2451,117 @@ mod tests {
         let (opts, id, server) = (&idle.opts, idle.id, idle.server.as_str());
         cancel(opts, id, server, &idle.spare).await.unwrap();
         assert_ne!(spare_id(&idle).await, idle_id);
+    }
+
+    /// A proxy in front of the test server that refuses as many sign-ins
+    /// as `refusals` says with `code`, as a full server does: with an error
+    /// in place of its greeting. The others go on to the server. The count
+    /// is of every sign-in that came.
+    async fn refusing(
+        url: &str,
+        code: u16,
+        refusals: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) -> (Opts, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::AsyncWriteExt;
+
+        let (spec, _) = ConnectSpec::from_url(url).unwrap();
+        let server = (spec.host.clone(), spec.port);
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let came = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&came);
+        tokio::spawn(async move {
+            while let Ok((mut client, _)) = listener.accept().await {
+                count.fetch_add(1, Ordering::SeqCst);
+                let refused = refusals
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                        left.checked_sub(1)
+                    })
+                    .is_ok();
+                let server = server.clone();
+                tokio::spawn(async move {
+                    if refused {
+                        // Before the handshake an error has no SQL state.
+                        let mut error = vec![0xff];
+                        error.extend(code.to_le_bytes());
+                        error.extend(b"Too many connections");
+                        let length = u32::try_from(error.len()).unwrap().to_le_bytes();
+                        let mut packet = vec![length[0], length[1], length[2], 0];
+                        packet.extend(error);
+                        client.write_all(&packet).await.ok();
+                        client.shutdown().await.ok();
+                        return;
+                    }
+                    let mut upstream = tokio::net::TcpStream::connect(server).await.unwrap();
+                    tokio::io::copy_bidirectional(&mut client, &mut upstream)
+                        .await
+                        .ok();
+                });
+            }
+        });
+        let opts = Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+        let opts = mysql_async::OptsBuilder::from_opts(opts)
+            .ip_or_hostname("127.0.0.1")
+            .tcp_port(port)
+            .into();
+        (opts, came)
+    }
+
+    /// A sign-in a full server refused is asked again once a spare there
+    /// gave its slot up, up to five times 100 ms apart. One that frees no
+    /// slot, or that the server goes on refusing, ends in the refusal.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_sign_in_a_full_server_refused_is_asked_again_once_a_spare_is_closed() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+
+        let Some(url) = test_url() else {
+            return;
+        };
+        for code in [TOO_MANY_CONNECTIONS, TOO_MANY_USER_CONNECTIONS] {
+            let refusals = Arc::new(AtomicUsize::new(0));
+            let (opts, came) = refusing(&url, code, Arc::clone(&refusals)).await;
+            let refusal = |error: mysql_async::Error| match error {
+                mysql_async::Error::Server(server) => server.code == code,
+                _ => false,
+            };
+            let opened = mysql_async::Conn::new(opts.clone()).await.unwrap();
+            let spare: Spare = Arc::new(tokio::sync::Mutex::new(Some(opened)));
+            let spares = || vec![Arc::clone(&spare)];
+
+            // Refused twice: the spare is closed, and the third ask, 100 ms
+            // after the second, signs in.
+            refusals.store(2, SeqCst);
+            let before = came.load(SeqCst);
+            let started = Instant::now();
+            let conn = sign_in_freeing(opts.clone(), spares).await.unwrap();
+            assert!(started.elapsed() >= Duration::from_millis(100));
+            assert_eq!(came.load(SeqCst) - before, 3, "{code}");
+            assert!(spare.lock().await.is_none());
+            conn.disconnect().await.unwrap();
+
+            // No spare left to close: the refusal, asked once.
+            refusals.store(1, SeqCst);
+            let before = came.load(SeqCst);
+            let refused = sign_in_freeing(opts.clone(), spares).await.unwrap_err();
+            assert!(refusal(refused), "{code}");
+            assert_eq!(came.load(SeqCst) - before, 1, "{code}");
+
+            // Still full once the spare is closed: five asks more, then the
+            // refusal.
+            let opened = mysql_async::Conn::new(opts.clone()).await.unwrap();
+            *spare.lock().await = Some(opened);
+            refusals.store(usize::MAX, SeqCst);
+            let before = came.load(SeqCst);
+            let refused = sign_in_freeing(opts.clone(), spares).await.unwrap_err();
+            assert!(refusal(refused), "{code}");
+            assert_eq!(came.load(SeqCst) - before, 6, "{code}");
+            assert!(spare.lock().await.is_none());
+        }
     }
 
     /// The list of spares lets go of the sessions that are gone.
