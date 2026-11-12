@@ -4,10 +4,10 @@
 //! the field having the keyboard from the start, in each look.
 
 use egui::accesskit::Role;
-use egui::{Event, Key, Modifiers};
+use egui::{Event, Key, Modifiers, Rect};
 
 use crate::i18n::Locale;
-use crate::keymap::Command;
+use crate::keymap::{Command, Group};
 use crate::model::{Action, Dialog, HelpSearch};
 use crate::testing::Harness;
 use crate::theme::Look;
@@ -64,6 +64,92 @@ fn close_button_top(harness: &mut Harness) -> f64 {
     let id = crate::testing::node(&tree, "Close", Role::Button).expect("a Close button");
     let (_, node) = tree.nodes.iter().find(|(at, _)| *at == id).unwrap();
     node.bounds().expect("bounds").y0
+}
+
+/// A group's heading as the dialog paints it: capitals, or Omarchy's
+/// lower case.
+fn painted_heading(look: &Look, group: Group) -> String {
+    let name = crate::ui::help::heading(group);
+    if look.terminal {
+        name.to_lowercase()
+    } else {
+        name.to_uppercase()
+    }
+}
+
+/// A heading or a command's name, painted in the list.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Shown {
+    Heading(Group),
+    Row(Group),
+}
+
+/// The groups and commands the dialog lists in its look.
+fn grouped(harness: &Harness) -> Vec<(Group, Command)> {
+    let layout = harness.app.layout();
+    crate::ui::help::rows(&harness.app.keymap, layout)
+        .into_iter()
+        .map(|(group, command, _)| (group, command))
+        .collect()
+}
+
+/// What the list's scroll area shows of the last frame: the texts painted
+/// inside its clip, which a heading names. Not the window behind the
+/// dialog, nor its buttons.
+fn in_list(harness: &Harness) -> Vec<(String, Rect)> {
+    let look = harness.app.look;
+    let headings: Vec<String> = grouped(harness)
+        .iter()
+        .map(|(group, _)| painted_heading(&look, *group))
+        .collect();
+    let Some(list) = harness
+        .clipped_text
+        .iter()
+        .find(|(text, ..)| headings.contains(text))
+        .map(|(.., clip)| *clip)
+    else {
+        return Vec::new();
+    };
+    let same =
+        |clip: &Rect| (clip.min - list.min).length() < 1.0 && (clip.max - list.max).length() < 1.0;
+    harness
+        .clipped_text
+        .iter()
+        .filter(|(_, rect, clip)| same(clip) && clip.contains_rect(*rect))
+        .map(|(text, rect, _)| (text.clone(), *rect))
+        .collect()
+}
+
+/// Where `text` is painted in the list last frame, if it is.
+fn visible(harness: &Harness, text: &str) -> Vec<Rect> {
+    in_list(harness)
+        .into_iter()
+        .filter(|(painted, _)| painted == text)
+        .map(|(_, rect)| rect)
+        .collect()
+}
+
+/// What the list shows, top to bottom: each heading and each command's
+/// name painted in it, with where it stands.
+fn shown(harness: &mut Harness, rows: &[(Group, Command)]) -> Vec<(Shown, Rect)> {
+    harness.settle();
+    let look = harness.app.look;
+    let mut shown: Vec<(Shown, Rect)> = in_list(harness)
+        .iter()
+        .filter_map(|(text, rect)| {
+            let heading = rows
+                .iter()
+                .find(|(group, _)| painted_heading(&look, *group) == *text)
+                .map(|(group, _)| Shown::Heading(*group));
+            let name = rows
+                .iter()
+                .find(|(_, command)| command.info().name == text)
+                .map(|(group, _)| Shown::Row(*group));
+            heading.or(name).map(|shown| (shown, *rect))
+        })
+        .collect();
+    shown.sort_by(|a, b| a.1.top().total_cmp(&b.1.top()));
+    shown
 }
 
 #[test]
@@ -312,5 +398,173 @@ fn the_dialog_keeps_its_size_while_it_is_searched() {
             "{}, a chord",
             look.name
         );
+    }
+}
+
+#[test]
+fn each_group_has_room_above_its_heading_but_the_first() {
+    for look in Look::ALL {
+        let name = look.name;
+        let mut harness = opened(look);
+        let rows = grouped(&harness);
+        let shown = shown(&mut harness, &rows);
+        assert!(matches!(shown[0].0, Shown::Heading(_)), "{name}: {shown:?}");
+        let first_row = shown
+            .iter()
+            .find(|(at, _)| matches!(at, Shown::Row(_)))
+            .expect("a row");
+        // A heading starts where the names start: across the list.
+        assert!(
+            (shown[0].1.left() - first_row.1.left()).abs() < 1.0,
+            "{name}"
+        );
+        // Each group is a row group named by its heading.
+        let tree = harness.settle();
+        for (group, _) in &rows {
+            let said = look.label(crate::ui::help::heading(*group));
+            assert!(
+                crate::testing::node(&tree, &said, Role::RowGroup).is_some(),
+                "{name}: {said}"
+            );
+        }
+        // The first group fills the list; a search shows several at once.
+        type_text(&mut harness, "new");
+        let shown = self::shown(&mut harness, &rows);
+        let (mut row_gaps, mut heading_gaps) = (Vec::new(), Vec::new());
+        for pair in shown.windows(2) {
+            let gap = pair[1].1.top() - pair[0].1.bottom();
+            match pair[1].0 {
+                Shown::Heading(_) => heading_gaps.push(gap),
+                Shown::Row(_) => row_gaps.push(gap),
+            }
+        }
+        assert!(!heading_gaps.is_empty(), "{name}: one group shown");
+        let widest = row_gaps.iter().copied().fold(0.0_f32, f32::max);
+        for gap in heading_gaps {
+            assert!(gap >= widest + 10.0, "{name}: {gap} after rows {widest}");
+        }
+    }
+}
+
+#[test]
+fn keys_stand_at_the_right_after_their_names() {
+    for look in Look::ALL {
+        let name = look.name;
+        let mut harness = opened(look);
+        harness.settle();
+        let layout = harness.app.layout();
+        let rows = crate::ui::help::rows(&harness.app.keymap, layout);
+        let mut rights = Vec::new();
+        for (_, command, keys) in &rows {
+            let (Some(what), Some(keys)) = (
+                visible(&harness, command.info().name).first().copied(),
+                visible(&harness, keys.as_str()).first().copied(),
+            ) else {
+                continue;
+            };
+            assert!(keys.left() >= what.right() + 20.0, "{name}: {command:?}");
+            rights.push(keys.right());
+        }
+        assert!(rights.len() > 5, "{name}: {rights:?}");
+        let least = rights.iter().copied().fold(f32::MAX, f32::min);
+        let most = rights.iter().copied().fold(f32::MIN, f32::max);
+        assert!(most - least < 1.0, "{name}: {rights:?}");
+    }
+}
+
+#[test]
+fn a_heading_stays_on_top_while_its_group_scrolls() {
+    for look in Look::ALL {
+        let name = look.name;
+        let mut harness = opened(look);
+        let rows = grouped(&harness);
+        let before = shown(&mut harness, &rows);
+        let (Shown::Heading(first), top) = before[0] else {
+            panic!("{name}: {before:?}")
+        };
+        // Nothing is pinned until the list moves: the first heading shows once.
+        let once = before
+            .iter()
+            .filter(|(at, _)| *at == Shown::Heading(first))
+            .count();
+        assert_eq!(once, 1, "{name}");
+        for _ in 0..3 {
+            harness.frame(vec![
+                Event::PointerMoved(top.center()),
+                Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -150.0),
+                    modifiers: Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                },
+            ]);
+        }
+        for _ in 0..5 {
+            harness.finish_animations();
+        }
+        let after = shown(&mut harness, &rows);
+        // A heading stands where the first one did: the group of the rows
+        // under it.
+        let (pinned, at) = after
+            .iter()
+            .find(|(at, rect)| {
+                matches!(at, Shown::Heading(_)) && (rect.top() - top.top()).abs() < 1.0
+            })
+            .copied()
+            .unwrap_or_else(|| panic!("{name}: nothing pinned: {after:?}"));
+        let Shown::Heading(group) = pinned else {
+            unreachable!()
+        };
+        let under = after
+            .iter()
+            .find(|(shown, rect)| matches!(shown, Shown::Row(_)) && rect.top() >= at.bottom());
+        assert_eq!(
+            under.map(|(shown, _)| *shown),
+            Some(Shown::Row(group)),
+            "{name}: {after:?}"
+        );
+        // It scrolled: the list's first row is not under it any more.
+        let first_row = rows[0].1.info().name;
+        assert!(
+            visible(&harness, first_row)
+                .iter()
+                .all(|rect| rect.top() < at.bottom()),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_search_keeps_the_headings_of_the_groups_it_keeps() {
+    for look in Look::ALL {
+        let name = look.name;
+        let mut harness = opened(look);
+        let rows = grouped(&harness);
+        type_text(&mut harness, "new");
+        let kept = listed(&harness, "new", None);
+        let mut groups: Vec<Group> = rows
+            .iter()
+            .filter(|(_, command)| kept.contains(command))
+            .map(|(group, _)| *group)
+            .collect();
+        groups.dedup();
+        assert!(groups.len() >= 2, "{name}: {groups:?}");
+        let shown = shown(&mut harness, &rows);
+        let headings: Vec<Group> = shown
+            .iter()
+            .filter_map(|(at, _)| match at {
+                Shown::Heading(group) => Some(*group),
+                Shown::Row(_) => None,
+            })
+            .collect();
+        assert_eq!(headings, groups, "{name}");
+        // Each heading stands above its own rows.
+        let mut under = None;
+        for (at, _) in &shown {
+            match at {
+                Shown::Heading(group) => under = Some(*group),
+                Shown::Row(group) => assert_eq!(under, Some(*group), "{name}"),
+            }
+        }
     }
 }
