@@ -58,7 +58,7 @@ impl Conn {
         }
         let (outcome, _, unfinished) =
             read_only(conn, texts, limit, kind, stop, None, None).await?;
-        unfinished.finish_later(session);
+        unfinished.finish_later(session, &self.resetting);
         Ok(outcome)
     }
 
@@ -93,7 +93,7 @@ impl Conn {
             .then_some(Hiding { read, sources });
         let (outcome, masked, unfinished) =
             read_only(conn, &texts, limits.rows, kind, stop, Some(sent), hiding).await?;
-        unfinished.finish_later(session);
+        unfinished.finish_later(session, &self.resetting);
         Ok((outcome, masked))
     }
 
@@ -659,8 +659,17 @@ impl Unfinished {
     /// run's outcome does not. Where they fail, the session is closed (see
     /// `Session`), as a run that fails at them is, and its connection hung
     /// up: nothing the script left on the server outlasts the close.
-    fn finish_later(self, mut session: tokio::sync::OwnedMutexGuard<Session>) {
+    ///
+    /// The session's cancels wait until they are over (see `Resetting`),
+    /// marked before the outcome is: what they are meant for runs after.
+    fn finish_later(
+        self,
+        mut session: tokio::sync::OwnedMutexGuard<Session>,
+        resetting: &super::Resetting,
+    ) {
+        let reset = Reset::begins(resetting);
         tokio::spawn(async move {
+            let _reset = reset;
             let Ok(conn) = session.conn() else {
                 return;
             };
@@ -681,6 +690,24 @@ impl Unfinished {
         put_back(conn, self.access)
             .await
             .map_err(|error| cleanup_failed(ScriptMode::ReadOnly, &error))
+    }
+}
+
+/// A reset going on after a run's outcome, for as long as it is held:
+/// `Resetting` is true from `begins` until it is dropped, however the task
+/// that holds it ends.
+struct Reset(super::Resetting);
+
+impl Reset {
+    fn begins(resetting: &super::Resetting) -> Self {
+        resetting.send_replace(true);
+        Self(std::sync::Arc::clone(resetting))
+    }
+}
+
+impl Drop for Reset {
+    fn drop(&mut self) {
+        self.0.send_replace(false);
     }
 }
 
@@ -1557,6 +1584,54 @@ mod tests {
         drop(conn.conn.lock().await);
         assert_eq!(count.load(Ordering::SeqCst) - before, 7);
         assert_eq!(settings(&conn).await, connected);
+    }
+
+    /// A cancel through the session's handle once the outcome is back is
+    /// meant for what uses the session next (a queued run, a timeout, a
+    /// table's page): it waits for the reset and the settings, here behind
+    /// a sleep, and does not interrupt them. The settings run once, and the
+    /// session is as it connected. The cancel above stands for one already
+    /// on its way when the run's close began.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_next_uses_cancels_wait_for_the_reset() {
+        use std::sync::atomic::Ordering;
+        let Some(url) = test_url() else {
+            return;
+        };
+        let mut admin = admin(&url).await;
+        // Slow, and still the settings.
+        let slow: &'static str = format!(
+            "SELECT 1 FROM DUAL WHERE SLEEP(3) = 0; {}",
+            settings_after_the_reset()
+        )
+        .leak();
+        let (conn, count) = super::super::tests::swapping_session(
+            &url,
+            Access::ReadOnly,
+            (settings_after_the_reset(), slow),
+        )
+        .await;
+        let connected = settings(&conn).await;
+        let before = count.load(Ordering::SeqCst);
+        let outcome = past_the_refusal(&conn, &["SELECT 1"], &StopFlag::new())
+            .await
+            .unwrap();
+        assert!(!outcome.stopped, "{outcome:?}");
+        runs_on_the_server(&mut admin, "SLEEP(3)").await;
+        let handle = conn.cancel_handle();
+        // Two, as the backend's repeated cancel sends them. Sent at once,
+        // one lands on the settings, which then run again; two on the same
+        // step would close the session.
+        let (first, second) = tokio::join!(handle.cancel(), handle.cancel());
+        first.unwrap();
+        second.unwrap();
+        drop(conn.conn.lock().await);
+        // The run's six, the settings not run again.
+        assert_eq!(count.load(Ordering::SeqCst) - before, 6);
+        assert_eq!(settings(&conn).await, connected);
+        past_the_refusal(&conn, &["SELECT 1"], &StopFlag::new())
+            .await
+            .unwrap();
     }
 
     /// Settings that fail after the outcome is back close the session: the

@@ -355,6 +355,8 @@ pub(crate) struct Conn {
     /// that ends the run goes on under the lock in a task of its own (see
     /// `script`), so the lock is shared with it.
     pub(crate) conn: std::sync::Arc<tokio::sync::Mutex<Session>>,
+    /// Whether a run's reset goes on after its outcome (see `Resetting`).
+    pub(crate) resetting: Resetting,
     /// For KILL QUERY from a second connection.
     pub(crate) opts: Opts,
     /// This session's thread id on the server.
@@ -468,6 +470,28 @@ impl Drop for Opening {
 /// keeps one cancel at a time: only a cancel holds it while it waits on
 /// the server, and each of a cancel's waits has a limit (see [`cancel`]).
 pub(crate) type Spare = std::sync::Arc<tokio::sync::Mutex<Option<mysql_async::Conn>>>;
+
+/// True while a SQL editor run's reset and settings go on after its
+/// outcome is back (see `script::Unfinished`). A cancel then is meant for
+/// what uses the session next, which waits for them: sent at once, its
+/// `KILL QUERY` would land on the reset or the settings, and a second one
+/// on the same step closes the session. So the session's cancels wait for
+/// it to be false (see [`cancel_session`]).
+pub(crate) type Resetting = std::sync::Arc<tokio::sync::watch::Sender<bool>>;
+
+/// A cancel of the session through its handle: once a reset that goes on
+/// after a run's outcome is over (see [`Resetting`]), [`cancel`].
+pub(crate) async fn cancel_session(
+    opts: &Opts,
+    id: u32,
+    server: &str,
+    spare: &Spare,
+    resetting: &tokio::sync::watch::Receiver<bool>,
+) -> Result<()> {
+    // A session gone has no reset to wait for.
+    let _ = resetting.clone().wait_for(|resetting| !resetting).await;
+    cancel(opts, id, server, spare).await
+}
 
 /// The server a session is to and the user it signs in as: the spec's
 /// host and port, whatever tunnel the session runs through. Each session
@@ -735,6 +759,7 @@ impl Conn {
             version,
             access,
             spare,
+            resetting: std::sync::Arc::new(tokio::sync::watch::Sender::new(false)),
             _opening: Opening(opening.abort_handle()),
         })
     }
@@ -820,6 +845,7 @@ impl Adapter for Conn {
             id: self.id,
             server: self.server.clone(),
             spare: std::sync::Arc::clone(&self.spare),
+            resetting: self.resetting.subscribe(),
         })
     }
 
