@@ -2898,7 +2898,7 @@ mod tests {
         url: &str,
         access: Access,
     ) -> (Conn, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
-        proxied_session(url, access, None).await
+        proxy(url, access, None, None).await
     }
 
     /// [`counted_session`], whose proxy cuts the connection at the first
@@ -2907,6 +2907,28 @@ mod tests {
         url: &str,
         access: Access,
         cut: Option<&'static str>,
+    ) -> (Conn, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        proxy(url, access, cut, None).await
+    }
+
+    /// [`counted_session`], whose proxy sends the server `instead` for a
+    /// query whose text is exactly `sql`, given as `(sql, instead)`.
+    /// Connections after the session's, the spare a cancel uses, pass
+    /// through as they are.
+    pub(super) async fn swapping_session(
+        url: &str,
+        access: Access,
+        swap: (&'static str, &'static str),
+    ) -> (Conn, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        proxy(url, access, None, Some(swap)).await
+    }
+
+    /// The proxy of [`proxied_session`] and [`swapping_session`].
+    async fn proxy(
+        url: &str,
+        access: Access,
+        cut: Option<&'static str>,
+        swap: Option<(&'static str, &'static str)>,
     ) -> (Conn, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2927,7 +2949,24 @@ mod tests {
         let count = Arc::clone(&asked);
         tokio::spawn(async move {
             let (client, _) = listener.accept().await.unwrap();
-            let upstream = tokio::net::TcpStream::connect(server).await.unwrap();
+            let upstream = tokio::net::TcpStream::connect(server.clone())
+                .await
+                .unwrap();
+            if swap.is_some() {
+                tokio::spawn(async move {
+                    while let Ok((mut other, _)) = listener.accept().await {
+                        let Ok(mut upstream) = tokio::net::TcpStream::connect(server.clone()).await
+                        else {
+                            return;
+                        };
+                        tokio::spawn(async move {
+                            tokio::io::copy_bidirectional(&mut other, &mut upstream)
+                                .await
+                                .ok();
+                        });
+                    }
+                });
+            }
             let (mut from_client, mut to_client) = client.into_split();
             let (mut from_server, mut to_server) = upstream.into_split();
             let answers = tokio::spawn(async move {
@@ -2962,6 +3001,15 @@ mod tests {
                     // Both ways: the client reads the end of the stream.
                     answers.abort();
                     return;
+                }
+                if let Some((sql, instead)) = swap
+                    && header[3] == 0
+                    && body.first() == Some(&QUERY)
+                    && &body[1..] == sql.as_bytes()
+                {
+                    body = [&[QUERY][..], instead.as_bytes()].concat();
+                    let length = (body.len() as u32).to_le_bytes();
+                    header[..3].copy_from_slice(&length[..3]);
                 }
                 if to_server.write_all(&header).await.is_err()
                     || to_server.write_all(&body).await.is_err()
@@ -3225,7 +3273,7 @@ mod tests {
         let Some(url) = test_url() else {
             return;
         };
-        for (access, read_only, run) in [(Access::ReadOnly, 1, 9), (Access::Writable, 0, 10)] {
+        for (access, read_only, run) in [(Access::ReadOnly, 1, 6), (Access::Writable, 0, 6)] {
             let (conn, asked) = counted_session(&url, access).await;
             assert_eq!(asked.load(Ordering::SeqCst), 2, "{access:?}");
             assert!(conn.server.starts_with("uuid "), "{}", conn.server);
