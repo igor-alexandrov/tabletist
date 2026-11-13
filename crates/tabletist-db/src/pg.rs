@@ -714,12 +714,18 @@ impl Conn {
 
     /// The shape this session last read of `object`, if it read one.
     fn known_shape(&self, object: &ObjectRef) -> Option<Shape> {
-        let shapes = self.shapes.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let shapes = self
+            .shapes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         shapes.get(object).cloned()
     }
 
     fn remember(&self, object: &ObjectRef, shape: &Shape) {
-        let mut shapes = self.shapes.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut shapes = self
+            .shapes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         shapes.insert(object.clone(), shape.clone());
     }
 }
@@ -756,31 +762,37 @@ async fn read_statement(client: &tokio_postgres::Client, text: &str) -> Result<A
 
 /// The first step of a read's run: it fails outside a transaction block,
 /// and in one that has failed. So the statement after it runs only inside
-/// the `BEGIN READ ONLY` the read sent first, and only once the prepare
-/// before it took the text as one statement: a failed prepare fails the
-/// transaction, and a failed `BEGIN` (a cancel that landed on it) leaves
-/// none. Nothing of a message runs past the step that failed.
+/// the `BEGIN READ ONLY` the read sent first, and only once everything
+/// sent in the transaction before it worked: the prepare, which took the
+/// text as one statement, and what went alongside the read. A failure
+/// there fails the transaction, and a failed `BEGIN` (a cancel that landed
+/// on it) leaves none. Nothing of a message runs past the step that
+/// failed.
 const READ_GUARD: &str = "SAVEPOINT tabletist_read";
 
-/// [`read_statement`], with what `alongside` sends going out first, in
-/// the same flight: what it answered, and the read's answer.
+/// [`read_statement`], with what `alongside` sends going out in the same
+/// flight, inside the read's transaction and before its statement: what
+/// it answered, and the read's answer.
 ///
 /// All of the read goes out at once, before any answer comes back: the
-/// `BEGIN READ ONLY`, the prepare (which yields the column types, and
-/// fails on a text of more than one statement), the run of `text` behind
-/// [`READ_GUARD`], and the `ROLLBACK`. Each goes out when it is first
-/// polled, and the first poll reaches them all, in this order. So a read
-/// that is dropped once it has started leaves its `ROLLBACK` on its way,
-/// and one that fails, wherever it fails, is rolled back by it.
+/// `BEGIN READ ONLY`, what goes alongside, the prepare (which yields the
+/// column types, and fails on a text of more than one statement), the run
+/// of `text` behind [`READ_GUARD`], and the `ROLLBACK`. Each goes out when
+/// it is first polled, and the first poll reaches them all, in this order.
+/// So a read that is dropped once it has started leaves its `ROLLBACK` on
+/// its way, and one that fails, wherever it fails, is rolled back by it.
+/// What goes alongside and fails, say because a cancel landed on it,
+/// fails the transaction, and the statement does not run: a cancel stops
+/// the read wherever it lands.
 async fn read_alongside<T>(
     client: &tokio_postgres::Client,
     text: &str,
     alongside: impl Future<Output = T>,
 ) -> (T, Result<Answered>) {
     let run = format!("{READ_GUARD};\n{text}");
-    let (alongside, begun, prepared, ran, rolled_back) = tokio::join!(
-        alongside,
+    let (begun, alongside, prepared, ran, rolled_back) = tokio::join!(
         client.batch_execute("BEGIN READ ONLY"),
+        alongside,
         client.prepare(text),
         client.simple_query(&run),
         client.batch_execute("ROLLBACK"),
@@ -1144,8 +1156,8 @@ impl Adapter for Conn {
     /// transaction, all in one round trip.
     ///
     /// The statement is built from the table's shape as this session last
-    /// read it, and the shape is read again in the same flight, just before
-    /// the page. A page whose statement the shape just read would not have
+    /// read it, and the shape is read again in the same flight, in the
+    /// page's transaction and just before it. A page whose statement the shape just read would not have
     /// built (a key or a `bytea` column that changed) is read again, from
     /// that shape: what stands is always the page of the shape read just
     /// before it, as when the shape is asked first. A table this session
@@ -1173,12 +1185,16 @@ impl Adapter for Conn {
                 read_statement(&client, &sql.text).await
             } else {
                 let (fresh, read) =
-                    read_alongside(&client, &sql.text, table_shape(&client, &query.object))
-                        .await;
+                    read_alongside(&client, &sql.text, table_shape(&client, &query.object)).await;
                 let fresh = fresh?;
                 self.remember(&query.object, &fresh);
                 checked = true;
                 if fresh.for_query(query) != (key.clone(), binary) {
+                    // A cancel that landed on the page stops it: the page
+                    // read again would run to its end.
+                    if let Err(Error::Cancelled) = read {
+                        return Err(Error::Cancelled);
+                    }
                     // The page may be wrong, or have failed, for the shape
                     // it was built from.
                     shape = fresh;
@@ -1725,7 +1741,11 @@ mod tests {
     /// Whether the session is outside any transaction a read began: the
     /// first statement of a transaction starts when the transaction does.
     async fn outside_a_transaction(conn: &Conn) -> bool {
-        let client = conn.client.lock().await;
+        outside_a_transaction_of(&*conn.client.lock().await).await
+    }
+
+    /// [`outside_a_transaction`], on a session already locked.
+    async fn outside_a_transaction_of(client: &tokio_postgres::Client) -> bool {
         let messages = client
             .simple_query("SELECT statement_timestamp() = transaction_timestamp()")
             .await
@@ -1904,6 +1924,95 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(first_text(&messages).as_deref(), Some("t"));
+    }
+
+    /// What goes alongside a read and fails, as a cancel that lands on it
+    /// does, keeps the read's statement from running. The statement takes
+    /// a session's advisory lock, which a rollback does not release: only
+    /// a statement that ran holds it.
+    #[tokio::test]
+    async fn a_failure_alongside_a_read_keeps_its_statement_from_running() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        let client = conn.client.lock().await;
+        let held = || async {
+            let messages = client
+                .simple_query(
+                    "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' \
+                     AND objid = 31800 AND pid = pg_backend_pid()",
+                )
+                .await
+                .unwrap();
+            first_text(&messages).unwrap()
+        };
+        let text = "SELECT pg_advisory_lock(31800)";
+        let (alongside, read) =
+            read_alongside(&client, text, client.simple_query("SELECT 1 / 0")).await;
+        assert!(alongside.is_err());
+        assert!(read.is_err());
+        assert_eq!(held().await, "0");
+        assert!(outside_a_transaction_of(&client).await);
+        read_statement(&client, text).await.unwrap();
+        assert_eq!(held().await, "1");
+        client
+            .batch_execute("SELECT pg_advisory_unlock_all()")
+            .await
+            .unwrap();
+    }
+
+    /// A cancel that lands on a page built from an old shape ends the
+    /// page: it is not read again from the new one, which would run to its
+    /// end. Each row of the page sleeps.
+    #[tokio::test]
+    async fn a_cancelled_page_of_an_old_shape_is_not_read_again() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let mut config: tokio_postgres::Config = url.parse().unwrap();
+        config.ssl_mode(tokio_postgres::config::SslMode::Disable);
+        let (other, connection) = config.connect(tokio_postgres::NoTls).await.unwrap();
+        tokio::spawn(connection);
+        other
+            .batch_execute(
+                "DROP TABLE IF EXISTS cancelled_shapes; \
+                 CREATE TABLE cancelled_shapes (a int PRIMARY KEY, b int NOT NULL); \
+                 INSERT INTO cancelled_shapes VALUES (1, 2), (2, 1)",
+            )
+            .await
+            .unwrap();
+        let object = ObjectRef::new("public", "cancelled_shapes");
+        let conn = session(&url).await;
+        let mut query = RowQuery::new(object.clone(), 10);
+        conn.fetch_rows(&query).await.unwrap();
+        other
+            .batch_execute(
+                "ALTER TABLE cancelled_shapes \
+                 DROP CONSTRAINT cancelled_shapes_pkey, ADD PRIMARY KEY (b)",
+            )
+            .await
+            .unwrap();
+        query.raw_where = Some("(SELECT true FROM pg_sleep(2))".into());
+        let cancel = conn.cancel.clone();
+        let cancelling = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            cancel.cancel().await.unwrap();
+        });
+        let started = Instant::now();
+        let fetched = conn.fetch_rows(&query).await;
+        cancelling.await.unwrap();
+        assert_eq!(fetched.unwrap_err(), Error::Cancelled);
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(outside_a_transaction(&conn).await);
+        other
+            .batch_execute("DROP TABLE cancelled_shapes")
+            .await
+            .unwrap();
     }
 
     /// The guard before a read's statement fails outside a transaction
