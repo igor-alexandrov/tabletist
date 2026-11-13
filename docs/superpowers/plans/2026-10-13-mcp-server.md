@@ -1021,6 +1021,26 @@ where it went otherwise:
   too, at any depth, and the statement is refused where it names one, by
   its name as a word in any schema. A view whose body is not shown is
   refused, as what it calls cannot be told.
+- **On PostgreSQL too a view whose body calls a function the agent may
+  not call is refused on every connection**, the one that hides nothing
+  too (`pg/views.rs`). PostgreSQL keeps no dependency on its own functions,
+  so each view's rule is read as the server stores it, the parsed tree in
+  text (`pg_rewrite.ev_action`), for a call of a refused function by its
+  number in `pg_proc` (`:funcid`, `:aggfnoid`, `:winfnoid`); nothing is
+  decompiled for that. The views that read one of those, at any depth,
+  are found by `pg_depend`, and only all of these are written back as SQL
+  (`pg_get_viewdef`), for the same check as MySQL's. The query takes the
+  place of the open's `SELECT 1`, which took the snapshot: no round trip
+  of its own, ever. An agent's read stays four round trips (the open, the
+  prepare, the cursor, the close; five with values). The server's own
+  time is about 7 ms on a stock database, most of it reading the rules of
+  `information_schema`, which a superuser may replace; those of
+  `pg_catalog` are not read, which no one changes without
+  `allow_system_table_mods`. The functions are found by their names as
+  `pg_proc` holds them: one the users wrote and named in capitals is not,
+  as any function they wrote may be called on such a connection. Where
+  something is hidden, this check runs first: `customer_sheet`, which runs
+  `query_to_xml`, is refused for the call, not hidden.
 - **MySQL's plan is read twice.** Its JSON names a table by the
   statement's alias where it has one, so a name there is checked only
   where the catalog lists it. The note `SHOW WARNINGS` gives after it

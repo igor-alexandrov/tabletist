@@ -12,6 +12,7 @@ use tokio_postgres::error::SqlState;
 use tokio_postgres::types::{Format, FromSql, IsNull, ToSql, Type, to_sql_checked};
 
 use super::{Conn, column_metas, first_text, query_error, row_values, unexpected};
+use crate::agent::views::View;
 use crate::agent::{Limits, Param, Read, Sent, count_mismatch};
 use crate::script::{cannot_start, cleanup_failed, retry_cancelled, statement_failed};
 use crate::{
@@ -101,7 +102,7 @@ async fn read_only(
     let mut masked = Vec::new();
     let tx = match open(client, sent).await {
         // A lost session ends the run here: nothing to close.
-        Ok(Tx::Open) => match refused_for_hiding(client, hiding).await {
+        Ok((Tx::Open, reaching)) => match refused(client, texts, &reaching, hiding).await {
             Ok(Err((error, tx))) => {
                 outcome.stopped = error == Error::Cancelled;
                 outcome.results.push(StatementResult {
@@ -119,7 +120,7 @@ async fn read_only(
             Err(error) => return Err(error),
         },
         // A cancel landed on the opening queries: no results.
-        Ok(tx) => {
+        Ok((tx, _)) => {
             outcome.stopped = true;
             tx
         }
@@ -139,6 +140,27 @@ async fn read_only(
     stop.finish();
     close(client, tx).await?;
     Ok((outcome, masked))
+}
+
+/// Why an agent's statement may not run: it reaches a view that calls a
+/// function an agent may not call (`super::views`, on every connection;
+/// `reaching` are the views the open found that may, with their
+/// definitions), or it reads what its connection hides or masks
+/// ([`refused_for_hiding`]). The views' check asks the server nothing: a
+/// refusal there leaves the transaction open.
+async fn refused(
+    client: &tokio_postgres::Client,
+    texts: &[String],
+    reaching: &[View],
+    hiding: Option<Hiding<'_>>,
+) -> Result<std::result::Result<Vec<bool>, (Error, Tx)>> {
+    let reached = texts
+        .iter()
+        .try_for_each(|text| crate::agent::views::check(Dialect::Postgres, text, reaching));
+    if let Err(refusal) = reached {
+        return Ok(Err((Error::Agent(refusal), Tx::Open)));
+    }
+    refused_for_hiding(client, hiding).await
 }
 
 /// Why an agent's statement may not run on a connection that hides tables
@@ -262,18 +284,35 @@ enum Tx {
 /// psql, and at times a slower one. The transaction plans for all of them,
 /// as a plain query is; the rollback takes the setting away.
 ///
+/// An agent's run asks, in the place of the query that takes the
+/// snapshot, which views may call a function an agent may not call
+/// (`super::views`): `Ok` holds those, with their definitions, and none
+/// for a script's run. Before the timeout is set: the run's own query is
+/// not the agent's statement, and a timeout there would fail the open.
+///
 /// All of it is one message, one round trip to the server. It runs in
 /// order and stops at the first step that fails; past `BEGIN` that leaves
 /// a failed transaction, which the close rolls back as before.
-async fn open(client: &tokio_postgres::Client, sent: Option<Sent<'_>>) -> Result<Tx> {
-    let timeout = sent.map(|sent| format!("SET LOCAL statement_timeout = {}; ", sent.timeout_ms()));
+async fn open(client: &tokio_postgres::Client, sent: Option<Sent<'_>>) -> Result<(Tx, Vec<View>)> {
+    let (snapshot, timeout) = match sent {
+        Some(sent) => (
+            super::views::reaching(),
+            format!("SET LOCAL statement_timeout = {}; ", sent.timeout_ms()),
+        ),
+        None => ("SELECT 1".to_owned(), String::new()),
+    };
     let steps = format!(
-        "BEGIN READ ONLY; SET LOCAL cursor_tuple_fraction = 1; SELECT 1; {}SAVEPOINT tabletist_guard",
-        timeout.unwrap_or_default()
+        "BEGIN READ ONLY; SET LOCAL cursor_tuple_fraction = 1; {snapshot}; {timeout}SAVEPOINT tabletist_guard"
     );
-    match client.batch_execute(&steps).await.map_err(query_error) {
-        Ok(()) => Ok(Tx::Open),
-        Err(Error::Cancelled) => Ok(Tx::Aborted),
+    match client.simple_query(&steps).await.map_err(query_error) {
+        Ok(messages) => {
+            let reaching = match sent {
+                Some(_) => super::views::listed(&messages),
+                None => Vec::new(),
+            };
+            Ok((Tx::Open, reaching))
+        }
+        Err(Error::Cancelled) => Ok((Tx::Aborted, Vec::new())),
         Err(error) => Err(error),
     }
 }
@@ -1071,7 +1110,11 @@ mod tests {
                 1,
             ),
         ] {
-            assert_eq!(open(&client, None).await, Ok(Tx::Open), "{text}");
+            assert_eq!(
+                open(&client, None).await,
+                Ok((Tx::Open, Vec::new())),
+                "{text}"
+            );
             let ran = run_statement(&client, text, 10, mode, &stop, Some(&sent)).await;
             let error = count_mismatch(counted, sent.len());
             let position = None;
@@ -1097,7 +1140,7 @@ mod tests {
                 params: &[],
                 timeout: Duration::from_millis(250),
             };
-            assert_eq!(open(&client, Some(sent)).await, Ok(Tx::Open));
+            assert_eq!(open(&client, Some(sent)).await, Ok((Tx::Open, Vec::new())));
         }
         assert_eq!(setting(&conn, "statement_timeout").await, "250ms");
         // A lock is waited for as long as the statement may run, no less.
@@ -1124,7 +1167,7 @@ mod tests {
         assert_eq!(setting(&conn, "cursor_tuple_fraction").await, "0.25");
         {
             let client = conn.client.lock().await;
-            assert_eq!(open(&client, None).await, Ok(Tx::Open));
+            assert_eq!(open(&client, None).await, Ok((Tx::Open, Vec::new())));
         }
         assert_eq!(setting(&conn, "cursor_tuple_fraction").await, "1");
         {
@@ -1311,7 +1354,11 @@ mod tests {
     /// `text` run as a statement of a SQL editor run that reads, in a
     /// transaction of its own, which is left open: with where it stands.
     async fn in_open_run(client: &tokio_postgres::Client, text: &str) -> (StatementOutcome, Tx) {
-        assert_eq!(open(client, None).await, Ok(Tx::Open), "{text}");
+        assert_eq!(
+            open(client, None).await,
+            Ok((Tx::Open, Vec::new())),
+            "{text}"
+        );
         let (stop, mode) = (StopFlag::new(), ScriptMode::ReadOnly);
         run_statement(client, text, 10, mode, &stop, None)
             .await
@@ -1489,7 +1536,7 @@ mod tests {
         let conn = session(&url).await;
         let other = session(&url).await;
         let client = conn.client.lock().await;
-        assert_eq!(open(&client, None).await, Ok(Tx::Open));
+        assert_eq!(open(&client, None).await, Ok((Tx::Open, Vec::new())));
         client
             .batch_execute("SELECT pg_advisory_lock(424243)")
             .await
@@ -1553,7 +1600,11 @@ mod tests {
             let conn = proxied_session(&url, (CONFIRM_AND_END, slow)).await;
             let cancel = conn.cancel_handle();
             let client = conn.client.lock().await;
-            assert_eq!(open(&client, None).await, Ok(Tx::Open), "{step}");
+            assert_eq!(
+                open(&client, None).await,
+                Ok((Tx::Open, Vec::new())),
+                "{step}"
+            );
             client
                 .batch_execute("SELECT pg_advisory_lock(424245)")
                 .await
@@ -1722,7 +1773,7 @@ mod tests {
         };
         let conn = session(&url).await;
         let client = conn.client.lock().await;
-        assert_eq!(open(&client, None).await, Ok(Tx::Open));
+        assert_eq!(open(&client, None).await, Ok((Tx::Open, Vec::new())));
         // What the first two statements of the script would have done.
         client
             .batch_execute("SET search_path = pg_catalog")
@@ -1762,27 +1813,27 @@ mod tests {
         let conn = session(&url).await;
         {
             let client = conn.client.lock().await;
-            assert_eq!(open(&client, None).await, Ok(Tx::Open));
+            assert_eq!(open(&client, None).await, Ok((Tx::Open, Vec::new())));
             assert_eq!(in_transaction(&client).await, Ok(Tx::Open));
             assert_eq!(close(&client, Tx::Open).await, Ok(()));
             // Closed: no transaction is left.
             assert_eq!(in_transaction(&client).await, Ok(Tx::Left));
 
-            assert_eq!(open(&client, None).await, Ok(Tx::Open));
+            assert_eq!(open(&client, None).await, Ok((Tx::Open, Vec::new())));
             assert!(client.batch_execute("SELECT 1 / 0").await.is_err());
             assert_eq!(in_transaction(&client).await, Ok(Tx::Aborted));
             assert_eq!(close(&client, Tx::Open).await, Ok(()));
             assert_eq!(in_transaction(&client).await, Ok(Tx::Left));
 
             // Another transaction is not the script's, block or not.
-            assert_eq!(open(&client, None).await, Ok(Tx::Open));
+            assert_eq!(open(&client, None).await, Ok((Tx::Open, Vec::new())));
             client.batch_execute("COMMIT AND CHAIN").await.unwrap();
             assert_eq!(close(&client, Tx::Open).await, Err(Error::LeftReadOnly));
             assert_eq!(in_transaction(&client).await, Ok(Tx::Left));
 
             // Nor is it once it failed (a cancel that landed on a check):
             // a failed block does not say whose it is, its savepoint does.
-            assert_eq!(open(&client, None).await, Ok(Tx::Open));
+            assert_eq!(open(&client, None).await, Ok((Tx::Open, Vec::new())));
             client.batch_execute("COMMIT AND CHAIN").await.unwrap();
             assert!(client.batch_execute("SELECT 1 / 0").await.is_err());
             assert_eq!(in_transaction(&client).await, Ok(Tx::Aborted));
