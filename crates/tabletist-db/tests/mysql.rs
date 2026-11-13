@@ -78,6 +78,22 @@ async fn connect() -> Option<Connection> {
     connect_as(Access::ReadOnly).await
 }
 
+/// Whether the connection's server is MariaDB, which some tests find
+/// answering otherwise than MySQL.
+async fn on_mariadb(connection: &Connection) -> bool {
+    let version = connection.server_version().await.unwrap();
+    version.starts_with("MariaDB")
+}
+
+/// How `meta`, a `JSON` column, is described: MariaDB's `JSON` is a
+/// `LONGTEXT`, and a result says nothing more of it than that.
+async fn json_column(connection: &Connection) -> (&'static str, ValueKind) {
+    match on_mariadb(connection).await {
+        true => ("text", ValueKind::Text),
+        false => ("json", ValueKind::Json),
+    }
+}
+
 #[tokio::test]
 async fn connections_report_mysql_and_list_databases_as_schemas() {
     let Some(connection) = connect().await else {
@@ -189,21 +205,29 @@ async fn users_structure_has_full_types_comments_key_and_indexes() {
         .unwrap();
     let column = |name: &str| structure.columns.iter().find(|c| c.name == name).unwrap();
     assert_eq!(structure.columns[0].name, "id");
-    assert_eq!(column("id").type_name, "int");
+    // The server's own words: MariaDB still gives an integer its width.
+    let mariadb = on_mariadb(&connection).await;
+    let (int, bigint) = match mariadb {
+        true => ("int(11)", "bigint(20) unsigned"),
+        false => ("int", "bigint unsigned"),
+    };
+    assert_eq!(column("id").type_name, int);
     assert!(!column("id").nullable);
     assert!(column("name").nullable);
     assert_eq!(column("email").type_name, "varchar(255)");
     assert_eq!(column("email").comment.as_deref(), Some("Login address"));
     assert_eq!(column("balance").type_name, "decimal(14,2)");
-    assert_eq!(column("counter").type_name, "bigint unsigned");
+    assert_eq!(column("counter").type_name, bigint);
     assert_eq!(column("mood").type_name, "enum('happy','sad')");
-    assert!(
-        column("created_at")
-            .default
-            .as_deref()
-            .unwrap()
-            .starts_with("2026-01-01 00:00:00")
-    );
+    // As the catalog writes it: MariaDB quotes a literal, as PostgreSQL
+    // does, and a new row shows it without the quotes.
+    let created = if mariadb {
+        "'2026-01-01 00:00:00"
+    } else {
+        "2026-01-01 00:00:00"
+    };
+    let default = column("created_at").default.clone().unwrap();
+    assert!(default.starts_with(created), "{default}");
     assert_eq!(structure.primary_key, vec!["id".to_owned()]);
     let primary = structure
         .indexes
@@ -388,19 +412,27 @@ async fn only_an_index_over_whole_columns_is_the_row_key() {
     let Some(connection) = connect().await else {
         return;
     };
+    // MariaDB indexes no expression.
+    let expressions = !on_mariadb(&connection).await;
     let mut admin = admin().await;
+    let expression = match expressions {
+        true => "UNIQUE KEY k0_expression ((code + 1)),",
+        false => "",
+    };
     for statement in [
-        "DROP TABLE IF EXISTS catalog_keys",
-        "CREATE TABLE catalog_keys (
-             name VARCHAR(20) COLLATE utf8mb4_0900_ai_ci NOT NULL,
-             code INT NOT NULL,
-             title VARCHAR(20) NOT NULL,
-             `<expression>` INT NOT NULL,
-             UNIQUE KEY k0_expression ((code + 1)),
-             UNIQUE KEY k1_prefix (name(1)),
-             UNIQUE KEY k2_plain (code, title DESC)
-         )",
-        "INSERT INTO catalog_keys VALUES ('ssa', 1, 't', 1), ('ßa', 2, 'u', 2)",
+        "DROP TABLE IF EXISTS catalog_keys".to_owned(),
+        format!(
+            "CREATE TABLE catalog_keys (
+                 name VARCHAR(20) COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                 code INT NOT NULL,
+                 title VARCHAR(20) NOT NULL,
+                 `<expression>` INT NOT NULL,
+                 {expression}
+                 UNIQUE KEY k1_prefix (name(1)),
+                 UNIQUE KEY k2_plain (code, title DESC)
+             )"
+        ),
+        "INSERT INTO catalog_keys VALUES ('ssa', 1, 't', 1), ('ßa', 2, 'u', 2)".to_owned(),
     ] {
         admin.query_drop(statement).await.unwrap();
     }
@@ -431,18 +463,19 @@ async fn only_an_index_over_whole_columns_is_the_row_key() {
             )
         })
         .collect();
-    assert_eq!(
-        indexes,
-        [
-            ("k0_expression", list(&["<expression>"]), None),
-            ("k1_prefix", list(&["name"]), None),
-            (
-                "k2_plain",
-                list(&["code", "title"]),
-                Some(list(&["code", "title"]))
-            ),
-        ]
-    );
+    let mut expected = vec![
+        ("k0_expression", list(&["<expression>"]), None),
+        ("k1_prefix", list(&["name"]), None),
+        (
+            "k2_plain",
+            list(&["code", "title"]),
+            Some(list(&["code", "title"])),
+        ),
+    ];
+    if !expressions {
+        expected.remove(0);
+    }
+    assert_eq!(indexes, expected);
     assert_eq!(structure.row_key(), Some(list(&["code", "title"])));
 }
 
@@ -512,7 +545,7 @@ async fn pages_have_typed_values_and_kinds() {
     assert_eq!(ids(&page), vec![1, 2, 3]);
     assert!(page.has_more && page.ordered_by_key);
     let kind = |name: &str| page.columns.iter().find(|c| c.name == name).unwrap().kind;
-    assert_eq!(kind("meta"), ValueKind::Json);
+    assert_eq!(kind("meta"), json_column(&connection).await.1);
     assert_eq!(kind("avatar"), ValueKind::Binary);
     assert_eq!(kind("created_at"), ValueKind::Temporal);
     assert_eq!(kind("balance"), ValueKind::Numeric);
@@ -1152,13 +1185,14 @@ async fn a_script_has_typed_columns_and_truncates_at_the_limit() {
         .iter()
         .map(|column| (column.name.as_str(), column.type_name.as_str(), column.kind))
         .collect();
+    let (json, json_kind) = json_column(&connection).await;
     assert_eq!(
         described,
         [
             ("id", "int", ValueKind::Numeric),
             ("email", "varchar", ValueKind::Text),
             ("created_at", "datetime", ValueKind::Temporal),
-            ("meta", "json", ValueKind::Json),
+            ("meta", json, json_kind),
             ("avatar", "varbinary", ValueKind::Binary),
             ("balance", "decimal", ValueKind::Numeric),
         ]
@@ -1341,14 +1375,27 @@ async fn what_the_prepared_protocol_refuses_is_the_statements_error() {
     )
     .await
     .unwrap();
-    assert_eq!(outcome.results.len(), 2);
-    let StatementOutcome::Error { error, .. } = &outcome.results[1].outcome else {
-        panic!("{outcome:?}");
-    };
-    assert!(
-        error.to_string().contains("prepared statement protocol"),
-        "{error}"
-    );
+    if on_mariadb(&connection).await {
+        // MariaDB prepares it, and every statement the SQL editor lets
+        // through: the script runs to its end.
+        assert_eq!(outcome.results.len(), 3, "{outcome:?}");
+        assert!(
+            outcome
+                .results
+                .iter()
+                .all(|result| !matches!(result.outcome, StatementOutcome::Error { .. })),
+            "{outcome:?}"
+        );
+    } else {
+        assert_eq!(outcome.results.len(), 2);
+        let StatementOutcome::Error { error, .. } = &outcome.results[1].outcome else {
+            panic!("{outcome:?}");
+        };
+        assert!(
+            error.to_string().contains("prepared statement protocol"),
+            "{error}"
+        );
+    }
     // The splitter would never hand over such a piece.
     let mut statements = script("SELECT 1");
     statements[0].text = "SELECT 1; SELECT 2".into();

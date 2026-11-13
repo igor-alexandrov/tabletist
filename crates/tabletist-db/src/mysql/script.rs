@@ -982,9 +982,20 @@ mod tests {
     use mysql_async::Opts;
 
     use super::super::cancel;
-    use super::super::tests::{session, test_url};
+    use super::super::tests::{on_mariadb, session, test_url};
     use super::*;
     use crate::adapter::Adapter;
+
+    /// The session's time limit in milliseconds, asked as its server names
+    /// it (`time_limits`): MariaDB has no `max_execution_time`, and counts
+    /// its `max_statement_time` in seconds.
+    fn time_limit(session: &Conn) -> &'static str {
+        if on_mariadb(session) {
+            "CAST(@@session.max_statement_time * 1000 AS SIGNED)"
+        } else {
+            "@@session.max_execution_time"
+        }
+    }
 
     /// A session on the test server, which is MySQL.
     fn on_mysql(access: Access) -> SessionKind {
@@ -1714,6 +1725,7 @@ mod tests {
     /// A setting the server knows only under its other name, or in its
     /// other form: the open and the close run the steps from there on their
     /// own. Here a MySQL server is taken for an old MariaDB, whose names it
+    /// does not know, and a MariaDB server for MySQL, whose time limit it
     /// does not know. The run works, with the time limit set.
     #[tokio::test]
     async fn a_setting_the_server_does_not_know_is_asked_for_under_its_other_name() {
@@ -1724,9 +1736,9 @@ mod tests {
         let connected = settings(&conn).await;
         let kind = SessionKind {
             access: Access::ReadOnly,
-            mariadb: true,
+            mariadb: !on_mariadb(&conn),
         };
-        let asked = "SELECT @@session.max_execution_time".to_owned();
+        let asked = format!("SELECT {}", time_limit(&conn));
         let sent = Sent {
             params: &[],
             timeout: Duration::from_secs(7),
@@ -1768,6 +1780,8 @@ mod tests {
             return;
         };
         let session = session(&url).await;
+        let limit = time_limit(&session);
+        let kind = session.kind();
         let mut conn = session.conn.lock().await;
         let left = "SELECT LAST_INSERT_ID(99), GET_LOCK('tabletist_agent_lock', 0), \
                     @tabletist_agent := 7";
@@ -1780,7 +1794,7 @@ mod tests {
             &mut conn,
             &[left.to_owned()],
             5,
-            on_mysql(Access::ReadOnly),
+            kind,
             &stop,
             Some(sent),
             None,
@@ -1797,11 +1811,11 @@ mod tests {
         // It ran, and took the lock.
         assert_eq!(rows[0][1], crate::Value::Int(1));
         let after: (u64, Option<u64>, Option<i64>, u64, u64) = conn
-            .query_first(
+            .query_first(format!(
                 "SELECT LAST_INSERT_ID(), IS_USED_LOCK('tabletist_agent_lock'), \
-                 @tabletist_agent, @@session.max_execution_time, \
+                 @tabletist_agent, {limit}, \
                  @@session.sql_select_limit = @@global.sql_select_limit",
-            )
+            ))
             .await
             .unwrap()
             .unwrap();

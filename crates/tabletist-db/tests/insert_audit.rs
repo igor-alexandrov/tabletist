@@ -584,6 +584,19 @@ mod mysql {
     /// The Bookshop's three tables, their names beginning with `prefix`,
     /// made anew, with a session of the test's own to drop them with.
     /// `None` without a server.
+    /// Whether the connection's server is MariaDB, which words some
+    /// failures otherwise than MySQL.
+    async fn on_mariadb(connection: &Connection) -> bool {
+        let version = connection.server_version().await.unwrap();
+        version.starts_with("MariaDB")
+    }
+
+    /// The error number of a row a CHECK refuses: MySQL's
+    /// ER_CHECK_CONSTRAINT_VIOLATED, or MariaDB's ER_CONSTRAINT_FAILED.
+    fn check_number(mariadb: bool) -> u32 {
+        if mariadb { 4025 } else { 3819 }
+    }
+
     async fn bookshop(prefix: &str) -> Option<(mysql_async::Conn, Connection)> {
         let Some(url) = url() else {
             eprintln!("skipped: TABLETIST_TEST_MYSQL_URL is not set");
@@ -605,18 +618,21 @@ mod mysql {
     }
 
     /// Spec 9: each of the four cases fails its own new row, in MySQL's
-    /// words, and nothing of the save stays.
+    /// words, and nothing of the save stays. MariaDB names a key without
+    /// its table, and refuses a CHECK by another number.
     #[tokio::test]
     async fn the_bookshops_failures_as_mysql_hands_them_over() {
         let Some((mut admin, connection)) = bookshop("audit").await else {
             return;
         };
+        let mariadb = on_mariadb(&connection).await;
         let cases = cases("audit");
         let (insert, _, message, _) = failed(save(&connection, &cases.taken_isbn()).await);
         assert_eq!(insert, 0);
+        let key = if mariadb { "isbn" } else { "audit_books.isbn" };
         assert_eq!(
             message,
-            "Duplicate entry '978-1-4028-9462-6' for key 'audit_books.isbn'"
+            format!("Duplicate entry '978-1-4028-9462-6' for key '{key}'")
         );
 
         // The second new row fails, and the first is undone with it.
@@ -633,10 +649,14 @@ mod mysql {
         assert_eq!(message, "Column 'publisher_id' cannot be null");
 
         let (_, _, message, _) = failed(save(&connection, &cases.vinyl()).await);
-        assert_eq!(
-            message,
-            "Check constraint 'audit_book_covers_kind_check' is violated."
-        );
+        let refused = match mariadb {
+            true => {
+                "CONSTRAINT `audit_book_covers_kind_check` failed for \
+                     `tabletist`.`audit_book_covers`"
+            }
+            false => "Check constraint 'audit_book_covers_kind_check' is violated.",
+        };
+        assert_eq!(message, refused);
 
         // What each failure is of, read from its number and its message.
         // Held to once the tables are dropped.
@@ -669,26 +689,31 @@ mod mysql {
                     }
                 ),
                 numbered(1048, of_column("publisher_id")),
-                numbered(3819, of_constraint("audit_book_covers_kind_check")),
+                numbered(
+                    check_number(mariadb),
+                    of_constraint("audit_book_covers_kind_check")
+                ),
             ]
         );
     }
 
     /// Spec 9: MySQL's failures are worded by their error number
-    /// (1062, 1452, 1048, 3819). A taken value, a missing parent and a NULL
-    /// share the SQLSTATE 23000, so the number is what tells them apart: it
-    /// is somewhere in the error the app is handed.
+    /// (1062, 1452, 1048, 3819; MariaDB's CHECK is 4025). A taken value, a
+    /// missing parent and a NULL share the SQLSTATE 23000, so the number is
+    /// what tells them apart: it is somewhere in the error the app is
+    /// handed.
     #[tokio::test]
     async fn a_mysql_failure_keeps_its_error_number() {
         let Some((mut admin, connection)) = bookshop("audit_number").await else {
             return;
         };
+        let check = check_number(on_mariadb(&connection).await).to_string();
         let cases = cases("audit_number");
         let numbered = [
             (cases.taken_isbn(), "1062"),
             (cases.no_publisher(), "1452"),
             (cases.null_publisher(), "1048"),
-            (cases.vinyl(), "3819"),
+            (cases.vinyl(), check.as_str()),
         ];
         let mut said = Vec::new();
         for (changes, number) in numbered {
