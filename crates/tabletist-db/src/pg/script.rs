@@ -647,6 +647,18 @@ fn fetch_count(limit: usize) -> usize {
     limit.saturating_add(1).min(i32::MAX as usize)
 }
 
+/// What a row statement's cursor runs: its `DECLARE`, and the `FETCH` of
+/// one row more than `limit` with the `CLOSE`.
+fn cursor_steps(text: &str, limit: usize) -> (String, String) {
+    // A newline, so a trailing -- comment ends there.
+    let declare = format!("{CURSOR_PREFIX}{text}\n");
+    let fetch = format!(
+        "FETCH {} FROM tabletist_sql; CLOSE tabletist_sql",
+        fetch_count(limit)
+    );
+    (declare, fetch)
+}
+
 /// A row statement's outcome from the rows kept: at most `limit` of them,
 /// and `truncated` when one more was read.
 fn rows_outcome(
@@ -725,10 +737,21 @@ async fn run_statement(
             Tx::Open,
         ));
     }
-    // Prepare first: it yields the column types and refuses a second
-    // statement hidden in one piece. A prepare error is the outcome; the
-    // text never runs another way. Only the columns are kept: the prepared
-    // statement itself is closed here.
+    // The SQL editor's row statement in a run that reads: its prepare goes
+    // out with its cursor.
+    if params.is_none() && mode == ScriptMode::ReadOnly && cursor_statement(text) {
+        return cursor_with_prepare(client, text, limit).await;
+    }
+    // Every other statement is prepared first: that yields the column
+    // types and refuses a second statement hidden in one piece. A prepare
+    // error is the outcome; the text never runs another way. Only the
+    // columns are kept: the prepared statement itself is closed here.
+    //
+    // Not in the same flight as the statement, as the cursor's is: the
+    // statement is sent as it is, and a text that starts with one a failed
+    // transaction still takes (`ROLLBACK`) would run past a failed
+    // prepare. And an agent's values are counted against the server's
+    // count before anything runs.
     let prepared = match client.prepare(text).await {
         Ok(prepared) => prepared,
         Err(error) => return failed(error, Some(0)),
@@ -774,17 +797,13 @@ async fn run_statement(
     // keep that. There every statement runs to its end, and `DECLARE`
     // would refuse a data-modifying `WITH` anyway.
     if mode == ScriptMode::ReadOnly && cursor_statement(text) {
-        // A newline, so a trailing -- comment ends there.
-        let declare = format!("{CURSOR_PREFIX}{text}\n");
-        let fetch = format!(
-            "FETCH {} FROM tabletist_sql; CLOSE tabletist_sql",
-            fetch_count(limit)
-        );
+        let (declare, fetch) = cursor_steps(text, limit);
         let messages = if params.is_empty() {
-            // The three in one message, one round trip to the server. The
-            // text cannot reach into what follows it: it prepared above, so
-            // it is one statement with no quote or comment left open but a
-            // -- one. The server stops at the first that fails.
+            // An agent's statement without values: the three in one
+            // message, one round trip to the server. The text cannot reach
+            // into what follows it: it prepared above, so it is one
+            // statement with no quote or comment left open but a -- one.
+            // The server stops at the first that fails.
             match client.simple_query(&format!("{declare};{fetch}")).await {
                 Ok(messages) => messages,
                 Err(error) => return failed_in_cursor(error, text),
@@ -834,6 +853,68 @@ async fn run_statement(
             }
         }
     }
+    Ok((rows_outcome(columns, &kept, limit), Tx::Open))
+}
+
+/// A row statement of the SQL editor's run that reads, in one round trip:
+/// the prepare and the cursor's message (its `DECLARE`, `FETCH` and
+/// `CLOSE`) go out together, and the client waits on both at once. Each
+/// goes out when it is first polled, and the first poll reaches both, in
+/// this order.
+///
+/// The server still takes the prepare first, and it still decides whether
+/// the cursor runs. A prepare that fails (a text of two statements, a quote
+/// or a comment left open, a cancel that landed on it) fails the
+/// transaction the run is inside, and a failed transaction refuses the
+/// `DECLARE` the message starts with, whatever the text is: nothing of the
+/// message runs. A prepare that works took the text as one statement, with
+/// no quote or comment left open but a -- one, so the text cannot reach
+/// into the `FETCH` and `CLOSE` after it. The prepare also types the
+/// columns: a simple query's rows carry no types.
+///
+/// A column of a type the driver does not know yet is looked up after the
+/// prepare answered, behind the cursor's message. Where the cursor failed,
+/// that lookup fails too, on the failed transaction: the cursor's error is
+/// the one that says why.
+async fn cursor_with_prepare(
+    client: &tokio_postgres::Client,
+    text: &str,
+    limit: usize,
+) -> Result<(StatementOutcome, Tx)> {
+    let (declare, fetch) = cursor_steps(text, limit);
+    let message = format!("{declare};{fetch}");
+    let (prepared, ran) = tokio::join!(client.prepare(text), client.simple_query(&message));
+    let (prepared, messages) = match (prepared, ran) {
+        (Ok(prepared), Ok(messages)) => (prepared, messages),
+        (Ok(_), Err(error)) => return failed_in_cursor(error, text),
+        (Err(error), Err(ran)) if error.code() == Some(&SqlState::IN_FAILED_SQL_TRANSACTION) => {
+            return failed_in_cursor(ran, text);
+        }
+        // The prepare's own failure, which kept the cursor from running.
+        (Err(error), _) => return failed(error, Some(0)),
+    };
+    let columns = column_metas(&prepared);
+    // Its close goes out on its own, waited on by nobody.
+    drop(prepared);
+    // A statement without columns (`SELECT FROM shelves`) is done, as the
+    // statements are that do not run as a cursor.
+    if columns.is_empty() {
+        let affected = None;
+        return Ok((
+            StatementOutcome::Done {
+                affected,
+                warnings: 0,
+            },
+            Tx::Open,
+        ));
+    }
+    let kept: Vec<_> = messages
+        .into_iter()
+        .filter_map(|message| match message {
+            SimpleQueryMessage::Row(row) => Some(row),
+            _ => None,
+        })
+        .collect();
     Ok((rows_outcome(columns, &kept, limit), Tx::Open))
 }
 
@@ -973,6 +1054,7 @@ mod tests {
             return;
         };
         let conn = session(&url).await;
+        let other = session(&url).await;
         let client = conn.client.lock().await;
         let stop = StopFlag::new();
         let mode = ScriptMode::ReadOnly;
@@ -981,13 +1063,24 @@ mod tests {
             ("SELECT 1", vec![Param::Int(1)], 0),
             // One placeholder written twice is one value.
             ("SELECT $1::int + $1::int", vec![Param::Int(1); 2], 1),
+            // Without values, the statement's placeholder still counts.
+            ("SELECT pg_advisory_lock(424253), $1::int", vec![], 1),
+            (
+                "SELECT pg_advisory_lock(424253), $1::int",
+                vec![Param::Int(1); 2],
+                1,
+            ),
         ] {
+            assert_eq!(open(&client, None).await, Ok(Tx::Open), "{text}");
             let ran = run_statement(&client, text, 10, mode, &stop, Some(&sent)).await;
             let error = count_mismatch(counted, sent.len());
             let position = None;
             let refused = StatementOutcome::Error { error, position };
             // Nothing ran, so nothing failed.
             assert_eq!(ran, Ok((refused, Tx::Open)), "{text}");
+            // Asked before the close, which would release the lock.
+            assert!(lock_is_free(&other, 424253).await, "{text}");
+            assert_eq!(close(&client, Tx::Open).await, Ok(()), "{text}");
         }
     }
 
@@ -1095,23 +1188,10 @@ mod tests {
     }
 
     /// A read-only session through a proxy in front of the test server,
-    /// with a count of what the client asks the server and waits on: its
-    /// simple queries and its prepares. Far from the server each is a round
-    /// trip.
-    async fn counted_session(url: &str) -> (Conn, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
-        proxied_session(url, None).await
-    }
-
-    /// [`counted_session`], whose proxy also sends the server `instead` for
-    /// a simple query that is exactly `sql`, given as `(sql, instead)`.
-    /// Connections after the session's, a cancel's, pass through as they
-    /// are.
-    async fn proxied_session(
-        url: &str,
-        swap: Option<(&'static str, &'static str)>,
-    ) -> (Conn, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
+    /// which sends the server `instead` for a simple query that is exactly
+    /// `sql`, given as `(sql, instead)`. Connections after the session's, a
+    /// cancel's, pass through as they are.
+    async fn proxied_session(url: &str, swap: (&'static str, &'static str)) -> Conn {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let (mut spec, secrets) = crate::ConnectSpec::from_url(url).unwrap();
@@ -1122,8 +1202,6 @@ mod tests {
             .unwrap();
         spec.host = "127.0.0.1".to_owned();
         spec.port = listener.local_addr().unwrap().port();
-        let asked = Arc::new(AtomicUsize::new(0));
-        let count = Arc::clone(&asked);
         tokio::spawn(async move {
             let (client, _) = listener.accept().await.unwrap();
             let upstream = tokio::net::TcpStream::connect(server.clone())
@@ -1157,13 +1235,8 @@ mod tests {
                 if from_client.read_exact(&mut body).await.is_err() {
                     return;
                 }
-                if matches!(kind, Some(b'Q' | b'P')) {
-                    count.fetch_add(1, Ordering::SeqCst);
-                }
-                if let Some((sql, instead)) = swap
-                    && kind == Some(b'Q')
-                    && body.strip_suffix(b"\0") == Some(sql.as_bytes())
-                {
+                let (sql, instead) = swap;
+                if kind == Some(b'Q') && body.strip_suffix(b"\0") == Some(sql.as_bytes()) {
                     body = [instead.as_bytes(), b"\0"].concat();
                 }
                 let length = body.len() as u32 + 4;
@@ -1179,25 +1252,24 @@ mod tests {
                 kind = Some(next);
             }
         });
-        let conn = Conn::connect(&spec, &secrets, None, crate::Access::ReadOnly)
+        Conn::connect(&spec, &secrets, None, crate::Access::ReadOnly)
             .await
-            .unwrap();
-        (conn, asked)
+            .unwrap()
     }
 
-    /// A SELECT asks the server four times: the opening, the prepare, the
-    /// cursor and the close. The first statement needs no guard's swap, and
-    /// the close's check, rollback and release go as one message. Each
-    /// statement after it adds the swap, the prepare and the cursor.
+    /// A SELECT asks the server three times: the opening, the cursor with
+    /// its prepare, and the close. The first statement needs no guard's
+    /// swap, the prepare goes out with the cursor, and the close's check,
+    /// rollback and release go as one message. Each statement after it adds
+    /// the swap and the cursor with its prepare.
     #[tokio::test]
-    async fn a_select_asks_the_server_four_times() {
-        use std::sync::atomic::Ordering;
+    async fn a_select_asks_the_server_three_times() {
         let Some(url) = test_url() else {
             return;
         };
-        let (conn, asked) = counted_session(&url).await;
-        for (script, expected) in [(&["SELECT 1"][..], 4), (&["SELECT 1", "SELECT 2"][..], 7)] {
-            let before = asked.load(Ordering::SeqCst);
+        let (conn, trips) = super::super::tests::trip_counted(&url).await;
+        for (script, expected) in [(&["SELECT 1"][..], 3), (&["SELECT 1", "SELECT 2"][..], 5)] {
+            let before = trips.count();
             let outcome = past_the_refusal(&conn, script, &StopFlag::new())
                 .await
                 .unwrap();
@@ -1209,15 +1281,201 @@ mod tests {
                     .all(|result| matches!(result.outcome, StatementOutcome::Rows { .. })),
                 "{outcome:?}"
             );
-            assert_eq!(
-                asked.load(Ordering::SeqCst) - before,
-                expected,
-                "{script:?}"
-            );
+            assert_eq!(trips.count() - before, expected, "{script:?}");
         }
         // The close left no transaction behind.
         let client = conn.client.lock().await;
         assert_eq!(in_transaction(&client).await, Ok(Tx::Left));
+    }
+
+    /// The SQLSTATE a statement failed with.
+    fn code(outcome: &StatementOutcome) -> Option<&str> {
+        match outcome {
+            StatementOutcome::Error {
+                error: Error::Query { code, .. },
+                ..
+            } => code.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Whether the session advisory lock `key` is free: `other` can take
+    /// it, and gives it back.
+    async fn lock_is_free(other: &Conn, key: i64) -> bool {
+        let client = other.client.lock().await;
+        let sql = format!("SELECT pg_try_advisory_lock({key}), pg_advisory_unlock({key})");
+        let taken = client.simple_query(&sql).await.unwrap();
+        first_text(&taken).as_deref() == Some("t")
+    }
+
+    /// `text` run as a statement of a SQL editor run that reads, in a
+    /// transaction of its own, which is left open: with where it stands.
+    async fn in_open_run(client: &tokio_postgres::Client, text: &str) -> (StatementOutcome, Tx) {
+        assert_eq!(open(client, None).await, Ok(Tx::Open), "{text}");
+        let (stop, mode) = (StopFlag::new(), ScriptMode::ReadOnly);
+        run_statement(client, text, 10, mode, &stop, None)
+            .await
+            .unwrap()
+    }
+
+    /// The prepare that goes out with the cursor still decides whether it
+    /// runs. A text of two statements fails the prepare, and with it the
+    /// transaction, so the cursor's message, which reads as the cursor and
+    /// a statement after it, runs nothing: neither the first statement nor
+    /// the second, which would have run past the cursor and its row cap.
+    #[tokio::test]
+    async fn a_text_of_two_statements_runs_neither() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        let other = session(&url).await;
+        let client = conn.client.lock().await;
+        for text in [
+            "SELECT pg_advisory_lock(424250); SELECT pg_advisory_lock(424251)",
+            "SELECT pg_advisory_lock(424250);\nSELECT pg_advisory_lock(424251) \
+             FROM generate_series(1, 5000)",
+        ] {
+            let (outcome, tx) = in_open_run(&client, text).await;
+            // "cannot insert multiple commands into a prepared statement"
+            assert_eq!(code(&outcome), Some("42601"), "{text}: {outcome:?}");
+            assert_eq!(tx, Tx::Aborted, "{text}");
+            // Asked while the transaction is still open: the close would
+            // release a lock either took.
+            assert!(lock_is_free(&other, 424250).await, "{text}");
+            assert!(lock_is_free(&other, 424251).await, "{text}");
+            assert_eq!(close(&client, tx).await, Ok(()), "{text}");
+        }
+    }
+
+    /// A quote or a comment the text leaves open would swallow the `FETCH`
+    /// and `CLOSE` after it. The prepare refuses it, so its message runs
+    /// nothing, and no cursor is left declared: the next run works. A --
+    /// comment at the end is no harm: the cursor's newline ends it.
+    #[tokio::test]
+    async fn a_quote_or_comment_left_open_cannot_reach_the_fetch() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        let other = session(&url).await;
+        {
+            let client = conn.client.lock().await;
+            for text in [
+                "SELECT pg_advisory_lock(424252) /* note",
+                "SELECT pg_advisory_lock(424252), 'note",
+                "SELECT pg_advisory_lock(424252), $$note",
+                "SELECT pg_advisory_lock(424252) AS \"note",
+            ] {
+                let (outcome, tx) = in_open_run(&client, text).await;
+                assert_eq!(code(&outcome), Some("42601"), "{text}: {outcome:?}");
+                assert_eq!(tx, Tx::Aborted, "{text}");
+                assert!(lock_is_free(&other, 424252).await, "{text}");
+                assert_eq!(close(&client, tx).await, Ok(()), "{text}");
+            }
+        }
+        for text in ["SELECT 1 /* note */", "SELECT 1 -- note"] {
+            let outcome = past_the_refusal(&conn, &[text], &StopFlag::new())
+                .await
+                .unwrap();
+            assert!(
+                matches!(
+                    &outcome.results[..],
+                    [StatementResult { outcome: StatementOutcome::Rows { rows, .. }, .. }]
+                        if rows == &[vec![Value::Int(1)]]
+                ),
+                "{text}: {outcome:?}"
+            );
+        }
+    }
+
+    /// The prepare that goes out with the cursor types its columns, also a
+    /// type the session has not met, which the driver looks up after the
+    /// cursor ran. Where the cursor failed, that lookup fails too, and the
+    /// cursor's error is the one the statement shows. A statement without
+    /// columns is done, as it was before it ran as a cursor.
+    #[tokio::test]
+    async fn the_prepare_with_the_cursor_types_its_columns() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let (admin, _turn) = probe(&url).await;
+        admin
+            .batch_execute(
+                "DO $$ BEGIN CREATE TYPE tabletist_mood AS ENUM ('calm'); \
+                 EXCEPTION WHEN duplicate_object THEN NULL; END $$",
+            )
+            .await
+            .unwrap();
+        // A session of its own each time: the driver keeps the types it
+        // looked up.
+        let conn = session(&url).await;
+        let client = conn.client.lock().await;
+        let (outcome, tx) = in_open_run(
+            &client,
+            "SELECT 7::int4 AS n, 'x'::text AS t, 2.5::numeric AS d, true AS b, \
+             now() AS at, 'calm'::tabletist_mood AS mood, \
+             ARRAY['calm']::tabletist_mood[] AS moods, NULL::int8 AS gone",
+        )
+        .await;
+        assert_eq!(tx, Tx::Open);
+        let StatementOutcome::Rows {
+            columns,
+            rows,
+            truncated: false,
+        } = outcome
+        else {
+            panic!("{outcome:?}");
+        };
+        let named: Vec<_> = columns
+            .iter()
+            .map(|column| (column.name.as_str(), column.type_name.as_str()))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                ("n", "int4"),
+                ("t", "text"),
+                ("d", "numeric"),
+                ("b", "bool"),
+                ("at", "timestamptz"),
+                ("mood", "tabletist_mood"),
+                ("moods", "_tabletist_mood"),
+                ("gone", "int8"),
+            ]
+        );
+        assert_eq!(columns[0].kind, crate::ValueKind::Numeric);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][0], Value::Int(7));
+        assert_eq!(rows[0][1], Value::Text("x".into()));
+        assert_eq!(rows[0][3], Value::Bool(true));
+        assert_eq!(rows[0][5], Value::Text("calm".into()));
+        assert_eq!(rows[0][7], Value::Null);
+        assert_eq!(close(&client, tx).await, Ok(()));
+        drop(client);
+
+        let conn = session(&url).await;
+        let client = conn.client.lock().await;
+        let (outcome, tx) = in_open_run(
+            &client,
+            "SELECT 'calm'::tabletist_mood AS mood, n / 0 FROM generate_series(1, 1) n",
+        )
+        .await;
+        // Division by zero, not the lookup's failed transaction.
+        assert_eq!(code(&outcome), Some("22012"), "{outcome:?}");
+        assert_eq!(tx, Tx::Aborted);
+        assert_eq!(close(&client, tx).await, Ok(()));
+
+        let (outcome, tx) = in_open_run(&client, "SELECT FROM generate_series(1, 3)").await;
+        let affected = None;
+        assert_eq!(
+            outcome,
+            StatementOutcome::Done {
+                affected,
+                warnings: 0
+            }
+        );
+        assert_eq!(close(&client, tx).await, Ok(()));
     }
 
     /// The close's one message ends the transaction and releases a lock a
@@ -1292,7 +1550,7 @@ mod tests {
         let slow_release = "RELEASE tabletist_guard; SAVEPOINT tabletist_guard; \
              SHOW transaction_read_only; ROLLBACK; SELECT pg_sleep(10)";
         for (step, slow) in [("rollback", slow_rollback), ("release", slow_release)] {
-            let (conn, _) = proxied_session(&url, Some((CONFIRM_AND_END, slow))).await;
+            let conn = proxied_session(&url, (CONFIRM_AND_END, slow)).await;
             let cancel = conn.cancel_handle();
             let client = conn.client.lock().await;
             assert_eq!(open(&client, None).await, Ok(Tx::Open), "{step}");
