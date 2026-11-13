@@ -128,10 +128,12 @@ What a hidden table hides with it:
 - Its rows, and its columns: `describe_schema` leaves it out, and the keys
   that point to it or from it.
 - A view over it, a materialized view, and a partition or a child table of
-  it. On MySQL, a view whose tables the server does not list.
+  it. On MySQL, a view whose tables the server does not list; on MariaDB,
+  one whose definition the server does not show you (without SHOW VIEW)
+  or that Tabletist cannot read for its tables.
 - The system catalogs (`information_schema`, `pg_catalog`, `mysql`,
   `sqlite_schema` and the rest), while anything is hidden: they describe
-  every table.
+  every table. On MySQL and MariaDB, so is a view over one.
 - A function your database's users wrote, while anything is hidden: what
   it reads cannot be seen, and a view that calls one is hidden. On
   PostgreSQL, so is a table whose row policy calls one; and while the

@@ -320,24 +320,6 @@ async fn on_mariadb(connection: &Connection) -> bool {
     version.starts_with("MariaDB")
 }
 
-/// Whether the server says which tables each view reads. MariaDB has no
-/// `VIEW_TABLE_USAGE`: there every view is taken to read what is hidden or
-/// masked, so it is refused as hidden itself while anything is either, and
-/// reads where nothing is.
-async fn says_what_views_read(connection: &Connection) -> bool {
-    !on_mariadb(connection).await
-}
-
-/// What reading `view` is refused as on a server that does not say what
-/// it reads ([`says_what_views_read`]): the view itself, hidden by `by`.
-fn untold_view(view: &str, by: By) -> Error {
-    Error::Agent(Refusal::TableHidden {
-        name: view.to_owned(),
-        through: None,
-        by,
-    })
-}
-
 /// Refused as hidden: `name`, read for `through` where that is given.
 fn hidden_refusal(name: &str, through: Option<&str>) -> Error {
     Error::Agent(Refusal::TableHidden {
@@ -351,20 +333,13 @@ fn hidden_refusal(name: &str, through: Option<&str>) -> Error {
 async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
     let customers = Tables::AllExcept(vec![named("customers")]);
     let count = |answer: Result<Answer, Error>| answer.map(|answer| answer.rows);
-    let told = says_what_views_read(connection).await;
-    // What is not hidden reads as before, views over it too where the
-    // server says what they read.
+    // What is not hidden reads as before, views over it too.
     for (sql, rows) in [
         ("SELECT count(*) FROM books", 12),
         ("SELECT count(*) FROM recent_orders", 7),
     ] {
         let found = count(hiding(connection, &customers, sql).await);
-        let view = sql.contains("recent_orders");
-        let expected = match view && !told {
-            true => Err(untold_view("recent_orders", By::Person)),
-            false => Ok(vec![vec![Value::Int(rows)]]),
-        };
-        assert_eq!(found, expected, "{on}: {sql}");
+        assert_eq!(found, Ok(vec![vec![Value::Int(rows)]]), "{on}: {sql}");
     }
     // The hidden table, by every way to it the text gives: by name, in
     // another case and in quotes, counted, behind EXISTS, in a common
@@ -386,11 +361,11 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
         assert_eq!(error, hidden_refusal("customers", None), "{on}: {sql}");
     }
     let through = hiding(connection, &customers, "SELECT * FROM customer_names").await;
-    let expected = match told {
-        true => hidden_refusal("customers", Some("customer_names")),
-        false => untold_view("customer_names", By::Person),
-    };
-    assert_eq!(through.unwrap_err(), expected, "{on}");
+    assert_eq!(
+        through.unwrap_err(),
+        hidden_refusal("customers", Some("customer_names")),
+        "{on}"
+    );
     // In a join in parentheses, where the name is not right after the
     // FROM: read off the text, and by the database's own check besides.
     let nested = "SELECT * FROM (customers JOIN books ON true)";
@@ -474,23 +449,29 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
             assert_eq!(error, hidden_refusal("stock_moves", None), "{on}");
         }
         Dialect::MySql => {
-            // A view of which the server lists no table it reads, as for a
-            // user without SHOW VIEW: what it reads cannot be told, so it
-            // is hidden while anything is, and reads where nothing is.
+            // A view of which MySQL lists no table it reads, as it lists
+            // none for a user without SHOW VIEW: what it reads cannot be
+            // told, so it is hidden while anything is, and reads where
+            // nothing is. MariaDB's definition says it reads none.
             let greeting = "SELECT * FROM shop_greeting";
-            let error = hiding(connection, &customers, greeting).await.unwrap_err();
-            assert_eq!(error, hidden_refusal("shop_greeting", None), "{on}");
+            let welcome = Ok(vec![vec![Value::Text("Welcome".into())]]);
+            let mariadb = on_mariadb(connection).await;
+            let found = hiding(connection, &customers, greeting).await;
+            match mariadb {
+                true => assert_eq!(found.map(|answer| answer.rows), welcome, "{on}"),
+                false => assert_eq!(
+                    found.unwrap_err(),
+                    hidden_refusal("shop_greeting", None),
+                    "{on}"
+                ),
+            }
             let hidden = connection
                 .agent_hidden(&Sources::person(customers.clone(), Vec::new()))
                 .await
                 .unwrap();
-            assert!(hidden.hides("bookshop", "shop_greeting"), "{on}");
+            assert_eq!(hidden.hides("bookshop", "shop_greeting"), !mariadb, "{on}");
             let found = hiding(connection, &Tables::All, greeting).await;
-            assert_eq!(
-                found.map(|answer| answer.rows),
-                Ok(vec![vec![Value::Text("Welcome".into())]]),
-                "{on}"
-            );
+            assert_eq!(found.map(|answer| answer.rows), welcome, "{on}");
             // An index hint's FOR, and an alias after it.
             let hinted = "SELECT * FROM books FORCE INDEX FOR JOIN (PRIMARY), customers c";
             let error = hiding(connection, &customers, hinted).await.unwrap_err();
@@ -565,9 +546,8 @@ fn masked_refusal(how: MaskedUse) -> Error {
 async fn a_masked_column_is_used_only_as_it_is(connection: &Connection, on: &str) {
     let email = ["orders.email"];
     let count = |answer: Result<Answer, Error>| answer.map(|answer| answer.rows.len());
-    let told = says_what_views_read(connection).await;
     // Selected as it is, the column reads; so does a view that does not
-    // read it, where the server says so, and what has none.
+    // read it, and what has none.
     for (sql, rows) in [
         ("SELECT id, email FROM orders WHERE id <= 3 ORDER BY id", 3),
         ("SELECT * FROM orders WHERE id = 1", 1),
@@ -575,12 +555,7 @@ async fn a_masked_column_is_used_only_as_it_is(connection: &Connection, on: &str
         ("SELECT * FROM customer_names", 8),
     ] {
         let found = count(masking(connection, &email, sql).await);
-        let view = sql.contains("customer_names");
-        let expected = match view && !told {
-            true => Err(untold_view("customer_names", By::Person)),
-            false => Ok(rows),
-        };
-        assert_eq!(found, expected, "{on}: {sql}");
+        assert_eq!(found, Ok(rows), "{on}: {sql}");
     }
     // Used, by its name, whatever the table.
     let named = masked_refusal(MaskedUse::Named("email".into()));
@@ -612,10 +587,7 @@ async fn a_masked_column_is_used_only_as_it_is(connection: &Connection, on: &str
         "{on}"
     );
     // A view that reads it, however little of the view is asked for.
-    let through = match told {
-        true => masked_refusal(MaskedUse::Through("recent_orders".into())),
-        false => untold_view("recent_orders", By::Person),
-    };
+    let through = masked_refusal(MaskedUse::Through("recent_orders".into()));
     for sql in [
         "SELECT * FROM recent_orders",
         "SELECT count(*) FROM recent_orders",
@@ -781,20 +753,16 @@ async fn a_column_computed_from_a_masked_one_is_masked(connection: &Connection, 
     )
     .await
     .unwrap_err();
-    if says_what_views_read(connection).await {
-        assert!(
-            matches!(
-                &found,
-                Error::Agent(Refusal::MaskedColumnUsed {
-                    how: MaskedUse::Through(view),
-                    ..
-                }) if view == "gift_shouts"
-            ),
-            "{on}: {found:?}"
-        );
-    } else {
-        assert_eq!(found, untold_view("gift_shouts", By::Person), "{on}");
-    }
+    assert!(
+        matches!(
+            &found,
+            Error::Agent(Refusal::MaskedColumnUsed {
+                how: MaskedUse::Through(view),
+                ..
+            }) if view == "gift_shouts"
+        ),
+        "{on}: {found:?}"
+    );
 }
 
 /// What the connection's database answers an agent that sends `sql` on a
@@ -847,11 +815,15 @@ async fn a_rule_hides_and_masks_beside_the_person(connection: &Connection, on: &
         "{on}"
     );
     let found = sourced(connection, &sources, "SELECT count(*) FROM customer_names").await;
-    let expected = match says_what_views_read(connection).await {
-        true => refused("customers", Some("customer_names"), By::Administrator),
-        false => untold_view("customer_names", By::Administrator),
-    };
-    assert_eq!(found, Err(expected), "{on}");
+    assert_eq!(
+        found,
+        Err(refused(
+            "customers",
+            Some("customer_names"),
+            By::Administrator
+        )),
+        "{on}"
+    );
     let found = sourced(connection, &sources, "SELECT count(*) FROM publishers").await;
     assert_eq!(found, Err(refused("publishers", None, By::Person)), "{on}");
     let found = count(sourced(connection, &sources, "SELECT count(*) FROM books").await);
@@ -1806,6 +1778,35 @@ mod mysql {
         ] {
             owner.query_drop(sql).await.unwrap();
         }
+    }
+
+    /// A view over a system catalog, which describes the hidden tables
+    /// too: hidden while anything is, merged or not, whatever the catalog
+    /// says it reads.
+    #[tokio::test]
+    async fn a_view_over_a_system_catalog_is_hidden_on_mysql() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        let url = std::env::var("TABLETIST_TEST_MYSQL_URL").unwrap();
+        let mut owner = admin(&url).await;
+        owner
+            .query_drop(
+                "CREATE OR REPLACE VIEW bookshop.table_names AS SELECT table_name AS name \
+                 FROM information_schema.tables GROUP BY table_name",
+            )
+            .await
+            .unwrap();
+        let customers = Tables::AllExcept(vec![named("customers")]);
+        let sql = "SELECT count(*) FROM table_names";
+        let found = hiding(&connection, &customers, sql).await;
+        let read = hiding(&connection, &Tables::All, sql).await;
+        owner
+            .query_drop("DROP VIEW bookshop.table_names")
+            .await
+            .unwrap();
+        assert_eq!(found.unwrap_err(), hidden_refusal("table_names", None));
+        assert!(read.is_ok(), "{read:?}");
     }
 
     #[tokio::test]
