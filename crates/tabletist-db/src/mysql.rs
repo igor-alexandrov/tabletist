@@ -1614,7 +1614,7 @@ const WRONG_ARGUMENTS: u16 = 1210;
 /// The answer is the binary protocol's (see [`binary_form`]), but for a
 /// FLOAT, whose text has lost digits: a page with one is read the other
 /// way, as is one whose statement the shape just read would not have
-/// built, failed or not.
+/// built, failed or not, unless a cancel stopped it.
 async fn page_in_one(
     conn: &mut mysql_async::Conn,
     query: &RowQuery,
@@ -1703,7 +1703,13 @@ fn answered(
             floats: false,
         };
         if fresh.page(query).as_ref().ok() != Some(sql) {
-            return Ok(None);
+            // A statement the old shape built failing is the old shape's
+            // doing: read again. A cancel stops the page, and a lost
+            // connection loses it, whatever shape it was built from.
+            return match error.map(query_error) {
+                Some(error @ (Error::Cancelled | Error::ConnectionLost(_))) => Err(error),
+                _ => Ok(None),
+            };
         }
         Some(fresh)
     } else {
@@ -2823,11 +2829,14 @@ mod tests {
 
     /// A fresh read-only session, as the app opens it.
     pub(super) async fn session(url: &str) -> Conn {
+        session_as(url, Access::ReadOnly).await
+    }
+
+    /// A fresh session opened as `access`.
+    async fn session_as(url: &str, access: Access) -> Conn {
         let (mut spec, secrets) = ConnectSpec::from_url(url).unwrap();
         spec.tls = TlsMode::Disable;
-        Conn::connect(&spec, &secrets, None, Access::ReadOnly)
-            .await
-            .unwrap()
+        Conn::connect(&spec, &secrets, None, access).await.unwrap()
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3991,7 +4000,7 @@ mod tests {
             queries.push(filtered(&object, column, op, value));
         }
         for access in [Access::ReadOnly, Access::Writable] {
-            let conn = session(&url).await;
+            let conn = session_as(&url, access).await;
             let mut session = conn.conn.lock().await;
             for query in &queries {
                 let limit = query.limit as usize;
@@ -4102,6 +4111,47 @@ mod tests {
         assert!(!in_transaction(&conn).await);
     }
 
+    /// A cancel that lands on a page built from a shape that has changed
+    /// stops the page: it is not read again from the new shape.
+    #[tokio::test]
+    async fn a_cancel_on_a_page_whose_shape_changed_stops_it() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = table_of(
+            &url,
+            "paged_rekeyed_cancel",
+            "id int PRIMARY KEY, other int NOT NULL",
+            "(1, 3), (2, 2), (3, 1)",
+        )
+        .await;
+        let conn = session(&url).await;
+        conn.describe(&object).await.unwrap();
+        {
+            let opts = Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+            let mut admin = mysql_async::Conn::new(opts).await.unwrap();
+            admin
+                .query_drop(
+                    "ALTER TABLE paged_rekeyed_cancel DROP PRIMARY KEY, ADD PRIMARY KEY (other)",
+                )
+                .await
+                .unwrap();
+        }
+        let mut slow = RowQuery::new(object, 10);
+        slow.raw_where = Some("SLEEP(5) = 0".into());
+        let cancel = conn.cancel_handle();
+        let cancelling = async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            cancel.cancel().await
+        };
+        let started = Instant::now();
+        let (fetched, cancelled) = tokio::join!(conn.fetch_rows(&slow), cancelling);
+        cancelled.unwrap();
+        assert_eq!(fetched.unwrap_err(), Error::Cancelled);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(!in_transaction(&conn).await);
+    }
+
     /// A page read in one message stops at a cancel, ends its transaction,
     /// and the session reads on; a raw WHERE of two statements, or with a
     /// parameter, is refused the same way the other way refuses it.
@@ -4112,7 +4162,7 @@ mod tests {
         };
         let object = trips(&url).await;
         for access in [Access::ReadOnly, Access::Writable] {
-            let conn = session(&url).await;
+            let conn = session_as(&url, access).await;
             conn.describe(&object).await.unwrap();
             let mut slow = RowQuery::new(object.clone(), 10);
             slow.raw_where = Some("SLEEP(5) = 0".into());
