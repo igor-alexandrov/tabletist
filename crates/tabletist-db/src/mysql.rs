@@ -1975,25 +1975,28 @@ async fn prepare_session(conn: &mut mysql_async::Conn, access: Access) -> Result
     retry_cancelled!(execute(conn, settings.trim_end_matches("; ")))
 }
 
-/// The row a message of several statements answers last: the last row of
-/// the last result set that has one. The driver keeps the error of a
-/// statement after the first as a pending result, which `is_empty` does
+/// Every row a message of several statements answers, in order, and the
+/// error that stopped it, if one did: the server runs the statements in
+/// order and stops at the first that fails. The driver keeps the error of
+/// a statement after the first as a pending result, which `is_empty` does
 /// not count: only `drop_result` gives it.
-async fn last_row(
+async fn answered_rows(
     conn: &mut mysql_async::Conn,
     text: &str,
-) -> mysql_async::Result<Option<mysql_async::Row>> {
-    let mut result = conn.query_iter(text).await?;
-    let mut last = None;
-    loop {
-        let rows: Vec<mysql_async::Row> = result.collect().await?;
-        last = rows.into_iter().last().or(last);
-        if result.is_empty() {
-            break;
+) -> (Vec<mysql_async::Row>, mysql_async::Result<()>) {
+    let mut rows = Vec::new();
+    let stopped = async {
+        let mut result = conn.query_iter(text).await?;
+        loop {
+            rows.extend(result.collect::<mysql_async::Row>().await?);
+            if result.is_empty() {
+                break;
+            }
         }
+        result.drop_result().await
     }
-    result.drop_result().await?;
-    Ok(last)
+    .await;
+    (rows, stopped)
 }
 
 /// Runs one of the driver's own statements, through the text protocol.
@@ -2435,34 +2438,36 @@ fn cancel_failed(error: mysql_async::Error) -> Error {
 
 /// Names the server a connection reached, with its `VERSION()`: by
 /// `@@server_uuid`, or by host name and port on MariaDB, which has no
-/// server UUID. `before` is statements sent in the same message, which run
-/// first ([`session_settings`]); they are sent again with MariaDB's
-/// question, so that one of them failing is never taken for the missing
-/// UUID.
+/// server UUID. `before` is statements that answer no rows, sent in the
+/// same message to run first ([`session_settings`]). The UUID is asked
+/// last, so one message serves both servers: MariaDB fails only that
+/// question, with error 1193, after the host's row came. A statement of
+/// `before` that fails stops the message before that row, so it is never
+/// taken for the missing UUID.
 async fn server_identity(conn: &mut mysql_async::Conn, before: &str) -> Result<(String, String)> {
-    let asked = last_row(conn, &format!("{before}SELECT @@server_uuid, VERSION()")).await;
-    match asked {
-        Ok(Some(row)) => {
-            if let (Some(uuid), version) = from_row::<(Option<String>, String)>(row)? {
-                return Ok((format!("uuid {uuid}"), version));
-            }
+    let text = format!("{before}SELECT @@hostname, @@port, VERSION(); SELECT @@server_uuid");
+    let (mut rows, stopped) = answered_rows(conn, &text).await;
+    let uuid = match stopped {
+        Ok(()) => rows.pop(),
+        Err(mysql_async::Error::Server(error))
+            if error.code == UNKNOWN_SYSTEM_VARIABLE && !rows.is_empty() =>
+        {
+            None
         }
-        Ok(None) => {}
-        Err(mysql_async::Error::Server(error)) if error.code == UNKNOWN_SYSTEM_VARIABLE => {}
         Err(error) => return Err(query_error(error)),
-    }
-    let found = last_row(
-        conn,
-        &format!("{before}SELECT @@hostname, @@port, VERSION()"),
-    )
-    .await
-    .map_err(query_error)?;
-    Ok(
-        match found.map(from_row::<(String, u16, String)>).transpose()? {
-            Some((host, port, version)) => (format!("host {host}:{port}"), version),
-            None => Default::default(),
-        },
-    )
+    };
+    let Some((host, port, version)) = rows
+        .pop()
+        .map(from_row::<(String, u16, String)>)
+        .transpose()?
+    else {
+        return Ok(Default::default());
+    };
+    let uuid = uuid.map(from_row::<Option<String>>).transpose()?.flatten();
+    Ok(match uuid {
+        Some(uuid) => (format!("uuid {uuid}"), version),
+        None => (format!("host {host}:{port}"), version),
+    })
 }
 
 /// Whether a cancel connection reached the session's server. An unknown
@@ -3078,10 +3083,12 @@ mod tests {
 
     /// A session through a proxy in front of the test server that takes
     /// every connection the client makes. Where `no_uuid`, a query that
-    /// asks for `@@server_uuid` is answered as MariaDB answers it, with
-    /// error 1193, and the server never hears it. The connections after
-    /// the session's (its spare's) wait at the proxy until `gate` says
-    /// true; the count is of those that came.
+    /// asks for `@@server_uuid` reaches the server asking for a variable
+    /// no server has instead, which it answers as MariaDB answers the
+    /// UUID: it runs the statements before that one and fails it with
+    /// error 1193. The connections after the session's (its spare's) wait
+    /// at the proxy until `gate` says true; the count is of those that
+    /// came.
     async fn scripted_session(
         url: &str,
         no_uuid: bool,
@@ -3138,20 +3145,14 @@ mod tests {
                             return;
                         }
                         const QUERY: u8 = 0x03;
-                        let asks_uuid = header[3] == 0
-                            && body.first() == Some(&QUERY)
-                            && body.windows(13).any(|part| part == b"@@server_uuid");
-                        if no_uuid && asks_uuid {
-                            let mut error = vec![0xff];
-                            error.extend(UNKNOWN_SYSTEM_VARIABLE.to_le_bytes());
-                            error.extend(b"#HY000Unknown system variable 'server_uuid'");
-                            let length = u32::try_from(error.len()).unwrap().to_le_bytes();
-                            let mut packet = vec![length[0], length[1], length[2], 1];
-                            packet.extend(error);
-                            if to_client.lock().await.write_all(&packet).await.is_err() {
-                                return;
+                        // The same length, so the header holds.
+                        const UUID: &[u8] = b"@@server_uuid";
+                        const NO_SUCH: &[u8] = b"@@no_such_var";
+                        if no_uuid && header[3] == 0 && body.first() == Some(&QUERY) {
+                            let at = body.windows(UUID.len()).position(|part| part == UUID);
+                            if let Some(at) = at {
+                                body[at..at + UUID.len()].copy_from_slice(NO_SUCH);
                             }
-                            continue;
                         }
                         if to_server.write_all(&header).await.is_err()
                             || to_server.write_all(&body).await.is_err()
@@ -3203,7 +3204,7 @@ mod tests {
     }
 
     /// A server with no `@@server_uuid` (MariaDB) is named by its host
-    /// and port, with the settings sent again before that question, and
+    /// and port, from the same message as its settings, which held, and
     /// its spare is checked by that name.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_server_without_a_uuid_is_named_by_its_host_and_port() {
@@ -4672,13 +4673,11 @@ mod tests {
         };
         for (access, read_only, run) in [(Access::ReadOnly, 1, 6), (Access::Writable, 0, 6)] {
             let (conn, asked) = counted_session(&url, access).await;
-            // MariaDB has no UUID: its server is named by a second
-            // question, sent with the settings again (`server_identity`).
-            let (connect, product) = match on_mariadb(&conn) {
-                true => (3, "MariaDB "),
-                false => (2, "MySQL 8."),
+            let product = match on_mariadb(&conn) {
+                true => "MariaDB ",
+                false => "MySQL 8.",
             };
-            assert_eq!(asked.load(Ordering::SeqCst), connect, "{access:?}");
+            assert_eq!(asked.load(Ordering::SeqCst), 2, "{access:?}");
             assert!(conn.server.starts_with(named_as(&conn)), "{}", conn.server);
             assert!(
                 version_name(&conn.version).starts_with(product),
@@ -4728,7 +4727,7 @@ mod tests {
 
     /// A message of statements runs them in order and stops at the first
     /// that fails, which the session settings rely on; its answer is the
-    /// last row that came.
+    /// rows that came before.
     #[tokio::test]
     async fn a_message_of_statements_stops_at_the_first_that_fails() {
         let Some(url) = test_url() else {
@@ -4736,26 +4735,58 @@ mod tests {
         };
         let conn = session(&url).await;
         let mut conn = conn.conn.lock().await;
-        let row = last_row(
+        let numbers = |rows: Vec<mysql_async::Row>| {
+            rows.into_iter()
+                .map(|row| from_row::<i64>(row).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let (rows, stopped) = answered_rows(
             &mut conn,
             "SET @a = 1; SELECT 5; DO 1; SELECT @a + 1; SET @b = 1",
         )
-        .await
-        .unwrap();
-        assert_eq!(row.map(from_row::<i64>), Some(Ok(2)));
-        for failing in [
-            "SET @a = 2; SELECT no_such_function(); SET @a = 3",
-            "SET @a = 2; SELECT 1; SELECT no_such_function()",
+        .await;
+        stopped.unwrap();
+        assert_eq!(numbers(rows), [5, 2]);
+        for (failing, came) in [
+            ("SET @a = 2; SELECT no_such_function(); SET @a = 3", &[][..]),
+            ("SET @a = 2; SELECT 1; SELECT no_such_function()", &[1][..]),
+            ("SELECT no_such_function(); SELECT 1", &[][..]),
         ] {
-            let failed = last_row(&mut conn, failing).await;
+            let (rows, stopped) = answered_rows(&mut conn, failing).await;
             assert!(
-                matches!(&failed, Err(mysql_async::Error::Server(error)) if error.code == 1305),
-                "{failing}: {failed:?}"
+                matches!(&stopped, Err(mysql_async::Error::Server(error)) if error.code == 1305),
+                "{failing}: {stopped:?}"
             );
+            assert_eq!(numbers(rows), came, "{failing}");
             let a: Option<i64> = conn.query_first("SELECT @a").await.unwrap();
             assert_eq!(a, Some(2), "{failing}");
         }
-        let none = last_row(&mut conn, "SET @a = 4; DO 1").await.unwrap();
-        assert!(none.is_none());
+        let (rows, stopped) = answered_rows(&mut conn, "SET @a = 4; DO 1").await;
+        stopped.unwrap();
+        assert!(rows.is_empty());
+    }
+
+    /// A setting sent before the question who the server is that fails
+    /// with error 1193, MariaDB's answer to the UUID, fails the question:
+    /// it is never taken for the missing UUID. The connection is usable
+    /// after either.
+    #[tokio::test]
+    async fn a_failing_setting_is_never_taken_for_a_missing_uuid() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        let mut conn = conn.conn.lock().await;
+        let failed = server_identity(&mut conn, "SET SESSION no_such_var = 1; ").await;
+        assert!(matches!(failed, Err(Error::Query { .. })), "{failed:?}");
+        let (server, version) = server_identity(&mut conn, "SET @a = 1; ").await.unwrap();
+        let named = if version.contains("MariaDB") {
+            "host "
+        } else {
+            "uuid "
+        };
+        assert!(server.starts_with(named), "{server}");
+        let a: Option<i64> = conn.query_first("SELECT @a").await.unwrap();
+        assert_eq!(a, Some(1));
     }
 }
