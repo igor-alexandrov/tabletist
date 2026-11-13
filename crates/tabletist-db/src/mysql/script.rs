@@ -396,6 +396,8 @@ pub(super) struct Answer {
     /// when it is the message's last, since reading its end also reads the
     /// next statement's first answer.
     status: StatusFlags,
+    /// Its result's columns: none for a statement that answers without.
+    pub(super) columns: std::sync::Arc<[mysql_async::Column]>,
 }
 
 /// What the server answered to `steps`, sent as one message: an answer for
@@ -416,12 +418,17 @@ pub(super) async fn answers(
         // the statement it answers.
         let before = status(conn);
         let mut result = QueryResult::<'_, '_, TextProtocol>::new(&mut *conn);
-        let without_rows = result.columns_ref().is_empty();
+        let columns = result.columns().unwrap_or_default();
         let read = result.collect().await;
         match read {
             Ok(rows) => answers.push(Answer {
-                status: if without_rows { before } else { status(conn) },
+                status: if columns.is_empty() {
+                    before
+                } else {
+                    status(conn)
+                },
                 rows,
+                columns,
             }),
             Err(error) => return (answers, Some(error)),
         }

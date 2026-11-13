@@ -787,12 +787,22 @@ async fn quotes_backslashes_and_wildcards_are_just_text() {
     assert!(page.rows.is_empty());
 }
 
+/// Also once a page of the table was read, after which a page is read in
+/// one message, through a statement the server prepares from text.
 #[tokio::test]
 async fn a_raw_where_cannot_write_or_chain_statements() {
-    for access in [Access::ReadOnly, Access::Writable] {
+    for (access, read_first) in [
+        (Access::ReadOnly, false),
+        (Access::Writable, false),
+        (Access::ReadOnly, true),
+        (Access::Writable, true),
+    ] {
         let Some(connection) = connect_as(access).await else {
             return;
         };
+        if read_first {
+            connection.fetch_rows(&users(1)).await.unwrap();
+        }
         for raw in [
             "1 = 1; DELETE FROM users",
             "1=1) ; COMMIT; DELETE FROM users; SELECT (1",
@@ -822,12 +832,14 @@ async fn a_bad_raw_where_is_a_query_error_and_the_session_survives() {
 
 /// The driver closes the connection when a statement runs without a value
 /// for each parameter, and it reads `:name` as one too, also in a quote
-/// right after a `-`.
+/// right after a `-`. A page read in one message, once a first page was
+/// read, refuses the same.
 #[tokio::test]
 async fn a_raw_where_with_a_parameter_is_a_query_error_and_the_session_survives() {
     let Some(connection) = connect().await else {
         return;
     };
+    assert!(connection.fetch_rows(&users(1)).await.is_ok());
     for raw in [
         "id = ?",
         "name = :x",

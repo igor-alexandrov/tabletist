@@ -2,8 +2,11 @@
 //! protocol): typed values, column types, and never more than one statement.
 //! The catalog questions about a table that go out together (its structure,
 //! what a page is built from) are the exception: fixed text, sent several
-//! to a message, with the names in them as hex literals (`inlined`). Rows
-//! are read inside a read-only transaction. A SQL editor script runs
+//! to a message, with the names in them as hex literals (`inlined`). So is
+//! a table's page once the session knows what it is built from: one
+//! message, whose statement the server prepares from its text in hex and
+//! whose values come back as the binary protocol's would (`page_in_one`).
+//! Rows are read inside a read-only transaction. A SQL editor script runs
 //! its statements the same way, in one read-only transaction, and the
 //! session is reset afterwards: MySQL session state is not transactional.
 //!
@@ -143,6 +146,47 @@ type KeyRow = (String, String, String, String, String, String, String);
 /// delete rule.
 type ReferencingRow = (String, String, String, String, String, String);
 
+/// What a page's statement over a table is built from: its primary key's
+/// columns, in key order, and its byte string columns, which a filter
+/// whose value reads as bytes compares as bytes. And whether a column of it
+/// is a FLOAT: the text protocol writes a FLOAT to six significant digits,
+/// so the pages of such a table are read through the binary protocol. A
+/// session keeps the shape it last read of each table, and asks for it
+/// again in the message that reads a page from it (see
+/// [`Adapter::fetch_rows`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Shape {
+    key: Vec<String>,
+    binary: Vec<String>,
+    floats: bool,
+}
+
+impl Shape {
+    /// The byte string columns a filter of `query` compares as bytes: none
+    /// when no filter has a value that reads as bytes.
+    fn classes(&self, query: &RowQuery) -> Vec<(String, ColumnClass)> {
+        if !crate::dialect::reads_bytes(query) {
+            return Vec::new();
+        }
+        self.binary
+            .iter()
+            .map(|name| (name.clone(), ColumnClass::Binary))
+            .collect()
+    }
+
+    /// The statement of `query`'s page, built from this shape.
+    fn page(&self, query: &RowQuery) -> Result<crate::dialect::Sql> {
+        Dialect::MySql.select_rows(query, &self.key, &self.classes(query))
+    }
+}
+
+/// Whether any of `columns` is a FLOAT (see [`Shape`]).
+fn floats(columns: &[ColumnMeta]) -> bool {
+    columns
+        .iter()
+        .any(|column| column.type_name.split(' ').next() == Some("float"))
+}
+
 /// `sql`, one of the catalog questions, with each `?` in turn given as a
 /// literal of `values`: so that several go in one message, which cannot
 /// bind. The literal is the value's UTF-8 in hex after the `utf8mb4`
@@ -151,26 +195,36 @@ type ReferencingRow = (String, String, String, String, String, String);
 /// character set a bound parameter has (`NAMES`), which a column compared
 /// with it outranks just the same.
 fn inlined(sql: &str, values: &[&str]) -> String {
-    use std::fmt::Write;
     let mut values = values.iter();
     let mut text = String::with_capacity(sql.len() + 64);
     for (at, piece) in sql.split('?').enumerate() {
         if at > 0 {
             let value = values.next().copied().unwrap_or_default();
-            text.push_str("_utf8mb4 X'");
-            for byte in value.bytes() {
-                let _ = write!(text, "{byte:02x}");
-            }
-            text.push('\'');
+            text.push_str(&hex_literal("_utf8mb4", value.as_bytes()));
         }
         text.push_str(piece);
     }
     text
 }
 
+/// `bytes` as a hex literal after the character set `introducer`: no
+/// quote or backslash can end it early (see [`inlined`]).
+fn hex_literal(introducer: &str, bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut text = String::with_capacity(introducer.len() + 3 + bytes.len() * 2);
+    text.push_str(introducer);
+    text.push_str(" X'");
+    for byte in bytes {
+        let _ = write!(text, "{byte:02x}");
+    }
+    text.push('\'');
+    text
+}
+
 /// The questions [`Adapter::describe`] sends as one message, with the
 /// CHECK constraints asked last the way of the server `version` names;
 /// and the other way's question, asked alone where that one is refused.
+/// The byte string columns are asked for the table's [`Shape`].
 fn structure_questions(version: &str, object: &ObjectRef) -> (Vec<String>, &'static str) {
     let (checks_first, checks_then) = if version.contains("MariaDB") {
         (MARIADB_CHECKS, MYSQL_CHECKS)
@@ -185,6 +239,7 @@ fn structure_questions(version: &str, object: &ObjectRef) -> (Vec<String>, &'sta
         KEYS_IN,
         COMMENT,
         PRIMARY_KEY,
+        BINARY_COLUMNS,
         checks_first,
     ]
     .iter()
@@ -375,6 +430,8 @@ pub(crate) struct Conn {
     pub(crate) spare: Spare,
     /// The spare's open beside the session, stopped when the session is.
     _opening: Opening,
+    /// The shape of each table this session read last (see [`Shape`]).
+    shapes: std::sync::Mutex<std::collections::HashMap<ObjectRef, Shape>>,
 }
 
 /// A session's connection, and whether it may still be used: the reset
@@ -761,6 +818,7 @@ impl Conn {
             spare,
             resetting: std::sync::Arc::new(tokio::sync::watch::Sender::new(false)),
             _opening: Opening(opening.abort_handle()),
+            shapes: Default::default(),
         })
     }
 
@@ -831,6 +889,23 @@ impl Conn {
             .into_iter()
             .map(|name| (name, ColumnClass::Binary))
             .collect())
+    }
+
+    /// The shape this session last read of `object`, if it read one.
+    fn known_shape(&self, object: &ObjectRef) -> Option<Shape> {
+        let shapes = self
+            .shapes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        shapes.get(object).cloned()
+    }
+
+    fn remember(&self, object: &ObjectRef, shape: Shape) {
+        let mut shapes = self
+            .shapes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        shapes.insert(object.clone(), shape);
     }
 }
 
@@ -925,8 +1000,17 @@ impl Adapter for Conn {
         let mut sets: Vec<Vec<mysql_async::Row>> =
             answers.into_iter().map(|answer| answer.rows).collect();
         let checks = (sets.len() == steps.len()).then(|| sets.pop()).flatten();
-        let Ok([columns, indexes, keys_out, keys_in, comment, primary_key]) =
-            <[_; 6]>::try_from(sets)
+        let Ok(
+            [
+                columns,
+                indexes,
+                keys_out,
+                keys_in,
+                comment,
+                primary_key,
+                binary,
+            ],
+        ) = <[_; 7]>::try_from(sets)
         else {
             // A question before the checks failed: that is the error.
             return Err(error.map_or_else(
@@ -945,6 +1029,19 @@ impl Adapter for Conn {
         if described.columns.is_empty() {
             return Err(no_such_object(object));
         }
+        // What the table's first page builds its statement from, which it
+        // then need not ask first (see `fetch_rows`).
+        self.remember(
+            object,
+            Shape {
+                key: described.primary_key.clone(),
+                binary: typed(binary)?,
+                floats: described
+                    .columns
+                    .iter()
+                    .any(|column| column.1.to_ascii_lowercase().starts_with("float")),
+            },
+        );
         // The server's own question for its checks answered, or it was
         // refused: the other kind's, alone, then none (see
         // `MARIADB_CHECKS`).
@@ -979,24 +1076,36 @@ impl Adapter for Conn {
         Ok(Ddl::new(crate::Driver::MySql, server, None, parts))
     }
 
-    /// One page, through a prepared statement inside a read-only
-    /// transaction. Reading stops after `limit + 1` rows.
+    /// One page, inside a read-only transaction, of at most `limit + 1`
+    /// rows.
     ///
-    /// The primary key, and the byte string columns a filter needs, are
-    /// asked in the message that starts the transaction.
+    /// The statement is built from the table's [`Shape`] as this session
+    /// last read it, and the page is read in one message with the shape
+    /// asked again just before it (see [`page_in_one`]). A page whose
+    /// statement the shape just read would not have built (a key or a byte
+    /// string column that changed) is read again from that shape: what
+    /// stands is always the page of the shape read just before it, as when
+    /// the shape is asked first. A table this session has not read the
+    /// shape of, or one with a FLOAT, is read the other way (see
+    /// [`page_in_three`]), as is a page that one message did not read.
     async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
         let limit = query.limit as usize;
         let mut session = self.conn.lock().await;
         let conn = session.conn()?;
         let started = Instant::now();
-        let outcome = async {
-            let (key, binary) = begin_shaped(conn, query, true).await?;
-            let sql = Dialect::MySql.select_rows(query, &key, &binary)?;
-            let page = read_page(conn, &sql, limit).await?;
-            Ok((page, key))
-        }
-        .await;
-        let ((columns, mut rows), key) = end_read(conn, outcome).await?;
+        let known = self
+            .known_shape(&query.object)
+            .filter(|shape| !shape.floats);
+        let read = match known {
+            Some(known) => page_in_one(conn, query, &known).await?,
+            None => None,
+        };
+        let ((columns, mut rows), shape) = match read {
+            Some(read) => read,
+            None => page_in_three(conn, query, limit).await?,
+        };
+        let key = shape.key.clone();
+        self.remember(&query.object, shape);
         let has_more = rows.len() > limit;
         rows.truncate(limit);
         Ok(RowPage {
@@ -1048,7 +1157,7 @@ impl Adapter for Conn {
         let mut session = self.conn.lock().await;
         let conn = session.conn()?;
         let outcome = async {
-            let (_, binary) = begin_shaped(conn, query, false).await?;
+            let binary = begin_shaped(conn, query).await?;
             let sql = Dialect::MySql.count_rows(query, &binary)?;
             count(conn, &sql).await
         }
@@ -1423,37 +1532,349 @@ async fn begin_read_asking(
         .collect())
 }
 
-/// Starts a read of `query` (see [`begin_read_asking`]), asking in the
-/// same message what its statement is built from: the primary key, when
-/// `key`, and the byte string columns when a filter's value reads as
-/// bytes.
+/// Starts a count of `query` (see [`begin_read_asking`]), asking in the
+/// same message for the byte string columns when a filter's value reads
+/// as bytes.
 async fn begin_shaped(
     conn: &mut mysql_async::Conn,
     query: &RowQuery,
-    key: bool,
-) -> Result<(Vec<String>, Vec<(String, ColumnClass)>)> {
+) -> Result<Vec<(String, ColumnClass)>> {
+    if !crate::dialect::reads_bytes(query) {
+        begin_read(conn).await?;
+        return Ok(Vec::new());
+    }
     let at = [query.object.schema.as_str(), query.object.name.as_str()];
-    let binary = crate::dialect::reads_bytes(query);
-    let questions: Vec<String> = [(key, PRIMARY_KEY), (binary, BINARY_COLUMNS)]
+    let mut sets = begin_read_asking(conn, &[inlined(BINARY_COLUMNS, &at)])
+        .await?
+        .into_iter();
+    Ok(typed::<String>(sets.next().unwrap_or_default())?
         .into_iter()
-        .filter(|(asked, _)| *asked)
-        .map(|(_, sql)| inlined(sql, &at))
+        .map(|name| (name, ColumnClass::Binary))
+        .collect())
+}
+
+/// A page's columns and rows.
+type Page = (Vec<ColumnMeta>, Vec<Vec<Value>>);
+
+/// `query`'s page in three round trips, through the binary protocol: the
+/// start of the read-only transaction with the table's [`Shape`] asked in
+/// its message, the prepared statement's run (and its prepare, the first
+/// time the driver meets the text), and the rollback. The page, and the
+/// shape it was built from.
+async fn page_in_three(
+    conn: &mut mysql_async::Conn,
+    query: &RowQuery,
+    limit: usize,
+) -> Result<(Page, Shape)> {
+    let outcome = async {
+        let at = [query.object.schema.as_str(), query.object.name.as_str()];
+        let questions = [inlined(PRIMARY_KEY, &at), inlined(BINARY_COLUMNS, &at)];
+        let mut sets = begin_read_asking(conn, &questions).await?.into_iter();
+        let mut shape = Shape {
+            key: typed(sets.next().unwrap_or_default())?,
+            binary: typed(sets.next().unwrap_or_default())?,
+            floats: false,
+        };
+        let page = read_page(conn, &shape.page(query)?, limit).await?;
+        shape.floats = floats(&page.0);
+        Ok((page, shape))
+    }
+    .await;
+    end_read(conn, outcome).await
+}
+
+/// The name of the statement [`page_in_one`] prepares on the server, and
+/// of the user variables it sets: the text as `@tabletist_page`, the
+/// values as `@tabletist_page_1` and on. They are set back to NULL, and the
+/// statement deallocated, in the same message, after the run; a message
+/// that stopped before then leaves them for the next page to replace, or
+/// the session reset after a SQL editor run to drop.
+const PAGE: &str = "tabletist_page";
+
+/// What `EXECUTE` answers when it is given another number of values than
+/// the statement has parameters.
+const WRONG_ARGUMENTS: u16 = 1210;
+
+/// `query`'s page, built from `shape`, in one round trip: the page and the
+/// shape just read, or `None` where it is to be read the other way
+/// ([`page_in_three`]).
+///
+/// One message, through the text protocol: the start of the read-only
+/// transaction, the shape's questions, the statement as the server
+/// prepares it from a user variable set to its text in hex (see
+/// [`inlined`]), its run with the values in user variables, and the
+/// rollback. The server stops a message at the first statement that
+/// fails, and its `PREPARE` refuses a text of more than one statement as
+/// the binary protocol's does: so the statement runs inside the
+/// transaction, alone. The driver never reads the text, so it rewrites
+/// nothing in it: [`driver_parameter`] refuses the same texts all the
+/// same, so both ways run the same ones. The values are written as
+/// [`literal`]s; a page with one that has none is read the other way.
+///
+/// The answer is the binary protocol's (see [`binary_form`]), but for a
+/// FLOAT, whose text has lost digits: a page with one is read the other
+/// way, as is one whose statement the shape just read would not have
+/// built, failed or not, unless a cancel stopped it.
+async fn page_in_one(
+    conn: &mut mysql_async::Conn,
+    query: &RowQuery,
+    shape: &Shape,
+) -> Result<Option<(Page, Shape)>> {
+    let sql = shape.page(query)?;
+    driver_parameter(&sql.text)?;
+    let Some(values) = sql.params.iter().map(literal).collect::<Option<Vec<_>>>() else {
+        return Ok(None);
+    };
+    let at = [query.object.schema.as_str(), query.object.name.as_str()];
+    let reads_bytes = crate::dialect::reads_bytes(query);
+    let mut steps = Vec::new();
+    // As `begin_read_asking`: `START TRANSACTION` would commit it.
+    if status(conn).contains(StatusFlags::SERVER_STATUS_IN_TRANS) {
+        steps.push(write::ROLLBACK.to_owned());
+    }
+    steps.push("START TRANSACTION READ ONLY".to_owned());
+    let asked = steps.len();
+    steps.push(inlined(PRIMARY_KEY, &at));
+    if reads_bytes {
+        steps.push(inlined(BINARY_COLUMNS, &at));
+    }
+    let names: Vec<String> = (1..=values.len())
+        .map(|number| format!("@{PAGE}_{number}"))
         .collect();
-    let mut sets = begin_read_asking(conn, &questions).await?.into_iter();
-    let key = if key {
-        typed(sets.next().unwrap_or_default())?
+    let text = hex_literal("_utf8mb4", sql.text.as_bytes());
+    let set: Vec<String> = std::iter::once(format!("@{PAGE} = {text}"))
+        .chain(
+            names
+                .iter()
+                .zip(&values)
+                .map(|(name, value)| format!("{name} = {value}")),
+        )
+        .collect();
+    steps.push(format!("SET {}", set.join(", ")));
+    steps.push(format!("PREPARE {PAGE} FROM @{PAGE}"));
+    let ran = steps.len();
+    steps.push(if names.is_empty() {
+        format!("EXECUTE {PAGE}")
     } else {
-        Vec::new()
-    };
-    let binary = if binary {
-        typed::<String>(sets.next().unwrap_or_default())?
-            .into_iter()
-            .map(|name| (name, ColumnClass::Binary))
-            .collect()
+        format!("EXECUTE {PAGE} USING {}", names.join(", "))
+    });
+    steps.push(format!("DEALLOCATE PREPARE {PAGE}"));
+    let cleared: Vec<String> = std::iter::once(format!("@{PAGE}"))
+        .chain(names)
+        .map(|name| format!("{name} = NULL"))
+        .collect();
+    steps.push(format!("SET {}", cleared.join(", ")));
+    steps.push(write::ROLLBACK.to_owned());
+    let (mut answers, error) = script::answers(conn, &steps).await;
+    // The message's own rollback answered: the transaction is over.
+    let ended = answers.len() == steps.len();
+    let outcome = answered(&mut answers, error, &sql, query, shape, (asked, ran));
+    if ended {
+        outcome
     } else {
-        Vec::new()
+        end_read(conn, outcome).await
+    }
+}
+
+/// What [`page_in_one`]'s message came to, from its `answers` and the
+/// `error` that stopped it: `asked` is the place of its shape's first
+/// question, `ran` that of the statement's run.
+fn answered(
+    answers: &mut [script::Answer],
+    error: Option<mysql_async::Error>,
+    sql: &crate::dialect::Sql,
+    query: &RowQuery,
+    known: &Shape,
+    (asked, ran): (usize, usize),
+) -> Result<Option<(Page, Shape)>> {
+    let reads_bytes = crate::dialect::reads_bytes(query);
+    let questions = asked + 1 + usize::from(reads_bytes);
+    // The shape as it is now, where the message read it.
+    let fresh = if answers.len() >= questions {
+        let key = typed(std::mem::take(&mut answers[asked].rows))?;
+        let binary = if reads_bytes {
+            typed(std::mem::take(&mut answers[asked + 1].rows))?
+        } else {
+            known.binary.clone()
+        };
+        let fresh = Shape {
+            key,
+            binary,
+            floats: false,
+        };
+        if fresh.page(query).as_ref().ok() != Some(sql) {
+            // A statement the old shape built failing is the old shape's
+            // doing: read again. A cancel stops the page, and a lost
+            // connection loses it, whatever shape it was built from.
+            return match error.map(query_error) {
+                Some(error @ (Error::Cancelled | Error::ConnectionLost(_))) => Err(error),
+                _ => Ok(None),
+            };
+        }
+        Some(fresh)
+    } else {
+        None
     };
-    Ok((key, binary))
+    let (Some(fresh), Some(answer)) = (fresh, answers.get_mut(ran)) else {
+        return Err(match error {
+            Some(mysql_async::Error::Server(refused))
+                if answers.len() == ran && refused.code == WRONG_ARGUMENTS =>
+            {
+                parameter("?", None)
+            }
+            Some(error) => query_error(error),
+            None => Error::query("unexpected data from the server: an answer is missing"),
+        });
+    };
+    let columns = column_metas(&answer.columns);
+    if floats(&columns) {
+        return Ok(None);
+    }
+    let rows = std::mem::take(&mut answer.rows)
+        .into_iter()
+        .map(|row| text_values(row, &answer.columns, &columns))
+        .collect::<Option<Vec<_>>>();
+    Ok(rows.map(|rows| ((columns, rows), fresh)))
+}
+
+/// A statement's value as [`page_in_one`] sets it, for the server to bind
+/// as the binary protocol would have: a number as itself, text as UTF-8 in
+/// hex in the session's collation (see [`NAMES`]), bytes in hex as bytes.
+/// `None` for a float that is no number, which has no literal.
+fn literal(value: &Value) -> Option<String> {
+    Some(match value {
+        Value::Null => "NULL".to_owned(),
+        Value::Bool(flag) => i64::from(*flag).to_string(),
+        Value::Int(number) => number.to_string(),
+        // With an exponent: a DOUBLE, as bound, not a DECIMAL.
+        Value::Float(number) if number.is_finite() => format!("{number:e}"),
+        Value::Float(_) => return None,
+        Value::Text(text) => format!(
+            "{} COLLATE {COLLATION}",
+            hex_literal("_utf8mb4", text.as_bytes())
+        ),
+        Value::Bytes(bytes) => hex_literal("_binary", bytes),
+    })
+}
+
+/// A text-protocol row's values, as [`row_values`] reads the binary
+/// protocol's: `None` where a value's text is not what the binary
+/// protocol's would be written as (see [`binary_form`]).
+fn text_values(
+    row: mysql_async::Row,
+    columns: &[mysql_async::Column],
+    metas: &[ColumnMeta],
+) -> Option<Vec<Value>> {
+    row.unwrap()
+        .into_iter()
+        .zip(columns)
+        .zip(metas)
+        .map(|((cell, column), meta)| {
+            Some(value(
+                binary_form(cell, column.column_type())?,
+                &meta.type_name,
+            ))
+        })
+        .collect()
+}
+
+/// A text-protocol value as the binary protocol sends it for a column of
+/// `column_type`: a number, a date or a time typed, the rest as bytes,
+/// which both protocols send alike. `None` for a FLOAT, whose text has
+/// lost digits, and for text that is not what the server writes for its
+/// type.
+fn binary_form(cell: mysql_async::Value, column_type: ColumnType) -> Option<mysql_async::Value> {
+    use mysql_async::Value as My;
+    let My::Bytes(bytes) = cell else {
+        return Some(cell);
+    };
+    let typed = match column_type {
+        ColumnType::MYSQL_TYPE_TINY
+        | ColumnType::MYSQL_TYPE_SHORT
+        | ColumnType::MYSQL_TYPE_INT24
+        | ColumnType::MYSQL_TYPE_LONG
+        | ColumnType::MYSQL_TYPE_LONGLONG
+        | ColumnType::MYSQL_TYPE_YEAR => {
+            let text = std::str::from_utf8(&bytes).ok()?;
+            match text.parse::<i64>() {
+                Ok(number) => My::Int(number),
+                Err(_) => My::UInt(text.parse().ok()?),
+            }
+        }
+        ColumnType::MYSQL_TYPE_DOUBLE => {
+            My::Double(std::str::from_utf8(&bytes).ok()?.parse().ok()?)
+        }
+        ColumnType::MYSQL_TYPE_FLOAT => return None,
+        ColumnType::MYSQL_TYPE_DATE
+        | ColumnType::MYSQL_TYPE_NEWDATE
+        | ColumnType::MYSQL_TYPE_DATETIME
+        | ColumnType::MYSQL_TYPE_DATETIME2
+        | ColumnType::MYSQL_TYPE_TIMESTAMP
+        | ColumnType::MYSQL_TYPE_TIMESTAMP2 => date_form(std::str::from_utf8(&bytes).ok()?)?,
+        ColumnType::MYSQL_TYPE_TIME | ColumnType::MYSQL_TYPE_TIME2 => {
+            let (negative, hours, minutes, seconds, micros) =
+                clock(std::str::from_utf8(&bytes).ok()?)?;
+            let day = u8::try_from(hours % 24).ok()?;
+            My::Time(negative, hours / 24, day, minutes, seconds, micros)
+        }
+        _ => My::Bytes(bytes),
+    };
+    Some(typed)
+}
+
+/// A date, or a date and a time, as the text protocol writes it
+/// (`2024-01-02`, `2024-01-02 03:04:05.120`).
+fn date_form(text: &str) -> Option<mysql_async::Value> {
+    let (date, time) = text.split_once(' ').unwrap_or((text, "00:00:00"));
+    let mut parts = date.split('-');
+    let year = digits(parts.next()?)?;
+    let month = digits(parts.next()?)?;
+    let day = digits(parts.next()?)?;
+    let (negative, hours, minutes, seconds, micros) = clock(time)?;
+    if parts.next().is_some() || negative {
+        return None;
+    }
+    Some(mysql_async::Value::Date(
+        year,
+        month,
+        day,
+        u8::try_from(hours).ok()?,
+        minutes,
+        seconds,
+        micros,
+    ))
+}
+
+/// A time as the text protocol writes it (`-838:59:59.50`): its sign, its
+/// hours, minutes, seconds and microseconds.
+fn clock(text: &str) -> Option<(bool, u32, u8, u8, u32)> {
+    let (negative, text) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text),
+    };
+    let (whole, fraction) = text.split_once('.').unwrap_or((text, ""));
+    let mut parts = whole.split(':');
+    let hours = digits(parts.next()?)?;
+    let minutes = digits(parts.next()?)?;
+    let seconds = digits(parts.next()?)?;
+    if parts.next().is_some() || fraction.len() > 6 {
+        return None;
+    }
+    // Places the text leaves out are zeros: `.12` is 120000 microseconds.
+    let micros = if fraction.is_empty() {
+        0
+    } else {
+        digits(&format!("{fraction:0<6}"))?
+    };
+    Some((negative, hours, minutes, seconds, micros))
+}
+
+/// Digits alone, as a number: no sign, no blank.
+fn digits<T: std::str::FromStr>(text: &str) -> Option<T> {
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
 }
 
 /// Ends a read's transaction whatever happened inside it, so that a failed
@@ -1491,6 +1912,9 @@ const READ_WRITE: &str = "SET SESSION TRANSACTION READ WRITE";
 /// reset puts the server's defaults in their place, while the driver goes
 /// on sending and reading UTF-8.
 const NAMES: &str = "SET NAMES utf8mb4 COLLATE utf8mb4_general_ci";
+
+/// The collation [`NAMES`] sets: a bound text value's.
+const COLLATION: &str = "utf8mb4_general_ci";
 
 /// Has the server say in a note what it rounds: a decimal with more places
 /// than its column keeps is stored rounded in any mode, and only a note
@@ -2405,11 +2829,14 @@ mod tests {
 
     /// A fresh read-only session, as the app opens it.
     pub(super) async fn session(url: &str) -> Conn {
+        session_as(url, Access::ReadOnly).await
+    }
+
+    /// A fresh session opened as `access`.
+    async fn session_as(url: &str, access: Access) -> Conn {
         let (mut spec, secrets) = ConnectSpec::from_url(url).unwrap();
         spec.tls = TlsMode::Disable;
-        Conn::connect(&spec, &secrets, None, Access::ReadOnly)
-            .await
-            .unwrap()
+        Conn::connect(&spec, &secrets, None, access).await.unwrap()
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3384,9 +3811,9 @@ mod tests {
     }
 
     /// Each read starts its read-only transaction in one statement and ends
-    /// it with one: a page is the start (with the key asked in its
-    /// message), the statement and the end, once the driver has its
-    /// statements prepared.
+    /// it with one: a count is the start, the statement and the end, once
+    /// the driver has its statements prepared. A page of a table whose shape
+    /// the session has read is one message, start to end.
     #[tokio::test]
     async fn a_read_starts_its_transaction_in_one_statement() {
         use std::sync::atomic::Ordering;
@@ -3423,7 +3850,7 @@ mod tests {
                     // The DDL: its kind, `SHOW CREATE TABLE`, its triggers.
                     assert_eq!(
                         (fetched, counted_rows, looked_up, shown),
-                        (3, 3, 3, 5),
+                        (1, 3, 3, 5),
                         "{access:?}"
                     );
                 }
@@ -3432,12 +3859,11 @@ mod tests {
         }
     }
 
-    /// Opening a table asks the server four times: its structure in one
-    /// message, then a page in three (the start with the key asked inside
-    /// it, the execute, the rollback), and once more for the page's prepare
-    /// the first time. A next page is the same prepared statement.
+    /// Opening a table asks the server twice: its structure, with what its
+    /// pages are built from, in one message, then its first page in one. A
+    /// next page is one message too.
     #[tokio::test]
-    async fn opening_a_table_asks_the_server_four_times() {
+    async fn opening_a_table_asks_the_server_twice() {
         use std::sync::atomic::Ordering;
         let Some(url) = test_url() else {
             return;
@@ -3463,8 +3889,320 @@ mod tests {
                 assert_eq!(rows.rows[0][0], Value::Int(offset as i64 + 1));
                 trips.push((described, asked.load(Ordering::SeqCst) - before));
             }
-            assert_eq!(trips, [(1, 4), (1, 3), (0, 3)], "{access:?}");
+            assert_eq!(trips, [(1, 1), (1, 1), (0, 1)], "{access:?}");
             assert!(!in_transaction(&conn).await, "{access:?}");
+        }
+    }
+
+    /// A table made afresh by `admin`, from `columns` and `rows`, with
+    /// strict modes off so that zero dates go in.
+    async fn table_of(url: &str, name: &str, columns: &str, rows: &str) -> ObjectRef {
+        let _turn = TRIPS.lock().await;
+        let opts = Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+        let mut admin = mysql_async::Conn::new(opts).await.unwrap();
+        admin
+            .query_drop(format!(
+                "SET SESSION sql_mode = ''; DROP TABLE IF EXISTS `{name}`; \
+                 CREATE TABLE `{name}` ({columns}); INSERT INTO `{name}` VALUES {rows}"
+            ))
+            .await
+            .unwrap();
+        let schema: String = admin
+            .query_first("SELECT DATABASE()")
+            .await
+            .unwrap()
+            .unwrap();
+        ObjectRef {
+            schema,
+            name: name.into(),
+        }
+    }
+
+    fn filtered(object: &ObjectRef, column: &str, op: crate::FilterOp, value: &str) -> RowQuery {
+        let mut query = RowQuery::new(object.clone(), 10);
+        query.filters = vec![crate::Filter {
+            column: column.into(),
+            op,
+            value: value.into(),
+        }];
+        query
+    }
+
+    /// A page read in one message, through the text protocol, is the page
+    /// three round trips read through the binary protocol: its columns,
+    /// its rows, and each value's type, over every kind of column but a
+    /// FLOAT, at their edges and NULL, with filters of each kind (bytes
+    /// among them), a sort, a raw WHERE and an offset. The user variables
+    /// the message sets are NULL again after it, and the transaction is
+    /// over.
+    #[tokio::test]
+    async fn a_page_in_one_message_is_the_page_the_binary_protocol_reads() {
+        use crate::{FilterOp, Sort, SortDir};
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = table_of(
+            &url,
+            "paged_types",
+            "id bigint PRIMARY KEY, ti tinyint, tu tinyint unsigned, si smallint, \
+             mi mediumint unsigned, i int, bu bigint unsigned, de decimal(30,10), d double, \
+             dm double(10,3), y year, dt date, t time(2), dtm datetime, dt3 datetime(3), \
+             ts timestamp(6) NULL, c char(4), vc varchar(40) COLLATE utf8mb4_bin, \
+             l varchar(10) CHARACTER SET latin1, tx text, bn binary(16), vb varbinary(8), \
+             bl blob, bt bit(9), e enum('x','y'), st set('a','b'), j json, g geometry NULL",
+            "(1, -128, 255, -32768, 16777215, -2147483648, 18446744073709551615, \
+              '-12345678901234567890.0123456789', 0.1e0 + 0.2e0, 1.5, 2024, '2024-02-29', \
+              '-838:59:59.50', '2024-01-02 03:04:05', '2024-01-02 03:04:05.120', \
+              '2024-01-02 03:04:05.000001', 'ab', 'O''Brien C:\\\\temp', 'é', 'x', \
+              UNHEX('0123456789abcdef0123456789abcdef'), x'00ff', x'', b'101010101', 'y', \
+              'a,b', '{\"a\": [1, 2.5, null]}', ST_GeomFromText('POINT(1 2)')), \
+             (2, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, \
+              NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, \
+              NULL), \
+             (3, 127, 0, 32767, 0, 2147483647, 9223372036854775807, '0', 5e-324, -0.0, 0, \
+              '0000-00-00', '838:59:59', '0000-00-00 00:00:00', '2024-01-02 03:04:05.000', \
+              '1970-01-01 00:00:01', '', '%_\\\\', '', '', x'', x'', x'00', b'0', 'x', '', \
+              '[]', NULL), \
+             (4, 0, 1, 0, 1, 0, 9223372036854775808, '1e-10', 1.7976931348623157e308, \
+              123456.789, 1999, '1000-01-01', '00:00:00.01', '9999-12-31 23:59:59', \
+              '2024-01-02 03:04:05.999', '2038-01-19 03:14:07.999999', 'abcd', 'abc', 'x', \
+              REPEAT('y', 300), x'ffffffffffffffffffffffffffffffff', x'61', x'ff00', \
+              b'111111111', 'x', 'b', '{}', ST_GeomFromText('LINESTRING(0 0, 1 1)'))",
+        )
+        .await;
+        let mut queries = vec![RowQuery::new(object.clone(), 10)];
+        let mut deep = RowQuery::new(object.clone(), 1);
+        deep.offset = 2;
+        queries.push(deep);
+        let mut sorted = RowQuery::new(object.clone(), 10);
+        sorted.sort = vec![Sort {
+            column: "vc".into(),
+            dir: SortDir::Desc,
+        }];
+        queries.push(sorted);
+        let mut raw = RowQuery::new(object.clone(), 10);
+        raw.raw_where = Some("dt3 > '2000-01-01' -- ? :x".into());
+        queries.push(raw);
+        for (column, op, value) in [
+            ("vc", FilterOp::Eq, r"O'Brien C:\temp"),
+            ("vc", FilterOp::Contains, "%"),
+            ("tx", FilterOp::StartsWith, "Y"),
+            ("l", FilterOp::Eq, "É"),
+            ("i", FilterOp::In, "-2147483648, 0"),
+            ("bu", FilterOp::Gt, "9223372036854775807"),
+            ("d", FilterOp::Lt, "0.31"),
+            ("dt3", FilterOp::Ge, "2024-01-02 03:04:05.12"),
+            ("bn", FilterOp::Eq, "01234567-89ab-cdef-0123-456789abcdef"),
+            ("vb", FilterOp::In, "0x00ff, 0x61"),
+            ("ti", FilterOp::IsNull, ""),
+            ("e", FilterOp::Ne, "x"),
+        ] {
+            queries.push(filtered(&object, column, op, value));
+        }
+        for access in [Access::ReadOnly, Access::Writable] {
+            let conn = session_as(&url, access).await;
+            let mut session = conn.conn.lock().await;
+            for query in &queries {
+                let limit = query.limit as usize;
+                let (three, shape) = page_in_three(&mut session, query, limit).await.unwrap();
+                assert!(!shape.floats);
+                let one = page_in_one(&mut session, query, &shape).await.unwrap();
+                assert_eq!(one, Some((three, shape)), "{access:?} {query:?}");
+                let left: mysql_async::Row = session
+                    .query_first("SELECT @tabletist_page, @tabletist_page_1")
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(left.unwrap(), [My::NULL, My::NULL]);
+                assert!(!status(&session).contains(StatusFlags::SERVER_STATUS_IN_TRANS));
+            }
+        }
+    }
+
+    /// A FLOAT's text has lost digits, so a table with one has its pages
+    /// read through the binary protocol, in three round trips: also where
+    /// the shape the session kept did not say so.
+    #[tokio::test]
+    async fn a_table_with_a_float_has_its_pages_read_through_the_binary_protocol() {
+        use std::sync::atomic::Ordering;
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = table_of(
+            &url,
+            "paged_floats",
+            "id int PRIMARY KEY, f float",
+            "(1, 1.2345679), (2, 16777217)",
+        )
+        .await;
+        let (conn, asked) = counted_session(&url, Access::ReadOnly).await;
+        conn.describe(&object).await.unwrap();
+        let mut trips = Vec::new();
+        for told in [true, false] {
+            if !told {
+                // A shape kept from before the column was a FLOAT: the
+                // message reads the page, which is then read again.
+                conn.remember(
+                    &object,
+                    Shape {
+                        key: vec!["id".into()],
+                        ..Shape::default()
+                    },
+                );
+            }
+            let before = asked.load(Ordering::SeqCst);
+            let page = conn
+                .fetch_rows(&RowQuery::new(object.clone(), 10))
+                .await
+                .unwrap();
+            trips.push(asked.load(Ordering::SeqCst) - before);
+            let floats: Vec<&Value> = page.rows.iter().map(|row| &row[1]).collect();
+            assert_eq!(
+                floats,
+                [&Value::Float(1.2345679), &Value::Float(16777216.0)]
+            );
+        }
+        // With the statement's prepare the first time.
+        assert_eq!(trips, [4, 4]);
+        assert!(!in_transaction(&conn).await);
+    }
+
+    /// A page built from a shape that has changed since the session read it
+    /// is read again from the shape its message read: here the primary key
+    /// moved to another column, which the page is then ordered by.
+    #[tokio::test]
+    async fn a_page_whose_shape_changed_is_read_again() {
+        use std::sync::atomic::Ordering;
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = table_of(
+            &url,
+            "paged_rekeyed",
+            "id int PRIMARY KEY, other int NOT NULL",
+            "(1, 3), (2, 2), (3, 1)",
+        )
+        .await;
+        let (conn, asked) = counted_session(&url, Access::ReadOnly).await;
+        conn.describe(&object).await.unwrap();
+        {
+            let opts = Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+            let mut admin = mysql_async::Conn::new(opts).await.unwrap();
+            admin
+                .query_drop("ALTER TABLE paged_rekeyed DROP PRIMARY KEY, ADD PRIMARY KEY (other)")
+                .await
+                .unwrap();
+        }
+        let mut trips = Vec::new();
+        for _ in 0..2 {
+            let before = asked.load(Ordering::SeqCst);
+            let page = conn
+                .fetch_rows(&RowQuery::new(object.clone(), 10))
+                .await
+                .unwrap();
+            trips.push(asked.load(Ordering::SeqCst) - before);
+            let ids: Vec<&Value> = page.rows.iter().map(|row| &row[0]).collect();
+            assert_eq!(ids, [&Value::Int(3), &Value::Int(2), &Value::Int(1)]);
+            assert!(page.ordered_by_key);
+        }
+        // The message, then three round trips and the new statement's
+        // prepare; then the message alone.
+        assert_eq!(trips, [5, 1]);
+        assert!(!in_transaction(&conn).await);
+    }
+
+    /// A cancel that lands on a page built from a shape that has changed
+    /// stops the page: it is not read again from the new shape.
+    #[tokio::test]
+    async fn a_cancel_on_a_page_whose_shape_changed_stops_it() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = table_of(
+            &url,
+            "paged_rekeyed_cancel",
+            "id int PRIMARY KEY, other int NOT NULL",
+            "(1, 3), (2, 2), (3, 1)",
+        )
+        .await;
+        let conn = session(&url).await;
+        conn.describe(&object).await.unwrap();
+        {
+            let opts = Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+            let mut admin = mysql_async::Conn::new(opts).await.unwrap();
+            admin
+                .query_drop(
+                    "ALTER TABLE paged_rekeyed_cancel DROP PRIMARY KEY, ADD PRIMARY KEY (other)",
+                )
+                .await
+                .unwrap();
+        }
+        let mut slow = RowQuery::new(object, 10);
+        slow.raw_where = Some("SLEEP(5) = 0".into());
+        let cancel = conn.cancel_handle();
+        let cancelling = async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            cancel.cancel().await
+        };
+        let started = Instant::now();
+        let (fetched, cancelled) = tokio::join!(conn.fetch_rows(&slow), cancelling);
+        cancelled.unwrap();
+        assert_eq!(fetched.unwrap_err(), Error::Cancelled);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(!in_transaction(&conn).await);
+    }
+
+    /// A page read in one message stops at a cancel, ends its transaction,
+    /// and the session reads on; a raw WHERE of two statements, or with a
+    /// parameter, is refused the same way the other way refuses it.
+    #[tokio::test]
+    async fn a_page_in_one_message_stops_at_a_cancel_and_refuses_what_the_other_way_does() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = trips(&url).await;
+        for access in [Access::ReadOnly, Access::Writable] {
+            let conn = session_as(&url, access).await;
+            conn.describe(&object).await.unwrap();
+            let mut slow = RowQuery::new(object.clone(), 10);
+            slow.raw_where = Some("SLEEP(5) = 0".into());
+            let cancel = conn.cancel_handle();
+            let cancelling = async {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                cancel.cancel().await
+            };
+            let started = Instant::now();
+            let (fetched, cancelled) = tokio::join!(conn.fetch_rows(&slow), cancelling);
+            cancelled.unwrap();
+            assert_eq!(fetched.unwrap_err(), Error::Cancelled, "{access:?}");
+            assert!(started.elapsed() < Duration::from_secs(5));
+            assert!(!in_transaction(&conn).await);
+            for raw in ["1 = 1; DELETE FROM trips", "id = ?", "1) -- "] {
+                let mut query = RowQuery::new(object.clone(), 10);
+                query.raw_where = Some(raw.into());
+                let shape = conn.known_shape(&object).unwrap();
+                let one = {
+                    let mut session = conn.conn.lock().await;
+                    page_in_one(&mut session, &query, &shape).await
+                };
+                let three = {
+                    let mut session = conn.conn.lock().await;
+                    page_in_three(&mut session, &query, 10).await
+                };
+                assert!(one.is_err(), "{raw}: {one:?}");
+                match (one, three) {
+                    (
+                        Err(Error::Query { code: one, .. }),
+                        Err(Error::Query { code: three, .. }),
+                    ) => {
+                        assert_eq!(one, three, "{raw}")
+                    }
+                    other => panic!("{raw}: {other:?}"),
+                }
+                assert!(!in_transaction(&conn).await);
+            }
+            let page = conn.fetch_rows(&RowQuery::new(object.clone(), 10)).await;
+            assert_eq!(page.unwrap().rows.len(), 3);
         }
     }
 
@@ -3603,6 +4341,76 @@ mod tests {
                 assert_eq!(described.as_ref(), Ok(&expected));
             }
         }
+    }
+
+    /// The text protocol's numbers, dates and times become the binary
+    /// protocol's; a FLOAT, and text no server writes, become nothing.
+    #[test]
+    fn text_values_take_the_binary_protocols_form() {
+        use ColumnType as T;
+        let form = |text: &str, column_type| binary_form(My::Bytes(text.into()), column_type);
+        assert_eq!(form("-128", T::MYSQL_TYPE_TINY), Some(My::Int(-128)));
+        assert_eq!(form("2024", T::MYSQL_TYPE_YEAR), Some(My::Int(2024)));
+        assert_eq!(
+            form("18446744073709551615", T::MYSQL_TYPE_LONGLONG),
+            Some(My::UInt(u64::MAX))
+        );
+        assert_eq!(
+            form("5e-324", T::MYSQL_TYPE_DOUBLE),
+            Some(My::Double(5e-324))
+        );
+        assert_eq!(form("1.23457", T::MYSQL_TYPE_FLOAT), None);
+        assert_eq!(
+            form("2024-01-02 03:04:05.12", T::MYSQL_TYPE_DATETIME),
+            Some(My::Date(2024, 1, 2, 3, 4, 5, 120_000))
+        );
+        assert_eq!(
+            form("0000-00-00", T::MYSQL_TYPE_DATE),
+            Some(My::Date(0, 0, 0, 0, 0, 0, 0))
+        );
+        assert_eq!(
+            form("-838:59:59.50", T::MYSQL_TYPE_TIME),
+            Some(My::Time(true, 34, 22, 59, 59, 500_000))
+        );
+        assert_eq!(
+            form("12.5", T::MYSQL_TYPE_NEWDECIMAL),
+            Some(My::Bytes("12.5".into()))
+        );
+        assert_eq!(
+            form("\0\u{1}", T::MYSQL_TYPE_BLOB),
+            Some(My::Bytes("\0\u{1}".into()))
+        );
+        assert_eq!(binary_form(My::NULL, T::MYSQL_TYPE_LONG), Some(My::NULL));
+        for odd in ["", " 1", "1.5", "x"] {
+            assert_eq!(form(odd, T::MYSQL_TYPE_LONG), None, "{odd:?}");
+        }
+        for odd in [
+            "2024-01-02 03:04",
+            "2024-01-02 -03:04:05",
+            "2024-01-02 03:04:05.1234567",
+        ] {
+            assert_eq!(form(odd, T::MYSQL_TYPE_DATETIME), None, "{odd:?}");
+        }
+    }
+
+    /// A page's values are set as literals the way the binary protocol
+    /// binds them: text in the session's collation, bytes as bytes, a float
+    /// as a DOUBLE; a float that is no number has none.
+    #[test]
+    fn a_pages_values_become_literals_as_they_bind() {
+        assert!(NAMES.ends_with(COLLATION));
+        assert_eq!(
+            literal(&Value::Text("a'\\".into())).as_deref(),
+            Some("_utf8mb4 X'61275c' COLLATE utf8mb4_general_ci")
+        );
+        assert_eq!(
+            literal(&Value::Bytes(vec![0, 255].into())).as_deref(),
+            Some("_binary X'00ff'")
+        );
+        assert_eq!(literal(&Value::Int(-5)).as_deref(), Some("-5"));
+        assert_eq!(literal(&Value::Float(0.1)).as_deref(), Some("1e-1"));
+        assert_eq!(literal(&Value::Null).as_deref(), Some("NULL"));
+        assert_eq!(literal(&Value::Float(f64::NAN)), None);
     }
 
     /// Each value goes in as hex after the `utf8mb4` introducer, in turn.
