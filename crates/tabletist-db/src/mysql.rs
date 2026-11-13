@@ -1869,7 +1869,9 @@ pub(crate) fn named(number: u32, message: &str) -> Named {
         3819 => (quoted(message, '\''), Vec::new()),
         // MariaDB's ER_CONSTRAINT_FAILED, its CHECK refusing a row:
         // "CONSTRAINT `name` failed for `db`.`table`". The constraint comes
-        // first in every language the server speaks.
+        // first in every language the server speaks. MySQL's 4025 is
+        // ER_INNODB_AUTOEXTEND_SIZE_OUT_OF_RANGE, which quotes no name, and
+        // so names nothing here.
         4025 => (quoted(message, '`'), Vec::new()),
         _ => (None, Vec::new()),
     };
@@ -2174,6 +2176,11 @@ mod tests {
                 Some("audit_book_covers_kind_check".into()),
                 vec![]
             )
+        );
+        // MySQL's 4025 is another error, of a table's AUTOEXTEND_SIZE.
+        assert_eq!(
+            of(4025, "AUTOEXTEND_SIZE should be a multiple of 4M"),
+            (Some(4025), None, vec![])
         );
         // Any other error keeps its number and names nothing.
         assert_eq!(

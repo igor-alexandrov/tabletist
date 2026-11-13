@@ -110,6 +110,43 @@ async fn connections_report_mysql_and_list_databases_as_schemas() {
     }
 }
 
+/// Objects are listed by their names' bytes, as PostgreSQL lists them:
+/// capitals before small letters, and `_` between the two. MariaDB's
+/// catalog would put `ab` before `a_x`, and `B_x` after both.
+#[tokio::test]
+async fn objects_are_listed_by_their_names_bytes() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let names = ["listed_ab", "listed_B_x", "listed_a_y", "listed_a_x"];
+    let mut admin = admin().await;
+    for name in names {
+        admin
+            .query_drop(format!(
+                "CREATE TABLE IF NOT EXISTS `{name}` (id INT PRIMARY KEY)"
+            ))
+            .await
+            .unwrap();
+    }
+    let objects = connection.list_objects("tabletist").await;
+    for name in names {
+        admin
+            .query_drop(format!("DROP TABLE `{name}`"))
+            .await
+            .unwrap();
+    }
+    let listed: Vec<String> = objects
+        .unwrap()
+        .into_iter()
+        .map(|object| object.name)
+        .filter(|name| name.starts_with("listed_"))
+        .collect();
+    assert_eq!(
+        listed,
+        ["listed_B_x", "listed_a_x", "listed_a_y", "listed_ab"]
+    );
+}
+
 #[tokio::test]
 async fn objects_have_kinds_and_estimates() {
     let Some(connection) = connect().await else {

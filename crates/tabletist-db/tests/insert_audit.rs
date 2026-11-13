@@ -581,9 +581,6 @@ mod mysql {
         url.filter(|url| !url.trim().is_empty())
     }
 
-    /// The Bookshop's three tables, their names beginning with `prefix`,
-    /// made anew, with a session of the test's own to drop them with.
-    /// `None` without a server.
     /// Whether the connection's server is MariaDB, which words some
     /// failures otherwise than MySQL.
     async fn on_mariadb(connection: &Connection) -> bool {
@@ -597,6 +594,9 @@ mod mysql {
         if mariadb { 4025 } else { 3819 }
     }
 
+    /// The Bookshop's three tables, their names beginning with `prefix`,
+    /// made anew, with a session of the test's own to drop them with.
+    /// `None` without a server.
     async fn bookshop(prefix: &str) -> Option<(mysql_async::Conn, Connection)> {
         let Some(url) = url() else {
             eprintln!("skipped: TABLETIST_TEST_MYSQL_URL is not set");
