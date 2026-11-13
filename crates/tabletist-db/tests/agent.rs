@@ -1809,6 +1809,67 @@ mod mysql {
         assert!(read.is_ok(), "{read:?}");
     }
 
+    /// A view's body runs when an agent reads the view, whose name is all
+    /// the statement says: one that calls a function an agent may not
+    /// call is refused, at any depth, on a connection that hides nothing
+    /// as on one that hides a table. A view that only says such a name
+    /// reads, as the others do.
+    #[tokio::test]
+    async fn a_view_that_calls_a_refused_function_is_refused_on_mysql() {
+        let (Some(connection), Some(url)) = (bookshop().await, url()) else {
+            return;
+        };
+        let mut owner = admin(&url).await;
+        for sql in [
+            "CREATE OR REPLACE VIEW bookshop.lock_takers AS \
+             SELECT id, get_lock('tabletist_view_lock', 0) AS took FROM bookshop.books",
+            "CREATE OR REPLACE VIEW bookshop.over_lock_takers AS \
+             SELECT id FROM bookshop.lock_takers",
+            "CREATE OR REPLACE VIEW bookshop.sleepy_books AS \
+             SELECT id, 'sleep(1)' AS mood FROM bookshop.books",
+        ] {
+            owner.query_drop(sql).await.unwrap();
+        }
+        let calls = Err(Error::Agent(Refusal::FunctionNotAllowed("get_lock".into())));
+        let rows = |answer: Result<Answer, Error>| answer.map(|answer| answer.rows);
+        for sql in [
+            "SELECT count(*) FROM lock_takers",
+            "SELECT count(*) FROM bookshop.over_lock_takers",
+            "SELECT title FROM books b WHERE EXISTS (SELECT 1 FROM over_lock_takers o WHERE o.id = b.id)",
+        ] {
+            assert_eq!(
+                rows(asked(&connection, sql, &[], LIMITS).await),
+                calls,
+                "{sql}"
+            );
+        }
+        let customers = Tables::AllExcept(vec![named("customers")]);
+        let hidden = hiding(
+            &connection,
+            &customers,
+            "SELECT count(*) FROM over_lock_takers",
+        )
+        .await;
+        assert_eq!(rows(hidden), calls);
+        for (sql, count) in [
+            ("SELECT count(*) FROM sleepy_books", 12),
+            ("SELECT count(*) FROM recent_orders", 7),
+            ("SELECT count(*) FROM books", 12),
+        ] {
+            assert_eq!(
+                read(&connection, sql, &[], "mysql").await,
+                [[Value::Int(count)]]
+            );
+        }
+        for sql in [
+            "DROP VIEW bookshop.over_lock_takers",
+            "DROP VIEW bookshop.lock_takers",
+            "DROP VIEW bookshop.sleepy_books",
+        ] {
+            owner.query_drop(sql).await.unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn a_masked_columns_values_are_never_answered_on_mysql() {
         let Some(connection) = bookshop().await else {

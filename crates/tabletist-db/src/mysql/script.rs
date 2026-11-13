@@ -168,7 +168,7 @@ async fn read_only(
     let names = kind.read_only_names(conn.server_version());
     let ended = match open(conn, limit, kind, sent).await {
         // A lost session ends the run here: nothing to close.
-        Ok(()) => match refused_for_hiding(conn, hiding).await? {
+        Ok(candidates) => match refused(conn, texts, &candidates, hiding).await? {
             Err(error) => {
                 outcome.stopped = error == Error::Cancelled;
                 outcome.results.push(StatementResult {
@@ -200,6 +200,24 @@ async fn read_only(
     stop.finish();
     let unfinished = end(conn, ended, kind).await?;
     Ok((outcome, masked, unfinished))
+}
+
+/// Why an agent's statement may not run: it reaches a view that calls a
+/// function an agent may not call (`super::views`, on every connection;
+/// `candidates` are the views the open found that may), or it reads what
+/// its connection hides or masks ([`refused_for_hiding`]). A refusal, the
+/// server's own error, or a cancel. `Ok` where it may run, with which of
+/// its result columns are a masked column's. `Err` is a lost session.
+async fn refused(
+    conn: &mut mysql_async::Conn,
+    texts: &[String],
+    candidates: &[crate::agent::views::View],
+    hiding: Option<Hiding<'_>>,
+) -> Result<std::result::Result<Vec<bool>, Error>> {
+    if let Err(error) = super::views::check(conn, texts, candidates).await? {
+        return Ok(Err(error));
+    }
+    refused_for_hiding(conn, hiding).await
 }
 
 /// Why an agent's statement may not run on a connection that hides tables
@@ -303,7 +321,9 @@ fn started(status: StatusFlags) -> Result<()> {
 /// queries, a lost session, or a transaction that could not start.
 ///
 /// An agent's run also sets the server's own limit on a statement's time
-/// (`time_limits`), which the same reset takes away.
+/// (`time_limits`), which the same reset takes away, and asks which views
+/// may call a function an agent may not call (`super::views`): `Ok` holds
+/// those, none for a script's run.
 ///
 /// The steps go as one message, one round trip (`opening`). A failed step
 /// stops the rest; where a setting the message names is unknown to the
@@ -313,19 +333,38 @@ async fn open(
     limit: u32,
     kind: SessionKind,
     sent: Option<Sent<'_>>,
-) -> Result<()> {
+) -> Result<Vec<crate::agent::views::View>> {
     let names = kind.read_only_names(conn.server_version());
     let [own_limit, other_limit] = match sent {
         Some(sent) => kind.time_limits(sent.timeout_ms()).map(Some),
         None => [None, None],
     };
-    let steps = opening(kind.access, limit, own_limit.as_deref(), names[0]);
-    let (answers, failure) = answers(conn, &steps).await;
+    let views = sent.map(|_| super::views::candidates());
+    let steps = opening(
+        kind.access,
+        limit,
+        views.as_deref(),
+        own_limit.as_deref(),
+        names[0],
+    );
+    let (mut answers, failure) = answers(conn, &steps).await;
     let step = answers.len();
+    // The views' answer, which is in wherever the open goes on: it comes
+    // before the only steps that may fail and leave the rest to run.
+    let views_step = views
+        .as_deref()
+        .and_then(|views| steps.iter().position(|step| step == views));
+    let candidates = |answers: &mut Vec<Answer>| match views_step {
+        Some(at) if at < answers.len() => {
+            super::views::listed(std::mem::take(&mut answers[at].rows))
+        }
+        _ => Ok(Vec::new()),
+    };
     if step == steps.len() {
         let last = &answers[step - 1];
         let read_only = last.rows.first().cloned().map(from_row).transpose()?;
-        return opened(read_only, last.status);
+        opened(read_only, last.status)?;
+        return candidates(&mut answers);
     }
     let failure = failure.ok_or_else(|| Error::query("the server did not answer the open"))?;
     // A setting the server does not know under the name the message used:
@@ -349,16 +388,24 @@ async fn open(
         names
     };
     let read_only = read_only_setting(conn, asked).await?;
-    opened(read_only, status(conn))
+    opened(read_only, status(conn))?;
+    candidates(&mut answers)
 }
 
 /// The open's steps, in order: a writable session is made read-only first
 /// (the checks read the session's own setting, and only that setting makes
 /// the server refuse DDL after the commit DDL implies; the close puts
-/// read-write back), the transaction, its row limit, an agent's time limit
-/// in the server's form, and last the question whether the session is
-/// read-only, whose answer carries the server's status after all of them.
-fn opening(access: Access, limit: u32, time_limit: Option<&str>, read_only: &str) -> Vec<String> {
+/// read-write back), the transaction, its row limit, for an agent the
+/// question which views may call what it may not and its time limit in the
+/// server's form, and last the question whether the session is read-only,
+/// whose answer carries the server's status after all of them.
+fn opening(
+    access: Access,
+    limit: u32,
+    views: Option<&str>,
+    time_limit: Option<&str>,
+    read_only: &str,
+) -> Vec<String> {
     // One row more than the limit, to know whether more exist.
     let rows = u64::from(limit) + 1;
     let fence = (access == Access::Writable).then_some(READ_ONLY.to_owned());
@@ -368,6 +415,7 @@ fn opening(access: Access, limit: u32, time_limit: Option<&str>, read_only: &str
             BEGIN.to_owned(),
             format!("SET SESSION sql_select_limit = {rows}"),
         ])
+        .chain(views.map(str::to_owned))
         .chain(time_limit.map(str::to_owned))
         .chain([question(read_only)])
         .collect()
@@ -466,8 +514,9 @@ fn time_limits(ms: u32) -> [String; 2] {
 /// The open has just asked where the session stands, and nothing of the
 /// script has run since, so the first statement goes without the check:
 /// it would only hear what the open did. What may run in between, an
-/// agent's check against what its connection hides (`EXPLAIN`, `SHOW
-/// WARNINGS`), ends no transaction and sets nothing.
+/// agent's checks against the views it reaches and what its connection
+/// hides (`information_schema.VIEWS`, `EXPLAIN`, `SHOW WARNINGS`), ends no
+/// transaction and sets nothing.
 async fn statements(
     conn: &mut mysql_async::Conn,
     texts: &[String],
@@ -1391,7 +1440,7 @@ mod tests {
     fn the_open_and_the_close_are_one_message_each() {
         let names = on_mysql(Access::ReadOnly).read_only_names((8, 4, 3));
         assert_eq!(
-            opening(Access::ReadOnly, 10, None, names[0]).join("; "),
+            opening(Access::ReadOnly, 10, None, None, names[0]).join("; "),
             OPEN
         );
         assert_eq!(closing(names[0]).join("; "), CLOSE);
@@ -1404,11 +1453,12 @@ mod tests {
         let [own, _] = mariadb.time_limits(1_500);
         let names = mariadb.read_only_names((10, 11, 6));
         assert_eq!(
-            opening(Access::Writable, 5, Some(&own), names[0]),
+            opening(Access::Writable, 5, Some("SELECT 1"), Some(&own), names[0]),
             [
                 "SET SESSION TRANSACTION READ ONLY",
                 "START TRANSACTION READ ONLY",
                 "SET SESSION sql_select_limit = 6",
+                "SELECT 1",
                 "SET SESSION max_statement_time = 1.500",
                 "SELECT @@session.tx_read_only LIMIT 1",
             ]

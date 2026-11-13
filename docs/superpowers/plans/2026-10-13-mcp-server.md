@@ -1008,6 +1008,19 @@ where it went otherwise:
   its definition, as the server writes it back, is read for such a call,
   as PostgreSQL keeps no dependency on its own functions. Such a function
   in the plan's `Function Scan` is refused wherever it came from.
+- **On MySQL and MariaDB a view whose body calls a function the agent may
+  not call is refused on every connection** (found by the review of the
+  pull request that read MariaDB's view definitions). The statement names
+  only the view, the server runs `load_file` or `get_lock` in its body,
+  and neither server lists the built-in functions a view calls. The open's
+  one message asks `information_schema.VIEWS` for the views whose body
+  holds a refused function's name, or that the server shows no body of (a
+  user without `SHOW VIEW`): on most databases none, and no round trip of
+  its own. Where one of them calls such a function, every view's body is
+  read in one more round trip, a view that names a refused one is refused
+  too, at any depth, and the statement is refused where it names one, by
+  its name as a word in any schema. A view whose body is not shown is
+  refused, as what it calls cannot be told.
 - **MySQL's plan is read twice.** Its JSON names a table by the
   statement's alias where it has one, so a name there is checked only
   where the catalog lists it. The note `SHOW WARNINGS` gives after it

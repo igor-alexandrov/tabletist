@@ -402,6 +402,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 mod hidden;
 mod script;
+mod views;
 mod write;
 
 pub(crate) struct Conn {

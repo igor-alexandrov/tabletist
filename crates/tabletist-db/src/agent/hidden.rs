@@ -1216,10 +1216,17 @@ pub(crate) fn planned(read: &Read) -> &str {
 /// held in a string, which no check reads, and so may read a hidden table.
 /// PostgreSQL keeps no dependency on its own functions, so the text is read.
 pub(crate) fn calls_a_refused_function(dialect: Dialect, definition: &str) -> bool {
+    refused_call(dialect, definition).is_some()
+}
+
+/// The first function `definition` calls that an agent may not call, by
+/// its name as written.
+pub(crate) fn refused_call(dialect: Dialect, definition: &str) -> Option<String> {
     names(dialect, definition)
         .functions
-        .iter()
-        .any(|function| super::function_allowed(dialect, &function.name).is_err())
+        .into_iter()
+        .find(|function| super::function_allowed(dialect, &function.name).is_err())
+        .map(|function| function.name)
 }
 
 /// The names the statement's text gives in a table's place, as written,
