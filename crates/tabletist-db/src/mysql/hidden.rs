@@ -23,13 +23,17 @@ use mysql_async::prelude::Queryable;
 
 use super::query_error;
 use crate::agent::{
-    Catalog, ColumnName, Hidden, Read, Refusal, Relation, Sources, named_relations, planned,
+    Catalog, ColumnName, Hidden, Read, Refusal, Relation, Sources, function_allowed,
+    named_relations, planned,
 };
 use crate::sql::{self, TokenKind};
 use crate::{Dialect, Error, Result};
 
 /// The system's own schemas, which the catalog leaves out.
 const SYSTEM: &str = "('information_schema', 'mysql', 'performance_schema', 'sys')";
+
+/// [`SYSTEM`]'s schemas, by name.
+const SYSTEM_SCHEMAS: [&str; 4] = ["information_schema", "mysql", "performance_schema", "sys"];
 
 /// The run sets `sql_select_limit` for the agent's rows; a `LIMIT` of a
 /// query's own takes its place, so the catalog is read whole.
@@ -327,8 +331,11 @@ pub(super) async fn catalog(
         .map(|(schema, name, kind)| {
             let view = kind.eq_ignore_ascii_case("VIEW");
             let key = (schema, name);
-            let opaque = view && !told.contains(&key);
             let depends_on = reads.remove(&key).unwrap_or_default();
+            // A view over a system catalog reads what describes every
+            // table, the hidden ones too, and the catalog leaves the
+            // system's relations out: it is taken to read what is hidden.
+            let opaque = view && (!told.contains(&key) || reads_the_system(&depends_on));
             let (schema, name) = key;
             Relation {
                 opaque,
@@ -380,6 +387,15 @@ pub(super) async fn catalog(
     })
 }
 
+/// Whether any of `reads`, by schema and name, is of a system schema.
+fn reads_the_system(reads: &[(String, String)]) -> bool {
+    reads.iter().any(|(schema, _)| {
+        SYSTEM_SCHEMAS
+            .iter()
+            .any(|system| system.eq_ignore_ascii_case(schema))
+    })
+}
+
 /// What a view reads, by its definition as MariaDB writes it back
 /// (`information_schema.VIEWS`), whatever the text it was made with: every
 /// table, view and sequence as `` `db`.`name` ``, a stored function it
@@ -391,7 +407,8 @@ pub(super) async fn catalog(
 ///
 /// `None` where what it reads cannot be told: an empty definition (a user
 /// without SHOW VIEW is shown none), a call of a function the users wrote
-/// (`functions`, folded) or of any name in backquotes, a name alone in a
+/// (`functions`, folded), of any name in backquotes or of a built-in
+/// function an agent may not call (`load_file`), a name alone in a
 /// table's place that no common table expression of the definition has,
 /// and what the server never writes, which a misreading could hide a name
 /// in: a comment, or a string with a backquote in it.
@@ -425,11 +442,15 @@ fn definition_reads(
     };
     // The common table expressions' names: each one a name that `AS (`
     // follows, or a list of its columns and then `AS (`.
+    // Where one is named with its columns, a parenthesis follows its name
+    // there, and it is no call.
     let mut defined = std::collections::HashSet::new();
+    let mut with_columns = std::collections::HashSet::new();
     for at in 0..tokens.len() {
         let Some(cte) = name(at) else { continue };
         let mut after = at + 1;
-        if is(after, "(") {
+        let columns = is(after, "(");
+        if columns {
             after += 1;
             while name(after).is_some() || is(after, ",") {
                 after += 1;
@@ -441,6 +462,9 @@ fn definition_reads(
         }
         if is(after, "as") && is(after + 1, "(") {
             defined.insert(cte.to_lowercase());
+            if columns {
+                with_columns.insert(at);
+            }
         }
     }
     let mut reads = Vec::new();
@@ -460,10 +484,15 @@ fn definition_reads(
         {
             return None;
         }
+        // A call of a function the users wrote, or of a built-in one an
+        // agent may not call (`load_file`), which the statement that reads
+        // the view does not name.
         if is(at + 1, "(")
+            && !with_columns.contains(&at)
             && let Some(called) = name(at)
-            && !defined.contains(&called.to_lowercase())
-            && (quoted(at).is_some() || functions.contains(&called.to_lowercase()))
+            && (quoted(at).is_some()
+                || functions.contains(&called.to_lowercase())
+                || function_allowed(Dialect::MySql, &called).is_err())
         {
             return None;
         }
@@ -612,11 +641,11 @@ mod tests {
             ])
         );
         // Under a subquery, EXISTS, IN, a derived table, a union, and a
-        // sequence.
+        // sequence read as a table.
         let nested = "select (select max(`d`.`t`.`id`) from `d`.`t`) AS `m` from `d`.`u` \
                       where exists(select 1 from `d`.`x` `x` limit 1) and `d`.`u`.`id` in \
-                      (select `d`.`y`.`id` from `d`.`y`) union select nextval(`d`.`s`) AS `n` \
-                      from ((select `d`.`z`.`id` AS `id` from `d`.`z`) `q` join `d`.`w`)";
+                      (select `d`.`y`.`id` from `d`.`y`) union select `d`.`s`.`cycle_count` AS `n` \
+                      from `d`.`s` join ((select `d`.`z`.`id` AS `id` from `d`.`z`) `q` join `d`.`w`)";
         let found = reads(nested).unwrap();
         for relation in ["d.t", "d.u", "d.x", "d.y", "d.s", "d.z", "d.w"] {
             assert!(
@@ -660,8 +689,33 @@ mod tests {
             "select 1 AS `1` from `d`.`t` join `customers`",
             "select 1 AS `1` /* from `d`.`customers` */",
             "select 'a`b' AS `s` from `d`.`t`",
+            // A built-in function an agent may not call.
+            "select load_file('/etc/hosts') AS `f`",
+            "select nextval(`d`.`s`) AS `n`",
+            // A function by a common table expression's name: only the
+            // expression's own columns follow its name unread.
+            "with customer_count as (select 1 AS `id`)select `bookshop`.`customer_count`() AS \
+             `n` from `customer_count`",
+            "with customer_count as (select 1 AS `id`)select customer_count() AS `n` from \
+             `customer_count`",
         ] {
             assert_eq!(reads(definition), None, "{definition}");
         }
+        // A system catalog, merged or not: what it reads is said, and the
+        // view is taken to read what is hidden, as MySQL's own listing of
+        // the same view is.
+        for definition in [
+            "select `information_schema`.`TABLES`.`TABLE_NAME` AS `TABLE_NAME` from \
+             `information_schema`.`TABLES` group by `information_schema`.`TABLES`.`TABLE_NAME`",
+            "select `mysql`.`user`.`User` AS `User` from `mysql`.`user`",
+        ] {
+            let read = definition_reads(definition, &functions).unwrap();
+            assert!(reads_the_system(&read), "{definition}");
+        }
+        assert!(!reads_the_system(
+            &definition_reads(recent, &functions).unwrap()
+        ));
+        let listed = [("INFORMATION_SCHEMA".to_owned(), "COLUMNS".to_owned())];
+        assert!(reads_the_system(&listed));
     }
 }

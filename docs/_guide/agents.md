@@ -133,7 +133,7 @@ What a hidden table hides with it:
   or that Tabletist cannot read for its tables.
 - The system catalogs (`information_schema`, `pg_catalog`, `mysql`,
   `sqlite_schema` and the rest), while anything is hidden: they describe
-  every table.
+  every table. On MySQL and MariaDB, so is a view over one.
 - A function your database's users wrote, while anything is hidden: what
   it reads cannot be seen, and a view that calls one is hidden. On
   PostgreSQL, so is a table whose row policy calls one; and while the

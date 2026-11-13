@@ -1780,6 +1780,35 @@ mod mysql {
         }
     }
 
+    /// A view over a system catalog, which describes the hidden tables
+    /// too: hidden while anything is, merged or not, whatever the catalog
+    /// says it reads.
+    #[tokio::test]
+    async fn a_view_over_a_system_catalog_is_hidden_on_mysql() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        let url = std::env::var("TABLETIST_TEST_MYSQL_URL").unwrap();
+        let mut owner = admin(&url).await;
+        owner
+            .query_drop(
+                "CREATE OR REPLACE VIEW bookshop.table_names AS SELECT table_name AS name \
+                 FROM information_schema.tables GROUP BY table_name",
+            )
+            .await
+            .unwrap();
+        let customers = Tables::AllExcept(vec![named("customers")]);
+        let sql = "SELECT count(*) FROM table_names";
+        let found = hiding(&connection, &customers, sql).await;
+        let read = hiding(&connection, &Tables::All, sql).await;
+        owner
+            .query_drop("DROP VIEW bookshop.table_names")
+            .await
+            .unwrap();
+        assert_eq!(found.unwrap_err(), hidden_refusal("table_names", None));
+        assert!(read.is_ok(), "{read:?}");
+    }
+
     #[tokio::test]
     async fn a_masked_columns_values_are_never_answered_on_mysql() {
         let Some(connection) = bookshop().await else {
