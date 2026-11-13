@@ -947,23 +947,28 @@ impl Adapter for Conn {
         Ok(Vec::new())
     }
 
+    /// By name, byte by byte (see `list_objects`).
     async fn list_schemas(&self) -> Result<Vec<String>> {
         self.catalog(
             &format!(
                 "SELECT schema_name FROM information_schema.schemata \
-                 ORDER BY schema_name LIMIT {MAX_LISTED}"
+                 ORDER BY CAST(schema_name AS BINARY) LIMIT {MAX_LISTED}"
             ),
             Params::Empty,
         )
         .await
     }
 
+    /// By name, byte by byte, as PostgreSQL lists them, and with them the
+    /// first [`MAX_LISTED`]: MariaDB's catalog compares names without case,
+    /// and puts `_` after the letters.
     async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>> {
         let rows: Vec<(String, String, Option<u64>)> = self
             .catalog(
                 &format!(
                     "SELECT table_name, table_type, table_rows FROM information_schema.tables \
-                     WHERE table_schema = ? ORDER BY table_name LIMIT {MAX_LISTED}"
+                     WHERE table_schema = ? ORDER BY CAST(table_name AS BINARY) \
+                     LIMIT {MAX_LISTED}"
                 ),
                 (schema,),
             )
@@ -2286,6 +2291,12 @@ pub(crate) fn named(number: u32, message: &str) -> Named {
         1048 | 1364 => (None, quoted(message, '\'').into_iter().collect()),
         // ER_CHECK_CONSTRAINT_VIOLATED: the constraint, quoted.
         3819 => (quoted(message, '\''), Vec::new()),
+        // MariaDB's ER_CONSTRAINT_FAILED, its CHECK refusing a row:
+        // "CONSTRAINT `name` failed for `db`.`table`". The constraint comes
+        // first in every language the server speaks. MySQL's 4025 is
+        // ER_INNODB_AUTOEXTEND_SIZE_OUT_OF_RANGE, which quotes no name, and
+        // so names nothing here.
+        4025 => (quoted(message, '`'), Vec::new()),
         _ => (None, Vec::new()),
     };
     Named {
@@ -2577,6 +2588,24 @@ mod tests {
                 vec![]
             )
         );
+        // MariaDB's CHECK, by another number and in other words.
+        assert_eq!(
+            of(
+                4025,
+                "CONSTRAINT `audit_book_covers_kind_check` failed for \
+                 `tabletist`.`audit_book_covers`"
+            ),
+            (
+                Some(4025),
+                Some("audit_book_covers_kind_check".into()),
+                vec![]
+            )
+        );
+        // MySQL's 4025 is another error, of a table's AUTOEXTEND_SIZE.
+        assert_eq!(
+            of(4025, "AUTOEXTEND_SIZE should be a multiple of 4M"),
+            (Some(4025), None, vec![])
+        );
         // Any other error keeps its number and names nothing.
         assert_eq!(
             of(1146, "Table 'tabletist.nope' doesn't exist"),
@@ -2827,6 +2856,36 @@ mod tests {
         url
     }
 
+    /// Whether the session's server is MariaDB, which some tests find
+    /// answering otherwise than MySQL.
+    pub(super) fn on_mariadb(session: &Conn) -> bool {
+        session.version.contains("MariaDB")
+    }
+
+    /// How a server is named ([`server_identity`]): by its UUID, or by its
+    /// host and port on MariaDB, which has none.
+    fn named_as(session: &Conn) -> &'static str {
+        if on_mariadb(session) {
+            "host "
+        } else {
+            "uuid "
+        }
+    }
+
+    /// What a `SELECT SLEEP(…)` that a KILL QUERY interrupted answers: 1 on
+    /// MySQL. MariaDB fails it with error 1317 instead.
+    fn interrupted(session: &Conn, slept: mysql_async::Result<Option<i64>>) {
+        if on_mariadb(session) {
+            assert!(
+                matches!(&slept, Err(mysql_async::Error::Server(error))
+                    if error.code == QUERY_INTERRUPTED),
+                "{slept:?}"
+            );
+        } else {
+            assert_eq!(slept.unwrap(), Some(1));
+        }
+    }
+
     /// A fresh read-only session, as the app opens it.
     pub(super) async fn session(url: &str) -> Conn {
         session_as(url, Access::ReadOnly).await
@@ -2845,12 +2904,17 @@ mod tests {
             return;
         };
         let session = std::sync::Arc::new(session(&url).await);
-        assert!(session.server.starts_with("uuid "), "{}", session.server);
+        assert!(
+            session.server.starts_with(named_as(&session)),
+            "{}",
+            session.server
+        );
         let running = {
             let session = std::sync::Arc::clone(&session);
             tokio::spawn(async move {
                 let mut conn = session.conn.lock().await;
-                // SLEEP answers 1 when a KILL QUERY interrupts it.
+                // SLEEP answers 1 when a KILL QUERY interrupts it
+                // (see `interrupted`).
                 conn.query_first::<i64, _>("SELECT SLEEP(2)").await
             })
         };
@@ -2985,13 +3049,14 @@ mod tests {
             let session = std::sync::Arc::clone(&session);
             tokio::spawn(async move {
                 let mut conn = session.conn.lock().await;
-                // SLEEP answers 1 when a KILL QUERY interrupts it.
+                // SLEEP answers 1 when a KILL QUERY interrupts it
+                // (see `interrupted`).
                 conn.query_first::<i64, _>("SELECT SLEEP(5)").await
             })
         };
         tokio::time::sleep(Duration::from_millis(300)).await;
         cancel(opts, id, server, &session.spare).await.unwrap();
-        assert_eq!(running.await.unwrap().unwrap(), Some(1));
+        interrupted(&session, running.await.unwrap());
         let second = spare_id(&session).await;
         assert_ne!(second, first);
     }
@@ -3502,7 +3567,8 @@ mod tests {
             let session = std::sync::Arc::clone(&session);
             tokio::spawn(async move {
                 let mut conn = session.conn.lock().await;
-                // SLEEP answers 1 when a KILL QUERY interrupts it.
+                // SLEEP answers 1 when a KILL QUERY interrupts it
+                // (see `interrupted`).
                 conn.query_first::<i64, _>("SELECT SLEEP(30)").await
             })
         };
@@ -3517,7 +3583,7 @@ mod tests {
         .expect("the cancel waited on a spare that does not answer")
         .unwrap();
         assert!(started.elapsed() < CONNECT_TIMEOUT + Duration::from_secs(5));
-        assert_eq!(running.await.unwrap().unwrap(), Some(1));
+        interrupted(&session, running.await.unwrap());
         assert_ne!(spare_id(&session).await, held_id);
     }
 
@@ -4606,10 +4672,16 @@ mod tests {
         };
         for (access, read_only, run) in [(Access::ReadOnly, 1, 6), (Access::Writable, 0, 6)] {
             let (conn, asked) = counted_session(&url, access).await;
-            assert_eq!(asked.load(Ordering::SeqCst), 2, "{access:?}");
-            assert!(conn.server.starts_with("uuid "), "{}", conn.server);
+            // MariaDB has no UUID: its server is named by a second
+            // question, sent with the settings again (`server_identity`).
+            let (connect, product) = match on_mariadb(&conn) {
+                true => (3, "MariaDB "),
+                false => (2, "MySQL 8."),
+            };
+            assert_eq!(asked.load(Ordering::SeqCst), connect, "{access:?}");
+            assert!(conn.server.starts_with(named_as(&conn)), "{}", conn.server);
             assert!(
-                version_name(&conn.version).starts_with("MySQL 8."),
+                version_name(&conn.version).starts_with(product),
                 "{}",
                 conn.version
             );
