@@ -10,6 +10,10 @@
 
 ---
 
+## Landed beside #321
+
+While this run waited to be pushed, #321 (`Pass the tabletist-db suite on MariaDB as well as MySQL`) merged with Tasks 1, 3 and 5 done its own way: 4025 named by the first name it quotes, schemas and objects in byte order with a test of its own, and the tests asking which server they reached (`on_mariadb`, `named_as`). The branch was rebuilt on it. Task 3 and Task 5 were dropped, and of Task 1 only a column's own CHECK, which MariaDB quotes as `table.column`, named by its column. Tasks 4 and 6 are as below; #321 kept MariaDB's quoted defaults, which the tests now expect as MySQL's. Then #323 named a MariaDB server in one message (the UUID asked last, after the host), so Task 2 was dropped too; and #322 read what a MariaDB view reads from its definition, so the docs no longer say that agents may not read any view on MariaDB while anything is hidden or masked.
+
 ## The three runs
 
 1. **This run.** MariaDB 11.4 in `compose.yaml` and CI; the driver fixes and server-aware tests below. JSON columns show as text, and agents may not read a view on MariaDB while anything is hidden or masked (decided on 2026-11-12: keep the fail-safe).
