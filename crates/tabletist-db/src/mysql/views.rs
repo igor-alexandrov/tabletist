@@ -75,7 +75,9 @@ fn users() -> String {
         .iter()
         .map(|schema| format!("'{schema}'"))
         .collect();
-    format!("LOWER(TABLE_SCHEMA) NOT IN ({})", own.join(", "))
+    // By the names' exact letters: a user's `SYS` is another schema where
+    // names are told by their case.
+    format!("CAST(TABLE_SCHEMA AS BINARY) NOT IN ({})", own.join(", "))
 }
 
 /// The views [`candidates`] answered.

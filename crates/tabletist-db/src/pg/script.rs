@@ -1420,6 +1420,56 @@ mod tests {
         );
     }
 
+    /// The views' question of an agent's open runs under the agent's
+    /// timeout: made slow, it ends as the statement over its time does, the
+    /// timeout is gone after the close, and the session stays.
+    #[tokio::test]
+    async fn a_slow_views_question_ends_with_the_timeout() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let sent = Sent {
+            params: &[],
+            timeout: Duration::from_millis(200),
+        };
+        let asked: &'static str = Box::leak(opening(Some(sent)).join("; ").into_boxed_str());
+        let slow = asked.replace(&super::super::views::reaching(), "SELECT pg_sleep(5)");
+        let conn = proxied_session(&url, (asked, Box::leak(slow.into_boxed_str()))).await;
+        let client = conn.client.lock().await;
+        let texts = ["SELECT 1".to_owned()];
+        let stop = StopFlag::new();
+        let started = std::time::Instant::now();
+        let (outcome, _) = read_only(&client, &texts, 10, &stop, Some(sent), None)
+            .await
+            .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(4), "{outcome:?}");
+        assert!(
+            matches!(
+                &outcome.results[..],
+                [StatementResult {
+                    outcome: StatementOutcome::Cancelled,
+                    ..
+                }]
+            ),
+            "{outcome:?}"
+        );
+        drop(client);
+        let again = conn
+            .script(
+                &["SHOW statement_timeout".to_owned()],
+                10,
+                ScriptMode::ReadOnly,
+                &StopFlag::new(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(&again.results[0].outcome, StatementOutcome::Rows { rows, .. }
+                if rows == &[vec![crate::Value::Text("0".into())]]),
+            "{again:?}"
+        );
+    }
+
     /// A SELECT asks the server three times: the opening, the cursor with
     /// its prepare, and the close. The first statement needs no guard's
     /// swap, the prepare goes out with the cursor, and the close's check,

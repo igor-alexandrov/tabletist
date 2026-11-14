@@ -69,13 +69,26 @@ impl Why {
 pub(crate) const MYSQL_OWN_SCHEMAS: [&str; 4] =
     ["information_schema", "mysql", "performance_schema", "sys"];
 
-/// Whether `view` is one the server made for itself.
+/// Whether `view` is one the server made for itself: in one of its
+/// schemas, by the name's exact letters. A user's `SYS` is another schema
+/// where names are told by their case (`lower_case_table_names = 0`).
 fn servers_own(dialect: Dialect, view: &View) -> bool {
     let own: &[&str] = match dialect {
         Dialect::MySql => &MYSQL_OWN_SCHEMAS,
         Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => &[],
     };
-    own.iter().any(|own| view.schema.eq_ignore_ascii_case(own))
+    own.contains(&view.schema.as_str())
+}
+
+/// The longest name the engine keeps, in bytes, where it cuts a longer one
+/// to it rather than refuse it: PostgreSQL's 63 (`NAMEDATALEN` less one),
+/// cut where a character ends. MySQL refuses a name over its 64
+/// characters.
+fn cuts_names_at(dialect: Dialect) -> Option<usize> {
+    match dialect {
+        Dialect::Postgres => Some(63),
+        Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery => None,
+    }
 }
 
 /// What a view of `views` reads that the user is not shown, by name: see
@@ -164,7 +177,9 @@ pub(crate) fn check(
             .iter()
             .filter(|(name, _)| !refused.iter().any(|(known, _)| known == name))
             .filter_map(|(name, body)| {
-                let (_, why) = refused.iter().find(|(known, _)| names(body, known))?;
+                let (_, why) = refused
+                    .iter()
+                    .find(|(known, _)| names(dialect, body, known))?;
                 Some((name.clone(), why.clone()))
             })
             .collect();
@@ -174,7 +189,10 @@ pub(crate) fn check(
         refused.extend(more);
     }
     let text = text.to_lowercase();
-    match refused.into_iter().find(|(name, _)| names(&text, name)) {
+    match refused
+        .into_iter()
+        .find(|(name, _)| names(dialect, &text, name))
+    {
         Some((_, why)) => Err(why.refusal()),
         None => Ok(()),
     }
@@ -182,14 +200,18 @@ pub(crate) fn check(
 
 /// Whether `text` holds `name` as a word: not inside a longer name. Both
 /// folded. A name that begins or ends with what no unquoted name holds
-/// (`` `a b` ``) is found wherever it stands at that end.
-fn names(text: &str, name: &str) -> bool {
+/// (`` `a b` ``) is found wherever it stands at that end, and so is one as
+/// long as the engine cuts a longer name to: a longer word that begins
+/// with it names it too ([`cuts_names_at`]). A character is at most four
+/// bytes, so a cut name is at most three short of the longest.
+fn names(dialect: Dialect, text: &str, name: &str) -> bool {
     if name.is_empty() {
         return false;
     }
     let word = |character: char| character.is_alphanumeric() || matches!(character, '_' | '$');
+    let cut = cuts_names_at(dialect).is_some_and(|longest| name.len() + 3 >= longest);
     let starts = name.starts_with(word);
-    let ends = name.ends_with(word);
+    let ends = name.ends_with(word) && !cut;
     // A quote in a name is written twice inside quotes of its kind: a
     // backquote in MySQL's, a double quote in PostgreSQL's (and MySQL's
     // under ANSI_QUOTES). Each spelling is looked for in any dialect.
@@ -297,7 +319,7 @@ mod tests {
     /// every table, refuse nothing, a table of the same name least of all.
     #[test]
     fn the_servers_own_views_are_not_refused() {
-        let views: Vec<View> = ["sys", "SYS", "mysql", "performance_schema"]
+        let views: Vec<View> = ["sys", "mysql", "performance_schema"]
             .into_iter()
             .map(|schema| View {
                 schema: schema.into(),
@@ -362,16 +384,59 @@ mod tests {
         );
     }
 
+    /// A schema of the user's whose name differs from the server's own only
+    /// in its case is the user's: its views are checked.
+    #[test]
+    fn a_users_schema_named_like_the_servers_is_checked() {
+        let views = [View {
+            schema: "SYS".into(),
+            name: "lock_takers".into(),
+            definition: "select get_lock('a', 0) AS `took`".into(),
+        }];
+        assert!(any_refused(Dialect::MySql, &views));
+        assert_eq!(
+            check(
+                Dialect::MySql,
+                "SELECT * FROM SYS.lock_takers",
+                &views,
+                &|_| None
+            ),
+            Err(Refusal::FunctionNotAllowed("get_lock".into()))
+        );
+    }
+
+    /// PostgreSQL cuts a longer name to its 63 bytes, so a longer word that
+    /// begins with a view's name that long reaches the view.
+    #[test]
+    fn a_longer_name_postgresql_cuts_to_a_views_is_found() {
+        let long = "a".repeat(63);
+        let views = [View {
+            schema: "public".into(),
+            name: long.clone(),
+            definition: "SELECT pg_sleep(1) AS pg_sleep".into(),
+        }];
+        let longer = format!("SELECT * FROM {long}bbbb");
+        let refused = Err(Refusal::FunctionNotAllowed("pg_sleep".into()));
+        assert_eq!(
+            check(Dialect::Postgres, &longer, &views, &|_| None),
+            refused
+        );
+        assert!(names(Dialect::Postgres, &longer, &long));
+        // A shorter name is not cut to, and MySQL cuts none.
+        assert!(!names(Dialect::Postgres, "from leaked_x", "leaked"));
+        assert!(!names(Dialect::MySql, &longer, &long));
+    }
+
     #[test]
     fn a_name_is_found_as_a_word() {
-        assert!(names("select * from `a b`", "a b"));
-        assert!(names("from x.`a``b`", "a`b"));
-        assert!(names("from x.\"a\"\"b\"", "a\"b"));
-        assert!(names("from 1abc", "1abc"));
-        assert!(!names("from x1abc", "1abc"));
-        assert!(!names("from leaked_x", "leaked"));
-        assert!(!names("from $leaked", "leaked"));
-        assert!(names("from leaked;", "leaked"));
-        assert!(names("from \"leaked\"", "leaked"));
+        assert!(names(Dialect::MySql, "select * from `a b`", "a b"));
+        assert!(names(Dialect::MySql, "from x.`a``b`", "a`b"));
+        assert!(names(Dialect::MySql, "from x.\"a\"\"b\"", "a\"b"));
+        assert!(names(Dialect::MySql, "from 1abc", "1abc"));
+        assert!(!names(Dialect::MySql, "from x1abc", "1abc"));
+        assert!(!names(Dialect::MySql, "from leaked_x", "leaked"));
+        assert!(!names(Dialect::MySql, "from $leaked", "leaked"));
+        assert!(names(Dialect::MySql, "from leaked;", "leaked"));
+        assert!(names(Dialect::MySql, "from \"leaked\"", "leaked"));
     }
 }
