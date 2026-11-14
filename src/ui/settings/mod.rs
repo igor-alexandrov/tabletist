@@ -27,9 +27,9 @@ use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::{Command, Keymap, Layout, Scope, Spelled, Stroke};
 use crate::model::{Action, AgentsView, Dialog, SettingsDialog, SettingsPane, SettingsRow};
 use crate::settings::{
-    Autocomplete, Commas, EditorKeys, EnvBar, Idle, InterfaceSize, KeywordCase, Launch,
-    LineNumbers, Mode, NewTab, OptionId, OptionValue, RowHeight, RunScope, Settings, TableList,
-    Theme, ThemeChoice, Timestamps, UpdateCheck, Zone,
+    Autocomplete, Commas, EditorKeys, EnvBar, Idle, KeywordCase, Launch, LineNumbers, LookChoice,
+    Mode, NewTab, OptionId, OptionValue, RowHeight, RunScope, Settings, TableList, Theme,
+    ThemeChoice, Timestamps, UpdateCheck, Zone,
 };
 
 /// The label of an option's row. English: the caller translates, and the
@@ -50,8 +50,9 @@ pub(crate) fn label(option: OptionId) -> &'static str {
         OptionId::AgentsOn => "Let agents use Tabletist",
         OptionId::LogDays => "Keep the activity log",
         OptionId::AgentsNotify => "Notify when an agent connects",
+        OptionId::Look => "Interface",
         OptionId::Theme => "Theme",
-        OptionId::InterfaceSize => "Interface size",
+        OptionId::InterfaceScale => "Interface scale",
         OptionId::Font => "Data font",
         OptionId::FontSize => "Data font size",
         OptionId::RowHeight => "Row density",
@@ -131,8 +132,9 @@ pub(super) fn terminal_label(option: OptionId) -> &'static str {
         | OptionId::AgentsOn
         | OptionId::LogDays
         | OptionId::AgentsNotify
+        | OptionId::Look
         | OptionId::Theme
-        | OptionId::InterfaceSize
+        | OptionId::InterfaceScale
         | OptionId::TableList
         | OptionId::NewTab
         | OptionId::RowLimit
@@ -168,8 +170,11 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
         OptionId::ColumnTypes => Some("Second line in headers: int8, varchar, jsonb"),
         OptionId::TableList => Some("Default for new connections; the sidebar toggle overrides it"),
         OptionId::EnvBar => Some("Production always uses the full tint"),
-        OptionId::InterfaceSize => Some("Sidebar, tabs, buttons, inspector labels"),
-        OptionId::Font => Some("Grid cells, SQL editor, JSON"),
+        OptionId::Look => Some("Omarchy: keyboard-first, square, monospace"),
+        OptionId::InterfaceScale => {
+            Some("Everything in the window: text, controls, rows and spacing")
+        }
+        OptionId::Font => Some("Grid cells, SQL editor, JSON · scales with the interface"),
         OptionId::NewTab => Some("The badge in each tab can still switch it"),
         // Igor's words (2026-10-19), in place of the board's "Adds LIMIT to
         // results you browse; exports get everything": the rows are capped
@@ -335,10 +340,11 @@ pub(super) fn is_on(value: &OptionValue) -> bool {
 /// force, off where a change made outside the app that turned it on is
 /// held, the grouping of numbers as the look has it where it is not set,
 /// the stripes and the font's size as the look draws them while they are
-/// not set, and the theme as the look reads it: a value of the other
-/// looks' is the desktop followed.
+/// not set, the look as it is drawn, and the theme as the look reads it:
+/// a value of the other looks' is the desktop followed.
 pub(super) fn shown(app: &App) -> Settings {
     let mut settings = app.settings.clone();
+    settings.look = Some(LookChoice::of(app.look.terminal));
     settings.mcp_enabled = app.agents_on();
     settings.group_digits = Some(app.settings.grouped(app.layout()));
     settings.zebra = Some(settings.zebra_in(app.look.terminal));
@@ -381,6 +387,130 @@ pub(super) fn sample_timestamp(timestamps: Timestamps) -> &'static str {
 /// no frame looks it up.
 pub(super) fn path_shown(app: &App) -> String {
     file_pane::shown_path(&app.dirs.settings_file(), app.dirs.home.as_deref())
+}
+
+/// Where updates stand, as the Updates pane reads it.
+fn update_status(app: &App) -> updates::Status<'_> {
+    updates::Status {
+        updates: &app.updates,
+        skip: app.settings.update_skip.as_deref(),
+        now: app.now_secs(),
+    }
+}
+
+/// The server, as the Agents pane says it.
+fn server(app: &App) -> agents::Server {
+    agents::Server {
+        on: app.agents_on(),
+        connected: app.agents.sessions.len(),
+        window: app.agents_window().is_some(),
+    }
+}
+
+/// How the sheet draws for `dialog`: the look, the palette and the
+/// language, with what its rows say beside them.
+fn sheet_skin<'a>(app: &'a App, dialog: &SettingsDialog) -> sheet::Skin<'a> {
+    sheet::Skin {
+        look: &app.look,
+        palette: &app.palette,
+        locale: app.locale,
+        system: app.system_zone.iana_name(),
+        zones: app.zones.as_deref().map_or(&[], crate::zones::Zones::names),
+        connections: &app.connections.connections,
+        fonts: sheet::DataFonts {
+            installed: &app.installed_fonts,
+            missing: app.data_font_missing(),
+        },
+        asked: dialog.asked.map(|option| (option, dialog.reveal)),
+    }
+}
+
+/// What the sheet reads of the app beside its skin: `interrupted` is
+/// `App::work_in_progress`, which the sheet asks only while the Updates
+/// card is held.
+fn sheet_asked<'a>(
+    app: &'a App,
+    interrupted: &'a dyn Fn() -> Vec<crate::app::Work>,
+) -> sheet::Asked<'a> {
+    sheet::Asked {
+        keymap: &app.keymap,
+        ignored: &app.settings_file.invalid,
+        shown: shown(app),
+        server: server(app),
+        status: update_status(app),
+        path: path_shown(app),
+        interrupted,
+    }
+}
+
+/// How the terminal screen draws: the look, the palette and the language,
+/// with what its rows say beside them. `launches` is what On launch steps
+/// through (`launch_choices`), and `checked` when updates were last
+/// checked, as the Updates pane's row writes it.
+fn terminal_skin<'a>(
+    app: &'a App,
+    launches: &'a [Launch],
+    checked: Option<&'a str>,
+    zoom: f32,
+) -> terminal::Skin<'a> {
+    terminal::Skin {
+        look: &app.look,
+        palette: &app.palette,
+        locale: app.locale,
+        window: app.agents_window().is_some(),
+        system: app.system_zone.iana_name(),
+        named: app.named_zone.as_deref(),
+        connections: &app.connections.connections,
+        launches,
+        desktop: desktop_shown(app),
+        font: font_shown(app),
+        checked,
+        inset: app.titlebar.inset / zoom,
+    }
+}
+
+/// What fontconfig gave for the font the settings name, as the terminal
+/// screen's font row says it.
+fn font_shown(app: &App) -> terminal::FontShown<'_> {
+    let read = &app.desktop_font;
+    terminal::FontShown {
+        family: read.family.as_deref(),
+        missing: read.asked.as_deref().filter(|_| read.missing),
+    }
+}
+
+/// What the terminal screen's theme rows say of the desktop: Omarchy's
+/// theme of the moment, and how a pin stands.
+fn desktop_shown(app: &App) -> terminal::Desktop<'_> {
+    let pin = app.settings.theme.pin().zip(app.pin_state());
+    terminal::Desktop {
+        current: app.desktop_theme.current.as_deref(),
+        pin,
+        follows_omarchy: app.themes.follows_omarchy(),
+    }
+}
+
+/// What the terminal screen reads of the app beside its skin, for
+/// `dialog`: `interrupted` is `App::work_in_progress`, which the screen
+/// asks only while the Updates card is held.
+fn terminal_asked<'a>(
+    app: &'a App,
+    dialog: &SettingsDialog,
+    interrupted: &'a dyn Fn() -> Vec<crate::app::Work>,
+) -> terminal::Asked<'a> {
+    let cursor = dialog.pane.rows().get(dialog.row).copied();
+    terminal::Asked {
+        notice: app.notice.as_deref(),
+        keymap: &app.keymap,
+        file: &app.settings_file,
+        path: path_shown(app),
+        binds: &app.settings.keys.binds,
+        shown: shown(app),
+        server: server(app),
+        status: update_status(app),
+        opened: cursor.and_then(|row| opened(app, row)),
+        interrupted,
+    }
 }
 
 /// What a choice is called.
@@ -482,6 +612,16 @@ pub(super) fn choices(
             (Word("off"), OptionValue::AgentsNotify(false)),
             (Word("on"), OptionValue::AgentsNotify(true)),
         ],
+        OptionId::Look => vec![
+            (
+                Word("classic"),
+                OptionValue::Look(Some(LookChoice::Classic)),
+            ),
+            (
+                Word("omarchy"),
+                OptionValue::Look(Some(LookChoice::Omarchy)),
+            ),
+        ],
         // The terminal look's: macOS and Windows draw their tiles.
         OptionId::Theme => vec![
             (
@@ -490,19 +630,10 @@ pub(super) fn choices(
             ),
             (Word("pin"), OptionValue::Theme(ThemeChoice::Pinned)),
         ],
-        OptionId::InterfaceSize => vec![
-            (
-                Word("small"),
-                OptionValue::InterfaceSize(InterfaceSize::Small),
-            ),
-            (
-                Word("default"),
-                OptionValue::InterfaceSize(InterfaceSize::Default),
-            ),
-            (
-                Word("large"),
-                OptionValue::InterfaceSize(InterfaceSize::Large),
-            ),
+        // macOS's and Windows's menu: the terminal look has no row of it.
+        OptionId::InterfaceScale => vec![
+            (Word("smaller"), settings.stepped(option, false)),
+            (Word("larger"), settings.stepped(option, true)),
         ],
         // A name is set in the file: the window offers none.
         OptionId::Font => Vec::new(),
@@ -866,7 +997,7 @@ fn keys(
                     SettingsPane::Agents => copy |= !repeat,
                     // The command that updates a copy something else
                     // installed, where it has one.
-                    SettingsPane::Updates => match updates::managed_command(app) {
+                    SettingsPane::Updates => match updates::managed_command(update_status(app)) {
                         Some(command) => {
                             if !repeat {
                                 update_command = Some(command);
@@ -890,7 +1021,7 @@ fn keys(
                 // Only where the block offers it: a version that downloads
                 // or waits to install is not skipped, and the key is left.
                 Asked::Skip => {
-                    if !updates::skips(app) {
+                    if !updates::skips(update_status(app)) {
                         return true;
                     }
                     if !repeat {
@@ -899,7 +1030,7 @@ fn keys(
                 }
                 // What the card offers: a press with nothing to do is
                 // left.
-                Asked::Install => match updates::install_action(app) {
+                Asked::Install => match updates::install_action(update_status(app)) {
                     Some(action) => {
                         if !repeat {
                             actions.push(action);
@@ -984,6 +1115,9 @@ pub(crate) fn editor_preview_field() -> egui::Id {
     editor_preview::field_id()
 }
 
+/// The Settings window, while it is the dialog: the keys of a row being
+/// recorded first, then the terminal look's screen with its keys or the
+/// sheet. What they push reaches `app.actions` after them, in that order.
 pub fn show(app: &mut App, ctx: &egui::Context) {
     let Some(Dialog::Settings(dialog)) = &app.dialog else {
         return;
@@ -995,7 +1129,13 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let keyboard = dialog.pane == SettingsPane::Keyboard;
     if keyboard && let Some(recording) = &dialog.keyboard.recording {
         let on_buttons = keyboard_sheet::on_refusal(ctx);
-        keyboard::record(ctx, app, (recording, on_buttons), &mut actions);
+        keyboard::record(
+            ctx,
+            &app.keymap,
+            app.layout(),
+            (recording, on_buttons),
+            &mut actions,
+        );
     }
     if app.look.terminal {
         // The screen's keys act on its cursor. The sheet has none: its
@@ -1006,14 +1146,22 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         let in_preview = ctx.memory(|memory| memory.has_focus(editor_preview::field_id()));
         if keyboard {
             if dialog.keyboard.recording.is_none() && !dialog.keyboard.filtering {
-                keyboard_terminal::keys(app, ctx, dialog, &mut actions);
+                let (keymap, layout) = (&app.keymap, app.layout());
+                keyboard_terminal::keys(ctx, keymap, layout, app.locale, dialog, &mut actions);
             }
         } else {
             keys(app, ctx, dialog, in_preview, &mut actions);
         }
-        terminal::show(app, ctx, dialog, &mut actions);
+        let interrupted = || app.work_in_progress();
+        let asked = terminal_asked(app, dialog, &interrupted);
+        let launches = launch_choices(&app.connections.connections);
+        let checked = updates::checked_text(asked.status, &app.look, app.locale, true);
+        let skin = terminal_skin(app, &launches, checked.as_deref(), ctx.zoom_factor());
+        terminal::show(ctx, &skin, dialog, asked, &mut actions);
     } else {
-        sheet::show(app, ctx, dialog, &mut actions);
+        let interrupted = || app.work_in_progress();
+        let asked = sheet_asked(app, &interrupted);
+        sheet::show(ctx, &sheet_skin(app, dialog), dialog, &asked, &mut actions);
     }
     app.actions.extend(actions);
 }

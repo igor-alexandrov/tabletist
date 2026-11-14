@@ -118,9 +118,15 @@ fn second_window(harness: &mut Harness, saved: SavedConnection) -> ConnTabId {
 /// back when the last tab closes.
 #[test]
 fn the_start_screen_shows_with_no_tab_and_comes_back_when_the_last_closes() {
-    for (look, said) in [
-        (Look::macos(), "No table open"),
-        (Look::omarchy(), "no table open"),
+    // The terminal's line names the table under the sidebar's cursor once
+    // the click left it there, in the place of "no table open".
+    for (look, said, back) in [
+        (Look::macos(), "No table open", "No table open"),
+        (
+            Look::omarchy(),
+            "no table open",
+            "book_covers · table · 13 rows",
+        ),
     ] {
         let (mut harness, tab) = bookshop(look);
         assert!(harness.has(said), "{}", look.name);
@@ -129,7 +135,7 @@ fn the_start_screen_shows_with_no_tab_and_comes_back_when_the_last_closes() {
         assert!(!harness.has(said), "{}: a tab is open", look.name);
         let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         harness.app.apply(Action::CloseTab { tab, id });
-        assert!(harness.has(said), "{}: the last tab closed", look.name);
+        assert!(harness.has(back), "{}: the last tab closed", look.name);
     }
 }
 
@@ -694,7 +700,7 @@ fn a_typed_command_key_leaves_the_keyboard_where_it_was() {
         Modifiers::NONE,
     )]);
     harness.settle();
-    assert!(matches!(harness.app.dialog, Some(Dialog::Help)));
+    assert!(matches!(harness.app.dialog, Some(Dialog::Help(_))));
     assert_eq!(harness.app.workspace(tab).unwrap().start_search, "");
 }
 

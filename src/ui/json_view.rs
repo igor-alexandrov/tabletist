@@ -8,7 +8,8 @@ use serde::de::{MapAccess, SeqAccess, Visitor};
 use tabletist_db::{Value, ValueKind};
 
 use crate::i18n::{Locale, gettext, ngettext};
-use crate::theme::{self, Icon, Palette};
+use crate::style::Icon;
+use crate::theme::{self, Palette};
 use crate::typography::{Text, TextRole};
 
 /// JSON larger than this is shown as plain text, not parsed into a tree.
@@ -77,7 +78,7 @@ fn literal(text: &str) -> Box<str> {
         Some((cut, _)) => format!("{}…\"", &quoted[..cut]),
         None => quoted,
     };
-    match crate::ui::format::escape_hidden(&cut) {
+    match crate::format::escape_hidden(&cut) {
         std::borrow::Cow::Borrowed(_) => cut.into(),
         std::borrow::Cow::Owned(escaped) => escaped.into(),
     }
@@ -271,7 +272,7 @@ pub fn attachment(doc: &Doc) -> Option<Attachment> {
         details.push(format!("{width} × {height}"));
     }
     if let Some(size) = text(get(metadata, "size")).and_then(|size| size.parse::<usize>().ok()) {
-        details.push(crate::ui::format::human_size(size));
+        details.push(crate::format::human_size(size));
     }
     if let Some(storage) = text(get(entries, "storage")) {
         details.push(storage);

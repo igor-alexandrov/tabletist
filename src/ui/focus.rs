@@ -163,6 +163,19 @@ pub fn neighbour(
     ask(ctx, forward, Some(among), from, false)
 }
 
+/// Whether ctrl+h or ctrl+l would move the keyboard from `from`: another
+/// region of `among` was drawn the frame before, among those [`step`]
+/// steps through.
+pub fn can_step(ctx: &egui::Context, among: &[Region], from: Region) -> bool {
+    ctx.data_mut(|data| {
+        let regions: &mut Regions = data.get_temp_mut_or_default(regions_id());
+        regions
+            .before
+            .iter()
+            .any(|(region, _)| *region != from && among.contains(region))
+    })
+}
+
 /// F6's question, and its neighbour's: which region takes the keyboard
 /// next, if any. Past the end it starts over where `wrap` says so, and
 /// from a region not `among` the ones stepped among.
@@ -428,6 +441,24 @@ pub fn hint(ui: &Ui, response: &Response, rect: Rect, ring: Ring) {
     ui.data_mut(|data| data.insert_temp(hint_id(), hint));
 }
 
+/// A laid out text added as a widget that answers `sense`.
+pub trait Link {
+    /// [`Laid::label`](crate::typography::Laid::label) that answers
+    /// `sense`. Text that can be clicked is a link: a tight ring round its
+    /// words.
+    fn label_sense(self, ui: &mut Ui, sense: Sense) -> Response;
+}
+
+impl Link for crate::typography::Laid {
+    fn label_sense(self, ui: &mut Ui, sense: Sense) -> Response {
+        let (rect, response) = self.allocate(ui, sense);
+        if sense.senses_click() {
+            hint(ui, &response, rect, Ring::Outer { radius: 3 });
+        }
+        response
+    }
+}
+
 /// Draws the ring of whatever has the keyboard. Call once the frame's
 /// widgets are drawn.
 pub fn paint(ctx: &egui::Context, look: &Look, palette: &Palette) {
@@ -593,8 +624,8 @@ mod tests {
 
     fn context(look: &Look, palette: &Palette) -> egui::Context {
         let ctx = egui::Context::default();
-        crate::theme::install(&ctx, false, look);
-        crate::theme::apply(&ctx, palette, look);
+        crate::style::install(&ctx, false, look);
+        crate::style::apply(&ctx, palette, look);
         ctx
     }
 

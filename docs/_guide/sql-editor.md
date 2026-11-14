@@ -39,7 +39,11 @@ look) sets what a run may do.
 - **Read-write.** A run that changes data is one transaction. It is
   committed when every statement succeeded, and rolled back on the first
   error, on cancel and on timeout. A run that only reads is still
-  read-only.
+  read-only, and the footer says it had nothing to commit.
+
+After a run the footer names the mode it ran in and how it ended:
+"Read-only · rolled back", "Read-write · committed", "Read-write ·
+nothing to commit".
 
 {% include shot.html file="macos-sql-committed" alt="A read-write run of two statements, with Messages saying how many rows each changed and that the run was committed" %}
 
@@ -67,6 +71,11 @@ On MySQL, statements such as `CREATE`, `ALTER` and `DROP` are committed by
 the server as they run, so they cannot be rolled back. The messages say
 which lines were written.
 
+A run that leaves a `CREATE`, `DROP`, `ALTER` or `RENAME` written (and,
+on SQLite, an `ATTACH` or `DETACH`) refreshes the sidebar when it ends,
+so a table you made or dropped shows there without a refresh by hand. A
+run that was rolled back leaves the sidebar as it is.
+
 ## Results and messages
 
 **Results** shows the rows of the statement you ran. Select a row and
@@ -76,6 +85,11 @@ to 1,000 rows", and **Show all** runs that statement again, alone, with no
 limit (it keeps the timeout). It is offered for a run that only read,
 while the editor holds the text that ran and the tab is on the database
 it ran on.
+
+**Copy as** and **Export…**, at the bar's right, copy the cells you
+picked in a format and [export the result]({% link _guide/browsing-data.md %}#exporting-a-sql-result)
+to a file or the clipboard; its export can run the statement again
+without the limit, as **Show all** does, straight into the file.
 
 When the timeout stopped a run, Messages says "Cancelled after 30 s" on
 the statement it stopped, and **Run without timeout** runs the whole run
@@ -191,6 +205,9 @@ It keeps every source, each marked as such:
   it ended, and **Show in Agents Log** opens its call there. The agent's
   name is read from the log while it holds the call. Once the log drops
   the call, the entry says it is no longer there.
+- **Export**: the `SELECT` a [table's export]({% link _guide/browsing-data.md %}#exporting)
+  ran, with the rows it wrote and how it ended. Never the rows, nor the
+  file's name.
 
 Tabletist's own reads of the schema, the row estimates and completion's
 are not kept, nor is a table read with no filter or sort of yours.

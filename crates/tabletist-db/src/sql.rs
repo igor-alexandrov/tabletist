@@ -129,6 +129,7 @@ const KEYWORDS: &[&str] = &[
 const POSTGRES_KEYWORDS: &[&str] = &["ILIKE", "LATERAL", "RETURNING", "SIMILAR"];
 const MYSQL_KEYWORDS: &[&str] = &["DESCRIBE", "REGEXP", "STRAIGHT_JOIN"];
 const SQLITE_KEYWORDS: &[&str] = &["GLOB", "PRAGMA", "RETURNING"];
+const BIGQUERY_KEYWORDS: &[&str] = &["PIVOT", "QUALIFY", "STRUCT", "UNNEST"];
 
 /// The keywords `dialect` highlights, in upper case: the words the editor
 /// completes too. A keyword worth completing is worth colouring, so there
@@ -138,6 +139,7 @@ pub fn keywords(dialect: Dialect) -> impl Iterator<Item = &'static str> {
         Dialect::Postgres => POSTGRES_KEYWORDS,
         Dialect::MySql => MYSQL_KEYWORDS,
         Dialect::Sqlite => SQLITE_KEYWORDS,
+        Dialect::BigQuery => BIGQUERY_KEYWORDS,
     };
     KEYWORDS.iter().chain(own).copied()
 }
@@ -154,14 +156,14 @@ impl Dialect {
     fn bom_is_space(self) -> bool {
         match self {
             Self::Sqlite => true,
-            Self::Postgres | Self::MySql => false,
+            Self::Postgres | Self::MySql | Self::BigQuery => false,
         }
     }
 
-    /// `#` starts a line comment.
+    /// `#` starts a line comment (GoogleSQL's too).
     fn hash_comments(self) -> bool {
         match self {
-            Self::MySql => true,
+            Self::MySql | Self::BigQuery => true,
             Self::Postgres | Self::Sqlite => false,
         }
     }
@@ -170,7 +172,7 @@ impl Dialect {
     fn runs_comments(self) -> bool {
         match self {
             Self::MySql => true,
-            Self::Postgres | Self::Sqlite => false,
+            Self::Postgres | Self::Sqlite | Self::BigQuery => false,
         }
     }
 
@@ -178,14 +180,14 @@ impl Dialect {
     fn nests_comments(self) -> bool {
         match self {
             Self::Postgres => true,
-            Self::MySql | Self::Sqlite => false,
+            Self::MySql | Self::Sqlite | Self::BigQuery => false,
         }
     }
 
     /// A backslash in a `'...'` string escapes the next character.
     fn backslash_escapes(self) -> bool {
         match self {
-            Self::MySql => true,
+            Self::MySql | Self::BigQuery => true,
             Self::Postgres | Self::Sqlite => false,
         }
     }
@@ -194,14 +196,14 @@ impl Dialect {
     fn escape_strings(self) -> bool {
         match self {
             Self::Postgres => true,
-            Self::MySql | Self::Sqlite => false,
+            Self::MySql | Self::Sqlite | Self::BigQuery => false,
         }
     }
 
     /// `` `name` `` is a quoted name.
     pub fn backtick_names(self) -> bool {
         match self {
-            Self::MySql | Self::Sqlite => true,
+            Self::MySql | Self::Sqlite | Self::BigQuery => true,
             Self::Postgres => false,
         }
     }
@@ -210,7 +212,7 @@ impl Dialect {
     fn bracket_names(self) -> bool {
         match self {
             Self::Sqlite => true,
-            Self::Postgres | Self::MySql => false,
+            Self::Postgres | Self::MySql | Self::BigQuery => false,
         }
     }
 
@@ -218,7 +220,7 @@ impl Dialect {
     fn dollar_quotes(self) -> bool {
         match self {
             Self::Postgres => true,
-            Self::MySql | Self::Sqlite => false,
+            Self::MySql | Self::Sqlite | Self::BigQuery => false,
         }
     }
 
@@ -226,7 +228,7 @@ impl Dialect {
     fn dollar_in_words(self) -> bool {
         match self {
             Self::Postgres | Self::MySql => true,
-            Self::Sqlite => false,
+            Self::Sqlite | Self::BigQuery => false,
         }
     }
 }
@@ -288,6 +290,9 @@ fn next(dialect: Dialect, text: &str, start: usize) -> (TokenKind, usize) {
         }
         b'"' => match dialect {
             Dialect::MySql => (TokenKind::String, quoted_end(bytes, start, b'"', true)),
+            // GoogleSQL reads "..." as a string with backslash escapes,
+            // never as a name.
+            Dialect::BigQuery => (TokenKind::String, quoted_end(bytes, start, b'"', true)),
             Dialect::Postgres | Dialect::Sqlite => (
                 TokenKind::QuotedIdentifier,
                 quoted_end(bytes, start, b'"', false),
@@ -345,7 +350,7 @@ fn next(dialect: Dialect, text: &str, start: usize) -> (TokenKind, usize) {
 fn dash_comment(dialect: Dialect, after: Option<u8>) -> bool {
     match dialect {
         Dialect::MySql => after.is_none_or(|b| is_space(b) || b.is_ascii_control()),
-        Dialect::Postgres | Dialect::Sqlite => true,
+        Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => true,
     }
 }
 
@@ -379,7 +384,7 @@ fn is_space(byte: u8) -> bool {
 fn line_end(dialect: Dialect, bytes: &[u8], from: usize) -> usize {
     let cr_ends = match dialect {
         Dialect::Postgres => true,
-        Dialect::MySql | Dialect::Sqlite => false,
+        Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery => false,
     };
     scan(bytes, from, |b| b != b'\n' && !(cr_ends && b == b'\r'))
 }
@@ -692,6 +697,8 @@ pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
         // A U&"..." name can spell any name in escapes, set_config included.
         Dialect::Postgres => unicode_name(statement, &tokens).then(|| "a U& name".to_owned()),
         Dialect::Sqlite => refused_pragma(statement, &tokens).map(|name| format!("PRAGMA {name}")),
+        // GoogleSQL has neither executable comments, escape names nor pragmas.
+        Dialect::BigQuery => None,
     };
     if hidden.is_some() {
         return hidden;
@@ -708,7 +715,7 @@ pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
                 words.drain(1..3);
             }
         }
-        Dialect::Postgres | Dialect::Sqlite => {}
+        Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => {}
     }
     let word = |index: usize| words.get(index).map(String::as_str).unwrap_or_default();
     let guarded_name = || words.iter().skip(1).find(|name| is_guarded_setting(name));
@@ -721,8 +728,10 @@ pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
             Dialect::Postgres if first == "PREPARE" && word(1) == "TRANSACTION" => {
                 return Some("PREPARE TRANSACTION".into());
             }
+            // BigQuery's EXECUTE IMMEDIATE runs SQL the guard cannot read.
             Dialect::Postgres | Dialect::MySql => return Some(first.to_owned()),
-            Dialect::Sqlite => {}
+            Dialect::BigQuery if first == "EXECUTE" => return Some(first.to_owned()),
+            Dialect::BigQuery | Dialect::Sqlite => {}
         },
         "SET" => {
             if let Some(refused) = set_refusal(dialect, statement, &tokens, &words) {
@@ -736,7 +745,7 @@ pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
                     second => format!("RESET {second}"),
                 });
             }
-            Dialect::Postgres | Dialect::Sqlite => {
+            Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => {
                 if word(1) == "ALL" {
                     return Some("RESET ALL".into());
                 }
@@ -748,7 +757,7 @@ pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
         "DISCARD" if word(1) == "ALL" => return Some("DISCARD ALL".into()),
         "COPY" => match dialect {
             Dialect::Postgres => return Some("COPY".into()),
-            Dialect::MySql | Dialect::Sqlite => {}
+            Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery => {}
         },
         _ => {}
     }
@@ -761,6 +770,9 @@ pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
                 .then(|| "set_config".to_owned());
         }
         Dialect::Sqlite => return None,
+        // BigQuery has no session settings to guard, no USE: what remains
+        // is MySQL's.
+        Dialect::BigQuery => return None,
         // The rest is MySQL's.
         Dialect::MySql => {}
     }
@@ -920,7 +932,7 @@ fn set_refusal(
                 return Some("SET STATEMENT".into());
             }
         }
-        Dialect::Postgres | Dialect::Sqlite => {}
+        Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => {}
     }
     let has = |wanted: &str| words.iter().skip(1).any(|word| word == wanted);
     if has("CHARACTERISTICS") {
@@ -958,7 +970,7 @@ fn set_refusal(
             .skip(1)
             .find(|word| matches!(word.as_str(), "GLOBAL" | "PERSIST" | "PERSIST_ONLY"))
             .map(|scope| format!("SET {scope}")),
-        Dialect::Postgres | Dialect::Sqlite => None,
+        Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => None,
     }
 }
 
@@ -1099,7 +1111,7 @@ pub fn kind(dialect: Dialect, statement: &str) -> StatementKind {
             READS.contains(&word)
                 || match dialect {
                     Dialect::Sqlite => word == "PRAGMA",
-                    Dialect::Postgres | Dialect::MySql => false,
+                    Dialect::Postgres | Dialect::MySql | Dialect::BigQuery => false,
                 }
         }
         None => &statement[first.range.clone()] == "(",
@@ -1109,6 +1121,38 @@ pub fn kind(dialect: Dialect, statement: &str) -> StatementKind {
     } else {
         StatementKind::Write
     }
+}
+
+/// The words a statement that changes what the database holds (its
+/// schemas, tables, views, columns) starts with, on every engine.
+const DEFINES: [&str; 4] = ["CREATE", "DROP", "ALTER", "RENAME"];
+
+/// Whether `statement` may change the database's catalog, which the
+/// sidebar and the completion lists show: a `CREATE`, `DROP`, `ALTER` or
+/// `RENAME` by its first word, and SQLite's `ATTACH` and `DETACH`, which
+/// add and remove a schema. It errs toward yes: a MySQL executable comment
+/// counts, since it can hold any of them. What it misses is a statement
+/// that makes a table by another name (PostgreSQL's `SELECT ... INTO`).
+pub fn changes_catalog(dialect: Dialect, statement: &str) -> bool {
+    let tokens = tokenize(dialect, statement);
+    if tokens
+        .iter()
+        .any(|token| token.kind == TokenKind::ExecutableComment)
+    {
+        return true;
+    }
+    let Some(first) = tokens
+        .iter()
+        .find(|token| !matches!(token.kind, TokenKind::Whitespace | TokenKind::Comment))
+        .and_then(|token| bare_word(statement, token))
+    else {
+        return false;
+    };
+    DEFINES.contains(&first.as_str())
+        || match dialect {
+            Dialect::Sqlite => first == "ATTACH" || first == "DETACH",
+            Dialect::Postgres | Dialect::MySql | Dialect::BigQuery => false,
+        }
 }
 
 /// A statement that changes or removes every row of a table: what
@@ -1261,7 +1305,7 @@ fn unbounded_at(dialect: Dialect, statement: &str, tokens: &[Token]) -> Option<(
 fn joins_target(dialect: Dialect, verb: &Word, words: &[&Word]) -> bool {
     match dialect {
         Dialect::MySql => {}
-        Dialect::Postgres | Dialect::Sqlite => return false,
+        Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => return false,
     }
     words.iter().enumerate().any(|(at, word)| {
         if word.text != "ON" {
@@ -1355,7 +1399,7 @@ fn code_of(tokens: &[Token]) -> Vec<&Token> {
 /// the dialect has the statement.
 fn truncate_at(dialect: Dialect, statement: &str, tokens: &[Token]) -> Option<usize> {
     let truncates = match dialect {
-        Dialect::Postgres | Dialect::MySql => true,
+        Dialect::Postgres | Dialect::MySql | Dialect::BigQuery => true,
         Dialect::Sqlite => false,
     };
     let (at, first) = tokens
@@ -2702,6 +2746,49 @@ mod tests {
                     "{dialect:?} {text}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn a_statement_that_defines_something_changes_the_catalog() {
+        for dialect in DIALECTS {
+            for text in [
+                "CREATE TABLE notes (id int)",
+                "create view cheap as select * from books",
+                "DROP TABLE books",
+                "drop table if exists books",
+                "ALTER TABLE books ADD COLUMN pages int",
+                "CREATE INDEX books_title ON books (title)",
+                "-- a new one\nCREATE TABLE notes (id int)",
+                "/* gone */ DROP VIEW cheap",
+            ] {
+                assert!(changes_catalog(dialect, text), "{dialect:?} {text}");
+            }
+            for text in [
+                "SELECT * FROM books",
+                "INSERT INTO books VALUES (1)",
+                "UPDATE books SET title = 'create'",
+                "DELETE FROM books",
+                "TRUNCATE books",
+                "SELECT 'DROP TABLE books'",
+                "-- DROP TABLE books",
+                "",
+            ] {
+                assert!(!changes_catalog(dialect, text), "{dialect:?} {text}");
+            }
+        }
+        assert!(changes_catalog(
+            Dialect::MySql,
+            "RENAME TABLE books TO tomes"
+        ));
+        assert!(changes_catalog(
+            Dialect::MySql,
+            "/*!40101 CREATE TABLE t (id int) */"
+        ));
+        // SQLite adds and removes a schema with these.
+        for text in ["ATTACH DATABASE 'shop.db' AS shop", "DETACH shop"] {
+            assert!(changes_catalog(Dialect::Sqlite, text), "{text}");
+            assert!(!changes_catalog(Dialect::Postgres, text), "{text}");
         }
     }
 

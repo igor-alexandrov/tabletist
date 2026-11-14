@@ -9,16 +9,19 @@ use std::time::Duration;
 use egui::{CornerRadius, Id, Rect, Sense, Ui, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::{Driver, Error, ScriptEnd, ScriptMode, StatementOutcome, ValueKind};
 
-use crate::app::App;
 use crate::backend::{CancelReason, RequestId};
+use crate::format;
 use crate::i18n::{Locale, gettext};
+use crate::keymap::Keymap;
 use crate::model::{
     Action, ConnTabId, NoWrites, ResultPane, RunMode, SqlRun, SqlTab, TabId, Workspace,
 };
-use crate::theme::{Icon, Look, Palette};
+use crate::settings::Settings;
+use crate::style::Icon;
+use crate::theme::{Look, Palette};
 use crate::typography::{Laid, Text, TextRole};
+use crate::ui::Paint;
 use crate::ui::data_view;
-use crate::ui::format;
 use crate::ui::grid::{self, Column};
 use crate::ui::states;
 use crate::ui::value_tags::Tags;
@@ -173,10 +176,36 @@ pub fn forget(ctx: &egui::Context, tab: ConnTabId, id: TabId) {
     });
 }
 
-pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
+/// Draws the results of `sql`, a SQL editor of `workspace` in the
+/// connection tab `tab`, and returns what they ask for.
+pub fn show(
+    ui: &mut Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    workspace: &Workspace,
+    sql: &SqlTab,
+    settings: &Settings,
+    keymap: &Keymap,
+) -> Vec<Action> {
     let mut actions = Vec::new();
-    draw(app, ui, tab, id, &mut actions);
-    app.actions.extend(actions);
+    let results = Results {
+        workspace,
+        sql,
+        settings,
+        keymap,
+    };
+    draw(ui, paint, tab, &results, &mut actions);
+    actions
+}
+
+/// What the results are drawn from besides the Paint: the editor's tab,
+/// its workspace, and the settings and keymap they read.
+#[derive(Clone, Copy)]
+struct Results<'a> {
+    workspace: &'a Workspace,
+    sql: &'a SqlTab,
+    settings: &'a Settings,
+    keymap: &'a Keymap,
 }
 
 /// The editor a pane is drawn for.
@@ -202,30 +231,34 @@ struct Place<'a> {
     grid: Look,
 }
 
-fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Action>) {
-    let (look, palette) = (app.look, app.palette);
+fn draw(ui: &mut Ui, paint: Paint, tab: ConnTabId, from: &Results<'_>, actions: &mut Vec<Action>) {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let Results {
+        workspace,
+        sql,
+        settings,
+        keymap,
+    } = *from;
     let env = Env {
         look: &look,
         palette: &palette,
-        locale: app.locale,
-        keymap: &app.keymap,
-    };
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
-    let Some(sql) = workspace.sql_tab(id) else {
-        return;
+        locale,
+        keymap,
     };
     let place = Place {
         tab,
         sql,
-        fit: data_view::Fit::of(workspace, app),
+        fit: data_view::Fit::of(workspace, settings, paint.layout()),
         zone: workspace.zone_shown(),
         driver: workspace.driver,
         blocked: blocked(workspace, sql),
         links: Links::of(workspace, sql),
         keys: workspace.pane == crate::model::Pane::Grid,
-        grid: look.with_grid(&app.settings),
+        grid: look.with_grid(settings),
     };
     let state = state(sql);
     let pane = ui.max_rect();
@@ -380,6 +413,25 @@ fn header(
         actions,
     ) + 16.0;
     let role = TextRole::pick(look, TextRole::Secondary, TextRole::OBody);
+    // The macOS look's Copy as and Export… at the right end (spec 4,
+    // S9): the words before them give way first.
+    let words = match (&head.running, &head.info) {
+        // The wait's words and its button keep what they take.
+        (Some(_), _) => 160.0,
+        (None, Some(info)) => role.width(ui.ctx(), look.faces, &info.painted),
+        (None, None) => 0.0,
+    };
+    let right = match look.terminal {
+        true => right,
+        false => bar_buttons(
+            ui,
+            (start + words, right, center),
+            head,
+            place,
+            env,
+            actions,
+        ),
+    };
     let spot = Spot {
         start,
         right,
@@ -400,6 +452,109 @@ fn header(
             data_view::paint_named(ui, start, center, text, &info.name);
         }
     }
+}
+
+/// The results bar's Copy as (⌥⌘C) and Export… (⇧⌘E), ending at `right`,
+/// on Results and on Messages alike (spec 4, S9 and F10), from where the
+/// bar's words end (`start`). They fold to their icons, then go, before the
+/// words are cut. Copy as is greyed while no cell of the rows is picked,
+/// Export… while the shown statement returned no rows or a run is on its
+/// way. Returns where the words must end.
+fn bar_buttons(
+    ui: &mut Ui,
+    (start, right, center): (f32, f32, f32),
+    head: &Head,
+    place: &Place<'_>,
+    env: &Env<'_>,
+    actions: &mut Vec<Action>,
+) -> f32 {
+    let Env {
+        look,
+        palette,
+        locale,
+        ..
+    } = *env;
+    let sql = place.sql;
+    let copy_label = gettext(locale, "Copy as");
+    let export_label = gettext(locale, "Export…");
+    let copy_keys = crate::ui::keys::written(ui.ctx(), look, crate::keymap::Command::CopyAs);
+    let export_keys = crate::ui::keys::written(ui.ctx(), look, crate::keymap::Command::Export);
+    let picked = sql.pane == ResultPane::Results && sql.selected().is_some();
+    let rows = place.sql.exports();
+    let copy_off = (!picked).then(|| gettext(locale, "Pick a cell of the rows first"));
+    let export_off = match (head.running.is_some(), rows) {
+        (true, _) => Some(gettext(locale, "Wait for the run to finish")),
+        (false, false) => Some(gettext(locale, "No rows to export")),
+        (false, true) => None,
+    };
+    fn button<'a>(
+        label: &'a str,
+        icon: Icon,
+        keys: &'a crate::keymap::Written,
+        off: Option<&'a str>,
+        short: bool,
+    ) -> ButtonSpec<'a> {
+        let button = ButtonSpec::new(if short { "" } else { label })
+            .label(label)
+            .icon(icon)
+            .role(TextRole::UiBodyStrong);
+        let button = match off {
+            Some(reason) => button.disabled(reason),
+            None if short => button,
+            None => button.shortcut(keys),
+        };
+        if short { button.gap(0.0) } else { button }
+    }
+    let pair = |short: bool| {
+        (
+            button(
+                &copy_label,
+                Icon::Copy,
+                &copy_keys,
+                copy_off.as_deref(),
+                short,
+            ),
+            button(
+                &export_label,
+                Icon::Download,
+                &export_keys,
+                export_off.as_deref(),
+                short,
+            ),
+        )
+    };
+    let room = right - start - 12.0;
+    let width = |short: bool| {
+        let (copy, export) = pair(short);
+        copy.width(ui, look) + 8.0 + export.width(ui, look)
+    };
+    let short = match (width(false) <= room, width(true) <= room) {
+        (true, _) => false,
+        (false, true) => true,
+        (false, false) => return right,
+    };
+    let (copy, export) = pair(short);
+    let export_width = export.width(ui, look);
+    let at = Rect::from_min_size(
+        pos2(right - export_width, center - 14.0),
+        egui::vec2(export_width, 28.0),
+    );
+    if export.show_at(ui, at, look, palette).clicked() && rows {
+        actions.push(Action::OpenExport {
+            tab: place.tab,
+            format: None,
+        });
+    }
+    let copy_width = copy.width(ui, look);
+    let left = at.left() - 8.0 - copy_width;
+    let at = Rect::from_min_size(pos2(left, center - 14.0), egui::vec2(copy_width, 28.0));
+    if copy.show_at(ui, at, look, palette).clicked() && picked {
+        actions.push(Action::OpenCopyAs {
+            tab: place.tab,
+            pick: crate::model::CopyPick::Selection,
+        });
+    }
+    left - 12.0
 }
 
 /// The Results and Messages tabs from `left`, centred on `center`: a click
@@ -1555,12 +1710,15 @@ impl Blocked<'_> {
 /// button names the letter: in the others none presses it, whoever asks.
 /// And only while the Messages show the card: not under the opening
 /// screen a switch of database puts over the editor, which keeps the tab
-/// and its last run.
-pub(crate) fn card_key(app: &App, tab: ConnTabId) -> Option<(crate::keymap::Command, Action)> {
-    if !app.look.terminal {
+/// and its last run. `workspace` is the connection tab `tab`'s.
+pub(crate) fn card_key(
+    look: &Look,
+    tab: ConnTabId,
+    workspace: &Workspace,
+) -> Option<(crate::keymap::Command, Action)> {
+    if !look.terminal {
         return None;
     }
-    let workspace = app.workspace(tab)?;
     let sql = workspace.active_sql_tab()?;
     if !workspace.opened() || sql.pane != ResultPane::Messages || sql.run.error.is_some() {
         return None;
@@ -1710,13 +1868,14 @@ const BEFORE_LINK: &str = " · ";
 /// The links on screen in the SQL editor in front, with the command whose
 /// letter takes each and what it does. Only in the terminal look, whose
 /// links name their letters, as [`card_key`].
-pub(crate) fn link_keys(app: &App, tab: ConnTabId) -> Vec<(crate::keymap::Command, Action)> {
-    if !app.look.terminal {
+pub(crate) fn link_keys(
+    look: &Look,
+    tab: ConnTabId,
+    workspace: &Workspace,
+) -> Vec<(crate::keymap::Command, Action)> {
+    if !look.terminal {
         return Vec::new();
     }
-    let Some(workspace) = app.workspace(tab) else {
-        return Vec::new();
-    };
     let Some(sql) = workspace.active_sql_tab() else {
         return Vec::new();
     };
@@ -1937,13 +2096,41 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         .iter()
         .map(|column| Tags::of(column, None).when(fit.value_tags))
         .collect();
+    // What is selected with the cursor's cell: whole rows, or a rectangle
+    // of cells. A result's places are its rows.
+    let selected = sql.selected();
+    let whole = selected
+        .map(|selected| selected.ranged())
+        .unwrap_or_default();
+    let block = selected.and_then(|selected| selected.block(columns.len()));
+    let said = selected.and_then(|selected| {
+        let whole_rows = sql
+            .range
+            .as_ref()
+            .is_some_and(crate::selection::Range::rows);
+        let size = selected.size(columns.len())?;
+        Some(crate::selection::said(locale, size, whole_rows))
+    });
     // The grid asks for the cells in view only.
+    // A secondary click's menu: Copy, Copy as ›, Copy rows as TSV, Export
+    // selection….
+    let paint = crate::ui::Paint {
+        locale,
+        palette: *palette,
+        look: *look,
+    };
+    let menu_rows = |ui: &mut egui::Ui| crate::ui::copy_as::context_rows(ui, paint, true);
     let output = grid::show(
         &mut child,
         id,
         &grid_columns,
         rows.len(),
         sql.selection,
+        grid::Picked {
+            block,
+            said: said.as_deref(),
+            menu: Some(grid::Menu(&menu_rows)),
+        },
         keys,
         palette,
         &grid_look,
@@ -1953,7 +2140,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
             mark: crate::edit::RowMark::None,
             number: Some(row as u64 + 1),
             deleted: false,
-            ranged: false,
+            ranged: whole.contains(&row),
         },
         None,
         None,
@@ -1974,10 +2161,35 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         },
     );
     if let Some(cell) = output.clicked {
-        actions.push(Action::SelectCell {
+        let id = sql.id;
+        // With Shift held the click takes the cells up to its own into
+        // the selection.
+        actions.push(if output.shift {
+            Action::ExtendTo { tab, id, cell }
+        } else {
+            Action::SelectCell { tab, id, cell }
+        });
+    }
+    // A drag over the cells: the range runs to the one under it.
+    if let Some(cell) = output.dragged {
+        let id = sql.id;
+        actions.push(Action::ExtendTo { tab, id, cell });
+    }
+    // A secondary click outside the selection selects its cell.
+    if let Some(cell) = output.context_clicked {
+        let id = sql.id;
+        actions.push(Action::SelectCell { tab, id, cell });
+    }
+    if let Some(chosen) = output.chosen {
+        actions.push(chosen.action(tab));
+    }
+    if let Some((row, click)) = output.row_clicked {
+        let id = sql.id;
+        actions.push(Action::RowNumberClicked {
             tab,
-            id: sql.id,
-            cell,
+            id,
+            row,
+            click,
         });
     }
     // The Tab key came to the grid: the arrows are its own now.
@@ -3173,7 +3385,12 @@ mod tests {
         for look in [Look::standard(), Look::macos()] {
             let (mut harness, tab) = refused_in_a_read_only_tab(look);
             assert!(harness.has("Allow writes in this tab"), "{}", look.name);
-            assert!(card_key(&harness.app, tab).is_none(), "{}", look.name);
+            let workspace = harness.app.workspace(tab).unwrap();
+            assert!(
+                card_key(&harness.app.look, tab, workspace).is_none(),
+                "{}",
+                look.name
+            );
             harness.press(Key::Escape, Modifiers::NONE);
             harness.press(Key::W, Modifiers::NONE);
             assert_eq!(sql(&harness, tab).mode, RunMode::ReadOnly, "{}", look.name);
@@ -3200,8 +3417,9 @@ mod tests {
         }
         // The terminal look, whose button names the letter, takes it.
         let (harness, tab) = refused_in_a_read_only_tab(Look::omarchy());
+        let workspace = harness.app.workspace(tab).unwrap();
         assert!(matches!(
-            card_key(&harness.app, tab),
+            card_key(&harness.app.look, tab, workspace),
             Some((
                 crate::keymap::Command::AllowRefusedWrite,
                 Action::SetSqlMode { .. }
@@ -4463,7 +4681,11 @@ mod tests {
         run(&mut harness);
         harness.answer_sql(Ok(script_outcome(vec![result_with("email")])), None);
         let narrow = width(&mut harness, "email");
-        let fit = data_view::Fit::of(harness.app.workspace(tab).unwrap(), &harness.app);
+        let fit = data_view::Fit::of(
+            harness.app.workspace(tab).unwrap(),
+            &harness.app.settings,
+            harness.app.layout(),
+        );
         let first = sql(&harness, tab).run.loaded;
         let first = grid_id(tab, sql(&harness, tab).id, first, fit);
         assert!(crate::ui::grid::remembered(&harness.ctx, first));

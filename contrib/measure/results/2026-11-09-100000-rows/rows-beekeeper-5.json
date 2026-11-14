@@ -1,0 +1,61 @@
+{
+  "what": "memory",
+  "command": [
+    "target/competitors/beekeeper/squashfs-root/AppRun",
+    "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/bench/bench.sqlite",
+    "--ozone-platform=wayland"
+  ],
+  "path": "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/beekeeper/squashfs-root/AppRun",
+  "sha256": "ef34b780c570542a45f6fcc914207c22b5f320e0f41ae1b9494e3cb151ba4db4",
+  "fresh_profile": true,
+  "seed": "contrib/measure/profiles/beekeeper",
+  "env": [],
+  "steps": [
+    {
+      "step": "connected",
+      "pid": 2173336,
+      "rss": 343502848,
+      "pss": 214353920,
+      "private": 176611328,
+      "gpu": {
+        "vram": 12288,
+        "gtt": 2097152,
+        "cpu": 0
+      },
+      "tree": {
+        "processes": 7,
+        "rss": 1449160704,
+        "pss": 908200960,
+        "private": 763494400,
+        "gpu": {
+          "vram": 17248256,
+          "gtt": 156930048,
+          "cpu": 0
+        }
+      }
+    },
+    {
+      "step": "all 100,000 rows loaded",
+      "pid": 2173336,
+      "rss": 350232576,
+      "pss": 219788288,
+      "private": 181411840,
+      "gpu": {
+        "vram": 12288,
+        "gtt": 2097152,
+        "cpu": 0
+      },
+      "tree": {
+        "processes": 7,
+        "rss": 2066411520,
+        "pss": 1522991104,
+        "private": 1376858112,
+        "gpu": {
+          "vram": 17252352,
+          "gtt": 80318464,
+          "cpu": 0
+        }
+      }
+    }
+  ]
+}

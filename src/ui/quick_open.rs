@@ -2,11 +2,11 @@
 //! a table or view of the window's connection by name, or of every open
 //! connection (`⇥`, `tab`), and in the macOS and Windows looks runs a
 //! command or opens Settings at one of its rows (`>` first lists those
-//! alone). What it lists is [`App::quick_open_list`]'s; this draws
-//! it and reads its keys, which are its own while it is open (the window's
-//! handler does not run under a dialog). macOS: a floating panel 640 wide,
-//! 84 from the window's top, the window behind it not dimmed. Omarchy: the
-//! picker, 780 wide, an accent border on the sunken surface.
+//! alone). What it lists is [`crate::app::App::quick_open_list`]'s; this
+//! draws it and reads its keys, which are its own while it is open (the
+//! window's handler does not run under a dialog). macOS: a floating panel
+//! 640 wide, 84 from the window's top, the window behind it not dimmed.
+//! Omarchy: the picker, 780 wide, an accent border on the sunken surface.
 
 use std::collections::HashMap;
 
@@ -15,17 +15,19 @@ use egui::{Align2, Color32, CornerRadius, Rect, Sense, Stroke, StrokeKind, UiBui
 use egui::{WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::ObjectKind;
 
-use crate::app::{
-    About, App, Found, QuickCommand, QuickHeading, QuickItem, QuickList, QuickRow, StartRow,
-    TabName,
-};
+use crate::app::{QuickHeading, QuickList, QuickRow};
 use crate::env::{Environment, Platform, env_colors};
+use crate::format::display_safe;
 use crate::i18n::{Locale, gettext};
 use crate::keymap::{Command, Keymap, Layout, Scope, Written};
-use crate::model::{Action, AgentsHere, ConnTabId, Dialog, QuickCaret, QuickGroup, StartRecent};
-use crate::theme::{Icon, Look, Palette};
+use crate::model::{
+    About, Action, AgentsHere, ConnTabId, Found, QuickCaret, QuickCommand, QuickGroup, QuickItem,
+    QuickOpen, StartRecent, StartRow, TabName,
+};
+use crate::style::Icon;
+use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
-use crate::ui::format::display_safe;
+use crate::ui::Paint;
 use crate::ui::widgets::{self, ButtonSpec};
 use crate::ui::workspace::{Badge, env_badge};
 
@@ -69,10 +71,10 @@ fn rows_shown(look: &Look) -> usize {
 }
 
 /// A window quick open names: its connection, environment and database.
-struct Window {
-    name: String,
-    env: Environment,
-    database: String,
+pub struct Window {
+    pub name: String,
+    pub env: Environment,
+    pub database: String,
 }
 
 /// The keys the panel names and reads, as the keymap writes them.
@@ -84,6 +86,7 @@ struct Keys {
     commands: Written,
     number: Written,
     close: Written,
+    export: Written,
 }
 
 fn keys(keymap: &Keymap, layout: Layout) -> Keys {
@@ -96,6 +99,7 @@ fn keys(keymap: &Keymap, layout: Layout) -> Keys {
         commands: key(Command::QuickOpenCommands),
         number: key(Command::QuickOpenNumber),
         close: key(Command::QuickOpenClose),
+        export: key(Command::QuickOpenExport),
     }
 }
 
@@ -142,39 +146,54 @@ impl Skin<'_> {
     }
 }
 
-pub fn show(app: &mut App, ctx: &egui::Context) {
-    let (look, palette, locale) = (app.look, app.palette, app.locale);
-    let Some(Dialog::QuickOpen(open)) = &app.dialog else {
-        return;
-    };
+/// What quick open asks of the app, answered by its caller before the
+/// dialog is lent.
+pub struct Asked {
+    /// What it lists, and the result picked, wherever the list has moved
+    /// it: none where it is gone.
+    pub list: QuickList,
+    pub picked: Option<usize>,
+    /// The open windows, which the chip and the headings name.
+    pub windows: HashMap<ConnTabId, Window>,
+    /// What the window's Agents entry says.
+    pub agents: Option<AgentsHere>,
+    /// Whether numbers are written in threes.
+    pub grouped: bool,
+    /// What follows the `>` of the commands alone.
+    pub commands_query: Option<String>,
+}
+
+/// Draws quick open, which `open` is, and returns what it asks for.
+/// `asked` is none where the window it was opened in is gone: it then
+/// closes.
+pub fn show(
+    ctx: &egui::Context,
+    paint: Paint,
+    open: &mut QuickOpen,
+    keymap: &Keymap,
+    asked: Option<Asked>,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let here = open.tab;
     // Quick open goes with the window it was opened in.
-    if app.workspace(here).is_none() {
-        app.actions.push(Action::CloseDialog);
-        return;
-    }
-    let list = app.quick_open_list(open);
-    // The result picked, wherever the list has moved it: none where it
-    // is gone.
-    let picked = app.quick_open_picked(open, &list);
-    let layout = app.layout();
-    let keymap = app.keymap.clone();
-    let keys = keys(&keymap, layout);
-    let windows: HashMap<ConnTabId, Window> = app
-        .open_connections()
-        .map(|(tab, workspace)| {
-            let database = crate::ui::workspace::bar_info(app, tab)
-                .map(|info| info.database)
-                .unwrap_or_default();
-            let window = Window {
-                name: workspace.name.clone(),
-                env: workspace.environment,
-                database,
-            };
-            (tab, window)
-        })
-        .collect();
-    let agents = app.agents_here(here).map(|state| {
+    let Some(Asked {
+        list,
+        picked,
+        windows,
+        agents,
+        grouped,
+        commands_query,
+    }) = asked
+    else {
+        return vec![Action::CloseDialog];
+    };
+    let layout = paint.layout();
+    let keys = keys(keymap, layout);
+    let agents = agents.map(|state| {
         let said = match &state {
             AgentsHere::ServerOff => gettext(locale, "server off").into_owned(),
             AgentsHere::OffHere => gettext(locale, "off here").into_owned(),
@@ -207,7 +226,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         palette: &palette,
         locale,
         now: crate::util::now_secs(),
-        grouped: app.settings.grouped(layout),
+        grouped,
         windows: &windows,
         here,
         agents,
@@ -222,12 +241,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     // Nothing typed but spaces lists what nothing typed lists, numbers
     // and all.
     let nothing_typed = open.query.trim().is_empty();
-    // What follows the `>` of the commands alone.
-    let commands_query = app.quick_open_commands_query(open).map(str::to_owned);
-    ctx.input_mut(|input| read_keys(input, &keymap, layout, nothing_typed, &mut actions));
-    let Some(Dialog::QuickOpen(open)) = &mut app.dialog else {
-        return;
-    };
+    ctx.input_mut(|input| read_keys(input, keymap, layout, nothing_typed, &mut actions));
     let (width, top) = place(&look);
     let width = width.min(ctx.content_rect().width() - 32.0).max(200.0);
     let area = egui::Modal::default_area(panel_id()).anchor(Align2::CENTER_TOP, vec2(0.0, top));
@@ -258,6 +272,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 no_match(
                     ui,
                     (&open.query, open.everywhere, commands_query.as_deref()),
+                    open.exporting,
                     &keys,
                     &skin,
                     &mut actions,
@@ -270,12 +285,23 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 let offset = rows(ui, &list, selected, reveal, &skin, &mut actions);
                 open.scroll_offset = offset;
             }
-            footer(ui, open.everywhere, nothing_typed, &keys, &skin);
+            // ⇧⌘E's hint while a table or view is picked (spec 3b, R4).
+            let on_table = picked
+                .and_then(|at| list.items().nth(at))
+                .and_then(crate::app::picked_object)
+                .is_some();
+            let shown = Footer {
+                everywhere: open.everywhere,
+                nothing_typed,
+                on_table,
+                picking: open.exporting,
+            };
+            footer(ui, shown, &keys, &skin);
         });
     if modal.backdrop_response.clicked() {
         actions.push(Action::CloseDialog);
     }
-    app.actions.extend(actions);
+    actions
 }
 
 /// The panel's frame: the dialog's corner and shadow, its parts edge to
@@ -340,6 +366,9 @@ fn read_keys(
     }
     if on(input, Command::QuickOpenScope) {
         actions.push(Action::QuickOpenScope);
+    }
+    if on(input, Command::QuickOpenExport) {
+        actions.push(Action::QuickOpenExport);
     }
     if nothing_typed
         && let Some(index) =
@@ -443,15 +472,17 @@ fn field(
     }
     // What the field finds, and no more: tables, views and (macOS) the
     // commands. Omarchy's prompt shows no placeholder, as its board.
-    let hint = if look.terminal {
+    let hint = if open.exporting {
+        skin.say("Pick a table to export")
+    } else if look.terminal {
         skin.say("Find a table or view")
     } else {
         skin.say("Find a table, view or command")
     };
-    let placeholder = if look.terminal {
+    let placeholder = if look.terminal && !open.exporting {
         String::new()
     } else {
-        hint.clone()
+        look.label(&hint)
     };
     let mut child = ui.new_child(UiBuilder::new().max_rect(inner));
     let placeholder = Text::one(look, role, &placeholder, palette.dim).layout(child.ctx());
@@ -706,7 +737,7 @@ fn shown(item: &QuickItem, skin: &Skin<'_>) -> Shown {
             // Settings, not the setting.
             let (name, icon, detail, what) = match command {
                 QuickCommand::Run(runnable) => {
-                    let name = gettext(skin.locale, runnable.name).into_owned();
+                    let name = runnable.named(skin.locale);
                     let icon = match runnable.command {
                         Command::NewSqlTab => Icon::Code,
                         Command::SwitchDatabase => Icon::Database,
@@ -722,6 +753,11 @@ fn shown(item: &QuickItem, skin: &Skin<'_>) -> Shown {
                         crate::app::setting_path(skin.locale, skin.run_key.as_str(), *option);
                     let detail = skin.say("jumps to the setting");
                     (name, Icon::Settings, detail, "setting")
+                }
+                // An export running (spec 4, F7).
+                QuickCommand::CancelExport { .. } => {
+                    let name = crate::app::command_words(skin.locale, command);
+                    (name, Icon::X, skin.say("export running"), "command")
                 }
             };
             let mut label = format!("{name}, {}", skin.say(what));
@@ -784,6 +820,9 @@ fn about(about: &About, skin: &Skin<'_>) -> String {
         About::Tab(TabName::Query(number)) => format!("{} {number}", skin.say("Query")),
         About::Tab(TabName::Agents) => skin.say("Agents"),
         About::Tab(TabName::History) => skin.say("History"),
+        About::CurrentTable(_) => skin.say("current table"),
+        About::CurrentResult(_) => skin.say("SQL editor"),
+        About::PickNext => skin.say("pick one next"),
     }
 }
 
@@ -1073,12 +1112,13 @@ fn full_on_hover(response: &egui::Response, laid: &crate::typography::Laid, name
 }
 
 /// What the panel says when nothing matches: where it looked, and in this
-/// connection's scope a way to look in every open one. Where the commands
-/// alone are listed (`>`, `commands_query` what follows it), that no
-/// command matches.
+/// connection's scope a way to look in every open one (not while picking
+/// a table to export). Where the commands alone are listed (`>`,
+/// `commands_query` what follows it), that no command matches.
 fn no_match(
     ui: &mut egui::Ui,
     (query, everywhere, commands_query): (&str, bool, Option<&str>),
+    picking: bool,
     keys: &Keys,
     skin: &Skin<'_>,
     actions: &mut Vec<Action>,
@@ -1110,6 +1150,8 @@ fn no_match(
         .replace("{place}", &place);
     let said = look.label(&said);
     let link = gettext(locale, "Search all open connections");
+    // Export a table… picks one of this connection's: no other to search.
+    let widen = !everywhere && !picking;
     let height = if look.terminal { 52.0 } else { 96.0 };
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
     if look.terminal {
@@ -1117,7 +1159,7 @@ fn no_match(
         let x = rect.left() + 10.0;
         let text = Text::one(look, TextRole::OBody, &said, palette.secondary);
         let width = widgets::paint_label(ui, x, y, text);
-        if !everywhere {
+        if widen {
             let key = Text::one(look, TextRole::OBody, keys.scope.as_str(), palette.accent);
             let x = x + width + 24.0;
             let key_width = widgets::paint_text(ui, x, y, key);
@@ -1132,7 +1174,7 @@ fn no_match(
     let y = rect.top() + 36.0;
     laid.paint_left(ui.painter(), rect.center().x - laid.width() / 2.0, y);
     widgets::announce(ui, rect, &said);
-    if !everywhere {
+    if widen {
         let words = format!("{link} {}", keys.scope.as_str());
         let words = words.trim();
         let button = ButtonSpec::new(words).link();
@@ -1149,7 +1191,24 @@ fn no_match(
 /// editor`, `> commands`, `⇥` and the scope it switches to, `esc close` at
 /// the right, on the sunken surface. Omarchy: the same in its words, but
 /// no `>`, and `1..9 pick` only while nothing is typed.
-fn footer(ui: &mut egui::Ui, everywhere: bool, nothing_typed: bool, keys: &Keys, skin: &Skin<'_>) {
+/// What the footer's hints depend on.
+struct Footer {
+    everywhere: bool,
+    nothing_typed: bool,
+    /// The pick is a table or view: ⇧⌘E exports it.
+    on_table: bool,
+    /// Export a table…: Enter exports, and it lists this connection's
+    /// tables alone (no commands, no SQL editor, no other connection).
+    picking: bool,
+}
+
+fn footer(ui: &mut egui::Ui, shown: Footer, keys: &Keys, skin: &Skin<'_>) {
+    let Footer {
+        everywhere,
+        nothing_typed,
+        on_table,
+        picking,
+    } = shown;
     let (look, palette, locale) = (skin.look, skin.palette, skin.locale);
     let height = if look.terminal { 30.0 } else { 34.0 };
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
@@ -1176,18 +1235,29 @@ fn footer(ui: &mut egui::Ui, everywhere: bool, nothing_typed: bool, keys: &Keys,
         word("pick"),
         word("close"),
     );
+    let export_words = word("export");
+    let open = if picking { &export_words } else { &open };
     let mut hints: Vec<widgets::Hint<'_>> =
-        vec![(&keys.moves, &moves, true), (&keys.open, &open, true)];
-    if !keys.editor.as_str().is_empty() {
+        vec![(&keys.moves, &moves, true), (&keys.open, open, true)];
+    if !keys.editor.as_str().is_empty() && !picking {
         hints.push((&keys.editor, &editor, true));
     }
-    if !keys.commands.as_str().is_empty() {
+    let export = match look.terminal {
+        true => word("export the picked table"),
+        false => word("export"),
+    };
+    if on_table && !picking && !keys.export.as_str().is_empty() {
+        hints.push((&keys.export, &export, true));
+    }
+    if !keys.commands.as_str().is_empty() && !picking {
         hints.push((&keys.commands, &commands, true));
     }
     if look.terminal && nothing_typed && !keys.number.as_str().is_empty() {
         hints.push((&keys.number, &pick, true));
     }
-    hints.push((&keys.scope, &scope, true));
+    if !picking {
+        hints.push((&keys.scope, &scope, true));
+    }
     let pad = if look.terminal { 10.0 } else { 14.0 };
     let gap = if look.terminal { 14.0 } else { 12.0 };
     let y = rect.center().y;

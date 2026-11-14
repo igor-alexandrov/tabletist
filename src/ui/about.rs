@@ -3,11 +3,10 @@
 
 use egui::{Sense, WidgetInfo, WidgetType, pos2, vec2};
 
-use crate::app::App;
 use crate::i18n::gettext;
-use crate::model::{Action, Dialog};
+use crate::model::Action;
 use crate::typography::Text;
-use crate::ui::widgets;
+use crate::ui::{Paint, widgets};
 
 /// The art every icon size is made from.
 const ICON: &[u8] = include_bytes!("../../assets/icon/tabletist.svg");
@@ -19,13 +18,14 @@ const COPYRIGHT: &str = "© 2026 Igor Alexandrov";
 
 /// The fonts this build bundles, each with its licence as the font's
 /// authors give it: the SIL Open Font License has its notice go with the
-/// font. Windows draws in fastframe's fonts, and bundles none of its own.
+/// font. Linux bundles macOS's faces for its classic look. Windows draws in
+/// fastframe's fonts, and bundles none of its own.
 const FONT_NOTICES: &[&str] = &[
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     include_str!("../../assets/fonts/IBMPlex-OFL.txt"),
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     include_str!("../../assets/fonts/JetBrainsMono-OFL.txt"),
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     include_str!("../../assets/fonts/NotoSansSymbols2-OFL.txt"),
 ];
 
@@ -53,16 +53,19 @@ pub fn repository() -> &'static str {
     url.strip_prefix("https://").unwrap_or(url)
 }
 
-pub fn show(app: &mut App, ctx: &egui::Context) {
-    if !matches!(app.dialog, Some(Dialog::About)) {
-        // The next About starts with the notices folded, whatever took
-        // its place.
-        ctx.data_mut(|data| data.remove::<bool>(notices_id()));
-        return;
-    }
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
+/// Folds the fonts' notices while About is not open: the next About starts
+/// with them folded, whatever took its place.
+pub fn fold(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.remove::<bool>(notices_id()));
+}
+
+/// Draws the dialog over the window, and returns what it asks for.
+pub fn show(ctx: &egui::Context, paint: Paint) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let mut actions = Vec::new();
     let modal = widgets::modal(egui::Id::new("about"), &look, &palette).show(ctx, |ui| {
         ui.set_width(380.0);
@@ -128,7 +131,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     {
         actions.push(Action::CloseDialog);
     }
-    app.actions.extend(actions);
+    actions
 }
 
 /// The link that shows the bundled fonts' licences, and under it, once it
@@ -186,6 +189,7 @@ fn centered(ui: &mut egui::Ui, mut text: Text) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Dialog;
     use crate::testing::Harness;
     use egui::{Key, Modifiers};
 
@@ -270,8 +274,11 @@ mod tests {
         let shown = |harness: &Harness, words: &str| {
             harness.painted.iter().any(|(text, _)| text.contains(words))
         };
-        // This build's: JetBrains Mono on Linux, with its notice whole.
+        // This build's: JetBrains Mono, with its notice whole, and the
+        // faces of macOS's look, which Linux draws as its classic look.
         assert!(shown(&harness, "The JetBrains Mono Project Authors"));
+        assert!(shown(&harness, "IBM Corp."));
+        assert!(shown(&harness, "The Noto Project Authors"));
         assert!(shown(&harness, "SIL OPEN FONT LICENSE Version 1.1"));
         // A second press folds them, and so does a close.
         harness.click("Font licenses");

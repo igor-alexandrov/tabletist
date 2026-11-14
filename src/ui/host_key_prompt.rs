@@ -1,18 +1,17 @@
 //! Asks whether to trust an SSH host seen for the first time.
 
-use crate::app::App;
 use crate::i18n::gettext;
-use crate::model::{Action, Dialog};
+use crate::model::{Action, HostKeyPrompt};
 use crate::typography::Text;
-use crate::ui::widgets;
+use crate::ui::{Paint, widgets};
 
-pub fn show(app: &mut App, ctx: &egui::Context) {
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
-    let Some(Dialog::HostKey(prompt)) = &app.dialog else {
-        return;
-    };
+/// Draws the prompt over the window, and returns what it asks for.
+pub fn show(ctx: &egui::Context, paint: Paint, prompt: &HostKeyPrompt) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let mut actions = Vec::new();
     let modal = crate::ui::widgets::modal(egui::Id::new("host-key-prompt"), &look, &palette);
     let modal = modal.show(ctx, |ui| {
@@ -73,5 +72,5 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     {
         actions.push(Action::CancelHostKey);
     }
-    app.actions.extend(actions);
+    actions
 }

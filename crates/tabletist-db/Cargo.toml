@@ -1,7 +1,7 @@
 [package]
 name = "tabletist-db"
 version = "0.1.0"
-description = "Access to PostgreSQL, MySQL and SQLite for Tabletist"
+description = "Access to PostgreSQL, MySQL, SQLite and BigQuery for Tabletist"
 edition.workspace = true
 rust-version.workspace = true
 publish = false
@@ -14,13 +14,14 @@ workspace = true
 thiserror = "2"
 # Connection specs were saved in connections.json, which is still read.
 serde = { version = "1", features = ["derive"] }
-# Adapters are async; SQLite's blocking calls run on spawn_blocking.
-tokio = { version = "1", features = ["rt", "sync", "net", "io-util"] }
+# Adapters are async; SQLite's blocking calls run on spawn_blocking. An SSH
+# tunnel's ProxyCommand or ProxyJump runs as a child process.
+tokio = { version = "1", features = ["rt", "sync", "net", "io-util", "time", "process"] }
 # SSH tunnels, on ring (no aws-lc to build).
 russh = { version = "0.63", default-features = false, features = ["ring", "rsa", "flate2"] }
 # SQLite, compiled in so every platform gets the same, recent version. hooks
 # gives the progress handler that stops a SQL editor script.
-rusqlite = { version = "0.37", features = ["bundled", "hooks"] }
+rusqlite = { version = "0.41", features = ["bundled", "hooks"] }
 # A result column's name and declared type, and the names SQLite asks its
 # authorizer about, as bytes: rusqlite panics on ones that are not UTF-8, and
 # reading them past it needs unsafe code, which this crate forbids.
@@ -75,6 +76,14 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 # agent's statement would scan (`agent`'s hidden tables). Already in the
 # tree through the app and mysql_async.
 serde_json = "1"
+
+# BigQuery over its REST API (there is no wire protocol), with rustls on
+# ring like the other two network drivers. No cloud-storage load jobs.
+gcp-bigquery-client = { version = "0.28", default-features = false, features = ["rust-tls", "ring"] }
+# BigQuery's BYTES cells are base64 in JSON, and its TIMESTAMP cells
+# seconds since the epoch (both already in the tree).
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["std", "alloc"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }

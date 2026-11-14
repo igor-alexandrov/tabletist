@@ -30,9 +30,12 @@ Omarchy look).
 
 {% include shot.html file="macos-connections" alt="The connection picker with five saved connections, each tagged with its environment and when it was last used" %}
 
-1. Give it a **Name** and pick its **Type**: SQLite, PostgreSQL or MySQL.
+1. Give it a **Name** and pick its **Type**: SQLite, PostgreSQL, MySQL or
+   BigQuery.
 2. For SQLite, choose the file. For a server, fill in **Host**, **Port**,
-   **Database** and **User**.
+   **Database** and **User**. For BigQuery, fill in the **Project** and
+   the service-account **Key file**, or leave the key empty to use Google
+   Cloud's default credentials.
 3. Pick an **Environment**. It sets the connection's color, and production
    opens read-only unless you turn that off.
 4. Press **Test** to check it, then **Save & Connect**.

@@ -55,7 +55,7 @@ fn closing_the_shortcuts_gives_the_keyboard_back_to_the_tree() {
             reach(&mut harness, "Objects");
             super::tests::type_key(&mut harness, Key::Questionmark, "?");
             assert!(
-                matches!(harness.app.dialog, Some(Dialog::Help)),
+                matches!(harness.app.dialog, Some(Dialog::Help(_))),
                 "{}",
                 look.name
             );

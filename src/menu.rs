@@ -45,6 +45,9 @@ pub enum Item {
     Command(Command),
     About,
     QuickOpen,
+    /// File › Import…, held for the feature after Export: always greyed,
+    /// with no key.
+    Import,
     /// Windows: the window's close, which asks about pending changes.
     Exit,
     Edit(EditItem),
@@ -94,6 +97,10 @@ pub fn bar(platform: Platform) -> Vec<Menu> {
         Run(C::NewConnection),
         Run(C::NewSqlTab),
         Run(C::Connections),
+        Sep,
+        Run(C::Export),
+        Run(C::ExportTable),
+        Item::Import,
         Sep,
         Run(C::EditConnection),
         Run(C::CloseConnection),
@@ -204,6 +211,8 @@ pub fn title(item: Item, on: bool) -> &'static str {
             C::EditConnection => "Edit Connection",
             C::CloseConnection => "Close Connection",
             C::CloseTab => "Close Tab",
+            C::Export => "Export…",
+            C::ExportTable => "Export a Table…",
             C::Settings => "Settings…",
             C::CheckForUpdates => "Check for Updates…",
             C::ToggleSidebar if on => "Hide Sidebar",
@@ -213,9 +222,9 @@ pub fn title(item: Item, on: bool) -> &'static str {
             C::FilterBar => "Filter Rows",
             C::History => "History",
             C::ShowAgents => "Agents",
-            C::LargerText => "Larger Text",
-            C::SmallerText => "Smaller Text",
-            C::DefaultTextSize => "Default Text Size",
+            C::LargerText => "Larger",
+            C::SmallerText => "Smaller",
+            C::DefaultTextSize => "Actual Size",
             C::RunAll => "Run All",
             C::CancelQuery => "Cancel Query",
             C::Format => "Format SQL",
@@ -236,6 +245,7 @@ pub fn title(item: Item, on: bool) -> &'static str {
         },
         Item::About => "About Tabletist",
         Item::QuickOpen => "Quick Open",
+        Item::Import => "Import…",
         Item::Exit => "Exit",
         Item::Edit(edit) => match edit {
             EditItem::Undo => "Undo",
@@ -266,7 +276,7 @@ pub fn key_of(keymap: &Keymap, layout: Layout, item: Item) -> Option<MenuKey> {
         Item::Command(command) => keymap.menu_key(command, layout),
         Item::QuickOpen => keymap.menu_key(Command::FindObject, layout),
         Item::Edit(edit) => keymap.edit_key(edit, layout),
-        Item::About | Item::Exit | Item::Native(_) | Item::Separator => None,
+        Item::About | Item::Import | Item::Exit | Item::Native(_) | Item::Separator => None,
     }
 }
 
@@ -282,6 +292,7 @@ pub fn window_command(item: Item) -> Option<egui::ViewportCommand> {
         | Item::Command(_)
         | Item::About
         | Item::QuickOpen
+        | Item::Import
         | Item::Native(_)
         | Item::Separator => None,
     }

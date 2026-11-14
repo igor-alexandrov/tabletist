@@ -7,15 +7,16 @@ use egui::{
     pos2, vec2,
 };
 
-use crate::app::App;
+use crate::format;
 use crate::i18n::{Locale, gettext};
-use crate::keymap::{Command, Scope, Written};
-use crate::model::{Action, ConnTabId, NoWrites, RunMode, SqlTab, TabId};
+use crate::keymap::{Command, Keymap, Scope, Written};
+use crate::model::{Action, ConnTabId, NoWrites, RunMode, SqlTab, TabId, Workspace};
 use crate::settings::Settings;
-use crate::theme::{Icon, Look, Palette};
+use crate::style::Icon;
+use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::Paint;
 use crate::ui::focus;
-use crate::ui::format;
 use crate::ui::menu;
 use crate::ui::widgets::{self, ButtonSpec};
 
@@ -55,18 +56,29 @@ fn split_at(height: f32, room: f32) -> Option<f32> {
     (room > 0.0).then(|| height.clamp(least, room - least) / room)
 }
 
-pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
-    let (look, palette, locale) = (app.look, app.palette, app.locale);
-    toolbar(app, ui, tab, id);
+/// Draws the SQL editor tab `id` of `workspace`, the connection tab
+/// `tab`, and returns what it asks for, in the order its toolbar, editor,
+/// results and splitter ask. The editor edits the tab's text in place.
+pub fn show(
+    ui: &mut Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    id: TabId,
+    workspace: &mut Workspace,
+    settings: &Settings,
+    keymap: &Keymap,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let mut actions = toolbar(ui, paint, tab, id, workspace, settings);
     if !look.terminal {
-        footer(app, ui, tab, id);
+        footer(ui, paint, tab, id, workspace, settings);
     }
-    let Some(split) = app
-        .workspace(tab)
-        .and_then(|workspace| workspace.sql_tab(id))
-        .map(|sql| sql.split)
-    else {
-        return;
+    let Some(split) = workspace.sql_tab(id).map(|sql| sql.split) else {
+        return actions;
     };
     // What the toolbar and the footer leave: the editor takes its share,
     // the band follows it, and the results take the rest.
@@ -76,17 +88,36 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     let editor = Rect::from_min_size(room.min, vec2(room.width(), editor_height(split, shared)));
     let divider = Rect::from_min_size(editor.left_bottom(), vec2(room.width(), band));
     let results = Rect::from_min_max(divider.left_bottom(), room.max);
-    let mut pane = |rect: Rect, salt: &str, add: fn(&mut App, &mut Ui, ConnTabId, TabId)| {
+    let mut pane = |rect: Rect, salt: &str| {
         // An id of its own: one counted from the parent's widgets would
         // change when the row panel appears beside the panes, and the
         // widgets in them would lose the keyboard focus with it.
         let pane_id = Id::new(("sql-pane", salt, tab.0, id.0));
         let mut child = ui.new_child(egui::UiBuilder::new().id(pane_id).max_rect(rect));
         child.set_clip_rect(rect.intersect(ui.clip_rect()));
-        add(app, &mut child, tab, id);
+        child
     };
-    pane(editor, "sql-text", super::sql_text::show);
-    pane(results, "sql-results", super::sql_results::show);
+    let dialect = workspace.driver.dialect();
+    let tree_has_arrows = workspace.pane == crate::model::Pane::Tree;
+    if let Some(sql) = workspace.sql_tab_mut(id) {
+        let mut child = pane(editor, "sql-text");
+        let asked = super::sql_text::show(
+            &mut child,
+            paint,
+            tab,
+            sql,
+            settings,
+            dialect,
+            tree_has_arrows,
+        );
+        actions.extend(asked);
+    }
+    if let Some(sql) = workspace.sql_tab(id) {
+        let mut child = pane(results, "sql-results");
+        let asked =
+            super::sql_results::show(&mut child, paint, tab, workspace, sql, settings, keymap);
+        actions.extend(asked);
+    }
     // After the panes, so the band takes the pointer where they meet it.
     let place = Splitter {
         band: divider,
@@ -94,12 +125,13 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         shared,
     };
     if let Some(split) = splitter(ui, &place, id, locale, &look, &palette) {
-        app.actions.push(Action::SetSqlSplit {
+        actions.push(Action::SetSqlSplit {
             tab,
             sql_tab: id,
             split,
         });
     }
+    actions
 }
 
 /// Where the divider under the editor sits.
@@ -312,13 +344,21 @@ struct Bar<'a> {
 
 /// Run and Run all, the transaction the editor's runs are in, and the
 /// limit and timeout they run with.
-fn toolbar(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
-    let (look, palette, locale) = (app.look, app.palette, app.locale);
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
+fn toolbar(
+    ui: &mut Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    id: TabId,
+    workspace: &Workspace,
+    settings: &Settings,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let Some(sql) = workspace.sql_tab(id) else {
-        return;
+        return Vec::new();
     };
     let (mode, writes) = (workspace.run_mode(sql), workspace.sql_writes());
     let title = look.label(&format!("{} {}", gettext(locale, "Query"), sql.number));
@@ -350,7 +390,7 @@ fn toolbar(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         runs: if sql.selected.is_some() {
             Runs::Selection
         } else {
-            match app.settings.run_scope {
+            match settings.run_scope {
                 crate::settings::RunScope::Statement => Runs::Statement,
                 crate::settings::RunScope::All => Runs::All,
             }
@@ -383,7 +423,7 @@ fn toolbar(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
                 mac_toolbar(ui, rect, &bar, &mut actions);
             }
         });
-    app.actions.extend(actions);
+    actions
 }
 
 /// How the two menus draw: their labels short or in full, and (macOS)
@@ -1151,15 +1191,20 @@ fn run_summary(sql: &SqlTab, locale: Locale) -> Option<String> {
     }
 }
 
-/// What became of the last run's transaction: "rolled back" for every
-/// read-only run, and for a run sent to write how it ended. Where the
-/// database could not undo everything, that is what is said, whatever the
-/// end; and a commit that failed after the database had committed part by
-/// itself reads as what it left, partly committed.
+/// What became of the last run's transaction: "rolled back" for a run of
+/// a Read-only editor, "nothing to commit" for a run of reads in
+/// Read-write (sent read-only all the same), and for a run sent to write
+/// how it ended. Where the database could not undo everything, that is
+/// what is said, whatever the end; and a commit that failed after the
+/// database had committed part by itself reads as what it left, partly
+/// committed.
 fn end_words(run: &crate::model::SqlRun) -> &'static str {
     use tabletist_db::ScriptEnd;
     if run.mode == tabletist_db::ScriptMode::ReadOnly {
-        return "rolled back";
+        return match run.chosen {
+            RunMode::ReadOnly => "rolled back",
+            RunMode::ReadWrite => "nothing to commit",
+        };
     }
     if run.outcome.rollback_warning.is_some() {
         return "not fully rolled back";
@@ -1172,28 +1217,37 @@ fn end_words(run: &crate::model::SqlRun) -> &'static str {
     }
 }
 
-/// "Read-only transaction · rolled back", "Read-write transaction ·
-/// committed": the footer's note of the last run.
+/// "Read-only · rolled back", "Read-write · committed", "Read-write ·
+/// nothing to commit": the footer's note of the last run, by the mode the
+/// switch showed when it was sent.
 fn end_note(sql: &SqlTab, locale: Locale) -> Option<String> {
     let run = sql.last_run().filter(|_| ran(sql))?;
-    let transaction = match run.mode {
-        tabletist_db::ScriptMode::ReadOnly => "Read-only transaction",
-        tabletist_db::ScriptMode::Write => "Read-write transaction",
+    let chosen = match run.chosen {
+        RunMode::ReadOnly => "Read-only",
+        RunMode::ReadWrite => "Read-write",
     };
     Some(format!(
         "{} · {}",
-        gettext(locale, transaction),
+        gettext(locale, chosen),
         gettext(locale, end_words(run))
     ))
 }
 
 /// The macOS and standard footer: the result's rows and time and what
 /// became of the transaction; at the right the cursor and the server.
-fn footer(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
-    let (look, palette, locale) = (app.look, app.palette, app.locale);
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
+fn footer(
+    ui: &mut Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    id: TabId,
+    workspace: &Workspace,
+    settings: &Settings,
+) {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let Some(sql) = workspace.sql_tab(id) else {
         return;
     };
@@ -1207,7 +1261,7 @@ fn footer(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     let note = end_note(sql, locale);
     let version = workspace.server_version.value.clone();
     // Vim's mode leads, where the editor has the keyboard.
-    let mode = vim_mode(app, ui.ctx(), tab)
+    let mode = vim_mode(ui.ctx(), &look, tab, workspace, settings)
         .and_then(crate::vim::Mode::label)
         .map(|label| gettext(locale, label).into_owned());
     egui::Panel::bottom(Id::new(("sql-footer", tab.0, id.0)))
@@ -1272,21 +1326,27 @@ fn footer(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         });
 }
 
-/// Vim's mode in the SQL editor in front, while it has the keyboard and
-/// the keybindings are vim's.
-pub fn vim_mode(app: &App, ctx: &egui::Context, tab: ConnTabId) -> Option<crate::vim::Mode> {
-    let vim = app.settings.editor_keys_in(app.look.terminal) == crate::settings::EditorKeys::Vim;
-    let sql = app.workspace(tab)?.active_sql_tab()?;
+/// Vim's mode in the SQL editor in front of `workspace`, the connection
+/// tab `tab`, while it has the keyboard and the keybindings are vim's.
+pub fn vim_mode(
+    ctx: &egui::Context,
+    look: &Look,
+    tab: ConnTabId,
+    workspace: &Workspace,
+    settings: &Settings,
+) -> Option<crate::vim::Mode> {
+    let vim = settings.editor_keys_in(look.terminal) == crate::settings::EditorKeys::Vim;
+    let sql = workspace.active_sql_tab()?;
     let editor = super::sql_text::editor_id(tab, sql.id);
     (vim && ctx.memory(|memory| memory.has_focus(editor))).then_some(sql.vim.mode)
 }
 
 /// The right end of the terminal's status line on an editor: "ln 12:21 ·
 /// 5 rows · 14 ms · rolled back", or after a run sent to write "ln 3:1 ·
-/// 12 rows affected · 14 ms · committed".
-pub fn status_summary(app: &App, tab: ConnTabId) -> Option<String> {
-    let locale = app.locale;
-    let sql = app.workspace(tab)?.active_sql_tab()?;
+/// 12 rows affected · 14 ms · committed". `None` where no editor is in
+/// front of `workspace`.
+pub fn status_summary(workspace: &Workspace, locale: Locale) -> Option<String> {
+    let sql = workspace.active_sql_tab()?;
     let (line, column) = sql.line_col();
     let mut parts = vec![format!("{} {line}:{column}", gettext(locale, "ln"))];
     parts.extend(run_summary(sql, locale));
@@ -1713,7 +1773,7 @@ mod tests {
                 set_mode(&mut harness, tab, id, RunMode::ReadWrite);
                 harness.press(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT);
                 // Nothing is said of a run that is still going.
-                assert!(!harness.has("Read-write transaction · committed"));
+                assert!(!harness.has("Read-write · committed"));
                 let mut outcome = write_outcome(
                     vec![done_outcome(None), done_outcome(Some(12))],
                     end.clone(),
@@ -1723,7 +1783,9 @@ mod tests {
                 let context = format!("{words} in {}", look.name);
                 if look.terminal {
                     // The terminal's status line, which has no footer.
-                    let status = status_summary(&harness.app, tab).expect("an editor shows");
+                    let workspace = harness.app.workspace(tab).unwrap();
+                    let status =
+                        status_summary(workspace, harness.app.locale).expect("an editor shows");
                     let (_, said) = status.split_once(" · ").expect("after the cursor");
                     assert_eq!(
                         said,
@@ -1732,23 +1794,52 @@ mod tests {
                     );
                 } else {
                     assert!(harness.has("12 rows affected · 14 ms"), "{context}");
-                    let note = format!("Read-write transaction · {words}");
+                    let note = format!("Read-write · {words}");
                     assert!(harness.has(&note), "{note} in {}", look.name);
-                    assert!(!harness.has("Read-only transaction · rolled back"));
+                    assert!(!harness.has("Read-only · rolled back"));
                 }
             }
         }
     }
 
     #[test]
-    fn a_run_of_reads_in_a_read_write_tab_is_said_to_be_read_only() {
+    fn a_run_of_reads_in_a_read_write_tab_has_nothing_to_commit() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editor(look, "SELECT 1");
+            set_mode(&mut harness, tab, id, RunMode::ReadWrite);
+            harness.press(Key::Enter, Modifiers::COMMAND);
+            // Sent read-only all the same.
+            let sql = harness.app.workspace(tab).unwrap().sql_tab(id).unwrap();
+            assert!(!sql.is_writing(), "{}", look.name);
+            let rows = crate::testing::script_outcome(vec![crate::testing::rows_outcome(3)]);
+            harness.answer_sql(Ok(rows), None);
+            let said = |harness: &mut Harness| {
+                if look.terminal {
+                    let workspace = harness.app.workspace(tab).unwrap();
+                    let status = status_summary(workspace, harness.app.locale);
+                    status
+                        .expect("an editor shows")
+                        .ends_with("3 rows · 14 ms · nothing to commit")
+                } else {
+                    harness.has("3 rows · 14 ms") && harness.has("Read-write · nothing to commit")
+                }
+            };
+            assert!(said(&mut harness), "{}", look.name);
+            assert!(!harness.has("Read-only · rolled back"), "{}", look.name);
+            // The note is the run's: switching the mode afterwards does
+            // not rewrite it.
+            set_mode(&mut harness, tab, id, RunMode::ReadOnly);
+            harness.settle();
+            assert!(said(&mut harness), "{}", look.name);
+        }
+        // In a Read-only tab the same run is rolled back.
         let (mut harness, tab, id) = editor(Look::standard(), "SELECT 1");
-        set_mode(&mut harness, tab, id, RunMode::ReadWrite);
+        set_mode(&mut harness, tab, id, RunMode::ReadOnly);
         harness.press(Key::Enter, Modifiers::COMMAND);
         let rows = crate::testing::script_outcome(vec![crate::testing::rows_outcome(3)]);
         harness.answer_sql(Ok(rows), None);
-        assert!(harness.has("3 rows · 14 ms"));
-        assert!(harness.has("Read-only transaction · rolled back"));
+        assert!(harness.has("Read-only · rolled back"));
+        assert!(!harness.has("Read-write · nothing to commit"));
         // A statement that counted rows in a read-only run is no change
         // that stayed: the footer does not count it.
         let (mut harness, tab, id) = editor(Look::standard(), "UPDATE notes SET n = 1");
@@ -1757,7 +1848,7 @@ mod tests {
         let counted = crate::testing::script_outcome(vec![done_outcome(Some(12))]);
         harness.answer_sql(Ok(counted), None);
         assert!(!harness.has("12 rows affected · 14 ms"));
-        assert!(harness.has("Read-only transaction · rolled back"));
+        assert!(harness.has("Read-only · rolled back"));
     }
 
     #[test]

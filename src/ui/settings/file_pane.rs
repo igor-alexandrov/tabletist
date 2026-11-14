@@ -9,9 +9,9 @@ use std::path::Path;
 
 use egui::{Color32, CornerRadius, Rangef, Rect, Sense, Ui, pos2, vec2};
 
-use crate::app::App;
 use crate::i18n::gettext;
-use crate::settings::OptionId;
+use crate::keymap::Bind;
+use crate::settings::{OptionId, SettingsFile};
 use crate::theme::Palette;
 use crate::typography::{Text, TextRole};
 use crate::ui::widgets;
@@ -236,13 +236,22 @@ pub(super) fn keys_lines(file: &crate::settings::SettingsFile) -> Vec<usize> {
     lines
 }
 
-/// The settings file beside its options, in `rect`: where it is and whether
-/// it is watched, its text (or the part of it `shown` says) with the line
-/// of the cursor's option or row marked, and what its colours say.
-pub(super) fn show(ui: &mut Ui, rect: Rect, app: &App, shown: Shown, skin: &Skin) {
+/// The settings file beside its options, in `rect`: where it is (`path`,
+/// as the window writes it) and whether it is watched, its text (or the
+/// part of it `shown` says) with the line of the cursor's option or row
+/// marked, and what its colours say. `binds` are the keys the settings
+/// bind, which the lines of the file's keys' tables are of.
+pub(super) fn show(
+    ui: &mut Ui,
+    rect: Rect,
+    file: &SettingsFile,
+    path: &str,
+    binds: &[Bind],
+    shown: Shown,
+    skin: &Skin,
+) {
     let Skin { look, palette, .. } = *skin;
     let role = widgets::code(look);
-    let file = &app.settings_file;
     ui.painter()
         .rect_filled(rect, CornerRadius::ZERO, palette.panel);
     widgets::vline(ui, rect.left() + 0.5, rect.y_range(), palette.outline);
@@ -258,9 +267,8 @@ pub(super) fn show(ui: &mut Ui, rect: Rect, app: &App, shown: Shown, skin: &Skin
         let live = Text::one(look, role, &skin.say("live"), palette.dim);
         path_right -= widgets::paint_text_right(ui, right, y, live) + 12.0;
     }
-    let path = super::path_shown(app);
     // The pane's heading: strong, as a heading over a rule is in this look.
-    let path = Text::one(look, TextRole::OGroup, &path, palette.text).layout(ui.ctx());
+    let path = Text::one(look, TextRole::OGroup, path, palette.text).layout(ui.ctx());
     let clip = Rect::from_min_max(pos2(left, rect.top()), pos2(path_right.max(left), rule));
     let clipped = ui.painter().with_clip_rect(clip);
     // A path longer than the header keeps its end: the file's name is there.
@@ -313,11 +321,9 @@ pub(super) fn show(ui: &mut Ui, rect: Rect, app: &App, shown: Shown, skin: &Skin
                 file.key_lines
                     .iter()
                     .filter(|(line, _)| match line {
-                        crate::keymap::Line::Bind(index) => {
-                            app.settings.keys.binds.get(*index).is_some_and(|bind| {
-                                bind.scope == row.scope && bind.command == row.command
-                            })
-                        }
+                        crate::keymap::Line::Bind(index) => binds.get(*index).is_some_and(|bind| {
+                            bind.scope == row.scope && bind.command == row.command
+                        }),
                         crate::keymap::Line::Unbind(_) => false,
                     })
                     .map(|(_, at)| *at)

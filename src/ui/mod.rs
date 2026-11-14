@@ -1,5 +1,7 @@
-//! The interface. Views read `App` and push `Action`s; they never change
-//! state directly.
+//! The interface. Views read the state they show and return the `Action`s
+//! they ask for; they never change state directly. Some still take `App`
+//! and push onto `app.actions`, until they are narrowed to `Paint` and
+//! their own state (`password_prompt`, `filter_bar`).
 
 pub mod about;
 pub mod agent_access;
@@ -18,6 +20,7 @@ mod appearance_settings_tests;
 pub mod calendar;
 #[cfg(test)]
 mod calendar_tests;
+pub mod cancel_export;
 pub mod cell_editor;
 #[cfg(test)]
 mod comment_tests;
@@ -25,6 +28,9 @@ mod comment_tests;
 mod complete_tests;
 pub mod conflict_prompt;
 pub mod connect_dialog;
+pub mod copy_as;
+#[cfg(test)]
+mod copy_as_tests;
 pub mod data_view;
 pub mod date_line;
 #[cfg(test)]
@@ -53,15 +59,28 @@ mod env_tests;
 pub mod every_row_prompt;
 #[cfg(test)]
 mod every_row_tests;
+pub mod export;
+#[cfg(test)]
+mod export_path_tests;
+#[cfg(test)]
+mod export_result_tests;
+#[cfg(test)]
+mod export_several_tests;
+#[cfg(test)]
+mod export_tests;
+pub mod export_toast;
+#[cfg(test)]
+mod export_ways_tests;
 pub mod filter_bar;
 pub mod focus;
-pub mod format;
 #[cfg(test)]
 mod format_settings_tests;
 pub mod grid;
 #[cfg(test)]
 mod grid_keys_tests;
 pub mod help;
+#[cfg(test)]
+mod help_tests;
 pub mod history;
 #[cfg(test)]
 mod history_tests;
@@ -75,14 +94,20 @@ pub mod json_view;
 mod key_picker;
 #[cfg(test)]
 mod key_picker_tests;
+pub(crate) mod key_search;
 #[cfg(test)]
 mod keyboard_tests;
 pub mod keys;
 pub mod label_chooser;
 #[cfg(test)]
 mod label_tests;
+#[cfg(test)]
+mod look_switch_tests;
 pub mod menu;
 pub mod object_tabs;
+pub mod pane_hints;
+#[cfg(test)]
+mod pane_hints_tests;
 #[cfg(test)]
 mod pane_keys_tests;
 pub mod password_prompt;
@@ -96,6 +121,10 @@ mod quick_open_tests;
 pub mod review;
 pub mod row_form;
 pub mod row_panel;
+#[cfg(test)]
+mod scale_layout_tests;
+#[cfg(test)]
+mod selection_tests;
 pub mod settings;
 #[cfg(test)]
 mod settings_access_tests;
@@ -116,6 +145,10 @@ mod text_settings_tests;
 mod theme_settings_tests;
 pub mod toast;
 #[cfg(test)]
+mod tree_groups_tests;
+#[cfg(test)]
+mod tree_reload_tests;
+#[cfg(test)]
 mod typing_settings_tests;
 #[cfg(test)]
 mod update_settings_tests;
@@ -131,9 +164,57 @@ mod zone_tests;
 use egui::Frame;
 
 use crate::app::App;
-use crate::model::{Action, ConnTabContent};
+use crate::model::{Action, ConnTabContent, Dialog};
+
+/// What every view draws with: the language of its words, the colours and
+/// the platform's look. A view takes it, and the state it shows, instead
+/// of the whole `App`.
+#[derive(Clone, Copy)]
+pub struct Paint {
+    pub locale: crate::i18n::Locale,
+    pub palette: crate::theme::Palette,
+    pub look: crate::theme::Look,
+}
+
+impl Paint {
+    pub fn of(app: &App) -> Self {
+        Self {
+            locale: app.locale,
+            palette: app.palette,
+            look: app.look,
+        }
+    }
+
+    /// The keyboard layout the look writes keys in, as `App::layout` has it.
+    pub fn layout(&self) -> crate::keymap::Layout {
+        crate::keymap::Layout::of(&self.look)
+    }
+}
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
+    // What the app's last actions copied and said: the clipboard and the
+    // toast are the frame's.
+    if let Some(text) = app.to_clipboard.take() {
+        ui.ctx().copy_text(text);
+    }
+    if let Some(said) = app.said.take() {
+        // Copy as over the clipboard's limit: its toast offers the file.
+        match app.offer.take() {
+            Some(offer) => toast::offer(ui.ctx(), &said, offer),
+            None => toast::say(ui.ctx(), &said),
+        }
+    }
+    // The Copy as menu's keys, before any view reads them.
+    if let Some(Dialog::CopyAs(open)) = &app.dialog {
+        let asked = copy_as::keys(ui.ctx(), Paint::of(app), open);
+        app.actions.extend(asked);
+    }
+    // And the `:export cancel` picker's.
+    if let Some(Dialog::CancelExport(picker)) = &app.dialog {
+        let rows = app.cancel_rows(picker);
+        let asked = cancel_export::keys(ui.ctx(), Paint::of(app), picker, &rows);
+        app.actions.extend(asked);
+    }
     let fill = app.palette.window;
     egui::CentralPanel::default()
         .frame(Frame::new().fill(fill))
@@ -145,47 +226,194 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 workspace::show(app, ui, tab);
             }
         });
-    connect_dialog::show(app, &ui.ctx().clone());
-    password_prompt::show(app, &ui.ctx().clone());
-    host_key_prompt::show(app, &ui.ctx().clone());
-    quick_open::show(app, &ui.ctx().clone());
-    help::show(app, &ui.ctx().clone());
-    about::show(app, &ui.ctx().clone());
+    let paint = Paint::of(app);
+    // What an open window of the connection has loaded, asked only for a
+    // form that lists names: what it costs is spent on them.
+    let loaded = match &app.dialog {
+        Some(Dialog::Connection(form)) if connect_dialog::lists_names(form) => form
+            .editing
+            .as_ref()
+            .and_then(|conn| app.loaded_tables(conn)),
+        _ => None,
+    };
+    if let Some(Dialog::Connection(form)) = &mut app.dialog {
+        let asked = connect_dialog::show(&ui.ctx().clone(), paint, form, &app.keymap, loaded);
+        app.actions.extend(asked);
+    } else {
+        connect_dialog::fold(ui.ctx());
+    }
+    if let Some(Dialog::Password(prompt)) = &mut app.dialog {
+        let asked = password_prompt::show(&ui.ctx().clone(), paint, prompt);
+        app.actions.extend(asked);
+    }
+    if let Some(Dialog::HostKey(prompt)) = &app.dialog {
+        let asked = host_key_prompt::show(&ui.ctx().clone(), paint, prompt);
+        app.actions.extend(asked);
+    }
+    let asked = match &app.dialog {
+        Some(Dialog::QuickOpen(open)) => Some(quick_open_asked(app, open)),
+        _ => None,
+    };
+    if let (Some(Dialog::QuickOpen(open)), Some(asked)) = (&mut app.dialog, asked) {
+        let asked = quick_open::show(&ui.ctx().clone(), paint, open, &app.keymap, asked);
+        app.actions.extend(asked);
+    }
+    if let Some(Dialog::Help(search)) = &app.dialog {
+        let asked = help::show(&ui.ctx().clone(), paint, &app.keymap, search);
+        app.actions.extend(asked);
+    } else {
+        help::fold(ui.ctx());
+    }
+    if matches!(app.dialog, Some(Dialog::About)) {
+        let asked = about::show(&ui.ctx().clone(), paint);
+        app.actions.extend(asked);
+    } else {
+        about::fold(ui.ctx());
+    }
     settings::show(app, &ui.ctx().clone());
-    write_prompts::show(app, &ui.ctx().clone());
-    every_row_prompt::show(app, &ui.ctx().clone());
-    conflict_prompt::show(app, &ui.ctx().clone());
-    agent_access::show(app, &ui.ctx().clone());
+    if let Some(Dialog::Leave(prompt)) = &app.dialog {
+        let asked = write_prompts::leave(&ui.ctx().clone(), paint, prompt);
+        app.actions.extend(asked);
+    }
+    if let Some(Dialog::ConfirmWrite(prompt)) = &mut app.dialog {
+        let workspace = crate::app::workspace_in(&app.tabs, prompt.tab);
+        let asked = write_prompts::confirm_write(&ui.ctx().clone(), paint, prompt, workspace);
+        app.actions.extend(asked);
+    }
+    if let Some(Dialog::ConfirmEveryRow(prompt)) = &app.dialog {
+        let editor_open = app
+            .workspace(prompt.tab)
+            .and_then(|workspace| workspace.sql_tab(prompt.id))
+            .is_some();
+        let asked = every_row_prompt::show(&ui.ctx().clone(), paint, prompt, editor_open);
+        app.actions.extend(asked);
+    }
+    if let Some(Dialog::Conflict(prompt)) = &mut app.dialog {
+        let workspace = crate::app::workspace_in(&app.tabs, prompt.tab);
+        let asked = conflict_prompt::show(&ui.ctx().clone(), paint, prompt, workspace);
+        app.actions.extend(asked);
+    }
+    if let Some(Dialog::AgentAccess(prompt)) = &app.dialog {
+        let current = app
+            .connections
+            .get(&prompt.conn)
+            .map(|saved| app.agents_access(saved));
+        let asked = agent_access::show(&ui.ctx().clone(), paint, prompt, current);
+        app.actions.extend(asked);
+    }
+    if let Some(Dialog::CopyAs(open)) = &app.dialog {
+        let size = copy_as_size(app, open);
+        let asked = copy_as::show(&ui.ctx().clone(), paint, open, &size);
+        app.actions.extend(asked);
+    } else {
+        copy_as::fold(ui.ctx());
+    }
+    let said = app.export_said.take();
+    if let Some(Dialog::Export(sheet)) = &app.dialog {
+        let facts = app.export_facts();
+        let asked = export::show(
+            &ui.ctx().clone(),
+            paint,
+            sheet,
+            facts.as_ref(),
+            said.as_deref(),
+        );
+        app.actions.extend(asked);
+    }
+    let asked = export_toast::show(
+        &ui.ctx().clone(),
+        paint,
+        &app.exports,
+        app.dirs.home.as_deref(),
+    );
+    app.actions.extend(asked);
+    if let Some(Dialog::CancelExport(picker)) = &app.dialog {
+        let rows = app.cancel_rows(picker);
+        let asked = cancel_export::show(&ui.ctx().clone(), paint, picker, &rows);
+        app.actions.extend(asked);
+    }
     // Last: it says what was done, whatever is on screen by now.
-    toast::show(app, ui.ctx());
+    if let Some(offer) = toast::show(ui.ctx(), paint, app.dialog.is_some()) {
+        app.actions.push(Action::ExportSelection(offer));
+    }
+}
+
+/// What the Copy as menu copies, in words: "4 rows × 2 columns".
+fn copy_as_size(app: &App, open: &crate::model::CopyAsMenu) -> String {
+    let how = crate::model::CopyHow::ColumnNames;
+    app.copy_in(open.tab, open.pick, how)
+        .map(|copying| {
+            let size = (copying.rows, copying.cols);
+            crate::selection::size_words(app.locale, size, copying.whole_rows)
+        })
+        .unwrap_or_default()
+}
+
+/// What quick open over `open.tab` asks of the app: none where that
+/// window is gone.
+fn quick_open_asked(app: &App, open: &crate::model::QuickOpen) -> Option<quick_open::Asked> {
+    let here = open.tab;
+    app.workspace(here)?;
+    let list = app.quick_open_list(open);
+    let picked = app.quick_open_picked(open, &list);
+    let windows = app
+        .open_connections()
+        .map(|(tab, workspace)| {
+            let database = workspace::bar_info(app, tab)
+                .map(|info| info.database)
+                .unwrap_or_default();
+            let window = quick_open::Window {
+                name: workspace.name.clone(),
+                env: workspace.environment,
+                database,
+            };
+            (tab, window)
+        })
+        .collect();
+    Some(quick_open::Asked {
+        list,
+        picked,
+        windows,
+        agents: app.agents_here(here),
+        grouped: app.settings.grouped(app.layout()),
+        commands_query: app.quick_open_commands_query(open).map(str::to_owned),
+    })
 }
 
 /// What the screen draws under the bar that leads the window, which on
 /// macOS is the title bar, so that the window's own buttons keep their
-/// line: what was changed outside the app and is held, then the notice.
-/// Returns their height.
-pub(crate) fn notices(app: &mut App, ui: &mut egui::Ui) -> f32 {
-    agents_held(app, ui) + notice(app, ui)
+/// line: what was changed outside the app and is held (`held`, named by
+/// the saved connections), then the app's notice. Returns their height and
+/// what they ask for.
+pub(crate) fn notices(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    notice: Option<&str>,
+    held: &[crate::agents_shown::Raised],
+    saved: &[crate::connections::SavedConnection],
+) -> (f32, Vec<Action>) {
+    let mut actions = Vec::new();
+    let height = agents_held(ui, paint, held, saved, &mut actions)
+        + self::notice(ui, paint, notice, &mut actions);
+    (height, actions)
 }
 
 /// A problem worth the user's attention that belongs to no one tab (a
 /// keyring write that failed), until dismissed. Returns its height,
 /// nothing when there is no notice.
-fn notice(app: &mut App, ui: &mut egui::Ui) -> f32 {
-    let Some(message) = app.notice.clone() else {
+fn notice(ui: &mut egui::Ui, paint: Paint, notice: Option<&str>, actions: &mut Vec<Action>) -> f32 {
+    let Some(message) = notice else {
         return 0.0;
     };
-    let mut actions = Vec::new();
     let shown = egui::Panel::top(egui::Id::new("notice"))
         .resizable(false)
         .show_separator_line(false)
         .frame(
             Frame::new()
-                .fill(notice_fill(&app.palette))
+                .fill(notice_fill(&paint.palette))
                 .inner_margin(egui::Margin::symmetric(12, 8)),
         )
-        .show(ui, |ui| notice_line(app, ui, &message, &mut actions));
-    app.actions.extend(actions);
+        .show(ui, |ui| notice_line(ui, paint, message, actions));
     shown.response.rect.height()
 }
 
@@ -193,14 +421,23 @@ fn notice(app: &mut App, ui: &mut egui::Ui) -> f32 {
 /// the person keeps it or puts it back: a bar of its own, in both looks,
 /// which no dismissal takes away. Returns its height, nothing when nothing
 /// is held.
-fn agents_held(app: &mut App, ui: &mut egui::Ui) -> f32 {
-    let Some(said) = agents_held_said(app) else {
+fn agents_held(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    held: &[crate::agents_shown::Raised],
+    saved: &[crate::connections::SavedConnection],
+    actions: &mut Vec<Action>,
+) -> f32 {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let Some(said) = agents_held_said(locale, held, saved) else {
         return 0.0;
     };
-    let (look, palette, locale) = (app.look, app.palette, app.locale);
     // The buttons answer what the bar says, not what a later change holds.
-    let held = app.agents_held.clone();
-    let mut actions = Vec::new();
+    let held = held.to_vec();
     let shown = egui::Panel::top(egui::Id::new("agents-held"))
         .resizable(false)
         .show_separator_line(false)
@@ -235,19 +472,21 @@ fn agents_held(app: &mut App, ui: &mut egui::Ui) -> f32 {
                 });
             });
         });
-    app.actions.extend(actions);
     shown.response.rect.height()
 }
 
-/// What the held bar says: what was changed outside the app, and the
-/// question. `None` with nothing held.
-pub fn agents_held_said(app: &App) -> Option<String> {
+/// What the held bar says of `held`: what was changed outside the app,
+/// with the saved connections' names, and the question. `None` with
+/// nothing held.
+pub fn agents_held_said(
+    locale: crate::i18n::Locale,
+    held: &[crate::agents_shown::Raised],
+    saved: &[crate::connections::SavedConnection],
+) -> Option<String> {
     use crate::agents_shown::Raised;
-    if app.agents_held.is_empty() {
+    if held.is_empty() {
         return None;
     }
-    let locale = app.locale;
-    let saved = &app.connections.connections;
     let names = crate::backend::agent_names(saved);
     let called = |id: &crate::connections::ConnectionId| {
         saved
@@ -256,8 +495,7 @@ pub fn agents_held_said(app: &App) -> Option<String> {
             .find(|(saved, _)| saved.id == *id)
             .map_or(id.0.clone(), |(_, name)| name.clone())
     };
-    let parts: Vec<String> = app
-        .agents_held
+    let parts: Vec<String> = held
         .iter()
         .map(|raise| match raise {
             Raised::Server => {
@@ -308,14 +546,14 @@ fn notice_fill(palette: &crate::theme::Palette) -> egui::Color32 {
 
 /// A notice on one line: what it says, and at the right the button that
 /// dismisses it. The bar has it, and so has a screen that covers the bar.
-fn notice_line(app: &App, ui: &mut egui::Ui, message: &str, actions: &mut Vec<Action>) {
-    let look = &app.look;
+fn notice_line(ui: &mut egui::Ui, paint: Paint, message: &str, actions: &mut Vec<Action>) {
+    let look = &paint.look;
     ui.horizontal(|ui| {
-        crate::typography::Text::one(look, widgets::body(look), message, app.palette.text)
+        crate::typography::Text::one(look, widgets::body(look), message, paint.palette.text)
             .layout(ui.ctx())
             .label(ui);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let dismiss = crate::i18n::gettext(app.locale, "Dismiss");
+            let dismiss = crate::i18n::gettext(paint.locale, "Dismiss");
             if widgets::button(ui, &dismiss, look).clicked() {
                 actions.push(Action::DismissNotice);
             }
@@ -330,7 +568,7 @@ pub fn window_buttons_line(app: &App, zoom: f32) -> f32 {
     if matches!(app.active_tab().content, ConnTabContent::Picker(_)) {
         picker::header_line(&app.look)
     } else {
-        workspace::bar_line(app, zoom)
+        workspace::bar_line(&app.look, app.titlebar.height, zoom)
     }
 }
 
@@ -2837,11 +3075,11 @@ value_tags   = true
     #[test]
     fn ctrl_b_hides_and_shows_the_sidebar() {
         let (mut harness, _tab) = tree_harness();
-        assert!(harness.has("orders"));
+        assert!(harness.has("orders, table"));
         harness.press(Key::B, Modifiers::COMMAND);
-        assert!(!harness.has("orders"));
+        assert!(!harness.has("orders, table"));
         harness.press(Key::B, Modifiers::COMMAND);
-        assert!(harness.has("orders"));
+        assert!(harness.has("orders, table"));
     }
 
     #[test]
@@ -4458,7 +4696,7 @@ value_tags   = true
         let mut harness = Harness::new();
         harness.connect_fake();
         assert!(harness.has("Schema"));
-        assert!(harness.has("active_users"));
+        assert!(harness.has("active_users, view"));
         harness.click("users");
         assert_eq!(fetches(&harness), 1);
         assert!(harness.has("users tab"));
@@ -4596,7 +4834,7 @@ value_tags   = true
             }
             // What a frame lays out and names: no piece longer than a
             // message may be, with its label before it.
-            let most = super::format::MESSAGE_MAX_CHARS + 64;
+            let most = crate::format::MESSAGE_MAX_CHARS + 64;
             let named = crate::testing::labels(&tree);
             let painted = harness.painted.iter().map(|(piece, _)| piece);
             for piece in named.iter().chain(painted) {
@@ -6001,9 +6239,9 @@ value_tags   = true
         assert_eq!(harness.app.active, 1);
         harness.press(Key::Num1, Modifiers::COMMAND);
         assert_eq!(harness.app.active, 0);
-        assert!(harness.has("orders"));
+        assert!(harness.has("orders, table"));
         harness.press(Key::B, Modifiers::COMMAND);
-        assert!(!harness.has("orders"));
+        assert!(!harness.has("orders, table"));
         harness.press(Key::B, Modifiers::COMMAND);
         harness.press(Key::P, Modifiers::COMMAND);
         assert!(harness.has("Quick open"));
@@ -6736,7 +6974,7 @@ value_tags   = true
 
     #[test]
     fn a_result_rows_text_is_formatted_once_not_every_frame() {
-        use crate::ui::format::FULL_TEXTS;
+        use crate::format::FULL_TEXTS;
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
         let mut page = crate::testing::page(2, false);
@@ -7942,7 +8180,7 @@ value_tags   = true
             assert!(harness.has("Ln 2, Col 3"), "{}", look.name);
             assert!(harness.has("SQLite 3.46.0"), "{}", look.name);
             // Nothing ran yet, so nothing was rolled back.
-            assert!(!harness.has("Read-only transaction · rolled back"));
+            assert!(!harness.has("Read-only · rolled back"));
             let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
             harness.app.apply(crate::model::Action::RunSql {
                 tab,
@@ -7950,7 +8188,7 @@ value_tags   = true
                 all: false,
             });
             // Nor while the run is on its way.
-            assert!(!harness.has("Read-only transaction · rolled back"));
+            assert!(!harness.has("Read-only · rolled back"));
             harness.answer_sql(
                 Ok(crate::testing::script_outcome(vec![
                     crate::testing::rows_outcome(3),
@@ -7958,7 +8196,7 @@ value_tags   = true
                 None,
             );
             assert!(harness.has("3 rows · 14 ms"), "{}", look.name);
-            assert!(harness.has("Read-only transaction · rolled back"));
+            assert!(harness.has("Read-only · rolled back"));
             // A run that failed as a whole ran nothing, and the rows of
             // the run before it are gone with it.
             harness.app.apply(crate::model::Action::RunSql {
@@ -7968,7 +8206,7 @@ value_tags   = true
             });
             harness.answer_sql(Err(tabletist_db::Error::query("no such server")), None);
             assert!(!harness.has("3 rows · 14 ms"), "{}", look.name);
-            assert!(!harness.has("Read-only transaction · rolled back"));
+            assert!(!harness.has("Read-only · rolled back"));
             // Nor do they come back with a run that is never answered
             // (its session went away), which leaves no error either.
             harness.app.apply(crate::model::Action::RunSql {
@@ -7981,7 +8219,7 @@ value_tags   = true
             let sql = active_sql(&harness, tab);
             assert!(!sql.is_running() && sql.run.error.is_none());
             assert!(!harness.has("3 rows · 14 ms"), "{}", look.name);
-            assert!(!harness.has("Read-only transaction · rolled back"));
+            assert!(!harness.has("Read-only · rolled back"));
         }
     }
 
@@ -8031,11 +8269,16 @@ value_tags   = true
             "{:?}",
             harness.painted
         );
-        // A table tab keeps its own line.
+        // A table tab keeps its own line. Clicked in the tree, the table
+        // opens with the keyboard on the tree: the tree's keys, then the
+        // rows' once they have it.
         harness.click("users");
         harness.answer_rows(crate::testing::page(5, false));
         harness.settle();
-        assert!(painted(&harness, "j/k row"));
+        assert!(painted(&harness, "j/k move"), "{:?}", harness.painted);
+        harness.press(Key::L, Modifiers::CTRL);
+        harness.settle();
+        assert!(painted(&harness, "j/k row"), "{:?}", harness.painted);
         assert!(!painted(&harness, "ctrl+enter run"));
     }
 
@@ -8150,10 +8393,8 @@ value_tags   = true
         harness.copy(false);
         assert_eq!(harness.copied.as_deref(), Some("user5@example.com"));
         harness.copy(true);
-        assert_eq!(
-            harness.copied.as_deref(),
-            Some("5\tuser5@example.com\tNULL")
-        );
+        // TSV's NULL as: empty by default.
+        assert_eq!(harness.copied.as_deref(), Some("5\tuser5@example.com\t"));
     }
 
     #[test]
@@ -8367,7 +8608,7 @@ value_tags   = true
 
     #[test]
     fn the_row_panel_formats_a_row_once_not_every_frame() {
-        use crate::ui::format::FULL_TEXTS;
+        use crate::format::FULL_TEXTS;
         let mut harness = Harness::new();
         harness.connect_fake();
         harness.click("users");
@@ -8753,6 +8994,16 @@ value_tags   = true
         }
     }
 
+    /// The password box's name in `look`: the Keychain on macOS, in every
+    /// look, the keyring elsewhere ([`crate::theme::Look::keychain`]).
+    fn keyring_word(look: &crate::theme::Look) -> &'static str {
+        if look.keychain(crate::update::release::Os::current()) {
+            "Keychain"
+        } else {
+            "Keyring"
+        }
+    }
+
     /// Tabs until the widget named `name` has the keyboard.
     fn tab_to(harness: &mut Harness, name: &str) {
         for _ in 0..80 {
@@ -8785,7 +9036,8 @@ value_tags   = true
                 })
                 .count()
         };
-        for name in ["Keyring", "Connect through SSH tunnel", "Open read-only"] {
+        let keyring = keyring_word(&crate::theme::Look::omarchy());
+        for name in [keyring, "Connect through SSH tunnel", "Open read-only"] {
             tab_to(&mut harness, name);
             assert_eq!(rings(&mut harness, name), 1, "{name}");
         }
@@ -9263,9 +9515,10 @@ value_tags   = true
         new_connection(&mut harness);
         harness.click("PostgreSQL");
         assert_eq!(form(&harness).password_mode, PasswordMode::Keyring);
-        harness.click("Keyring");
+        let keyring = keyring_word(&harness.app.look);
+        harness.click(keyring);
         assert_eq!(form(&harness).password_mode, PasswordMode::Ask);
-        harness.click("Keyring");
+        harness.click(keyring);
         assert_eq!(form(&harness).password_mode, PasswordMode::Keyring);
     }
 
@@ -9286,7 +9539,7 @@ value_tags   = true
                 saved.password = PasswordMode::Keyring;
                 harness.app.connections.upsert(saved);
                 harness.app.apply(crate::model::Action::EditConnection(id));
-                let hint = look.label(if look.faces.typeface == crate::theme::Typeface::Plex {
+                let hint = look.label(if keyring_word(&look) == "Keychain" {
                     "Saved in the keychain"
                 } else {
                     "Saved in the keyring"
@@ -9537,11 +9790,7 @@ value_tags   = true
     fn each_keyring_box_says_which_secret_it_keeps() {
         use crate::connections::PasswordMode;
         for look in crate::theme::Look::ALL {
-            let keyring = if look.faces.typeface == crate::theme::Typeface::Plex {
-                "Keychain"
-            } else {
-                "Keyring"
-            };
+            let keyring = keyring_word(&look);
             let ssh = format!("{keyring} for the SSH secret");
             let mut harness = Harness::new();
             harness.set_look(look);
@@ -10390,7 +10639,7 @@ value_tags   = true
     }
 
     #[test]
-    fn a_config_host_behind_a_proxy_warns() {
+    fn a_config_host_behind_a_proxy_jump_says_so() {
         let jump = config_host(
             "gateway-only",
             HostConfig {
@@ -10400,7 +10649,7 @@ value_tags   = true
         );
         let mut harness = ssh_dialog(vec![jump]);
         ssh_form(&mut harness).ssh_host = "gateway-only".into();
-        assert!(harness.has("Uses ProxyJump, which Tabletist does not support yet."));
+        assert!(harness.has("Through ProxyJump bastion from ~/.ssh/config"));
     }
 
     #[test]
@@ -10465,13 +10714,11 @@ value_tags   = true
                 "{}",
                 look.name
             );
-            // The warning takes the place of the host name's line.
             assert!(
-                harness.has("Uses ProxyCommand, which Tabletist does not support yet."),
+                harness.has("10.0.0.9 through a ProxyCommand from ~/.ssh/config"),
                 "{}",
                 look.name
             );
-            assert!(!harness.has("10.0.0.9 from ~/.ssh/config"), "{}", look.name);
         }
     }
 
@@ -11101,7 +11348,7 @@ value_tags   = true
         // One flat list: in groups, all would fold into `t_`.
         harness.app.workspace_mut(tab).unwrap().tree.flat = true;
         harness.settle();
-        assert!(harness.has("t_000"));
+        assert!(harness.has("t_000, table"));
         harness.app.apply(crate::model::Action::SetTreeCursor {
             tab,
             node: crate::model::TreeNode::Object(
@@ -11111,7 +11358,7 @@ value_tags   = true
         });
         harness.press(Key::End, Modifiers::NONE);
         harness.settle();
-        assert!(harness.has("t_199"), "the cursor row is on screen");
+        assert!(harness.has("t_199, table"), "the cursor row is on screen");
     }
 
     #[test]
@@ -11167,6 +11414,50 @@ value_tags   = true
         );
         let chip = bounds_of(&tree, "Switch to Fixture · dev");
         assert!(chip.x0 > button.x1, "the chips follow: {chip:?}");
+    }
+
+    #[test]
+    fn the_omarchy_settings_title_starts_after_the_mac_window_buttons() {
+        // The screen covers the window, its header under the buttons.
+        for look in crate::theme::Look::ALL
+            .into_iter()
+            .filter(|look| look.terminal)
+        {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            mac_title_bar(&mut harness);
+            harness.app.apply(Action::ShowSettings);
+            harness.settle();
+            let title = harness
+                .text_rects
+                .iter()
+                .find(|(text, rect)| text.eq_ignore_ascii_case("settings") && rect.top() < 40.0)
+                .map(|(_, rect)| *rect)
+                .unwrap_or_else(|| panic!("{}: no Settings title", look.name));
+            assert!(
+                title.left() >= 80.0,
+                "{}: the title starts after the buttons: {title:?}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn every_looks_connection_bar_starts_after_the_mac_window_buttons() {
+        // The Omarchy look runs on macOS too, under the same buttons.
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            mac_title_bar(&mut harness);
+            harness.connect_fake();
+            let tree = harness.settle();
+            let button = bounds_of(&tree, "Connections");
+            assert!(
+                button.x0 >= 80.0,
+                "{}: the bar starts after the buttons: {button:?}",
+                look.name
+            );
+        }
     }
 
     /// The middle of the node labelled (or valued) `label`.
@@ -12143,7 +12434,7 @@ value_tags   = true
                 "The SSH server could not reach the database",
             ),
         ] {
-            let described = crate::ui::format::describe_error(crate::i18n::Locale::English, &error);
+            let described = crate::format::describe_error(crate::i18n::Locale::English, &error);
             assert!(described.starts_with(words), "{error:?}: {described}");
         }
     }
@@ -12819,7 +13110,7 @@ value_tags   = true
             named: Box::default(),
         };
         assert_eq!(
-            crate::ui::format::describe_error(crate::i18n::Locale::English, &error),
+            crate::format::describe_error(crate::i18n::Locale::English, &error),
             "database \"nosuchdb\" does not exist"
         );
     }
@@ -12842,8 +13133,12 @@ value_tags   = true
         main.objects.value = Some(vec![table(spoof), table("users"), table("users\u{200B}")]);
 
         let labels = crate::testing::labels(&harness.settle());
-        assert!(labels.iter().any(|label| label == "users_<U+202E>atad"));
-        assert!(labels.iter().any(|label| label == "users<U+200B>"));
+        assert!(
+            labels
+                .iter()
+                .any(|label| label == "users_<U+202E>atad, table")
+        );
+        assert!(labels.iter().any(|label| label == "users<U+200B>, table"));
         harness.click("users_<U+202E>atad");
         let mut page = crate::testing::page(1, false);
         page.columns[1].name = "e\u{202E}liam".into();
@@ -14128,11 +14423,13 @@ value_tags   = true
     }
 
     /// The middle of the cell that shows `text`.
+    /// Where a cell writes `text`: not a row's number.
     fn cell_of(harness: &Harness, text: &str) -> egui::Pos2 {
-        harness
-            .painted_rect(text)
+        let mut pieces = harness.text_rects.iter();
+        pieces
+            .find(|(piece, rect)| piece == text && !harness.is_row_number(*rect))
+            .map(|(_, rect)| rect.center())
             .unwrap_or_else(|| panic!("no cell shows {text}"))
-            .center()
     }
 
     fn edits(harness: &Harness, tab: ConnTabId, id: TabId) -> &crate::edit::Edits {
@@ -14845,7 +15142,7 @@ value_tags   = true
             assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
             assert!(matches!(
                 harness.app.dialog,
-                Some(crate::model::Dialog::Help)
+                Some(crate::model::Dialog::Help(_))
             ));
             harness.press(Key::Escape, Modifiers::NONE);
             assert!(harness.app.dialog.is_none());
@@ -14898,7 +15195,8 @@ value_tags   = true
             // It is a note at the cell: beside the key it is about.
             // (The row panel writes the key too: the grid's is leftmost.)
             let note = harness.painted_rect(why).unwrap();
-            let keys = harness.text_rects.iter().filter(|(text, _)| text == "2");
+            let pieces = harness.text_rects.iter();
+            let keys = pieces.filter(|(text, rect)| text == "2" && !harness.is_row_number(*rect));
             let cell = keys
                 .map(|(_, rect)| *rect)
                 .min_by(|a, b| a.left().total_cmp(&b.left()))
@@ -15274,7 +15572,13 @@ value_tags   = true
             // With the keyboard in the filter's field.
             let (mut harness, tab, id) = pending();
             harness.press(Key::F, Modifiers::COMMAND);
-            assert!(crate::ui::filter_bar::is_open(&harness.app, tab, id));
+            assert!(
+                harness
+                    .app
+                    .workspace(tab)
+                    .and_then(|workspace| workspace.object_tab(id))
+                    .is_some_and(crate::ui::filter_bar::is_open)
+            );
             assert!(harness.ctx.text_edit_focused(), "{}", look.name);
             harness.press(Key::S, Modifiers::COMMAND);
             assert_eq!(writes(&harness), 1, "{}: the filter", look.name);
@@ -17281,7 +17585,9 @@ value_tags   = true
         make_pending(&mut harness, tab, id, (1, 1), "ann@example.com");
         harness.press(Key::S, Modifiers::COMMAND);
         harness.answer_written(Err(tabletist_db::Error::Cancelled));
-        harness.size.x = 720.0;
+        // Narrow enough that the keys give way, wide enough for the grid
+        // and the rows' numbers to keep every column in sight.
+        harness.size.x = 820.0;
         harness.settle();
         let said = "save cancelled. nothing was written.";
         assert!(painted(&harness, said), "{:?}", harness.painted);
@@ -17679,10 +17985,11 @@ value_tags   = true
         // alone are looked at.
         harness.app.workspace_mut(tab).unwrap().row_panel = false;
         make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
-        // With the arrows on the tree the line offers `:w`, and Ctrl+S
-        // saves: so does the prompt.
+        // With the arrows on the tree the line offers `:w` while something
+        // is pending, and Ctrl+S saves: so does the prompt.
         harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Tree;
         harness.settle();
+        assert!(painted(&harness, "j/k move"), "{:?}", harness.painted);
         assert!(painted_in(&harness, ":w write", palette.text));
         type_key(&mut harness, Key::Colon, ":");
         assert_eq!(command(&harness, tab).as_deref(), Some(""));
@@ -17988,7 +18295,13 @@ value_tags   = true
             type_text(&mut harness, "x");
             // The filter bar opens and takes the keyboard.
             harness.press(Key::F, Modifiers::COMMAND);
-            assert!(crate::ui::filter_bar::is_open(&harness.app, tab, id));
+            assert!(
+                harness
+                    .app
+                    .workspace(tab)
+                    .and_then(|workspace| workspace.object_tab(id))
+                    .is_some_and(crate::ui::filter_bar::is_open)
+            );
             assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
             assert_eq!(
                 pending_text(&harness, tab, id, (1, 1)).as_deref(),
@@ -19174,7 +19487,7 @@ value_tags   = true
         // It is that dialog still, in every look: closing the question
         // unanswered would leave the same line.
         assert!(
-            matches!(harness.app.dialog, Some(crate::model::Dialog::Help)),
+            matches!(harness.app.dialog, Some(crate::model::Dialog::Help(_))),
             "{:?}",
             harness.app.dialog
         );
@@ -20413,7 +20726,7 @@ value_tags   = true
         assert!(sends(&harness, CancelClose));
         assert!(matches!(
             harness.app.dialog,
-            Some(crate::model::Dialog::Help)
+            Some(crate::model::Dialog::Help(_))
         ));
         assert_eq!(
             harness.app.notice.as_deref(),
@@ -21280,7 +21593,13 @@ value_tags   = true
             let (mut harness, tab, id) = editable_in(look);
             make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
             harness.press(Key::F, Modifiers::COMMAND);
-            assert!(crate::ui::filter_bar::is_open(&harness.app, tab, id));
+            assert!(
+                harness
+                    .app
+                    .workspace(tab)
+                    .and_then(|workspace| workspace.object_tab(id))
+                    .is_some_and(crate::ui::filter_bar::is_open)
+            );
             assert!(harness.ctx.text_edit_focused(), "{}", look.name);
             let typed = |harness: &Harness| {
                 let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
@@ -24421,10 +24740,14 @@ value_tags   = true
         for look in Look::ALL {
             let (mut harness, tab, id) = editing_a_document(look);
             let palette = harness.app.palette;
+            // The editor's, not the grid's row numbers: those are written
+            // in the same colour.
             let numbered = |harness: &Harness, number: &str| {
                 let pieces = harness.text_rects.iter().zip(&harness.painted);
                 pieces
-                    .filter(|((text, _), (_, color))| text == number && *color == palette.faint)
+                    .filter(|((text, rect), (_, color))| {
+                        text == number && *color == palette.faint && !harness.is_row_number(*rect)
+                    })
                     .count()
             };
             let valid = |harness: &Harness| {

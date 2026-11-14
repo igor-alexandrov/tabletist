@@ -1,4 +1,4 @@
-//! Access to PostgreSQL, MySQL and SQLite for Tabletist.
+//! Access to PostgreSQL, MySQL, SQLite and BigQuery for Tabletist.
 //!
 //! The crate writes to a connected database in two places:
 //! [`Connection::write`], which saves edited rows, and
@@ -11,6 +11,7 @@
 
 mod adapter;
 pub mod agent;
+mod bigquery;
 mod catalog;
 mod check;
 mod class;
@@ -33,12 +34,19 @@ pub mod sql;
 mod sqlite;
 mod ssh;
 pub mod ssh_config;
+mod stream;
 mod tls;
 mod value;
 mod write;
 
 use std::fmt;
 use std::sync::Arc;
+
+/// The PgBouncer check of a PostgreSQL session (see
+/// `Connection::database_probe`): it owns what it needs, so it can run
+/// apart from the session.
+pub type DatabaseProbe =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<String>>> + Send>>;
 
 use adapter::Adapter;
 pub use catalog::{
@@ -59,7 +67,8 @@ pub use script::{
 };
 pub use spec::{ConnectSpec, Driver, ParsedUrl, Secrets, SshAuth, SshSpec, TlsMode};
 pub use ssh::HostKeys;
-pub use value::{ColumnMeta, Value, ValueKind, value_from_pg_text};
+pub use stream::Streamed;
+pub use value::{ColumnMeta, Value, ValueKind, is_plain_number, value_from_pg_text};
 pub use write::{
     CellChange, ChangeSet, Conflict, InsertValue, MAX_RUN, NewValue, RowChange, RowDelete,
     RowInsert, WriteOutcome, delete_runs,
@@ -91,6 +100,7 @@ enum Inner {
     // Boxed: a PostgreSQL client is much larger than a SQLite handle.
     Postgres(Box<pg::Conn>),
     MySql(Box<mysql::Conn>),
+    BigQuery(Box<bigquery::Conn>),
 }
 
 impl Inner {
@@ -114,6 +124,9 @@ impl Inner {
             Driver::MySql => Ok(Self::MySql(Box::new(
                 mysql::Conn::connect(spec, secrets, via, access).await?,
             ))),
+            Driver::BigQuery => Ok(Self::BigQuery(Box::new(
+                bigquery::Conn::connect(spec, access).await?,
+            ))),
         }
     }
 }
@@ -134,9 +147,17 @@ impl Connection {
         access: Access,
     ) -> Result<Self> {
         // A file is opened here, whatever tunnel its spec still names.
+        // BigQuery's API is HTTPS to Google: no tunnel runs to it.
         let ssh = match spec.driver {
-            Driver::Sqlite => None,
+            Driver::Sqlite | Driver::BigQuery => None,
             Driver::Postgres | Driver::MySql => spec.ssh.as_ref(),
+        };
+        // BigQuery has no transactions or row locks to save rows with,
+        // and no read-only one to fence a script's writes: a session is
+        // read-only whatever was asked, and its adapter runs only reads.
+        let access = match spec.driver {
+            Driver::BigQuery => Access::ReadOnly,
+            Driver::Sqlite | Driver::Postgres | Driver::MySql => access,
         };
         let Some(ssh) = ssh else {
             return Ok(Self {
@@ -171,6 +192,7 @@ impl Connection {
             Inner::Sqlite(_) => Driver::Sqlite,
             Inner::Postgres(_) => Driver::Postgres,
             Inner::MySql(_) => Driver::MySql,
+            Inner::BigQuery(_) => Driver::BigQuery,
         }
     }
 
@@ -182,6 +204,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.is_encrypted(),
             Inner::Postgres(conn) => conn.is_encrypted(),
             Inner::MySql(conn) => conn.is_encrypted(),
+            Inner::BigQuery(conn) => conn.is_encrypted(),
         }
     }
 
@@ -229,6 +252,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.run_script(texts, limit, mode, stop).await,
             Inner::Postgres(conn) => conn.run_script(texts, limit, mode, stop).await,
             Inner::MySql(conn) => conn.run_script(texts, limit, mode, stop).await,
+            Inner::BigQuery(conn) => conn.run_script(texts, limit, mode, stop).await,
         }
     }
 
@@ -284,6 +308,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.run_read(read, limits, sources, stop).await,
             Inner::Postgres(conn) => conn.run_read(read, limits, sources, stop).await,
             Inner::MySql(conn) => conn.run_read(read, limits, sources, stop).await,
+            Inner::BigQuery(conn) => conn.run_read(read, limits, sources, stop).await,
         }?;
         agent::answer(outcome, stop).map(|answer| agent::masked(answer, masked))
     }
@@ -300,6 +325,7 @@ impl Connection {
                     Inner::Sqlite(conn) => conn.agents_catalog(&masked).await?,
                     Inner::Postgres(conn) => conn.agents_catalog(&masked).await?,
                     Inner::MySql(conn) => conn.agents_catalog(&masked).await?,
+                    Inner::BigQuery(conn) => conn.agents_catalog(&masked).await?,
                 }
             }
             false => agent::Catalog::default(),
@@ -314,6 +340,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.server_version().await,
             Inner::Postgres(conn) => conn.server_version().await,
             Inner::MySql(conn) => conn.server_version().await,
+            Inner::BigQuery(conn) => conn.server_version().await,
         }
     }
 
@@ -326,6 +353,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.session_zone().await,
             Inner::Postgres(conn) => conn.session_zone().await,
             Inner::MySql(conn) => conn.session_zone().await,
+            Inner::BigQuery(conn) => conn.session_zone().await,
         }
     }
 
@@ -336,6 +364,27 @@ impl Connection {
             Inner::Sqlite(conn) => conn.list_databases().await,
             Inner::Postgres(conn) => conn.list_databases().await,
             Inner::MySql(conn) => conn.list_databases().await,
+            Inner::BigQuery(conn) => conn.list_databases().await,
+        }
+    }
+
+    /// The part of `list_databases` that needs no turn on this session:
+    /// on PostgreSQL, the check for PgBouncer, on a connection of its own.
+    /// `Some` aliases are the listing; `None` leaves it to
+    /// `catalog_databases`. No probe on the other engines.
+    pub fn database_probe(&self) -> Option<DatabaseProbe> {
+        match &self.inner {
+            Inner::Postgres(conn) => Some(Box::pin(conn.database_probe())),
+            Inner::Sqlite(_) | Inner::MySql(_) | Inner::BigQuery(_) => None,
+        }
+    }
+
+    /// The rest of `list_databases`, on this session: what its catalog
+    /// lists, for when `database_probe` found no PgBouncer.
+    pub async fn catalog_databases(&self) -> Result<Vec<String>> {
+        match &self.inner {
+            Inner::Postgres(conn) => conn.catalog_databases().await,
+            Inner::Sqlite(_) | Inner::MySql(_) | Inner::BigQuery(_) => self.list_databases().await,
         }
     }
 
@@ -345,6 +394,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.list_schemas().await,
             Inner::Postgres(conn) => conn.list_schemas().await,
             Inner::MySql(conn) => conn.list_schemas().await,
+            Inner::BigQuery(conn) => conn.list_schemas().await,
         }
     }
 
@@ -354,6 +404,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.list_objects(schema).await,
             Inner::Postgres(conn) => conn.list_objects(schema).await,
             Inner::MySql(conn) => conn.list_objects(schema).await,
+            Inner::BigQuery(conn) => conn.list_objects(schema).await,
         }
     }
 
@@ -362,6 +413,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.describe(object).await,
             Inner::Postgres(conn) => conn.describe(object).await,
             Inner::MySql(conn) => conn.describe(object).await,
+            Inner::BigQuery(conn) => conn.describe(object).await,
         }
     }
 
@@ -376,6 +428,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.ddl(object).await,
             Inner::Postgres(conn) => conn.ddl(object).await,
             Inner::MySql(conn) => conn.ddl(object).await,
+            Inner::BigQuery(conn) => conn.ddl(object).await,
         }
     }
 
@@ -388,6 +441,92 @@ impl Connection {
             Inner::Sqlite(conn) => conn.fetch_rows(query).await,
             Inner::Postgres(conn) => conn.fetch_rows(query).await,
             Inner::MySql(conn) => conn.fetch_rows(query).await,
+            Inner::BigQuery(conn) => conn.fetch_rows(query).await,
+        }
+    }
+
+    /// The statement [`Connection::stream_rows`] runs for `query` and
+    /// `columns`, its values written in, as a person reads it: built from
+    /// the same key and binary columns, for the history to keep.
+    pub async fn export_statement(&self, query: &RowQuery, columns: &[String]) -> Result<String> {
+        match &self.inner {
+            Inner::Sqlite(conn) => conn.export_statement(query, columns).await,
+            Inner::Postgres(conn) => conn.export_statement(query, columns).await,
+            Inner::MySql(conn) => conn.export_statement(query, columns).await,
+            Inner::BigQuery(conn) => conn.export_statement(query, columns).await,
+        }
+    }
+
+    /// Every row of `query`'s table that its filters keep, in its order
+    /// (no `LIMIT`, no `OFFSET`): the `columns` named, in their order, or
+    /// all of them when there are none. Sent to `to` as the columns, then
+    /// batches of up to `batch` rows, read-only: through a cursor on
+    /// PostgreSQL, unbuffered on MySQL, stepped on SQLite, so no more than
+    /// a batch is read ahead of what `to` has taken. Returns the rows sent.
+    /// `stop`, or `to` closing, ends it as [`Error::Cancelled`]; a
+    /// statement the server's own timeout ended is [`Error::Timeout`].
+    /// A connection whose stream failed once its statement ran (a closed
+    /// `to` included, before any row was sent) is to be closed: on MySQL
+    /// the rows not yet read are still on their way, and the read-only
+    /// transaction they come in is left open, which a rollback could end
+    /// only by reading them all.
+    pub async fn stream_rows(
+        &self,
+        query: &RowQuery,
+        columns: &[String],
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        let batch = batch.max(1);
+        match &self.inner {
+            Inner::Sqlite(conn) => conn.stream_rows(query, columns, batch, to, stop).await,
+            Inner::Postgres(conn) => conn.stream_rows(query, columns, batch, to, stop).await,
+            Inner::MySql(conn) => conn.stream_rows(query, columns, batch, to, stop).await,
+            Inner::BigQuery(conn) => conn.stream_rows(query, columns, batch, to, stop).await,
+        }
+    }
+
+    /// The rows of `statement`, a statement of the person's, as
+    /// [`Self::stream_rows`] sends a table's: the columns, then batches of
+    /// up to `batch` rows, read-only, never more than a batch ahead of
+    /// `to`. It runs as it was written, with no `LIMIT` added. Refused with
+    /// nothing sent unless [`sql::kind`] reads it as a read and
+    /// [`sql::refusal`] lets it run: an export never runs a write. Returns
+    /// the rows sent; `stop`, or `to` closing, ends it as
+    /// [`Error::Cancelled`], and the server's own timeout as
+    /// [`Error::Timeout`]. On PostgreSQL it runs as a cursor, so a
+    /// statement no cursor holds (`SHOW`, `EXPLAIN`) fails with the
+    /// server's words. A connection whose stream failed once its statement
+    /// ran is to be closed, as for [`Self::stream_rows`].
+    pub async fn stream_statement(
+        &self,
+        statement: &sql::Statement,
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        let dialect = self.dialect();
+        let refused = |what: String| Error::Refused {
+            line: statement.first_line,
+            what,
+            mode: ScriptMode::ReadOnly,
+        };
+        if let Some(what) = sql::refusal(dialect, &statement.text) {
+            return Err(refused(what));
+        }
+        if sql::kind(dialect, &statement.text) != sql::StatementKind::Read {
+            return Err(Error::query(
+                "Run again without the limit is only for a statement that reads",
+            ));
+        }
+        let text = statement.text.trim().trim_end_matches(';').trim_end();
+        let batch = batch.max(1);
+        match &self.inner {
+            Inner::Sqlite(conn) => conn.stream_statement(text, batch, to, stop).await,
+            Inner::Postgres(conn) => conn.stream_statement(text, batch, to, stop).await,
+            Inner::MySql(conn) => conn.stream_statement(text, batch, to, stop).await,
+            Inner::BigQuery(conn) => conn.stream_statement(text, batch, to, stop).await,
         }
     }
 
@@ -396,6 +535,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.count_rows(query).await,
             Inner::Postgres(conn) => conn.count_rows(query).await,
             Inner::MySql(conn) => conn.count_rows(query).await,
+            Inner::BigQuery(conn) => conn.count_rows(query).await,
         }
     }
 
@@ -409,6 +549,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.lookup(lookup).await,
             Inner::Postgres(conn) => conn.lookup(lookup).await,
             Inner::MySql(conn) => conn.lookup(lookup).await,
+            Inner::BigQuery(conn) => conn.lookup(lookup).await,
         }
     }
 
@@ -455,6 +596,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.write(changes, stop).await,
             Inner::Postgres(conn) => conn.write(changes, stop).await,
             Inner::MySql(conn) => conn.write(changes, stop).await,
+            Inner::BigQuery(conn) => conn.write(changes, stop).await,
         }
     }
 
@@ -464,6 +606,7 @@ impl Connection {
             Inner::Sqlite(conn) => conn.cancel_handle(),
             Inner::Postgres(conn) => conn.cancel_handle(),
             Inner::MySql(conn) => conn.cancel_handle(),
+            Inner::BigQuery(conn) => conn.cancel_handle(),
         }
     }
 
@@ -482,6 +625,10 @@ impl Connection {
                 drop(conn);
                 Ok(())
             }
+            Inner::BigQuery(conn) => {
+                drop(conn);
+                Ok(())
+            }
         };
         // The driver has closed; now its tunnel.
         drop(tunnel);
@@ -490,23 +637,33 @@ impl Connection {
 }
 
 /// Cancels the query a session is running. Cancelling when nothing runs
-/// does nothing.
+/// does nothing. A cancel returns once the server has acted on it, so it
+/// cannot stop what the session runs after: PostgreSQL's waits for the
+/// server to close the cancel's connection (see `pg::Cancel`), MySQL's
+/// `KILL QUERY` for its answer. Not always on PostgreSQL: a cancel that
+/// hears nothing for ten seconds gives up with [`Error::Timeout`], and a
+/// session over a Unix socket, or on a host the session could not resolve
+/// itself, takes the driver's cancel, which does not wait.
 #[derive(Clone)]
 pub struct CancelHandle(CancelInner);
 
 #[derive(Clone)]
 enum CancelInner {
     Sqlite(Arc<rusqlite::InterruptHandle>),
-    Postgres {
-        token: tokio_postgres::CancelToken,
-        tls: tokio_postgres_rustls::MakeRustlsConnect,
-    },
+    Postgres(pg::Cancel),
     MySql {
         opts: mysql_async::Opts,
         id: u32,
         /// The server that thread id belongs to.
         server: String,
+        /// The connection the cancels go through (see `mysql::cancel`).
+        spare: mysql::Spare,
+        /// Whether a run's reset goes on, which a cancel waits for (see
+        /// `mysql::Resetting`).
+        resetting: tokio::sync::watch::Receiver<bool>,
     },
+    /// Boxed: a BigQuery client is much larger than the other handles.
+    BigQuery(Box<bigquery::Cancel>),
 }
 
 impl CancelHandle {
@@ -516,11 +673,15 @@ impl CancelHandle {
                 handle.interrupt();
                 Ok(())
             }
-            CancelInner::MySql { opts, id, server } => mysql::cancel(opts, *id, server).await,
-            CancelInner::Postgres { token, tls } => token
-                .cancel_query(tls.clone())
-                .await
-                .map_err(|error| Error::Connect(format!("could not cancel: {error}"))),
+            CancelInner::MySql {
+                opts,
+                id,
+                server,
+                spare,
+                resetting,
+            } => mysql::cancel_session(opts, *id, server, spare, resetting).await,
+            CancelInner::Postgres(cancel) => cancel.cancel().await,
+            CancelInner::BigQuery(cancel) => cancel.cancel().await,
         }
     }
 }

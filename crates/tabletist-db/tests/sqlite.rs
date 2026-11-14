@@ -3730,7 +3730,7 @@ fn stored(other: &rusqlite::Connection, table: &str) -> Vec<Vec<rusqlite::types:
     statement
         .query_map([], |row| {
             (0..width)
-                .map(|index| row.get_ref(index).map(rusqlite::types::Value::from))
+                .map(|index| row.get::<_, rusqlite::types::Value>(index))
                 .collect()
         })
         .unwrap()

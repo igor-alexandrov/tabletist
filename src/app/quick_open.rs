@@ -11,9 +11,11 @@ use std::rc::Rc;
 use tabletist_db::{ObjectKind, ObjectRef};
 
 use super::App;
-use super::commands::Runnable;
 use crate::keymap::Command;
-use crate::model::{Action, ConnTabId, Dialog, QuickGroup, QuickOpen, SettingsPane, StartRecent};
+use crate::model::{
+    Action, ConnTabId, Dialog, Found, QuickCommand, QuickGroup, QuickItem, QuickOpen, SettingsPane,
+    StartRecent, StartRow,
+};
 use crate::search::{self, Tier};
 use crate::settings::OptionId;
 
@@ -28,20 +30,6 @@ const SUGGESTED: [Command; 4] = [
     Command::ShowAgents,
     Command::History,
 ];
-
-/// A table or view that matches what is typed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Found {
-    /// The index's own: a search that matches thousands copies no name.
-    pub object: Rc<ObjectRef>,
-    pub kind: ObjectKind,
-    /// The catalog's estimate of its rows, where it has one.
-    pub estimate: Option<u64>,
-    pub tier: Tier,
-    /// The runs of the name that matched, as byte ranges of
-    /// `object.name`.
-    pub spans: Vec<Range<usize>>,
-}
 
 /// The index of a connection's objects: each with its name taken apart for
 /// matching once, in order by name and then schema (the last of the
@@ -138,102 +126,6 @@ impl Ranked {
 #[derive(Default)]
 pub struct Indexes(RefCell<HashMap<ConnTabId, (u64, Rc<Index>)>>);
 
-/// A row of a window's start screen list, as quick open shows it with
-/// nothing typed: a recent, or on a first visit one of the largest tables.
-#[derive(Debug, Clone, PartialEq)]
-pub enum StartRow {
-    Recent(StartRecent),
-    Largest(ObjectRef, Option<u64>),
-}
-
-/// One of the commands quick open offers in the macOS and Windows looks.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum QuickCommand {
-    /// A command of the keymap's, run as its key runs it.
-    Run(Runnable),
-    /// A row of the Settings window: the window opens at it.
-    Setting(OptionId),
-}
-
-impl QuickCommand {
-    /// The keymap's command it is, whose key the row writes: a setting's
-    /// is the one that opens Settings.
-    pub fn command(&self) -> Command {
-        match self {
-            Self::Run(runnable) => runnable.command,
-            Self::Setting(_) => Command::Settings,
-        }
-    }
-}
-
-/// One of quick open's results: what can be picked.
-#[derive(Debug, Clone, PartialEq)]
-pub enum QuickItem {
-    /// A table or view of the window `tab`'s connection.
-    Object { tab: ConnTabId, found: Found },
-    /// The row of `tab`'s start screen list numbered `index` there.
-    Start {
-        tab: ConnTabId,
-        index: usize,
-        row: StartRow,
-    },
-    /// A command, and the runs of its name that matched.
-    Command {
-        command: QuickCommand,
-        spans: Vec<Range<usize>>,
-    },
-    /// The row after a group's first results: the rest are `hidden`.
-    More { group: QuickGroup, hidden: usize },
-}
-
-impl QuickItem {
-    /// Whether `other` is this result, though it may be listed elsewhere
-    /// or say something else of itself now (an estimate read again, a
-    /// command's name): the same object of the same window, the same row
-    /// of a start screen, the same command or setting, the same group's
-    /// "more" row.
-    pub fn same(&self, other: &QuickItem) -> bool {
-        match (self, other) {
-            (
-                Self::Object { tab, found },
-                Self::Object {
-                    tab: at,
-                    found: other,
-                },
-            ) => tab == at && found.object == other.object && found.kind == other.kind,
-            (
-                Self::Start { tab, row, .. },
-                Self::Start {
-                    tab: at,
-                    row: other,
-                    ..
-                },
-            ) => {
-                // The largest tables by their table: an estimate read
-                // again is the same row.
-                let largest = |row: &StartRow| match row {
-                    StartRow::Largest(object, _) => Some(object.clone()),
-                    StartRow::Recent(_) => None,
-                };
-                tab == at
-                    && match (largest(row), largest(other)) {
-                        (Some(one), Some(two)) => one == two,
-                        _ => row == other,
-                    }
-            }
-            (Self::Command { command, .. }, Self::Command { command: other, .. }) => {
-                match (command, other) {
-                    (QuickCommand::Run(one), QuickCommand::Run(two)) => one.command == two.command,
-                    (QuickCommand::Setting(one), QuickCommand::Setting(two)) => one == two,
-                    _ => false,
-                }
-            }
-            (Self::More { group, .. }, Self::More { group: other, .. }) => group == other,
-            _ => false,
-        }
-    }
-}
-
 /// What heads a group of quick open's results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuickHeading {
@@ -301,12 +193,25 @@ pub fn setting_path(locale: crate::i18n::Locale, run: &str, option: OptionId) ->
     format!("{} › {} › {label}", say("Settings"), say(pane.name()))
 }
 
+/// A cancel row's name, translated: "Cancel exporting reviews.csv". Any
+/// other command's is [`App::command_name`]'s.
+pub fn command_words(locale: crate::i18n::Locale, command: &QuickCommand) -> String {
+    name_of(locale, "", command)
+}
+
 /// `command`'s name, translated; `run` is the run key, as for
 /// [`setting_path`].
 fn name_of(locale: crate::i18n::Locale, run: &str, command: &QuickCommand) -> String {
     match command {
-        QuickCommand::Run(runnable) => crate::i18n::gettext(locale, runnable.name).into_owned(),
+        QuickCommand::Run(runnable) => runnable.named(locale),
         QuickCommand::Setting(option) => setting_path(locale, run, *option),
+        QuickCommand::CancelExport { name, copying, .. } => {
+            let words = match copying {
+                true => "Cancel copying {name}",
+                false => "Cancel exporting {name}",
+            };
+            crate::i18n::gettext(locale, words).replace("{name}", name)
+        }
     }
 }
 
@@ -416,13 +321,19 @@ impl App {
     fn start_rows(&self, tab: ConnTabId) -> (QuickHeading, Vec<StartRow>) {
         let recents = self.start_recents(tab);
         if recents.is_empty() {
-            let largest = self.start_largest(tab).into_iter();
-            let rows = largest.map(|(object, estimate)| StartRow::Largest(object, estimate));
-            (QuickHeading::Largest, rows.collect())
+            self.start_largest_rows(tab)
         } else {
             let rows = recents.into_iter().map(StartRow::Recent);
             (QuickHeading::Recent, rows.collect())
         }
+    }
+
+    /// The largest tables, as the start screen lists them with nothing
+    /// recent.
+    fn start_largest_rows(&self, tab: ConnTabId) -> (QuickHeading, Vec<StartRow>) {
+        let largest = self.start_largest(tab).into_iter();
+        let rows = largest.map(|(object, estimate)| StartRow::Largest(object, estimate));
+        (QuickHeading::Largest, rows.collect())
     }
 
     /// The windows quick open searches: its own, then where every open
@@ -463,6 +374,18 @@ impl App {
             })
             .map(QuickCommand::Run)
             .collect();
+        // An export running: a row each that cancels it, as a command not
+        // suggested is listed (spec 4, F7).
+        if (!typed.is_empty() || commands_only) && !self.look.terminal {
+            commands.extend(
+                self.running_exports()
+                    .map(|exporting| QuickCommand::CancelExport {
+                        job: exporting.job.id,
+                        name: exporting.name().to_owned(),
+                        copying: exporting.file.is_empty(),
+                    }),
+            );
+        }
         // The settings' rows answer a word: with nothing typed they would
         // bury the commands.
         if !typed.is_empty() && !self.look.terminal {
@@ -515,7 +438,15 @@ impl App {
         };
         for tab in windows {
             if query.is_empty() {
-                let (heading, rows) = self.start_rows(tab);
+                let (mut heading, mut rows) = self.start_rows(tab);
+                // Export a table… lists tables and views alone: the
+                // largest where every recent one is a SQL editor.
+                if open.exporting {
+                    rows.retain(|row| !matches!(row, StartRow::Recent(StartRecent::Sql { .. })));
+                    if rows.is_empty() {
+                        (heading, rows) = self.start_largest_rows(tab);
+                    }
+                }
                 if rows.is_empty() {
                     continue;
                 }
@@ -560,6 +491,9 @@ impl App {
                 }
                 list.group(group, found.into_iter().map(item).collect(), whole(group));
             }
+        }
+        if open.exporting {
+            return list;
         }
         let typed = search::folded(query);
         let commands = self.commands_found(open.tab, &typed, commands_only);
@@ -620,6 +554,7 @@ impl App {
                 scrolled_to: None,
                 scroll_offset: 0.0,
                 picked: None,
+                exporting: false,
             })));
             self.quick_open_hold();
         }
@@ -673,7 +608,8 @@ impl App {
 
     /// `QuickOpenScope`: this connection, or every open one.
     pub(super) fn quick_open_scope(&mut self) {
-        if let Some(open) = self.quick_open_mut() {
+        // Export a table… picks one of this connection's (spec 3b, R3).
+        if let Some(open) = self.quick_open_mut().filter(|open| !open.exporting) {
             open.everywhere = !open.everywhere;
             open.selected = 0;
             open.expanded.clear();
@@ -718,20 +654,28 @@ impl App {
     /// that result is no longer listed (a Cancel whose run ended), Enter
     /// opens nothing, and quick open stays.
     pub(super) fn quick_open_pick(&mut self, index: Option<usize>, in_editor: bool) {
-        let (here, at, item) = match &self.dialog {
+        let (here, at, item, exporting) = match &self.dialog {
             Some(Dialog::QuickOpen(open)) => {
                 let list = self.quick_open_list(open);
                 // A click and a digit name a row of the list drawn this
                 // frame; Enter, the result picked.
                 let picked = index.or_else(|| self.quick_open_picked(open, &list));
                 let item = picked.and_then(|at| list.items().nth(at).cloned());
-                (open.tab, picked, item)
+                (open.tab, picked, item, open.exporting)
             }
             _ => return,
         };
         let (Some(at), Some(item)) = (at, item) else {
             return;
         };
+        // Export a table…: the one picked opens with its sheet, Enter and
+        // ⌥↩ alike; its "more" row shows the rest, as anywhere.
+        if exporting && !matches!(item, QuickItem::More { .. }) {
+            if let Some((tab, object, kind)) = picked_object(&item) {
+                self.export_picked(here, tab, object, kind);
+            }
+            return;
+        }
         if let QuickItem::More { group, .. } = item {
             if let Some(open) = self.quick_open_mut() {
                 open.expanded.push(group);
@@ -783,8 +727,84 @@ impl App {
                     }
                 }
                 QuickCommand::Setting(option) => self.apply(Action::ShowSetting(option)),
+                QuickCommand::CancelExport { job, .. } => {
+                    self.apply(Action::CancelExport(Some(job)));
+                }
             },
             QuickItem::More { .. } => {}
         }
+    }
+
+    /// `QuickOpenExport` (⇧⌘E, `ctrl+e`): the picked table or view opens,
+    /// as Enter opens it, and its sheet over it (spec 3b, R4). On anything
+    /// else (a command, a SQL editor's recent) nothing happens.
+    pub(super) fn quick_open_export(&mut self) {
+        let (here, item) = match &self.dialog {
+            Some(Dialog::QuickOpen(open)) => {
+                let list = self.quick_open_list(open);
+                let at = self.quick_open_picked(open, &list);
+                (open.tab, at.and_then(|at| list.items().nth(at).cloned()))
+            }
+            _ => return,
+        };
+        let Some((tab, object, kind)) = item.as_ref().and_then(picked_object) else {
+            return;
+        };
+        self.export_picked(here, tab, object, kind);
+    }
+
+    /// The table or view picked in quick open opens in its window, and
+    /// its sheet over it, beside any export running (spec 4, F7).
+    fn export_picked(
+        &mut self,
+        here: ConnTabId,
+        tab: ConnTabId,
+        object: ObjectRef,
+        kind: ObjectKind,
+    ) {
+        self.dialog = None;
+        if tab != here {
+            self.apply(Action::ActivateConnTab(tab));
+        }
+        self.export_object(tab, object, kind);
+    }
+
+    /// Export a table…: quick open again over `tab`, on its tables and
+    /// views alone (spec 3b, R3).
+    pub(super) fn pick_table_to_export(&mut self, tab: ConnTabId) {
+        if self.dialog.is_some() || self.workspace(tab).is_none() {
+            return;
+        }
+        self.dialog = Some(Dialog::QuickOpen(Box::new(QuickOpen {
+            tab,
+            query: String::new(),
+            selected: 0,
+            everywhere: false,
+            expanded: Vec::new(),
+            caret: None,
+            scrolled_to: None,
+            scroll_offset: 0.0,
+            picked: None,
+            exporting: true,
+        })));
+        self.quick_open_hold();
+    }
+}
+
+/// The table or view a result of quick open is, with its window: an
+/// object found, a recent one, one of the largest tables.
+pub fn picked_object(item: &QuickItem) -> Option<(ConnTabId, ObjectRef, ObjectKind)> {
+    match item {
+        QuickItem::Object { tab, found } => {
+            Some((*tab, ObjectRef::clone(&found.object), found.kind))
+        }
+        QuickItem::Start { tab, row, .. } => match row {
+            StartRow::Recent(StartRecent::Object { object, kind, .. }) => {
+                Some((*tab, object.clone(), *kind))
+            }
+            StartRow::Largest(object, _) => Some((*tab, object.clone(), ObjectKind::Table)),
+            StartRow::Recent(StartRecent::Sql { .. }) => None,
+        },
+        QuickItem::Command { .. } | QuickItem::More { .. } => None,
     }
 }

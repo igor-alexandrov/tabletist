@@ -88,7 +88,7 @@ fn listed(harness: &Harness, tab: ConnTabId, id: TabId) -> Vec<String> {
         .unwrap()
         .options
         .iter()
-        .map(|option| crate::ui::format::plain_text(&option.key))
+        .map(|option| crate::format::plain_text(&option.key))
         .collect()
 }
 

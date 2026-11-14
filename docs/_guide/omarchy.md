@@ -6,8 +6,11 @@ nav_order: 7
 
 On Linux, Tabletist takes the Omarchy look: square corners, the keyboard
 first, vim keys, and the desktop's monospace font throughout. Every Linux
-desktop gets it. On macOS and Windows the app has a desktop look instead,
-and there is no setting that switches between them.
+desktop gets it until you choose otherwise. On macOS and Windows the app
+starts in its classic look. **Settings › Appearance › Interface** switches
+between the two at once, on every system: on Linux the classic look is the
+macOS one with its keys written with Ctrl, as Windows writes them. In this
+look the setting is the `interface` row, first in `appearance`.
 
 {% include shot.html file="omarchy-table" alt="Tabletist in its Omarchy look: a table filtered with a WHERE line, a row open beside it, and key hints along the bottom" width="2880" height="1800" %}
 
@@ -15,7 +18,9 @@ and there is no setting that switches between them.
 
 This page lists the keys of the Omarchy look, grouped by where they
 work. The status line along the bottom shows the ones that work where you
-are. The app's own list (`?`) is shorter: it leaves out the keys of the
+are: the keys of the part that has the keyboard (the sidebar, its filter,
+the rows, the row panel, a SQL editor's script or its results), with
+`ctrl+h/l panes` wherever Ctrl+H and Ctrl+L move to another part. The app's own list (`?`) is shorter: it leaves out the keys of the
 dialogs and of the lists that open in an editor.
 
 A letter does its job when no text field has the keyboard. While a field
@@ -41,7 +46,7 @@ second Esc gives the keyboard back.
 | Ctrl+K, Ctrl+J | In a SQL editor: up to the script, down to its results |
 | F6, Shift+F6 | Next and previous part of the window |
 | Ctrl+, | Settings |
-| Ctrl+=, Ctrl+- | Larger and smaller text: the whole window, under a dialog too |
+| Ctrl+=, Ctrl+-, Ctrl+0 | Larger and smaller text, or back to 13: the whole window, under a dialog too |
 | `:agents` | Show the Agents tab |
 | `:agents log` | Show the Agents tab's log |
 | `:history` | Show the [History tab]({% link _guide/sql-editor.md %}#history) |
@@ -50,7 +55,7 @@ second Esc gives the keyboard back.
 | `:keys cheatsheet` | Save the keys in force as a Markdown cheat sheet, where you say |
 | `:set calendar`, `:set nocalendar` | Show or hide the [calendar]({% link _guide/editing-data.md %}#the-calendar) under a date's editor, saved as its switch in Settings is |
 | `:update` | Show Settings › Updates, and check for a newer version there. Where Tabletist can install it, the footer asks `install <version> and restart?`: `y` downloads it and, once it is ready, restarts as Restart now does: with work open, the block lists the work, and `U` restarts when it is done; `n`, `N` or Esc does not |
-| `?` | The list of keys |
+| `?` | The list of keys. Type to filter it by name, group or keys (`ctrl+r`), or press keys with Ctrl or Alt held to list the commands they are keys of. Esc clears the filter, then closes |
 
 Ctrl+P opens quick open from any pane: a picker at the top of the
 window that finds a table or view by name, in this connection or (Tab)
@@ -65,6 +70,7 @@ numbered; once you type, it lists what matches. Its commands stay on `:`.
 | `Enter` | Open the one picked, or show its tab where it has one |
 | `1` to `9` | With nothing typed: open that recent. Once you type, digits are typed |
 | `Tab` | Search every open connection, or this one again |
+| `Ctrl+E` | [Export]({% link _guide/browsing-data.md %}#exporting) the table or view picked: it opens, with the export's float over it |
 | `Esc` | Close |
 
 ### The picker
@@ -104,12 +110,21 @@ numbered; once you type, it lists what matches. Its commands stay on `:`.
 | Keys | Do |
 | --- | --- |
 | `j` `k`, arrows, Home, End | Move |
-| Enter | Open the table or view |
+| Enter | Open the table or view, or fold or open a group |
+| `za` | Fold or open the group under the cursor; on a table of a group, fold its group |
+| `zM` `zR` | Fold every group, open every group |
 | `/` | Filter the list |
+| Enter, Esc | In the filter: back to the list |
 | `t` | Switch between tree and flat. The connection keeps its choice; Settings › Appearance sets the default |
 | `R` | Reload the list |
 | `ga` | Show the Agents tab |
+| `E` | [Export]({% link _guide/browsing-data.md %}#exporting) the table under the cursor: it opens, with the export's float over it |
+| Right-click | A table's or view's menu: open, structure, ddl, copy name, export… |
 | Ctrl+B | Hide the sidebar |
+
+A group's tables are drawn two cells in, with a `│` before them and
+without the group's prefix. The status line names the table under the
+cursor in full: `book_covers · table · 13 rows`.
 
 ### The start screen
 
@@ -158,8 +173,14 @@ With the search open, the matches replace the start lists:
 | Ctrl+C | Cancel the running query |
 | `r`, `s`, `S` | Show the rows, the structure or the DDL, from any of them |
 | `:ddl` | The DDL view of the table under the sidebar's cursor (with the keyboard in the sidebar), or else of the table in front |
+| `E`, `:export` | [Export]({% link _guide/browsing-data.md %}#exporting) the table: the float. With a selection it starts on the selected rows, and a block on its columns. Tab moves, Space or Enter chooses, Enter on the save to line exports, Ctrl+R shows the SQL it runs, Esc closes. On the save to line, the names of its folder that start with what you typed are listed: Ctrl+N and Ctrl+P move, Enter takes one, Esc closes the list. Ctrl+O picks the file in the desktop's save dialog. In its column list Space includes, `K` and `J` move, `a` takes all and `n` none. After a failure `:export` does what its line offers: tries again, shows the SQL after a timeout, the float for another name, or the float on a file when the clipboard could not take the rows. A right-click on the rows offers export selection… too |
+| `:export json` | The float, in that format: `csv`, `tsv`, `json`, `jsonl`, `sql` or `md` |
+| `:w ~/Downloads/reviews.csv` | Export the table now, in the format of the ending, with its filter and sort. A name without a folder goes to your downloads folder. `:w!` replaces a file that is there |
+| `:export cancel` | Stop the running export: nothing is saved. With two or more running, a list of them: a digit, or Ctrl+N and Ctrl+P then Enter, cancels the one picked, Esc closes it |
+| `go` | While the status line says an export is done: open its folder (of the one it names, with several) |
+| Esc | While the status line says an export failed: put it away (the one it names) |
 
-Copying a whole row has no key.
+`V` then `y` copies whole rows, with tabs between the values.
 
 ### The Agents tab
 
@@ -234,6 +255,7 @@ cursor is on.
 | `[` `]` | Previous and next row, while the panel shows. Where there is an error to go to, the bracket waits for the key after it: `e` goes to the error, and any other key steps the row. A key that moves then moves on from there; a key that edits, and `:`, are dropped, so the edit never lands on the row you left: press it again |
 | `za` | Fold the documents in it |
 | `cc`, `x`, `D`, `u` | Work on the field as they do on its cell |
+| `E` | [Export]({% link _guide/browsing-data.md %}#exporting) the panel's row alone: the float |
 | Ctrl+H | Back to the grid, on that field's cell |
 | Esc | From its fields, back to the rows. From the rows, close it |
 
@@ -248,9 +270,12 @@ cursor is on.
 | `p`, `P` | Put a copy of the yanked row below the cursor's row, or above it |
 | `dd` | Delete the row: mark it for deletion, or restore a marked row. A new row that is not saved yet is dropped |
 | `3dd` | The same for the cursor's row and the two after it. Any count works, up to 1,000 rows. The cursor moves to the row after them |
-| `V` | Start a selection of rows on the cursor's row. `j`, `k` and the other moves extend it. The status line reads `-- VISUAL --` and counts its rows |
+| `v`, Ctrl+V | Start a selection of cells, or a block, on the cursor's cell. The moves stretch it. The status line reads `-- VISUAL --` or `-- VISUAL BLOCK --` and its size |
+| `V` | Start a selection of rows on the cursor's row. `j`, `k` and the other moves extend it. The status line reads `-- VISUAL LINE --` and counts its rows |
+| `y` | In a selection: copy it, with tabs between the values, and leave it |
+| `gy` | [Copy as]({% link _guide/browsing-data.md %}#copying): the selection, or the cursor's row, in a format. One letter picks: `c` csv, `t` tsv, `j` json, `m` markdown, `s` sql insert, `n` column names. Ctrl+N and Ctrl+P move, Enter picks, Esc closes. In the row panel it copies the row, but not a new one. A selection past the clipboard's limit copies nothing: the line ends `E export`, the selection stays, and `E` opens the float on it in that format, to a file |
 | `d` | In a selection of rows: delete its rows, or restore them where all are marked. New rows among them are dropped |
-| Esc, `V` | Leave the selection of rows |
+| Esc, or the key that started it | Leave the selection |
 | Enter, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Esc | Leave the editor and keep the edit |
 | Ctrl+C | Drop the edit |
@@ -306,6 +331,8 @@ A save can ask you something first. Each question has its own keys:
 | Tab, Shift+Tab | Indent, outdent, in the text: at the cursor, or every line of the selection |
 | `:ro`, `:rw` | Read-only and read-write runs, from normal mode or with the keyboard out of the text |
 | `:w` | Nothing: vim's write, where the editor has nothing to write, and never writes to the database |
+| `:export`, `:export json` | [Export the result]({% link _guide/browsing-data.md %}#exporting-a-sql-result): the float, in a format if you name one |
+| `:w ~/Downloads/query-1.csv` | Export the result's loaded rows now, in the format of the ending. `:w!` replaces a file that is there |
 | Ctrl+Space | Complete |
 | `y`; `n`, Enter or Esc | When the status line asks before a run that changes every row of a table (an `UPDATE` or a `DELETE` without `WHERE`, a `TRUNCATE`): run it; do not |
 
@@ -325,6 +352,9 @@ On a result, with the keyboard out of the editor:
 | Keys | Do |
 | --- | --- |
 | `j` `k`, `h` `l` | Move in the result |
+| `v`, Ctrl+V, `V` | Select cells, a block, or whole rows, as in a table. `y` copies the selection and Esc leaves it |
+| `gy` | [Copy as]({% link _guide/browsing-data.md %}#copying): the selection in a format |
+| `E` | [Export the result]({% link _guide/browsing-data.md %}#exporting-a-sql-result): the float. With a selection it starts on the selected rows. In it, run again without the limit is offered where `a` (show all) is |
 | Enter | Show the selected row in the row panel |
 | Ctrl+Shift+R | Show or hide the row panel |
 | `[` `]` | Previous and next row, while the panel shows |
@@ -348,7 +378,7 @@ stopped a run, `t` runs it again without one. Times read "45s", "1m" and
 | `a` | On an agent's statement: open its call in the Agents tab's log |
 | `f` | On a filter's: open its table with that filter and sort |
 | `y` | Copy the selected statement |
-| `/` | The filter line: plain words search the SQL; `source:sql`, `source:save`, `source:filter`, `source:agent`, `result:ok`, `result:error`, `result:cancelled` and `result:saved` choose. A token it does not know shows in red and is left out. Esc closes the line and keeps it |
+| `/` | The filter line: plain words search the SQL; `source:sql`, `source:save`, `source:filter`, `source:agent`, `source:export`, `result:ok`, `result:error`, `result:cancelled` and `result:saved` choose. A token it does not know shows in red and is left out. Esc closes the line and keeps it |
 | `y`, `n` or Esc | Clear the history, or keep it, when `:history clear` asks |
 
 ### Settings
@@ -385,7 +415,7 @@ they do nothing until it is built; `:keys default` marks its lines so.
 | Enter | Record new keys for the command |
 | `dd` | Unbind it: none of its keys does anything |
 | `R` | Put its keys back |
-| `/` | Filter the commands by name. Enter or Esc gives the keys back to the list |
+| `/` | Filter the commands by name, group or keys typed (`ctrl+r`). Enter or Esc gives the keys back to the list |
 | `?` | Then press keys: list the commands they are keys of. Esc lists them all again |
 | Ctrl+E | Open `settings.toml` in your editor |
 | Esc | Close |
@@ -477,8 +507,9 @@ font = "Fira Code"
 font_size = 15
 ```
 
-The size, 9 to 24, sizes the whole window, as a terminal's font size
-does. `h` and `l` on the size row change it, and so do Ctrl+= and Ctrl+-
-anywhere in the window; `R` on the row puts back 13.
+The size, 9 to 32, sizes the whole window, as a terminal's font size
+does: rows and panes grow with it. `h` and `l` on the size row change it,
+and so do Ctrl+= and Ctrl+- anywhere in the window, which the status line
+says for 4 seconds; Ctrl+0, or `R` on the row, puts back 13.
 
 {% include shot.html file="omarchy-settings" alt="The Settings screen in the Omarchy look: the options on the left and settings.toml on the right" width="2880" height="1800" %}

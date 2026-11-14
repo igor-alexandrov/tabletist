@@ -5,16 +5,19 @@ nav_order: 8
 ---
 
 On a Mac, Tabletist has the macOS look: rounded controls, IBM Plex Sans
-for the interface and IBM Plex Mono for data. There is no setting that
-switches to another look.
+for the interface and IBM Plex Mono for data. **Settings › Appearance ›
+Interface**, beside the theme, switches to
+[the Omarchy look]({% link _guide/omarchy.md %}) and back, at once.
 
 {% include shot.html file="macos-table" alt="Tabletist in its macOS look, with two connections in the bar at the top" %}
 
 ## Install
 
 Tabletist needs macOS 11 or later. One download runs on both Apple
-Silicon and Intel. The steps are on the
-[Download page]({% link _guide/download.md %}#macos).
+Silicon and Intel. Install it with
+`brew install --cask igor-alexandrov/tabletist/tabletist`, or from the
+disk image as the
+[Download page]({% link _guide/download.md %}#macos) shows.
 
 ## The window
 
@@ -57,19 +60,24 @@ Silicon and Intel. The steps are on the
   do not apply now, while it is open. Its keys do what they do where you
   are: Cmd+N in the grid still adds a row, and the menu's **New
   Connection** is a click away. Settings, New Connection, Connections,
-  Keyboard Shortcuts and the text sizes work from the connection picker
+  Keyboard Shortcuts and View's Larger, Smaller and Actual Size work from the connection picker
   too. Previous Tab and Next Tab show no key in the menu, and their keys
   work all the same.
 - **The sidebar's SQL Editor button has a clock.** Its main part opens a
   new SQL editor; the clock at its right shows the History tab, and looks
   pressed while that tab is in front.
-- **Text has two sizes.** **Settings › Appearance** sizes the interface
-  (Small, Default or Large) and the data apart: grid cells, the SQL
-  editor and JSON, from 11 to 16 points, in IBM Plex Mono or JetBrains
-  Mono, which Tabletist bundles, or in a monospace font installed on the
-  Mac (Menlo, or one of your own), which the menu lists after them.
-  Cmd+= and Cmd+- change the data's size wherever you are, and Cmd+0
-  puts back 12.5.
+- **The window has a scale, and the data a size of its own.**
+  **Settings › Appearance › Interface scale** draws everything in the
+  window larger or smaller, from 90% to 250%, on top of the Mac's own
+  display scale: text, controls, rows and spacing together, so the
+  layout keeps its shape. Cmd+= and Cmd+- step through the scales
+  wherever you are (also **View → Larger** and **View → Smaller**), a
+  toast says the one you reached, and Cmd+0 (**View → Actual Size**)
+  puts back 100%. The data, grid cells, the SQL editor and JSON, has its
+  size apart, from 11 to 16 points, which the scale multiplies, in IBM
+  Plex Mono or JetBrains Mono, which Tabletist bundles, or in a monospace
+  font installed on the Mac (Menlo, or one of your own), which the menu
+  lists after them.
 
 {% include shot.html file="macos-table-dark" alt="The same window in the dark appearance" %}
 
@@ -106,8 +114,9 @@ Cmd+A): none of them can be given to a command.
 | Cmd+Y | Show the History tab. Not while you type in a text field, where it is redo |
 | F6, Shift+F6 | Next and previous part of the window |
 | Cmd+, | Settings |
-| Cmd+=, Cmd+-, Cmd+0 | Larger, smaller and default data text |
-| `?` | The list of keys |
+| Cmd+Shift+' | Move the keyboard to the newest [export's toast]({% link _guide/browsing-data.md %}#exporting). Tab goes round every toast's buttons, Esc gives the keyboard back |
+| Cmd+=, Cmd+-, Cmd+0 | The interface scale a step larger, a step smaller, or back to 100% |
+| `?` | The list of keys. Type to search it by name, group or keys (`cmd+r`, `⌘R`), or press keys to list the commands they are keys of. Esc clears the search, then closes |
 
 ### Quick open
 
@@ -142,6 +151,7 @@ keyboard.
 | Option+Return | Open a new SQL editor reading its first rows |
 | Tab | Search every open connection, or this one again |
 | `>` | Typed first: list the commands alone (and, with a word after it, the settings) |
+| Cmd+Shift+E | [Export]({% link _guide/browsing-data.md %}#exporting) the table or view picked: it opens, with the export over it |
 | Esc | Close |
 
 ### The picker
@@ -177,6 +187,7 @@ keyboard.
 | Cmd+Up, Cmd+Down | The top and the bottom, as Home and End |
 | Return | Open the table or view |
 | Cmd+R | Reload the list |
+| Right-click | A table's or view's menu: Open, Structure, DDL, Copy name, Export… |
 
 ### A table
 
@@ -187,8 +198,14 @@ keyboard.
 | Cmd+Left, Cmd+Right | First and last column |
 | Cmd+Option+Left and Right | Previous and next page |
 | Cmd+F | Filter bar |
-| Cmd+C | Copy the cell |
-| Cmd+Shift+C | Copy the row |
+| Cmd+C | Copy the selection, or the cell |
+| Cmd+Shift+C | Copy the selected rows |
+| Cmd+Option+C | [Copy as]({% link _guide/browsing-data.md %}#copying): the selection in a format, one letter each |
+| Cmd+Shift+E | [Export]({% link _guide/browsing-data.md %}#exporting) the table, or the one selected in the sidebar. With a selection it starts on the selected rows, and a block on its columns. On the row panel, its row alone |
+| Shift+arrows, Shift-click, drag | Select cells |
+| Click a row's number | Select the row. Shift-click selects through to another, Cmd-click adds or takes out one |
+| Shift+Space | Select the rows of the selected cells |
+| Cmd+A | Select every row loaded |
 | Cmd+R | Reload |
 | Cmd+. | Cancel the running query |
 | Cmd+I | Open the row panel, with the keyboard on its fields. Esc goes back to the rows |
@@ -220,9 +237,9 @@ In its DDL view:
 | Return, F2 | Edit the cell. Typing on a selected cell starts an edit too, and so does a double-click |
 | Cmd+N | Add a row, at the top of the grid |
 | Down | On the table's last row, on its last page: add a row below it |
-| Cmd+D | Duplicate the row, as a new row at the top of the grid |
+| Cmd+D | Duplicate the selected rows, as new rows at the top of the grid |
 | Backspace, Forward Delete | Delete the row: mark it for deletion, or restore a marked row. A new row that is not saved yet is dropped |
-| Shift+Up, Shift+Down | Select the row above or below with the selected rows. Backspace then deletes them all |
+| Shift+Up, Shift+Down | Select cells across the rows above or below. Backspace then deletes their rows |
 | Return, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Esc | Cancel the edit |
 | Cmd+L | In a foreign key cell's list: choose the column that labels it. In the chooser, Up and Down move, Return chooses and Esc closes |
@@ -247,6 +264,8 @@ In its DDL view:
 | Cmd+Shift+F | Format |
 | Tab, Shift+Tab | Indent, outdent: at the cursor, or every line of the selection |
 | Cmd+Shift+M | Switch between read-only and read-write runs |
+| Cmd+Option+C | [Copy as]({% link _guide/browsing-data.md %}#copying): the cells picked in the result, in a format |
+| Cmd+Shift+E | [Export the result]({% link _guide/browsing-data.md %}#exporting-a-sql-result), from the script or its rows. With a selection it starts on the selected rows |
 | Cmd+Option+Down, Cmd+Option+Up | Put the cursor where the last run's error is, while the script is the one that ran |
 | Cmd+I, Ctrl+Space | Complete |
 | Esc, Return | Cancel, when a run that changes every row of a table asks first. Return runs only from Run anyway, with the keyboard on it |

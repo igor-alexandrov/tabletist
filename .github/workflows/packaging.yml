@@ -5,10 +5,10 @@ name: Packaging
 # changes. No signing here.
 on:
   pull_request:
-    paths: [packaging/**, .cargo/**, Cargo.toml, Cargo.lock, build.rs, src/main.rs, src/macos.rs, crates/tabletist-appkit/**, .github/workflows/packaging.yml, .github/workflows/release.yml]
+    paths: [packaging/**, .cargo/**, Cargo.toml, Cargo.lock, build.rs, src/main.rs, src/macos.rs, crates/tabletist-appkit/**, crates/tabletist-core/Cargo.toml, crates/tabletist-core/build.rs, .github/workflows/packaging.yml, .github/workflows/release.yml]
   push:
     branches: [main]
-    paths: [packaging/**, .cargo/**, Cargo.toml, Cargo.lock, build.rs, src/main.rs, src/macos.rs, crates/tabletist-appkit/**, .github/workflows/packaging.yml, .github/workflows/release.yml]
+    paths: [packaging/**, .cargo/**, Cargo.toml, Cargo.lock, build.rs, src/main.rs, src/macos.rs, crates/tabletist-appkit/**, crates/tabletist-core/Cargo.toml, crates/tabletist-core/build.rs, .github/workflows/packaging.yml, .github/workflows/release.yml]
   workflow_dispatch:
 
 permissions:
@@ -216,3 +216,94 @@ jobs:
           sudo -u builder bash -c "cd $work/src && makepkg --printsrcinfo > .SRCINFO && makepkg --noconfirm"
           tar -tf "$work"/src/tabletist-0.0.0-1-*.pkg.tar.zst | grep -x 'usr/bin/tabletist'
 
+
+  # The tap's cask as release.yml renders it, against the latest release: the
+  # DMG `brew install --cask igor-alexandrov/tabletist/tabletist` downloads. A
+  # template that needs a file no release has yet fails here until one does.
+  homebrew:
+    name: Homebrew cask
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+      HOMEBREW_NO_ANALYTICS: 1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render the cask into a local tap
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern checksums.txt --dir "$RUNNER_TEMP"
+          brew tap-new --no-git tabletist/test
+          tap="$(brew --repository tabletist/test)"
+          mkdir -p "$tap/Casks"
+          bash packaging/homebrew/render.sh packaging/homebrew/tabletist.rb.in "${tag#v}" \
+            "$RUNNER_TEMP/checksums.txt" > "$tap/Casks/tabletist.rb"
+          cat "$tap/Casks/tabletist.rb"
+      - run: brew style --cask tabletist/test/tabletist
+      # By its full name, as the install steps give it: since Homebrew 6 that
+      # trusts this one cask of a tap nobody trusted, and nothing else.
+      - name: Install, and open as Gatekeeper sees it
+        run: |
+          brew install --cask tabletist/test/tabletist
+          /Applications/Tabletist.app/Contents/MacOS/tabletist --version
+          spctl --assess --type execute --verbose /Applications/Tabletist.app
+      # Refuses a cask nobody trusted, so after the install. --online asks
+      # GitHub's API about the repository, more often than the 60 an hour
+      # a runner may ask without a token.
+      - name: brew audit --cask --strict --online
+        env:
+          HOMEBREW_GITHUB_API_TOKEN: ${{ github.token }}
+        run: brew audit --cask --strict --online tabletist/test/tabletist
+      - name: Uninstall
+        run: |
+          brew uninstall --cask tabletist/test/tabletist
+          test ! -e /Applications/Tabletist.app
+
+  # The tap's formula as release.yml renders it, against the latest release:
+  # `brew install igor-alexandrov/tabletist/tabletist` builds that release's
+  # source archive with Homebrew's Rust. On Linux too, where Homebrew is on
+  # the runner but not on the PATH.
+  homebrew-formula:
+    name: Homebrew formula (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+      HOMEBREW_NO_ANALYTICS: 1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Homebrew on the PATH
+        if: runner.os == 'Linux'
+        run: echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
+      - name: Render the formula into a local tap
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern checksums.txt --dir "$RUNNER_TEMP"
+          brew tap-new --no-git tabletist/test
+          tap="$(brew --repository tabletist/test)"
+          mkdir -p "$tap/Formula"
+          bash packaging/homebrew/render.sh packaging/homebrew/tabletist-formula.rb.in "${tag#v}" \
+            "$RUNNER_TEMP/checksums.txt" > "$tap/Formula/tabletist.rb"
+          cat "$tap/Formula/tabletist.rb"
+      - run: brew style --formula tabletist/test/tabletist
+      - name: Build from source, and test
+        run: |
+          brew install --build-from-source --formula tabletist/test/tabletist
+          brew test tabletist/test/tabletist
+          "$(brew --prefix)/bin/tabletist" --version
+      - name: brew audit --formula --strict --online
+        env:
+          HOMEBREW_GITHUB_API_TOKEN: ${{ github.token }}
+        run: brew audit --formula --strict --online tabletist/test/tabletist
+      - name: Uninstall
+        run: |
+          brew uninstall --formula tabletist/test/tabletist
+          test ! -e "$(brew --prefix)/bin/tabletist"

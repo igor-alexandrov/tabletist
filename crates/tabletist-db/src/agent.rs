@@ -21,7 +21,7 @@
 use std::fmt;
 
 use sqlparser::ast::{Query, SetExpr, Statement, UtilityOption};
-use sqlparser::dialect::{MySqlDialect, PostgreSqlDialect, SQLiteDialect};
+use sqlparser::dialect::{BigQueryDialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect};
 use sqlparser::parser::Parser;
 use sqlparser::tokenizer::{Token, Tokenizer, Whitespace};
 
@@ -37,7 +37,7 @@ pub use hidden::{
 };
 pub(crate) use hidden::{calls_a_refused_function, named_relations, planned};
 pub use run::{Answer, Limits, MASKED};
-pub(crate) use run::{Sent, answer, count_mismatch, masked};
+pub(crate) use run::{Sent, answer, count_mismatch, masked, over_its_time};
 
 /// The longest statement that is read at all, in bytes.
 pub const MAX_SQL_BYTES: usize = 100_000;
@@ -312,7 +312,7 @@ impl fmt::Display for Refusal {
             Self::InvalidParams(ParamFault::Placeholder { written, dialect }) => {
                 let own = match dialect {
                     Dialect::Postgres => "$1, $2 and so on",
-                    Dialect::MySql | Dialect::Sqlite => "?",
+                    Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery => "?",
                 };
                 write!(
                     f,
@@ -517,6 +517,7 @@ fn read_parsed(dialect: Dialect, text: &str, params: &[Param]) -> Result<bool, R
         Dialect::Postgres => &PostgreSqlDialect {},
         Dialect::MySql => &MySqlDialect {},
         Dialect::Sqlite => &SQLiteDialect {},
+        Dialect::BigQuery => &BigQueryDialect {},
     };
     let unread = || unread(dialect, text);
     let tokens = Tokenizer::new(parser, text)
@@ -579,7 +580,7 @@ fn read_parsed(dialect: Dialect, text: &str, params: &[Param]) -> Result<bool, R
 fn hints_read(dialect: Dialect, tokens: &[Token], text: &str) -> Result<(), Refusal> {
     match dialect {
         Dialect::MySql => {}
-        Dialect::Postgres | Dialect::Sqlite => return Ok(()),
+        Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => return Ok(()),
     }
     let parsed = tokens.iter().any(|token| match token {
         Token::Whitespace(Whitespace::MultiLineComment(body)) => body.starts_with('+'),
@@ -806,7 +807,7 @@ fn words_read(dialect: Dialect, pieces: &[Piece]) -> Result<(), Refusal> {
                 Dialect::MySql => {
                     return Err(Refusal::NotAllowed("An assignment to a variable".into()));
                 }
-                Dialect::Postgres | Dialect::Sqlite => continue,
+                Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => continue,
             },
             Piece::Open | Piece::Other => continue,
         };
@@ -869,7 +870,7 @@ fn pragma_table(dialect: Dialect, name: &str) -> bool {
         Dialect::Sqlite => name
             .get(..7)
             .is_some_and(|start| start.eq_ignore_ascii_case("pragma_")),
-        Dialect::Postgres | Dialect::MySql => false,
+        Dialect::Postgres | Dialect::MySql | Dialect::BigQuery => false,
     }
 }
 
@@ -986,6 +987,9 @@ fn effects(dialect: Dialect) -> (&'static [&'static str], &'static [&'static str
             // parenthesis to be read.
             &[],
         ),
+        // GoogleSQL's functions are pure: it has nothing with an effect
+        // outside its result (no files, no settings, no sessions).
+        Dialect::BigQuery => (&[], &[]),
     }
 }
 
@@ -999,7 +1003,7 @@ fn named_placeholder(dialect: Dialect, sign: char, next: Option<&Token>) -> Opti
     };
     let named = match (dialect, sign) {
         (Dialect::MySql | Dialect::Sqlite, ':') | (Dialect::Sqlite, '@') => true,
-        (Dialect::Postgres | Dialect::MySql | Dialect::Sqlite, _) => false,
+        (Dialect::Postgres | Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery, _) => false,
     };
     named.then(|| format!("{sign}{}", name.value))
 }
@@ -1018,7 +1022,9 @@ fn params_match(
                 .strip_prefix('$')
                 .and_then(|number| number.parse::<usize>().ok())
                 .filter(|number| *number > 0),
-            Dialect::MySql | Dialect::Sqlite => (written == "?").then_some(expected + 1),
+            Dialect::MySql | Dialect::Sqlite | Dialect::BigQuery => {
+                (written == "?").then_some(expected + 1)
+            }
         };
         let Some(position) = position else {
             return Err(Refusal::InvalidParams(ParamFault::Placeholder {

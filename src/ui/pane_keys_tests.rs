@@ -14,7 +14,7 @@ use crate::ui::tests::focused_name;
 
 /// A connection in `look` with a new SQL editor that holds `text`, has the
 /// keyboard, and has run once: its results show three rows.
-fn ran(look: Look, text: &str) -> (Harness, ConnTabId, TabId) {
+pub(super) fn ran(look: Look, text: &str) -> (Harness, ConnTabId, TabId) {
     let mut harness = Harness::new();
     let run = if look.terminal {
         Modifiers::CTRL

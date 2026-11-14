@@ -5,16 +5,17 @@
 use egui::{CornerRadius, Id, Rect, Sense, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::{ObjectKind, ObjectRef};
 
-use crate::app::App;
-use crate::i18n::{Locale, gettext};
-use crate::keymap::{Command, Written};
-use crate::model::{Action, ConnTabId, TreeNode, TreeRow};
-use crate::theme::{Icon, Look, Palette};
+use crate::format::display_safe;
+use crate::i18n::{Locale, gettext, ngettext};
+use crate::keymap::{Command, Keymap, Scope, Written};
+use crate::model::{Action, AgentsHere, ConnTabId, TreeNode, TreeRow, Workspace};
+use crate::style::Icon;
+use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
-use crate::ui::focus;
-use crate::ui::format::display_safe;
+use crate::ui::focus::Link;
 use crate::ui::menu;
 use crate::ui::widgets::{self, ButtonSpec};
+use crate::ui::{Paint, focus};
 
 /// The sidebar's width when it opens, per look: the design's 264 and 248
 /// and the 1 pt rule it draws outside them.
@@ -144,6 +145,16 @@ fn row_height(row: &TreeRow, look: &Look) -> f32 {
     }
 }
 
+/// What an object is, as a screen reader names its row and the terminal's
+/// status line says it.
+pub(super) fn kind_name(locale: Locale, kind: ObjectKind) -> std::borrow::Cow<'static, str> {
+    match kind {
+        ObjectKind::Table => gettext(locale, "table"),
+        ObjectKind::View => gettext(locale, "view"),
+        ObjectKind::MaterializedView => gettext(locale, "materialized view"),
+    }
+}
+
 /// The name kind of an object as the tree tags it, if not a table.
 fn kind_tag(locale: Locale, kind: ObjectKind) -> Option<String> {
     match kind {
@@ -153,35 +164,43 @@ fn kind_tag(locale: Locale, kind: ObjectKind) -> Option<String> {
     }
 }
 
-pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
-    let show_system = app.settings.show_system_schemas;
+/// Draws the sidebar of the workspace `tab`, and returns what it asks for.
+/// `show_system` is the setting that lists the system's schemas; `agents`
+/// what the Agents entry says, where it has one. The terminal look's filter
+/// line edits the tree's filter in place, and the sidebar takes the tree's
+/// request to scroll its cursor into view.
+pub fn show(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    workspace: &mut Workspace,
+    keymap: &Keymap,
+    show_system: bool,
+    agents: Option<AgentsHere>,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     // The keys under the tree, as the keymap writes them for the look.
-    let layout = app.layout();
-    let hints = HINTS.map(|(command, label)| (app.keymap.key(layout, command), label));
-    let sql_key = app.keymap.key(layout, Command::NewSqlTab);
-    let history_key = app.keymap.key(layout, Command::History);
+    let layout = paint.layout();
+    let hints = HINTS.map(|(command, label)| (keymap.key(layout, command), label));
+    let sql_key = keymap.key(layout, Command::NewSqlTab);
+    let history_key = keymap.key(layout, Command::History);
     // The Agents entry, where agents can reach the app: what it says, and
     // the key that shows the tab.
     // The terminal look names the letters from the tree and the grid, as
     // the others name their chord.
     let agents_key = match look.terminal {
-        true => app
-            .keymap
-            .key_in(layout, Command::ShowAgents, crate::keymap::Scope::Grid),
-        false => app.keymap.key(layout, Command::ShowAgents),
+        true => keymap.key_in(layout, Command::ShowAgents, crate::keymap::Scope::Grid),
+        false => keymap.key(layout, Command::ShowAgents),
     };
-    let agents = app
-        .agents_here(tab)
+    let agents = agents
         .filter(|_| crate::endpoint::AVAILABLE)
         .map(|here| (here, agents_key));
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
     if workspace.sidebar_hidden {
-        return;
+        return Vec::new();
     }
     let agents_front = workspace.agents_in_front();
     let history_front = workspace.history_in_front();
@@ -285,7 +304,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     } else if field.clicked() {
                         actions.push(Action::OpenQuickOpen);
                     }
-                } else if let Some(workspace) = app.workspace_mut(tab) {
+                } else {
                     let hint = gettext(locale, "filter objects");
                     let style = widgets::FieldStyle {
                         fill: Some(palette.window),
@@ -302,8 +321,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                         &palette,
                     );
                     field.widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, true, "Filter"));
+                    // The status line, drawn before the sidebar, asks
+                    // whether it has the keyboard.
+                    ui.data_mut(|data| data.insert_temp(filter_field_key(tab), field.id));
                     focus::region(ui, focus::Region::Search, field.rect.expand(8.0));
                     focus::claim(ui, focus::Region::Search, &field);
+                    // Clicked from another pane, the field is the tree's
+                    // all the same: its Enter and Esc leave it for the tree.
+                    if field.has_focus() && workspace.pane != crate::model::Pane::Tree {
+                        actions.push(Action::GiveTreeKeys(tab));
+                    }
                 }
             });
             ui.add_space(if look.terminal { 6.0 } else { 8.0 });
@@ -401,7 +428,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     WidgetInfo::labeled(WidgetType::Other, true, gettext(locale, "Objects"))
                 });
                 ui.ctx().accesskit_node_builder(stop.id, |node| {
-                    node.set_role(egui::accesskit::Role::Group);
+                    node.set_role(egui::accesskit::Role::Tree);
                 });
                 focus::pane(ui, &stop);
                 focus::hint(ui, &stop, area, focus::Ring::Own);
@@ -446,6 +473,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                     cursor: cursor.as_ref(),
                                     keys,
                                     lit,
+                                    flat,
                                 },
                                 locale,
                                 Skin {
@@ -475,18 +503,31 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 focus::pane_border(ui, full, &look, &palette);
             }
         });
-    if reveal_pending && let Some(workspace) = app.workspace_mut(tab) {
+    if reveal_pending {
         workspace.tree.reveal_cursor = false;
     }
-    app.actions.extend(actions);
+    actions
+}
+
+/// Where the terminal look's filter field above the tree keeps its id.
+fn filter_field_key(tab: ConnTabId) -> egui::Id {
+    egui::Id::new(("tree-filter-field", tab.0))
+}
+
+/// Whether the terminal look's filter field above the tree has the
+/// keyboard: the field the last frame drew.
+pub fn filter_focused(ctx: &egui::Context, tab: ConnTabId) -> bool {
+    ctx.data(|data| data.get_temp::<egui::Id>(filter_field_key(tab)))
+        .is_some_and(|id| ctx.memory(|memory| memory.has_focus(id)))
 }
 
 /// The terminal look's key hints under the tree: what each key does, and
 /// the command whose key it is.
-const HINTS: [(Command, &str); 3] = [
+const HINTS: [(Command, &str); 4] = [
     (Command::ToggleSidebar, "hide"),
     (Command::ToggleTree, "tree"),
     (Command::OpenObject, "open"),
+    (Command::Export, "export table"),
 ];
 
 /// The terminal footer's padding (8 above and below, 12 at the sides), and
@@ -498,7 +539,7 @@ const FOOTER: f32 = 8.0 + 2.0 * 15.0 + 8.0 + 1.0;
 fn terminal_footer(
     ui: &mut egui::Ui,
     full: Rect,
-    hints: &[(Written, &str); 3],
+    hints: &[(Written, &str); 4],
     look: &Look,
     palette: &Palette,
 ) {
@@ -974,6 +1015,8 @@ struct Marks<'a> {
     keys: bool,
     /// And the keyboard is in use: the cursor shows.
     lit: bool,
+    /// The objects are one flat list: no groups, no indent.
+    flat: bool,
 }
 
 /// How rows are drawn: the platform look and the colour palette.
@@ -983,17 +1026,83 @@ struct Skin<'a> {
     palette: &'a Palette,
 }
 
-/// Where a tree row draws its label. macOS: the chevron 8 into the row
-/// (itself 8 in), then 6 to the name; grouped objects 26 into theirs.
-/// Terminal: 4 and 8 in, the glyph, 6; objects 24 into theirs.
-fn label_x(rect: Rect, depth: u8, look: &Look, glyph: f32) -> f32 {
+/// One step of the macOS tree's indent: the chevron, 12, and the 6 after
+/// it. A group's name and a single object's start one step past the
+/// chevron.
+pub(crate) const INDENT: f32 = 18.0;
+
+/// Where the macOS guide stands: 4 into the group's chevron.
+pub(crate) const GUIDE: f32 = 4.0;
+
+/// How far a grouped object's highlight begins past its guide: the 1 pt
+/// line, then 4.
+pub(crate) const PAST_GUIDE: f32 = 5.0;
+
+/// How far a grouped object's name stands into its highlight.
+pub(crate) const NAME_IN: f32 = 14.0;
+
+/// Where a tree row draws, from its left edge.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Places {
+    /// The fold mark: macOS's chevron, the terminal's ▸.
+    pub fold: f32,
+    /// The name.
+    pub label: f32,
+    /// The guide along an open group's objects, on each of its rows:
+    /// macOS's line 4 into the chevron, the terminal's `│` under its
+    /// group's name.
+    pub guide: Option<f32>,
+    /// Where the highlight and the focus ring begin: inside the indent,
+    /// past the guide, for a grouped object.
+    pub band: f32,
+}
+
+/// Where `row` draws, in the look. `glyph` is the fold mark's width and
+/// `cell` one character's of the terminal's face. macOS: the chevron 8
+/// into the row (itself 8 in), a group's name and a single object's one
+/// step past it; a grouped object's highlight 4 past the guide and its
+/// name 14 into that, so it stands in from its group's name. Terminal: the mark 4 and 8 in, a
+/// group's name 6 after it, and in the tree every object two cells
+/// further, a grouped one with `│` in the first of them.
+pub(crate) fn places(row: &TreeRow, flat: bool, look: &Look, glyph: f32, cell: f32) -> Places {
     let inset = tree_inset(look);
-    let (pad, nested) = if look.terminal {
-        (8.0, 24.0)
-    } else {
-        (8.0, 26.0)
+    let fold = inset + 8.0;
+    let grouped = row.depth > 0;
+    if look.terminal {
+        let name = fold + glyph + 6.0;
+        let label = match row.node {
+            TreeNode::Object(..) if !flat => name + 2.0 * cell,
+            _ => name,
+        };
+        return Places {
+            fold,
+            label,
+            guide: grouped.then_some(name),
+            band: inset,
+        };
+    }
+    let guide = fold + GUIDE;
+    let highlight = guide + PAST_GUIDE;
+    // The pill stands 8 inside its band.
+    let pill = match look.selection {
+        crate::theme::Selection::Pill => 8.0,
+        crate::theme::Selection::Tint | crate::theme::Selection::Bar => 0.0,
     };
-    rect.left() + inset + if depth > 0 { nested } else { pad + glyph + 6.0 }
+    Places {
+        fold,
+        label: if grouped {
+            highlight + NAME_IN
+        } else {
+            fold + INDENT
+        },
+        guide: grouped.then_some(guide),
+        band: if grouped { highlight - pill } else { 0.0 },
+    }
+}
+
+/// One character's width in the terminal's face.
+fn cell_width(ui: &egui::Ui, look: &Look) -> f32 {
+    TextRole::OBody.width(ui.ctx(), look.faces, " ")
 }
 
 /// The width of the fold mark: macOS's 12 pt chevron, the terminal's ▾.
@@ -1025,8 +1134,8 @@ fn tree_row(
         ui.allocate_ui_with_layout(size, layout, |ui| {
             ui.set_min_size(size);
             ui.spacing_mut().item_spacing.x = 6.0;
-            let left = label_x(ui.max_rect(), 0, look, glyph_width(ui, look));
-            ui.add_space(left - ui.max_rect().left());
+            let at = places(row, marks.flat, look, glyph_width(ui, look), 0.0);
+            ui.add_space(at.label);
             let refresh = gettext(locale, "Reload");
             let link_width = small.width(ui.ctx(), look.faces, &refresh);
             let room = ui.available_width() - link_width - ui.spacing().item_spacing.x;
@@ -1061,15 +1170,42 @@ fn tree_row(
         _ => display_safe(&row.label),
     };
     let label = display_safe(&row.label);
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &*full_name));
     let selected = matches!(&row.node, TreeNode::Object(object, _) if Some(object) == marks.active);
-    // Rows sit in the tree's inset: the macOS pill fills it, the terminal
-    // bar spans it.
-    let band = if look.terminal {
-        rect.shrink2(vec2(tree_inset(look), 0.0))
-    } else {
-        rect
+    // A tree's item, named in full with what it is, though a grouped
+    // object's prefix is not drawn: "book_, 21 tables", "book_covers, table".
+    let name = match &row.node {
+        TreeNode::Group(..) => {
+            let count = row.count.unwrap_or_default();
+            let plural = u32::try_from(count).unwrap_or(u32::MAX);
+            ngettext(locale, "{name}, {n} table", "{name}, {n} tables", plural)
+                .replace("{n}", &count.to_string())
+                .replace("{name}", &label)
+        }
+        TreeNode::Object(_, kind) => format!("{full_name}, {}", kind_name(locale, *kind)),
+        TreeNode::Empty(_) => label.to_string(),
     };
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &name));
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_role(egui::accesskit::Role::TreeItem);
+        node.set_level(usize::from(row.depth) + 1);
+        if let Some(open) = row.expanded {
+            node.set_expanded(open);
+        }
+        if selected {
+            node.set_selected(true);
+        }
+    });
+    let glyph = glyph_width(ui, look);
+    let at = places(row, marks.flat, look, glyph, cell_width(ui, look));
+    // Rows sit in the tree's inset: the macOS pill fills it, the terminal
+    // bar spans it. A grouped object's begins past its guide.
+    let band = Rect::from_min_max(
+        pos2(rect.left() + at.band, rect.top()),
+        pos2(
+            rect.right() - if look.terminal { at.band } else { 0.0 },
+            rect.bottom(),
+        ),
+    );
     widgets::selection(ui, band, selected, response.hovered(), look, palette);
     let highlight = widgets::selection_rect(band, look);
     // The terminal's bar on the open object's row is muted while the keys
@@ -1091,9 +1227,21 @@ fn tree_row(
         );
     }
     let center = rect.center().y;
-    let glyph = glyph_width(ui, look);
-    let x = label_x(rect, row.depth, look, glyph);
-    let fold_x = rect.left() + tree_inset(look) + 8.0;
+    let x = rect.left() + at.label;
+    let fold_x = rect.left() + at.fold;
+    // The guide along the open group, a piece on each of its rows: one
+    // line from its first object to its last.
+    if let Some(guide) = at.guide {
+        let guide = rect.left() + guide;
+        if look.terminal {
+            let mark = Text::one(look, TextRole::OBody, "│", palette.dim);
+            widgets::paint_text(ui, guide, center, mark);
+        } else {
+            let line = Rect::from_min_size(pos2(guide, rect.top()), vec2(1.0, rect.height()));
+            ui.painter()
+                .rect_filled(line, CornerRadius::ZERO, palette.surface_active);
+        }
+    }
     if let Some(expanded) = row.expanded {
         if look.terminal {
             let mark = if expanded { "▾" } else { "▸" };
@@ -1213,10 +1361,75 @@ fn tree_row(
     }
     // A click also puts the keyboard cursor here and gives the tree the
     // arrows (after the row's own action, which may give them to the grid).
-    if response.clicked() {
+    // A secondary click too: its menu is about this row.
+    if response.clicked() || response.secondary_clicked() {
         actions.push(Action::SetTreeCursor {
             tab,
             node: row.node.clone(),
         });
     }
+    if let TreeNode::Object(object, kind) = &row.node {
+        object_menu(&response, (tab, object, *kind), locale, skin, actions);
+    }
+}
+
+/// The menu a secondary click on a table's or view's row opens (spec 3b,
+/// R5): Open, Structure, DDL, Copy name, Export…, and Import… greyed.
+fn object_menu(
+    response: &egui::Response,
+    (tab, object, kind): (ConnTabId, &ObjectRef, ObjectKind),
+    locale: Locale,
+    skin: Skin<'_>,
+    actions: &mut Vec<Action>,
+) {
+    use crate::model::TreePick;
+    let Skin { look, palette } = skin;
+    menu::context(response, look, palette, |ui| {
+        let ctx = ui.ctx().clone();
+        let word = |text: &'static str| look.label(&gettext(locale, text));
+        let key = |command| crate::ui::keys::written_in(&ctx, look, command, Scope::Sidebar);
+        let rows = [
+            (TreePick::Open, word("Open"), key(Command::OpenObject)),
+            (TreePick::Structure, word("Structure"), Written::default()),
+            (TreePick::Ddl, word("DDL"), Written::default()),
+        ];
+        let mut picked = None;
+        let row = |ui: &mut egui::Ui, words: &str, key: &Written| {
+            let mut item = menu::Item::action(words);
+            if !look.terminal && !key.as_str().is_empty() {
+                item = item.detail(key.as_str());
+            }
+            item.show(ui, look, palette).clicked()
+        };
+        for (pick, words, key) in &rows {
+            if row(ui, words, key) {
+                picked = Some(*pick);
+            }
+        }
+        let copy = word("Copy name");
+        if row(ui, &copy, &Written::default()) {
+            picked = Some(TreePick::CopyName);
+        }
+        menu::separator(ui, palette);
+        let export = word("Export…");
+        if row(ui, &export, &key(Command::Export)) {
+            picked = Some(TreePick::Export);
+        }
+        let import = word("Import…");
+        let later = word("later");
+        let why = gettext(locale, "Import comes after Export");
+        menu::Item::action(&import)
+            .detail(&later)
+            .disabled(&why)
+            .show(ui, look, palette);
+        if let Some(pick) = picked {
+            actions.push(Action::FromTree {
+                tab,
+                object: object.clone(),
+                kind,
+                pick,
+            });
+            ui.close();
+        }
+    });
 }

@@ -6,7 +6,7 @@
 use egui::accesskit::Live;
 use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 
-use crate::app::App;
+use crate::app::Work;
 use crate::i18n::gettext;
 use crate::keymap::Command;
 use crate::model::Action;
@@ -17,8 +17,8 @@ use crate::update::release;
 
 use super::terminal::{ROW_SIDE, Skin, columns, heading, key, option_row, widths};
 use super::updates::{
-    Card, announce_live, downloading_said, failure_said, installs, progress_node, released, when,
-    work_said,
+    Card, Status, announce_live, downloading_said, failure_said, installs, progress_node, released,
+    when, work_said,
 };
 
 /// What the note under the row says, word for word as the board has it.
@@ -27,16 +27,18 @@ const NOTE_COMMAND: &str = "cargo install tabletist --locked";
 const PRIVACY: &str = "the check asks github for the latest release and sends this version, os and cpu, nothing else.";
 
 /// The pane: the block, then its one row under `automatic`, then the
-/// note. The cursor's row is the pane's only one.
+/// note. The cursor's row is the pane's only one. `interrupted` lists what
+/// a restart would interrupt, asked only while the block says so.
 pub(super) fn rows(
     ui: &mut Ui,
-    app: &App,
+    status: Status,
+    interrupted: impl FnOnce() -> Vec<Work>,
     settings: &Settings,
     cursor: usize,
     skin: &Skin,
     actions: &mut Vec<Action>,
 ) {
-    block(ui, app, skin);
+    block(ui, status, interrupted, skin);
     heading(ui, "Automatic", 8.0, skin);
     let room = ui.available_width() - 2.0 * ROW_SIDE;
     let columns = columns(
@@ -118,15 +120,15 @@ fn progress_row(ui: &Ui, downloading: &crate::update::Downloading, skin: &Skin) 
 
 /// The status block: what the card of the other looks says, a line at a
 /// time, with the pane's keys that act on it.
-fn block(ui: &mut Ui, app: &App, skin: &Skin) {
+fn block(ui: &mut Ui, status: Status, interrupted: impl FnOnce() -> Vec<Work>, skin: &Skin) {
     let Skin {
         look,
         palette,
         locale,
         ..
     } = *skin;
-    let shown = Card::of(app);
-    let now = app.now_secs();
+    let shown = Card::of(status);
+    let now = status.now;
     let current = crate::update::CURRENT;
     // As the board writes it here: `0.4.0 available`.
     let title = match shown {
@@ -203,13 +205,13 @@ fn block(ui: &mut Ui, app: &App, skin: &Skin) {
             progress = Some((lines.len(), downloading));
             lines.push(progress_row(ui, downloading, skin));
         }
-        Card::Ready(_) => sub.push(say(super::updates::ready_said(app))),
+        Card::Ready(_) => sub.push(say(super::updates::ready_said(status.updates))),
         Card::Held { when_done, .. } => {
             sub.push(say(match when_done {
                 false => "restart now would interrupt:",
                 true => "tabletist restarts once this is done:",
             }));
-            let listed = app.work_in_progress();
+            let listed = interrupted();
             let start = lines.len();
             for item in &listed {
                 lines.push(vec![
@@ -237,7 +239,7 @@ fn block(ui: &mut Ui, app: &App, skin: &Skin) {
         Card::Checking => Vec::new(),
         Card::Available(offer) | Card::NoBuild(offer) => {
             let mut keys = Vec::new();
-            if matches!(shown, Card::Available(_)) && installs(app) {
+            if matches!(shown, Card::Available(_)) && installs(status) {
                 keys.push((Command::SettingsInstallUpdate, say("update now")));
             }
             keys.push((Command::SettingsReleaseNotes, say("release notes")));
