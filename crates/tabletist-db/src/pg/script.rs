@@ -119,9 +119,18 @@ async fn read_only(
             }
             Err(error) => return Err(error),
         },
-        // A cancel landed on the opening queries: no results.
+        // A cancel landed on the opening queries: no results. Where
+        // nobody stopped an agent's run, the server's timeout ended its
+        // views' question (see `open`): the statement is told as one the
+        // timeout ended, as a cancel the run did not make is.
         Ok((tx, _)) => {
             outcome.stopped = true;
+            if sent.is_some() && !stop.is_stopped() {
+                outcome.results.push(StatementResult {
+                    elapsed: Duration::ZERO,
+                    outcome: StatementOutcome::Cancelled,
+                });
+            }
             tx
         }
         Err(error) if error.is_connection_lost() => return Err(error),
@@ -287,22 +296,24 @@ enum Tx {
 /// An agent's run asks, in the place of the query that takes the
 /// snapshot, which views may call a function an agent may not call
 /// (`super::views`): `Ok` holds those, with their definitions, and none
-/// for a script's run. Before the timeout is set: the run's own query is
-/// not the agent's statement, and a timeout there would fail the open.
+/// for a script's run. After the timeout is set, which bounds it as it
+/// bounds the statement: on a database of many views it is not free. The
+/// timeout ending it is a cancel, `Aborted`, which the caller tells from
+/// a stop.
 ///
 /// All of it is one message, one round trip to the server. It runs in
 /// order and stops at the first step that fails; past `BEGIN` that leaves
 /// a failed transaction, which the close rolls back as before.
 async fn open(client: &tokio_postgres::Client, sent: Option<Sent<'_>>) -> Result<(Tx, Vec<View>)> {
-    let (snapshot, timeout) = match sent {
+    let (timeout, snapshot) = match sent {
         Some(sent) => (
-            super::views::reaching(),
             format!("SET LOCAL statement_timeout = {}; ", sent.timeout_ms()),
+            super::views::reaching(),
         ),
-        None => ("SELECT 1".to_owned(), String::new()),
+        None => (String::new(), "SELECT 1".to_owned()),
     };
     let steps = format!(
-        "BEGIN READ ONLY; SET LOCAL cursor_tuple_fraction = 1; {snapshot}; {timeout}SAVEPOINT tabletist_guard"
+        "BEGIN READ ONLY; SET LOCAL cursor_tuple_fraction = 1; {timeout}{snapshot}; SAVEPOINT tabletist_guard"
     );
     match client.simple_query(&steps).await.map_err(query_error) {
         Ok(messages) => {

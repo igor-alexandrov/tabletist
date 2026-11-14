@@ -1703,6 +1703,20 @@ mod postgres {
             rows_of(&connection, "SHOW statement_timeout", on).await,
             none
         );
+        // The open's question which views call what an agent may not
+        // runs under the timeout too, and reads every view's rule outside
+        // `pg_catalog`: no server answers it within a millisecond.
+        let instant = Limits {
+            timeout: Duration::from_millis(1),
+            ..LIMITS
+        };
+        let ended = asked(&connection, "SELECT count(*) FROM books", &[], instant).await;
+        assert_eq!(ended.unwrap_err(), Error::Timeout);
+        assert_eq!(
+            rows_of(&connection, "SHOW statement_timeout", on).await,
+            none
+        );
+        read(&connection, "SELECT count(*) FROM books", &[], on).await;
     }
 }
 
