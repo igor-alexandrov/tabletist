@@ -64,6 +64,14 @@ mysql_async = { version = "0.37", default-features = false, features = ["default
 # run. Moves with mysql_async; mysql.rs fails to compile if the two drift apart.
 mysql_common = { version = "0.37", default-features = false }
 
+# ClickHouse's HTTP interface speaks HTTP/1.1 through ureq-proto, the
+# sans-IO protocol ureq is built on (already in the tree through the app's
+# check for updates); it moves with ureq's version. Only its client half.
+ureq-proto = { version = "0.6", default-features = false, features = ["client"] }
+# TLS for ClickHouse's HTTP interface on our own rustls config, with ring
+# (already in the tree through tokio-postgres-rustls).
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+
 # The plans PostgreSQL and MySQL give in JSON, read for the tables an
 # agent's statement would scan (`agent`'s hidden tables). Already in the
 # tree through the app and mysql_async.

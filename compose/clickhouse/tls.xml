@@ -1,0 +1,12 @@
+<!-- HTTPS on 8443 with the test certificate, for the TLS tests. -->
+<clickhouse>
+    <https_port>8443</https_port>
+    <openSSL>
+        <server>
+            <certificateFile>/etc/clickhouse-server/certs/server.pem</certificateFile>
+            <privateKeyFile>/etc/clickhouse-server/certs/server.key</privateKeyFile>
+            <verificationMode>none</verificationMode>
+            <loadDefaultCAFile>false</loadDefaultCAFile>
+        </server>
+    </openSSL>
+</clickhouse>

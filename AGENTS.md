@@ -96,6 +96,12 @@ Without the variables those tests print "skipped" and pass; CI runs all three su
 The MySQL tests also run against MariaDB: `docker compose up -d --wait mariadb`, then the same
 command with `TABLETIST_TEST_MYSQL_URL=mysql://tabletist:tabletist@localhost:53307/tabletist`
 (CI's `mariadb` job). A test that expects what only one of them does asks the server's version.
+ClickHouse is not an engine yet and not in CI: `docker compose up -d --build --wait clickhouse ssh`, then
+the three variables `TABLETIST_TEST_CLICKHOUSE_URL=http://tabletist:tabletist@localhost:58123/tabletist`,
+`TABLETIST_TEST_CLICKHOUSE_HTTPS_URL=https://tabletist:tabletist@localhost:58443/tabletist` and
+`TABLETIST_TEST_SSH_URL=ssh://tabletist:tabletist@localhost:52222` set for both
+`cargo test -p tabletist-db --lib clickhouse` and `cargo test -p tabletist-db --test clickhouse`
+(cargo's filter matches test names, so one run does not cover both).
 The native keyring test is `#[ignore]`d; run it by hand on a desktop session.
 
 Views draw text only through `TextRole`s (`src/typography.rs`); a view never
