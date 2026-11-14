@@ -121,8 +121,9 @@ struct Heard {
 /// error of the statement that failed, if one did. The statement's run
 /// may answer more than once (a `CALL`): every answer is read, so the
 /// close's are the last three. Of the run's first answer, `ran`, at most
-/// `limit + 1` rows are kept: `sql_select_limit` does not bound every
-/// statement, and the rest is read off the wire.
+/// `limit + 1` rows are kept, and of any other answer one: nothing reads
+/// more, and `sql_select_limit` does not bound every statement (a `SHOW`,
+/// a `SELECT` inside a routine). The rest is read off the wire.
 async fn heard(
     conn: &mut mysql_async::Conn,
     steps: &[String],
@@ -141,11 +142,10 @@ async fn heard(
             // statement that failed.
             return (answers, result.drop_result().await.err());
         };
-        let keep = if answers.len() == ran {
-            limit + 1
-        } else {
-            usize::MAX
-        };
+        // The run's first answer keeps `limit + 1` rows. Any other answer
+        // (a step of the open or the close, or a later answer of a `CALL`,
+        // which `sql_select_limit` does not bound) needs one row at most.
+        let keep = if answers.len() == ran { limit + 1 } else { 1 };
         let mut rows = Vec::new();
         loop {
             match result.next().await {
@@ -952,6 +952,33 @@ mod tests {
             };
             assert_eq!((rows.len(), *truncated), (10, true), "{text}");
         }
+    }
+
+    /// Of a `CALL`'s later answers, which `sql_select_limit` does not
+    /// bound, one row is kept and the rest is read off the wire: the step
+    /// after them still gets its own answer.
+    #[tokio::test]
+    async fn a_later_answer_of_a_call_keeps_one_row() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let mut admin = admin(&url).await;
+        admin
+            .query_drop(
+                "CREATE PROCEDURE IF NOT EXISTS tabletist_wide() \
+                 BEGIN SELECT COLLATION_NAME FROM information_schema.COLLATIONS; \
+                 SELECT COLLATION_NAME FROM information_schema.COLLATIONS; END",
+            )
+            .await
+            .unwrap();
+        let steps = ["CALL tabletist_wide()".to_owned(), "SELECT 7".to_owned()];
+        let (answers, failure) = heard(&mut admin, &steps, 0, 10).await;
+        assert!(failure.is_none(), "{failure:?}");
+        let kept: Vec<usize> = answers.iter().map(|answer| answer.rows.len()).collect();
+        assert_eq!(kept[..2], [11, 1], "{kept:?}");
+        let last = answers.last().unwrap();
+        assert_eq!(last.rows[0].get::<i64, _>(0), Some(7), "{kept:?}");
+        assert!(kept[2..].iter().all(|&rows| rows <= 1), "{kept:?}");
     }
 
     /// Where the server does not know the read-only setting under the name
