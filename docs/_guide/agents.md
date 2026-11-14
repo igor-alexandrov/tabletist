@@ -44,12 +44,14 @@ affected. A function your users wrote whose name has capital letters is
 not looked for in a view, as an agent may call such a function itself.
 
 On MySQL and MariaDB, only the views the connection's user can see are
-followed. A view the user has no privilege on is shown to it nowhere, so
-what such a view calls is not seen when a view the user may read runs it
-with its definer's rights. A view whose definition the connection's user
-may not see is refused, and so is one that reads it: grant that user
-`SHOW VIEW` on it, and agents can read it. The views MySQL and MariaDB
-make for themselves (`sys` and the rest) are not affected.
+followed. A query that reads a view whose definition the connection's
+user may not see is refused too: grant that user `SHOW VIEW` on it, and
+agents can read it. The views MySQL and MariaDB make for themselves
+(`sys` and the rest) are not affected.
+
+A view the user has no privilege on at all is shown to it nowhere, so what
+such a view calls is not seen when a view the user may read runs it with
+its definer's rights.
 
 Agents cannot write in this version.
 
