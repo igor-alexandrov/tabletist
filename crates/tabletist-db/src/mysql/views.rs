@@ -102,8 +102,9 @@ pub(super) fn listed(rows: Vec<mysql_async::Row>) -> Result<Vec<Candidate>> {
 }
 
 /// What [`whole`] answered: every view, by their folded names those run
-/// with another user's rights and those run with their reader's, and the
-/// folded names of what the user is shown.
+/// with another user's rights and those run with their reader's (folding
+/// counts more of them, never fewer), and by their exact names what the
+/// user is shown.
 struct Whole {
     views: Vec<View>,
     others: HashSet<(String, String)>,
@@ -152,11 +153,13 @@ fn whole_listed(rows: Vec<mysql_async::Row>) -> Result<Whole> {
             i64,
             i64,
         ) = from_row(row)?;
-        let folded = (schema.to_lowercase(), name.to_lowercase());
         if view == 0 {
-            whole.shown.insert(folded);
+            // By the names' exact letters: where the server tells names by
+            // their case, `PEEK` shown says nothing of a `peek`.
+            whole.shown.insert((schema, name));
             continue;
         }
+        let folded = (schema.to_lowercase(), name.to_lowercase());
         if others_rights != 0 {
             whole.others.insert(folded.clone());
         }

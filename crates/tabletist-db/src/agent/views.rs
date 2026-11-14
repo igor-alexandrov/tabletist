@@ -123,9 +123,13 @@ pub(crate) fn relations(dialect: Dialect, view: &View) -> Vec<(String, String)> 
 
 /// The first relation `view`'s body reads that the user is not shown, as
 /// `schema.name`, for a view the server runs with another user's rights:
-/// `shown` are the tables and views the user is shown, by their folded
-/// schema and name. What it reads may be a view that calls what an agent
-/// may not, which the user is shown nothing of.
+/// `shown` are the tables and views the user is shown, by their schema and
+/// name in the server's own letters. Matched by those exact letters: where
+/// the server tells names by their case, `PEEK` shown says nothing of a
+/// `peek`; where it does not, it writes a body's names as it keeps them,
+/// and a name written otherwise is refused, which errs toward refusing.
+/// What it reads may be a view that calls what an agent may not, which the
+/// user is shown nothing of.
 pub(crate) fn reads_unseen(
     dialect: Dialect,
     view: &View,
@@ -133,7 +137,7 @@ pub(crate) fn reads_unseen(
 ) -> Option<String> {
     qualified_relations(dialect, &view.definition)
         .into_iter()
-        .find(|(schema, name)| !shown.contains(&(schema.to_lowercase(), name.to_lowercase())))
+        .find(|relation| !shown.contains(relation))
         .map(|(schema, name)| format!("{schema}.{name}"))
 }
 
@@ -363,14 +367,24 @@ mod tests {
             ),
             view(
                 "named",
-                "with `c` as (select 1 AS `n`) select `bookshop`.`Books`.`id` AS `id` \
-                 from (`bookshop`.`Books` join `c`)",
+                "with `c` as (select 1 AS `n`) select `bookshop`.`books`.`id` AS `id` \
+                 from (`bookshop`.`books` join `c`)",
+            ),
+            // `PEEK` shown is another relation than `peek` where the
+            // server tells names by their case.
+            view(
+                "cased",
+                "select `bookshop`.`peek`.`id` AS `id` from `bookshop`.`peek`",
             ),
         ];
-        let shown: HashSet<(String, String)> = [("bookshop", "books"), ("bookshop", "outer_v")]
-            .into_iter()
-            .map(|(schema, name)| (schema.to_owned(), name.to_owned()))
-            .collect();
+        let shown: HashSet<(String, String)> = [
+            ("bookshop", "books"),
+            ("bookshop", "outer_v"),
+            ("bookshop", "PEEK"),
+        ]
+        .into_iter()
+        .map(|(schema, name)| (schema.to_owned(), name.to_owned()))
+        .collect();
         let unseen = |view: &View| reads_unseen(Dialect::MySql, view, &shown);
         let refused = Err(Refusal::NotAllowed(
             "The view bookshop.outer_v, which reads other.inner_v that this connection's user \
@@ -381,6 +395,14 @@ mod tests {
         assert_eq!(shown_check("SELECT * FROM outer_v"), refused);
         assert_eq!(shown_check("SELECT * FROM over_outer"), refused);
         assert_eq!(shown_check("SELECT * FROM named"), Ok(()));
+        assert_eq!(
+            shown_check("SELECT * FROM cased"),
+            Err(Refusal::NotAllowed(
+                "The view bookshop.cased, which reads bookshop.peek that this connection's \
+                 user may not see,"
+                    .into()
+            ))
+        );
         // Without what the user is shown, as for views run with their
         // reader's own rights, nothing is refused for it.
         assert!(!any_refused(Dialect::MySql, &views));

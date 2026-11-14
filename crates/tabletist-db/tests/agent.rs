@@ -1976,6 +1976,21 @@ mod mysql {
         ] {
             root.query_drop(sql).await.unwrap();
         }
+        // Where the server tells names by their case, a `PEEK_LOCKS` the
+        // user is shown is another view than the `peek_locks` it is not.
+        let folds: Option<i64> = root
+            .query_first("SELECT @@lower_case_table_names")
+            .await
+            .unwrap();
+        let cased = folds == Some(0);
+        if cased {
+            for sql in [
+                "CREATE OR REPLACE VIEW bookshop.PEEK_LOCKS AS SELECT 1 AS id",
+                "GRANT SELECT, SHOW VIEW ON bookshop.PEEK_LOCKS TO tabletist_peek",
+            ] {
+                root.query_drop(sql).await.unwrap();
+            }
+        }
         let (mut spec, secrets) =
             ConnectSpec::from_url(&format!("mysql://tabletist_peek:peek@{server}/bookshop"))
                 .unwrap();
@@ -2002,6 +2017,7 @@ mod mysql {
         for sql in [
             "DROP VIEW bookshop.peek_chain, bookshop.peek_invoker, bookshop.peek_outer, \
              bookshop.peek_locks, bookshop.peek_titles, bookshop.peek_orders",
+            "DROP VIEW IF EXISTS bookshop.PEEK_LOCKS",
             "DROP USER tabletist_peek",
         ] {
             root.query_drop(sql).await.unwrap();
