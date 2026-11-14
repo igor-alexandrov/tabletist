@@ -419,14 +419,15 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
             assert_eq!(found, Ok(vec![vec![Value::Int(8)]]), "{on}");
             let found = count(hiding(connection, &Tables::All, tally).await);
             assert_eq!(found, Ok(vec![vec![Value::Int(8)]]), "{on}");
-            // A view that runs SQL held in a string.
+            // A view that runs SQL held in a string, which an agent may
+            // not call: refused on every connection, the one that hides
+            // nothing too.
             let sheet = "SELECT * FROM customer_sheet";
-            let error = hiding(connection, &customers, sheet).await.unwrap_err();
-            assert_eq!(error, hidden_refusal("customer_sheet", None), "{on}");
-            assert!(
-                hiding(connection, &Tables::All, sheet).await.is_ok(),
-                "{on}"
-            );
+            let refused = Error::Agent(Refusal::FunctionNotAllowed("query_to_xml".into()));
+            for tables in [&customers, &Tables::All] {
+                let error = hiding(connection, tables, sheet).await.unwrap_err();
+                assert_eq!(error, refused, "{on}");
+            }
             // A function of a row, called as its column.
             for sql in [
                 "SELECT b.book_reach FROM books b",
@@ -1375,27 +1376,26 @@ mod postgres {
         a_masked_column_is_used_only_as_it_is(&connection, "postgres").await;
     }
 
-    /// A database of the test's own, `bookshop_gifts`, made where it is
-    /// not there: what it makes and drops there is in no other test's
-    /// catalog while that one reads it.
-    async fn gifts(url: &str) -> Connection {
+    /// A database of the test's own, `database`, made where it is not
+    /// there: what it makes and drops there is in no other test's catalog
+    /// while that one reads it.
+    async fn own(url: &str, database: &str) -> Connection {
         let server = admin(url, None).await;
         let made = server
-            .query_opt(
-                "SELECT 1 FROM pg_database WHERE datname = 'bookshop_gifts'",
-                &[],
-            )
+            .query_opt("SELECT 1 FROM pg_database WHERE datname = $1", &[&database])
             .await
             .unwrap()
             .is_some();
         if !made {
             // Two runs may race to make it: the second's error is the
             // first's database.
-            let _ = server.batch_execute("CREATE DATABASE bookshop_gifts").await;
+            let _ = server
+                .batch_execute(&format!("CREATE DATABASE {database}"))
+                .await;
         }
         let (mut spec, secrets) = ConnectSpec::from_url(url).unwrap();
         spec.tls = TlsMode::Disable;
-        spec.database = "bookshop_gifts".into();
+        spec.database = database.into();
         Connection::connect_with(&spec, &secrets, &HostKeys::default(), Access::ReadOnly)
             .await
             .unwrap()
@@ -1407,7 +1407,7 @@ mod postgres {
             eprintln!("skipped: TABLETIST_TEST_PG_URL is not set");
             return;
         };
-        let connection = gifts(&url).await;
+        let connection = own(&url, "bookshop_gifts").await;
         let owner = admin(&url, Some("bookshop_gifts")).await;
         owner
             .batch_execute(
@@ -1437,6 +1437,66 @@ mod postgres {
         );
         owner
             .batch_execute("DROP TABLE gift_notes CASCADE")
+            .await
+            .unwrap();
+    }
+
+    /// A view's body runs when an agent reads the view, whose name is all
+    /// the statement says: one that calls a function an agent may not
+    /// call is refused, at any depth, on a connection that hides nothing
+    /// as on one that hides a table. A view that only says such a name
+    /// reads, as the others do.
+    #[tokio::test]
+    async fn a_view_that_calls_a_refused_function_is_refused_on_postgres() {
+        let Some(url) = url() else {
+            eprintln!("skipped: TABLETIST_TEST_PG_URL is not set");
+            return;
+        };
+        let connection = own(&url, "bookshop_locks").await;
+        let owner = admin(&url, Some("bookshop_locks")).await;
+        owner
+            .batch_execute(
+                "DROP TABLE IF EXISTS shelf_books, shelf_notes CASCADE;
+                 CREATE TABLE shelf_books (id int PRIMARY KEY, title text);
+                 INSERT INTO shelf_books SELECT n, 'Book ' || n FROM generate_series(1, 12) n;
+                 CREATE TABLE shelf_notes (id int PRIMARY KEY, note text);
+                 CREATE VIEW lock_takers AS
+                     SELECT id, pg_advisory_lock(id) IS NULL AS took FROM shelf_books;
+                 CREATE VIEW over_lock_takers AS SELECT id FROM lock_takers;
+                 CREATE VIEW sleepy_books AS SELECT id, 'pg_sleep(1)' AS mood FROM shelf_books;",
+            )
+            .await
+            .unwrap();
+        let calls = Err(Error::Agent(Refusal::FunctionNotAllowed(
+            "pg_advisory_lock".into(),
+        )));
+        let rows = |answer: Result<Answer, Error>| answer.map(|answer| answer.rows);
+        for sql in [
+            "SELECT count(*) FROM lock_takers",
+            "SELECT count(*) FROM public.over_lock_takers",
+            "SELECT title FROM shelf_books b \
+             WHERE EXISTS (SELECT 1 FROM over_lock_takers o WHERE o.id = b.id)",
+        ] {
+            assert_eq!(
+                rows(asked(&connection, sql, &[], LIMITS).await),
+                calls,
+                "{sql}"
+            );
+        }
+        let notes = Tables::AllExcept(vec![named("shelf_notes")]);
+        let hidden = hiding(&connection, &notes, "SELECT count(*) FROM over_lock_takers").await;
+        assert_eq!(rows(hidden), calls);
+        for sql in [
+            "SELECT count(*) FROM sleepy_books",
+            "SELECT count(*) FROM shelf_books",
+        ] {
+            assert_eq!(
+                read(&connection, sql, &[], "postgres").await,
+                [[Value::Int(12)]]
+            );
+        }
+        owner
+            .batch_execute("DROP TABLE shelf_books, shelf_notes CASCADE")
             .await
             .unwrap();
     }
@@ -1643,6 +1703,20 @@ mod postgres {
             rows_of(&connection, "SHOW statement_timeout", on).await,
             none
         );
+        // The open's question which views call what an agent may not
+        // runs under the timeout too, and reads every view's rule outside
+        // `pg_catalog`: no server answers it within a millisecond.
+        let instant = Limits {
+            timeout: Duration::from_millis(1),
+            ..LIMITS
+        };
+        let ended = asked(&connection, "SELECT count(*) FROM books", &[], instant).await;
+        assert_eq!(ended.unwrap_err(), Error::Timeout);
+        assert_eq!(
+            rows_of(&connection, "SHOW statement_timeout", on).await,
+            none
+        );
+        read(&connection, "SELECT count(*) FROM books", &[], on).await;
     }
 }
 

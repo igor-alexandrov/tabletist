@@ -190,13 +190,15 @@ fn names(text: &str, name: &str) -> bool {
     let word = |character: char| character.is_alphanumeric() || matches!(character, '_' | '$');
     let starts = name.starts_with(word);
     let ends = name.ends_with(word);
-    // A backquote in a name is written twice in backquotes.
-    let doubled = name.replace('`', "``");
-    let spellings: &[&str] = if doubled == name {
-        &[name]
-    } else {
-        &[name, &doubled]
-    };
+    // A quote in a name is written twice inside quotes of its kind: a
+    // backquote in MySQL's, a double quote in PostgreSQL's (and MySQL's
+    // under ANSI_QUOTES). Each spelling is looked for in any dialect.
+    let mut spellings = vec![name.to_owned()];
+    for quote in ['`', '"'] {
+        if name.contains(quote) {
+            spellings.push(name.replace(quote, &format!("{quote}{quote}")));
+        }
+    }
     spellings.iter().any(|spelling| {
         text.match_indices(spelling).any(|(at, _)| {
             let before = text[..at].chars().next_back();
@@ -364,6 +366,7 @@ mod tests {
     fn a_name_is_found_as_a_word() {
         assert!(names("select * from `a b`", "a b"));
         assert!(names("from x.`a``b`", "a`b"));
+        assert!(names("from x.\"a\"\"b\"", "a\"b"));
         assert!(names("from 1abc", "1abc"));
         assert!(!names("from x1abc", "1abc"));
         assert!(!names("from leaked_x", "leaked"));
