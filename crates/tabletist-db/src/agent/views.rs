@@ -168,17 +168,18 @@ pub(crate) fn check(
     views: &[View],
     unseen: Unseen<'_>,
 ) -> Result<(), Refusal> {
-    // The refused views, by their folded names, and why each is.
+    // The refused views, by their names as the server keeps them, and why
+    // each is.
     let mut refused: Vec<(String, Why)> = views
         .iter()
-        .filter_map(|view| Some((view.name.to_lowercase(), by_itself(dialect, view, unseen)?)))
+        .filter_map(|view| Some((view.name.clone(), by_itself(dialect, view, unseen)?)))
         .collect();
     if refused.is_empty() {
         return Ok(());
     }
     let bodies: Vec<(String, String)> = views
         .iter()
-        .map(|view| (view.name.to_lowercase(), view.definition.to_lowercase()))
+        .map(|view| (view.name.clone(), view.definition.to_lowercase()))
         .collect();
     // A view whose body names a refused view is refused for the same
     // reason, until no more are.
@@ -208,18 +209,22 @@ pub(crate) fn check(
     }
 }
 
-/// Whether `text` holds `name` as a word: not inside a longer name. Both
-/// folded. A name that begins or ends with what no unquoted name holds
-/// (`` `a b` ``) is found wherever it stands at that end, and so is one as
-/// long as the engine cuts a longer name to: a longer word that begins
-/// with it names it too ([`cuts_names_at`]). A character is at most four
-/// bytes, so a cut name is at most three short of the longest.
+/// Whether `text`, folded, holds `name`, a view's name as the server keeps
+/// it, as a word: not inside a longer name. A name that begins or ends
+/// with what no unquoted name holds (`` `a b` ``) is found wherever it
+/// stands at that end, and so is one as long as the engine cuts a longer
+/// name to: a longer word that begins with it names it too
+/// ([`cuts_names_at`]). A character is at most four bytes, so a cut name
+/// is at most three short of the longest. How long it is, is told before
+/// it is folded: folding may shorten it (`K`, the Kelvin sign, folds to
+/// `k`), and the server cuts the name as written.
 fn names(dialect: Dialect, text: &str, name: &str) -> bool {
     if name.is_empty() {
         return false;
     }
     let word = |character: char| character.is_alphanumeric() || matches!(character, '_' | '$');
     let cut = cuts_names_at(dialect).is_some_and(|longest| name.len() + 3 >= longest);
+    let name = name.to_lowercase();
     let starts = name.starts_with(word);
     let ends = name.ends_with(word) && !cut;
     // A quote in a name is written twice inside quotes of its kind: a
@@ -453,6 +458,25 @@ mod tests {
         // A shorter name is not cut to, and MySQL cuts none.
         assert!(!names(Dialect::Postgres, "from leaked_x", "leaked"));
         assert!(!names(Dialect::MySql, &longer, &long));
+    }
+
+    /// A name is as long as the server keeps it, not as folded: 21 Kelvin
+    /// signs are 63 bytes, which fold to 21 `k`s, and PostgreSQL cuts a
+    /// longer quoted name to them.
+    #[test]
+    fn a_name_folding_shortens_is_cut_to_by_its_own_length() {
+        let kelvin = "\u{212A}".repeat(21);
+        assert_eq!(kelvin.len(), 63);
+        let views = [View {
+            schema: "public".into(),
+            name: kelvin.clone(),
+            definition: "SELECT pg_advisory_lock(1) AS pg_advisory_lock".into(),
+        }];
+        let longer = format!("SELECT * FROM \"{kelvin}x\"");
+        assert_eq!(
+            check(Dialect::Postgres, &longer, &views, &|_| None),
+            Err(Refusal::FunctionNotAllowed("pg_advisory_lock".into()))
+        );
     }
 
     #[test]

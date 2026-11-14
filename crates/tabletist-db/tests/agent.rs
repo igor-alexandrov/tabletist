@@ -2033,6 +2033,62 @@ mod mysql {
         assert_eq!(orders.unwrap(), own.unwrap());
     }
 
+    /// Accounts are told by their names' case: a view defined by
+    /// `TABLETIST_CASE` runs with its rights, not with those of
+    /// `tabletist_case` reading it, though MariaDB's `DEFINER` compares
+    /// without case. So the view, which reads what the reader is not
+    /// shown, is refused. Only root may make the users and views, with the
+    /// password `compose.yaml` gives it: skipped where it may not connect.
+    #[tokio::test]
+    async fn a_view_defined_by_an_account_named_like_the_readers_is_checked_on_mysql() {
+        let Some(url) = url() else {
+            return;
+        };
+        load(&url).await;
+        let Some((mut root, server)) = root(&url).await else {
+            return;
+        };
+        for sql in [
+            "DROP USER IF EXISTS tabletist_case, TABLETIST_CASE",
+            "CREATE USER tabletist_case IDENTIFIED BY 'case'",
+            "CREATE USER TABLETIST_CASE IDENTIFIED BY 'CASE'",
+            "CREATE OR REPLACE SQL SECURITY DEFINER VIEW bookshop.case_locks AS \
+             SELECT id, get_lock('tabletist_case_lock', 0) AS took FROM bookshop.books",
+            "GRANT SELECT ON bookshop.case_locks TO TABLETIST_CASE",
+            "CREATE OR REPLACE DEFINER = TABLETIST_CASE SQL SECURITY DEFINER \
+             VIEW bookshop.case_outer AS SELECT id FROM bookshop.case_locks",
+            "GRANT SELECT, SHOW VIEW ON bookshop.case_outer TO tabletist_case",
+        ] {
+            root.query_drop(sql).await.unwrap();
+        }
+        let (mut spec, secrets) =
+            ConnectSpec::from_url(&format!("mysql://tabletist_case:case@{server}/bookshop"))
+                .unwrap();
+        spec.tls = TlsMode::Disable;
+        let connection =
+            Connection::connect_with(&spec, &secrets, &HostKeys::default(), Access::ReadOnly)
+                .await
+                .unwrap();
+        let outer = asked(&connection, "SELECT count(*) FROM case_outer", &[], LIMITS)
+            .await
+            .map(|answer| answer.rows);
+        drop(connection);
+        for sql in [
+            "DROP VIEW bookshop.case_outer, bookshop.case_locks",
+            "DROP USER tabletist_case, TABLETIST_CASE",
+        ] {
+            root.query_drop(sql).await.unwrap();
+        }
+        assert_eq!(
+            outer,
+            Err(Error::Agent(Refusal::NotAllowed(
+                "The view bookshop.case_outer, which reads bookshop.case_locks that this \
+                 connection's user may not see,"
+                    .into()
+            )))
+        );
+    }
+
     /// A view's body runs when an agent reads the view, whose name is all
     /// the statement says: one that calls a function an agent may not
     /// call is refused, at any depth, on a connection that hides nothing

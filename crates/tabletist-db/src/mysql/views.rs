@@ -36,7 +36,11 @@ pub(super) struct Candidate {
 }
 
 /// Whether the server runs a view with another user's rights, as 1 or 0.
-const OTHERS_RIGHTS: &str = "IF(SECURITY_TYPE = 'DEFINER' AND DEFINER <> CURRENT_USER(), 1, 0)";
+/// The accounts are compared byte for byte: a user's name is told by its
+/// case, and MariaDB's `DEFINER` compares without it. A host told apart
+/// only by its case counts as another user's, which only checks more.
+const OTHERS_RIGHTS: &str = "IF(SECURITY_TYPE = 'DEFINER' \
+     AND CAST(DEFINER AS BINARY) <> CAST(CURRENT_USER() AS BINARY), 1, 0)";
 
 /// The views whose body may call a function an agent may not call: one
 /// that holds a refused function's name anywhere, in any letters, or that
