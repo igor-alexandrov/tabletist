@@ -32,8 +32,11 @@ also [hide tables](#hide-tables) from them.
 
 A view runs what its definition calls. On MySQL and MariaDB, a query that
 reads a view calling a function an agent may not call (`sleep`,
-`get_lock`, `load_file` and the like), directly or through other views, is
-refused, on every connection. So is one that reads a view whose definition
+`get_lock`, `load_file` and the like), directly or through other views the
+connection's user can see, is refused, on every connection. A view the
+user has no privilege on is shown to it nowhere, so what such a view
+calls is not seen when a view the user may read runs it with its
+definer's rights. So is one that reads a view whose definition
 the connection's user may not see: grant that user `SHOW VIEW` on it, and
 agents can read it. Tabletist finds such a view by its name, so a query
 that only uses that name, for a column or a table elsewhere, is refused

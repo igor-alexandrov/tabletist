@@ -11,6 +11,12 @@
 //! any letters, wherever they stand, so a column or a string that bears a
 //! refused view's name is refused with it. That errs toward refusing, and
 //! only ever where a view calls what it may not.
+//!
+//! Only the views the connection's user is shown are followed. A view the
+//! user holds no privilege on is listed to it nowhere, so a view it may
+//! read that the server runs with its definer's rights (`SQL SECURITY
+//! DEFINER`) may read one that calls what an agent may not, and that call
+//! is not seen.
 
 use super::Refusal;
 use super::hidden::refused_call;
@@ -253,6 +259,21 @@ mod tests {
         ] {
             assert_eq!(check(Dialect::MySql, text, &views), Ok(()), "{text}");
         }
+    }
+
+    /// A view the user is not shown is not followed: a view it may read,
+    /// whose body names it, reads, whatever it calls.
+    #[test]
+    fn a_view_the_user_is_not_shown_is_not_followed() {
+        let views = [view(
+            "outer_v",
+            "select `v`.`id` AS `id` from `other`.`inner_v` `v`",
+        )];
+        assert!(!any_refused(Dialect::MySql, &views));
+        assert_eq!(
+            check(Dialect::MySql, "SELECT * FROM outer_v", &views),
+            Ok(())
+        );
     }
 
     #[test]
