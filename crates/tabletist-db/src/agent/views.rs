@@ -55,10 +55,11 @@ pub(crate) const MYSQL_OWN_SCHEMAS: [&str; 4] =
 
 /// Whether `view` is one the server made for itself.
 fn servers_own(dialect: Dialect, view: &View) -> bool {
-    dialect == Dialect::MySql
-        && MYSQL_OWN_SCHEMAS
-            .iter()
-            .any(|own| view.schema.eq_ignore_ascii_case(own))
+    let own: &[&str] = match dialect {
+        Dialect::MySql => &MYSQL_OWN_SCHEMAS,
+        Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => &[],
+    };
+    own.iter().any(|own| view.schema.eq_ignore_ascii_case(own))
 }
 
 /// Why `view` itself may not be read, by its own body alone.
