@@ -1140,7 +1140,10 @@ mod tests {
                 params: &[],
                 timeout: Duration::from_millis(250),
             };
-            assert_eq!(open(&client, Some(sent)).await, Ok((Tx::Open, Vec::new())));
+            // Only where the transaction stands: which views it finds is
+            // what other tests left in the database.
+            let opened = open(&client, Some(sent)).await.map(|(tx, _)| tx);
+            assert_eq!(opened, Ok(Tx::Open));
         }
         assert_eq!(setting(&conn, "statement_timeout").await, "250ms");
         // A lock is waited for as long as the statement may run, no less.

@@ -134,6 +134,18 @@ mod tests {
         assert_eq!(check("SELECT count(*) FROM public.over_lock_takers"), calls);
         assert_eq!(check("SELECT count(*) FROM \"lock_takers\""), calls);
         assert_eq!(check("SELECT count(*) FROM books"), Ok(()));
+        // A double quote in a name is written twice, by the agent and by
+        // the server in a definition that names the view.
+        let views = [
+            view(
+                "lock\"takers",
+                " SELECT (pg_advisory_lock((1)::bigint) IS NULL) AS took;",
+            ),
+            view("over\"lock", " SELECT took\n   FROM \"lock\"\"takers\";"),
+        ];
+        let check = |text: &str| views::check(Dialect::Postgres, text, &views);
+        assert_eq!(check("SELECT * FROM \"lock\"\"takers\""), calls);
+        assert_eq!(check("SELECT * FROM public.\"over\"\"lock\""), calls);
     }
 
     /// The words stand in a string as they are, and each is the start of
