@@ -182,21 +182,28 @@ pub(crate) fn check(
         .map(|view| (view.name.clone(), view.definition.to_lowercase()))
         .collect();
     // A view whose body names a refused view is refused for the same
-    // reason, until no more are.
+    // reason, until no more are. Each pass looks only for the views the
+    // last one refused: a body that named one refused before it would
+    // have been refused then. So each body is read for each name once, on
+    // a chain of views as deep as it goes.
+    let mut known: HashSet<String> = refused.iter().map(|(name, _)| name.clone()).collect();
+    let mut last = 0;
     loop {
         let more: Vec<(String, Why)> = bodies
             .iter()
-            .filter(|(name, _)| !refused.iter().any(|(known, _)| known == name))
+            .filter(|(name, _)| !known.contains(name))
             .filter_map(|(name, body)| {
-                let (_, why) = refused
+                let (_, why) = refused[last..]
                     .iter()
-                    .find(|(known, _)| names(dialect, body, known))?;
+                    .find(|(refused, _)| names(dialect, body, refused))?;
                 Some((name.clone(), why.clone()))
             })
             .collect();
         if more.is_empty() {
             break;
         }
+        last = refused.len();
+        known.extend(more.iter().map(|(name, _)| name.clone()));
         refused.extend(more);
     }
     let text = text.to_lowercase();
