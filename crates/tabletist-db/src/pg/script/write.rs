@@ -39,7 +39,7 @@ pub(super) async fn run(
             {
                 Stand::Tx(tx) => tx,
                 // A run that writes sends no flight, so neither of these.
-                Stand::Ended(_) | Stand::Unopened(_) => Tx::Aborted,
+                Stand::Closing(_) | Stand::Unopened(_) => Tx::Aborted,
             }
         }
         // A cancel landed on the opening queries: no results.

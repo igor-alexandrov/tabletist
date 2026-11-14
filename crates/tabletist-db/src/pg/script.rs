@@ -162,10 +162,13 @@ async fn read_only(
             return Err(cannot_start(mode, &error));
         }
         // The last statement's flight carried the close: what it did not
-        // get to runs now.
-        Stand::Ended(ended) => {
+        // get to runs now. Its answers are read once the backend stopped
+        // repeating its cancel, since reading them may ask the server
+        // again (see `confirmed`).
+        Stand::Closing(closing) => {
             stop.finish();
-            end(client, *ended).await?;
+            let ended = confirmed(client, &closing.messages, closing.failure).await;
+            end(client, ended).await?;
             return Ok((outcome, masked));
         }
     };
@@ -192,8 +195,9 @@ struct Flights {
 enum Stand {
     /// In the transaction or out of it, for the close to end.
     Tx(Tx),
-    /// The last statement's flight carried the close: how far it got.
-    Ended(Box<Ended>),
+    /// The last statement's flight carried the close: what the server
+    /// answered to it.
+    Closing(Closing),
     /// The opening that went out with the first statement failed, and
     /// nothing of the statement ran.
     Unopened(Error),
@@ -432,10 +436,10 @@ async fn statements(
             closes: flights.closes && index + 1 == texts.len(),
         };
         let flown = flies(text, mode, params);
-        let (result, tx, ended) = if flown {
+        let (result, tx, closing) = if flown {
             match cursor_flight(client, text, limit, flight).await? {
                 Flown::Unopened(error) => return Ok(Stand::Unopened(error)),
-                Flown::Ran(result, tx, ended) => (result, tx, ended),
+                Flown::Ran(result, tx, closing) => (result, tx, closing),
             }
         } else {
             let (result, tx) = run_statement(client, text, limit, mode, stop, params).await?;
@@ -451,8 +455,8 @@ async fn statements(
             elapsed: started.elapsed(),
             outcome: result,
         });
-        if let Some(ended) = ended {
-            return Ok(Stand::Ended(ended));
+        if let Some(closing) = closing {
+            return Ok(Stand::Closing(closing));
         }
         if last {
             return Ok(Stand::Tx(tx));
@@ -555,7 +559,9 @@ async fn confirm(client: &tokio_postgres::Client) -> Ended {
 
 /// How far [`CONFIRM_AND_END`] got from what the server answered to it,
 /// on its own or behind a cursor (see `cursor_flight`): its `messages`, up
-/// to the step that failed, and that step's error.
+/// to the step that failed, and that step's error. Where the check or the
+/// question failed it asks the server whose failed block it is, so it runs
+/// once the run is finishing: a repeated cancel must not land on that.
 async fn confirmed(
     client: &tokio_postgres::Client,
     messages: &[SimpleQueryMessage],
@@ -1034,9 +1040,18 @@ enum Flown {
     /// The opening that went out with it failed: nothing of the statement
     /// ran.
     Unopened(Error),
-    /// The statement's outcome and where it left the transaction, with how
-    /// far the close got where it went along and the cursor got that far.
-    Ran(StatementOutcome, Tx, Option<Box<Ended>>),
+    /// The statement's outcome and where it left the transaction, with
+    /// what the server answered to the close where it went along and the
+    /// cursor got that far.
+    Ran(StatementOutcome, Tx, Option<Closing>),
+}
+
+/// What the server answered to the close's steps at the end of a cursor's
+/// message: their answers, up to the step that failed, and that step's
+/// error. [`confirmed`] reads them once the run is finishing.
+struct Closing {
+    messages: Vec<SimpleQueryMessage>,
+    failure: Option<tokio_postgres::Error>,
 }
 
 /// A row statement of the SQL editor's run that reads, in one round trip:
@@ -1122,12 +1137,11 @@ async fn cursor_flight(
         None
     };
     let (outcome, tx) = cursor_outcome(prepared, steps, failure, messages, text, limit)?;
-    let ended = if flight.closes && steps >= CURSOR_STEPS {
-        Some(Box::new(confirmed(client, &closing, close_failure).await))
-    } else {
-        None
-    };
-    Ok(Flown::Ran(outcome, tx, ended))
+    let closing = (flight.closes && steps >= CURSOR_STEPS).then(|| Closing {
+        messages: closing,
+        failure: close_failure,
+    });
+    Ok(Flown::Ran(outcome, tx, closing))
 }
 
 /// A flight's statement from what came back for it: the prepare, how many
@@ -1499,9 +1513,9 @@ mod tests {
 
     /// A read-only session through a proxy in front of the test server,
     /// which sends the server `instead` for a simple query that is exactly
-    /// `sql`, given as `(sql, instead)`. Connections after the session's, a
-    /// cancel's, pass through as they are.
-    async fn proxied_session(url: &str, swap: (&'static str, &'static str)) -> Conn {
+    /// `sql`, given as `(sql, instead)` among `swaps`. Connections after the
+    /// session's, a cancel's, pass through as they are.
+    async fn proxied_session(url: &str, swaps: &[(&'static str, &'static str)]) -> Conn {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let (mut spec, secrets) = crate::ConnectSpec::from_url(url).unwrap();
@@ -1512,6 +1526,7 @@ mod tests {
             .unwrap();
         spec.host = "127.0.0.1".to_owned();
         spec.port = listener.local_addr().unwrap().port();
+        let swaps = swaps.to_vec();
         tokio::spawn(async move {
             let (client, _) = listener.accept().await.unwrap();
             let upstream = tokio::net::TcpStream::connect(server.clone())
@@ -1545,8 +1560,10 @@ mod tests {
                 if from_client.read_exact(&mut body).await.is_err() {
                     return;
                 }
-                let (sql, instead) = swap;
-                if kind == Some(b'Q') && body.strip_suffix(b"\0") == Some(sql.as_bytes()) {
+                let swap = swaps
+                    .iter()
+                    .find(|(sql, _)| body.strip_suffix(b"\0") == Some(sql.as_bytes()));
+                if let (Some(b'Q'), Some((_, instead))) = (kind, swap) {
                     body = [instead.as_bytes(), b"\0"].concat();
                 }
                 let length = body.len() as u32 + 4;
@@ -1661,7 +1678,7 @@ mod tests {
         };
         let opening: &'static str = Box::leak(opening(None).into_boxed_str());
         let cancelled = "DO $$ BEGIN RAISE EXCEPTION USING ERRCODE = 'query_canceled'; END $$";
-        let conn = proxied_session(&url, (opening, cancelled)).await;
+        let conn = proxied_session(&url, &[(opening, cancelled)]).await;
         let text = "SELECT set_config('tabletist.probe', 'ran', false)";
         let stop = StopFlag::new();
         let outcome = past_the_refusal(&conn, &[text], &stop).await.unwrap();
@@ -1695,7 +1712,7 @@ mod tests {
         for (step, slow) in [("rollback", slow_rollback), ("release", slow_release)] {
             assert_ne!(slow, message, "{step}");
             let slow: &'static str = Box::leak(slow.into_boxed_str());
-            let conn = proxied_session(&url, (message, slow)).await;
+            let conn = proxied_session(&url, &[(message, slow)]).await;
             let cancel = conn.cancel_handle();
             let cancelling = async {
                 tokio::time::sleep(Duration::from_millis(300)).await;
@@ -1720,6 +1737,64 @@ mod tests {
             assert_eq!(in_transaction(&client).await, Ok(Tx::Left), "{step}");
             assert!(lock_is_free(&other, 424266).await, "{step}");
         }
+    }
+
+    /// A cancel that lands on the close's question at the end of the
+    /// cursor's message leaves the asking whose failed block it is to the
+    /// close, and the backend repeats its cancel until the run is
+    /// finishing. So the close asks only once the run is finishing, and a
+    /// cancel sent before then does not land on the asking twice and close
+    /// the session. The proxy sends the server a slow statement in the
+    /// question's place, and makes the asking slow too.
+    #[tokio::test]
+    async fn repeated_cancels_do_not_land_on_the_close_after_a_flight() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let text = "SELECT 1";
+        let message = cursor_message(text, 10, true);
+        let slow = message.replacen("SHOW transaction_read_only", "SELECT pg_sleep(10)", 1);
+        assert_ne!(slow, message);
+        let asking = "ROLLBACK TO SAVEPOINT tabletist_guard";
+        let slow_asking = "ROLLBACK TO SAVEPOINT tabletist_guard; SELECT pg_sleep(1)";
+        let message: &'static str = Box::leak(message.into_boxed_str());
+        let slow: &'static str = Box::leak(slow.into_boxed_str());
+        let conn = proxied_session(&url, &[(message, slow), (asking, slow_asking)]).await;
+        let cancel = conn.cancel_handle();
+        let (script, stop) = ([text], StopFlag::new());
+        // As the backend does: a cancel every 100 ms until the run is
+        // finishing, or over.
+        let over = std::sync::atomic::AtomicBool::new(false);
+        let running = async {
+            let ran = past_the_refusal(&conn, &script, &stop).await;
+            over.store(true, std::sync::atomic::Ordering::SeqCst);
+            ran
+        };
+        let cancelling = async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let mut sent = 0;
+            while !stop.is_finishing() && !over.load(std::sync::atomic::Ordering::SeqCst) {
+                cancel.cancel().await.unwrap();
+                sent += 1;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            sent
+        };
+        let (ran, sent) = tokio::join!(running, cancelling);
+        assert!(sent >= 1);
+        let outcome = ran.unwrap();
+        assert!(
+            matches!(
+                &outcome.results[..],
+                [StatementResult {
+                    outcome: StatementOutcome::Rows { .. },
+                    ..
+                }]
+            ),
+            "{outcome:?}"
+        );
+        let client = conn.client.lock().await;
+        assert_eq!(in_transaction(&client).await, Ok(Tx::Left));
     }
 
     /// The SQLSTATE a statement failed with.
@@ -1984,7 +2059,7 @@ mod tests {
         let slow_release = "RELEASE tabletist_guard; SAVEPOINT tabletist_guard; \
              SHOW transaction_read_only; ROLLBACK; SELECT pg_sleep(10)";
         for (step, slow) in [("rollback", slow_rollback), ("release", slow_release)] {
-            let conn = proxied_session(&url, (CONFIRM_AND_END, slow)).await;
+            let conn = proxied_session(&url, &[(CONFIRM_AND_END, slow)]).await;
             let cancel = conn.cancel_handle();
             let client = conn.client.lock().await;
             assert_eq!(open(&client, None).await, Ok(Tx::Open), "{step}");
