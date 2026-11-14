@@ -321,9 +321,10 @@ fn started(status: StatusFlags) -> Result<()> {
 /// queries, a lost session, or a transaction that could not start.
 ///
 /// An agent's run also sets the server's own limit on a statement's time
-/// (`time_limits`), which the same reset takes away, and asks which views
-/// may call a function an agent may not call (`super::views`): `Ok` holds
-/// those, none for a script's run.
+/// (`time_limits`), which the same reset takes away, and then asks which
+/// views may call a function an agent may not call (`super::views`), so
+/// the limit holds that question too: `Ok` holds those views, none for a
+/// script's run.
 ///
 /// The steps go as one message, one round trip (`opening`). A failed step
 /// stops the rest; where a setting the message names is unknown to the
@@ -343,36 +344,29 @@ async fn open(
     let steps = opening(
         kind.access,
         limit,
-        views.as_deref(),
         own_limit.as_deref(),
+        views.as_deref(),
         names[0],
     );
     let (mut answers, failure) = answers(conn, &steps).await;
     let step = answers.len();
-    // The views' answer, which is in wherever the open goes on: it comes
-    // before the only steps that may fail and leave the rest to run.
-    let views_step = views
-        .as_deref()
-        .and_then(|views| steps.iter().position(|step| step == views));
-    let candidates = |answers: &mut Vec<Answer>| match views_step {
-        Some(at) if at < answers.len() => {
-            super::views::listed(std::mem::take(&mut answers[at].rows))
-        }
-        _ => Ok(Vec::new()),
-    };
+    let at = |sql: Option<&str>| sql.and_then(|sql| steps.iter().position(|step| step == sql));
+    let views_step = at(views.as_deref());
+    let time_step = at(own_limit.as_deref());
     if step == steps.len() {
         let last = &answers[step - 1];
         let read_only = last.rows.first().cloned().map(from_row).transpose()?;
         opened(read_only, last.status)?;
-        return candidates(&mut answers);
+        return views_step.map_or(Ok(Vec::new()), |at| {
+            super::views::listed(std::mem::take(&mut answers[at].rows))
+        });
     }
     let failure = failure.ok_or_else(|| Error::query("the server did not answer the open"))?;
     // A setting the server does not know under the name the message used:
-    // the time limit, second last, or the question, last.
+    // the time limit, or the question, last.
     let unknown = matches!(&failure, mysql_async::Error::Server(error)
         if error.code == UNKNOWN_SYSTEM_VARIABLE);
     let question_step = steps.len() - 1;
-    let time_step = other_limit.as_ref().map(|_| question_step - 1);
     if !unknown || (step != question_step && Some(step) != time_step) {
         return Err(query_error(failure));
     }
@@ -381,6 +375,16 @@ async fn open(
     {
         execute(conn, other).await?;
     }
+    // The views' question, asked in the message where the time limit went
+    // through, and on its own after the limit where it did not.
+    let candidates = match (views_step, views.as_deref()) {
+        (Some(at), _) if at < step => super::views::listed(std::mem::take(&mut answers[at].rows))?,
+        (Some(_), Some(views)) => {
+            let rows: Vec<mysql_async::Row> = conn.query(views).await.map_err(query_error)?;
+            super::views::listed(rows)?
+        }
+        _ => Vec::new(),
+    };
     let [first, second] = names;
     let asked = if step == question_step {
         [second, first]
@@ -389,21 +393,22 @@ async fn open(
     };
     let read_only = read_only_setting(conn, asked).await?;
     opened(read_only, status(conn))?;
-    candidates(&mut answers)
+    Ok(candidates)
 }
 
 /// The open's steps, in order: a writable session is made read-only first
 /// (the checks read the session's own setting, and only that setting makes
 /// the server refuse DDL after the commit DDL implies; the close puts
-/// read-write back), the transaction, its row limit, for an agent the
-/// question which views may call what it may not and its time limit in the
-/// server's form, and last the question whether the session is read-only,
-/// whose answer carries the server's status after all of them.
+/// read-write back), the transaction, its row limit, for an agent its time
+/// limit in the server's form and the question which views may call what
+/// it may not, under that limit, and last the question whether the session
+/// is read-only, whose answer carries the server's status after all of
+/// them.
 fn opening(
     access: Access,
     limit: u32,
-    views: Option<&str>,
     time_limit: Option<&str>,
+    views: Option<&str>,
     read_only: &str,
 ) -> Vec<String> {
     // One row more than the limit, to know whether more exist.
@@ -415,8 +420,8 @@ fn opening(
             BEGIN.to_owned(),
             format!("SET SESSION sql_select_limit = {rows}"),
         ])
-        .chain(views.map(str::to_owned))
         .chain(time_limit.map(str::to_owned))
+        .chain(views.map(str::to_owned))
         .chain([question(read_only)])
         .collect()
 }
@@ -1444,8 +1449,8 @@ mod tests {
             OPEN
         );
         assert_eq!(closing(names[0]).join("; "), CLOSE);
-        // A writable session's fence comes first; an agent's time limit
-        // just before the question, in the server's own form.
+        // A writable session's fence comes first; an agent's time limit, in
+        // the server's own form, before the views' question it bounds.
         let mariadb = SessionKind {
             access: Access::Writable,
             mariadb: true,
@@ -1453,13 +1458,13 @@ mod tests {
         let [own, _] = mariadb.time_limits(1_500);
         let names = mariadb.read_only_names((10, 11, 6));
         assert_eq!(
-            opening(Access::Writable, 5, Some("SELECT 1"), Some(&own), names[0]),
+            opening(Access::Writable, 5, Some(&own), Some("SELECT 1"), names[0]),
             [
                 "SET SESSION TRANSACTION READ ONLY",
                 "START TRANSACTION READ ONLY",
                 "SET SESSION sql_select_limit = 6",
-                "SELECT 1",
                 "SET SESSION max_statement_time = 1.500",
+                "SELECT 1",
                 "SELECT @@session.tx_read_only LIMIT 1",
             ]
         );

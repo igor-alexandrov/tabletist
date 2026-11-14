@@ -24,7 +24,8 @@ const WHOLE: &str = "LIMIT 18446744073709551615";
 /// The views whose body may call a function an agent may not call: one
 /// that holds a refused function's name anywhere, in any letters, or that
 /// the server shows to no one but its owner (an empty body). A superset of
-/// what [`views::any_refused`] finds. Every schema's, the system's too.
+/// what [`views::any_refused`] finds. Every schema's but the server's own
+/// ([`views::MYSQL_OWN_SCHEMAS`]).
 pub(super) fn candidates() -> String {
     let holds: Vec<String> = views::refused_words(Dialect::MySql)
         .map(|word| format!("LOWER(VIEW_DEFINITION) LIKE '%{word}%'"))
@@ -32,17 +33,28 @@ pub(super) fn candidates() -> String {
     format!(
         "SELECT TABLE_SCHEMA, TABLE_NAME, COALESCE(VIEW_DEFINITION, '') \
          FROM information_schema.VIEWS \
-         WHERE COALESCE(VIEW_DEFINITION, '') = '' OR {} {WHOLE}",
+         WHERE {} AND (COALESCE(VIEW_DEFINITION, '') = '' OR {}) {WHOLE}",
+        users(),
         holds.join(" OR ")
     )
 }
 
-/// Every view's body.
+/// Every view's body but the server's own.
 fn every_view() -> String {
     format!(
         "SELECT TABLE_SCHEMA, TABLE_NAME, COALESCE(VIEW_DEFINITION, '') \
-         FROM information_schema.VIEWS {WHOLE}"
+         FROM information_schema.VIEWS WHERE {} {WHOLE}",
+        users()
     )
+}
+
+/// The views of the users' schemas, not the server's own.
+fn users() -> String {
+    let own: Vec<String> = views::MYSQL_OWN_SCHEMAS
+        .iter()
+        .map(|schema| format!("'{schema}'"))
+        .collect();
+    format!("LOWER(TABLE_SCHEMA) NOT IN ({})", own.join(", "))
 }
 
 /// The views [`candidates`] or [`every_view`] answered.
