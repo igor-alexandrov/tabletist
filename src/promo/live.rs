@@ -193,6 +193,14 @@ impl Live {
                         result: Ok(server.answer(run, changes)?),
                     }),
                 },
+                // No names, as for a folder that cannot be read: a folder
+                // on this machine is never read into a video. The answer
+                // lets the float ask again for the line as it is then.
+                Command::ListFolder { asked, typed, .. } => Some(Event::FolderListed {
+                    asked: *asked,
+                    typed: typed.clone(),
+                    names: Vec::new(),
+                }),
                 Command::History(HistoryCommand::Append { entry, .. }) => {
                     history.push(entry.as_ref().clone());
                     None
@@ -206,10 +214,15 @@ impl Live {
                     asked: *asked,
                     result: Ok(super::history::newest(history, connection, *keep)),
                 })),
-                // Nothing is written, saved, stored, watched or closed here.
+                // Nothing is written, saved, stored, watched, exported,
+                // revealed, notified or closed here.
                 Command::Test { .. }
                 | Command::Close { .. }
                 | Command::Cancel { .. }
+                | Command::Export(_)
+                | Command::CancelExport(_)
+                | Command::Reveal { .. }
+                | Command::Notify { .. }
                 | Command::LoadSecret { .. }
                 | Command::StoreSecret { .. }
                 | Command::Save { .. }

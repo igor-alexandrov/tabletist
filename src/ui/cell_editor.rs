@@ -6,13 +6,13 @@ use egui::text::{CCursor, CCursorRange};
 use egui::{CornerRadius, Id, Margin, Rect, Stroke, StrokeKind, Ui, pos2, vec2};
 
 use crate::edit::{Editor, Lock, MAX_EDIT_BYTES, Problem};
+use crate::format::display_safe;
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::{Command, Keymap, Layout, Scope, Written};
 use crate::model::{Advance, ConnTabId, TabId};
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Ring};
-use crate::ui::format::display_safe;
 use crate::ui::keys::{press_of, presses};
 use crate::ui::states::Tone;
 use crate::ui::{grid, sql_complete, widgets};
@@ -609,7 +609,7 @@ pub fn field(
             pos2(rect.left() + pad + SEARCH_ICON / 2.0, center),
             vec2(SEARCH_ICON, SEARCH_ICON),
         );
-        crate::theme::Icon::Search
+        crate::style::Icon::Search
             .image(palette.secondary, SEARCH_ICON)
             .paint_at(ui, place);
     }
@@ -1296,7 +1296,7 @@ fn band(
         None => {
             let count = |count: usize, one: &'static str, many: &'static str| {
                 let noun = ngettext(locale, one, many, u32::try_from(count).unwrap_or(u32::MAX));
-                let count = crate::ui::format::group_digits(count as u64);
+                let count = crate::format::group_digits(count as u64);
                 format!("{count} {noun}")
             };
             let chars = editor.text.chars().count();
@@ -1825,7 +1825,7 @@ mod tests {
             }
         }
         let ctx = egui::Context::default();
-        crate::theme::install(&ctx, false, look);
+        crate::style::install(&ctx, false, look);
         let palette = Palette::dark();
         let mut editor = Editor {
             cell: crate::model::CellPos { row: 0, col: 0 },

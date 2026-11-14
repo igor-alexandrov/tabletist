@@ -6,8 +6,8 @@ nav_order: 0
 
 ## Why Tabletist
 
-**A fast, native database client.** Tabletist connects to PostgreSQL, MySQL
-and SQLite. It is written in Rust and draws its own window, so there is no
+**A fast, native database client.** Tabletist connects to PostgreSQL, MySQL,
+SQLite and BigQuery. It is written in Rust and draws its own window, so there is no
 browser inside. It runs on Linux (Omarchy and Hyprland first), macOS and
 Windows.
 
@@ -20,7 +20,8 @@ Windows.
   last used. Open more than one and each is a chip in the window's header.
 - **Connects the way your servers need.** Direct connections, TLS, and SSH
   tunnels with a password, a key file or your agent. Passwords live in the
-  system keyring, or are asked for when you connect.
+  system keyring, or are asked for when you connect. BigQuery signs in
+  with a service-account key file or Google Cloud's default credentials.
   [Read about connections]({% link _reference/connections.md %}).
 - **Browses tables.** A sidebar of one schema's tables and views, quick
   open to find any of them by name, a data grid with sorting, filters and
@@ -38,6 +39,11 @@ Windows.
   Vim keys if you want them, a row limit and a timeout, read-only or
   read-write, and a History tab of what ran on the connection lately.
   [Open the SQL editor guide]({% link _guide/sql-editor.md %}).
+- **Copies and exports.** Select cells or rows in a table's grid or a
+  SQL result, and copy them as CSV, TSV, JSON, Markdown or SQL INSERT.
+  Export a table or a result to a file in those formats or JSON Lines.
+  Exports run in the background, several at once if you like.
+  [Copy and export]({% link _guide/browsing-data.md %}#copying).
 - **Lets agents read your databases.** Claude Code, Cursor and other
   agents ask Tabletist over MCP. They read only the connections you
   allow, never get the connection's password, and are kept from what is
@@ -66,8 +72,11 @@ Tabletist is young. These are the limits you are most likely to meet:
   rows. Pasting rows is not built yet.
 - Binary values, values over 256 KiB, views, and tables without a primary
   key or unique index cannot be edited.
+- Importing a file into a table is not built yet.
 - The SQL editor does not run read-write on a production connection.
-- SSH tunnels do not go through `ProxyJump` or `ProxyCommand`.
+- A BigQuery connection is read-only: BigQuery has no transactions to
+  edit rows with. It has no DDL view, and agents cannot read it once it
+  hides a table or masks a column.
 - The app is in English only.
 
 ## Open source

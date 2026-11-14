@@ -25,4 +25,4 @@ undocumented_unsafe_blocks = "deny"
 [dependencies]
 # The connection type and the bindings to SQLite's C API. `bundled` as in the
 # database layer, so this crate builds and tests by itself too.
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }

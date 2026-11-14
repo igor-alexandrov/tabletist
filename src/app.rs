@@ -17,7 +17,7 @@ use crate::edit::EditorPlace;
 use crate::i18n::{Locale, gettext};
 use crate::model::{Action, ConnTab, ConnTabContent, ConnTabId, PickerState};
 use crate::model::{
-    Advance, CellPos, Completion, ConnectionForm, Dialog, Fetch, FilterBar, FilterRow, Held,
+    Advance, CellPos, Completion, ConnectionForm, Dialog, Fetch, FilterBar, FilterRow, Found, Held,
     HostKeyPrompt, LeavePrompt, ObjectTab, ObjectView, Pane, PasswordPrompt, PickTarget, Reach,
     ResultPane, RunMode, SecretKind, SessionStatus, SqlTab, StartRecent, Tab, TabId, TestState,
     TextPrint, Tree, TreeKey, TreeNode, Wanted, Workspace,
@@ -25,11 +25,14 @@ use crate::model::{
 use crate::paths::AppDirs;
 use crate::secrets::{SecretString, password_account, ssh_account};
 use crate::settings::{Loaded, Settings, SettingsFile, Source};
+use crate::style;
 use crate::theme::{self, Catalog, Palette};
 
 mod commands;
 mod editing;
+mod export;
 mod history;
+pub use export::{ExportFacts, ResultFacts};
 mod key_picker;
 mod keyboard;
 #[cfg(test)]
@@ -41,14 +44,13 @@ mod quick_open;
 mod startup_tests;
 mod updates;
 
-pub use commands::{About, RUNNABLE, Runnable, TabName};
+pub use commands::RUNNABLE;
 pub use keyboard::{CHEAT_SHEET, cheat_sheet, keys_list};
 pub use menu::ItemState;
 pub use quick_open::{
-    Found, GROUP_SHOWN, QuickCommand, QuickHeading, QuickItem, QuickList, QuickRow, StartRow,
-    setting_path,
+    GROUP_SHOWN, QuickHeading, QuickList, QuickRow, command_words, picked_object, setting_path,
 };
-pub use updates::{Pending, Work};
+pub use updates::{Pending, Work, WorkId};
 
 /// What a keyring read is for; each names the exact request it serves, so
 /// a late answer for an earlier attempt is dropped.
@@ -93,6 +95,20 @@ pub enum PinState {
     Reading,
     /// Nowhere to be found: the desktop is followed instead.
     Missing,
+}
+
+/// A look the settings chose, on its way to being drawn: egui puts fonts
+/// set in one frame in place at the next frame's start, so the look's are
+/// installed a frame before it is drawn.
+#[derive(Clone, Copy, Debug)]
+enum LookSwitch {
+    /// Its fonts are to be installed.
+    Asked(crate::theme::Look),
+    /// The terminal look's: the desktop's monospace is being read, by the
+    /// read the counter names; its fonts are installed once it is in.
+    Reading(crate::theme::Look, u64),
+    /// Its fonts are in place from this frame: it is drawn.
+    Installed(crate::theme::Look),
 }
 
 pub struct App {
@@ -154,6 +170,32 @@ pub struct App {
     /// id, as the file had them: a newer version may have written them,
     /// and they are written back with the others.
     table_lists_unread: std::collections::BTreeMap<String, serde_json::Value>,
+    /// The options last chosen for each format of an export and of Copy
+    /// as, from export_options.json.
+    pub export: crate::export::Options,
+    /// The exports running, and those whose end is still told, in the
+    /// order they started (spec 4, S12).
+    pub exports: Vec<crate::export_sheet::Exporting>,
+    /// The formats whose last export went to the clipboard: the sheet
+    /// starts there for them (spec, Q12).
+    export_clipboard: std::collections::HashSet<crate::export::Format>,
+    /// The format of the last export: the next sheet opens on it.
+    export_format: Option<crate::export::Format>,
+    /// What the Export sheet says to a screen reader next: a column moved.
+    pub export_said: Option<String>,
+    /// What a copy the app made puts on the clipboard: the frame takes it
+    /// there (`ui::show`), as it has the clipboard.
+    pub to_clipboard: Option<String>,
+    /// What the toast, or the terminal look's status line, says next: the
+    /// frame says it (`ui::show`).
+    pub said: Option<String>,
+    /// The sheet the toast's Export… opens, said with `said` when a copy is
+    /// over the clipboard's limit (spec 3b, R6): the frame hands both to
+    /// the toast.
+    pub offer: Option<crate::model::ExportOffer>,
+    /// Whether the window has the keyboard: as the last frame began. A
+    /// finished export behind other windows is told (spec 3b, R8).
+    pub focused: bool,
     /// What was open at the last quit, and each connection's tables as
     /// its window last had them, from session.json.
     pub session: crate::session::Session,
@@ -210,7 +252,7 @@ pub struct App {
     /// What fontconfig gave the terminal look for the font the settings
     /// name, or CoreText macOS's data: nothing in tests, a demo's screenshot
     /// and Windows.
-    pub desktop_font: crate::typography::desktop_font::Read,
+    pub desktop_font: crate::font_files::desktop_font::Read,
     /// The installed monospace families macOS's data font menu lists after
     /// the bundled faces: read each time Settings opens, none in tests and
     /// a demo's screenshot.
@@ -227,6 +269,8 @@ pub struct App {
     /// The look's text changed since the last `logic`: egui's own text
     /// styles follow it.
     restyle: bool,
+    /// A look the settings chose, on its way to being drawn.
+    look_switch: Option<LookSwitch>,
     /// The zoom the window was last given: the terminal look's text size,
     /// which sizes the whole window there.
     zoom: Option<f32>,
@@ -323,6 +367,26 @@ fn load_table_lists(path: &std::path::Path) -> (TableLists, Unread) {
     (lists, unread)
 }
 
+/// The workspace of `tab` among `tabs`, as [`App::workspace`] finds it, for
+/// a caller that holds another of `App`'s fields beside it: a dialog's
+/// prompt, `&mut`, over the workspace it asks about.
+pub fn workspace_in(tabs: &[ConnTab], tab: ConnTabId) -> Option<&Workspace> {
+    match &tabs.iter().find(|t| t.id == tab)?.content {
+        ConnTabContent::Workspace(workspace) => Some(workspace),
+        ConnTabContent::Picker(_) => None,
+    }
+}
+
+/// The workspace of `tab` among `tabs`, `&mut`, as [`App::workspace_mut`]
+/// finds it, for a caller that lends another of `App`'s fields beside it:
+/// the settings and the keymap a SQL editor reads while it edits its text.
+pub fn workspace_in_mut(tabs: &mut [ConnTab], tab: ConnTabId) -> Option<&mut Workspace> {
+    match &mut tabs.iter_mut().find(|t| t.id == tab)?.content {
+        ConnTabContent::Workspace(workspace) => Some(workspace),
+        ConnTabContent::Picker(_) => None,
+    }
+}
+
 impl App {
     pub fn new(dirs: AppDirs, loaded: Loaded, backend: Backend) -> Self {
         Self::opened(dirs, loaded, backend, false)
@@ -338,6 +402,7 @@ impl App {
 
     fn opened(dirs: AppDirs, loaded: Loaded, backend: Backend, relaunched: bool) -> Self {
         let source = loaded.source;
+        let migrated = loaded.migrated();
         let (settings, settings_file) = loaded.into_parts();
         let loaded_connections = SavedConnections::load(&dirs);
         let connections = loaded_connections.store;
@@ -368,6 +433,7 @@ impl App {
         };
         let (table_lists, table_lists_unread) = load_table_lists(&dirs.table_lists_file());
         let session = crate::session::Session::load(&dirs.session_file());
+        let export = crate::export::Options::load(&dirs.export_options_file());
         let recents = crate::recents::Recents::load(&dirs.recents_file());
         let updates = crate::update::Updates {
             seen: crate::update::Seen::load(&dirs.updates_file()),
@@ -375,7 +441,8 @@ impl App {
         };
         let writes_session = loaded_connections.problem.is_none();
         // An installed data font is read once the window exists (`attach`).
-        let look = crate::theme::Look::for_platform().with_text(&settings, false);
+        let look = crate::theme::Look::chosen(settings.look, crate::update::release::Os::current())
+            .with_text(&settings, false);
         let mut app = Self {
             dirs,
             settings,
@@ -402,6 +469,15 @@ impl App {
             labels,
             table_lists,
             table_lists_unread,
+            export,
+            exports: Vec::new(),
+            export_clipboard: Default::default(),
+            export_format: None,
+            export_said: None,
+            to_clipboard: None,
+            said: None,
+            offer: None,
+            focused: true,
             session,
             writes_session,
             recents,
@@ -428,13 +504,14 @@ impl App {
             theme_asked: 0,
             theme_taken: 0,
             pin_told: None,
-            desktop_font: crate::typography::desktop_font::Read::default(),
+            desktop_font: crate::font_files::desktop_font::Read::default(),
             installed_fonts: Vec::new(),
             font_asked: 0,
             font_taken: 0,
             font_read: false,
             fonts: egui::FontDefinitions::empty(),
             restyle: false,
+            look_switch: None,
             zoom: None,
             window_title: "Tabletist".into(),
             window_asks: Vec::new(),
@@ -487,6 +564,17 @@ impl App {
         if source == Source::Json {
             app.save_settings();
         }
+        // And a key read from the older one it took the place of, once:
+        // `interface_size` as `ui_scale`, the old line taken out. Where
+        // that would write the file whole (the key in a table written
+        // inline), it is not written: nobody asked, and the file's other
+        // keys and comments would go. The old key is read as it is.
+        if !migrated.is_empty() {
+            let settings = app.settings.clone();
+            if let Some(text) = settings.write_kept(&app.settings_file.text, &migrated) {
+                app.take_written(text, settings);
+            }
+        }
         app
     }
 
@@ -512,10 +600,7 @@ impl App {
     }
 
     pub fn workspace(&self, tab: ConnTabId) -> Option<&Workspace> {
-        match &self.tabs.iter().find(|t| t.id == tab)?.content {
-            ConnTabContent::Workspace(workspace) => Some(workspace),
-            ConnTabContent::Picker(_) => None,
-        }
+        workspace_in(&self.tabs, tab)
     }
 
     pub fn picker_mut(&mut self, tab: ConnTabId) -> Option<&mut PickerState> {
@@ -526,10 +611,7 @@ impl App {
     }
 
     pub fn workspace_mut(&mut self, tab: ConnTabId) -> Option<&mut Workspace> {
-        match &mut self.tabs.iter_mut().find(|t| t.id == tab)?.content {
-            ConnTabContent::Workspace(workspace) => Some(workspace),
-            ConnTabContent::Picker(_) => None,
-        }
+        workspace_in_mut(&mut self.tabs, tab)
     }
 
     /// The open connections with their tabs, in the order the header shows
@@ -867,7 +949,7 @@ impl App {
     /// shortcuts dialog, which offers it and gives way to it. Every way
     /// in (its key, quick open, a menu item, a pane asked for) holds to it.
     fn settings_may_open(&self) -> bool {
-        matches!(self.dialog, None | Some(Dialog::Help))
+        matches!(self.dialog, None | Some(Dialog::Help(_)))
     }
 
     fn tab_index(&self, id: ConnTabId) -> Option<usize> {
@@ -1092,7 +1174,7 @@ impl App {
                     .picker_mut(tab)
                     .map(|picker| picker.search.clone())
                     .unwrap_or_default();
-                let shown = crate::ui::picker::visible(self, &search).contains(&conn);
+                let shown = crate::ui::picker::visible(&self.connections, &search).contains(&conn);
                 let search = if shown { search } else { String::new() };
                 let found = self.connections.search(&search);
                 let group = crate::ui::picker::groups(&found)
@@ -1128,7 +1210,7 @@ impl App {
                 let Some(search) = search else {
                     return;
                 };
-                let order = crate::ui::picker::visible(self, &search);
+                let order = crate::ui::picker::visible(&self.connections, &search);
                 if let Some(picker) = self.picker_mut(tab)
                     && !order.is_empty()
                 {
@@ -1285,7 +1367,7 @@ impl App {
                                 .get(cell.row)
                                 .and_then(|row| row.get(cell.col))
                                 .filter(|value| !value.is_null())
-                                .map(crate::ui::format::plain_text),
+                                .map(crate::format::plain_text),
                         }?;
                         Some((
                             ObjectRef::new(foreign.ref_schema.clone(), foreign.ref_table.clone()),
@@ -1397,6 +1479,11 @@ impl App {
             Action::SetTreeCursor { tab, node } => {
                 if let Some(workspace) = self.workspace_mut(tab) {
                     workspace.tree.cursor = Some(node);
+                    workspace.pane = Pane::Tree;
+                }
+            }
+            Action::GiveTreeKeys(tab) => {
+                if let Some(workspace) = self.workspace_mut(tab) {
                     workspace.pane = Pane::Tree;
                 }
             }
@@ -1601,7 +1688,7 @@ impl App {
                     let tabletist_db::Value::Bytes(bytes) = rows.get(row)?.get(col)? else {
                         return None;
                     };
-                    let name = crate::ui::format::save_name(table, &columns.get(col)?.name, bytes);
+                    let name = crate::format::save_name(table, &columns.get(col)?.name, bytes);
                     Some((name, bytes.to_vec()))
                 });
                 if let Some((name, bytes)) = found {
@@ -1732,7 +1819,7 @@ impl App {
                     // that drew the cell.
                     let (height, width) = sql.dims();
                     if cell.row < height && cell.col < width {
-                        sql.selection = Some(cell);
+                        sql.set_cursor(Some(cell), Reach::End);
                     }
                 }
                 if let Some(workspace) = self.workspace_mut(tab) {
@@ -2051,14 +2138,8 @@ impl App {
                     object.focus_field = None;
                 }
                 if let Some(sql) = self.sql_tab_mut(tab, id) {
-                    let (height, width) = sql.dims();
-                    sql.selection = (height > 0 && width > 0).then(|| match sql.selection {
-                        None => CellPos { row: 0, col: 0 },
-                        Some(cell) => CellPos {
-                            row: step(cell.row, rows, height),
-                            col: step(cell.col, cols, width),
-                        },
-                    });
+                    let moved = sql_moved(sql, rows, cols);
+                    sql.set_cursor(moved, Reach::Move);
                 } else if let Some(object) = self.object_tab_mut(tab, id) {
                     let moved = moved(object, rows, cols);
                     object.pinned |= moved.is_some();
@@ -2073,29 +2154,86 @@ impl App {
                     object.focus_field = None;
                     object.set_cursor(Some(cell), Reach::Extend);
                     object.pinned = true;
+                } else if let Some(sql) = self.sql_tab_mut(tab, id) {
+                    let (height, width) = sql.dims();
+                    if cell.row < height && cell.col < width {
+                        sql.set_cursor(Some(cell), Reach::Extend);
+                    }
                 }
                 if let Some(workspace) = self.workspace_mut(tab) {
                     workspace.pane = Pane::Grid;
                 }
             }
-            Action::ExtendBy { tab, id, rows } => {
+            Action::ExtendBy {
+                tab,
+                id,
+                rows,
+                cols,
+            } => {
                 self.close_editor(tab, id, true);
                 if let Some(object) = self.object_tab_mut(tab, id) {
                     object.edits.why = None;
                     object.focus_field = None;
-                    let moved = moved(object, rows, 0);
+                    let moved = moved(object, rows, cols);
                     object.pinned |= moved.is_some();
                     object.set_cursor(moved, Reach::Extend);
+                } else if let Some(sql) = self.sql_tab_mut(tab, id) {
+                    let moved = sql_moved(sql, rows, cols);
+                    sql.set_cursor(moved, Reach::Extend);
                 }
             }
-            Action::SelectRows { tab, id } => {
+            Action::SelectRows { tab, id, mode } => {
                 // As a move does: an editor's text is kept, and the keys
                 // are the rows'.
                 self.close_editor(tab, id, true);
                 if let Some(object) = self.object_tab_mut(tab, id) {
                     object.edits.why = None;
                     object.focus_field = None;
-                    object.toggle_visual();
+                    object.toggle_visual(mode);
+                } else if let Some(sql) = self.sql_tab_mut(tab, id) {
+                    sql.toggle_visual(mode);
+                }
+            }
+            Action::SelectRowsOfCursor { tab, id } => {
+                self.close_editor(tab, id, true);
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.select_rows_of_cursor();
+                } else if let Some(sql) = self.sql_tab_mut(tab, id) {
+                    sql.select_rows_of_cursor();
+                }
+            }
+            Action::SelectAllRows { tab, id } => {
+                self.close_editor(tab, id, true);
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.edits.why = None;
+                    object.focus_field = None;
+                    object.select_all_rows();
+                } else if let Some(sql) = self.sql_tab_mut(tab, id) {
+                    sql.select_all_rows();
+                }
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.pane = Pane::Grid;
+                }
+            }
+            Action::RowNumberClicked {
+                tab,
+                id,
+                row,
+                click,
+            } => {
+                self.close_editor(tab, id, true);
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.edits.why = None;
+                    object.focus_field = None;
+                    object.row_number_clicked(row, click);
+                    object.pinned = true;
+                } else if let Some(sql) = self.sql_tab_mut(tab, id)
+                    && row < sql.dims().0
+                {
+                    sql.row_number_clicked(row, click);
+                }
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.pane = Pane::Grid;
                 }
             }
             Action::LeaveVisual { tab, id } => {
@@ -2103,6 +2241,83 @@ impl App {
                     && object.visual()
                 {
                     object.range = None;
+                } else if let Some(sql) = self.sql_tab_mut(tab, id)
+                    && sql.visual_mode().is_some()
+                {
+                    sql.range = None;
+                }
+            }
+            Action::OpenCopyAs { tab, pick } => {
+                // Over a grid with a cell to copy, and no other dialog.
+                if self.dialog.is_none() && self.copy_in(tab, pick, How::ColumnNames).is_some() {
+                    self.dialog = Some(Dialog::CopyAs(Box::new(crate::model::CopyAsMenu {
+                        tab,
+                        pick,
+                        lit: 0,
+                    })));
+                }
+            }
+            Action::OpenExport { tab, format } => self.open_export(tab, format),
+            Action::ExportFromTree(tab) => self.export_from_tree(tab),
+            Action::ExportSelection(offer) => self.export_selection(offer),
+            Action::FromTree {
+                tab,
+                object,
+                kind,
+                pick,
+            } => self.tree_pick(tab, object, kind, pick),
+            Action::ChangeExport(change) => self.change_export(change),
+            Action::CountForExport => self.count_for_export(),
+            Action::StartExport => self.start_export(),
+            Action::ExportTo { tab, path, replace } => self.export_to(tab, &path, replace),
+            Action::CancelExport(job) => self.cancel_export(job),
+            Action::HideExport { job, hidden } => self.hide_export(job, hidden),
+            Action::DismissExport(job) => self.dismiss_export(job),
+            Action::ExportFailureAction(job) => self.export_failure_action(job),
+            Action::RevealExport(job) => self.reveal_export(job),
+            Action::MoveInCancelExport(step) => self.move_in_cancel_export(step),
+            Action::ExportPickFile => self.pick_export_file(),
+            Action::PickPath(at) => self.pick_path(at),
+            Action::MoveInCopyAs(step) => {
+                if let Some(Dialog::CopyAs(menu)) = &mut self.dialog {
+                    let last = crate::model::CopyHow::menu(menu.pick).len() - 1;
+                    menu.lit = menu.lit.saturating_add_signed(step).min(last);
+                }
+            }
+            Action::CopyAs { tab, pick, how } => {
+                let mut refused = false;
+                if let Some(copying) = self.copy_in(tab, pick, how) {
+                    // The grid menu's Copy and Copy rows as TSV are ⌘C's
+                    // and ⇧⌘C's, which say nothing of a copy made.
+                    let silent = how == How::Plain && pick != Pick::CursorRow;
+                    let copied = matches!(copying.copied, crate::export::Copied::Text { .. });
+                    if let crate::export::Copied::Text { ref text, .. } = copying.copied {
+                        self.to_clipboard = Some(text.clone());
+                    }
+                    if !(copied && silent) {
+                        self.said = Some(copy_said(self.locale, &copying, how));
+                        self.offer = None;
+                        if !copied {
+                            refused = self.offer_export(tab, pick, how);
+                        }
+                        // What the copy came to is what the terminal's
+                        // line says next, not why the last save was not
+                        // made.
+                        if let Some(workspace) = self.workspace_mut(tab) {
+                            workspace.save_refused = false;
+                            workspace.review_refused = false;
+                        }
+                    }
+                }
+                // As `y` leaves a visual selection; a copy refused keeps it,
+                // for `E` to export (spec 3b, R6).
+                let workspace = self.workspace(tab).filter(|_| !refused);
+                let shown = workspace.and_then(|workspace| {
+                    let object = workspace.active_object_tab().map(|object| object.id);
+                    object.or_else(|| workspace.active_sql_tab().map(|sql| sql.id))
+                });
+                if let Some(id) = shown {
+                    self.apply(Action::LeaveVisual { tab, id });
                 }
             }
             Action::ToggleRowPanel(tab) => {
@@ -2180,7 +2395,20 @@ impl App {
             Action::CancelQuery(tab) => {
                 if let Some(workspace) = self.workspace(tab) {
                     let session = workspace.session;
-                    let pending = self.cancellable(tab);
+                    let mut pending = self.cancellable(tab);
+                    // The databases' listing a connect still holds back is
+                    // not with the session, so the session cannot skip it:
+                    // it ends here, as a skipped one answers.
+                    if let Some(workspace) = self.workspace_mut(tab)
+                        && let Some(request) = workspace.databases_after_tree
+                        && pending.contains(&request)
+                    {
+                        workspace.databases_after_tree = None;
+                        workspace
+                            .databases
+                            .finish(request, Err(tabletist_db::Error::Cancelled));
+                        pending.retain(|id| *id != request);
+                    }
                     self.cancel(session, pending);
                 }
             }
@@ -2474,22 +2702,28 @@ impl App {
             Action::CountRows { tab, object_tab } => self.count_rows(tab, object_tab),
             Action::ShowHelp => {
                 if self.dialog.is_none() {
-                    self.dialog = Some(Dialog::Help);
+                    self.dialog = Some(Dialog::Help(crate::model::HelpSearch::default()));
+                }
+            }
+            Action::HelpSearch(text) => {
+                if let Some(Dialog::Help(help)) = &mut self.dialog {
+                    help.search = text;
+                    help.found = None;
+                }
+            }
+            Action::HelpFind(keys) => {
+                if let Some(Dialog::Help(help)) = &mut self.dialog {
+                    help.found = keys;
+                    help.search.clear();
                 }
             }
             Action::ShowAbout => {
                 // The shortcuts dialog offers it, and gives way to it.
-                if matches!(self.dialog, None | Some(Dialog::Help)) {
+                if matches!(self.dialog, None | Some(Dialog::Help(_))) {
                     self.dialog = Some(Dialog::About);
                 }
             }
-            Action::TextSize(larger) => {
-                let terminal = self.look.terminal;
-                self.change_settings(|settings| {
-                    settings.font_size =
-                        larger.map(|larger| settings.stepped_font_size(terminal, larger));
-                });
-            }
+            Action::TextSize(larger) => self.resize(larger),
             Action::ShowSettings => {
                 // Asked for while it is open, it stays as it is.
                 if self.settings_may_open() {
@@ -2731,6 +2965,8 @@ impl App {
             Action::QuickOpenMove(step) => self.quick_open_move(step),
             Action::QuickOpenPick { index, in_editor } => self.quick_open_pick(index, in_editor),
             Action::QuickOpenScope => self.quick_open_scope(),
+            Action::QuickOpenExport => self.quick_open_export(),
+            Action::PickTableToExport(tab) => self.pick_table_to_export(tab),
             Action::ShowDatabaseMenu(tab) => {
                 if let Some(workspace) = self.workspace_mut(tab) {
                     workspace.database_menu_asked = true;
@@ -2904,7 +3140,8 @@ impl App {
                     let old_default = form.driver.default_port().to_string();
                     form.driver = driver;
                     match driver {
-                        Driver::Sqlite => {}
+                        // No port or password of its own to default.
+                        Driver::Sqlite | Driver::BigQuery => {}
                         Driver::Postgres | Driver::MySql => {
                             if form.port.trim().is_empty() || form.port.trim() == old_default {
                                 form.port = driver.default_port().to_string();
@@ -4041,6 +4278,15 @@ impl App {
 
     fn apply_event(&mut self, event: Event) {
         match event {
+            Event::ExportPath { job, path, replace } => {
+                self.export_path_answered(job, path, replace)
+            }
+            Event::Export { job, state } => self.export_state(job, state),
+            Event::FolderListed {
+                asked,
+                typed,
+                names,
+            } => self.folder_listed(asked, &typed, names),
             Event::Connected {
                 session,
                 request,
@@ -4273,6 +4519,7 @@ impl App {
                 if let Some(schema) = default {
                     self.expand_schema(tab, &schema);
                 }
+                self.send_databases_after_tree(tab);
             }
             Event::Objects {
                 session,
@@ -4823,9 +5070,13 @@ impl App {
                         cancel,
                     )
                 });
+                let catalog_changed = sql
+                    .in_flight
+                    .as_ref()
+                    .is_some_and(|run| changed_catalog(dialect, &run.statements, &result));
                 let messages = opens_messages(&result, cancel);
                 if sql.finish_run(request, result, cancel) {
-                    sql.selection = None;
+                    sql.set_cursor(None, Reach::End);
                     sql.pane = if messages {
                         ResultPane::Messages
                     } else {
@@ -4834,6 +5085,11 @@ impl App {
                 }
                 for entry in ran.unwrap_or_default() {
                     self.record(entry);
+                }
+                // A table made or dropped shows in the sidebar without a
+                // click on its refresh.
+                if catalog_changed && let Some(tab) = self.tab_for_session(session) {
+                    self.refresh_tree(tab);
                 }
             }
         }
@@ -4966,6 +5222,14 @@ impl App {
         self.backend.send(Command::Save {
             path: self.dirs.table_lists_file(),
             file: StateFile::TableLists(lists),
+        });
+    }
+
+    /// Saves the options last chosen for each format, on the backend.
+    pub fn save_export_options(&mut self) {
+        self.backend.send(Command::Save {
+            path: self.dirs.export_options_file(),
+            file: StateFile::ExportOptions(self.export.to_file()),
         });
     }
 
@@ -5566,17 +5830,7 @@ impl App {
         self.refresh_keymap();
         let terminal = self.look.terminal;
         if old.editor_keys_in(terminal) != self.settings.editor_keys_in(terminal) {
-            // Other keybindings: every editor in normal mode, as vim
-            // starts, its history starting at its script.
-            for tab in &mut self.tabs {
-                if let ConnTabContent::Workspace(workspace) = &mut tab.content {
-                    for sql in workspace.sql_tabs_mut() {
-                        sql.vim.to_normal();
-                        let text = sql.text.clone();
-                        sql.vim.start_over(&text);
-                    }
-                }
-            }
+            self.restart_editors();
         }
         if old.timestamps != self.settings.timestamps {
             let full = self.settings.timestamps == crate::settings::Timestamps::Full;
@@ -5643,6 +5897,24 @@ impl App {
                     workspace.tree.flat = flat;
                 }
             }
+        }
+        // Another look than the one drawn or on its way: its fonts are
+        // installed at the next frame's start, and it is drawn from the
+        // frame after, with the keymap of its layout (`App::switch_look`).
+        let chosen =
+            crate::theme::Look::chosen(self.settings.look, crate::update::release::Os::current());
+        let coming = match self.look_switch {
+            Some(
+                LookSwitch::Asked(look)
+                | LookSwitch::Reading(look, _)
+                | LookSwitch::Installed(look),
+            ) => look,
+            None => self.look,
+        };
+        if old.look != self.settings.look
+            && (chosen.name, chosen.keys) != (coming.name, coming.keys)
+        {
+            self.look_switch = Some(LookSwitch::Asked(chosen));
         }
         if old.theme != self.settings.theme {
             // Reading a theme needs the window: `logic` has it.
@@ -5902,7 +6174,7 @@ impl App {
         };
         let asks = match workspace.driver {
             Driver::MySql => workspace.session_zone.needs_load(),
-            Driver::Postgres | Driver::Sqlite => false,
+            Driver::Postgres | Driver::Sqlite | Driver::BigQuery => false,
         };
         if asks {
             let session = workspace.session;
@@ -5917,24 +6189,29 @@ impl App {
     /// After a (re)connect: load the tree, restart everything that waited on
     /// the old session, and open anything queued for this connection.
     pub fn after_connect(&mut self, tab: ConnTabId) {
+        self.ask_server_version(tab);
+        self.ask_session_zone(tab);
+        self.refresh_tree(tab);
+        // After the tree: the databases' listing waits on a check of its
+        // own for PgBouncer, and its catalog query would hold up the
+        // default schema's objects, so it goes when the schemas answer.
         if let Some(workspace) = self.workspace(tab) {
             match workspace.driver {
                 // The one driver with other databases to switch to.
                 Driver::Postgres => {
-                    let session = workspace.session;
+                    let waits = workspace.tree.schemas.is_loading();
                     let request = RequestId(self.next_id());
                     if let Some(workspace) = self.workspace_mut(tab) {
                         workspace.databases.start(request);
+                        workspace.databases_after_tree = Some(request);
                     }
-                    self.backend
-                        .send(Command::ListDatabases { session, request });
+                    if !waits {
+                        self.send_databases_after_tree(tab);
+                    }
                 }
-                Driver::MySql | Driver::Sqlite => {}
+                Driver::MySql | Driver::Sqlite | Driver::BigQuery => {}
             }
         }
-        self.ask_server_version(tab);
-        self.ask_session_zone(tab);
-        self.refresh_tree(tab);
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
@@ -6190,6 +6467,22 @@ impl App {
             request,
             schema: schema.to_owned(),
         });
+    }
+
+    /// Sends the databases' listing a connect held back for the tree, if
+    /// it is still the one the switcher waits for.
+    fn send_databases_after_tree(&mut self, tab: ConnTabId) {
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        let Some(request) = workspace.databases_after_tree.take() else {
+            return;
+        };
+        if workspace.databases.pending == Some(request) {
+            let session = workspace.session;
+            self.backend
+                .send(Command::ListDatabases { session, request });
+        }
     }
 
     pub fn expand_schema(&mut self, tab: ConnTabId, schema: &str) {
@@ -7137,9 +7430,9 @@ impl App {
                             (named.name.clone(), true)
                         }
                         tabletist_db::Dialect::Postgres => (named.name.to_lowercase(), true),
-                        tabletist_db::Dialect::MySql | tabletist_db::Dialect::Sqlite => {
-                            (named.name.clone(), false)
-                        }
+                        tabletist_db::Dialect::MySql
+                        | tabletist_db::Dialect::Sqlite
+                        | tabletist_db::Dialect::BigQuery => (named.name.clone(), false),
                     };
                     let object = crate::completion::resolve(schema, &name, &catalog)
                         .filter(|object| !exact || object.name == name)?;
@@ -7233,10 +7526,17 @@ impl App {
         // Where the run goes: its links are offered only while the tab is
         // still there.
         let on = Some(crate::model::RanOn(workspace.spec.clone()));
+        // What the switch shows, which the footer names after the run.
+        let chosen = match mode {
+            tabletist_db::ScriptMode::Write => RunMode::ReadWrite,
+            tabletist_db::ScriptMode::ReadOnly => workspace
+                .sql_tab(id)
+                .map_or(RunMode::ReadOnly, |sql| workspace.run_mode(sql)),
+        };
         let Some(sql) = workspace.sql_tab_mut(id) else {
             return;
         };
-        let superseded = sql.start_run_with(request, statements.clone(), mode, caps, on);
+        let superseded = sql.start_run_with(request, statements.clone(), (mode, chosen), caps, on);
         // The session runs one thing at a time: the run still going must
         // stop before this one can start.
         self.cancel(session, superseded);
@@ -7475,6 +7775,27 @@ impl App {
             .as_ref()
             .and_then(|cursor| rows.iter().position(|row| &row.node == cursor));
         let last = rows.len() - 1;
+        // Up to the parent: the nearest row above that is shallower.
+        let parent = |at: usize| {
+            (0..at)
+                .rev()
+                .find(|&i| rows[i].depth < rows[at].depth)
+                .unwrap_or(at)
+        };
+        if let TreeKey::FoldAll | TreeKey::OpenAll = key {
+            let open = key == TreeKey::OpenAll;
+            // An object of a group folded now leaves its cursor to the group.
+            let target = at.map(|at| if open { at } else { parent(at) });
+            self.set_every_group(tab, show_system, open);
+            if let Some(index) = target
+                && let Some(workspace) = self.workspace_mut(tab)
+            {
+                workspace.tree.cursor = Some(rows[index].node.clone());
+                workspace.tree.reveal_cursor = true;
+                workspace.pane = Pane::Tree;
+            }
+            return;
+        }
         let target = match (key, at) {
             // No cursor, or it is on a row no longer shown: End and Up start
             // at the bottom, anything else at the top.
@@ -7497,14 +7818,23 @@ impl App {
                     self.toggle_tree_row(tab, &rows[at].node);
                     Some(at)
                 }
-                // Up to the parent: the nearest row above that is shallower.
-                _ => Some(
-                    (0..at)
-                        .rev()
-                        .find(|&i| rows[i].depth < rows[at].depth)
-                        .unwrap_or(at),
-                ),
+                _ => Some(parent(at)),
             },
+            // A group folds or unfolds; an object of one folds its group,
+            // and the cursor goes up to it.
+            (TreeKey::Fold, Some(at)) => match rows[at].expanded {
+                Some(_) => {
+                    self.toggle_tree_row(tab, &rows[at].node);
+                    Some(at)
+                }
+                None if rows[at].depth > 0 => {
+                    let group = parent(at);
+                    self.toggle_tree_row(tab, &rows[group].node);
+                    Some(group)
+                }
+                None => Some(at),
+            },
+            (TreeKey::FoldAll | TreeKey::OpenAll, Some(at)) => Some(at),
             (TreeKey::Enter, Some(at)) => {
                 match &rows[at].node {
                     TreeNode::Object(object, kind) => self.apply(Action::OpenObject {
@@ -7524,6 +7854,37 @@ impl App {
             workspace.tree.cursor = Some(rows[index].node.clone());
             workspace.tree.reveal_cursor = true;
             workspace.pane = Pane::Tree;
+        }
+    }
+
+    /// Folds every group of the schema the sidebar shows, or unfolds them
+    /// all: those a filter hides too, so they are as asked once it is
+    /// cleared. `show_system` is the setting that lists the system's
+    /// schemas.
+    fn set_every_group(&mut self, tab: ConnTabId, show_system: bool, open: bool) {
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        let Some(schema) = workspace.tree.shown_schema(workspace.driver, show_system) else {
+            return;
+        };
+        let Some(node) = workspace.tree.nodes.get_mut(&schema) else {
+            return;
+        };
+        let objects: Vec<&tabletist_db::ObjectInfo> = node.objects.value.iter().flatten().collect();
+        let prefixes: Vec<String> = crate::model::group_objects(&objects)
+            .into_iter()
+            .filter_map(|entry| match entry {
+                crate::model::Entry::Group { prefix, .. } => Some(prefix),
+                crate::model::Entry::Object(_) => None,
+            })
+            .collect();
+        for prefix in prefixes {
+            if open {
+                node.open_groups.insert(prefix);
+            } else {
+                node.open_groups.remove(&prefix);
+            }
         }
     }
 
@@ -7716,35 +8077,113 @@ impl App {
         }
     }
 
-    /// Text for the clipboard: the selected cell, or its whole row as TSV.
-    /// What the grid shows: a pending cell gives its new value, as the row
-    /// panel's copy does.
+    /// What a copy takes of the active tab's grid, a table's or a SQL
+    /// result's: with a range, the cells it covers as TSV, a line for each
+    /// row; with none, or one cell held by `v`, the cursor's cell's text as
+    /// it is. `whole_row` takes every column of the rows the selection
+    /// covers. What is pending reads as its new value, and a new row's cell
+    /// nothing is set in as a NULL. `None` where nothing is copied: no
+    /// cell, or more than the clipboard takes ([`copy_said`] says which).
     pub fn copy_text(&self, whole_row: bool) -> Option<String> {
-        use tabletist_db::Value;
-        let (tab, id) = self.active_object()?;
-        let object = self.workspace(tab)?.object_tab(id)?;
-        let cell = object.selection?;
-        let row = object.page()?.rows.get(cell.row)?;
-        let shown = |col: usize, loaded: &Value| match object.edits.cells.get(&(cell.row, col)) {
-            Some(pending) => crate::edit::shown_value(&pending.new),
-            None => loaded.clone(),
-        };
-        Some(if whole_row {
-            let row: Vec<Value> = row
-                .iter()
-                .enumerate()
-                .map(|(col, loaded)| shown(col, loaded))
-                .collect();
-            crate::ui::format::tsv_row(&row)
+        let pick = if whole_row {
+            Pick::Rows
         } else {
-            crate::ui::format::plain_text(&shown(cell.col, row.get(cell.col)?))
-        })
+            Pick::Selection
+        };
+        self.copy(pick, How::Plain)?.text()
+    }
+
+    /// The cursor's row alone, whole, as `yy` yanks it: a range that
+    /// stands is not what it puts.
+    pub fn yank_text(&self) -> Option<String> {
+        self.copy(Pick::CursorRow, How::Plain)?.text()
+    }
+
+    /// A copy of `pick` in the active tab's grid, a table's or a SQL
+    /// result's, `how` says: as ⌘C copies it (TSV with its remembered
+    /// options and no header row), in a format with its remembered
+    /// options, or the columns' names. A copy in a format of no range is
+    /// the cursor's row whole. `None` where the grid has no cell to copy.
+    pub fn copy(&self, pick: Pick, how: How) -> Option<Copying> {
+        self.copy_in(self.active_tab_id(), pick, how)
+    }
+
+    /// [`App::copy`], of the grid in front in `tab`.
+    pub fn copy_in(&self, tab: ConnTabId, pick: Pick, how: How) -> Option<Copying> {
+        let workspace = self.workspace(tab)?;
+        let dialect = workspace.driver.dialect();
+        if let Some(object) = workspace.active_object_tab() {
+            let mut selected = object.selected()?;
+            if pick == Pick::CursorRow {
+                selected.range = None;
+            }
+            let page = object.page()?;
+            // As ⌘C, the cursor's cell or row alone is copied from the
+            // page's rows: a new row is none of them. A copy in a format
+            // takes a new row too, what is not set in it NULL, and in SQL
+            // INSERT its column's default, as a save leaves it.
+            let new = crate::edit::new_id(selected.cursor.row).is_some();
+            if how == How::Plain && selected.range.is_none() && new {
+                return None;
+            }
+            let table = crate::edit::Table::of(workspace, object);
+            // What is pending reads as what it shows; a pending DEFAULT or
+            // time of the save is written in SQL INSERT as a save sends it.
+            let value = |row: usize, col: usize| {
+                let type_name = page.columns.get(col).map_or("", |column| &column.type_name);
+                match object.edits.cells.get(&(row, col)) {
+                    Some(pending) => crate::export::Pending {
+                        value: Some(crate::edit::shown_value(&pending.new)),
+                        sql: dialect.pending_literal(&pending.new, type_name),
+                    },
+                    None if crate::edit::new_id(row).is_some() => {
+                        let column = table.as_ref().and_then(|table| table.column(col));
+                        let expression = column.and_then(|column| column.default.clone());
+                        let default = tabletist_db::NewValue::Default { expression };
+                        crate::export::Pending {
+                            value: None,
+                            sql: dialect.pending_literal(&default, type_name),
+                        }
+                    }
+                    None => crate::export::Pending {
+                        value: page.rows.get(row).and_then(|row| row.get(col)).cloned(),
+                        sql: None,
+                    },
+                }
+            };
+            let target = crate::export::Target::Table {
+                object: &object.object,
+                create: None,
+            };
+            let source = CopySource {
+                columns: &page.columns,
+                dialect,
+                target,
+            };
+            return copying(&selected, source, pick, how, &self.export, value);
+        }
+        let sql = workspace.active_sql_tab()?;
+        let mut selected = sql.selected()?;
+        if pick == Pick::CursorRow {
+            selected.range = None;
+        }
+        let (columns, rows, _) = sql.shown_rows()?;
+        let value = |row: usize, col: usize| crate::export::Pending {
+            value: rows.get(row).and_then(|row| row.get(col)).cloned(),
+            sql: None,
+        };
+        let source = CopySource {
+            columns,
+            dialect,
+            target: crate::export::Target::Named("result"),
+        };
+        copying(&selected, source, pick, how, &self.export, value)
     }
 
     /// The palette and the look, applied to egui's style, with the caret
     /// as [`Self::caret_blinks`] says.
     pub fn apply_style(&self, ctx: &egui::Context) {
-        theme::apply(ctx, &self.palette, &self.look);
+        style::apply(ctx, &self.palette, &self.look);
         if !self.caret_blinks {
             ctx.all_styles_mut(|style| style.visuals.text_cursor.blink = false);
         }
@@ -7761,12 +8200,12 @@ impl App {
         // Read here, before the first frame, as the desktop's monospace
         // always was: a font that arrived later would move every line.
         if self.reads_font() {
-            self.desktop_font = crate::typography::read_font(self.settings.font.as_deref());
+            self.desktop_font = crate::font_files::read_font(self.settings.font.as_deref());
             // macOS: the data in the installed font read.
             self.look = self.text_look();
         }
         let desktop = self.desktop_font.faces.as_ref();
-        self.fonts = theme::install_with(ctx, follow_desktop, &self.look, desktop);
+        self.fonts = style::install_with(ctx, follow_desktop, &self.look, desktop);
         if follow_desktop {
             theme::enable_desktop_themes(&mut self.themes);
             let repaint = ctx.clone();
@@ -7874,14 +8313,62 @@ impl App {
         });
     }
 
-    /// How large the window draws everything: the terminal look's text
-    /// size against its 13 points. The other looks size their text by
-    /// role, and draw at 1.
+    /// How large the window draws everything, on top of the display's own
+    /// scale (egui multiplies its native pixels per point by it): the
+    /// terminal look's text size against its 13 points, the others'
+    /// interface scale.
     pub fn zoom_factor(&self) -> f32 {
         if self.look.terminal {
             self.settings.font_size_in(true).points() / 13.0
         } else {
-            1.0
+            self.settings.ui_scale.factor()
+        }
+    }
+
+    /// The keys' and the View menu's Larger, Smaller and Actual Size
+    /// (`larger`, or none for the last): the interface scale a step or back
+    /// to 100% on macOS and Windows, the terminal look's one font size a
+    /// point or back to 13. Saved at once, and told for 4 s in the toast
+    /// or the status line. The Settings window changes them unsaid.
+    fn resize(&mut self, larger: Option<bool>) {
+        use crate::i18n::gettext;
+        let reset = self
+            .keymap
+            .key(self.layout(), crate::keymap::Command::DefaultTextSize);
+        if self.look.terminal {
+            self.change_settings(|settings| {
+                settings.font_size = larger.map(|larger| settings.stepped_font_size(true, larger));
+            });
+            let size = self.settings.font_size_in(true).text();
+            // A key that resets it is named; a `[keys]` line can leave none.
+            let words = if reset.as_str().is_empty() {
+                "font size {size}"
+            } else {
+                "font size {size} · {key} resets"
+            };
+            self.said = Some(
+                gettext(self.locale, words)
+                    .replace("{size}", &size)
+                    .replace("{key}", reset.as_str()),
+            );
+        } else {
+            self.change_settings(|settings| {
+                settings.ui_scale = larger.map_or(crate::settings::UiScale::DEFAULT, |larger| {
+                    settings.ui_scale.stepped(larger)
+                });
+            });
+            let scale = self.settings.ui_scale;
+            let words = if reset.as_str().is_empty() {
+                "Interface {percent}% · {px} px text"
+            } else {
+                "Interface {percent}% · {px} px text · {key} resets"
+            };
+            self.said = Some(
+                gettext(self.locale, words)
+                    .replace("{percent}", &scale.percent().to_string())
+                    .replace("{px}", &scale.text_px().to_string())
+                    .replace("{key}", reset.as_str()),
+            );
         }
     }
 
@@ -7944,6 +8431,86 @@ impl App {
         })
     }
 
+    /// Takes the look the settings chose ([`App::apply_settings`]) a step
+    /// on, at the start of a frame: the fonts of the look drawn and of the
+    /// new one installed, which egui puts in place at the next frame's
+    /// start, and in that frame the new look drawn, in its palette and
+    /// style, its fonts alone set for the frames after, and the desktop's
+    /// theme read in `logic`. Each editor starts over where the look's
+    /// keybindings are others. Settings, open on Appearance, has the
+    /// keyboard on the look's row in the screen the new look draws.
+    fn switch_look(&mut self, ctx: &egui::Context) {
+        match self.look_switch.take() {
+            None => {}
+            // The terminal look's font is read before its first frame, as
+            // a start reads it (`attach`): one that came later would move
+            // every line. On the backend, as the app is running.
+            Some(LookSwitch::Asked(next))
+                if next.terminal && !self.look.terminal && self.follow_desktop =>
+            {
+                self.font_asked += 1;
+                self.backend.send(Command::ReadFont {
+                    font: self.settings.font.clone(),
+                    asked: self.font_asked,
+                });
+                self.look_switch = Some(LookSwitch::Reading(next, self.font_asked));
+            }
+            Some(LookSwitch::Reading(next, asked)) if self.font_taken < asked => {
+                self.look_switch = Some(LookSwitch::Reading(next, asked));
+            }
+            // The fonts of both: the next frame draws the look now, or
+            // the new one where nothing chooses again before it lands.
+            Some(LookSwitch::Asked(next) | LookSwitch::Reading(next, _)) => {
+                let next = next.with_text(&self.settings, self.installed_drawn());
+                let desktop = self.desktop_font.faces.as_ref();
+                let looks = (&self.look, &next);
+                self.fonts = style::install_both(ctx, self.follow_desktop, looks, desktop);
+                self.look_switch = Some(LookSwitch::Installed(next));
+                ctx.request_repaint();
+            }
+            Some(LookSwitch::Installed(next)) => {
+                let was = self.look.terminal;
+                self.look = next;
+                self.look = self.text_look();
+                // The terminal's was read as its fonts were set.
+                if !self.look.terminal {
+                    self.read_desktop_font();
+                }
+                // Its fonts alone from the next frame on.
+                let desktop = self.desktop_font.faces.as_ref();
+                self.fonts = style::install_with(ctx, self.follow_desktop, &self.look, desktop);
+                if self.settings.editor_keys_in(was)
+                    != self.settings.editor_keys_in(self.look.terminal)
+                {
+                    self.restart_editors();
+                }
+                crate::ui::grid::forget_marks(ctx);
+                self.palette = self.resolve_palette();
+                self.apply_style(ctx);
+                self.theme_changed = true;
+                self.list_fonts();
+                if matches!(&self.dialog, Some(Dialog::Settings(dialog)) if dialog.pane == crate::model::SettingsPane::Appearance)
+                {
+                    self.apply(Action::ShowSetting(crate::settings::OptionId::Look));
+                }
+            }
+        }
+    }
+
+    /// Other keybindings: every editor in normal mode, as vim starts, its
+    /// history starting at its script.
+    fn restart_editors(&mut self) {
+        for tab in &mut self.tabs {
+            if let ConnTabContent::Workspace(workspace) = &mut tab.content {
+                for sql in workspace.sql_tabs_mut() {
+                    sql.vim.to_normal();
+                    let text = sql.text.clone();
+                    sql.vim.start_over(&text);
+                }
+            }
+        }
+    }
+
     fn resolve_palette(&self) -> Palette {
         theme::resolve(
             &self.look,
@@ -7985,7 +8552,7 @@ impl App {
         self.tell_missing_pin(ctx);
         if std::mem::take(&mut self.font_read) {
             let desktop = self.desktop_font.faces.as_ref();
-            theme::set_read_faces(ctx, &mut self.fonts, &self.look, desktop);
+            style::set_read_faces(ctx, &mut self.fonts, &self.look, desktop);
             crate::ui::grid::forget_marks(ctx);
             // macOS: the data in the installed font read, or in the default
             // where it is missing.
@@ -8207,13 +8774,17 @@ impl App {
 
     /// Draws one frame, then applies what the frame asked for.
     pub fn frame_ui(&mut self, ui: &mut egui::Ui) {
+        self.focused = ui.ctx().input(|input| input.focused);
         self.note_use(ui.ctx());
         self.poll_backend();
         self.apply_actions();
         self.tick_lookups(ui.ctx());
+        self.tick_export();
         // Before anything is drawn: a close request that pending changes
         // hold back is asked about in this frame.
         self.hold_close(ui.ctx());
+        // Before anything is drawn: a look the settings chose.
+        self.switch_look(ui.ctx());
         // Before anything names a key: the keymap its labels are read from,
         // made for the look's layout.
         if self.keymap_layout != Some(self.layout()) {
@@ -8232,6 +8803,10 @@ impl App {
         crate::ui::keys::text_size(self, ui.ctx());
         // A dialog takes the keyboard: no shortcut acts behind it, and a
         // first key that waited for its second (`cc`) waits no longer.
+        // An offer of rows the grid no longer shows goes first.
+        crate::ui::toast::keep_offer_if(ui.ctx(), |offer| self.offer_holds(offer));
+        // The toasts' keys come first: Esc on a toast's button is its own.
+        crate::ui::toast::keys(ui.ctx(), &self.keymap, self.layout(), self.dialog.is_some());
         if self.dialog.is_none() {
             crate::ui::keys::handle(self, ui.ctx());
         } else {
@@ -8305,6 +8880,17 @@ fn apply_url(form: &mut ConnectionForm) -> Result<(), String> {
             }
             form.driver = Driver::Sqlite;
             form.sqlite_path = path;
+        }
+        Driver::BigQuery => {
+            if form.name.trim().is_empty() {
+                form.name = spec.database.clone();
+            }
+            form.driver = Driver::BigQuery;
+            form.database = spec.database;
+            form.bigquery_key = spec
+                .bigquery_key
+                .map(|path| path.display().to_string())
+                .unwrap_or_default();
         }
         Driver::Postgres | Driver::MySql => {
             if form.name.trim().is_empty() {
@@ -8388,6 +8974,38 @@ fn script_mode(
 /// is written, its commit failed, the database could not undo all of it,
 /// or its session had to be closed. A run the user stopped after rows came
 /// back stays on Results.
+/// Whether a run left a change to the catalog behind: one of the
+/// statements whose work remains once its transaction ended creates, drops
+/// or alters something. A run rolled back leaves none, unless the database
+/// could not say so (MySQL's DDL that failed half done): then any statement
+/// that started counts.
+fn changed_catalog(
+    dialect: tabletist_db::Dialect,
+    statements: &[tabletist_db::sql::Statement],
+    result: &Result<tabletist_db::ScriptOutcome, Error>,
+) -> bool {
+    use tabletist_db::ScriptEnd;
+    let Ok(outcome) = result else {
+        return false;
+    };
+    let started = outcome.results.len();
+    let kept = if outcome.rollback_warning.is_some() {
+        started
+    } else {
+        match outcome.end {
+            ScriptEnd::RolledBack => 0,
+            ScriptEnd::Committed => started,
+            ScriptEnd::Partly { committed } | ScriptEnd::CommitFailed { committed, .. } => {
+                committed
+            }
+        }
+    };
+    statements
+        .iter()
+        .take(kept.min(started))
+        .any(|statement| tabletist_db::sql::changes_catalog(dialect, &statement.text))
+}
+
 fn opens_messages(
     result: &Result<tabletist_db::ScriptOutcome, Error>,
     cancel: Option<CancelReason>,
@@ -8415,6 +9033,174 @@ fn opens_messages(
 fn step(index: usize, delta: isize, len: usize) -> usize {
     let moved = (index as i128 + delta as i128).clamp(0, len as i128 - 1);
     moved as usize
+}
+
+pub use crate::model::{CopyHow as How, CopyPick as Pick};
+
+/// What a copy put together, and of how much.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Copying {
+    pub copied: crate::export::Copied,
+    pub rows: usize,
+    pub cols: usize,
+    /// Whether it took whole rows.
+    pub whole_rows: bool,
+}
+
+impl Copying {
+    /// The text for the clipboard, where there is one.
+    pub fn text(self) -> Option<String> {
+        match self.copied {
+            crate::export::Copied::Text { text, .. } => Some(text),
+            _ => None,
+        }
+    }
+}
+
+/// What the toast says of `copying`, made as `how` says: "Copied 4 rows ×
+/// 2 columns as Markdown", "Copied 12 rows as CSV · 1 statement", or, past
+/// the clipboard's limits, why nothing was copied.
+pub fn copy_said(locale: crate::i18n::Locale, copying: &Copying, how: How) -> String {
+    use crate::export::Copied;
+    use crate::i18n::{counted, gettext};
+    match &copying.copied {
+        Copied::TooManyRows(rows) => gettext(locale, "That's {rows} rows. Export to a file?")
+            .replace("{rows}", &crate::format::group_digits(*rows as u64)),
+        Copied::TooLarge => gettext(locale, "That's over 20 MB. Export to a file?").into_owned(),
+        Copied::Text { statements, .. } => {
+            let size = (copying.rows, copying.cols);
+            let what = crate::selection::size_words(locale, size, copying.whole_rows);
+            let copied = gettext(locale, "Copied");
+            match how {
+                How::ColumnNames => {
+                    let names = counted(locale, copying.cols, "column name", "column names");
+                    format!("{copied} {names}")
+                }
+                How::Plain => format!("{copied} {what} {} TSV", gettext(locale, "as")),
+                How::As(format) => {
+                    let said = format!(
+                        "{copied} {what} {} {}",
+                        gettext(locale, "as"),
+                        format.name()
+                    );
+                    if format == crate::export::Format::SqlInsert {
+                        let made = counted(locale, *statements, "statement", "statements");
+                        format!("{said} · {made}")
+                    } else {
+                        said
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The grid a copy reads: its columns, its connection's dialect, and the
+/// table SQL INSERT writes into.
+struct CopySource<'a> {
+    columns: &'a [tabletist_db::ColumnMeta],
+    dialect: tabletist_db::Dialect,
+    target: crate::export::Target<'a>,
+}
+
+/// What [`App::copy`] copies of `selected`, in a grid whose cells `value`
+/// reads.
+fn copying(
+    selected: &crate::selection::Selection<'_>,
+    source: CopySource<'_>,
+    pick: Pick,
+    how: How,
+    options: &crate::export::Options,
+    value: impl Fn(usize, usize) -> crate::export::Pending,
+) -> Option<Copying> {
+    use crate::export::{Copied, Format};
+    let width = source.columns.len();
+    let cursor = selected.cursor;
+    // One cell, alone or held by `v`: its text as it is, tabs and lines in
+    // it kept.
+    let one = selected.range.is_none_or(|range| !range.rows())
+        && selected.size(width).is_none_or(|size| size == (1, 1));
+    // A new row's cell nothing is set in is a NULL, and past the
+    // clipboard's limit nothing is copied.
+    if how == How::Plain && pick == Pick::Selection && one {
+        let value = value(cursor.row, cursor.col).value;
+        let text = crate::format::plain_text(&value.unwrap_or(tabletist_db::Value::Null));
+        let copied = if text.len() > crate::export::CLIPBOARD_BYTES {
+            Copied::TooLarge
+        } else {
+            Copied::Text {
+                text,
+                statements: 0,
+            }
+        };
+        return Some(Copying {
+            copied,
+            rows: 1,
+            cols: 1,
+            whole_rows: false,
+        });
+    }
+    let whole_rows = pick != Pick::Selection || selected.range.is_none_or(|range| range.rows());
+    let (first, last) = if whole_rows {
+        (0, width.checked_sub(1)?)
+    } else {
+        selected.cols(width)?
+    };
+    let columns = &source.columns[first..=last];
+    let names: Vec<&str> = columns.iter().map(|column| column.name.as_str()).collect();
+    let rows = selected.rows();
+    let (count, cols) = (rows.len(), names.len());
+    let done = |copied| {
+        Some(Copying {
+            copied,
+            rows: count,
+            cols,
+            whole_rows,
+        })
+    };
+    let (format, options) = match how {
+        How::ColumnNames => {
+            let text = crate::export::column_names(&names, source.dialect);
+            if text.len() > crate::export::CLIPBOARD_BYTES {
+                return done(Copied::TooLarge);
+            }
+            return done(Copied::Text {
+                text,
+                statements: 0,
+            });
+        }
+        How::As(format) => (format, std::borrow::Cow::Borrowed(options)),
+        How::Plain => {
+            let mut plain = options.clone();
+            plain.tsv.header = false;
+            (Format::Tsv, std::borrow::Cow::Owned(plain))
+        }
+    };
+    let written = crate::export::Columns {
+        names,
+        kinds: columns.iter().map(|column| column.kind).collect(),
+        dialect: source.dialect,
+    };
+    let cells = rows.into_iter().map(|row| {
+        (first..=last)
+            .map(|col| value(row, col))
+            .collect::<Vec<_>>()
+    });
+    let copied = crate::export::clipboard(format, &options, written, source.target, count, cells);
+    done(copied)
+}
+
+/// Where a move by `rows` and `cols` puts the cursor of a SQL result's
+/// grid. With no cursor, the first cell. `None` where it has no cell.
+fn sql_moved(sql: &SqlTab, rows: isize, cols: isize) -> Option<CellPos> {
+    let (height, width) = sql.dims();
+    (height > 0 && width > 0).then(|| match sql.selection {
+        None => CellPos { row: 0, col: 0 },
+        Some(cell) => CellPos {
+            row: step(cell.row, rows, height),
+            col: step(cell.col, cols, width),
+        },
+    })
 }
 
 /// Where a move by `rows` and `cols` puts the cursor of `object`, through
@@ -8454,7 +9240,7 @@ fn row_fields(
     zone: Option<&jiff::tz::TimeZone>,
     cells: &std::collections::BTreeMap<(usize, usize), crate::edit::Pending>,
 ) -> crate::model::RowFields {
-    use crate::ui::format::{cell_text, field_text};
+    use crate::format::{cell_text, field_text};
     let pending: Vec<Option<crate::model::PendingField>> = values
         .iter()
         .enumerate()
@@ -8477,7 +9263,7 @@ fn row_fields(
             let temporal = kinds.get(col) == Some(&tabletist_db::ValueKind::Temporal);
             match (value, zone) {
                 (tabletist_db::Value::Text(text), Some(zone)) if temporal => {
-                    match crate::ui::format::in_zone(text, zone) {
+                    match crate::format::in_zone(text, zone) {
                         Some(moved) => field_text(&tabletist_db::Value::Text(moved.into())),
                         None => field_text(value),
                     }
@@ -8514,7 +9300,7 @@ fn logged_statement(driver: Driver, sql: &str, params: Option<&str>) -> String {
                 let place = at + 1;
                 let named = match driver {
                     Driver::Postgres => format!("${place}"),
-                    Driver::Sqlite => format!("?{place}"),
+                    Driver::Sqlite | Driver::BigQuery => format!("?{place}"),
                     Driver::MySql => format!("? #{place}"),
                 };
                 text.push_str(&format!("-- {named} = {value}\n"));
@@ -8539,6 +9325,87 @@ fn logged_statement(driver: Driver, sql: &str, params: Option<&str>) -> String {
 mod tests {
     use super::*;
     use crate::model::{Action, ConnTabContent};
+
+    /// A whole row of one column is a row, not one cell: ⌘C writes it as
+    /// TSV, its NULL empty, where one cell alone is written `NULL`.
+    #[test]
+    fn a_whole_row_of_one_column_copies_as_tsv() {
+        use crate::edit::Order;
+        use crate::selection::{Range, Selection};
+        let mut columns = crate::testing::page(1, false).columns;
+        columns.truncate(1);
+        let source = || CopySource {
+            columns: &columns,
+            dialect: tabletist_db::Dialect::Postgres,
+            target: crate::export::Target::Named("result"),
+        };
+        let null = |_: usize, _: usize| crate::export::Pending {
+            value: Some(tabletist_db::Value::Null),
+            sql: None,
+        };
+        let options = crate::export::Options::default();
+        let cursor = CellPos { row: 0, col: 0 };
+        let row = Range::Rows {
+            anchor: Some(0),
+            picked: Default::default(),
+            held: false,
+        };
+        let copied = |range| {
+            let selected = Selection {
+                cursor,
+                range,
+                order: Order::of(&[], 1),
+            };
+            copying(
+                &selected,
+                source(),
+                Pick::Selection,
+                How::Plain,
+                &options,
+                null,
+            )
+            .and_then(Copying::text)
+        };
+        assert_eq!(copied(Some(&row)).as_deref(), Some(""));
+        assert_eq!(copied(None).as_deref(), Some("NULL"));
+    }
+
+    /// Column names are held to the clipboard's limit too.
+    #[test]
+    fn column_names_past_twenty_megabytes_copy_nothing() {
+        use crate::edit::Order;
+        use crate::selection::Selection;
+        let mut columns = crate::testing::page(1, false).columns;
+        columns.truncate(1);
+        columns[0].name = "w".repeat(crate::export::CLIPBOARD_BYTES + 1);
+        let source = CopySource {
+            columns: &columns,
+            dialect: tabletist_db::Dialect::Postgres,
+            target: crate::export::Target::Named("result"),
+        };
+        let selected = Selection {
+            cursor: CellPos { row: 0, col: 0 },
+            range: None,
+            order: Order::of(&[], 1),
+        };
+        let options = crate::export::Options::default();
+        let none = |_: usize, _: usize| crate::export::Pending {
+            value: None,
+            sql: None,
+        };
+        let copying = copying(
+            &selected,
+            source,
+            Pick::Selection,
+            How::ColumnNames,
+            &options,
+            none,
+        );
+        assert!(matches!(
+            copying.map(|copying| copying.copied),
+            Some(crate::export::Copied::TooLarge)
+        ));
+    }
 
     fn app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -8812,6 +9679,154 @@ mod tests {
             );
             assert_eq!(saves(&app), 0, "{source:?}");
         }
+    }
+
+    #[test]
+    fn an_older_interface_size_is_written_as_its_scale_once_at_the_start() {
+        use crate::settings::{Key, UiScale};
+        let saved = |app: &App| -> Vec<String> {
+            app.backend
+                .sent
+                .iter()
+                .filter_map(|command| match command {
+                    Command::Save {
+                        file: StateFile::Settings(text),
+                        ..
+                    } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        for (size, scale) in [("small", 0.9), ("default", 1.0), ("large", 1.1)] {
+            let dir = tempfile::tempdir().unwrap();
+            let text = format!(
+                "# mine\n[appearance]\ninterface_size = \"{size}\"  # small | default | large\n\
+                 font_size = 14\n"
+            );
+            let app = App::new(
+                AppDirs::at(dir.path()),
+                Settings::from_toml(&text),
+                Backend::recording(),
+            );
+            let scale = UiScale::of(scale).unwrap();
+            assert_eq!(app.settings.ui_scale, scale, "{size}");
+            // Written once, off the UI thread: the old line out, the scale
+            // in where it is not 100%, the rest as it was.
+            let saved = saved(&app);
+            assert_eq!(saved.len(), 1, "{size}");
+            let written = &saved[0];
+            assert_eq!(written, &app.settings_file.text);
+            assert!(!written.contains("interface_size"), "{written}");
+            assert!(written.starts_with("# mine\n[appearance]\n"), "{written}");
+            assert!(written.contains("font_size = 14"), "{written}");
+            assert_eq!(
+                written.contains(&format!("ui_scale = {}", scale.name())),
+                scale != UiScale::DEFAULT,
+                "{written}"
+            );
+            // Read back, it is what it was, and nothing more is to move.
+            let again = Settings::from_toml(written);
+            assert_eq!(again.settings.ui_scale, scale);
+            assert_eq!(again.migrated(), Vec::<Key>::new());
+            let app = App::new(AppDirs::at(dir.path()), again, Backend::recording());
+            assert!(saved_none(&app), "{size}");
+        }
+        // The editor's older keys are not moved at a start: they give way
+        // the first time the limit or the timeout is set.
+        let dir = tempfile::tempdir().unwrap();
+        let text = "[editor]\nsql_limit = 300\nsql_timeout_secs = 7200\n";
+        let app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::from_toml(text),
+            Backend::recording(),
+        );
+        assert_eq!(app.settings.sql_limit, 300);
+        assert!(saved_none(&app), "{:?}", app.backend.sent);
+        assert_eq!(app.settings_file.text, text);
+        // An inline table could only be written whole, losing the keys and
+        // comments this version does not know: the start leaves it alone,
+        // and the old key is read as it is.
+        let text = "appearance = { interface_size = \"large\", future = 1 } # mine\n";
+        let app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::from_toml(text),
+            Backend::recording(),
+        );
+        assert_eq!(app.settings.ui_scale, UiScale::of(1.1).unwrap());
+        assert!(saved_none(&app), "{:?}", app.backend.sent);
+        assert_eq!(app.settings_file.text, text);
+        fn saved_none(app: &App) -> bool {
+            !app.backend.sent.iter().any(|command| {
+                matches!(
+                    command,
+                    Command::Save {
+                        file: StateFile::Settings(_),
+                        ..
+                    }
+                )
+            })
+        }
+    }
+
+    #[test]
+    fn the_interface_scale_reloads_live_and_one_it_cannot_be_is_told() {
+        use crate::settings::UiScale;
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::default().into(),
+            Backend::recording(),
+        );
+        app.look = crate::theme::Look::macos();
+        let edited = |app: &mut App, text: &str| {
+            app.apply_event(Event::SettingsFile {
+                text: text.to_owned(),
+                own: false,
+            });
+        };
+        edited(&mut app, "[appearance]\nui_scale = 1.75\n");
+        assert_eq!(app.settings.ui_scale, UiScale::of(1.75).unwrap());
+        assert_eq!(app.zoom_factor(), 1.75);
+        assert_eq!(app.settings_file.invalid, Vec::<usize>::new());
+        // No scale of the menu's: its line told as ignored, and the scale
+        // stays as it was, as every key's does while the file is edited.
+        edited(&mut app, "[appearance]\nui_scale = 1.3\n");
+        assert_eq!(app.settings.ui_scale, UiScale::of(1.75).unwrap());
+        assert_eq!(app.settings_file.invalid, vec![2]);
+        // With the older key beside it, the older key stands for it.
+        edited(
+            &mut app,
+            "[appearance]\ninterface_size = \"large\"\nui_scale = 1.3\n",
+        );
+        assert_eq!(app.settings.ui_scale, UiScale::of(1.1).unwrap());
+        assert_eq!(app.settings_file.invalid, vec![3]);
+        // At a start, there is none to keep: 100%, the line told too.
+        let loaded = Settings::from_toml("[appearance]\nui_scale = 1.3\n");
+        let app = App::new(AppDirs::at(dir.path()), loaded, Backend::recording());
+        assert_eq!(app.settings.ui_scale, UiScale::DEFAULT);
+        assert_eq!(app.settings_file.invalid, vec![2]);
+        // The older key beside it stands for it at a start too, and the
+        // file is not written: the line typed by hand stays to be put right.
+        let text = "[appearance]\ninterface_size = \"large\"\nui_scale = 1.3\n";
+        let app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::from_toml(text),
+            Backend::recording(),
+        );
+        assert_eq!(app.settings.ui_scale, UiScale::of(1.1).unwrap());
+        assert_eq!(app.settings_file.invalid, vec![3]);
+        assert_eq!(app.settings_file.text, text);
+        assert!(
+            !app.backend.sent.iter().any(|command| matches!(
+                command,
+                Command::Save {
+                    file: StateFile::Settings(_),
+                    ..
+                }
+            )),
+            "{:?}",
+            app.backend.sent
+        );
     }
 
     #[test]
@@ -9208,7 +10223,7 @@ mod tests {
     fn a_font_read_is_drawn_and_an_older_one_that_ends_later_is_dropped() {
         let mut harness = Harness::new();
         harness.set_look(crate::theme::Look::omarchy());
-        let read = |family: &str| crate::typography::desktop_font::Read {
+        let read = |family: &str| crate::font_files::desktop_font::Read {
             asked: Some(family.into()),
             // Faces of their own, to tell them apart.
             faces: Some(std::array::from_fn(|_| {
@@ -9244,7 +10259,7 @@ mod tests {
         assert_eq!(drawn, hack);
         let kept = harness
             .ctx
-            .data(|data| data.get_temp::<crate::ui::format::Marks>(marks));
+            .data(|data| data.get_temp::<crate::format::Marks>(marks));
         assert!(kept.is_none());
     }
 
@@ -9955,7 +10970,8 @@ mod tests {
             [AgentsCommand::Policy { connections, .. }] if connections.is_empty()
         ));
         assert_eq!(
-            crate::ui::agents_held_said(&app).as_deref(),
+            crate::ui::agents_held_said(app.locale, &app.agents_held, &app.connections.connections)
+                .as_deref(),
             Some(
                 "Agent access was changed outside Tabletist: the agent server was turned on, \
                  and agents may read Shop · dev. Until you answer, agents may not. Keep it, or \
@@ -10001,7 +11017,8 @@ mod tests {
         app.connections.upsert(other);
         app.check_agents();
         assert_eq!(
-            crate::ui::agents_held_said(&app).as_deref(),
+            crate::ui::agents_held_said(app.locale, &app.agents_held, &app.connections.connections)
+                .as_deref(),
             Some(
                 "Agent access was changed outside Tabletist: the agent server was turned on, \
                  agents may read Shop · dev, and agents may read Ledger · dev. Until you \
@@ -11156,7 +12173,9 @@ masked = ["orders.email"]
             [Raised::Tables { .. }]
         ));
         assert_eq!(sent(&app), customers);
-        let said = crate::ui::agents_held_said(&app).unwrap();
+        let said =
+            crate::ui::agents_held_said(app.locale, &app.agents_held, &app.connections.connections)
+                .unwrap();
         assert!(
             said.contains("agents may read more of Local · dev"),
             "{said}"
@@ -11229,7 +12248,9 @@ masked = ["orders.email"]
             [Raised::Masked { .. }]
         ));
         assert_eq!(sent(&app), columns(&["orders.phone", "orders.email"]));
-        let said = crate::ui::agents_held_said(&app).unwrap();
+        let said =
+            crate::ui::agents_held_said(app.locale, &app.agents_held, &app.connections.connections)
+                .unwrap();
         assert!(
             said.contains("agents may read more of Local · dev"),
             "{said}"
@@ -11299,7 +12320,9 @@ masked = ["orders.email"]
         );
         file_says(&mut app, Tables::All, &[]);
         assert_eq!(app.agents_held.len(), 2);
-        let said = crate::ui::agents_held_said(&app).unwrap();
+        let said =
+            crate::ui::agents_held_said(app.locale, &app.agents_held, &app.connections.connections)
+                .unwrap();
         assert_eq!(said.matches("Local · dev").count(), 1, "{said}");
     }
 
@@ -14072,6 +15095,55 @@ masked = ["orders.email"]
     }
 
     #[test]
+    fn a_run_that_made_or_dropped_a_table_refreshes_the_sidebar() {
+        use crate::testing::{done_outcome, error_outcome, write_outcome};
+        use tabletist_db::ScriptEnd;
+        let mut harness = Harness::new();
+        let (tab, id) = writable_sql(&mut harness);
+        set_mode(&mut harness, tab, id, RunMode::ReadWrite);
+        let done = || done_outcome(None);
+        let failed = || error_outcome("no", None);
+        for (text, outcome, refreshes) in [
+            (
+                "CREATE TABLE notes (seen int)",
+                write_outcome(vec![done()], ScriptEnd::Committed),
+                true,
+            ),
+            (
+                "DELETE FROM users WHERE id = 1; DROP TABLE users",
+                write_outcome(vec![done(), done()], ScriptEnd::Committed),
+                true,
+            ),
+            // Rolled back: the tables are as they were.
+            (
+                "CREATE TABLE notes (seen int); SELECT x",
+                write_outcome(vec![done(), failed()], ScriptEnd::RolledBack),
+                false,
+            ),
+            // MySQL committed the first on its own; the DROP never ran.
+            (
+                "INSERT INTO users (email) VALUES ('a'); SELECT x; DROP TABLE users",
+                write_outcome(vec![done(), failed()], ScriptEnd::Partly { committed: 1 }),
+                false,
+            ),
+            (
+                "UPDATE users SET email = 'x' WHERE id = 1",
+                write_outcome(vec![done()], ScriptEnd::Committed),
+                false,
+            ),
+        ] {
+            type_sql(&mut harness, tab, id, text, 0);
+            run(&mut harness, tab, id, true);
+            let sent = harness.app.backend.sent.len();
+            harness.answer_sql(Ok(outcome), None);
+            let listed = harness.app.backend.sent[sent..]
+                .iter()
+                .any(|command| matches!(command, Command::ListSchemas { .. }));
+            assert_eq!(listed, refreshes, "{text}");
+        }
+    }
+
+    #[test]
     fn nothing_is_sent_to_write_where_the_session_cannot() {
         use tabletist_db::ScriptMode::ReadOnly;
         let write = "DELETE FROM users WHERE id = 1";
@@ -16027,7 +17099,7 @@ masked = ["orders.email"]
         }
     }
 
-    fn connected_postgres(app: &mut App) -> ConnTabId {
+    fn connected_postgres_unanswered(app: &mut App) -> ConnTabId {
         let conn = postgres_saved(app, PasswordMode::None);
         let tab = app.active_tab_id();
         app.apply(Action::Connect { tab, conn });
@@ -16046,6 +17118,86 @@ masked = ["orders.email"]
             access: crate::testing::asked_access(app),
         }));
         tab
+    }
+
+    /// [`connected_postgres_unanswered`], with the schemas answered: the
+    /// databases' listing is sent.
+    fn connected_postgres(app: &mut App) -> ConnTabId {
+        let tab = connected_postgres_unanswered(app);
+        answer_schemas(app, Ok(vec!["public".into()]));
+        tab
+    }
+
+    /// Answers the schemas' listing the last connect sent.
+    fn answer_schemas(app: &mut App, result: Result<Vec<String>, tabletist_db::Error>) {
+        let Some((session, request)) = app.backend.sent.iter().rev().find_map(|c| match c {
+            Command::ListSchemas { session, request } => Some((*session, *request)),
+            _ => None,
+        }) else {
+            panic!("expected ListSchemas");
+        };
+        app.apply(Action::Backend(Event::Schemas {
+            session,
+            request,
+            result,
+        }));
+    }
+
+    fn sent_databases(app: &App) -> usize {
+        app.backend
+            .sent
+            .iter()
+            .filter(|c| matches!(c, Command::ListDatabases { .. }))
+            .count()
+    }
+
+    #[test]
+    fn postgres_tabs_ask_for_the_default_schema_before_the_databases() {
+        let (mut app, _dir) = app();
+        let tab = connected_postgres_unanswered(&mut app);
+        // The listing waits for the schemas, while the switcher shows it
+        // loading.
+        assert_eq!(sent_databases(&app), 0);
+        assert!(app.workspace(tab).unwrap().databases.is_loading());
+        answer_schemas(&mut app, Ok(vec!["public".into()]));
+        let at = |wanted: fn(&Command) -> bool| app.backend.sent.iter().position(wanted);
+        let objects = at(|c| matches!(c, Command::ListObjects { .. })).expect("ListObjects");
+        let databases = at(|c| matches!(c, Command::ListDatabases { .. })).expect("ListDatabases");
+        assert!(objects < databases);
+    }
+
+    #[test]
+    fn a_cancel_before_the_schemas_answer_keeps_the_databases_from_being_listed() {
+        let (mut app, _dir) = app();
+        let tab = connected_postgres_unanswered(&mut app);
+        let held = app.workspace(tab).unwrap().databases.pending;
+        app.apply(Action::CancelQuery(tab));
+        // Not sent to the session: it never had it.
+        assert!(
+            !app.backend
+                .sent
+                .iter()
+                .any(|c| matches!(c, Command::Cancel { request, .. } if Some(*request) == held))
+        );
+        let databases = &app.workspace(tab).unwrap().databases;
+        assert!(!databases.is_loading());
+        assert!(matches!(
+            databases.error,
+            Some(tabletist_db::Error::Cancelled)
+        ));
+        // The schemas' answer the cancel came too late for.
+        answer_schemas(&mut app, Ok(vec!["public".into()]));
+        assert_eq!(sent_databases(&app), 0);
+    }
+
+    #[test]
+    fn postgres_tabs_list_their_databases_when_the_schemas_fail_or_are_empty() {
+        for result in [Err(tabletist_db::Error::query("denied")), Ok(Vec::new())] {
+            let (mut app, _dir) = app();
+            connected_postgres_unanswered(&mut app);
+            answer_schemas(&mut app, result);
+            assert_eq!(sent_databases(&app), 1);
+        }
     }
 
     #[test]
@@ -20534,7 +21686,7 @@ masked = ["orders.email"]
             type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
             harness.app.apply(Action::ShowHelp);
             harness.app.apply(Action::CloseTab { tab, id });
-            assert!(matches!(harness.app.dialog, Some(Dialog::Help)));
+            assert!(matches!(harness.app.dialog, Some(Dialog::Help(_))));
             assert!(harness.app.notice.is_some());
             assert!(harness.app.workspace(tab).unwrap().object_tab(id).is_some());
             harness.app.apply(Action::CloseDialog);
@@ -22107,7 +23259,7 @@ masked = ["orders.email"]
                 Action::CancelWrite,
             ] {
                 harness.app.apply(answer);
-                assert!(matches!(harness.app.dialog, Some(Dialog::Help)));
+                assert!(matches!(harness.app.dialog, Some(Dialog::Help(_))));
             }
             assert_eq!(object(&harness, tab, id).edits.cells.len(), 1);
             assert_eq!(writes(&harness), 0);
@@ -22120,7 +23272,7 @@ masked = ["orders.email"]
             type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
             harness.app.apply(Action::ShowHelp);
             harness.app.apply(Action::WriteEdits { tab, id });
-            assert!(matches!(harness.app.dialog, Some(Dialog::Help)));
+            assert!(matches!(harness.app.dialog, Some(Dialog::Help(_))));
             assert_eq!(writes(&harness), 0);
             assert!(object(&harness, tab, id).edits.saving.is_none());
             // With the dialog closed it asks.
@@ -22490,9 +23642,10 @@ masked = ["orders.email"]
             });
             harness.app.apply(Action::SetNull { tab, id });
             assert_eq!(harness.app.copy_text(false), null);
+            // In a row, as TSV writes a NULL: empty, as a loaded one.
             assert_eq!(
-                harness.app.copy_text(true),
-                null.map(|null| format!("1\tada@example.com\t{null}"))
+                harness.app.copy_text(true).as_deref(),
+                Some("1\tada@example.com\t")
             );
             // Another row's changes are not this row's.
             harness.app.apply(Action::SelectCell {
@@ -22735,7 +23888,7 @@ masked = ["orders.email"]
                 at: 0,
                 answer: Answer::UseServer,
             });
-            assert!(matches!(harness.app.dialog, Some(Dialog::Help)));
+            assert!(matches!(harness.app.dialog, Some(Dialog::Help(_))));
             assert_eq!(pending(&harness, tab, id), [(1, 1), (3, 1)]);
         }
 
@@ -22948,7 +24101,7 @@ masked = ["orders.email"]
                 2,
                 "eve@example.com",
             )])));
-            assert!(matches!(harness.app.dialog, Some(Dialog::Help)));
+            assert!(matches!(harness.app.dialog, Some(Dialog::Help(_))));
             let line = Some(crate::edit::Note::Conflict {
                 row: 1,
                 gone: false,

@@ -35,10 +35,11 @@ what was last open on it.
 
 | Field | Notes |
 | --- | --- |
-| **Name** | Left empty, it becomes `user@host:port/database` or the file's name |
-| **Type** | SQLite, PostgreSQL or MySQL |
+| **Name** | Left empty, it becomes `user@host:port/database`, the file's name or the BigQuery project |
+| **Type** | SQLite, PostgreSQL, MySQL or BigQuery. MySQL is also for [MariaDB](#mariadb) |
 | **Environment** | local, dev, staging, production or none. Sets the connection's color |
 | **File** | SQLite only |
+| **Project**, **Key file** | BigQuery only. See [BigQuery](#bigquery) |
 | **Host**, **Port** | The port defaults to 5432 for PostgreSQL and 3306 for MySQL |
 | **Database** | Left empty, PostgreSQL uses the user's name and MySQL selects no database |
 | **User**, **Password** | See [Passwords](#passwords) |
@@ -51,6 +52,20 @@ what was last open on it.
 
 {% include shot.html file="macos-connection-edit" alt="The connection dialog with every field filled in for a production database behind an SSH tunnel" width="2880" height="1800" %}
 
+### MariaDB
+
+A MariaDB server is opened as MySQL, and a `mariadb://` URL means the
+same as `mysql://`. The footer names the server: `MariaDB 11.4.5`. Where
+MariaDB is not MySQL:
+
+- A JSON column is text to MariaDB (`LONGTEXT` with a check), and shows
+  as text.
+- Integer types keep their display width: `int(11)`.
+- MariaDB does not list what a view reads, so Tabletist reads its
+  definition. While anything is hidden or masked, agents may not read a
+  view whose definition you may not see (without SHOW VIEW) or that
+  Tabletist cannot read for its tables (see [Agents](#agents)).
+
 ## Connection URLs
 
 The **URL** tab of the dialog (`u` in the Omarchy look) takes a connection
@@ -61,14 +76,34 @@ password field.
 postgres://app@db.example.com:5432/shop?sslmode=verify-full
 mysql://app@127.0.0.1:3306/shop
 sqlite:///home/me/data/shop.db
+bigquery:my-project?credentials=/home/me/keys/reader.json
 ```
 
-- The schemes are `postgres://`, `postgresql://`, `mysql://`, `mariadb://`
-  and `sqlite:`.
+- The schemes are `postgres://`, `postgresql://`, `mysql://`, `mariadb://`,
+  `sqlite:` and `bigquery:`.
 - `sslmode` (also `ssl-mode` or `ssl_mode`) sets the SSL mode, and
-  `sslrootcert` (also `ssl-ca`) the CA certificate. Other parameters are
-  ignored.
+  `sslrootcert` (also `ssl-ca`) the CA certificate. For BigQuery,
+  `credentials` sets the key file. Other parameters are ignored.
 - A URL cannot be given on the command line.
+
+## BigQuery
+
+A BigQuery connection names a **Project**, the Google Cloud project its
+queries are billed to, and how it signs in:
+
+- **Key file:** a service-account key (JSON). The file stays where it is,
+  and the connection keeps its path.
+- **Left empty:** Google Cloud's application default credentials. These
+  are the file `GOOGLE_APPLICATION_CREDENTIALS` names, else the one
+  `gcloud auth application-default login` saved, else the service account
+  of the Google Cloud machine Tabletist runs on.
+
+The sidebar lists the project's datasets as schemas, with their tables
+and views. A BigQuery connection always opens read-only, whatever
+[Open read-only](#open-read-only) says: BigQuery has no transactions, so
+Tabletist runs only statements it can tell are reads. Rows cannot be
+edited, and a table has no DDL view. Agents can read a BigQuery
+connection only while it hides no table and masks no column.
 
 ## TLS
 
@@ -110,13 +145,40 @@ you type wins over the file.
 | `Port`, `User` | The port and the login name |
 | `IdentityFile` | The key file. The first one is used |
 | `IdentityAgent` | The agent's socket. This is how 1Password is found |
+| `ProxyJump` | The jump hosts the tunnel goes through |
+| `ProxyCommand` | A command the tunnel goes through |
 | `Include` | Other files to read |
 
 Without an `IdentityAgent`, the agent is the one in `SSH_AUTH_SOCK`. On
 Windows it is the OpenSSH agent, then Pageant.
 
-`Match` blocks are ignored. `ProxyJump` and `ProxyCommand` are not
-supported yet: a host that needs one cannot be used for a tunnel.
+`Match` blocks are ignored.
+
+### ProxyJump and ProxyCommand
+
+A host with a `ProxyCommand` is reached through that command, as `ssh`
+reaches it: Tabletist runs it in your shell and talks to the SSH server
+over its input and output. On Windows, Tabletist starts the command's
+program itself with no shell in between, as Windows' own `ssh` does. It takes the tokens `%h`
+(the host name), `%p` (the port), `%r` (the user), `%n` (the host as you
+typed it) and `%%`. A host name or user with a space, a quote or another
+character the shell would read is refused rather than put into the
+command. Started from the Dock on macOS, the command has the `PATH`
+macOS gives apps, not the one your shell sets up: if a program is not
+found, write its whole path (`/opt/homebrew/bin/cloudflared`).
+
+A host with a `ProxyJump` is reached the way `ssh` reaches it: Tabletist
+runs `ssh -W` through the jump hosts. The jump hosts are logged in to by
+your `ssh`, with its config, your agent and its `known_hosts`, so a jump
+host you can reach from a terminal works here too. They cannot ask for a
+password or for trust in a new key: connect to each one from a terminal
+once first. The `ssh` command has to be installed and on the `PATH`.
+
+Either way, the SSH server at the end is logged in to with the method you
+chose, and its key is checked against Tabletist's trusted keys, as for a
+direct connection. The login through a proxy has two minutes, time
+enough to approve an agent's prompt. If the command fails, or the login
+runs out of time, the error shows the last lines the command wrote.
 
 ### Host keys
 
@@ -233,7 +295,8 @@ The file keeps this in the connection's `[connections.agents]` table: see
 
 A connection with **Open read-only** ticked blocks every write from
 Tabletist: the session itself is read-only on PostgreSQL and MySQL, and a
-SQLite file is opened read-only.
+SQLite file is opened read-only. A BigQuery connection is read-only with
+the box off too: see [BigQuery](#bigquery).
 
 The box is ticked by default for production, and not for the other
 environments. Turn it off to edit. A change applies from the next time

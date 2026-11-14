@@ -7,7 +7,7 @@
 
 use egui::{CornerRadius, Rect, Sense, Ui, WidgetInfo, WidgetType, pos2, vec2};
 
-use crate::app::App;
+use crate::i18n::Locale;
 use crate::keymap::{Command, Group, Keymap, Layout, Row, Scope, Spelled, Stroke, Why, fixed};
 use crate::model::{Action, KeyboardPage, Recorded, Recording, SettingsDialog, SettingsPane};
 use crate::typography::{Text, TextRole};
@@ -38,8 +38,13 @@ fn flat(listed: &[Listed]) -> Vec<Row> {
 
 /// The row the cursor is on: the one the page says, where it is listed,
 /// else the first listed.
-pub(super) fn cursor(app: &App, page: &KeyboardPage) -> Option<Row> {
-    let rows = flat(&keyboard::listed(app, page));
+pub(super) fn cursor(
+    keymap: &Keymap,
+    layout: Layout,
+    locale: Locale,
+    page: &KeyboardPage,
+) -> Option<Row> {
+    let rows = flat(&keyboard::listed(keymap, layout, locale, page));
     page.cursor
         .filter(|cursor| rows.contains(cursor))
         .or_else(|| rows.first().copied())
@@ -75,16 +80,17 @@ fn waiting_id() -> egui::Id {
 /// unbind and reset its row, filter and find, open the file, show
 /// another pane and close the screen.
 pub(super) fn keys(
-    app: &App,
     ctx: &egui::Context,
+    keymap: &Keymap,
+    layout: Layout,
+    locale: Locale,
     dialog: &SettingsDialog,
     actions: &mut Vec<Action>,
 ) {
-    let keymap = app.keymap.clone();
     let page = &dialog.keyboard;
-    let listed = keyboard::listed(app, page);
+    let listed = keyboard::listed(keymap, layout, locale, page);
     let rows = flat(&listed);
-    let mut at = cursor(app, page)
+    let mut at = cursor(keymap, layout, locale, page)
         .and_then(|cursor| rows.iter().position(|row| *row == cursor))
         .unwrap_or(0);
     let mut waiting: String = ctx
@@ -125,7 +131,7 @@ pub(super) fn keys(
             };
             if let Some(char) = typed {
                 waiting.push(char);
-                let unbind = chords(&keymap, Command::SettingsUnbind).any(|keys| {
+                let unbind = chords(keymap, Command::SettingsUnbind).any(|keys| {
                     keys.chars().filter(|char| *char != ' ').collect::<String>() == waiting
                 });
                 if unbind {
@@ -134,7 +140,7 @@ pub(super) fn keys(
                     return false;
                 }
                 let begins =
-                    chords(&keymap, Command::SettingsUnbind).any(|keys| keys.starts_with(&waiting));
+                    chords(keymap, Command::SettingsUnbind).any(|keys| keys.starts_with(&waiting));
                 if begins {
                     return false;
                 }
@@ -166,7 +172,7 @@ pub(super) fn keys(
                 (Command::SettingsPane, None),
                 (Command::SettingsClose, Some(Asked::Close)),
             ] {
-                for (nth, keys) in chords(&keymap, command).enumerate() {
+                for (nth, keys) in chords(keymap, command).enumerate() {
                     let pressed = match crate::keymap::spell(keys) {
                         Ok(Spelled::Strokes(strokes)) => match strokes.as_slice() {
                             [Stroke::Text(letter)] => typed == Some(*letter),
@@ -271,7 +277,7 @@ pub(super) fn keys(
 /// refused key, and the note of what is never bound.
 pub(super) fn rows(
     ui: &mut Ui,
-    app: &App,
+    keymap: &Keymap,
     page: &KeyboardPage,
     skin: &Skin,
     actions: &mut Vec<Action>,
@@ -292,8 +298,9 @@ pub(super) fn rows(
             Text::one(look, role, &skin.say(word), palette.dim),
         );
     }
-    let listed = keyboard::listed(app, page);
-    let on = cursor(app, page);
+    let layout = Layout::of(look);
+    let listed = keyboard::listed(keymap, layout, skin.locale, page);
+    let on = cursor(keymap, layout, skin.locale, page);
     if listed.is_empty() {
         let said = if page.changed_only {
             skin.say("no shortcuts changed")
@@ -316,7 +323,7 @@ pub(super) fn rows(
                 node.set_label(label.as_str());
             });
             for Listed { group, rows } in &listed {
-                group_rows(ui, app, page, (*group, rows), on, skin, actions);
+                group_rows(ui, keymap, page, (*group, rows), on, skin, actions);
             }
         });
     }
@@ -430,7 +437,7 @@ fn filter_line(ui: &mut Ui, page: &KeyboardPage, skin: &Skin, actions: &mut Vec<
 /// A group's heading, then its rows.
 fn group_rows(
     ui: &mut Ui,
-    app: &App,
+    keymap: &Keymap,
     page: &KeyboardPage,
     (group, rows): (Group, &[Row]),
     on: Option<Row>,
@@ -457,10 +464,17 @@ fn group_rows(
                 .recording
                 .as_ref()
                 .filter(|recording| recording.of == Recorded::Row(*row));
-            key_row(ui, app, *row, (on == Some(*row), recording), skin, actions);
+            key_row(
+                ui,
+                keymap,
+                *row,
+                (on == Some(*row), recording),
+                skin,
+                actions,
+            );
             if let Some((keys, why)) = recording.and_then(|recording| recording.refused.as_ref()) {
                 let swaps = recording.is_some_and(|recording| recording.swaps);
-                refusal_line(ui, app, (*row, keys, why, swaps), skin);
+                refusal_line(ui, (*row, keys, why, swaps), skin);
             }
         }
     });
@@ -470,7 +484,7 @@ fn group_rows(
 /// while it records), and its action.
 fn key_row(
     ui: &mut Ui,
-    app: &App,
+    keymap: &Keymap,
     row: Row,
     (on_cursor, recording): (bool, Option<&Recording>),
     skin: &Skin,
@@ -481,15 +495,15 @@ fn key_row(
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
     let middle = rect.center().y;
     let (scope_x, keys_x, action_x) = columns(rect);
-    let name = keyboard::name(app, row.command);
+    let name = keyboard::name(look, skin.locale, row.command);
     let scope = skin.say(row.scope.name(layout));
     let fixed = fixed(layout, row);
-    let changed = app.keymap.changed(layout, row);
+    let changed = keymap.changed(layout, row);
     let id = ui.id().with(("keyboard-row", row));
     let built = row.command.info().built;
     let line = ui.interact(rect, id, Sense::click());
-    let spoken = keyboard::spoken_keys(app, row);
-    let said = keyboard::said(app, row, [&name, &scope, &spoken]);
+    let spoken = keyboard::spoken_keys(keymap, Layout::of(look), skin.locale, row);
+    let said = keyboard::said(keymap, look, skin.locale, row, [&name, &scope, &spoken]);
     line.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, &said));
     ui.ctx().accesskit_node_builder(line.id, |node| {
         node.set_role(egui::accesskit::Role::Row);
@@ -564,7 +578,7 @@ fn key_row(
             );
         }
         None => {
-            let keys = app.keymap.row_keys(layout, row);
+            let keys = keymap.row_keys(layout, row);
             let written: Vec<&str> = keys.iter().map(|key| key.as_str()).collect();
             let (text, color) = if written.is_empty() {
                 (skin.say("not set"), palette.faint)
@@ -632,7 +646,6 @@ fn key_row(
 /// told why as an alert, and the keys as hints of their own.
 fn refusal_line(
     ui: &mut Ui,
-    app: &App,
     (row, keys, why, swaps): (Row, &'static str, &Why, bool),
     skin: &Skin,
 ) {
@@ -643,7 +656,7 @@ fn refusal_line(
     let bar = Rect::from_min_size(pos2(left, rect.top() + 2.0), vec2(2.0, rect.height() - 4.0));
     ui.painter()
         .rect_filled(bar, CornerRadius::ZERO, palette.warning);
-    let said = keyboard::refusal(app, row, keys, why);
+    let said = keyboard::refusal(look, skin.locale, row, keys, why);
     let role = TextRole::OBody;
     let width = widgets::paint_text(
         ui,

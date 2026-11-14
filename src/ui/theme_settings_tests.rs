@@ -7,10 +7,18 @@ use egui::accesskit::{Role, Toggled};
 use super::appearance_settings_tests::{on_the_pane, settings_saves, shows};
 use crate::backend::Event;
 use crate::desktop_theme::{Pinned, Read};
+use crate::keymap::Layout;
 use crate::model::Action;
 use crate::settings::{Settings, Theme};
 use crate::testing::Harness;
 use crate::theme::{Catalog, CustomTheme, Look, Palette};
+
+/// Settings › Appearance with the board's cursor on the theme's row,
+/// under the interface's.
+fn on_the_theme(harness: &mut Harness) {
+    on_the_pane(harness);
+    super::tests::type_key(harness, egui::Key::J, "j");
+}
 
 /// Whether the control called `label` is told to a screen reader as set.
 fn set(harness: &mut Harness, label: &str) -> Option<bool> {
@@ -138,7 +146,7 @@ fn the_screen_shows_omarchys_theme_and_the_palette_it_gives() {
 #[test]
 fn l_pins_the_theme_omarchy_shows_and_h_follows_it_again() {
     let mut harness = following();
-    on_the_pane(&mut harness);
+    on_the_theme(&mut harness);
     let saves = settings_saves(&harness);
     key(&mut harness, egui::Key::L, "l");
     assert_eq!(
@@ -184,7 +192,7 @@ fn l_pins_the_theme_omarchy_shows_and_h_follows_it_again() {
 #[test]
 fn a_pin_and_a_flip_in_one_frame_follow_omarchy_again() {
     let mut harness = following();
-    on_the_pane(&mut harness);
+    on_the_theme(&mut harness);
     harness.frame(vec![
         crate::testing::key(egui::Key::L, egui::Modifiers::NONE),
         egui::Event::Text("l".into()),
@@ -197,7 +205,7 @@ fn a_pin_and_a_flip_in_one_frame_follow_omarchy_again() {
 #[test]
 fn with_no_omarchy_theme_to_name_pin_does_nothing() {
     let mut harness = terminal();
-    on_the_pane(&mut harness);
+    on_the_theme(&mut harness);
     assert!(shows(&mut harness, "now: dark, from the system"));
     assert!(shows(&mut harness, "tabletist's own light or dark"));
     let saves = settings_saves(&harness);
@@ -210,7 +218,7 @@ fn with_no_omarchy_theme_to_name_pin_does_nothing() {
 fn a_value_of_macos_is_the_desktop_here_and_stays_in_the_file() {
     let mut harness = following();
     with_theme(&mut harness, Theme::Dark);
-    on_the_pane(&mut harness);
+    on_the_theme(&mut harness);
     assert_eq!(set(&mut harness, "Theme: follow omarchy"), Some(true));
     assert_eq!(harness.app.palette, omarchy_palette());
     // h, and a click on follow, change nothing the row shows: nothing.
@@ -307,12 +315,16 @@ fn sheet(look: Look) -> Harness {
 
 #[test]
 fn the_sheet_sets_the_theme_with_its_tiles() {
-    let hint = if cfg!(target_os = "windows") {
-        "System follows Windows."
-    } else {
-        "System follows macOS, including Auto."
-    };
     for look in [Look::macos(), Look::standard()] {
+        // What the System tile follows: the OS of the look's keys, and off
+        // Windows the desktop where they are Windows' (Linux's classic).
+        let hint = if cfg!(target_os = "windows") {
+            "System follows Windows."
+        } else if look.keys == Layout::Mac {
+            "System follows macOS, including Auto."
+        } else {
+            "System follows the desktop's light or dark."
+        };
         let mut harness = sheet(look);
         assert!(shows(&mut harness, "THEME"), "{}", look.name);
         assert!(shows(&mut harness, hint), "{}", look.name);

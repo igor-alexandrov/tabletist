@@ -1,0 +1,192 @@
+{
+  "what": "startup",
+  "cold": false,
+  "evicted": [],
+  "fresh_profile": true,
+  "seed": null,
+  "env": [
+    "DISPLAY=:0",
+    "QT_PLUGIN_PATH=/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/valentina/root/opt/VStudio/qt/plugins",
+    "QT_QPA_PLATFORM_PLUGIN_PATH=/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/valentina/root/opt/VStudio/qt/plugins/platforms"
+  ],
+  "command": [
+    "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/valentina/root/opt/VStudio/vstudio"
+  ],
+  "path": "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/valentina/root/opt/VStudio/vstudio",
+  "sha256": "0916335e3a32e1de7e07c7b38a82e36f977816ca16d5a337de2e10f89b6f6a67",
+  "window": {
+    "n": 20,
+    "median": 1.3067513645000872,
+    "min": 1.3002997249968757,
+    "max": 1.3774971189995995
+  },
+  "settled": {
+    "n": 20,
+    "median": 3.36432590000004,
+    "min": 1.487314961002994,
+    "max": 3.3842968880016997
+  },
+  "capture_interval": 0.016613516250799876,
+  "runs": [
+    {
+      "window": 1.307214919001126,
+      "settled": 1.4888943850019132,
+      "settled_on_first_capture": true,
+      "xwayland": null,
+      "windows": 3,
+      "capture_interval": 0.01665672700255527
+    },
+    {
+      "window": 1.3084657360013807,
+      "settled": 3.372494972001732,
+      "settled_on_first_capture": true,
+      "xwayland": false,
+      "windows": 2,
+      "capture_interval": 0.016564020999794593
+    },
+    {
+      "window": 1.3045647689978068,
+      "settled": 3.364504866000061,
+      "settled_on_first_capture": true,
+      "xwayland": false,
+      "windows": 2,
+      "capture_interval": 0.01662989699980244
+    },
+    {
+      "window": 1.3075658720008505,
+      "settled": 3.3671256199995696,
+      "settled_on_first_capture": true,
+      "xwayland": false,
+      "windows": 2,
+      "capture_interval": 0.016639776000374695
+    },
+    {
+      "window": 1.3065923329995712,
+      "settled": 3.367176744999597,
+      "settled_on_first_capture": true,
+      "xwayland": null,
+      "windows": 2,
+      "capture_interval": 0.016478010002174415
+    },
+    {
+      "window": 1.3021987409993017,
+      "settled": 3.361263789996883,
+      "settled_on_first_capture": true,
+      "xwayland": false,
+      "windows": 2,
+      "capture_interval": 0.016432791999250185
+    },
+    {
+      "window": 1.307413249000092,
+      "settled": 3.3553072409995366,
+      "settled_on_first_capture": true,
+      "xwayland": null,
+      "windows": 2,
+      "capture_interval": 0.01656280699899071
+    },
+    {
+      "window": 1.309745369002485,
+      "settled": 3.371112576001906,
+      "settled_on_first_capture": true,
+      "xwayland": null,
+      "windows": 2,
+      "capture_interval": 0.016562013999646297
+    },
+    {
+      "window": 1.3068496980013151,
+      "settled": 3.3830188530009764,
+      "settled_on_first_capture": true,
+      "xwayland": false,
+      "windows": 2,
+      "capture_interval": 0.01666972699968028
+    },
+    {
+      "window": 1.305130561999249,
+      "settled": 3.3641469340000185,
+      "settled_on_first_capture": true,
+      "xwayland": null,
+      "windows": 2,
+      "capture_interval": 0.01662298799783457
+    },
+    {
+      "window": 1.306263131002197,
+      "settled": 3.3842968880016997,
+      "settled_on_first_capture": true,
+      "xwayland": null,
+      "windows": 2,
+      "capture_interval": 0.016542373999982374
+    },
+    {
+      "window": 1.3054568170009588,
+      "settled": 3.3645122289999563,
+      "settled_on_first_capture": true,
+      "xwayland": null,
+      "windows": 2,
+      "capture_interval": 0.01663144199847011
+    },
+    {
+      "window": 1.3064624409998942,
+      "settled": 1.487314961002994,
+      "settled_on_first_capture": true,
+      "xwayland": null,
+      "windows": 3,
+      "capture_interval": 0.016657263999150018
+    },
+    {
+      "window": 1.3002997249968757,
+      "settled": 3.3597201419979683,
+      "settled_on_first_capture": true,
+      "xwayland": null,
+      "windows": 2,
+      "capture_interval": 0.016610179001872893
+    },
+    {
+      "window": 1.3066530309988593,
+      "settled": 3.367088671999227,
+      "settled_on_first_capture": true,
+      "xwayland": null,
+      "windows": 2,
+      "capture_interval": 0.016560624997509876
+    },
+    {
+      "window": 1.3048152269984712,
+      "settled": 1.4951737869996578,
+      "settled_on_first_capture": true,
+      "xwayland": null,
+      "windows": 3,
+      "capture_interval": 0.016751905001001433
+    },
+    {
+      "window": 1.3108995370021148,
+      "settled": 1.5006744760030415,
+      "settled_on_first_capture": true,
+      "xwayland": null,
+      "windows": 3,
+      "capture_interval": 0.016823689999000635
+    },
+    {
+      "window": 1.309673900999769,
+      "settled": 1.4994025429987232,
+      "settled_on_first_capture": true,
+      "xwayland": null,
+      "windows": 3,
+      "capture_interval": 0.016616853499726858
+    },
+    {
+      "window": 1.3774971189995995,
+      "settled": 1.5674687120008457,
+      "settled_on_first_capture": true,
+      "xwayland": false,
+      "windows": 3,
+      "capture_interval": 0.016559304498514393
+    },
+    {
+      "window": 1.3089923090010416,
+      "settled": 3.369102615000884,
+      "settled_on_first_capture": true,
+      "xwayland": false,
+      "windows": 2,
+      "capture_interval": 0.016368207001505652
+    }
+  ]
+}

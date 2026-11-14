@@ -1,0 +1,7 @@
+# TablePro's settings in the measuring profile (--seed), read through
+# GSETTINGS_BACKEND=keyfile so the user's own dconf is never touched.
+[app/tablepro/TablePro]
+# Hold the whole 100,000-row table in one page (the default is 1,000).
+default-page-size=uint32 100000
+# No usage events from the measuring machine.
+share-usage-data=false

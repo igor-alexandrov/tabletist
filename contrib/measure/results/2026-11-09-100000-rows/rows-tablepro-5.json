@@ -1,0 +1,63 @@
+{
+  "what": "memory",
+  "command": [
+    "target/competitors/tablepro/root/usr/bin/tablepro",
+    "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/bench/bench.sqlite"
+  ],
+  "path": "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/tablepro/root/usr/bin/tablepro",
+  "sha256": "a58ea13776b5f848f40fb5c7a8d5593a7d1fd467caa329b5188ce2b58a9e17ef",
+  "fresh_profile": true,
+  "seed": "contrib/measure/profiles/tablepro",
+  "env": [
+    "GSETTINGS_SCHEMA_DIR=/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/tablepro/root/usr/share/glib-2.0/schemas",
+    "GSETTINGS_BACKEND=keyfile"
+  ],
+  "steps": [
+    {
+      "step": "connected",
+      "pid": 2169857,
+      "rss": 158404608,
+      "pss": 120584192,
+      "private": 114434048,
+      "gpu": {
+        "vram": 1396736,
+        "gtt": 32694272,
+        "cpu": 0
+      },
+      "tree": {
+        "processes": 1,
+        "rss": 158404608,
+        "pss": 120584192,
+        "private": 114434048,
+        "gpu": {
+          "vram": 1396736,
+          "gtt": 32694272,
+          "cpu": 0
+        }
+      }
+    },
+    {
+      "step": "all 100,000 rows loaded",
+      "pid": 2169857,
+      "rss": 251789312,
+      "pss": 213683200,
+      "private": 207245312,
+      "gpu": {
+        "vram": 1404928,
+        "gtt": 32776192,
+        "cpu": 0
+      },
+      "tree": {
+        "processes": 1,
+        "rss": 251789312,
+        "pss": 213683200,
+        "private": 207245312,
+        "gpu": {
+          "vram": 1404928,
+          "gtt": 32776192,
+          "cpu": 0
+        }
+      }
+    }
+  ]
+}

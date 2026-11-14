@@ -8,44 +8,31 @@
 //! look's faces (Plex on macOS, the terminal's monospace on Omarchy, Inter
 //! elsewhere).
 //!
-//! A role's size in [`TextRole::spec`] is the design's. The settings size
-//! the text on macOS and Windows ([`TextRole::spec_in`]): the data roles
-//! keep to the data's size, 12.5 points in the design, and the others to
-//! the interface's, 13. The terminal look draws the whole window larger or
-//! smaller instead, its roles as they are.
+//! A role's size in [`TextRole::spec`] is the design's. On macOS and
+//! Windows the data roles keep to the data's size the settings give
+//! ([`TextRole::spec_in`]), 12.5 points in the design, and the others keep
+//! the design's. Every look draws the whole window larger or smaller on
+//! top: the terminal look by its font size, the others by their interface
+//! scale (egui's zoom factor), the data's size multiplied by it.
 //!
 //! Text is built with [`Text`] and drawn from the [`Laid`] it lays out.
 
-pub mod desktop_font;
 mod fonts;
-pub mod installed_font;
 
-pub use fonts::{TerminalFaces, configure};
-
-/// The font the settings name, read from the system: on macOS the data's,
-/// an installed one through CoreText; elsewhere the terminal look's,
-/// through fontconfig.
-pub fn read_font(asked: Option<&str>) -> desktop_font::Read {
-    if cfg!(target_os = "macos") {
-        installed_font::read(asked)
-    } else {
-        desktop_font::read(asked)
-    }
-}
+pub use fonts::configure;
 
 use std::sync::Arc;
 
 use egui::text::LayoutJob;
 use egui::{
-    Color32, FontFamily, FontId, Galley, Painter, Pos2, Response, Sense, TextFormat, Ui, Vec2,
+    Color32, FontFamily, FontId, Galley, Painter, Pos2, Rect, Response, Sense, TextFormat, Ui, Vec2,
 };
 
 use crate::theme::{DataFace, Faces, Look, Typeface};
 
-/// The data's size and the interface's in the design: what a role's size
-/// in [`TextRole::spec`] is drawn at before the settings change them.
+/// The data's size in the design: what a data role's size in
+/// [`TextRole::spec`] is drawn at before the settings change it.
 const DESIGN_DATA: f32 = 12.5;
-const DESIGN_INTERFACE: f32 = 13.0;
 
 /// Sans or monospace: what a role asks for. The Omarchy look has one
 /// monospace face for both.
@@ -342,18 +329,16 @@ impl TextRole {
 
     /// The role as `faces` draw it: [`Self::spec`] at the settings' sizes.
     /// A data role keeps to the data's size as the design's keeps to 12.5
-    /// points, and the others to the interface's as the design's to 13.
-    /// The terminal look's are the design's.
+    /// points; the others, and the terminal look's, are the design's (the
+    /// interface scale zooms them with the rest of the window).
     pub fn spec_in(self, faces: Faces) -> Spec {
         let mut spec = self.spec();
-        let (size, design) = match faces.typeface {
-            Typeface::Terminal => return spec,
+        match faces.typeface {
             Typeface::Inter | Typeface::Plex if self.is_data() => {
-                (faces.data_size.points(), DESIGN_DATA)
+                spec.size = spec.size * faces.data_size.points() / DESIGN_DATA;
             }
-            Typeface::Inter | Typeface::Plex => (faces.interface.points(), DESIGN_INTERFACE),
-        };
-        spec.size = spec.size * size / design;
+            Typeface::Terminal | Typeface::Inter | Typeface::Plex => {}
+        }
         spec
     }
 
@@ -706,27 +691,21 @@ impl Laid {
 
     /// Adds the text as a label widget in `ui`'s layout.
     pub fn label(self, ui: &mut Ui) -> Response {
-        self.label_sense(ui, Sense::hover())
+        self.allocate(ui, Sense::hover()).1
     }
 
-    /// [`Self::label`] that answers `sense`.
-    pub fn label_sense(self, ui: &mut Ui, sense: Sense) -> Response {
+    /// [`Self::label`] that answers `sense`, with where the text stands,
+    /// which may be narrower than the response. Text that can be clicked
+    /// is a link, which wants a ring round its words when it has the
+    /// keyboard: `ui::focus::Link` adds the text with one.
+    pub fn allocate(self, ui: &mut Ui, sense: Sense) -> (Rect, Response) {
         let (rect, response) = ui.allocate_exact_size(self.size(), sense);
         let text = self.galley.text().to_owned();
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &text));
-        // Text that can be clicked is a link: a tight ring round its words.
-        if sense.senses_click() {
-            crate::ui::focus::hint(
-                ui,
-                &response,
-                rect,
-                crate::ui::focus::Ring::Outer { radius: 3 },
-            );
-        }
         if ui.is_rect_visible(rect) {
             self.paint(ui.painter(), rect.min);
         }
-        response
+        (rect, response)
     }
 }
 
@@ -773,4 +752,52 @@ pub fn text_styles(faces: Faces) -> std::collections::BTreeMap<egui::TextStyle, 
         (TextStyle::Monospace, mono.font_id(faces)),
     ]
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::{FontSize, Settings, UiScale};
+
+    /// The settings with the interface's scale, the data font and its size
+    /// as given.
+    fn text(scale: f64, font: Option<&str>, size: f64) -> Settings {
+        Settings {
+            ui_scale: UiScale::of(scale).unwrap(),
+            font: font.map(str::to_owned),
+            font_size: FontSize::of(size),
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn the_data_is_sized_apart_and_the_interface_keeps_the_designs_sizes() {
+        for look in [Look::macos(), Look::standard()] {
+            let faces = look.with_text(&text(1.5, None, 16.0), false).faces;
+            // The interface's roles are the design's whatever the scale:
+            // the zoom draws them larger. The data's keep to 16 as the
+            // design's to 12.5.
+            assert_eq!(TextRole::UiBody.size(faces), 13.0, "{}", look.name);
+            assert_eq!(TextRole::Secondary.size(faces), 12.0);
+            assert_eq!(TextRole::MonoSecondary.size(faces), 12.0);
+            assert_eq!(TextRole::GridCell.size(faces), 16.0);
+            assert_eq!(TextRole::DataBody.size(faces), 13.0 * 16.0 / 12.5);
+            assert_eq!(TextRole::Code.size(faces), 13.0 * 16.0 / 12.5);
+            // Lines keep to their size: the editor's 22 at 13.
+            let code = TextRole::Code.line_height(faces).unwrap();
+            assert!((code - 22.0 * 16.0 / 12.5).abs() < 1e-4, "{code}");
+        }
+        // Before any is set, and in the terminal look whatever is set, the
+        // design's.
+        for faces in [
+            Look::macos().faces,
+            Look::omarchy()
+                .with_text(&text(2.5, Some("Fira Code"), 20.0), true)
+                .faces,
+        ] {
+            for role in TextRole::ALL {
+                assert_eq!(role.size(faces), role.spec().size, "{}", role.id());
+            }
+        }
+    }
 }

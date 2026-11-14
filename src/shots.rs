@@ -987,6 +987,16 @@ fn shots() {
         let postgres = harness.app.look.label("PostgreSQL");
         harness.click(&postgres);
     });
+    both("dialog-bigquery", |harness| {
+        harness.app.apply(Action::NewConnection);
+        let bigquery = harness.app.look.label("BigQuery");
+        harness.click(&bigquery);
+        if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
+            form.name = "Bookshop".into();
+            form.database = "bookshop-analytics".into();
+            form.bigquery_key = "~/.config/gcloud/bookshop.json".into();
+        }
+    });
     both("state-disconnected", |harness| {
         let tab = workspace(harness);
         let session = harness.app.workspace(tab).unwrap().session;
@@ -2321,7 +2331,7 @@ pub(crate) mod mock {
                 harness.app.connections.mark_used(&id, used);
             }
         }
-        let first = crate::ui::picker::visible(&harness.app, "")
+        let first = crate::ui::picker::visible(&harness.app.connections, "")
             .first()
             .cloned();
         let tab = harness.app.active_tab_id();

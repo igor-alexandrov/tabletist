@@ -24,20 +24,25 @@ Cmd/Ctrl+, opens Settings. Changes apply right away.
 | **Ask before closing with unsaved edits** | On or off. Off, closing a table, its connection or the window, or loading another page of it, discards its pending changes without asking | On |
 | **Disconnect when idle** | Never, or after 5, 15 or 30 minutes, 1 hour or 4 hours unused. The server session is closed; the tabs stay, and the connection connects again when something next needs it: a refresh, a page, a table opened, a run or a save | After 30 min |
 
-A second pane, **Appearance**, sets the theme, the text, and how the grids
-and the connection bar are drawn. Each change shows in every open window
+A second pane, **Appearance**, sets the look, the theme, the text, and how
+the grids and the connection bar are drawn. Each change shows in every open window
 at once, and in the preview under the options: two rows of a table under
 the bar of a dev connection, drawn as the grid and the bar are. Its rows
 are made in the app, so it needs no connection and reads no database.
 
+Where the pane says macOS and Windows, it means their look, which Linux has
+too when **Interface** is Classic; Omarchy means the Omarchy look on any
+system.
+
 | Option | Choices | Default |
 | --- | --- | --- |
+| **Interface** | Classic or Omarchy. Classic is the system's own look: macOS's on a Mac, Windows' on Windows, and on Linux macOS's with its keys written with Ctrl. The window changes at once, and Settings stays open on Appearance. In the classic look the control is beside the theme's tiles; in the Omarchy look it is the first row. Reset to defaults leaves it as it is | Omarchy on Linux, Classic on macOS and Windows |
 | **Theme** (macOS and Windows) | System, Light or Dark. System follows the system's light or dark as it changes, Auto on macOS too | System |
 | **Theme** (Omarchy) | Follow Omarchy, or pin the theme it shows now, which then stays when Omarchy switches. The row says the theme drawn, and under it the palette it gave | Follow Omarchy |
-| **Interface size** (macOS and Windows) | Small, Default or Large: the sidebar, tabs, buttons and the inspector's labels, from a body text of 12, 13 or 14 points | Default |
-| **Data font** (macOS and Windows) | The face of grid cells, the SQL editor and JSON on macOS, IBM Plex Mono or JetBrains Mono, or an installed monospace font, listed after them (Windows draws its data in Inter, and offers none), and its size, 11 to 16 points by halves | IBM Plex Mono, 12.5 pt |
+| **Interface scale** (macOS and Windows) | 90%, 100%, 110%, 125%, 150%, 175%, 200% or 250%: everything in the window, its text, controls, rows and spacing, on top of the display's own scale. The menu gives the body text each comes to, 12 to 33 px. Cmd+= and Cmd+- (Ctrl on Windows) step through them anywhere in the window, and Cmd+0 puts back 100% | 100% |
+| **Data font** (macOS and Windows) | The face of grid cells, the SQL editor and JSON on macOS, IBM Plex Mono or JetBrains Mono, or an installed monospace font, listed after them (Windows draws its data in Inter, and offers none), and its size, 11 to 16 points by halves. The interface scale applies on top: 12.5 points at 150% is drawn at 18.75 px | IBM Plex Mono, 12.5 pt |
 | **Font** (Omarchy) | The system's monospace, as fontconfig resolves it, or a font you name in the file by its fontconfig name. The row says the font drawn; one fontconfig does not have is drawn as the system's monospace, and the row says so | System monospace |
-| **Size** (Omarchy) | 9 to 24 points: everything in the window, which is drawn larger or smaller as a terminal's text is | 13 |
+| **Size** (Omarchy) | 9 to 32 points: everything in the window, which is drawn larger or smaller as a terminal's text is. Ctrl+= and Ctrl+- step it anywhere in the window, and Ctrl+0 puts back 13 | 13 |
 | **Row density** (Omarchy: row height) | Compact, Regular or Roomy. On macOS and Windows a step of 8 points either side of Regular, and taller where a large data size needs it; in the Omarchy look one, one and a half or two lines. The grid keeps the row at its top | Regular |
 | **Alternate row shading** (Omarchy: alternate rows) | On or off, in the table grid and the SQL editor's results | Off on macOS and Windows, on in the Omarchy look |
 | **Show column types** (Omarchy: column types) | On or off: the second line of the grid's header | On |
@@ -137,10 +142,12 @@ Restart`. It installs only when you choose Restart now: a quit does not
 install it, and the next launch offers it again. Restart now first looks
 at every window, and the restart waits for what it would interrupt:
 unsaved edits in a table, a save running, a table's page, count or
-structure being read, a write running in a SQL editor, and any other
-query an editor runs. With any of them, the card says **Finish your
+structure being read, a write running in a SQL editor, any other
+query an editor runs, and an export or Copy as running, or waiting for
+its save dialog. With any of them, the card says **Finish your
 work first** and lists them (`Bookshop · dev: 3 unsaved edits in
-book_covers`, `Bookshop · dev: query running for 1 min 12 s`), with
+book_covers`, `Bookshop · dev: query running for 1 min 12 s`,
+`Bookshop · dev: exporting reviews.csv`), with
 **Restart when done** (Omarchy: `U`), which restarts as soon as the list
 is empty and no other dialog is open, and **Show them**, which closes Settings and
 brings the first window with work forward, on its tab. Nothing is
@@ -248,7 +255,7 @@ log_days = 30
 notify = true
 
 [appearance]
-interface_size = "default"
+ui_scale = 1.0
 
 [appearance.grid]
 row_height = "regular"
@@ -291,9 +298,10 @@ check = "daily"
 | `editor.format.keywords` | `"upper"`, `"lower"` or `"keep"` | Not set: upper on macOS and Windows, lower in the Omarchy look |
 | `editor.format.commas` | `"trailing"` or `"leading"` | `"trailing"` |
 | `editor.history.keep` | 0 to 100000 statements kept for each connection, from every source; `0` keeps none. A smaller number deletes the oldest past it | `1000` |
-| `appearance.interface_size` | `"small"`, `"default"` or `"large"`, on macOS and Windows | `"default"` |
-| `appearance.font` | On macOS the data's face, `"IBM Plex Mono"`, `"JetBrains Mono"` or the family name of an installed font (`"Menlo"`); `"monospace"` is IBM Plex Mono too, and a name no installed font has is drawn as IBM Plex Mono, which the window says. Windows draws its data in Inter, whatever it says. In the Omarchy look a fontconfig name (`"Fira Code"`); `"monospace"` is the system's. Written once you set it | Not set: IBM Plex Mono, or the system's monospace |
-| `appearance.font_size` | Points, whole or by halves (`13`, `12.5`). On macOS and Windows the data's, 11 to 16; in the Omarchy look all of it, 9 to 24. A size past a look's range is drawn at its nearest end. Written once you set it | Not set: 12.5 on macOS and Windows, 13 in the Omarchy look |
+| `appearance.look` | `"classic"` or `"omarchy"`. Written once you set it; an edit of the file switches the window at once | Not set: the system's own look, the Omarchy look on Linux |
+| `appearance.ui_scale` | `0.9`, `1.0`, `1.1`, `1.25`, `1.5`, `1.75`, `2.0` or `2.5`, where **Interface** is Classic, on every system. The `interface_size` of older versions (`"small"`, `"default"`, `"large"`) is read as `0.9`, `1.0` and `1.1`, and the first start writes it as `ui_scale` in its place; `"default"` leaves no line at all, since `1.0` is not written. Where the file has both, `ui_scale` is read and `interface_size` stays until the scale is next changed. Any other value is reported and read as if the line were not there: an `interface_size` beside it stands for it, and neither line moves until the scale is changed; with none, a start draws 100% and a live edit keeps the last good scale | `1.0` |
+| `appearance.font` | On macOS the data's face, `"IBM Plex Mono"`, `"JetBrains Mono"` or the family name of an installed font (`"Menlo"`); `"monospace"` is IBM Plex Mono too, and a name no installed font has is drawn as IBM Plex Mono, which the window says. Linux's classic look offers `"IBM Plex Mono"` and `"JetBrains Mono"`, and draws another name the file gives as fontconfig finds it. Windows draws its data in Inter, whatever it says. In the Omarchy look a fontconfig name (`"Fira Code"`); `"monospace"` is the system's. Written once you set it | Not set: IBM Plex Mono, or the system's monospace |
+| `appearance.font_size` | Points, whole or by halves (`13`, `12.5`). On macOS and Windows the data's, 11 to 16; in the Omarchy look all of it, 9 to 32. A size past a look's range is drawn at its nearest end. Written once you set it | Not set: 12.5 on macOS and Windows, 13 in the Omarchy look |
 | `appearance.theme` | On macOS and Windows `"system"`, `"light"` or `"dark"`. In the Omarchy look `"omarchy"`, or a theme to pin: an Omarchy theme's name (`"Tokyo Night"`), a palette file in the `themes` folder (`"Nord.json"`; its name alone where no Omarchy theme has it), or a path that starts with `/` or `~/` to a palette file or an Omarchy theme's folder. A value meant for the other looks is drawn as not set and stays in the file | Not set: the system's light or dark, or the Omarchy theme |
 | `appearance.grid.row_height` | `"compact"`, `"regular"` or `"roomy"` | `"regular"` |
 | `appearance.grid.zebra` | `true` or `false`. Written once you set it; without it, the look's default | Not set: off on macOS and Windows, on in the Omarchy look |
@@ -310,9 +318,9 @@ check = "daily"
 name or a path other than the Omarchy theme of the moment, and a font by
 its fontconfig name. The SQL editor's **Limit** and **Timeout** menus set
 `editor.run.limit` and `editor.run.timeout`, which every open SQL editor
-follows, and the text size keys (Cmd+= Cmd+- Cmd+0 on macOS, Ctrl+=
-Ctrl+- Ctrl+0 on Windows, `ctrl+=` `ctrl+-` in the Omarchy look) set
-`font_size`, wherever the keyboard is.
+follows. The size keys, wherever the keyboard is, set `ui_scale` on
+macOS (Cmd+= Cmd+- Cmd+0) and Windows (Ctrl+= Ctrl+- Ctrl+0), and
+`font_size` in the Omarchy look (`ctrl+=` `ctrl+-` `ctrl+0`).
 
 A line that cannot be read is ignored and reported in the Settings window,
 and its key keeps its last good value: the one it had before the edit, or
@@ -440,10 +448,11 @@ An administrator's policy, `managed.toml`, is in a third place of its own:
 | `session.json` | State | The connection windows open when Tabletist last quit, and each saved connection's window as it last had it: its table tabs, with their sort and filters, and whether the row panel was shown. Written at quit, when a connection's window closes or gets another connection, when a database switch drops its tables, and when a connection is deleted. Not written while `connections.toml` cannot be read. A connection deleted from `connections.toml` by hand is taken out of it at the next write |
 | `recents.json` | State | What you opened last on each saved connection, by its id: up to eight tables and views, with the database each is in and when it was opened, for the start screen. Written when something opens, when Clear is pressed, when an object the database no longer lists is dropped, and when a connection is deleted |
 | `labels.json` | State | The column you chose to label each table's rows in a foreign key's list, by saved connection and, on PostgreSQL, by database |
+| `export_options.json` | State | The options last chosen for each format of an export and of Copy as, by format, written when an export starts: CSV, TSV, JSON, JSON Lines, SQL INSERT and Markdown. An option this version does not know is kept and written back |
 | `keys.default.toml` | State | Every key in force, commented, as `:keys default` writes it for you to copy lines from. Written again each time, and never read |
-| `tabletist.log`, `panic.log` | State | Logs |
+| `tabletist.log`, `tabletist.previous.log`, `panic.log` | State | Logs. `tabletist.log` is the latest start's, and `tabletist.previous.log` the start's before it, which goes on writing there while that copy is still open. `panic.log` has one line for each crash |
 | `agents.sqlite3` | State | Every call agents made: the tool, the statement and its values, and how it ended. Never a row |
-| `history.sqlite3` | State | The query history, by saved connection: each statement run from the SQL editor, a grid's save (its whole transaction, with the values you typed written in) and a filter or sort you set, with when, how long, its rows and how it ended, and a filter's table, filter and sort. An agent's run is kept as its call's place in `agents.sqlite3`, its tool, rows, time and result, never what it sent, its name included: the History tab reads that from `agents.sqlite3`. Never a result's rows. Kept to `editor.history.keep` per connection, and written on its own: a statement never waits for it |
+| `history.sqlite3` | State | The query history, by saved connection: each statement run from the SQL editor, a grid's save (its whole transaction, with the values you typed written in), a filter or sort you set, and the `SELECT` an export ran, with when, how long, its rows and how it ended, and a filter's table, filter and sort. An agent's run is kept as its call's place in `agents.sqlite3`, its tool, rows, time and result, never what it sent, its name included: the History tab reads that from `agents.sqlite3`. Never a result's rows. Kept to `editor.history.keep` per connection, and written on its own: a statement never waits for it |
 | `agents_shown.json` | State | What agents may do as Tabletist last showed it: whether the server is on, and each connection's access, hidden tables and masked columns |
 | `updates.json` | State | What the checks for updates found: when the last one that worked ran, the newest version seen, that release's page and notes while it is newer than this version, and when the Omarchy status line last told of it |
 | `release-notes-<version>.md` | State | A release's notes, written for `$PAGER` when `n` shows them in the Omarchy look |

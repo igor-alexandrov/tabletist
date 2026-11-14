@@ -1,8 +1,8 @@
 name: Release
 
 # A v* tag builds every package, publishes a GitHub release with checksums,
-# and updates the AUR. Run it by hand (workflow_dispatch) for a dry run that
-# builds and uploads the artifacts but publishes nothing.
+# and updates the AUR and the Homebrew tap. Run it by hand (workflow_dispatch)
+# for a dry run that builds and uploads the artifacts but publishes nothing.
 on:
   push:
     tags: ["v*"]
@@ -409,3 +409,73 @@ jobs:
               fi
             ' bash "$package" "$version"
           done
+
+  # The cask and the formula in igor-alexandrov/homebrew-tabletist, for
+  # `brew install --cask igor-alexandrov/tabletist/tabletist` (the app) and
+  # `brew install igor-alexandrov/tabletist/tabletist` (built from the source
+  # archive). Independent of the AUR job: either can fail and be re-run alone.
+  homebrew:
+    name: Homebrew tap
+    needs: publish
+    if: github.event_name == 'push' && !contains(github.ref_name, '-')
+    runs-on: ubuntu-latest
+    env:
+      # Only whether the key is set; the key itself is in the one step that
+      # uses it.
+      HAS_HOMEBREW_TAP_SSH_KEY: ${{ secrets.HOMEBREW_TAP_SSH_KEY != '' }}
+      # Ed25519 SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU, as published
+      # on https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints.
+      GITHUB_HOST_KEY: github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+    steps:
+      - name: Skipped without HOMEBREW_TAP_SSH_KEY
+        if: env.HAS_HOMEBREW_TAP_SSH_KEY != 'true'
+        run: echo "::notice::HOMEBREW_TAP_SSH_KEY is not set; the Homebrew tap was not updated."
+      - uses: actions/checkout@v4
+        if: env.HAS_HOMEBREW_TAP_SSH_KEY == 'true'
+        with:
+          persist-credentials: false
+      - name: Update Casks/tabletist.rb and Formula/tabletist.rb
+        if: env.HAS_HOMEBREW_TAP_SSH_KEY == 'true'
+        env:
+          HOMEBREW_TAP_SSH_KEY: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
+        run: |
+          version="${TAG#v}"
+          # A deploy key of the tap with write access, and nothing else.
+          install -d -m 700 ~/.ssh
+          (umask 077 && printf '%s\n' "$HOMEBREW_TAP_SSH_KEY" > ~/.ssh/homebrew-tabletist)
+          printf '%s\n' "$GITHUB_HOST_KEY" > ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/homebrew-tabletist -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          curl --fail --location --retry 3 \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/checksums.txt" \
+            --output "$RUNNER_TEMP/checksums.txt"
+          git clone git@github.com:igor-alexandrov/homebrew-tabletist.git "$RUNNER_TEMP/tap"
+          cask="$RUNNER_TEMP/tap/Casks/tabletist.rb"
+          formula="$RUNNER_TEMP/tap/Formula/tabletist.rb"
+          # A re-run of an older tag leaves a newer cask or formula, and so
+          # both, as they are. Each is read on its own: either may be missing.
+          # The formula's version is in its source archive's name.
+          cask_version="$(sed -n 's/^  version "\(.*\)"$/\1/p' "$cask" 2>/dev/null || true)"
+          formula_version="$(sed -n 's/^  url ".*\/tabletist-v\(.*\)-source\.tar\.gz"$/\1/p' "$formula" 2>/dev/null || true)"
+          for current in $cask_version $formula_version; do
+            if [ "$current" != "$version" ] &&
+              [ "$(printf '%s\n%s\n' "$current" "$version" | sort -V | tail -n 1)" = "$current" ]; then
+              echo "::notice::The tap has ${current}, newer than ${version}; left as it is."
+              exit 0
+            fi
+          done
+          mkdir -p "$(dirname "$cask")" "$(dirname "$formula")"
+          bash packaging/homebrew/render.sh packaging/homebrew/tabletist.rb.in "$version" \
+            "$RUNNER_TEMP/checksums.txt" > "$cask"
+          bash packaging/homebrew/render.sh packaging/homebrew/tabletist-formula.rb.in "$version" \
+            "$RUNNER_TEMP/checksums.txt" > "$formula"
+          cd "$RUNNER_TEMP/tap"
+          git config user.name "Igor Alexandrov"
+          git config user.email "igor.alexandrov@gmail.com"
+          git add Casks/tabletist.rb Formula/tabletist.rb
+          # A re-run for the same tag has nothing to commit.
+          if git diff --cached --quiet; then
+            echo "::notice::The Homebrew tap is already at ${version}."
+          else
+            git commit -m "tabletist ${version}"
+            git push origin HEAD:main
+          fi

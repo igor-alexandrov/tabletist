@@ -13,13 +13,12 @@ use egui::{
 use tabletist_db::Dialect;
 use tabletist_db::sql::{self, Statement, Token, TokenKind};
 
-use crate::app::App;
 use crate::i18n::{Locale, gettext};
-use crate::model::{Action, Completion, ConnTabId, Pane, SqlTab, TabId, TextPrint};
+use crate::model::{Action, Completion, ConnTabId, SqlTab, TabId, TextPrint};
 use crate::settings::Indent;
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
-use crate::ui::widgets;
+use crate::ui::{Paint, widgets};
 use crate::vim;
 
 /// The script's and the line numbers' role: monospace in every look.
@@ -557,17 +556,23 @@ struct Place {
     backdrop: egui::layers::ShapeIdx,
 }
 
-pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
-    let shown = Shown::of(&app.settings, app.look, app.palette, app.locale);
+/// Draws the script of `sql_tab`, in the connection tab `tab`, and returns
+/// what it asks for; the field edits the text and its cursor in place.
+/// `dialect` is the connection's, and `tree_has_arrows` whether the
+/// sidebar's tree has the arrow keys, which the editor takes when focused.
+pub fn show(
+    ui: &mut Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    sql_tab: &mut SqlTab,
+    settings: &crate::settings::Settings,
+    dialect: Dialect,
+    tree_has_arrows: bool,
+) -> Vec<Action> {
+    let shown = Shown::of(settings, paint.look, paint.palette, paint.locale);
     let locale = shown.locale;
-    let Some(workspace) = app.workspace_mut(tab) else {
-        return;
-    };
-    let dialect = workspace.driver.dialect();
-    let tree_has_arrows = workspace.pane == Pane::Tree;
-    let Some(sql_tab) = workspace.sql_tab_mut(id) else {
-        return;
-    };
+    let id = sql_tab.id;
+    let mut actions = Vec::new();
     let lines = sql_tab.text.bytes().filter(|b| *b == b'\n').count() + 1;
     let gutter = Gutter::new(ui, &shown.look, lines, shown.numbering.shown());
     let editor = editor_id(tab, id);
@@ -595,16 +600,15 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     let statement = sql::statement_at(&parsed.statements, sql_tab.cursor)
         .and_then(|statement| edited.span(&starts, &statement_lines(statement)));
     if edited.focused && tree_has_arrows {
-        app.actions
-            .push(Action::SqlEditorFocused { tab, sql_tab: id });
+        actions.push(Action::SqlEditorFocused { tab, sql_tab: id });
     }
     if edited.typed {
-        app.actions.push(Action::SqlTyped { tab, sql_tab: id });
+        actions.push(Action::SqlTyped { tab, sql_tab: id });
     }
     // Vim's `:`: the prompt the terminal look has. (The macOS look has
     // none.)
     if edited.prompt && shown.look.terminal {
-        app.actions.push(Action::EditorCommand { tab, sql_tab: id });
+        actions.push(Action::EditorCommand { tab, sql_tab: id });
     }
     let spot = Spot {
         tab,
@@ -613,7 +617,7 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         locale,
     };
     let asked = completion_list(ui, completing.as_ref(), &mut edited, &field, &spot);
-    app.actions.extend(asked);
+    actions.extend(asked);
     let lines = Lines {
         starts: &starts,
         cursor: cursor_line,
@@ -621,6 +625,7 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         statement,
     };
     draw_lines(ui, &shown, &gutter, &place, &edited, &lines, false);
+    actions
 }
 
 /// Settings › Editor's preview: `sql_tab`'s script in the editor, as the

@@ -5,7 +5,9 @@
 use egui::accesskit::{Live, Role};
 use egui::{Key, Modifiers};
 
-use crate::backend::{Command, UpdatesCommand};
+use crate::app::WorkId;
+use crate::backend::export::{ExportId, ExportState};
+use crate::backend::{Command, Event, UpdatesCommand};
 use crate::model::{Action, Dialog, SettingsPane};
 use crate::settings::UpdateCheck;
 use crate::testing::{Harness, node};
@@ -25,7 +27,7 @@ const NOW: i64 = 1_793_092_320;
 
 /// A release far newer than this version, as the fake server gives it.
 fn offer() -> Offer {
-    let json = crate::update::check::tests::RELEASE
+    let json = crate::fixtures::RELEASE
         .replace("v0.4.0", "v99.0.0")
         .replace("0.4.0", "99.0.0");
     let latest: Latest = serde_json::from_str(&json).unwrap();
@@ -958,7 +960,7 @@ fn restart_when_done_becomes_dont_restart_and_show_them_shows_the_work() {
     with_an_unsaved_edit(&mut harness);
     let (tab, id) = {
         let work = harness.app.work_in_progress();
-        (work[0].tab, work[0].id)
+        (work[0].tab, work[0].tab_id().unwrap())
     };
     // Another window in front, on its picker.
     harness.app.apply(Action::ShowConnections);
@@ -1069,7 +1071,7 @@ fn u_downloads_then_restarts_in_the_terminal_look() {
     ));
     // The edit goes: the restart does.
     let work = harness.app.work_in_progress();
-    let (tab, id) = (work[0].tab, work[0].id);
+    let (tab, id) = (work[0].tab, work[0].tab_id().unwrap());
     harness.app.apply(Action::DiscardEdits { tab, id });
     harness.settle();
     let handed = harness
@@ -1083,6 +1085,195 @@ fn u_downloads_then_restarts_in_the_terminal_look() {
         harness.app.updates.install,
         Install::Restarting { .. }
     ));
+}
+
+/// An export of the Bookshop's `book_covers` to `book_covers.csv`, in a
+/// folder of the test's own, running: the recording backend never ends
+/// it. Its id.
+fn with_an_export(harness: &mut Harness) -> (tempfile::TempDir, ExportId) {
+    let (tab, _) = harness.book_covers();
+    harness.app.workspace_mut(tab).unwrap().name = "Bookshop".into();
+    let dir = tempfile::tempdir().unwrap();
+    harness.app.apply(Action::ExportTo {
+        tab,
+        path: dir.path().join("book_covers.csv").display().to_string(),
+        replace: false,
+    });
+    harness.settle();
+    assert!(harness.app.exports[0].running());
+    (dir, harness.app.exports[0].job.id)
+}
+
+fn handed(harness: &Harness) -> bool {
+    harness
+        .app
+        .backend
+        .sent
+        .iter()
+        .any(|sent| matches!(sent, Command::Updates(UpdatesCommand::Install { .. })))
+}
+
+/// A running export is work a restart would interrupt: Restart now
+/// holds, and the list names it by its file.
+#[test]
+fn a_running_export_holds_the_restart_and_is_listed() {
+    for look in looks() {
+        let mut harness = installs(look);
+        let (_dir, job) = with_an_export(&mut harness);
+        harness.app.updates.install = ready();
+        harness.app.apply(Action::RestartToUpdate);
+        harness.settle();
+        assert!(!handed(&harness), "{}", look.name);
+        assert!(!harness.app.closing, "{}", look.name);
+        assert!(
+            matches!(
+                harness.app.updates.install,
+                Install::Held {
+                    when_done: false,
+                    ..
+                }
+            ),
+            "{}",
+            look.name
+        );
+        assert_eq!(pane(&harness), Some(SettingsPane::Updates), "{}", look.name);
+        let work = harness.app.work_in_progress();
+        assert_eq!(work[0].id, WorkId::Export(job), "{}", look.name);
+        let tree = harness.settle();
+        let dev = crate::env::Environment::Dev.label(crate::env::Platform::of(&look));
+        assert_eq!(
+            work_items(&tree, &look),
+            [format!("Bookshop · {dev}: exporting book_covers.csv")],
+            "{}",
+            look.name
+        );
+        // Nothing was dropped: the export runs on.
+        assert!(harness.app.exports[0].running(), "{}", look.name);
+        let cancelled = harness
+            .app
+            .backend
+            .sent
+            .iter()
+            .any(|sent| matches!(sent, Command::CancelExport(_)));
+        assert!(!cancelled, "{}", look.name);
+    }
+}
+
+/// Restart when done waits for the export, and restarts once it ends.
+#[test]
+fn restart_when_done_restarts_once_the_export_ends() {
+    let mut harness = installs(Look::macos());
+    let (_dir, job) = with_an_export(&mut harness);
+    harness.app.updates.install = ready();
+    harness.app.apply(Action::RestartToUpdate);
+    harness.click("Restart when done");
+    harness.settle();
+    assert!(harness.has("Tabletist restarts once this is done:"));
+    assert!(!handed(&harness));
+    harness.app.apply(Action::Backend(Event::Export {
+        job,
+        state: ExportState::Done {
+            rows: 4,
+            bytes: 900,
+            took: std::time::Duration::from_secs(2),
+            copied: None,
+            statements: 0,
+        },
+    }));
+    harness.settle();
+    assert!(harness.app.work_in_progress().is_empty());
+    assert!(handed(&harness));
+    assert!(matches!(
+        harness.app.updates.install,
+        Install::Restarting { .. }
+    ));
+}
+
+/// Show them with an export first: its window comes forward, from
+/// another window's picker.
+#[test]
+fn show_them_brings_the_exports_window_forward() {
+    let mut harness = installs(Look::macos());
+    let (_dir, _job) = with_an_export(&mut harness);
+    let tab = harness.app.exports[0].tab;
+    // Another of its tabs in front: it stays there.
+    let sql = harness.add_sql_tab(tab);
+    harness.app.apply(Action::ActivateTab { tab, id: sql });
+    harness.app.apply(Action::ShowConnections);
+    assert_ne!(harness.app.active_tab_id(), tab);
+    harness.app.updates.install = ready();
+    harness.app.apply(Action::RestartToUpdate);
+    harness.click("Show them");
+    harness.settle();
+    assert!(harness.app.dialog.is_none());
+    assert_eq!(harness.app.active_tab_id(), tab);
+    assert_eq!(harness.app.workspace(tab).unwrap().active_tab, Some(sql));
+}
+
+/// With the window hidden no frame runs, only `logic`: an export that
+/// ends there lets Restart when done quit for the helper that waits,
+/// before the helper gives up.
+#[test]
+fn an_export_that_ends_with_the_window_hidden_lets_the_restart_quit() {
+    let mut harness = installs(Look::macos());
+    let (_dir, job) = with_an_export(&mut harness);
+    harness.app.updates.install = Install::Ready {
+        version: "99.0.0".into(),
+        handed: Some(std::time::Instant::now()),
+    };
+    harness.app.apply(Action::RestartToUpdate);
+    harness.app.apply(Action::RestartWhenDone);
+    assert!(matches!(
+        harness.app.updates.install,
+        Install::Held {
+            when_done: true,
+            ..
+        }
+    ));
+    harness.app.backend.inject(Event::Export {
+        job,
+        state: ExportState::Done {
+            rows: 4,
+            bytes: 900,
+            took: std::time::Duration::from_secs(2),
+            copied: None,
+            statements: 0,
+        },
+    });
+    harness.app.logic(&harness.ctx.clone());
+    assert!(!harness.app.exports[0].running());
+    assert!(harness.app.closing);
+}
+
+/// An export runs on with its window closed: it still holds the restart,
+/// listed last under the window's name as it started, and Show them
+/// closes Settings with no window to bring forward.
+#[test]
+fn an_export_whose_window_closed_still_holds_the_restart() {
+    let mut harness = installs(Look::macos());
+    let (_dir, job) = with_an_export(&mut harness);
+    let tab = harness.app.exports[0].tab;
+    harness.app.apply(Action::CloseConnTab(tab));
+    harness.settle();
+    assert!(harness.app.workspace(tab).is_none());
+    assert!(harness.app.exports[0].running());
+    harness.app.updates.install = ready();
+    harness.app.apply(Action::RestartToUpdate);
+    harness.settle();
+    assert!(!handed(&harness));
+    let work = harness.app.work_in_progress();
+    assert_eq!(work.len(), 1);
+    assert_eq!(work[0].id, WorkId::Export(job));
+    let tree = harness.settle();
+    assert_eq!(
+        work_items(&tree, &Look::macos()),
+        ["Bookshop · dev: exporting book_covers.csv"]
+    );
+    let front = harness.app.active_tab_id();
+    harness.click("Show them");
+    harness.settle();
+    assert!(harness.app.dialog.is_none());
+    assert_eq!(harness.app.active_tab_id(), front);
 }
 
 /// `S` is the block's only while it offers the version: with the update
@@ -1108,7 +1299,7 @@ fn a_work_list_that_empties_shows_ready_again() {
     harness.app.apply(Action::RestartToUpdate);
     assert!(harness.has("Restart now would interrupt:"));
     let work = harness.app.work_in_progress();
-    let (tab, id) = (work[0].tab, work[0].id);
+    let (tab, id) = (work[0].tab, work[0].tab_id().unwrap());
     harness.app.apply(Action::DiscardEdits { tab, id });
     harness.settle();
     assert!(!harness.has("Restart now would interrupt:"));
@@ -1167,7 +1358,7 @@ fn update_on_the_prompt_asks_before_installing() {
             _ => None,
         })
         .expect("a check");
-    let json = crate::update::check::tests::RELEASE.replace("v0.4.0", "v99.0.0");
+    let json = crate::fixtures::RELEASE.replace("v0.4.0", "v99.0.0");
     let mut latest: Latest = serde_json::from_str(&json).unwrap();
     // A build of this computer's, whatever it is.
     let name = release::asset_name("99.0.0", Os::current(), Some(Kind::Portable))

@@ -14,16 +14,16 @@ use egui::{
 use tabletist_db::ssh_config::Proxy;
 use tabletist_db::{Driver, TlsMode};
 
-use crate::app::App;
 use crate::connections::PasswordMode;
 use crate::env::{EnvColors, Environment, Platform, env_colors};
 use crate::i18n::{Locale, gettext};
-use crate::keymap::{Command, Scope};
-use crate::model::{Action, ConnectionForm, Dialog, SshAuthKind, SshHints, TestState};
-use crate::theme::{self, Icon, Look, Palette, Typeface};
+use crate::keymap::{Command, Keymap, Scope};
+use crate::model::{Action, ConnectionForm, LoadedTables, SshAuthKind, SshHints, TestState};
+use crate::style::Icon;
+use crate::theme::{self, Look, Palette};
 use crate::typography::{Text, TextRole};
-use crate::ui::menu;
 use crate::ui::widgets::{self, ButtonSpec};
+use crate::ui::{Paint, menu};
 
 use sheet::{body, footer, header};
 use terminal::{terminal_body, terminal_footer, terminal_header, terminal_row};
@@ -184,9 +184,10 @@ impl<'a> Skin<'a> {
         ink
     }
 
-    /// Where saved passwords go, as this platform calls it.
+    /// Where saved passwords go, as this platform calls it
+    /// ([`Look::keychain`]).
     fn keyring(&self) -> &'static str {
-        if self.look.faces.typeface == Typeface::Plex {
+        if self.look.keychain(crate::update::release::Os::current()) {
             "Keychain"
         } else {
             "Keyring"
@@ -196,7 +197,7 @@ impl<'a> Skin<'a> {
     /// The name of the box that keeps the SSH secret: the database
     /// password's has the same text beside it.
     fn ssh_keyring(&self) -> &'static str {
-        if self.look.faces.typeface == Typeface::Plex {
+        if self.look.keychain(crate::update::release::Os::current()) {
             "Keychain for the SSH secret"
         } else {
             "Keyring for the SSH secret"
@@ -204,7 +205,7 @@ impl<'a> Skin<'a> {
     }
 
     fn saved_hint(&self) -> &'static str {
-        if self.look.faces.typeface == Typeface::Plex {
+        if self.look.keychain(crate::update::release::Os::current()) {
             "Saved in the keychain"
         } else {
             "Saved in the keyring"
@@ -230,35 +231,42 @@ impl<'a> Skin<'a> {
     }
 }
 
-pub fn show(app: &mut App, ctx: &egui::Context) {
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
+/// Whether `form` lists names of its connection's tables, for its Tables
+/// and Masked columns controls: only then is what an open window of the
+/// connection has loaded asked for, as what it costs is spent on them.
+pub fn lists_names(form: &ConnectionForm) -> bool {
+    form.agents_tables.names().is_some()
+        || !form.agents_masked.is_empty()
+        || form.agents_column_typed.is_some()
+}
+
+/// Draws the dialog over the window, and returns what it asks for.
+/// `loaded` is what an open window of the connection the form edits has
+/// loaded, read again on each frame, as a sidebar loads: `None` where it
+/// lists no names ([`lists_names`]), is a new connection, or no window of
+/// it is open.
+pub fn show(
+    ctx: &egui::Context,
+    paint: Paint,
+    form: &mut ConnectionForm,
+    keymap: &Keymap,
+    loaded: Option<LoadedTables>,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     // The form's own keys, as the keymap has them for the look.
-    let (keymap, layout) = (app.keymap.clone(), app.layout());
+    let layout = paint.layout();
     let on = |input: &mut egui::InputState, command: Command| {
-        crate::ui::keys::asked(input, &keymap, layout, command, Scope::Prompt, true)
-    };
-    // What an open window of the connection has loaded, for the Tables
-    // and Masked columns controls: read again on each frame, as a sidebar
-    // loads. Only for a list of names: what it costs is spent on them.
-    let loaded = match &app.dialog {
-        Some(Dialog::Connection(form))
-            if form.agents_tables.names().is_some()
-                || !form.agents_masked.is_empty()
-                || form.agents_column_typed.is_some() =>
-        {
-            form.editing
-                .as_ref()
-                .and_then(|conn| app.loaded_tables(conn).map(|loaded| (conn.clone(), loaded)))
-        }
-        _ => None,
+        crate::ui::keys::asked(input, keymap, layout, command, Scope::Prompt, true)
     };
     // The columns of the tables the masked columns name, for their mark,
     // and of the one Add column…'s field names, for its list: asked for
     // once the frame is drawn.
-    let wanted = match (&app.dialog, &loaded) {
-        (Some(Dialog::Connection(form)), Some((conn, loaded))) => {
+    let wanted = match (&form.editing, &loaded) {
+        (Some(conn), Some(loaded)) => {
             let mut wanted: Vec<tabletist_db::ObjectRef> = form
                 .agents_masked
                 .iter()
@@ -280,11 +288,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         }
         _ => None,
     };
-    let Some(Dialog::Connection(form)) = &mut app.dialog else {
-        ctx.data_mut(|data| data.remove::<Placement>(placement_id()));
-        return;
-    };
-    form.agents_loaded = loaded.map(|(_, loaded)| loaded);
+    form.agents_loaded = loaded;
     let placement: Placement = ctx
         .data(|data| data.get_temp(placement_id()))
         .unwrap_or_default();
@@ -418,7 +422,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         .filter(|_| !(modifiers.command || modifiers.ctrl || modifiers.alt));
                     let command = letter.and_then(|letter| {
                         let typed = letter.to_string();
-                        crate::ui::keys::prompt_letter(&keymap, layout, form, &typed)
+                        crate::ui::keys::prompt_letter(keymap, layout, form, &typed)
                     });
                     let pastes = command == Some(Command::FormPasteUrl);
                     toggled |= pastes;
@@ -433,7 +437,13 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             show_url(ctx, form, !form.url_mode);
         }
     }
-    app.actions.extend(actions);
+    actions
+}
+
+/// What the dialog does on a frame it is not open: the next one opened
+/// settles its own top edge.
+pub fn fold(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.remove::<Placement>(placement_id()));
 }
 
 /// Shows or hides the URL field; shown, it takes the keyboard.
@@ -926,20 +936,32 @@ fn ssh_key_hint(hints: &SshHints, skin: &Skin) -> Option<String> {
 }
 
 /// What goes under the SSH host, and its colour: the host name
-/// ~/.ssh/config resolves the typed host to, or why the tunnel cannot
-/// follow the config there. `None` when there is nothing to say.
+/// ~/.ssh/config resolves the typed host to, and the ProxyJump or
+/// ProxyCommand the tunnel goes through. `None` when there is nothing to
+/// say.
 fn ssh_host_note(hints: &SshHints, skin: &Skin) -> Option<(String, Color32)> {
-    let warning = match &hints.proxy {
-        Some(Proxy::Jump(_)) => Some("Uses ProxyJump, which Tabletist does not support yet."),
-        Some(Proxy::Command(_)) => Some("Uses ProxyCommand, which Tabletist does not support yet."),
-        Some(Proxy::Off) | None => None,
+    let locale = skin.locale;
+    // Whole sentences, so a translation can put the host and the hops where
+    // its language wants them.
+    let sentence = match (&hints.host_name, &hints.proxy) {
+        (Some(_), Some(Proxy::Jump(_))) => "{name} through ProxyJump {hops} from ~/.ssh/config",
+        (Some(_), Some(Proxy::Command(_))) => "{name} through a ProxyCommand from ~/.ssh/config",
+        (None, Some(Proxy::Jump(_))) => "Through ProxyJump {hops} from ~/.ssh/config",
+        (None, Some(Proxy::Command(_))) => "Through a ProxyCommand from ~/.ssh/config",
+        (Some(name), Some(Proxy::Off) | None) => {
+            let text = format!("{name} {}", gettext(locale, "from ~/.ssh/config"));
+            return Some((text, skin.palette.dim));
+        }
+        (None, Some(Proxy::Off) | None) => return None,
     };
-    if let Some(warning) = warning {
-        let text = gettext(skin.locale, warning).to_string();
-        return Some((text, skin.palette.warning));
-    }
-    let name = hints.host_name.as_ref()?;
-    let text = format!("{name} {}", gettext(skin.locale, "from ~/.ssh/config"));
+    let hops = match &hints.proxy {
+        Some(Proxy::Jump(hops)) => hops.as_str(),
+        _ => "",
+    };
+    let name = hints.host_name.as_deref().unwrap_or("");
+    let text = gettext(locale, sentence)
+        .replace("{hops}", hops)
+        .replace("{name}", name);
     Some((text, skin.palette.dim))
 }
 
@@ -959,6 +981,7 @@ fn url_field(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) -> Response {
         Driver::Sqlite => "sqlite:///path/to/file.db",
         Driver::MySql => "mysql://user@host/db",
         Driver::Postgres => "postgres://user@host/db",
+        Driver::BigQuery => "bigquery:project-id?credentials=/path/key.json",
     };
     let hint = hint(ui, example, role, skin);
     let field = ui.add(input(ui, &mut form.url, role, skin.field_height(), skin).hint_text(hint));
@@ -1162,7 +1185,7 @@ fn status(form: &ConnectionForm, skin: &Skin) -> Option<Status> {
                 .map_or(form.driver, |spec| spec.driver);
             let mut text = format!("{} · {}", gettext(skin.locale, "Connected"), driver.label());
             if let Some(took) = form.test_took {
-                text = format!("{text} · {}", crate::ui::format::elapsed(took));
+                text = format!("{text} · {}", crate::format::elapsed(took));
             }
             Some(Status::Passed(skin.look.label(&text)))
         }

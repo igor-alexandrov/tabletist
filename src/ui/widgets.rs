@@ -6,7 +6,8 @@ use egui::{
 };
 
 use crate::keymap::Written;
-use crate::theme::{DialogStyle, Icon, Look, Palette, Selection, TabStyle};
+use crate::style::Icon;
+use crate::theme::{DialogStyle, Look, Palette, Selection, TabStyle};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Ring};
 
@@ -34,6 +35,20 @@ pub fn single_in<'a>(
     role: TextRole,
 ) -> egui::TextEdit<'a> {
     field(ui, text, look, role, look.control_height, 8)
+}
+
+/// [`single_in`] whose text stops `right` points short of its right end,
+/// for a hint painted there.
+pub fn single_in_short<'a>(
+    ui: &Ui,
+    text: &'a mut String,
+    look: &Look,
+    role: TextRole,
+    right: f32,
+) -> egui::TextEdit<'a> {
+    let right = right.clamp(8.0, f32::from(i8::MAX)) as i8;
+    let height = look.control_height;
+    padded(ui, text, height, role.font_id(look.faces), [8, right])
 }
 
 /// A single-line field `height` tall in `role`, with `pad` points at each

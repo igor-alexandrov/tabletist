@@ -6,7 +6,6 @@
 
 use egui::{Sense, WidgetInfo, WidgetType, vec2};
 
-use crate::app::App;
 use crate::edit::{Editor, EditorPlace, Lock, Table};
 use crate::i18n::{Locale, gettext};
 use crate::model::{Action, CellPos, ConnTabId, ObjectTab, TabId, Workspace};
@@ -62,8 +61,7 @@ pub struct Form<'a> {
 /// Takes the tab's editor out of the tab for the frame, where the panel
 /// draws it: its field edits the text while the panel reads the rest of
 /// the workspace. [`put_editor`] gives it back when the panel is drawn.
-pub fn take_editor(app: &mut App, tab: ConnTabId, id: TabId) -> Option<Editor> {
-    let object = app.workspace_mut(tab)?.object_tab_mut(id)?;
+pub fn take_editor(object: &mut ObjectTab) -> Option<Editor> {
     object
         .edits
         .editor
@@ -71,11 +69,8 @@ pub fn take_editor(app: &mut App, tab: ConnTabId, id: TabId) -> Option<Editor> {
 }
 
 /// Gives back what [`take_editor`] took.
-pub fn put_editor(app: &mut App, tab: ConnTabId, id: TabId, editor: Option<Editor>) {
-    let object = app
-        .workspace_mut(tab)
-        .and_then(|workspace| workspace.object_tab_mut(id));
-    if let (Some(editor), Some(object)) = (editor, object) {
+pub fn put_editor(object: &mut ObjectTab, editor: Option<Editor>) {
+    if let Some(editor) = editor {
         object.edits.editor = Some(editor);
     }
 }

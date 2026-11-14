@@ -1,5 +1,6 @@
 # Databases for integration tests:
 #   docker compose up -d --build --wait postgres mysql ssh
+#   (and `mariadb`, to run the MySQL tests against it on port 53307)
 #   TABLETIST_TEST_PG_URL=postgres://tabletist:tabletist@localhost:55432/tabletist \
 #   TABLETIST_TEST_MYSQL_URL=mysql://tabletist:tabletist@localhost:53306/tabletist \
 #   TABLETIST_TEST_SSH_URL=ssh://tabletist:tabletist@localhost:52222 \
@@ -53,6 +54,26 @@ services:
     # does not), so `docker compose up --wait` returns when tests can run.
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "tabletist", "-ptabletist", "--silent"]
+      interval: 2s
+      timeout: 5s
+      retries: 90
+  # MariaDB, which the MySQL tests also run against, with its URL in
+  # TABLETIST_TEST_MYSQL_URL (port 53307). 11.4 by default; MARIADB_VERSION
+  # picks another, such as 10.11, which still names some settings the old way.
+  mariadb:
+    image: mariadb:${MARIADB_VERSION:-11.4}
+    environment:
+      MARIADB_ROOT_PASSWORD: tabletist-root
+      MARIADB_DATABASE: tabletist
+      MARIADB_USER: tabletist
+      MARIADB_PASSWORD: tabletist
+    ports:
+      - "127.0.0.1:53307:3306"
+    volumes:
+      - ./compose/mysql-init.sql:/docker-entrypoint-initdb.d/billing.sql:ro
+    # `--connect` goes over TCP, which the init server does not listen on.
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 2s
       timeout: 5s
       retries: 90

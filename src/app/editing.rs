@@ -68,6 +68,9 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
             | Action::ExtendTo { .. }
             | Action::ExtendBy { .. }
             | Action::SelectRows { .. }
+            | Action::SelectRowsOfCursor { .. }
+            | Action::SelectAllRows { .. }
+            | Action::RowNumberClicked { .. }
             | Action::MoveSelection { .. }
             // Closing the row panel closes the editor it draws, and the
             // text of that editor joins the set.
@@ -111,14 +114,11 @@ fn drop_named(object: &mut ObjectTab, named: &[usize], new: &[usize]) -> usize {
         let near = left.iter().min_by_key(|(place, _)| place.abs_diff(at));
         near.map(|(_, row)| *row)
     };
-    if let Some(anchor) = object.range.map(|range| range.anchor)
-        && new.contains(&anchor)
-    {
-        match (nearest(anchor), object.range.as_mut()) {
-            (Some(row), Some(range)) => range.anchor = row,
-            _ => object.range = None,
-        }
-    }
+    let gone = |row: usize| new.contains(&row) && new_id(row).is_some();
+    object.range = object
+        .range
+        .take()
+        .and_then(|range| range.without(gone, nearest));
     if let Some(cell) = object.selection.filter(|cell| new.contains(&cell.row)) {
         let row = nearest(cell.row).or_else(|| {
             let order = Order::of(&object.edits.added, height);
@@ -235,7 +235,7 @@ fn opened_text(table: &Table<'_>, cell: CellPos, class: ColumnClass) -> Option<S
         temporal
             .then_some(table.zone)
             .flatten()
-            .and_then(|zone| crate::ui::format::in_zone(&start, zone))
+            .and_then(|zone| crate::format::in_zone(&start, zone))
             .unwrap_or(start),
     )
 }
@@ -541,7 +541,7 @@ impl App {
             cols.dedup();
             cols.into_iter()
                 .filter_map(|col| table.page.columns.get(col))
-                .map(|column| crate::ui::format::display_safe(&column.name).into_owned())
+                .map(|column| crate::format::display_safe(&column.name).into_owned())
                 .collect()
         })
         .unwrap_or_default()
@@ -1122,17 +1122,27 @@ impl App {
         self.settle_new_row(tab, id, cell, required.is_some());
     }
 
-    /// Adds a copy of the selected row as a new row at the top.
+    /// Adds a copy of each selected row as a new row at the top.
     pub(super) fn duplicate_row(&mut self, tab: ConnTabId, id: TabId) {
         // Before the row is read: an open editor's text is part of what
         // the row shows, and closed it is pending.
         self.close_editor(tab, id, true);
-        let copy = self.table(tab, id, |table, object| {
-            let yank = table.yank(object.selection?.row, &object.edits.cells)?;
-            Some(table.duplicate(&yank))
+        // Each selected row, in the grid's order: the copies stand at the
+        // top in that order, and the first is settled as one copy is.
+        let copies = self.table(tab, id, |table, object| {
+            let rows = object.selected_rows();
+            let yanks = rows
+                .iter()
+                .filter_map(|row| table.yank(*row, &object.edits.cells));
+            yanks.map(|yank| table.duplicate(&yank)).collect::<Vec<_>>()
         });
-        if let Some(Some(copy)) = copy {
-            self.put_copy(tab, id, copy, Place::Top);
+        let mut first = None;
+        for copy in copies.unwrap_or_default() {
+            let added = self.add_copy(tab, id, copy, Place::Top);
+            first = first.or(added);
+        }
+        if let Some((cell, open)) = first {
+            self.settle_new_row(tab, id, cell, open);
         }
     }
 
@@ -1172,22 +1182,28 @@ impl App {
             (Some(cell), true) => Place::Above(cell.row),
             (None, _) => Place::Top,
         };
-        self.put_copy(tab, id, copy, place);
+        if let Some((cell, open)) = self.add_copy(tab, id, copy, place) {
+            self.settle_new_row(tab, id, cell, open);
+        }
     }
 
     /// Adds `copy` as a new row at `place`, where the table takes one, and
-    /// settles it. The editor opens on the first cell a save needs a value
-    /// in and that takes one. With none the selection goes to the copy, in
-    /// the column the cursor was in. Both are the copy's own rules: an
-    /// added row opens on its first required cell whatever it is, and
+    /// says where to settle it: the cell the editor opens on, the first a
+    /// save needs a value in and that takes one, or with none the copy's
+    /// cell in the column the cursor was in. Both are the copy's own rules:
+    /// an added row opens on its first required cell whatever it is, and
     /// otherwise selects the first cell that takes a value.
-    fn put_copy(&mut self, tab: ConnTabId, id: TabId, copy: Duplicate, place: Place) {
+    fn add_copy(
+        &mut self,
+        tab: ConnTabId,
+        id: TabId,
+        copy: Duplicate,
+        place: Place,
+    ) -> Option<(CellPos, bool)> {
         if !self.takes_rows(tab, id) {
-            return;
+            return None;
         }
-        let Some(object) = self.object_tab_mut(tab, id) else {
-            return;
-        };
+        let object = self.object_tab_mut(tab, id)?;
         let stood = object.selection.map_or(0, |cell| cell.col);
         let height = object.page().map_or(0, |page| page.rows.len());
         let new = object.edits.add_copy(place, height, copy);
@@ -1200,7 +1216,7 @@ impl App {
             row,
             col: open.unwrap_or(stood),
         };
-        self.settle_new_row(tab, id, cell, open.is_some());
+        Some((cell, open.is_some()))
     }
 
     /// Drops the selected row where it is a new one. The selection stays
@@ -1232,9 +1248,11 @@ impl App {
             .map(|row| CellPos { row, col: cell.col });
         // The rows selected with it stay selected, unless they began on
         // the row that went.
-        if object.range.is_some_and(|range| range.anchor == cell.row) {
-            object.range = None;
-        }
+        let gone = |row: usize| row == cell.row;
+        object.range = object
+            .range
+            .take()
+            .and_then(|range| range.without(gone, |_| None));
         object.set_cursor(stays, Reach::Keep);
     }
 
@@ -1642,7 +1660,7 @@ impl App {
     /// Lays the document in the tab's large editor out a member to a line,
     /// where the editor is on a JSON column and its text is a document: a
     /// text its column does not take stays as it was typed. Only the white
-    /// space between its pieces changes (`ui::json_text::pretty`).
+    /// space between its pieces changes (`json::pretty`).
     pub(super) fn format_editor(&mut self, tab: ConnTabId, id: TabId) {
         let laid = self.table(tab, id, |table, object| {
             let editor = object.edits.editor.as_ref().filter(|editor| editor.large)?;
@@ -1910,6 +1928,12 @@ impl App {
             .active_object_tab()
             .map(|object| (object.id, object.edits.pending()));
         let sql_tab = workspace.active_sql_tab().map(|sql| sql.id);
+        // A SQL editor whose shown statement returned rows: its result
+        // exports as a table does (spec 4).
+        let rows_here = table.is_some()
+            || workspace
+                .active_sql_tab()
+                .is_some_and(crate::model::SqlTab::exports);
         let scope = match table {
             Some(_) => Scope::Grid,
             None if workspace.agents_in_front() => Scope::Agents,
@@ -1967,6 +1991,53 @@ impl App {
                 }
             }
             (Typed::Command(Command::SaveChanges), Some((id, _))) => Action::WriteEdits { tab, id },
+            // Export: the float, in a format, or at once to a path. Bare
+            // `:w` is the line above, and never reaches these.
+            (Typed::Command(Command::Export), _) if rows_here => {
+                // After a failure, the same export again: the one whose
+                // line shows (spec 4, S14).
+                if self.shown_export().is_some_and(|exporting| {
+                    matches!(
+                        exporting.status,
+                        crate::export_sheet::ExportStatus::Failed { .. }
+                    )
+                }) {
+                    return self.export_failure_action(None);
+                }
+                Action::OpenExport { tab, format: None }
+            }
+            (Typed::Command(Command::ExportAs), _) if rows_here => {
+                let named =
+                    self.keymap
+                        .ex_argument(Layout::Omarchy, Command::ExportAs, scope, line);
+                let format = named.and_then(|named| {
+                    crate::export::Format::of_extension(named).or_else(|| {
+                        crate::export::Format::ALL
+                            .into_iter()
+                            .find(|format| format.name().eq_ignore_ascii_case(named))
+                    })
+                });
+                let Some(format) = format else {
+                    return refused(self);
+                };
+                Action::OpenExport {
+                    tab,
+                    format: Some(format),
+                }
+            }
+            (Typed::Command(command @ (Command::ExportTo | Command::ExportOver)), _)
+                if rows_here =>
+            {
+                let named = self
+                    .keymap
+                    .ex_argument(Layout::Omarchy, command, scope, line);
+                let Some(path) = named.map(str::to_owned) else {
+                    return refused(self);
+                };
+                let replace = command == Command::ExportOver;
+                Action::ExportTo { tab, path, replace }
+            }
+            (Typed::Command(Command::CancelExport), _) => Action::CancelExport(None),
             (Typed::Command(Command::DiscardChanges), Some((id, _))) => {
                 Action::DiscardEdits { tab, id }
             }

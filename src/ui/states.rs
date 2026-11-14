@@ -9,7 +9,8 @@ use egui::{Align, Color32, CornerRadius, Frame, Margin, Rect, Sense, Stroke, Str
 use egui::{pos2, vec2};
 
 use crate::env::{Platform, failure_tint, success_tint, warning_tint};
-use crate::theme::{Icon, Look, Palette};
+use crate::style::Icon;
+use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::widgets::{self, ButtonSpec};
 

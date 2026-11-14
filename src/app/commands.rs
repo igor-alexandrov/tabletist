@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use tabletist_db::Dialect;
 
 use crate::keymap::Command;
-use crate::model::{Action, ConnTabId, RunMode, Tab};
+use crate::model::{About, Action, ConnTabId, RunMode, Runnable, Tab, TabName};
 
 use super::App;
 
@@ -79,7 +79,7 @@ impl Scripts {
 /// review, which the key shows and hides by turns; and its Agents shows
 /// the Agents tab, which the key does but where History has an agent's
 /// statement picked (there it shows that call).
-pub const RUNNABLE: [Command; 30] = [
+pub const RUNNABLE: [Command; 32] = [
     Command::NewSqlTab,
     Command::SwitchDatabase,
     Command::ShowAgents,
@@ -110,53 +110,9 @@ pub const RUNNABLE: [Command; 30] = [
     Command::Format,
     Command::ToggleSqlMode,
     Command::CancelQuery,
+    Command::Export,
+    Command::ExportTable,
 ];
-
-/// What a command's row says after its name: where it acts.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum About {
-    Nothing,
-    /// New SQL query on production, where a new editor opens read-only.
-    OpensReadOnly,
-    /// The window's connection (`Bookshop · dev`).
-    Connection,
-    /// The window's connection, and who is connected to its Agents tab.
-    Agents,
-    /// The tab in front.
-    Tab(TabName),
-}
-
-/// A tab as a command's row names it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TabName {
-    /// A table or view, by its name.
-    Object(String),
-    /// A SQL editor, by its number (`Query 2`).
-    Query(u32),
-    Agents,
-    History,
-}
-
-impl TabName {
-    fn of(tab: &Tab) -> Self {
-        match tab {
-            Tab::Object(object) => Self::Object(object.object.name.clone()),
-            Tab::Sql(sql) => Self::Query(sql.number),
-            Tab::Agents(_) => Self::Agents,
-            Tab::History(_) => Self::History,
-        }
-    }
-}
-
-/// A command quick open offers: the keymap's command, the name it is
-/// listed by (English: the caller translates it), and what its row says
-/// after the name.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Runnable {
-    pub command: Command,
-    pub name: &'static str,
-    pub about: About,
-}
 
 impl App {
     /// The commands quick open offers in `tab`'s window, in the order of
@@ -265,6 +221,31 @@ impl App {
                     "Hide sidebar"
                 };
                 (name, About::Nothing, vec![Action::ToggleSidebar(tab)])
+            }
+            // The table in front's, or the SQL result's: another export
+            // starts beside any running (spec 4, F7).
+            Command::Export => {
+                let open = Action::OpenExport { tab, format: None };
+                // A SQL editor whose shown statement returned rows: its
+                // result's (spec 4, S11).
+                if let Some(sql) = sql.filter(|sql| sql.exports()) {
+                    let about = About::CurrentResult(sql.number);
+                    return Some((
+                        Runnable {
+                            command,
+                            name: "Export result of Query {n}…",
+                            about,
+                        },
+                        vec![open],
+                    ));
+                }
+                let table = object?.object.name.clone();
+                ("Export {table}…", About::CurrentTable(table), vec![open])
+            }
+            // A table of the connection, picked next.
+            Command::ExportTable => {
+                let pick = Action::PickTableToExport(tab);
+                ("Export a table…", About::PickNext, vec![pick])
             }
             // The tab in front's.
             Command::CloseTab => {
@@ -397,10 +378,11 @@ impl App {
     /// connection picker too, which has no workspace. They have no arm in
     /// `run_of`'s match, which asks here first: None here is None there.
     fn window_run(&self, command: Command) -> Option<(&'static str, About, Vec<Action>)> {
-        let stepped = |larger| {
-            let terminal = self.look.terminal;
-            let settings = &self.settings;
-            settings.stepped_font_size(terminal, larger) != settings.font_size_in(terminal)
+        // The terminal look's font size, the others' interface scale.
+        let settings = &self.settings;
+        let stepped = |larger| match self.look.terminal {
+            true => settings.stepped_font_size(true, larger) != settings.font_size_in(true),
+            false => settings.ui_scale.stepped(larger) != settings.ui_scale,
         };
         let run = match command {
             Command::Connections => ("Connections", About::Nothing, vec![Action::ShowConnections]),
@@ -420,31 +402,27 @@ impl App {
             // nor back to the look's own where it is that already.
             Command::LargerText => {
                 stepped(true).then_some(())?;
-                (
-                    "Larger text",
-                    About::Nothing,
-                    vec![Action::TextSize(Some(true))],
-                )
+                ("Larger", About::Nothing, vec![Action::TextSize(Some(true))])
             }
             Command::SmallerText => {
                 stepped(false).then_some(())?;
                 (
-                    "Smaller text",
+                    "Smaller",
                     About::Nothing,
                     vec![Action::TextSize(Some(false))],
                 )
             }
             Command::DefaultTextSize => {
-                let terminal = self.look.terminal;
-                let default = crate::settings::FontSizes::of(terminal).default;
-                if self.settings.font_size_in(terminal) == default {
+                let actual = match self.look.terminal {
+                    true => {
+                        settings.font_size_in(true) == crate::settings::FontSizes::of(true).default
+                    }
+                    false => settings.ui_scale == crate::settings::UiScale::DEFAULT,
+                };
+                if actual {
                     return None;
                 }
-                (
-                    "Default text size",
-                    About::Nothing,
-                    vec![Action::TextSize(None)],
-                )
+                ("Actual size", About::Nothing, vec![Action::TextSize(None)])
             }
             _ => return None,
         };
@@ -476,5 +454,34 @@ mod tests {
         assert_eq!(tokenized(), start + 3);
         assert!(!scripts.runs(Dialect::Postgres, "-- only a comment"));
         assert_eq!(tokenized(), start + 4);
+    }
+
+    #[test]
+    fn a_menu_key_holds_cmd_or_ctrl_and_is_one_press() {
+        use crate::keymap::{Keymap, Kind, Layout, Spelled, Stroke, spell};
+        let keymap = Keymap::default();
+        for layout in [Layout::Mac, Layout::Windows] {
+            for command in RUNNABLE {
+                if let Some(key) = keymap.menu_key(command, layout) {
+                    assert!(key.mods.cmd || key.mods.ctrl, "{command:?}: {key:?}");
+                    // It is one of the command's own chords, spelled as one
+                    // press.
+                    let own = keymap
+                        .of(command)
+                        .flat_map(|binding| binding.bound(layout).chords.iter())
+                        .filter(|chord| chord.kind == Kind::Own)
+                        .any(|chord| {
+                            spell(chord.keys).is_ok_and(|spelled| {
+                                spelled
+                                    == Spelled::Strokes(vec![Stroke::Key {
+                                        mods: key.mods,
+                                        key: key.key,
+                                    }])
+                            })
+                        });
+                    assert!(own, "{command:?}");
+                }
+            }
+        }
     }
 }

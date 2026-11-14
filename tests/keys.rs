@@ -1,8 +1,9 @@
 //! No key is spelled outside the keymap. What names a key gets its text
-//! from `src/keymap.rs`, by the key's command, so a key that is rebound, or
-//! a decision that moves one, shows everywhere at once. The painters of a
-//! key take only what the keymap wrote; this finds the rest: a key written
-//! by hand into a sentence, a tooltip or a comparison.
+//! from `crates/tabletist-core/src/keymap.rs`, by the key's command, so a
+//! key that is rebound, or a decision that moves one, shows everywhere at
+//! once. The painters of a key take only what the keymap wrote; this finds
+//! the rest: a key written by hand into a sentence, a tooltip or a
+//! comparison.
 
 use std::path::{Path, PathBuf};
 
@@ -17,14 +18,14 @@ const SPELLED: [&str; 18] = [
 /// spelled (the person's keys laid over it too), and the fonts, whose
 /// notes name the glyphs the faces hold.
 const MAY: [&str; 3] = [
-    "src/keymap.rs",
-    "src/keymap/overrides.rs",
+    "crates/tabletist-core/src/keymap.rs",
+    "crates/tabletist-core/src/keymap/overrides.rs",
     "src/typography/fonts.rs",
 ];
 
 /// The files that are tests and nothing else, or scenes for screenshots: a
 /// test says what the user presses and sees, in its own words.
-const TESTS: [&str; 13] = [
+const TESTS: [&str; 17] = [
     "src/app/keyboard_tests.rs",
     "src/testing.rs",
     "src/shots.rs",
@@ -33,15 +34,19 @@ const TESTS: [&str; 13] = [
     "src/ui/delete_tests.rs",
     "src/ui/duplicate_tests.rs",
     "src/ui/env_tests.rs",
+    "src/ui/export_tests.rs",
+    "src/ui/export_ways_tests.rs",
+    "src/ui/help_tests.rs",
     "src/ui/insert_audit_tests.rs",
     "src/ui/key_picker_tests.rs",
     "src/ui/keyboard_tests.rs",
     "src/ui/label_tests.rs",
+    "src/ui/pane_hints_tests.rs",
     "src/ui/start_tests.rs",
 ];
 
-/// Every Rust file of the app, by its path from the repository root, with
-/// its text.
+/// Every Rust file of the app, its interface's and its core's, by its path
+/// from the repository root, with its text.
 fn sources() -> Vec<(String, String)> {
     fn walk(dir: &Path, into: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).expect("read a source directory") {
@@ -55,8 +60,11 @@ fn sources() -> Vec<(String, String)> {
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut paths = Vec::new();
-    walk(&root.join("src"), &mut paths);
-    assert!(!paths.is_empty(), "no sources under src");
+    for dir in ["src", "crates/tabletist-core/src"] {
+        let before = paths.len();
+        walk(&root.join(dir), &mut paths);
+        assert!(paths.len() > before, "no sources under {dir}");
+    }
     paths.sort();
     paths
         .into_iter()

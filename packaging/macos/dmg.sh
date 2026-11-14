@@ -17,7 +17,13 @@ stage="$(mktemp -d)"
 cp -R "$app" "$stage/"
 ln -s /Applications "$stage/Applications"
 rm -f "$dmg"
-hdiutil create -volname Tabletist -srcfolder "$stage" -ov -format UDZO "$dmg"
+# hdiutil's own guess at the volume's size from -srcfolder can come out short
+# for a large binary, and the copy into it then fails with "No space left on
+# device". Size it from the stage instead, a quarter and 50 MB over: the
+# compressed DMG holds only what was copied, so the room costs nothing.
+stage_kb="$(du -sk "$stage" | cut -f1)"
+hdiutil create -volname Tabletist -srcfolder "$stage" \
+    -size "$((stage_kb * 5 / 4 + 51200))k" -ov -format UDZO "$dmg"
 
 if [ -n "${CODESIGN_IDENTITY:-}" ]; then
     codesign --force --timestamp --sign "$CODESIGN_IDENTITY" "$dmg"

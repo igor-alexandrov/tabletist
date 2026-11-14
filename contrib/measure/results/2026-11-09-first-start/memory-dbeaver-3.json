@@ -1,0 +1,30 @@
+{
+  "what": "memory",
+  "command": [
+    "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/dbeaver/dbeaver/dbeaver"
+  ],
+  "path": "/home/igor/Work/tabletist/.claude/worktrees/vigilant-sinoussi-ca4ee1/target/competitors/dbeaver/dbeaver/dbeaver",
+  "sha256": "f35258b2bef8c4c0c141721bb77a265fb173e922bac77ea711ef63d53c02ca16",
+  "fresh_profile": true,
+  "seed": null,
+  "env": [
+    "DISPLAY=:0"
+  ],
+  "steps": [
+    {
+      "step": "idle after the start",
+      "pid": 3381937,
+      "rss": 368902144,
+      "pss": 339829760,
+      "private": 331505664,
+      "gpu": {},
+      "tree": {
+        "processes": 8,
+        "rss": 431714304,
+        "pss": 362391552,
+        "private": 350773248,
+        "gpu": {}
+      }
+    }
+  ]
+}

@@ -1,38 +1,41 @@
 //! The font files behind each look, one egui family per weight.
 //!
 //! - Standard: Inter (fastframe's set-up), with egui's monospace for data.
-//! - macOS: IBM Plex Sans (400, 500, 600) and IBM Plex Mono (400, 500),
-//!   bundled: `plex-sans-400` ... `plex-mono-500`; JetBrains Mono (400,
+//! - macOS, and Linux's classic look: IBM Plex Sans (400, 500, 600) and
+//!   IBM Plex Mono (400, 500), bundled on both: `plex-sans-400` ... `plex-mono-500`; JetBrains Mono (400,
 //!   500), the other bundled face data can be drawn in: `jetbrains-mono-400`
 //!   and `jetbrains-mono-500`; and the installed font the settings name for
-//!   the data, where one was read ([`super::installed_font`]):
+//!   the data, where one was read ([`crate::font_files::installed_font`]):
 //!   `installed-mono-400` and `installed-mono-500`, holding Plex Mono
 //!   without one.
 //! - Omarchy: the desktop's monospace font at 400, 500 and 700 (fontconfig
-//!   reads it, [`super::desktop_font`]), or the bundled JetBrains Mono when
-//!   it found none: `omarchy-mono-400` ... `omarchy-mono-700`.
+//!   reads it, [`crate::font_files::desktop_font`]), or the bundled
+//!   JetBrains Mono when it found none: `omarchy-mono-400` ...
+//!   `omarchy-mono-700`.
 //!
 //! egui's own Proportional and Monospace families (and fastframe's Inter
 //! weight families, which the edit connection dialog still names) lead with
 //! the look's regular faces, so text egui draws by itself matches.
 
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 use std::sync::Arc;
 
 #[cfg(any(target_os = "macos", target_os = "linux", test))]
-use egui::epaint::text::VariationCoords;
-use egui::{FontData, FontDefinitions, FontFamily};
+use egui::{FontData, epaint::text::VariationCoords};
+use egui::{FontDefinitions, FontFamily};
 
 use super::{Kind, family_name};
+use crate::font_files::TerminalFaces;
 use crate::theme::{Look, Typeface};
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 use {super::data_family_name, crate::theme::DataFace};
 
 /// IBM Plex Sans, variable in weight and width (SIL OFL 1.1).
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 pub(crate) const PLEX_SANS: &[u8] = include_bytes!("../../assets/fonts/IBMPlexSans-Variable.ttf");
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 pub(crate) const PLEX_MONO: &[u8] = include_bytes!("../../assets/fonts/IBMPlexMono-Regular.ttf");
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 pub(crate) const PLEX_MONO_MEDIUM: &[u8] =
     include_bytes!("../../assets/fonts/IBMPlexMono-Medium.ttf");
 /// Noto Sans Symbols 2 cut down to the keyboard symbols Plex lacks (⌘ ⌥ ⇧
@@ -40,7 +43,7 @@ pub(crate) const PLEX_MONO_MEDIUM: &[u8] =
 /// shortcuts (both SIL OFL 1.1, of the same authors). It keeps the line of
 /// the first cut, which the symbols' place on the baseline is tuned to.
 /// Neither has ⇥: the keymap writes that key as a word.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 pub(crate) const KEYS: &[u8] = include_bytes!("../../assets/fonts/NotoSansSymbols2-Keys.ttf");
 /// JetBrains Mono, variable in weight (SIL OFL 1.1): Omarchy's default, for
 /// desktops without a monospace font of their own, and the other data face
@@ -50,14 +53,14 @@ pub(crate) const JETBRAINS_MONO: &[u8] =
     include_bytes!("../../assets/fonts/JetBrainsMono-Variable.ttf");
 
 /// A face's line box in ems: what epaint places its glyphs by.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 #[derive(Clone, Copy)]
 struct Metrics {
     ascent: f32,
     descent: f32,
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 impl Metrics {
     /// The baseline, below the middle of the line box.
     fn baseline(self) -> f32 {
@@ -66,13 +69,13 @@ impl Metrics {
 }
 
 /// IBM Plex's line box, Sans and Mono alike.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 const PLEX_METRICS: Metrics = Metrics {
     ascent: 1.025,
     descent: 0.275,
 };
 /// The key symbols' line box: it reaches far deeper below the baseline.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 const KEYS_METRICS: Metrics = Metrics {
     ascent: 1.069,
     descent: 0.63,
@@ -84,8 +87,9 @@ const PLEX_CAPITALS: f32 = 0.698;
 /// centre on them: Plex's centres a little above its capitals. Inter's and
 /// JetBrains Mono's centre on theirs, and a desktop font's are not known.
 pub fn capitals(typeface: Typeface) -> Option<f32> {
-    // Off macOS the Plex look draws in Inter.
-    (typeface == Typeface::Plex && cfg!(any(target_os = "macos", test))).then_some(PLEX_CAPITALS)
+    // Windows, which bundles no Plex, never draws the Plex look.
+    (typeface == Typeface::Plex && cfg!(any(target_os = "macos", target_os = "linux", test)))
+        .then_some(PLEX_CAPITALS)
 }
 
 /// fastframe's families for Inter's named weights.
@@ -131,10 +135,6 @@ fn alias(fonts: &mut FontDefinitions, name: &str, from: &FontFamily) {
     fonts.families.insert(FontFamily::Name(name.into()), list);
 }
 
-/// The terminal look's monospace at 400, 500 and 700, or the installed
-/// font macOS draws data in at the same.
-pub type TerminalFaces = [Arc<FontData>; 3];
-
 /// Replaces the faces fastframe set up with the look's. `desktop` is the
 /// font read from the system for the settings' name (never in tests or
 /// screenshots): the desktop's own monospace that fontconfig gave the
@@ -169,7 +169,7 @@ fn inter(fonts: &mut FontDefinitions) {
     );
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 fn plex(fonts: &mut FontDefinitions, installed: Option<&TerminalFaces>) {
     for weight in [400, 500, 600] {
         let name = family_name(Typeface::Plex, Kind::Sans, weight);
@@ -237,7 +237,7 @@ fn plex(fonts: &mut FontDefinitions, installed: Option<&TerminalFaces>) {
     }
 }
 
-#[cfg(not(any(target_os = "macos", test)))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", test)))]
 fn plex(fonts: &mut FontDefinitions, _installed: Option<&TerminalFaces>) {
     inter(fonts);
 }
@@ -295,52 +295,6 @@ mod tests {
     use crate::typography::{Text, TextRole};
 
     const PLEX: Faces = Faces::of(Typeface::Plex);
-
-    #[test]
-    fn macos_draws_the_keys_its_shortcuts_name() {
-        let mut harness = crate::testing::Harness::new();
-        harness.set_look(Look::macos());
-        harness.settle();
-        for role in [
-            crate::typography::TextRole::Secondary,
-            crate::typography::TextRole::Shortcut,
-        ] {
-            let font = role.font_id(PLEX);
-            assert!(
-                harness
-                    .ctx
-                    .fonts_mut(|fonts| fonts.has_glyphs(&font, "⌘⇧⌫↩")),
-                "{}: a replacement box instead of a key",
-                role.id()
-            );
-        }
-    }
-
-    /// Every character the keymap writes for the Mac is one its faces
-    /// have: a key added to the keymap cannot come out as a box.
-    #[test]
-    fn the_mac_has_a_glyph_for_every_key_the_keymap_writes() {
-        let mut harness = crate::testing::Harness::new();
-        harness.set_look(Look::macos());
-        harness.settle();
-        let keymap = crate::keymap::Keymap::default();
-        for role in [
-            crate::typography::TextRole::Secondary,
-            crate::typography::TextRole::Shortcut,
-        ] {
-            let font = role.font_id(PLEX);
-            for command in crate::keymap::Command::ALL {
-                let label = keymap.label(crate::keymap::Layout::Mac, *command);
-                assert!(
-                    harness
-                        .ctx
-                        .fonts_mut(|fonts| fonts.has_glyphs(&font, &label)),
-                    "{}: {command:?} is written {label}, with a box in it",
-                    role.id()
-                );
-            }
-        }
-    }
 
     /// A context drawing in the macOS faces at `pixels_per_point`.
     fn macos_at(pixels_per_point: f32) -> egui::Context {

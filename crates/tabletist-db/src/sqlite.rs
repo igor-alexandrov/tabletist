@@ -163,7 +163,7 @@ fn begin(connection: &rusqlite::Connection, mode: ScriptMode) -> Result<()> {
 /// for another connection's lock does not run, and is not interrupted: so
 /// that wait is held to the run's time as well, for the run's length.
 fn script(
-    connection: &rusqlite::Connection,
+    connection: &mut rusqlite::Connection,
     fences: &Fences,
     texts: &[String],
     limit: usize,
@@ -199,21 +199,25 @@ fn script(
     }
     // SQLite calls this every 1000 virtual machine steps; `true` interrupts
     // the running statement, which fails with SQLITE_INTERRUPT (Cancelled).
-    // The deadline is SQLite's statement timeout: it has no other.
+    // The deadline is SQLite's statement timeout: it has no other. A run
+    // that cannot be stopped does not start: SQLite failing to take the
+    // handler (out of memory) ends it as an error, through the cleanup.
     let watching = stop.clone();
     let deadline = sent.and_then(|sent| deadline(Instant::now(), sent.timeout));
-    connection.progress_handler(
-        1_000,
-        Some(move || watching.is_stopped() || deadline.is_some_and(|at| Instant::now() >= at)),
-    );
+    let watched = connection
+        .progress_handler(
+            1_000,
+            Some(move || watching.is_stopped() || deadline.is_some_and(|at| Instant::now() >= at)),
+        )
+        .map_err(map_error);
     let params = sent.map(|sent| sent.params);
     // The cleanup's `set_session_pragmas` puts the session's own wait back.
-    let held = match sent {
+    let held = watched.and_then(|()| match sent {
         Some(sent) => connection
             .busy_timeout(Duration::from_millis(u64::from(sent.timeout_ms())))
             .map_err(map_error),
         None => Ok(()),
-    };
+    });
     let ran = held.and_then(|()| {
         statements(
             connection,
@@ -226,8 +230,19 @@ fn script(
             &mut outcome,
         )
     });
-    // Removed before the cleanup, so a stop cannot interrupt it.
-    connection.progress_handler(0, None::<fn() -> bool>);
+    // Removed before the cleanup, so a stop cannot interrupt it. One that
+    // stays would interrupt what the session runs next once the stop is
+    // set, so a session that cannot remove it is lost; its transaction is
+    // still rolled back, as far as the handler lets that happen.
+    if let Err(error) = connection.progress_handler(0, None::<fn() -> bool>) {
+        stop.finish();
+        // The session is reconnected, so what the cleanup found is moot.
+        let _ended = end_transaction(connection);
+        return Err(Error::ConnectionLost(format!(
+            "could not remove SQLite's progress handler: {}",
+            map_error(error)
+        )));
+    }
     if sent.is_some()
         && let Some(result) = outcome.results.last_mut()
         && let StatementOutcome::Error { error, .. } = &result.outcome
@@ -678,6 +693,52 @@ impl Drop for StopOnDrop {
     }
 }
 
+/// `sql`'s rows, stepped a row at a time and sent on a batch at a time.
+fn stream_stepped(
+    connection: &rusqlite::Connection,
+    sql: &crate::dialect::Sql,
+    batch: usize,
+    to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+    stop: &StopFlag,
+) -> Result<u64> {
+    let mut statement = connection.prepare(&sql.text).map_err(map_error)?;
+    let mut declared = Some(declared_columns(connection, &statement, &sql.text)?);
+    let width = declared.as_ref().map_or(0, Vec::len);
+    let mut rows = statement
+        .query(rusqlite::params_from_iter(sql.params.iter().map(to_sqlite)))
+        .map_err(map_error)?;
+    let mut sent = 0u64;
+    let mut values: Vec<Vec<Value>> = Vec::with_capacity(batch);
+    let mut flush = |values: Vec<Vec<Value>>, declared: &mut Option<Vec<(String, String)>>| {
+        if let Some(declared) = declared.take() {
+            let metas = column_metas(declared, &values);
+            crate::stream::send_blocking(to, crate::Streamed::Columns(metas))?;
+        }
+        if values.is_empty() {
+            return Ok(());
+        }
+        sent += values.len() as u64;
+        crate::stream::send_blocking(to, crate::Streamed::Rows(values))
+    };
+    while let Some(row) = rows.next().map_err(map_error)? {
+        let mut cells = Vec::with_capacity(width);
+        for index in 0..width {
+            cells.push(from_sqlite(row.get_ref(index).map_err(map_error)?));
+        }
+        values.push(cells);
+        if values.len() == batch {
+            if stop.is_stopped() {
+                return Err(Error::Cancelled);
+            }
+            let full = std::mem::replace(&mut values, Vec::with_capacity(batch));
+            flush(full, &mut declared)?;
+        }
+    }
+    flush(values, &mut declared)?;
+    stop.finish();
+    Ok(sent)
+}
+
 /// Result columns from their declared types; a column without one takes
 /// its kind from the first value that is not NULL.
 fn column_metas(declared: Vec<(String, String)>, rows: &[Vec<Value>]) -> Vec<ColumnMeta> {
@@ -839,17 +900,17 @@ impl Conn {
     /// Runs `work` on the blocking pool with the connection.
     pub(crate) async fn run<T: Send + 'static>(
         &self,
-        work: impl FnOnce(&rusqlite::Connection) -> Result<T> + Send + 'static,
+        work: impl FnOnce(&mut rusqlite::Connection) -> Result<T> + Send + 'static,
     ) -> Result<T> {
         let inner = Arc::clone(&self.inner);
         // If the caller drops this future (a closed tab, a replaced query),
         // stop the statement instead of letting it hold the connection.
         let guard = InterruptOnDrop(Some(Arc::clone(&self.interrupt)));
         let result = tokio::task::spawn_blocking(move || {
-            let connection = inner
+            let mut connection = inner
                 .lock()
                 .map_err(|_| Error::ConnectionLost("the SQLite connection was poisoned".into()))?;
-            work(&connection)
+            work(&mut connection)
         })
         .await;
         guard.disarm();
@@ -1110,7 +1171,7 @@ impl Adapter for Conn {
         self.browse(move |connection| {
             let key = ordering_key(connection, &query.object)?;
             let binary = binary_columns(connection, &query)?;
-            let sql = Dialect::Sqlite.select_rows(&query, &key, &binary);
+            let sql = Dialect::Sqlite.select_rows(&query, &key, &binary)?;
             let ordered_by_key = !key.is_empty();
             let started = Instant::now();
             // The lookups above are the app's own, and the fence would
@@ -1149,13 +1210,76 @@ impl Adapter for Conn {
         .await
     }
 
+    async fn export_statement(&self, query: &RowQuery, columns: &[String]) -> Result<String> {
+        let query = query.clone();
+        let columns = columns.to_vec();
+        self.run(move |connection| {
+            let key = ordering_key(connection, &query.object)?;
+            let binary = binary_columns(connection, &query)?;
+            Dialect::Sqlite.shown_export(&query, &key, &binary, &columns)
+        })
+        .await
+    }
+
+    /// An export's rows, stepped one at a time in one blocking job and
+    /// sent on a batch at a time: the job waits while the receiver holds
+    /// the batch before. The kinds of columns declared with no type come
+    /// from the first batch's values, as a page's do.
+    async fn stream_rows(
+        &self,
+        query: &RowQuery,
+        columns: &[String],
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        check_raw_where(query)?;
+        let query = query.clone();
+        let columns = columns.to_vec();
+        let fences = self.fences.clone();
+        let to = to.clone();
+        let stop = stop.clone();
+        self.browse(move |connection| {
+            let key = ordering_key(connection, &query.object)?;
+            let binary = binary_columns(connection, &query)?;
+            let sql = Dialect::Sqlite.export_rows(&query, &key, &binary, &columns)?;
+            // As in `fetch_rows`: only the text with the raw WHERE.
+            let _fenced = fences.fence(Fence::Filter);
+            stream_stepped(connection, &sql, batch, &to, &stop)
+        })
+        .await
+    }
+
+    /// A statement of the person's, as `stream_rows` streams a table's,
+    /// behind the fence a script's statement has.
+    async fn stream_statement(
+        &self,
+        text: &str,
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        let sql = crate::dialect::Sql {
+            text: text.to_owned(),
+            params: Vec::new(),
+        };
+        let fences = self.fences.clone();
+        let to = to.clone();
+        let stop = stop.clone();
+        self.browse(move |connection| {
+            let _fenced = fences.fence(Fence::Script);
+            stream_stepped(connection, &sql, batch, &to, &stop)
+        })
+        .await
+    }
+
     async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
         check_raw_where(query)?;
         let query = query.clone();
         let fences = self.fences.clone();
         self.browse(move |connection| {
             let binary = binary_columns(connection, &query)?;
-            let sql = Dialect::Sqlite.count_rows(&query, &binary);
+            let sql = Dialect::Sqlite.count_rows(&query, &binary)?;
             // As in `fetch_rows`: only the text with the raw WHERE.
             let _fenced = fences.fence(Fence::Filter);
             let count: i64 = connection
@@ -1504,8 +1628,10 @@ fn agents_catalog(
     }
     // The table functions, SQLite's own modules read without a table
     // made of them: the pragmas are refused before this, and `dbstat` and
-    // the `sqlite_` ones are system catalogs.
-    let table_functions = connection
+    // the `sqlite_` ones are system catalogs. The JSON ones SQLite makes
+    // only when a statement first names one, so the list holds them
+    // whether or not one was named yet.
+    let mut table_functions = connection
         .prepare("SELECT name FROM pragma_module_list")
         .and_then(|mut statement| {
             statement
@@ -1513,6 +1639,11 @@ fn agents_catalog(
                 .collect::<rusqlite::Result<Vec<_>>>()
         })
         .map_err(map_error)?;
+    for name in JSON_TABLE_FUNCTIONS {
+        if !table_functions.iter().any(|listed| listed == name) {
+            table_functions.push(name.to_owned());
+        }
+    }
     Ok(Catalog {
         relations,
         table_functions,
@@ -1522,6 +1653,11 @@ fn agents_catalog(
         ..Catalog::default()
     })
 }
+
+/// SQLite's JSON table functions. From 3.54 on it makes their module when a
+/// statement first names one, as it does a pragma's, and
+/// `pragma_module_list` lists only the ones made so far.
+const JSON_TABLE_FUNCTIONS: [&str; 4] = ["json_each", "json_tree", "jsonb_each", "jsonb_tree"];
 
 fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<ColumnInfo>> {
     // A table WITHOUT ROWID has no rowid for a column to be the alias of.
@@ -1636,7 +1772,10 @@ fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
 /// keeps a blob in a column of any type, so besides the ones declared as
 /// blobs these are the ones whose type says nothing: none at all, or a name
 /// like `BINARY(16)` or `UUID` that SQLite gives no blob affinity.
-fn binary_columns(connection: &rusqlite::Connection, query: &RowQuery) -> Result<Vec<String>> {
+fn binary_columns(
+    connection: &rusqlite::Connection,
+    query: &RowQuery,
+) -> Result<Vec<(String, ColumnClass)>> {
     if !crate::dialect::reads_bytes(query) {
         return Ok(Vec::new());
     }
@@ -1648,7 +1787,7 @@ fn binary_columns(connection: &rusqlite::Connection, query: &RowQuery) -> Result
                 ValueKind::Binary | ValueKind::Other
             )
         })
-        .map(|column| column.name)
+        .map(|column| (column.name, ColumnClass::Binary))
         .collect())
 }
 
@@ -2517,6 +2656,8 @@ mod tests {
             ("areas", "SELECT count(*) FROM areas WHERE min_x >= 5"),
             // SQLite's own table functions are no tables to list.
             ("notes", "SELECT count(*) FROM json_each('[1, 2]')"),
+            // One SQLite lists only once a statement has named it.
+            ("notes", "SELECT count(*) FROM jsonb_each('[1, 2]')"),
             (
                 "notes",
                 "SELECT count(*) FROM notes, json_each('[1]') WHERE notes MATCH 'shelf'",

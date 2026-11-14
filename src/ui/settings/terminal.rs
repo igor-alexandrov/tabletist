@@ -7,18 +7,18 @@
 use egui::emath::GuiRounding as _;
 use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, WidgetInfo, WidgetType, pos2, vec2};
 
-use crate::app::{App, PinState};
+use crate::app::{PinState, Work};
 use crate::i18n::{Locale, gettext, ngettext};
-use crate::keymap::Command;
+use crate::keymap::{Bind, Command, Keymap, Layout};
 use crate::model::{Action, SettingsDialog, SettingsPane, SettingsRow};
-use crate::settings::{Idle, OptionId, OptionValue, Settings};
+use crate::settings::{Idle, OptionId, OptionValue, Settings, SettingsFile};
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Ring};
 use crate::ui::value_tags::terminal_slots;
 use crate::ui::widgets::{self, ButtonSpec};
 
-use super::{Said, choices, file_pane, opened, sample_timestamp, terminal_label};
+use super::{Said, choices, file_pane, sample_timestamp, terminal_label};
 
 /// The header's and the footer's heights, each without its rule.
 const HEADER: f32 = 40.0;
@@ -69,6 +69,9 @@ pub(super) struct Skin<'a> {
     /// When the last check for updates that worked ran, as the Updates
     /// pane's row says it: `last checked 09:12`.
     pub(super) checked: Option<&'a str>,
+    /// How far in from the left the macOS window buttons reach, in
+    /// points: the header's title starts after them.
+    pub(super) inset: f32,
 }
 
 /// What fontconfig gave for the font the settings name, which the font's
@@ -81,16 +84,6 @@ pub(super) struct FontShown<'a> {
     /// The font the settings name, where fontconfig does not have it: the
     /// system's monospace is drawn in its place.
     pub(super) missing: Option<&'a str>,
-}
-
-impl<'a> FontShown<'a> {
-    pub(super) fn of(app: &'a App) -> Self {
-        let read = &app.desktop_font;
-        Self {
-            family: read.family.as_deref(),
-            missing: read.asked.as_deref().filter(|_| read.missing),
-        }
-    }
 }
 
 /// What the Appearance pane's theme rows say beside their values: Omarchy's
@@ -106,15 +99,31 @@ pub(super) struct Desktop<'a> {
     pub(super) follows_omarchy: bool,
 }
 
-impl<'a> Desktop<'a> {
-    pub(super) fn of(app: &'a App) -> Self {
-        let pin = app.settings.theme.pin().zip(app.pin_state());
-        Self {
-            current: app.desktop_theme.current.as_deref(),
-            pin,
-            follows_omarchy: app.themes.follows_omarchy(),
-        }
-    }
+/// What the screen reads of the app beside its skin and the dialog, built
+/// by `settings::terminal_asked`.
+pub(super) struct Asked<'a> {
+    /// The app's notice, which stands under the header while it has one.
+    pub(super) notice: Option<&'a str>,
+    /// The Keyboard pane's shortcuts, where the file's pane and the
+    /// footer find the cursor's row.
+    pub(super) keymap: &'a Keymap,
+    /// The settings file the file's pane shows, its path as the window
+    /// writes it, and the keys it binds.
+    pub(super) file: &'a SettingsFile,
+    pub(super) path: String,
+    pub(super) binds: &'a [Bind],
+    /// The settings as the window shows them (`settings::shown`).
+    pub(super) shown: Settings,
+    /// The server, as the Agents pane's status says it.
+    pub(super) server: super::agents::Server,
+    /// Where updates stand, which the nav's dot and the Updates pane read.
+    pub(super) status: super::updates::Status<'a>,
+    /// What Enter does on the cursor's row, where it does something
+    /// (`settings::opened`).
+    pub(super) opened: Option<Vec<Action>>,
+    /// What a restart would interrupt: asked only while the Updates card
+    /// is held.
+    pub(super) interrupted: &'a dyn Fn() -> Vec<Work>,
 }
 
 impl Skin<'_> {
@@ -154,29 +163,19 @@ struct Cell<'a> {
     described: Option<&'a str>,
 }
 
+/// The screen over the whole window, drawn as `skin` has it: the header,
+/// the notice, the nav, the rows of the pane `dialog` shows with what the
+/// app answered in `asked`, the file beside them where it fits, and the
+/// footer. What its buttons do is pushed into `actions`.
 pub(super) fn show(
-    app: &App,
     ctx: &egui::Context,
+    skin: &Skin,
     dialog: &SettingsDialog,
+    asked: Asked,
     actions: &mut Vec<Action>,
 ) {
     let (pane, row) = (dialog.pane, dialog.row);
-    let settings = super::shown(app);
-    let launches = super::launch_choices(&app.connections.connections);
-    let checked = super::updates::checked_text(app, true);
-    let skin = Skin {
-        look: &app.look,
-        palette: &app.palette,
-        locale: app.locale,
-        window: app.agents_window().is_some(),
-        system: app.system_zone.iana_name(),
-        named: app.named_zone.as_deref(),
-        connections: &app.connections.connections,
-        launches: &launches,
-        desktop: Desktop::of(app),
-        font: FontShown::of(app),
-        checked: checked.as_deref(),
-    };
+    let settings = &asked.shown;
     let screen = ctx.content_rect();
     let id = egui::Id::new("settings");
     // A modal: nothing behind it can be clicked while it is open. It is
@@ -195,15 +194,15 @@ pub(super) fn show(
             ui.set_width(screen.width());
             ui.set_height(screen.height());
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-            header(ui, pane, &skin);
-            let notice = notice(ui, app, actions);
+            header(ui, pane, skin);
+            let notice = notice(ui, skin, asked.notice, actions);
             // What the header, a notice, the footer and their rules leave.
             let height = (screen.height() - HEADER - notice - FOOTER - 2.0).max(0.0);
             let (body, _) =
                 ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
             let (side, place) = body.split_left_right_at_x((body.left() + NAV).min(body.right()));
-            let offered = super::updates::offered(app);
-            nav(ui, (side, offered), pane, &skin, actions);
+            let offered = super::updates::offered(asked.status);
+            nav(ui, (side, offered), pane, skin, actions);
             // The rows scroll when the window is short, so the header and
             // the footer stay on screen. They start past the nav's rule.
             let place = place.with_min_x((place.left() + 1.0).min(place.right()));
@@ -225,45 +224,58 @@ pub(super) fn show(
                 .id_salt(pane.name())
                 .auto_shrink([false, false])
                 .show(&mut list, |ui| match pane {
-                    SettingsPane::General => rows(ui, &settings, row, &skin, actions),
-                    SettingsPane::Appearance => appearance_rows(ui, &settings, row, &skin, actions),
-                    SettingsPane::Editor => editor_rows(ui, &settings, row, &skin, actions),
+                    SettingsPane::General => rows(ui, settings, row, skin, actions),
+                    SettingsPane::Appearance => appearance_rows(ui, settings, row, skin, actions),
+                    SettingsPane::Editor => editor_rows(ui, settings, row, skin, actions),
                     SettingsPane::Keyboard => {
-                        super::keyboard_terminal::rows(ui, app, &dialog.keyboard, &skin, actions);
+                        super::keyboard_terminal::rows(
+                            ui,
+                            asked.keymap,
+                            &dialog.keyboard,
+                            skin,
+                            actions,
+                        );
                     }
-                    SettingsPane::Agents => agent_rows(ui, app, &settings, row, &skin, actions),
+                    SettingsPane::Agents => {
+                        agent_rows(ui, asked.server, settings, row, skin, actions);
+                    }
                     SettingsPane::Updates => {
-                        super::updates_terminal::rows(ui, app, &settings, row, &skin, actions);
+                        super::updates_terminal::rows(
+                            ui,
+                            asked.status,
+                            asked.interrupted,
+                            settings,
+                            row,
+                            skin,
+                            actions,
+                        );
                     }
                 });
             if let Some(beside) = beside {
                 let shown = match pane {
                     SettingsPane::Keyboard => {
-                        let row = super::keyboard_terminal::cursor(app, &dialog.keyboard);
+                        let (keymap, layout) = (asked.keymap, Layout::of(skin.look));
+                        let page = &dialog.keyboard;
+                        let row =
+                            super::keyboard_terminal::cursor(keymap, layout, skin.locale, page);
                         file_pane::Shown::Keys(row)
                     }
                     _ => file_pane::Shown::Option(option),
                 };
-                file_pane::show(ui, beside, app, shown, &skin);
+                let (file, path) = (asked.file, asked.path.as_str());
+                file_pane::show(ui, beside, file, path, asked.binds, shown, skin);
             }
-            let opens = cursor.and_then(|cursor| opened(app, cursor).map(|opens| (cursor, opens)));
-            let question = match &app.dialog {
-                Some(crate::model::Dialog::Settings(dialog)) => dialog.history_question,
-                _ => None,
-            };
-            let update = match &app.dialog {
-                Some(crate::model::Dialog::Settings(dialog)) if pane == SettingsPane::Updates => {
-                    dialog.update_question.clone()
-                }
-                _ => None,
-            };
+            let opens = cursor.zip(asked.opened);
+            let question = dialog.history_question;
+            let update = dialog.update_question.as_deref();
+            let update = update.filter(|_| pane == SettingsPane::Updates);
             match (question, update) {
-                (Some(question), _) => history_question(ui, question, &skin, actions),
-                (None, Some(version)) => update_question(ui, &version, &skin, actions),
+                (Some(question), _) => history_question(ui, question, skin, actions),
+                (None, Some(version)) => update_question(ui, version, skin, actions),
                 (None, None) if pane == SettingsPane::Keyboard => {
-                    keyboard_footer(ui, app, &dialog.keyboard, &skin, actions);
+                    keyboard_footer(ui, asked.keymap, &dialog.keyboard, skin, actions);
                 }
-                (None, None) => footer(ui, pane, option, opens, &settings, &skin, actions),
+                (None, None) => footer(ui, pane, option, opens, settings, skin, actions),
             }
         });
 }
@@ -373,14 +385,20 @@ fn update_question(ui: &mut Ui, version: &str, skin: &Skin, actions: &mut Vec<Ac
 /// One tinted line: the title and the pane it shows, and at the right
 /// what a change does and the key that opens the screen.
 fn header(ui: &mut Ui, pane: SettingsPane, skin: &Skin) {
-    let Skin { look, palette, .. } = *skin;
+    let Skin {
+        look,
+        palette,
+        inset,
+        ..
+    } = *skin;
     let (rect, _) =
         ui.allocate_exact_size(vec2(ui.available_width(), HEADER + 1.0), Sense::hover());
     ui.painter()
         .rect_filled(rect, CornerRadius::ZERO, palette.panel);
     widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, palette.outline);
     let y = rect.top() + HEADER / 2.0;
-    let mut x = rect.left() + 14.0;
+    // Clear of the macOS window buttons, as the connections' header is.
+    let mut x = rect.left() + 14.0_f32.max(inset + 12.0);
     x += widgets::paint_label(
         ui,
         x,
@@ -417,15 +435,20 @@ fn header(ui: &mut Ui, pane: SettingsPane, skin: &Skin) {
 /// under the screen, and a save that fails here would go unseen until the
 /// screen closes. Returns the band's height with its rule, nothing when
 /// there is no notice.
-fn notice(ui: &mut Ui, app: &App, actions: &mut Vec<Action>) -> f32 {
-    let Some(message) = &app.notice else {
+fn notice(ui: &mut Ui, skin: &Skin, notice: Option<&str>, actions: &mut Vec<Action>) -> f32 {
+    let Some(message) = notice else {
         return 0.0;
     };
     let (rect, _) =
         ui.allocate_exact_size(vec2(ui.available_width(), NOTICE + 1.0), Sense::hover());
-    let fill = crate::ui::notice_fill(&app.palette);
+    let fill = crate::ui::notice_fill(skin.palette);
     ui.painter().rect_filled(rect, CornerRadius::ZERO, fill);
-    widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, app.palette.outline);
+    widgets::hline(
+        ui,
+        rect.x_range(),
+        rect.bottom() - 0.5,
+        skin.palette.outline,
+    );
     let left = rect.left() + NOTICE_SIDE;
     let right = (rect.right() - NOTICE_SIDE).max(left);
     let line = Rect::from_min_max(pos2(left, rect.top()), pos2(right, rect.bottom() - 1.0));
@@ -433,7 +456,12 @@ fn notice(ui: &mut Ui, app: &App, actions: &mut Vec<Action>) -> f32 {
     let centred = egui::Layout::left_to_right(egui::Align::Center);
     let builder = egui::UiBuilder::new().id_salt("notice").max_rect(line);
     let mut line = ui.new_child(builder.layout(centred));
-    crate::ui::notice_line(app, &mut line, message, actions);
+    let paint = crate::ui::Paint {
+        locale: skin.locale,
+        palette: *skin.palette,
+        look: *skin.look,
+    };
+    crate::ui::notice_line(&mut line, paint, message, actions);
     rect.height()
 }
 
@@ -581,7 +609,8 @@ fn appearance_rows(
     );
     let mut index = 0;
     for (heading_text, top, options) in [
-        ("Theme", 8.0, &OptionId::THEME[..]),
+        ("Interface", 8.0, &OptionId::INTERFACE[..]),
+        ("Theme", 12.0, &OptionId::THEME[..]),
         ("Text", 12.0, &OptionId::TERMINAL_TEXT[..]),
         ("Grid", 12.0, &OptionId::GRID[..]),
         ("Environment", 12.0, &OptionId::ENVIRONMENT[..]),
@@ -822,10 +851,11 @@ fn font_value(settings: &Settings, skin: &Skin) -> String {
 /// The Agents pane: the server's switch and its status, how to connect an
 /// agent, where access is set, and the log. Its rows are
 /// [`SettingsPane::rows`]'s, in order; the command, the line for other
-/// agents and the note under them are no rows of the cursor's.
+/// agents and the note under them are no rows of the cursor's. `server`
+/// is what the status row says.
 fn agent_rows(
     ui: &mut Ui,
-    app: &App,
+    server: super::agents::Server,
     settings: &Settings,
     cursor: usize,
     skin: &Skin,
@@ -846,7 +876,7 @@ fn agent_rows(
     let text_of = |ui: &Ui, which: usize, fits: f32| -> (&'static str, Text, Text) {
         match which {
             0 => {
-                let (value, hint) = status_text(app.agents_on(), app.agents.sessions.len(), skin);
+                let (value, hint) = status_text(server.on, server.connected, skin);
                 ("Status", value, hint)
             }
             1 => {
@@ -1163,6 +1193,20 @@ pub(super) fn columns(
     (LABEL - share * spare[0], VALUE - share * spare[1])
 }
 
+/// What the stepper of `option` says after its chevrons: the font size's
+/// range, `9 to 32`.
+fn range(option: OptionId, skin: &Skin) -> Option<String> {
+    (option == OptionId::FontSize).then(|| {
+        let sizes = crate::settings::FontSizes::of(true);
+        format!(
+            "{} {} {}",
+            sizes.min.text(),
+            skin.say("to"),
+            sizes.max.text()
+        )
+    })
+}
+
 /// How wide `option`'s value is drawn, at its widest.
 fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f32 {
     let role = TextRole::OBody;
@@ -1179,12 +1223,19 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
         | OptionId::Timeout
         | OptionId::Indent
         | OptionId::HistoryKeep
-        | OptionId::UpdatesCheck => width(&format!("‹ {} ›", stepped_text(option, settings, skin))),
+        | OptionId::UpdatesCheck => {
+            let value = stepped_text(option, settings, skin);
+            match range(option, skin) {
+                Some(range) => width(&format!("‹ {value} › {range}")),
+                None => width(&format!("‹ {value} ›")),
+            }
+        }
         OptionId::Font => width(&font_value(settings, skin)),
         OptionId::Timestamps
         | OptionId::GroupDigits
+        | OptionId::Look
         | OptionId::Theme
-        | OptionId::InterfaceSize
+        | OptionId::InterfaceScale
         | OptionId::RowHeight
         | OptionId::TableList
         | OptionId::EnvBar
@@ -1473,8 +1524,9 @@ pub(super) fn option_row(
         }
         OptionId::Timestamps
         | OptionId::GroupDigits
+        | OptionId::Look
         | OptionId::Theme
-        | OptionId::InterfaceSize
+        | OptionId::InterfaceScale
         | OptionId::RowHeight
         | OptionId::TableList
         | OptionId::EnvBar
@@ -1569,6 +1621,11 @@ fn stepper(
             .add(role, "›", chevron(&more))
     } else {
         Text::one(look, role, &value, palette.text)
+    };
+    // The size's range after it, as the board writes it: `‹ 13 › 9 to 32`.
+    let text = match range(option, skin) {
+        Some(range) => text.add(role, &format!(" {range}"), palette.dim),
+        None => text,
     };
     widgets::paint_text(ui, cell.left, y, text);
     // The chevrons' buttons are on every row. On the cursor's row each is
@@ -1689,9 +1746,10 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
             )
             .add(role, &format!(" {}", skin.say("shows it")), palette.dim),
         OptionId::AgentsNotify => dim(&skin.say("a desktop notification")),
+        OptionId::Look => dim(&skin.say("classic is the system's own look")),
         OptionId::Theme => theme_hint(skin),
         // macOS's and Windows's: no row of this look's.
-        OptionId::InterfaceSize => Text::new(look),
+        OptionId::InterfaceScale => Text::new(look),
         OptionId::Font => font_hint(skin),
         // The keys that change it, from the keymap, wherever the keyboard
         // is.
@@ -1699,7 +1757,21 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
             .add(role, &key(ui, look, Command::LargerText), palette.accent)
             .add(role, " / ", palette.dim)
             .add(role, &key(ui, look, Command::SmallerText), palette.accent)
-            .add(role, &format!(" {}", skin.say("anywhere")), palette.dim),
+            .add(role, " / ", palette.dim)
+            .add(
+                role,
+                &key(ui, look, Command::DefaultTextSize),
+                palette.accent,
+            )
+            .add(
+                role,
+                &format!(
+                    " {} · {}",
+                    skin.say("anywhere"),
+                    skin.say("rows and panes grow with it")
+                ),
+                palette.dim,
+            ),
         OptionId::RowHeight => dim(&skin.say("1 · 1.5 · 2 lines")),
         OptionId::Zebra => Text::new(look),
         OptionId::ColumnTypes => dim(&skin.say("second header line")),
@@ -1923,11 +1995,12 @@ fn footer(
     }
 }
 
-/// The Keyboard pane's footer: its keys, each a button too. While a row
-/// records, the keys that end and give up the recording.
+/// The Keyboard pane's footer: its keys, each a button too, which act on
+/// the row of `keymap` the cursor is on. While a row records, the keys
+/// that end and give up the recording.
 fn keyboard_footer(
     ui: &mut Ui,
-    app: &App,
+    keymap: &Keymap,
     page: &crate::model::KeyboardPage,
     skin: &Skin,
     actions: &mut Vec<Action>,
@@ -1944,7 +2017,7 @@ fn keyboard_footer(
         .rect_filled(rect, CornerRadius::ZERO, palette.panel);
     widgets::hline(ui, rect.x_range(), rect.top() + 0.5, palette.outline);
     let y = rect.top() + 1.0 + FOOTER / 2.0;
-    let cursor = super::keyboard_terminal::cursor(app, page);
+    let cursor = super::keyboard_terminal::cursor(keymap, Layout::of(look), locale, page);
     // `$EDITOR` is a name: the look does not lower-case it.
     let in_editor = skin
         .say("open file in {editor}")

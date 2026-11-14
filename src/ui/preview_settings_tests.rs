@@ -8,9 +8,7 @@ use super::appearance_settings_tests::{on_the_pane, shows};
 use crate::backend::{Command, StateFile};
 use crate::env::{Environment, Platform};
 use crate::model::{Action, SettingsPane};
-use crate::settings::{
-    EnvBar, FontSize, InterfaceSize, OptionValue, RowHeight, TableList, ThemeChoice,
-};
+use crate::settings::{EnvBar, FontSize, OptionValue, RowHeight, TableList, ThemeChoice};
 use crate::testing::{Harness, bounds};
 use crate::theme::Look;
 
@@ -78,6 +76,12 @@ fn wheel_at(harness: &mut Harness, at: egui::Pos2, delta: f32) {
 /// place there.
 fn set(harness: &mut Harness, value: OptionValue) {
     harness.app.apply(Action::SetOption(value));
+    logic(harness);
+}
+
+/// One pass of the app's logic, as the window runs it between frames: a
+/// zoom the settings came to is set there, and drawn the frames after.
+fn logic(harness: &mut Harness) {
     let mut input = egui::RawInput::default();
     input.viewports.entry(egui::ViewportId::ROOT).or_default();
     let app = &mut harness.app;
@@ -119,7 +123,10 @@ fn rows(harness: &mut Harness) -> [egui::Rect; 2] {
                     egui::pos2(rect.x1 as f32, rect.y1 as f32),
                 )
             })
-            .find(|rect| preview.contains_rect(*rect))
+            // Within the pixel the window's zoom rounds the two to: the
+            // terminal look's text size zooms its window, and the board's
+            // Interface section puts the preview on a fractional point.
+            .find(|rect| preview.expand(1.0).contains_rect(*rect))
             .expect("a row in the preview")
     };
     [row(1), row(2)]
@@ -281,11 +288,13 @@ fn the_preview_follows_the_theme_and_the_text() {
     assert_eq!(wide(&mut harness, "publisher_id"), name);
     // The columns are fitted again: the ones after the ids move right.
     assert!(left(&mut harness) > after);
+    // The interface scale zooms the whole window: in its points the
+    // preview keeps its shape.
     set(
         &mut harness,
-        OptionValue::InterfaceSize(InterfaceSize::Large),
+        OptionValue::InterfaceScale(crate::settings::UiScale::of(1.25).unwrap()),
     );
-    assert!(wide(&mut harness, "publisher_id") > name);
+    assert_eq!(wide(&mut harness, "publisher_id"), name);
     // Value tags off: the kinds are plain text.
     set(&mut harness, OptionValue::ValueTags(false));
     assert_eq!(
@@ -311,7 +320,9 @@ fn the_preview_sends_the_backend_nothing() {
         ];
         if !look.terminal {
             values.push(OptionValue::Theme(ThemeChoice::Dark));
-            values.push(OptionValue::InterfaceSize(InterfaceSize::Small));
+            values.push(OptionValue::InterfaceScale(
+                crate::settings::UiScale::of(0.9).unwrap(),
+            ));
             values.push(OptionValue::Font(Some("JetBrains Mono".into())));
         }
         let changes = values.len();
@@ -322,6 +333,7 @@ fn the_preview_sends_the_backend_nothing() {
         // And every option put back at once.
         harness.app.apply(Action::ResetSettings);
         harness.app.apply(Action::ConfirmResetSettings(true));
+        logic(&mut harness);
         wheel(&mut harness, -2000.0);
         assert!(harness.painted_rect("Bookshop").is_some(), "{}", look.name);
         rows(&mut harness);

@@ -10,15 +10,20 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use tabletist_db::{NewValue, SortDir, Value, ValueKind};
 
-use crate::app::App;
 use crate::edit::{EditorPlace, Pending, RowMark, State, Table, Told, Unset};
+use crate::format;
 use crate::i18n::{gettext, ngettext};
-use crate::model::{Action, CellPos, ConnTabId, EditStart, ObjectTab, ObjectView, TabId};
-use crate::theme::{Icon, Look, Palette};
+use crate::keymap::Keymap;
+use crate::model::{
+    Action, CellPos, ConnTabId, EditStart, ObjectTab, ObjectView, TabId, Workspace,
+};
+use crate::settings::Settings;
+use crate::style::Icon;
+use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::Paint;
 use crate::ui::cell_editor;
-use crate::ui::focus;
-use crate::ui::format;
+use crate::ui::focus::{self, Link};
 use crate::ui::grid::{self, Cell, Column, Mark, Style};
 use crate::ui::key_picker;
 use crate::ui::pending_bar;
@@ -54,13 +59,20 @@ fn state_note(selected: Option<String>, read_only: bool, locale: crate::i18n::Lo
 }
 
 /// What the footer says of the tab's selection: that a row is selected,
-/// or, on a new row, that it is one and how many values it still needs.
+/// how many rows or rows and columns a range covers, or, on a new row,
+/// that it is one and how many values it still needs.
 fn selection_note(
     workspace: &crate::model::Workspace,
     object: &ObjectTab,
     locale: crate::i18n::Locale,
 ) -> Option<String> {
     let cell = object.selection?;
+    // A rectangle of cells: how many rows and columns.
+    let cells = object.range.as_ref().is_some_and(|range| !range.rows());
+    if let Some(size) = object.selection_size().filter(|_| cells) {
+        let size = crate::selection::size_words(locale, size, false);
+        return Some(format!("{size} {}", gettext(locale, "selected")));
+    }
     // Several rows: how many, whatever kind each is.
     let rows = object.selected_rows().len();
     if rows > 1 {
@@ -173,13 +185,19 @@ fn view_tab(ui: &egui::Ui, response: &egui::Response, selected: bool) {
 
 /// The object's name and counts, the Rows · Structure · DDL switch, and
 /// Add row (none in the DDL view).
-pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
-    let Some(object) = app.workspace(tab).and_then(|w| w.object_tab(object_tab)) else {
-        return;
-    };
+pub fn header(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    workspace: &Workspace,
+    object: &ObjectTab,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let object_tab = object.id;
     let name = format::display_safe(&object.object.name).into_owned();
     let view = object.view;
     // The rows to add: the terminal's header counts them at its right.
@@ -192,10 +210,8 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
     let ddl_ready = view == ObjectView::Ddl && object.ddl_shown().is_some();
     // Production is named beside the table's name, in the looks with a
     // pointer: the terminal's bar says it in its own tag.
-    let production = app
-        .workspace(tab)
-        .map(|workspace| workspace.environment)
-        .filter(|env| env.is_production() && !look.terminal);
+    let production =
+        Some(workspace.environment).filter(|env| env.is_production() && !look.terminal);
     let parts = match (look.terminal, view) {
         (true, ObjectView::Ddl) => super::ddl::subtitle(object, locale),
         _ => subtitle(object, &look, locale),
@@ -203,13 +219,11 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
     let summary = parts.join(" · ");
     // Why Add row cannot be pressed, where it cannot: the table takes no
     // row, or its page is not there yet.
-    let no_rows = app.workspace(tab).and_then(|workspace| {
-        let lock = match Table::of(workspace, object) {
-            Some(table) => table.no_rows(),
-            None => Some(crate::edit::Lock::Refreshing),
-        };
-        lock.map(|lock| cell_editor::lock_text(lock, &name, locale))
-    });
+    let lock = match Table::of(workspace, object) {
+        Some(table) => table.no_rows(),
+        None => Some(crate::edit::Lock::Refreshing),
+    };
+    let no_rows = lock.map(|lock| cell_editor::lock_text(lock, &name, locale));
     let mut actions = Vec::new();
     // The DDL view's Copy was clicked: copied once the header is drawn.
     let mut copy_ddl = false;
@@ -399,6 +413,22 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                 };
                 if short { button.gap(0.0) } else { button }
             };
+            // Export… stands before Add row, and folds with it (spec,
+            // Entry points).
+            let export_label = gettext(locale, "Export…");
+            let export_keys =
+                crate::ui::keys::written(ui.ctx(), &look, crate::keymap::Command::Export);
+            let export = |short: bool| {
+                let button = widgets::ButtonSpec::new(if short { "" } else { &export_label })
+                    .label(&export_label)
+                    .icon(Icon::Download)
+                    .role(TextRole::UiBodyStrong);
+                if short {
+                    button.gap(0.0)
+                } else {
+                    button.shortcut(&export_keys)
+                }
+            };
             // In the DDL view, what it says while it reads stands where
             // Add row would.
             // Its Copy and Open in SQL editor stand there once its text
@@ -433,15 +463,28 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                 .find(|form| free - wait(Some(*form)) >= title_width)
                 .or_else(|| (free - wait(Some(Buttons::Icons)) >= cut).then_some(Buttons::Icons));
             let wait = wait(form);
-            let stack = |button: Option<bool>| {
-                let button = button.map_or(0.0, |short| 12.0 + add_row(short).width(ui, &look));
+            // The buttons as room allows: Export… (whole, its icon, or
+            // gone) and Add row (whole or its icon). Export… folds and goes
+            // first.
+            let stack = |button: Option<(Option<bool>, bool)>| {
+                let button = button.map_or(0.0, |(exported, short)| {
+                    let export_width =
+                        exported.map_or(0.0, |short| 8.0 + export(short).width(ui, &look));
+                    12.0 + add_row(short).width(ui, &look) + export_width
+                });
                 free - button - wait
             };
             // The DDL view has no Add row.
             let rows = if view == ObjectView::Ddl {
                 &[None][..]
             } else {
-                &[Some(false), Some(true), None][..]
+                &[
+                    Some((Some(false), false)),
+                    Some((Some(true), false)),
+                    Some((None, false)),
+                    Some((None, true)),
+                    None,
+                ][..]
             };
             let button = rows
                 .iter()
@@ -558,7 +601,18 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                 } else {
                     super::ddl::header_wait(ui, reading, right, center, skin);
                 }
-            } else if let Some(short) = button {
+            } else if let Some((exported, short)) = button {
+                if let Some(export_short) = exported {
+                    let exporting = export(export_short);
+                    let export_width = exporting.width(ui, &look);
+                    let add_width = add_row(short).width(ui, &look);
+                    let at = right - add_width - 8.0 - export_width;
+                    let place =
+                        Rect::from_min_size(pos2(at, center - 16.0), vec2(export_width, 32.0));
+                    if exporting.show_at(ui, place, &look, &palette).clicked() {
+                        actions.push(Action::OpenExport { tab, format: None });
+                    }
+                }
                 let button = add_row(short);
                 let width = button.width(ui, &look);
                 let place =
@@ -581,9 +635,9 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
             }
         });
     if copy_ddl {
-        super::ddl::copy(app, ui.ctx(), tab, object_tab);
+        super::ddl::copy(ui.ctx(), paint, tab, object);
     }
-    app.actions.extend(actions);
+    actions
 }
 
 /// The sort order as a chip: "Sort created_at ↑ ×", or the terminal's
@@ -684,17 +738,24 @@ fn filter_texts(object: &ObjectTab) -> Vec<String> {
 }
 
 /// Above the grid: Add filter and the filters in use (macOS), or the
-/// terminal's WHERE line; the sort; and how timestamps are shown.
-pub fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
+/// terminal's WHERE line; the sort; and how timestamps are shown. The
+/// WHERE line edits the tab's raw clause in place, and takes the
+/// workspace's request for the keyboard.
+pub fn toolbar(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    object_tab: TabId,
+    workspace: &mut Workspace,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let full_precision = workspace.full_precision;
     let Some(object) = workspace.object_tab(object_tab) else {
-        return;
+        return Vec::new();
     };
     let filters = filter_texts(object);
     let sort = object
@@ -744,10 +805,10 @@ pub fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Tab
                     limit = chip.left() - 12.0;
                 }
                 where_line(
-                    app,
                     ui,
-                    tab,
-                    object_tab,
+                    paint,
+                    (tab, object_tab),
+                    workspace,
                     Rect::from_min_max(pos2(left, rect.top()), pos2(limit, rect.bottom())),
                     &mut actions,
                 );
@@ -885,28 +946,25 @@ pub fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Tab
                 }
             }
         });
-    app.actions.extend(actions);
+    actions
 }
 
 /// The terminal look's `/ where …` line: a raw WHERE clause, run on Enter.
 fn where_line(
-    app: &mut App,
     ui: &mut egui::Ui,
-    tab: ConnTabId,
-    object_tab: TabId,
+    paint: Paint,
+    (tab, object_tab): (ConnTabId, TabId),
+    workspace: &mut Workspace,
     rect: Rect,
     actions: &mut Vec<Action>,
 ) {
-    let palette = app.palette;
-    let locale = app.locale;
-    let look = app.look;
-    let focus = app
-        .workspace_mut(tab)
-        .is_some_and(|workspace| std::mem::take(&mut workspace.focus_where));
-    let Some(object) = app
-        .workspace_mut(tab)
-        .and_then(|w| w.object_tab_mut(object_tab))
-    else {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let focus = std::mem::take(&mut workspace.focus_where);
+    let Some(object) = workspace.object_tab_mut(object_tab) else {
         return;
     };
     let center = rect.center().y;
@@ -1033,12 +1091,16 @@ pub struct Fit {
 }
 
 impl Fit {
-    pub fn of(workspace: &crate::model::Workspace, app: &crate::app::App) -> Self {
+    pub fn of(
+        workspace: &crate::model::Workspace,
+        settings: &crate::settings::Settings,
+        layout: crate::keymap::Layout,
+    ) -> Self {
         Self {
             full_precision: workspace.full_precision,
-            grouped: app.settings.grouped(app.layout()),
-            value_tags: app.settings.value_tags,
-            column_types: app.settings.column_types,
+            grouped: settings.grouped(layout),
+            value_tags: settings.value_tags,
+            column_types: settings.column_types,
             zone: workspace
                 .zone_shown()
                 .and_then(|zone| zone.iana_name())
@@ -1100,16 +1162,22 @@ pub fn columns_note(
 
 /// The status footer: the page's range and paging, then what is selected
 /// and how long the query took.
-pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
-    let filter_key = app
-        .keymap
-        .key(app.layout(), crate::keymap::Command::FilterBar);
-    let Some(object) = app.workspace(tab).and_then(|w| w.object_tab(object_tab)) else {
-        return;
-    };
+pub fn footer(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    workspace: &Workspace,
+    object: &ObjectTab,
+    settings: &Settings,
+    keymap: &Keymap,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let object_tab = object.id;
+    let filter_key = keymap.key(paint.layout(), crate::keymap::Command::FilterBar);
     let view = object.view;
     let fetching = object.rows.is_loading();
     let counting = object.count.is_loading();
@@ -1151,20 +1219,15 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
         })
     });
     let unordered = page.is_some_and(|page| !page.ordered_by_key) && object.query.sort.is_empty();
-    let selected = app
-        .workspace(tab)
-        .and_then(|workspace| selection_note(workspace, object, locale));
-    let read_only = app
-        .workspace(tab)
-        .is_some_and(|workspace| workspace.access == tabletist_db::Access::ReadOnly);
+    let selected = selection_note(workspace, object, locale);
+    let read_only = workspace.access == tabletist_db::Access::ReadOnly;
     let state = state_note(selected, read_only, locale);
-    let columns = app
-        .workspace(tab)
-        .filter(|_| view == ObjectView::Data)
-        .and_then(|workspace| {
-            let fit = Fit::of(workspace, app);
-            columns_note(ui.ctx(), tab, object, fit, &look, locale)
-        });
+    let columns = if view == ObjectView::Data {
+        let fit = Fit::of(workspace, settings, paint.layout());
+        columns_note(ui.ctx(), tab, object, fit, &look, locale)
+    } else {
+        None
+    };
     let mut actions = Vec::new();
     egui::Panel::bottom(Id::new(("object-footer", tab.0, object_tab.0)))
         .exact_size(33.0)
@@ -1300,7 +1363,7 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                 });
             });
         });
-    app.actions.extend(actions);
+    actions
 }
 
 /// A footer's page arrow: a bare chevron, faint when there is nowhere to go.
@@ -1368,83 +1431,87 @@ pub fn type_line(
 /// first foreign key that names no row, in a pending cell's tone:
 /// `? 4:publisher_id  no publisher with id 91`. A bottom panel: called
 /// before the grid is drawn, it stands under it.
-fn error_line(app: &App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
-    let (locale, palette, look) = (app.locale, app.palette, app.look);
-    let said = app
-        .workspace(tab)
-        .and_then(|workspace| workspace.object_tab(object_tab))
-        .and_then(|object| {
-            let page = object.page()?;
-            // A row whose delete failed has no cell to say it: the row,
-            // by its number, and the database's words.
-            let refused = object
-                .edits
-                .deleted
-                .iter()
-                .find_map(|(&row, doomed)| Some((row, doomed.failed.as_ref()?)));
-            if let Some((row, error)) = refused {
-                let number = object.query.offset + row as u64 + 1;
-                let failure = failure_text(error);
-                // Who holds the row, once it was counted.
-                let doomed = object.edits.deleted.get(&row);
-                let held = doomed
-                    .and_then(|doomed| doomed.holder.as_ref())
-                    .map(|holder| {
-                        let own = |words: &str| look.label(words);
-                        super::pending_bar::holder_said(holder, locale, own)
-                    });
-                // With the key that opens those rows.
-                let key = crate::ui::keys::written(
-                    ui.ctx(),
-                    &look,
-                    crate::keymap::Command::OpenReferencedRow,
-                );
-                let open = look.label(&gettext(locale, "open rows"));
-                return Some(match held {
-                    Some(held) => format!("! {number}:  {failure} · {held} · {key} {open}"),
-                    None => format!("! {number}:  {failure}"),
+fn error_line(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    object_tab: TabId,
+    workspace: &Workspace,
+) {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let said = workspace.object_tab(object_tab).and_then(|object| {
+        let page = object.page()?;
+        // A row whose delete failed has no cell to say it: the row,
+        // by its number, and the database's words.
+        let refused = object
+            .edits
+            .deleted
+            .iter()
+            .find_map(|(&row, doomed)| Some((row, doomed.failed.as_ref()?)));
+        if let Some((row, error)) = refused {
+            let number = object.query.offset + row as u64 + 1;
+            let failure = failure_text(error);
+            // Who holds the row, once it was counted.
+            let doomed = object.edits.deleted.get(&row);
+            let held = doomed
+                .and_then(|doomed| doomed.holder.as_ref())
+                .map(|holder| {
+                    let own = |words: &str| look.label(words);
+                    super::pending_bar::holder_said(holder, locale, own)
                 });
+            // With the key that opens those rows.
+            let key = crate::ui::keys::written(
+                ui.ctx(),
+                &look,
+                crate::keymap::Command::OpenReferencedRow,
+            );
+            let open = look.label(&gettext(locale, "open rows"));
+            return Some(match held {
+                Some(held) => format!("! {number}:  {failure} · {held} · {key} {open}"),
+                None => format!("! {number}:  {failure}"),
+            });
+        }
+        // The set is in the page's order: by row, then by column.
+        let (&(row, col), pending) = object
+            .edits
+            .cells
+            .iter()
+            .find(|(_, pending)| pending.state != State::Ready)?;
+        let column = page.columns.get(col)?;
+        let message = match &pending.state {
+            State::Ready => return None,
+            State::ToFix(problem) => {
+                let typed = match &pending.new {
+                    NewValue::Text(text) => Some(text.as_str()),
+                    NewValue::Null | NewValue::Default { .. } | NewValue::Now => None,
+                };
+                let type_name = format::type_label(&column.type_name, column.kind);
+                let type_name = format::display_safe(&type_name);
+                cell_editor::problem_text(problem, &type_name, typed, locale)
             }
-            // The set is in the page's order: by row, then by column.
-            let (&(row, col), pending) = object
-                .edits
-                .cells
-                .iter()
-                .find(|(_, pending)| pending.state != State::Ready)?;
-            let column = page.columns.get(col)?;
-            let message = match &pending.state {
-                State::Ready => return None,
-                State::ToFix(problem) => {
-                    let typed = match &pending.new {
-                        NewValue::Text(text) => Some(text.as_str()),
-                        NewValue::Null | NewValue::Default { .. } | NewValue::Now => None,
-                    };
-                    let type_name = format::type_label(&column.type_name, column.kind);
-                    let type_name = format::display_safe(&type_name);
-                    cell_editor::problem_text(problem, &type_name, typed, locale)
-                }
-                State::Failed(error) => failure_text(error),
-            };
-            // A new row has no number among the table's: it is named by
-            // what it is.
-            let row = match crate::edit::new_id(row) {
-                Some(_) => look.label(&gettext(locale, "new")),
-                None => (object.query.offset + row as u64 + 1).to_string(),
-            };
-            // The database's words and the column's values as they are:
-            // the look's lower case is for the app's own.
-            Some(format!(
-                "! {row}:{}  {message}",
-                format::display_safe(&column.name)
-            ))
-        });
+            State::Failed(error) => failure_text(error),
+        };
+        // A new row has no number among the table's: it is named by
+        // what it is.
+        let row = match crate::edit::new_id(row) {
+            Some(_) => look.label(&gettext(locale, "new")),
+            None => (object.query.offset + row as u64 + 1).to_string(),
+        };
+        // The database's words and the column's values as they are:
+        // the look's lower case is for the app's own.
+        Some(format!(
+            "! {row}:{}  {message}",
+            format::display_safe(&column.name)
+        ))
+    });
     // The warnings that stand, and the first of them in the line's words.
-    let warned = app
-        .workspace(tab)
-        .and_then(|workspace| {
-            let object = workspace.object_tab(object_tab)?;
-            Some((object, key_picker::unmatched(workspace, object)))
-        })
+    let warned = workspace
+        .object_tab(object_tab)
+        .map(|object| (object, key_picker::unmatched(workspace, object)))
         .filter(|(_, found)| !found.is_empty());
     let warning = warned.as_ref().and_then(|(object, found)| {
         let page = object.page()?;
@@ -1509,30 +1576,54 @@ fn error_line(app: &App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
         });
 }
 
-pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
+/// What the grid reads besides its workspace: the settings and keys it is
+/// drawn with, and two answers of the app's for its cell's editor. The row
+/// panel's editor reads the same.
+pub struct Around<'a> {
+    pub settings: &'a Settings,
+    pub keymap: &'a Keymap,
+    /// An editor that is open has the keyboard: no dialog has it.
+    pub hold: bool,
+    /// The calendar under a date's field, where the settings show one
+    /// (`App::calendar`).
+    pub calendar: Option<cell_editor::Calendar>,
+}
+
+/// The grid of the object tab `object_tab`, or its error or empty state.
+/// Its cell's field edits the editor's text in place.
+pub fn show(
+    ui: &mut egui::Ui,
+    paint: Paint,
+    tab: ConnTabId,
+    object_tab: TabId,
+    workspace: &mut Workspace,
+    around: Around<'_>,
+) -> Vec<Action> {
+    let Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let Around {
+        settings,
+        keymap,
+        hold,
+        calendar,
+    } = around;
     // The grid's rows as dense and as striped, and its header as tall, as
     // the settings have them.
-    let grid_look = look.with_grid(&app.settings);
-    // An editor that is open has the keyboard, unless a dialog has it.
-    let hold = app.dialog.is_none();
-    let editor_keys = cell_editor::Keys::of(&app.keymap, app.layout());
-    let calendar = app.calendar();
+    let grid_look = look.with_grid(settings);
+    let editor_keys = cell_editor::Keys::of(keymap, paint.layout());
     if look.terminal {
-        error_line(app, ui, tab, object_tab);
+        error_line(ui, paint, tab, object_tab, workspace);
     }
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
-    let fit = Fit::of(workspace, app);
+    let fit = Fit::of(workspace, settings, paint.layout());
     // Kept apart from the workspace, which the editor's text is taken from.
     let zone = workspace.zone_shown().cloned();
     // The arrows are the grid's once the user worked in it.
     let keys = workspace.pane == crate::model::Pane::Grid;
     let Some(object) = workspace.object_tab(object_tab) else {
-        return;
+        return Vec::new();
     };
     // Rows that wait for a connect that restarts the tab (see
     // `App::wake_to_read`): how long it has been going, None until it is
@@ -1610,21 +1701,19 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         )),
         (None, _) => None,
     };
-    // A visual selection of rows, and how many it holds: said when it
-    // starts and each time it grows or shrinks.
-    let visual = (look.terminal && object.visual()).then(|| {
-        let rows = object.selected_rows().len();
-        let held = super::pending_bar::counted(locale, rows, "row selected", "rows selected");
+    // A visual selection, and what it holds: said when it starts and each
+    // time it grows or shrinks.
+    let visual = object.visual_mode().filter(|_| look.terminal).map(|mode| {
+        let whole_rows = mode == crate::selection::Visual::Rows;
+        let size = object.selection_size().unwrap_or((1, 1));
+        let held = crate::selection::said(locale, size, whole_rows);
         format!("{} {held}.", gettext(locale, "Visual."))
     });
     // The tab itself from here on: the field on a cell edits the text its
     // editor holds, beside the page the grid reads. Nothing else of it is
     // changed.
-    let Some(object) = app
-        .workspace_mut(tab)
-        .and_then(|workspace| workspace.object_tab_mut(object_tab))
-    else {
-        return;
+    let Some(object) = workspace.object_tab_mut(object_tab) else {
+        return Vec::new();
     };
     let mut actions = Vec::new();
     let area = ui.max_rect();
@@ -1733,11 +1822,24 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         // among them. A place is the grid's; a row is the set's and the
         // page's, and the reducer's.
         let order = crate::edit::Order::of(&object.edits.added, page.rows.len());
-        // The rows selected with the cursor's, as places of the grid. Read
-        // here, before the tab is taken for its editor's text.
-        let span = object.selected_span();
-        let ranged =
-            |place: usize| span.is_some_and(|(first, last)| (first..=last).contains(&place));
+        // What is selected with the cursor's cell, as places of the grid:
+        // whole rows, or a rectangle of cells. Read here, before the tab is
+        // taken for its editor's text.
+        let width = page.columns.len();
+        let selected = object.selected();
+        let whole = selected
+            .map(|selected| selected.ranged())
+            .unwrap_or_default();
+        let block = selected.and_then(|selected| selected.block(width));
+        let said = selected.and_then(|selected| {
+            let whole_rows = object
+                .range
+                .as_ref()
+                .is_some_and(crate::selection::Range::rows);
+            let size = selected.size(width)?;
+            Some(crate::selection::said(locale, size, whole_rows))
+        });
+        let ranged = |place: usize| whole.contains(&place);
         let placed = |cell: CellPos| {
             let row = order.place(cell.row)?;
             Some(CellPos { row, col: cell.col })
@@ -1784,12 +1886,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         // grid of the fit before kept goes when this one is drawn.
         let id = grid_id(tab, object_tab, fit);
         grid::keep(ui.ctx(), table_id(tab, object_tab), id);
+        // A secondary click's menu: Copy, Copy as ›, Copy rows as TSV,
+        // Export selection….
+        let menu_rows = |ui: &mut egui::Ui| crate::ui::copy_as::context_rows(ui, paint, true);
         let output = grid::show(
             ui,
             id,
             &columns,
             order.len(),
             object.selection.and_then(placed),
+            grid::Picked {
+                block,
+                said: said.as_deref(),
+                menu: Some(grid::Menu(&menu_rows)),
+            },
             keys,
             &palette,
             &grid_look,
@@ -1950,12 +2060,33 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             });
         }
         if let Some(cell) = output.clicked.and_then(held) {
-            // With Shift held the click takes the rows up to its own into
+            // With Shift held the click takes the cells up to its own into
             // the selection.
             actions.push(if output.shift {
                 Action::ExtendTo { tab, id, cell }
             } else {
                 Action::SelectCell { tab, id, cell }
+            });
+        }
+        // A drag over the cells: the range runs to the one under it.
+        if let Some(cell) = output.dragged.and_then(held) {
+            actions.push(Action::ExtendTo { tab, id, cell });
+        }
+        // A secondary click outside the selection selects its cell.
+        if let Some(cell) = output.context_clicked.and_then(held) {
+            actions.push(Action::SelectCell { tab, id, cell });
+        }
+        if let Some(chosen) = output.chosen {
+            actions.push(chosen.action(tab));
+        }
+        if let Some((place, click)) = output.row_clicked
+            && let Some(row) = order.row(place)
+        {
+            actions.push(Action::RowNumberClicked {
+                tab,
+                id,
+                row,
+                click,
             });
         }
         // A second click edits the cell.
@@ -2014,7 +2145,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             let (text, name, keys) = (
                 look.label(&gettext(locale, "Running query…")),
                 look.label(&gettext(locale, "Cancel")),
-                cancel_keys(&app.keymap, &look),
+                cancel_keys(keymap, &look),
             );
             let cancel = states::key_button(&name, &keys, &look).label("Cancel query");
             if states::running(ui, area, &text, waited, Some(cancel), &look, &palette) {
@@ -2025,7 +2156,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             ui.ctx().request_repaint_after(states::DELAY - waited);
         }
     }
-    app.actions.extend(actions);
+    actions
 }
 
 /// What editing shows in a table's grid: the pending cells, the ones a save
@@ -2719,7 +2850,7 @@ pub fn cell<'a>(
     shown: Shown,
 ) -> Cell<'a> {
     if let Some(style) = tags.style(value)
-        && format::color(value).is_none()
+        && grid::swatch_color(value).is_none()
     {
         return Cell {
             text: format::cell_text(value),
@@ -2769,7 +2900,7 @@ pub fn plain_cell<'a>(
         };
         return styled(label.into(), style);
     }
-    if let Some(color) = format::color(value) {
+    if let Some(color) = grid::swatch_color(value) {
         return styled(format::cell_text(value), Style::Color(color));
     }
     if let Some(doc) =

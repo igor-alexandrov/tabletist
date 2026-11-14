@@ -7,7 +7,7 @@ use egui::{Key, Modifiers};
 
 use crate::app::App;
 use crate::keymap::{Command, Keymap, Layout, Mods, Scope, Spelled, Stroke, Typed, Written};
-use crate::model::{Action, ConnTabId, TabId};
+use crate::model::{Action, ConnTabId, ObjectTab, TabId, Workspace};
 
 const NUMBERS: [Key; 9] = [
     Key::Num1,
@@ -245,16 +245,14 @@ pub(crate) fn asked(
     all
 }
 
-/// Whether `tab`'s server has another database to switch to: the menu of
-/// Switch database has something to show.
-fn switchable(app: &App, tab: ConnTabId) -> bool {
-    app.workspace(tab).is_some_and(|workspace| {
-        workspace
-            .databases
-            .value
-            .as_ref()
-            .is_some_and(|databases| databases.len() > 1)
-    })
+/// Whether the workspace's server has another database to switch to:
+/// the menu of Switch database has something to show.
+fn switchable(workspace: &Workspace) -> bool {
+    workspace
+        .databases
+        .value
+        .as_ref()
+        .is_some_and(|databases| databases.len() > 1)
 }
 
 /// The digit a command bound to a range (`alt+1..9`) was asked with, from
@@ -409,6 +407,8 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             .and_then(|workspace| workspace.object_tab(id))
             .is_some_and(|object| object.selection.is_some())
     });
+    // A field of a SQL result's row panel has the keyboard: Export row….
+    let on_result_field = result_field(ctx, app);
     // The row panel's field that has the keyboard, of the table on screen:
     // its keys are read here with the grid's, so one key is never both's.
     let field = object.filter(|_| grid).and_then(|(tab, id)| {
@@ -547,7 +547,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     let flips = object
         .filter(|_| grid && !editing && !tree_arrows && !focused)
         .filter(|&(tab, id)| app.flips(tab, id))
-        // Not under the terminal look's visual selection of rows.
+        // Not under the terminal look's visual selection.
         .filter(|&(tab, id)| {
             let object = app
                 .workspace(tab)
@@ -644,9 +644,10 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         && !app.look.terminal
         && !ctx.text_edit_focused()
         && !ctx.memory(|memory| memory.has_focus(crate::ui::sidebar::find_field_id(active)))
-        && typed_chars(ctx)
-            .into_iter()
-            .any(|char| !char.is_whitespace() && window_letter(app, scopes, char).is_none())
+        && typed_chars(ctx).into_iter().any(|char| {
+            !char.is_whitespace()
+                && window_letter(&app.keymap, app.layout(), scopes, char).is_none()
+        })
     {
         let field = crate::ui::start::search_field_id(active);
         ctx.memory_mut(|memory| memory.request_focus(field));
@@ -835,7 +836,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         {
             // With an agent's entry selected in History, its call: the key
             // its Show in Agents Log button names.
-            let shown = history_shown(app, active);
+            let shown = app.workspace(active).and_then(history_shown);
             let call = shown
                 .and_then(crate::model::HistoryTab::chosen)
                 .filter(|chosen| chosen.entry.source == crate::history::Source::Agent)
@@ -850,6 +851,10 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         }
         if in_workspace && on(input, Command::History, Scope::Global).count > 0 {
             actions.push(Action::ShowHistory(active));
+        }
+        // No key of its own: one the person gives it in Settings.
+        if in_workspace && on(input, Command::ExportTable, Scope::Global).count > 0 {
+            actions.push(Action::PickTableToExport(active));
         }
         if on(input, Command::Connections, Scope::Global).count > 0 {
             actions.push(Action::ShowConnections);
@@ -946,12 +951,14 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         // Where the server has another database: with one, no menu is
         // drawn, and an id left open would show it once the list came.
         if in_workspace
-            && switchable(app, active)
+            && app.workspace(active).is_some_and(switchable)
             && on(input, Command::SwitchDatabase, Scope::Global).count > 0
         {
             menu_asked = true;
         }
-        if !on_sql && on(input, Command::Reload, Scope::Grid).count > 0 {
+        // A SQL editor has nothing to reload, but the tree beside it does
+        // when it has the keys.
+        if (!on_sql || tree_arrows) && on(input, Command::Reload, Scope::Grid).count > 0 {
             // The tree reloads itself when it has the arrows (spec 5.10).
             actions.push(if tree_arrows {
                 Action::RefreshTree(active)
@@ -1049,6 +1056,39 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 }
             }
         }
+        // Export…: of the table in front, of the one the tree's selection
+        // is on, of the SQL result in front, or the row panel's row
+        // (spec 4, S8 and S10), beside any export running (spec 4, F7).
+        if !terminal && app.dialog.is_none() {
+            let result_front = object.is_none()
+                && app
+                    .workspace(active)
+                    .and_then(crate::model::Workspace::active_sql_tab)
+                    .is_some_and(crate::model::SqlTab::exports);
+            let tree_asked = tree_arrows && on(input, Command::Export, Scope::Sidebar).fresh;
+            let row_asked = !tree_asked
+                && (field.is_some() || on_result_field)
+                && on(input, Command::Export, Scope::Inspector).fresh;
+            let grid_asked = !tree_asked
+                && !row_asked
+                && object.is_some()
+                && on(input, Command::Export, Scope::Grid).fresh;
+            let result_asked = !tree_asked
+                && !row_asked
+                && result_front
+                && (on(input, Command::Export, Scope::Results).fresh
+                    || on(input, Command::Export, Scope::SqlEditor).fresh);
+            if tree_asked {
+                actions.push(Action::ExportFromTree(active));
+            } else if row_asked {
+                actions.push(Action::ExportSelection(export_row(active)));
+            } else if grid_asked || result_asked {
+                actions.push(Action::OpenExport {
+                    tab: active,
+                    format: None,
+                });
+            }
+        }
         // The DDL view's chords, in its text too.
         if !terminal
             && app.dialog.is_none()
@@ -1086,7 +1126,10 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             // The terminal look's list of sessions has Enter of its own,
             // and so has its log with a call selected, unless the person
             // went to the tree.
-            let log_call = agents_log(app, tab).is_some_and(|log| log.selected.is_some());
+            let log_call = app
+                .workspace(tab)
+                .and_then(agents_log)
+                .is_some_and(|log| log.selected.is_some());
             let list = terminal
                 && (agents_lists(app, tab) || log_call)
                 && app
@@ -1117,22 +1160,51 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 actions.push(Action::CloseTab { tab, id });
             }
             if !editing && any_grid && !tree_arrows && !focused {
-                // Shift with an arrow takes the row it moves to into the
-                // selection. A table's rows only.
-                if sql.is_none() {
-                    for (command, rows) in [(Command::ExtendUp, -1), (Command::ExtendDown, 1)] {
-                        let presses = on(input, command, Scope::Grid).count;
-                        actions.extend((0..presses).map(|_| Action::ExtendBy { tab, id, rows }));
-                    }
+                // Shift with an arrow takes the cell it moves to into the
+                // selection, in a table's rows and a result's.
+                let rows_scope = if sql.is_some() {
+                    Scope::Results
+                } else {
+                    Scope::Grid
+                };
+                for (command, rows, cols) in [
+                    (Command::ExtendUp, -1, 0),
+                    (Command::ExtendDown, 1, 0),
+                    (Command::ExtendLeft, 0, -1),
+                    (Command::ExtendRight, 0, 1),
+                ] {
+                    let presses = on(input, command, rows_scope).count;
+                    actions.extend((0..presses).map(|_| Action::ExtendBy {
+                        tab,
+                        id,
+                        rows,
+                        cols,
+                    }));
+                }
+                if on(input, Command::SelectRowsOfCursor, rows_scope).fresh {
+                    actions.push(Action::SelectRowsOfCursor { tab, id });
+                }
+                if on(input, Command::SelectAllRows, rows_scope).fresh {
+                    actions.push(Action::SelectAllRows { tab, id });
+                }
+                // The terminal look's block: a chord, where `v` and `V`
+                // are letters.
+                if on(input, Command::SelectBlock, rows_scope).fresh {
+                    let mode = crate::model::Visual::Block;
+                    actions.push(Action::SelectRows { tab, id, mode });
                 }
                 // Down on a table's last row, on its last page, adds a
                 // row below it where the table takes one, in the looks
                 // with a key for it. A fresh press only: a held arrow
                 // that reaches the end adds no more, and stays there.
-                if let Some((tab, id)) = adds.filter(|&(tab, id)| on_last_row(app, tab, id)) {
+                let table = |(tab, id)| {
+                    app.workspace(tab)
+                        .and_then(|workspace| workspace.object_tab(id))
+                };
+                if let Some((tab, id)) = adds.filter(|&at| table(at).is_some_and(on_last_row)) {
                     let pressed = on(input, Command::AddRowAtEnd, Scope::Grid);
                     if pressed.fresh
-                        && let Some(row) = selection_row(app, tab, id)
+                        && let Some(row) = table((tab, id)).and_then(selection_row)
                     {
                         let place = crate::edit::Place::Below(row);
                         actions.push(Action::AddRow { tab, id, place });
@@ -1174,7 +1246,13 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         }
     });
     if let Some((tab, id)) = copy_ddl {
-        crate::ui::ddl::copy(app, ctx, tab, id);
+        let paint = crate::ui::Paint::of(app);
+        if let Some(object) = app
+            .workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+        {
+            crate::ui::ddl::copy(ctx, paint, tab, object);
+        }
     }
     // The menu opens as a click on the chip opens it: a server with one
     // database has none, and the key does nothing.
@@ -1275,23 +1353,35 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     if terminal {
         held_copy(ctx, open);
     }
-    if !editing && grid {
+    if !editing && any_grid {
         // The row's chord first: with Shift exact neither is the other's.
         // They come as the window's copy, which `presses` reads. A look
-        // with no chord for them copies nothing here.
+        // with no chord for them copies nothing here. A table's grid or a
+        // result's.
+        // Copy as's chord too: it holds Alt with the copy.
+        let scope = if grid { Scope::Grid } else { Scope::Results };
         let copied = ctx.input_mut(|input| {
-            [Command::CopyRow, Command::CopyCells]
+            [Command::CopyAs, Command::CopyRow, Command::CopyCells]
                 .into_iter()
                 .find(|command| {
-                    let scope = Scope::Grid;
                     asked(input, &app.keymap, layout, *command, scope, normal).count > 0
                 })
         });
-        let row = copied == Some(Command::CopyRow);
-        if copied.is_some()
-            && let Some(text) = app.copy_text(row)
-        {
-            ctx.copy_text(text);
+        match copied {
+            Some(Command::CopyAs) => {
+                let pick = crate::model::CopyPick::Selection;
+                let tab = app.active_tab_id();
+                actions.push(Action::OpenCopyAs { tab, pick });
+            }
+            Some(command) => {
+                let pick = if command == Command::CopyRow {
+                    crate::model::CopyPick::Rows
+                } else {
+                    crate::model::CopyPick::Selection
+                };
+                copy_plain(ctx, app, pick, &mut actions);
+            }
+            None => {}
         }
     }
     // The Settings window, wherever the keyboard is.
@@ -1315,9 +1405,13 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     if !editing
         && app.dialog.is_none()
         && !focused
-        && let Some(history) = history_shown(app, active).filter(|_| !on_tree)
+        && let Some(history) = app
+            .workspace(active)
+            .and_then(history_shown)
+            .filter(|_| !on_tree)
     {
-        history_chords(app, ctx, active, history, &mut actions);
+        let (keymap, layout, locale) = (&app.keymap, app.layout(), app.locale);
+        history_chords(keymap, layout, locale, ctx, active, history, &mut actions);
     }
     if !editing && app.dialog.is_none() {
         // A click ends a first key's wait: what is typed after it is typed
@@ -1349,6 +1443,12 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
 /// The text size keys, wherever the keyboard is: under a dialog too, where
 /// [`handle`] reads no key. The Settings window shows what they change.
 pub fn text_size(app: &mut App, ctx: &egui::Context) {
+    // The shortcuts' search field finds them instead.
+    if matches!(app.dialog, Some(crate::model::Dialog::Help(_)))
+        && crate::ui::help::field_has_keyboard(ctx)
+    {
+        return;
+    }
     let layout = app.layout();
     // In a field as out of one: no field takes these chords.
     let normal = !ctx.text_edit_focused();
@@ -1709,10 +1809,10 @@ fn editing_keys(
     let Some((tab, id)) = app.active_object() else {
         return;
     };
-    let Some(object) = app
-        .workspace(tab)
-        .and_then(|workspace| workspace.object_tab(id))
-    else {
+    let Some(workspace) = app.workspace(tab) else {
+        return;
+    };
+    let Some(object) = workspace.object_tab(id) else {
         return;
     };
     let (keymap, layout) = (&app.keymap, app.layout());
@@ -1720,7 +1820,7 @@ fn editing_keys(
         asked(input, keymap, layout, command, scope, normal)
     };
     let open = object.edits.editor.is_some();
-    // The terminal look's visual selection of rows holds back the chords
+    // The terminal look's visual selection holds back the chords
     // that act on one cell or one row.
     let visual = app.look.terminal && object.visual();
     let editor = crate::ui::cell_editor::field_id(tab, id);
@@ -1874,7 +1974,7 @@ fn editing_keys(
         // keys on a field of the row panel nothing is deleted here.
         let deletes = on(input, Command::DeleteRow, Scope::Grid, true).count;
         if deletes > 0 && field.is_none() {
-            refused = delete_selected(app, tab, id, actions);
+            refused = delete_selected(workspace, &app.look, app.locale, tab, id, actions);
             return;
         }
         let cell = crate::model::CellPos {
@@ -1966,14 +2066,20 @@ fn editing_keys(
 /// Asks for the selected row of the tab `id` to be deleted, or hands back
 /// why it cannot be, for the caller to say: a toast in the desktop looks,
 /// the status line's message in the Omarchy look.
-fn delete_row(app: &App, tab: ConnTabId, id: TabId, actions: &mut Vec<Action>) -> Option<String> {
-    let refused = app.workspace(tab).and_then(|workspace| {
-        let object = workspace.object_tab(id)?;
+fn delete_row(
+    workspace: &Workspace,
+    look: &crate::theme::Look,
+    locale: crate::i18n::Locale,
+    tab: ConnTabId,
+    id: TabId,
+    actions: &mut Vec<Action>,
+) -> Option<String> {
+    let refused = workspace.object_tab(id).and_then(|object| {
         let row = object.selection?.row;
         let lock = crate::edit::Table::of(workspace, object)?.no_delete(row)?;
-        let table = crate::ui::format::display_safe(&object.object.name);
+        let table = crate::format::display_safe(&object.object.name);
         Some(crate::ui::cell_editor::delete_said(
-            lock, &table, &app.look, app.locale,
+            lock, &table, look, locale,
         ))
     });
     if refused.is_none() {
@@ -1986,24 +2092,25 @@ fn delete_row(app: &App, tab: ConnTabId, id: TabId, actions: &mut Vec<Action>) -
 /// [`delete_row`]'s. Of several, hands back what there is to say where a
 /// refusal is said: why none is deleted, or how many were left out.
 fn delete_selected(
-    app: &App,
+    workspace: &Workspace,
+    look: &crate::theme::Look,
+    locale: crate::i18n::Locale,
     tab: ConnTabId,
     id: TabId,
     actions: &mut Vec<Action>,
 ) -> Option<String> {
-    let several = app.workspace(tab).and_then(|workspace| {
-        let object = workspace.object_tab(id)?;
+    let several = workspace.object_tab(id).and_then(|object| {
         let rows = object.selected_rows();
         if rows.len() < 2 {
             return None;
         }
         let sweep = crate::edit::Table::of(workspace, object)?.sweep(&rows);
-        let table = crate::ui::format::display_safe(&object.object.name);
-        let said = crate::ui::cell_editor::sweep_said(&sweep, &table, &app.look, app.locale);
+        let table = crate::format::display_safe(&object.object.name);
+        let said = crate::ui::cell_editor::sweep_said(&sweep, &table, look, locale);
         Some((sweep, said))
     });
     let Some((sweep, said)) = several else {
-        return delete_row(app, tab, id, actions);
+        return delete_row(workspace, look, locale, tab, id, actions);
     };
     if !matches!(
         sweep,
@@ -2017,21 +2124,22 @@ fn delete_selected(
 /// Asks for the cursor's row and the rows after it, `count` in all, to be
 /// deleted, or hands back what there is to say where a refusal is said.
 fn delete_count(
-    app: &App,
+    workspace: &Workspace,
+    look: &crate::theme::Look,
+    locale: crate::i18n::Locale,
     tab: ConnTabId,
     id: TabId,
     count: u32,
     actions: &mut Vec<Action>,
 ) -> Option<String> {
-    let (sweep, said) = app.workspace(tab).and_then(|workspace| {
-        let object = workspace.object_tab(id)?;
+    let (sweep, said) = workspace.object_tab(id).and_then(|object| {
         let rows = object.rows_from_cursor(count);
         if rows.is_empty() {
             return None;
         }
         let sweep = crate::edit::Table::of(workspace, object)?.sweep(&rows);
-        let table = crate::ui::format::display_safe(&object.object.name);
-        let said = crate::ui::cell_editor::sweep_said(&sweep, &table, &app.look, app.locale);
+        let table = crate::format::display_safe(&object.object.name);
+        let said = crate::ui::cell_editor::sweep_said(&sweep, &table, look, locale);
         Some((sweep, said))
     })?;
     if !matches!(
@@ -2043,21 +2151,14 @@ fn delete_count(
     said
 }
 
-/// The row the cursor of the table tab `id` is on.
-fn selection_row(app: &App, tab: ConnTabId, id: TabId) -> Option<usize> {
-    let object = app.workspace(tab)?.object_tab(id)?;
+/// The row the cursor of the table tab `object` is on.
+fn selection_row(object: &ObjectTab) -> Option<usize> {
     Some(object.selection?.row)
 }
 
-/// Whether the cursor of the table tab `id` is on the last row its Data
-/// view shows, on the last page: no row is under it to move to.
-fn on_last_row(app: &App, tab: ConnTabId, id: TabId) -> bool {
-    let Some(object) = app
-        .workspace(tab)
-        .and_then(|workspace| workspace.object_tab(id))
-    else {
-        return false;
-    };
+/// Whether the cursor of the table tab `object` is on the last row its
+/// Data view shows, on the last page: no row is under it to move to.
+fn on_last_row(object: &ObjectTab) -> bool {
     let Some(page) = object.page().filter(|page| !page.has_more) else {
         return false;
     };
@@ -2067,10 +2168,37 @@ fn on_last_row(app: &App, tab: ConnTabId, id: TabId) -> bool {
         && place.is_some_and(|place| place + 1 == order.len())
 }
 
-/// Whether a visual selection of rows holds `command` back: what changes,
-/// copies or follows one cell or one row. The moves, the inspector's
-/// show and hide, a save, a discard, Review SQL, a reload, the filters and
-/// the pages are not among them.
+/// Copies `pick` of the grid in front as ⌘C does, saying nothing: past the
+/// clipboard's limits it copies nothing and says why.
+/// A copy too large for the clipboard is the app's to refuse: it says
+/// why and offers the file (spec 3b, R6). Says whether it was refused.
+fn copy_plain(
+    ctx: &egui::Context,
+    app: &App,
+    pick: crate::model::CopyPick,
+    actions: &mut Vec<Action>,
+) -> bool {
+    let how = crate::model::CopyHow::Plain;
+    let Some(copying) = app.copy(pick, how) else {
+        return false;
+    };
+    match copying.copied {
+        crate::export::Copied::Text { text, .. } => {
+            ctx.copy_text(text);
+            false
+        }
+        _ => {
+            let tab = app.active_tab_id();
+            actions.push(Action::CopyAs { tab, pick, how });
+            true
+        }
+    }
+}
+
+/// Whether a visual selection holds `command` back: what changes or
+/// follows one cell or one row, and what copies one row. The moves, the
+/// inspector's show and hide, a save, a discard, Review SQL, a reload, the
+/// filters, the pages and the copy of the selection are not among them.
 fn held_back(command: Command) -> bool {
     matches!(
         command,
@@ -2081,7 +2209,6 @@ fn held_back(command: Command) -> bool {
             | Command::SetDefault
             | Command::UndoCell
             | Command::RedoCell
-            | Command::CopyCells
             | Command::CopyRow
             | Command::PasteCells
             | Command::PasteNewRows
@@ -2105,7 +2232,8 @@ fn held_back(command: Command) -> bool {
 fn agents_shows(app: &App, tab: ConnTabId, server_off: bool) -> bool {
     use crate::model::AgentsHere;
     // Its Activity view: the Log view shows neither Turn on nor Copy.
-    let front = agents_view(app, tab) == Some(crate::model::AgentsView::Activity);
+    let front =
+        app.workspace(tab).and_then(agents_view) == Some(crate::model::AgentsView::Activity);
     let here = app.agents_here(tab);
     front
         && match server_off {
@@ -2122,12 +2250,12 @@ fn agents_shows(app: &App, tab: ConnTabId, server_off: bool) -> bool {
 /// or the connection is Off, whose tabs list none.
 fn agents_lists(app: &App, tab: ConnTabId) -> bool {
     use crate::model::AgentsHere;
-    if agents_view(app, tab) != Some(crate::model::AgentsView::Activity) {
-        return false;
-    }
     let Some(workspace) = app.workspace(tab) else {
         return false;
     };
+    if agents_view(workspace) != Some(crate::model::AgentsView::Activity) {
+        return false;
+    }
     let listing = matches!(
         app.agents_here(tab),
         Some(AgentsHere::NoneConnected | AgentsHere::Connected { .. })
@@ -2135,11 +2263,11 @@ fn agents_lists(app: &App, tab: ConnTabId) -> bool {
     listing && !app.agents.listed(&workspace.conn_id).is_empty()
 }
 
-/// The History tab of `tab`, while it is in front.
-fn history_shown(app: &App, tab: ConnTabId) -> Option<&crate::model::HistoryTab> {
-    let workspace = app
-        .workspace(tab)
-        .filter(|workspace| workspace.history_in_front())?;
+/// The History tab of the workspace, while it is in front.
+fn history_shown(workspace: &Workspace) -> Option<&crate::model::HistoryTab> {
+    if !workspace.history_in_front() {
+        return None;
+    }
     workspace.history_tab()
 }
 
@@ -2147,14 +2275,14 @@ fn history_shown(app: &App, tab: ConnTabId) -> Option<&crate::model::HistoryTab>
 /// the arrows, Enter and Esc, and the macOS look's chords. A letter of the
 /// terminal look's is left to the letters.
 fn history_chords(
-    app: &App,
+    keymap: &Keymap,
+    layout: Layout,
+    locale: crate::i18n::Locale,
     ctx: &egui::Context,
     tab: ConnTabId,
     history: &crate::model::HistoryTab,
     actions: &mut Vec<Action>,
 ) {
-    let layout = app.layout();
-    let keymap = &app.keymap;
     let holds = |command: Command| {
         keymap
             .of(command)
@@ -2204,7 +2332,7 @@ fn history_chords(
             Command::CopyHistorySql,
         ] {
             if pressed(input, command) {
-                history_command(ctx, app, tab, command, chosen, actions);
+                history_command(ctx, locale, tab, command, chosen, actions);
             }
         }
     });
@@ -2214,7 +2342,7 @@ fn history_chords(
 /// only what the entry offers.
 fn history_command(
     ctx: &egui::Context,
-    app: &App,
+    locale: crate::i18n::Locale,
     tab: ConnTabId,
     command: Command,
     chosen: &crate::model::HistoryRow,
@@ -2237,7 +2365,7 @@ fn history_command(
         Command::CopyHistorySql => {
             if let Some(sql) = &entry.sql {
                 ctx.copy_text(sql.clone());
-                let said = crate::i18n::gettext(app.locale, crate::ui::review::COPIED_SQL);
+                let said = crate::i18n::gettext(locale, crate::ui::review::COPIED_SQL);
                 crate::ui::toast::say(ctx, &said);
             }
         }
@@ -2245,12 +2373,11 @@ fn history_command(
     }
 }
 
-/// The Log view of the Agents tab of `tab`, while it shows.
-fn agents_log(app: &App, tab: ConnTabId) -> Option<&crate::model::AgentsLog> {
-    if agents_view(app, tab) != Some(crate::model::AgentsView::Log) {
+/// The Log view of the workspace's Agents tab, while it shows.
+fn agents_log(workspace: &Workspace) -> Option<&crate::model::AgentsLog> {
+    if agents_view(workspace) != Some(crate::model::AgentsView::Log) {
         return None;
     }
-    let workspace = app.workspace(tab)?;
     workspace.tabs.iter().find_map(|open| match open {
         crate::model::Tab::Agents(agents) => Some(&agents.log),
         crate::model::Tab::Object(_)
@@ -2259,11 +2386,11 @@ fn agents_log(app: &App, tab: ConnTabId) -> Option<&crate::model::AgentsLog> {
     })
 }
 
-/// The view of the Agents tab of `tab`, while the tab is in front.
-fn agents_view(app: &App, tab: ConnTabId) -> Option<crate::model::AgentsView> {
-    let workspace = app
-        .workspace(tab)
-        .filter(|workspace| workspace.agents_in_front())?;
+/// The view of the workspace's Agents tab, while the tab is in front.
+fn agents_view(workspace: &Workspace) -> Option<crate::model::AgentsView> {
+    if !workspace.agents_in_front() {
+        return None;
+    }
     workspace.tabs.iter().find_map(|open| match open {
         crate::model::Tab::Agents(agents) => Some(agents.view),
         crate::model::Tab::Object(_)
@@ -2275,7 +2402,8 @@ fn agents_view(app: &App, tab: ConnTabId) -> Option<crate::model::AgentsView> {
 /// Whether the Agents tab of `tab` is in front with agents here: what Stop
 /// agents here needs.
 fn agents_here(app: &App, tab: ConnTabId) -> bool {
-    let front = agents_view(app, tab) == Some(crate::model::AgentsView::Activity);
+    let front =
+        app.workspace(tab).and_then(agents_view) == Some(crate::model::AgentsView::Activity);
     front
         && matches!(
             app.agents_here(tab),
@@ -2285,7 +2413,7 @@ fn agents_here(app: &App, tab: ConnTabId) -> bool {
 
 /// Whether `sql` shows a result grid for the keys to move in: its last
 /// run's rows, unless the Messages pane covers them.
-fn shows_grid(sql: &crate::model::SqlTab) -> bool {
+pub(crate) fn shows_grid(sql: &crate::model::SqlTab) -> bool {
     sql.pane == crate::model::ResultPane::Results && sql.dims().0 > 0
 }
 
@@ -2321,20 +2449,57 @@ pub fn after_frame(ctx: &egui::Context) {
 /// takes a key: [`letters`] takes such a character from the frame.
 const WINDOW_LETTERS: [Command; 4] = crate::keymap::ONE_LETTER;
 
+/// Whether a field of the row panel of the SQL result in front has the
+/// keyboard: its Export row… is the panel's row (spec 4, S8).
+fn result_field(ctx: &egui::Context, app: &App) -> bool {
+    let tab = app.active_tab_id();
+    app.workspace(tab)
+        .and_then(crate::model::Workspace::active_sql_tab)
+        .and_then(|sql| {
+            let (columns, _, _) = sql.shown_rows()?;
+            crate::ui::row_panel::focused_field(ctx, tab, sql.id, columns.len())
+        })
+        .is_some()
+}
+
+/// Export row…: the sheet on the cursor's row alone, of the table or the
+/// SQL result in front of `tab` (spec 4, S8).
+pub fn export_row(tab: crate::model::ConnTabId) -> crate::model::ExportOffer {
+    crate::model::ExportOffer {
+        tab,
+        table: None,
+        format: None,
+        whole_rows: false,
+        copied: None,
+        row_only: true,
+    }
+}
+
 /// The command `char`, typed this frame, stands for among
 /// [`WINDOW_LETTERS`], in the first of `scopes` that reads it (the global
 /// scope's keys with each, so `?` is Help's everywhere).
-fn window_letter(app: &App, scopes: &[Scope], char: char) -> Option<Command> {
+fn window_letter(keymap: &Keymap, layout: Layout, scopes: &[Scope], char: char) -> Option<Command> {
     let nothing = |_: crate::keymap::When| false;
     let typed = char.to_string();
     let read = scopes
         .iter()
-        .map(|scope| app.keymap.typed(app.layout(), *scope, &nothing, &typed))
+        .map(|scope| keymap.typed(layout, *scope, &nothing, &typed))
         .find(|read| *read != Typed::Nothing);
     match read {
         Some(Typed::Command(command)) if WINDOW_LETTERS.contains(&command) => Some(command),
         _ => None,
     }
+}
+
+/// What `typed` is in the first of `scopes` that reads it: a command, the
+/// start of a key of several (the keymap waits for the next), or nothing.
+fn read_typed(keymap: &Keymap, layout: Layout, scopes: &[Scope], typed: &str) -> Typed {
+    let nothing = |_: crate::keymap::When| false;
+    scopes
+        .iter()
+        .map(|scope| keymap.typed(layout, *scope, &nothing, typed))
+        .find(|read| *read != Typed::Nothing)
+        .unwrap_or(Typed::Nothing)
 }
 
 /// Single letters: the picker's keys, and in the terminal look the
@@ -2354,16 +2519,44 @@ fn letters(
     // taken from the frame, its key with it; any other is left for the
     // code below.
     let layout = app.layout();
+    // A key of several begun (`z` of `zR`) takes the letter after it
+    // where that goes on with it, though alone the letter is one of these
+    // (`R`). A count does not, nor a key the letter does not go on (`d?`
+    // is Help's).
+    let mut begun: String = ctx
+        .data(|data| data.get_temp(typed_id()))
+        .unwrap_or_default();
     for char in typed_chars(ctx) {
-        let Some(command) = window_letter(app, scopes, char) else {
+        if !begun.is_empty() && !crate::keymap::is_count(&begun) {
+            let joined = format!("{begun}{char}");
+            match read_typed(&app.keymap, layout, scopes, &joined) {
+                Typed::Waiting => {
+                    begun = joined;
+                    continue;
+                }
+                Typed::Nothing => begun.clear(),
+                _ => {
+                    begun.clear();
+                    continue;
+                }
+            }
+        }
+        let Some(command) = window_letter(&app.keymap, layout, scopes, char) else {
+            begun = if read_typed(&app.keymap, layout, scopes, &char.to_string()) == Typed::Waiting
+            {
+                char.to_string()
+            } else {
+                String::new()
+            };
             continue;
         };
         take_char(ctx, char);
         let tab = app.active_tab_id();
         match command {
-            // A SQL editor has nothing to reload.
-            Command::Reload if app.active_sql().is_some() => {}
+            // The tree reloads itself whatever tab is in front; a SQL
+            // editor has nothing to reload.
             Command::Reload if tree_arrows => actions.push(Action::RefreshTree(tab)),
+            Command::Reload if app.active_sql().is_some() => {}
             Command::Reload => actions.push(Action::Refresh(tab)),
             Command::FilterObjects => {
                 use crate::ui::focus::{self, Region};
@@ -2550,9 +2743,18 @@ fn letters(
     // The cursor's row is a new one: the row panel is its form, and the
     // key that drops the row is read from the form's fields too.
     let on_new = selection.is_some_and(|cell| crate::edit::new_id(cell.row).is_some());
-    // A visual selection of rows is on: its keys are read, and the keys
-    // that act on one cell or one row are held back.
-    let visual = object.is_some_and(|object| object.visual());
+    // A visual selection is on, of a table's rows or a result's: its keys
+    // are read, and the keys that act on one cell or one row are held
+    // back. `V`'s holds the key that deletes its rows.
+    let visual_mode = match object {
+        Some(object) => object.visual_mode(),
+        None => workspace
+            .active_sql_tab()
+            .filter(|sql| shows_grid(sql))
+            .and_then(|sql| sql.visual_mode()),
+    };
+    let visual = visual_mode.is_some();
+    let visual_rows = visual_mode == Some(crate::model::Visual::Rows);
     let on_sql = workspace.active_sql_tab().is_some();
     // A SQL editor showing its result takes the letters that move in it.
     let sql_grid = workspace
@@ -2589,9 +2791,9 @@ fn letters(
     // field of the panel it gave the keys back to the grid, before this.)
     let quiet = !left_field && !menu_open;
     // A visual selection first: it is the innermost thing the key leaves.
-    if let Some(id) = active.filter(|_| visual)
+    if let Some(id) = active.or(sql_grid).filter(|_| visual)
         && quiet
-        && on(Command::LeaveVisual, Scope::Grid).fresh
+        && on(Command::LeaveVisual, rows).fresh
     {
         actions.push(Action::LeaveVisual { tab, id });
     }
@@ -2607,6 +2809,18 @@ fn letters(
         && on(Command::DismissNote, Scope::Grid).fresh
     {
         actions.push(Action::DismissNote { tab, id });
+    }
+    // A failed export's line, which stays until Esc: the one the line
+    // shows (spec 4, S14).
+    let export_failed = app.shown_export().is_some_and(|exporting| {
+        matches!(
+            exporting.status,
+            crate::export_sheet::ExportStatus::Failed { .. }
+        )
+    });
+    let here = if tree { Scope::Sidebar } else { rows };
+    if export_failed && quiet && on(Command::DismissExport, here).fresh {
+        actions.push(Action::DismissExport(None));
     }
     // The row panel's keys: an object tab's, or a SQL result's while a row
     // of it is selected (with none its panel has nothing to show).
@@ -2690,10 +2904,15 @@ fn letters(
     };
     // The card of a refused write, while a SQL editor's Messages show it:
     // the command its button stands for, and what the button does.
-    let mut card = crate::ui::sql_results::card_key(app, tab);
+    let mut card = app
+        .workspace(tab)
+        .and_then(|workspace| crate::ui::sql_results::card_key(&app.look, tab, workspace));
     let has_card = card.is_some();
     // The results' links on screen: the commands their letters stand for.
-    let mut links = crate::ui::sql_results::link_keys(app, tab);
+    let mut links = app
+        .workspace(tab)
+        .map(|workspace| crate::ui::sql_results::link_keys(&app.look, tab, workspace))
+        .unwrap_or_default();
     let offers = |command: Command| links.iter().any(|(offered, _)| *offered == command);
     let (cut, timed_out) = (
         offers(Command::ShowAllRows),
@@ -2710,15 +2929,16 @@ fn letters(
         crate::keymap::When::TimedOut => timed_out,
         crate::keymap::When::NewRow => on_new,
         crate::keymap::When::Visual => visual,
+        crate::keymap::When::VisualRows => visual_rows,
         // The Structure view shows where the rows would: its own keys
         // come before the rows' there.
         crate::keymap::When::Structure => structure_shows,
         crate::keymap::When::Ddl => ddl_shows,
         crate::keymap::When::AgentsLog => {
-            agents_view(app, tab) == Some(crate::model::AgentsView::Log)
+            agents_view(workspace) == Some(crate::model::AgentsView::Log)
         }
         crate::keymap::When::ClearingHistory => {
-            history_shown(app, tab).is_some_and(|history| history.clearing)
+            history_shown(workspace).is_some_and(|history| history.clearing)
         }
         _ => false,
     };
@@ -2827,7 +3047,9 @@ fn letters(
             app.workspace(tab)
                 .is_some_and(|workspace| !session.connections.contains(&workspace.conn_id.0))
         })
-        .and_then(|session| crate::ui::agents::Elsewhere::of(app, session).on);
+        .and_then(|session| {
+            crate::ui::agents::Elsewhere::of(&app.connections.connections, session).on
+        });
     if agents_lists(app, tab)
         && !crate::ui::focus::on_control(ctx)
         && let Some((conn, _)) = elsewhere
@@ -2850,7 +3072,7 @@ fn letters(
     }
     // Enter in the Log view shows the selected call's details, and closes
     // them; never a focused button's.
-    let log = agents_log(app, tab);
+    let log = agents_log(workspace);
     if let Some(log) = log
         && log.selected.is_some()
         && !crate::ui::focus::on_control(ctx)
@@ -2875,7 +3097,7 @@ fn letters(
     // The History tab's keys that are no letters: its arrows, Enter in
     // the terminal look, and the macOS look's chords. Its letters are read
     // with the others, below.
-    let history = history_shown(app, tab).filter(|_| !tree);
+    let history = history_shown(workspace).filter(|_| !tree);
     // While Clear history asks, its answers are the tab's only letters.
     let history_free = history.filter(|history| !history.clearing);
     let alone = actions.is_empty() && !pointer && keys <= typed.len() && only_edits;
@@ -2936,6 +3158,23 @@ fn letters(
         waiting.clear();
         let command = command.filter(|command| !(visual && held_back(*command)));
         match (command, active) {
+            // Export: the table under the tree's cursor, the row panel's
+            // row (spec 4, S8), or the rows' (a table's or a result's).
+            (Some(Command::Export), _) if tree => actions.push(Action::ExportFromTree(tab)),
+            (Some(Command::Export), _) if field.is_some() || result_field(ctx, app) => {
+                actions.push(Action::ExportSelection(export_row(tab)));
+            }
+            // While the line offers the file for a copy refused, on the
+            // copy's selection and format (spec 3b, R6).
+            (Some(Command::Export), _) if rows_show || (active.is_none() && sql_grid.is_some()) => {
+                match crate::ui::toast::offered(ctx) {
+                    Some(offer) if offer.tab == tab => {
+                        actions.push(Action::ExportSelection(offer));
+                    }
+                    _ => actions.push(Action::OpenExport { tab, format: None }),
+                }
+            }
+            (Some(Command::OpenExportFolder), _) => actions.push(Action::RevealExport(None)),
             (Some(Command::ShowAgents), _) if crate::endpoint::AVAILABLE => {
                 actions.push(Action::ShowAgents(tab));
             }
@@ -2949,7 +3188,7 @@ fn letters(
             // Settings… with the server off, Other agents… with nobody
             // here: both are Settings › Agents.
             (Some(Command::ShowAgentSettings), _)
-                if agents_view(app, tab) == Some(crate::model::AgentsView::Activity)
+                if agents_view(workspace) == Some(crate::model::AgentsView::Activity)
                     && matches!(
                         app.agents_here(tab),
                         Some(
@@ -2961,7 +3200,7 @@ fn letters(
                 actions.push(Action::ShowAgentSettings);
             }
             (Some(Command::AllowAgents), _)
-                if agents_view(app, tab) == Some(crate::model::AgentsView::Activity)
+                if agents_view(workspace) == Some(crate::model::AgentsView::Activity)
                     && app.agents_here(tab) == Some(crate::model::AgentsHere::OffHere) =>
             {
                 if let Some(workspace) = app.workspace(tab)
@@ -2971,35 +3210,35 @@ fn letters(
                     actions.push(Action::EditAgents { conn, allow: true });
                 }
             }
-            (Some(Command::ShowAgentsLog), _) if agents_view(app, tab).is_some() => {
+            (Some(Command::ShowAgentsLog), _) if agents_view(workspace).is_some() => {
                 // `l` shows the log, and the activity again.
-                let view = match agents_view(app, tab) {
+                let view = match agents_view(workspace) {
                     Some(crate::model::AgentsView::Log) => crate::model::AgentsView::Activity,
                     _ => crate::model::AgentsView::Log,
                 };
                 actions.push(Action::ShowAgentsView { tab, view });
             }
             (Some(Command::ToggleAgentsLogScope), _)
-                if agents_view(app, tab) == Some(crate::model::AgentsView::Log) =>
+                if agents_view(workspace) == Some(crate::model::AgentsView::Log) =>
             {
                 actions.push(Action::ToggleAgentsLogScope(tab));
             }
             (Some(Command::ExportAgentsLog), _)
-                if agents_view(app, tab) == Some(crate::model::AgentsView::Log) =>
+                if agents_view(workspace) == Some(crate::model::AgentsView::Log) =>
             {
                 if log.is_some_and(|log| log.total > 0) {
                     actions.push(Action::ExportAgentsLog(tab));
                 }
             }
             (Some(Command::OpenAgentsLogCall), _)
-                if agents_view(app, tab) == Some(crate::model::AgentsView::Log) =>
+                if agents_view(workspace) == Some(crate::model::AgentsView::Log) =>
             {
                 if let Some(id) = log.and_then(|log| log.selected) {
                     actions.push(Action::OpenAgentsLogCall { tab, id });
                 }
             }
             (Some(Command::FilterAgentsLog), _)
-                if agents_view(app, tab) == Some(crate::model::AgentsView::Log) =>
+                if agents_view(workspace) == Some(crate::model::AgentsView::Log) =>
             {
                 opened = true;
                 actions.push(Action::ShowAgentsLogFilters { tab, open: true });
@@ -3031,11 +3270,11 @@ fn letters(
                 _,
             ) if history_free.is_some() => {
                 if let Some(chosen) = history_free.and_then(crate::model::HistoryTab::chosen) {
-                    history_command(ctx, app, tab, command, chosen, actions);
+                    history_command(ctx, app.locale, tab, command, chosen, actions);
                 }
             }
             (Some(Command::MoveInAgentSessions), _)
-                if agents_view(app, tab) == Some(crate::model::AgentsView::Log) =>
+                if agents_view(workspace) == Some(crate::model::AgentsView::Log) =>
             {
                 let step = if char == 'k' { -1 } else { 1 };
                 actions.push(Action::MoveAgentsLogSelection { tab, step });
@@ -3066,7 +3305,7 @@ fn letters(
                     actions.push(Action::EditConnection(conn));
                 }
             }
-            (Some(Command::SwitchDatabase), _) if start && switchable(app, tab) => {
+            (Some(Command::SwitchDatabase), _) if start && switchable(workspace) => {
                 let id = crate::ui::workspace::database_menu_id(tab, true);
                 egui::Popup::open_id(ctx, id);
             }
@@ -3117,10 +3356,23 @@ fn letters(
             // is the page's.
             (Some(Command::YankRow), Some(id)) if rows_show && !tree && selection.is_some() => {
                 actions.push(Action::YankRow { tab, id });
-                if let Some(text) = app.copy_text(true) {
-                    ctx.copy_text(text);
-                }
-                let said = crate::i18n::gettext(app.locale, "Row yanked");
+                let how = crate::model::CopyHow::Plain;
+                let yanked = app.copy(crate::model::CopyPick::CursorRow, how);
+                // Past the clipboard's limits it is yanked, and not put
+                // there: the toast says why.
+                let said = match yanked {
+                    Some(copying)
+                        if !matches!(copying.copied, crate::export::Copied::Text { .. }) =>
+                    {
+                        crate::app::copy_said(app.locale, &copying, how)
+                    }
+                    yanked => {
+                        if let Some(text) = yanked.and_then(crate::app::Copying::text) {
+                            ctx.copy_text(text);
+                        }
+                        crate::i18n::gettext(app.locale, "Row yanked").into_owned()
+                    }
+                };
                 crate::ui::toast::say(ctx, &app.look.label(&said));
             }
             // A copy of the yanked row below the cursor's, or above it
@@ -3132,14 +3384,24 @@ fn letters(
                 let above = command == Command::PutRowAbove;
                 actions.push(Action::PutRow { tab, id, above });
             }
-            (Some(Command::SelectRows), Some(id)) if rows_show && !tree && field.is_none() => {
-                actions.push(Action::SelectRows { tab, id });
+            // The visual selections, of a table's rows or a result's.
+            (Some(command @ (Command::SelectRows | Command::SelectCells)), _)
+                if !tree && field.is_none() =>
+            {
+                let mode = if command == Command::SelectRows {
+                    crate::model::Visual::Rows
+                } else {
+                    crate::model::Visual::Cells
+                };
+                if let Some(id) = active.filter(|_| rows_show).or(sql_grid) {
+                    actions.push(Action::SelectRows { tab, id, mode });
+                }
             }
             // The rows of the visual selection. Where none of them is
             // deleted the selection stays, to be made smaller.
             (Some(Command::DeleteSelection), Some(id)) if rows_show && !tree && field.is_none() => {
                 let from = actions.len();
-                let why = delete_selected(app, tab, id, actions);
+                let why = delete_selected(workspace, &app.look, app.locale, tab, id, actions);
                 // One row's delete comes back as its own action: the
                 // selection's is what leaves the visual selection.
                 for action in &mut actions[from..] {
@@ -3160,9 +3422,13 @@ fn letters(
                 // A count names its own rows. From a field of a new
                 // row's form, the row it is of.
                 let why = match count {
-                    Some(count) if field.is_none() => delete_count(app, tab, id, count, actions),
-                    _ if field.is_none() => delete_selected(app, tab, id, actions),
-                    _ => delete_row(app, tab, id, actions),
+                    Some(count) if field.is_none() => {
+                        delete_count(workspace, &app.look, app.locale, tab, id, count, actions)
+                    }
+                    _ if field.is_none() => {
+                        delete_selected(workspace, &app.look, app.locale, tab, id, actions)
+                    }
+                    _ => delete_row(workspace, &app.look, app.locale, tab, id, actions),
                 };
                 if let Some(why) = why {
                     crate::ui::toast::say(ctx, &why);
@@ -3233,7 +3499,10 @@ fn letters(
                 actions.push(Action::ToggleDdlVisual { tab, id });
             }
             (Some(Command::CopyDdl), Some(id)) => {
-                crate::ui::ddl::copy(app, ctx, tab, id);
+                let paint = crate::ui::Paint::of(app);
+                if let Some(object) = workspace.object_tab(id) {
+                    crate::ui::ddl::copy(ctx, paint, tab, object);
+                }
                 actions.push(Action::LeaveDdlVisual { tab, id });
             }
             (Some(Command::OpenDdlInEditor), Some(id)) => {
@@ -3241,16 +3510,31 @@ fn letters(
             }
             // The rows' cell, where the rows show: no other view copies
             // one it hides.
-            (Some(Command::CopyCells), Some(_)) if rows_show => {
-                if let Some(text) = app.copy_text(false) {
-                    ctx.copy_text(text);
+            // A visual selection's cells, of the rows or a result, and as
+            // vim's `y` does the selection is left.
+            (Some(Command::CopySelection), _) if active.is_none() || rows_show => {
+                // A refused copy keeps the selection, for `E` to export.
+                let refused = copy_plain(ctx, app, crate::model::CopyPick::Selection, actions);
+                if let Some(id) = active.or(sql_grid).filter(|_| visual && !refused) {
+                    actions.push(Action::LeaveVisual { tab, id });
                 }
+            }
+            // Copy as, over the selection of the rows or a result.
+            (Some(Command::CopyAs), _) if active.is_none() || rows_show => {
+                let pick = crate::model::CopyPick::Selection;
+                actions.push(Action::OpenCopyAs { tab, pick });
+            }
+            // Copy row as, from a field of the row panel: not of a new
+            // row, as the macOS look's Copy row ▾ hides there.
+            (Some(Command::CopyRowAs), Some(_)) if rows_show && selection.is_some() && !on_new => {
+                let pick = crate::model::CopyPick::CursorRow;
+                actions.push(Action::OpenCopyAs { tab, pick });
             }
             // The whole statements, never the lines as the panel shows
             // them. The copy shows nowhere, so the status line says it.
             (Some(Command::CopyReviewSql), Some(id)) => {
-                if let Some(text) = crate::ui::review::copy_text(app, tab, id) {
-                    ctx.copy_text(text);
+                if let Some(review) = app.review_whole(tab, id) {
+                    ctx.copy_text(crate::ui::review::text(&review, app.locale));
                     let said = crate::i18n::gettext(app.locale, crate::ui::review::COPIED_SQL);
                     crate::ui::toast::say(ctx, &said);
                 }
@@ -3293,6 +3577,22 @@ fn letters(
                     crate::model::TreeKey::Up
                 } else {
                     crate::model::TreeKey::Down
+                };
+                actions.push(Action::TreeKey { tab, key });
+            }
+            // Vim's folds, on the tree's groups.
+            (
+                Some(
+                    command
+                    @ (Command::FoldGroup | Command::FoldAllGroups | Command::OpenAllGroups),
+                ),
+                _,
+            ) => {
+                use crate::model::TreeKey;
+                let key = match command {
+                    Command::FoldGroup => TreeKey::Fold,
+                    Command::FoldAllGroups => TreeKey::FoldAll,
+                    _ => TreeKey::OpenAll,
                 };
                 actions.push(Action::TreeKey { tab, key });
             }

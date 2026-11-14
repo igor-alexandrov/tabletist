@@ -9,19 +9,23 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio_postgres::tls::{MakeTlsConnect, TlsConnect};
+use tokio_postgres::types::{ToSql, Type};
 use tokio_postgres::{SimpleQueryMessage, Socket};
 
 use crate::adapter::Adapter;
 use crate::agent::{Catalog, ColumnName, Limits, Read, Sources};
 use crate::{
-    Access, CancelHandle, CancelInner, ChangeSet, ColumnInfo, ColumnMeta, ConnectSpec, Ddl,
-    Dialect, Error, ForeignKeyInfo, IndexInfo, Lookup, LookupPage, MAX_LISTED, Named, ObjectInfo,
-    ObjectKind, ObjectRef, ReferencingKey, Result, RowPage, RowQuery, ScriptMode, ScriptOutcome,
-    Secrets, Sql, StopFlag, Structure, Value, ValueKind, WriteOutcome, value_from_pg_text,
+    Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, ConnectSpec,
+    Ddl, Dialect, Error, ForeignKeyInfo, IndexInfo, Lookup, LookupPage, MAX_LISTED, Named,
+    ObjectInfo, ObjectKind, ObjectRef, ReferencingKey, Result, RowPage, RowQuery, ScriptMode,
+    ScriptOutcome, Secrets, Sql, StopFlag, Structure, Value, ValueKind, WriteOutcome,
+    value_from_pg_text,
 };
 use tokio_postgres::error::SqlState;
 use tokio_postgres_rustls::MakeRustlsConnect;
 
+mod cancel;
+pub(crate) use cancel::Cancel;
 mod ddl;
 mod hidden;
 mod script;
@@ -40,13 +44,92 @@ const PRINTS_EXACTLY: &str = "SET extra_float_digits = 3; SET DateStyle = 'ISO'"
 
 pub(crate) struct Conn {
     pub(crate) client: tokio::sync::Mutex<tokio_postgres::Client>,
-    pub(crate) cancel: tokio_postgres::CancelToken,
+    cancel: Cancel,
     pub(crate) tls: MakeRustlsConnect,
     config: tokio_postgres::Config,
     requested_database: String,
     /// Whether the session runs over TLS: under `prefer` a server that
     /// declines TLS gets plain text.
     pub(crate) encrypted: bool,
+    /// The shape of each table this session read last, by table: what the
+    /// next page builds its statement from. It is asked again with every
+    /// page, in the same flight as the page, and a page built from a shape
+    /// that has changed since is read again (see `Adapter::fetch_rows`).
+    shapes: std::sync::Mutex<std::collections::HashMap<ObjectRef, Shape>>,
+}
+
+/// What a statement over a table needs to know of it: its primary key's
+/// columns, in key order, and its `bytea` columns. Both are empty for a
+/// table that does not exist: a statement over it then fails on the
+/// server, which says why.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Shape {
+    key: Vec<String>,
+    bytea: Vec<String>,
+}
+
+/// The query [`Shape`] reads, with the table's schema and name as `$1` and
+/// `$2`. Only the key's own columns: `INCLUDE` puts more after them in
+/// `indkey`, and those are no part of the key. Their count, `indnkeyatts`,
+/// exists from PostgreSQL 11, so it is read through `to_jsonb`: every page
+/// asks for the shape, and naming a column an older server lacks would fail
+/// them all.
+const SHAPE_SQL: &str = "SELECT a.attname::text, k.ord IS NOT NULL, a.atttypid = 'bytea'::regtype \
+     FROM pg_class c \
+     JOIN pg_namespace n ON n.oid = c.relnamespace \
+     JOIN pg_attribute a \
+       ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped \
+     LEFT JOIN LATERAL ( \
+         SELECT k.ord FROM pg_index i \
+         CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord) \
+         WHERE i.indrelid = c.oid AND i.indisprimary AND k.attnum = a.attnum \
+           AND k.ord <= COALESCE((to_jsonb(i) ->> 'indnkeyatts')::int, i.indnatts) \
+     ) k ON true \
+     WHERE n.nspname = $1 AND c.relname = $2 \
+       AND (k.ord IS NOT NULL OR a.atttypid = 'bytea'::regtype) \
+     ORDER BY k.ord, a.attnum";
+
+impl Shape {
+    /// The shape in [`SHAPE_SQL`]'s rows.
+    fn from_rows(rows: &[tokio_postgres::Row]) -> Result<Self> {
+        let mut shape = Self::default();
+        for row in rows {
+            let name: String = column(row, 0)?;
+            if column(row, 2)? {
+                shape.bytea.push(name.clone());
+            }
+            if column(row, 1)? {
+                shape.key.push(name);
+            }
+        }
+        Ok(shape)
+    }
+
+    /// The key, and the `bytea` columns a filter of `query` compares as
+    /// bytes: none when no filter has a value that reads as bytes.
+    fn for_query(&self, query: &RowQuery) -> (Vec<String>, Vec<(String, ColumnClass)>) {
+        let binary = if crate::dialect::reads_bytes(query) {
+            self.bytea
+                .iter()
+                .map(|name| (name.clone(), ColumnClass::Binary))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        (self.key.clone(), binary)
+    }
+}
+
+/// `object`'s [`Shape`], read in one round trip.
+async fn table_shape(client: &tokio_postgres::Client, object: &ObjectRef) -> Result<Shape> {
+    let rows = client
+        .query_typed(
+            SHAPE_SQL,
+            &[(&object.schema, Type::TEXT), (&object.name, Type::TEXT)],
+        )
+        .await
+        .map_err(query_error)?;
+    Shape::from_rows(&rows)
 }
 
 /// Wraps the rustls connector to note a finished handshake. tokio-postgres
@@ -144,6 +227,63 @@ fn database_name(spec: &ConnectSpec) -> &str {
     }
 }
 
+/// A session the driver opened, the config that opened it, and where its
+/// cancels go.
+type Pinned = (
+    (
+        tokio_postgres::Client,
+        tokio_postgres::Connection<Socket, <Noted as MakeTlsConnect<Socket>>::Stream>,
+    ),
+    tokio_postgres::Config,
+    Option<(std::net::SocketAddr, String)>,
+);
+
+/// Opens a session on one address of the host, tried in the order the
+/// driver tries them, and says which one: a cancel must reach the same
+/// server. A host this cannot resolve (or a Unix socket) is left to the
+/// driver, which says why it cannot connect.
+async fn connect_pinned(
+    config: tokio_postgres::Config,
+    tls: &MakeRustlsConnect,
+    handshake: &Arc<AtomicBool>,
+) -> std::result::Result<Pinned, tokio_postgres::Error> {
+    let noted = || Noted {
+        inner: tls.clone(),
+        handshake: Arc::clone(handshake),
+    };
+    let port = config.get_ports().first().copied().unwrap_or(5432);
+    if let [tokio_postgres::config::Host::Tcp(host)] = config.get_hosts() {
+        let addresses = match config.get_hostaddrs() {
+            // Through a tunnel: the address its local port listens on.
+            [address] => vec![*address],
+            [] => tokio::net::lookup_host((host.as_str(), port))
+                .await
+                .map(|found| found.map(|address| address.ip()).collect())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let mut failed = None;
+        for address in addresses {
+            let mut pinned = config.clone();
+            if pinned.get_hostaddrs().is_empty() {
+                pinned.hostaddr(address);
+            }
+            match pinned.connect(noted()).await {
+                Ok(pair) => {
+                    let to = (std::net::SocketAddr::new(address, port), host.clone());
+                    return Ok((pair, pinned, Some(to)));
+                }
+                Err(error) => failed = Some(error),
+            }
+        }
+        if let Some(error) = failed {
+            return Err(error);
+        }
+    }
+    let pair = config.connect(noted()).await?;
+    Ok((pair, config, None))
+}
+
 pub(crate) fn connect_error(error: tokio_postgres::Error) -> Error {
     if let Some(db) = error.as_db_error() {
         let code = db.code();
@@ -183,6 +323,26 @@ fn session_setup(access: Access) -> String {
         Access::Writable => "",
     };
     format!("{read_only}SET standard_conforming_strings = on; {PRINTS_EXACTLY}")
+}
+
+/// The cursor an export reads through. One export per connection, so one
+/// name.
+const EXPORT_CURSOR: &str = "tabletist_export";
+
+/// How long the PgBouncer probe may take, startup and SHOW together.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// [`query_error`], where the server's own `statement_timeout` (which
+/// PostgreSQL reports as a cancel) is [`Error::Timeout`]: an export sets no
+/// timeout of its own, so a cancel that names it was the server's.
+fn stream_error(error: tokio_postgres::Error) -> Error {
+    if let Some(db) = error.as_db_error()
+        && *db.code() == SqlState::QUERY_CANCELED
+        && db.message().contains("statement timeout")
+    {
+        return Error::Timeout;
+    }
+    query_error(error)
 }
 
 pub(crate) fn query_error(error: tokio_postgres::Error) -> Error {
@@ -253,6 +413,60 @@ fn row_values(row: &tokio_postgres::SimpleQueryRow, columns: &[ColumnMeta]) -> R
 }
 
 impl Conn {
+    /// `text`'s rows through a cursor in a read-only transaction, a
+    /// `FETCH` of `batch` rows at a time.
+    async fn stream_text(
+        &self,
+        text: &str,
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        let mut client = self.client.lock().await;
+        let transaction = client
+            .build_transaction()
+            .read_only(true)
+            .start()
+            .await
+            .map_err(stream_error)?;
+        // Prepared first: its columns, and a second statement refused
+        // before anything runs.
+        let statement = transaction.prepare(text).await.map_err(stream_error)?;
+        let metas = column_metas(&statement);
+        crate::stream::send(to, crate::Streamed::Columns(metas.clone())).await?;
+        transaction
+            .simple_query(&format!(
+                "DECLARE {EXPORT_CURSOR} NO SCROLL CURSOR FOR {text}"
+            ))
+            .await
+            .map_err(stream_error)?;
+        let fetch = format!("FETCH {batch} FROM {EXPORT_CURSOR}");
+        let mut sent = 0u64;
+        loop {
+            if stop.is_stopped() {
+                return Err(Error::Cancelled);
+            }
+            let messages = transaction
+                .simple_query(&fetch)
+                .await
+                .map_err(stream_error)?;
+            let mut rows = Vec::with_capacity(batch);
+            for message in messages {
+                if let SimpleQueryMessage::Row(row) = message {
+                    rows.push(row_values(&row, &metas)?);
+                }
+            }
+            if rows.is_empty() {
+                break;
+            }
+            sent += rows.len() as u64;
+            crate::stream::send(to, crate::Streamed::Rows(rows)).await?;
+        }
+        stop.finish();
+        transaction.rollback().await.map_err(stream_error)?;
+        Ok(sent)
+    }
+
     /// Connects to the spec's server, or through a tunnel's local port `via`.
     pub async fn connect(
         spec: &ConnectSpec,
@@ -281,14 +495,12 @@ impl Conn {
         // The config's own timeout covers only the TCP connect, which is
         // instant to a tunnel's local port: bound the whole startup instead.
         let handshake = Arc::new(AtomicBool::new(false));
-        let connecting = config.connect(Noted {
-            inner: tls.clone(),
-            handshake: Arc::clone(&handshake),
-        });
-        let (client, connection) = tokio::time::timeout(Duration::from_secs(10), connecting)
-            .await
-            .map_err(|_| Error::Timeout)?
-            .map_err(connect_error)?;
+        let connecting = connect_pinned(config, &tls, &handshake);
+        let ((client, connection), config, address) =
+            tokio::time::timeout(Duration::from_secs(10), connecting)
+                .await
+                .map_err(|_| Error::Timeout)?
+                .map_err(connect_error)?;
         tokio::spawn(async move {
             if let Err(error) = connection.await {
                 log::info!("PostgreSQL connection ended: {error}");
@@ -298,7 +510,11 @@ impl Conn {
             .batch_execute(&session_setup(access))
             .await
             .map_err(query_error)?;
-        let cancel = client.cancel_token();
+        let cancel = Cancel {
+            token: client.cancel_token(),
+            tls: tls.clone(),
+            to: address,
+        };
         Ok(Self {
             client: tokio::sync::Mutex::new(client),
             cancel,
@@ -306,36 +522,67 @@ impl Conn {
             config,
             requested_database: database.to_owned(),
             encrypted: handshake.load(Ordering::Relaxed),
+            shapes: Default::default(),
         })
     }
 
-    /// A catalog query: fixed SQL, typed results.
+    /// A catalog query: fixed SQL, typed results. One round trip: with the
+    /// parameters' types given, nothing is prepared first.
     async fn catalog(
         &self,
         sql: &str,
-        params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
+        params: &[(&(dyn ToSql + Sync), Type)],
     ) -> Result<Vec<tokio_postgres::Row>> {
         let client = self.client.lock().await;
-        client.query(sql, params).await.map_err(query_error)
+        client.query_typed(sql, params).await.map_err(query_error)
     }
 
     /// PgBouncer's reserved admin database is the protocol-level source of
     /// its routing aliases. A stats/admin user can list them. PostgreSQL's
     /// missing-database response allows the ordinary catalog listing. If
     /// the probe is denied or inconclusive, keep only the working alias.
-    async fn database_listing(&self, timeout: Duration) -> Option<Vec<String>> {
-        // Bound both startup and SHOW. Driving the connection in this future
-        // also closes the probe socket when it finishes or is cancelled.
-        tokio::time::timeout(timeout, self.pgbouncer_databases())
-            .await
-            .unwrap_or_else(|_| Some(vec![self.requested_database.clone()]))
+    ///
+    /// Owns all it needs and runs on a connection of its own, so that it
+    /// can run beside the session's commands (see `database_probe`).
+    fn database_listing(
+        &self,
+        timeout: Duration,
+    ) -> impl Future<Output = Option<Vec<String>>> + Send + 'static + use<> {
+        let config = self.config.clone();
+        let tls = self.tls.clone();
+        let requested = self.requested_database.clone();
+        async move {
+            // Bound both startup and SHOW. Driving the connection in this
+            // future also closes the probe socket when it finishes or is
+            // cancelled.
+            tokio::time::timeout(timeout, Self::pgbouncer_databases(config, tls, &requested))
+                .await
+                .unwrap_or_else(|_| Some(vec![requested.clone()]))
+        }
     }
 
-    async fn pgbouncer_databases(&self) -> Option<Vec<String>> {
-        let mut config = self.config.clone();
+    /// The PgBouncer probe of `list_databases`, to run apart from the
+    /// session: `Some` aliases answer the listing, `None` leaves it to
+    /// `catalog_databases`.
+    pub(crate) fn database_probe(
+        &self,
+    ) -> impl Future<Output = Option<Vec<String>>> + Send + 'static + use<> {
+        self.database_listing(PROBE_TIMEOUT)
+    }
+
+    /// The probe itself, on a connection of its own to the `pgbouncer`
+    /// database of the server `config` names: the console's aliases, `None`
+    /// where the server is PostgreSQL itself, or only `requested` (the
+    /// alias that connected) where the answer is unclear.
+    async fn pgbouncer_databases(
+        mut config: tokio_postgres::Config,
+        tls: MakeRustlsConnect,
+        requested: &str,
+    ) -> Option<Vec<String>> {
+        let working = || Some(vec![requested.to_owned()]);
         config.dbname("pgbouncer");
         let connecting = config.connect(Noted {
-            inner: self.tls.clone(),
+            inner: tls,
             handshake: Arc::new(AtomicBool::new(false)),
         });
         let (client, connection) = match connecting.await {
@@ -349,7 +596,7 @@ impl Conn {
             }
             // An auth, transport or proxy error does not establish that the
             // backend catalog's names are valid routes on this endpoint.
-            Err(_) => return Some(vec![self.requested_database.clone()]),
+            Err(_) => return working(),
         };
         let messages = tokio::select! {
             result = client.simple_query("SHOW DATABASES") => match result {
@@ -359,9 +606,9 @@ impl Conn {
                     // configuration parameter named databases.
                     error.code() == &SqlState::UNDEFINED_OBJECT
                 }) => return None,
-                Err(_) => return Some(vec![self.requested_database.clone()]),
+                Err(_) => return working(),
             },
-            _ = connection => return Some(vec![self.requested_database.clone()]),
+            _ = connection => return working(),
         };
         let has_database_columns = messages.iter().any(|message| {
             matches!(message, SimpleQueryMessage::RowDescription(columns)
@@ -369,7 +616,7 @@ impl Conn {
                     && columns.iter().any(|column| column.name() == "database"))
         });
         if !has_database_columns {
-            return Some(vec![self.requested_database.clone()]);
+            return working();
         }
         let mut aliases: Vec<String> = messages
             .iter()
@@ -386,23 +633,23 @@ impl Conn {
             .collect();
         // Keep the alias that already connected, including after a reload
         // removes or disables its entry in the console's listing.
-        aliases.push(self.requested_database.clone());
+        aliases.push(requested.to_owned());
         aliases.sort();
         aliases.dedup();
         Some(aliases)
     }
 
-    async fn relation(&self, object: &ObjectRef) -> Result<u32> {
+    /// The databases the server's catalog names: the listing where the
+    /// probe found no PgBouncer.
+    pub(crate) async fn catalog_databases(&self) -> Result<Vec<String>> {
         let rows = self
             .catalog(
-                "SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
-                 WHERE n.nspname = $1 AND c.relname = $2",
-                &[&object.schema, &object.name],
+                "SELECT datname::text FROM pg_database \
+                 WHERE datallowconn AND NOT datistemplate ORDER BY datname",
+                &[],
             )
             .await?;
-        rows.first()
-            .map(|row| column(row, 0))
-            .ok_or_else(|| Error::query(format!("no such table or view: {}", object.name)))?
+        rows.iter().map(|row| column(row, 0)).collect()
     }
 
     pub async fn primary_key(&self, object: &ObjectRef) -> Result<Vec<String>> {
@@ -422,7 +669,7 @@ impl Conn {
                  WHERE n.nspname = $1 AND c.relname = $2 AND i.indisprimary \
                    AND k.ord <= COALESCE((to_jsonb(i) ->> 'indnkeyatts')::int, i.indnatts) \
                  ORDER BY k.ord",
-                &[&object.schema, &object.name],
+                &[(&object.schema, Type::TEXT), (&object.name, Type::TEXT)],
             )
             .await?;
         rows.iter().map(|row| column(row, 0)).collect()
@@ -438,55 +685,138 @@ impl Conn {
     ) -> Result<(Vec<ColumnMeta>, Vec<Vec<Value>>, Duration)> {
         // Every value is a literal in the text, so there is nothing to bind.
         debug_assert!(sql.params.is_empty());
-        let mut client = self.client.lock().await;
+        let client = self.client.lock().await;
         let started = Instant::now();
-        let transaction = client
-            .build_transaction()
-            .read_only(true)
-            .start()
-            .await
-            .map_err(query_error)?;
-        // Prepare first: it types the columns, and refuses a second
-        // statement before anything runs.
-        let statement = transaction.prepare(&sql.text).await.map_err(query_error)?;
-        let columns = column_metas(&statement);
-        let messages = transaction
-            .simple_query(&sql.text)
-            .await
-            .map_err(query_error)?;
-        transaction.rollback().await.map_err(query_error)?;
-        let mut rows = Vec::new();
-        for message in messages {
-            if let SimpleQueryMessage::Row(row) = message {
-                if rows.len() > limit {
-                    break;
-                }
-                rows.push(row_values(&row, &columns)?);
-            }
-        }
+        let (columns, messages) = read_statement(&client, &sql.text).await?;
+        let rows = kept_rows(&messages, &columns, limit)?;
         Ok((columns, rows, started.elapsed()))
     }
 
-    /// The `bytea` columns a filter of `query` compares as bytes when its
-    /// value reads as bytes; empty, without asking, when no filter has such
-    /// a value.
-    async fn binary_columns(&self, query: &RowQuery) -> Result<Vec<String>> {
+    /// What a statement over `query`'s table needs to know of it, in one
+    /// round trip: its primary key's columns, in key order, and the `bytea`
+    /// columns a filter compares as bytes when its value reads as bytes
+    /// (see [`Shape`]).
+    async fn shape(&self, query: &RowQuery) -> Result<(Vec<String>, Vec<(String, ColumnClass)>)> {
+        let client = self.client.lock().await;
+        let shape = table_shape(&client, &query.object).await?;
+        self.remember(&query.object, &shape);
+        Ok(shape.for_query(query))
+    }
+
+    /// The `bytea` columns of [`Conn::shape`]: empty, without asking, when
+    /// no filter of `query` has a value that reads as bytes.
+    async fn binary_columns(&self, query: &RowQuery) -> Result<Vec<(String, ColumnClass)>> {
         if !crate::dialect::reads_bytes(query) {
             return Ok(Vec::new());
         }
-        let rows = self
-            .catalog(
-                "SELECT a.attname::text \
-                 FROM pg_attribute a \
-                 JOIN pg_class c ON c.oid = a.attrelid \
-                 JOIN pg_namespace n ON n.oid = c.relnamespace \
-                 WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 \
-                   AND NOT a.attisdropped AND a.atttypid = 'bytea'::regtype",
-                &[&query.object.schema, &query.object.name],
-            )
-            .await?;
-        rows.iter().map(|row| column(row, 0)).collect()
+        Ok(self.shape(query).await?.1)
     }
+
+    /// The shape this session last read of `object`, if it read one.
+    fn known_shape(&self, object: &ObjectRef) -> Option<Shape> {
+        let shapes = self
+            .shapes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        shapes.get(object).cloned()
+    }
+
+    fn remember(&self, object: &ObjectRef, shape: &Shape) {
+        let mut shapes = self
+            .shapes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        shapes.insert(object.clone(), shape.clone());
+    }
+}
+
+/// The rows of `messages`, typed by `columns`: at most one more than
+/// `limit`.
+fn kept_rows(
+    messages: &[SimpleQueryMessage],
+    columns: &[ColumnMeta],
+    limit: usize,
+) -> Result<Vec<Vec<Value>>> {
+    let mut rows = Vec::new();
+    for message in messages {
+        if let SimpleQueryMessage::Row(row) = message {
+            if rows.len() > limit {
+                break;
+            }
+            rows.push(row_values(row, columns)?);
+        }
+    }
+    Ok(rows)
+}
+
+/// What a [`read_statement`] answers: the statement's columns, as the
+/// prepare typed them, and what the server answered to its run.
+type Answered = (Vec<ColumnMeta>, Vec<SimpleQueryMessage>);
+
+/// Runs `text`, one reading statement, in a read-only transaction: what
+/// the server answered, and the columns, as the prepare typed them. One
+/// round trip: see [`read_alongside`].
+async fn read_statement(client: &tokio_postgres::Client, text: &str) -> Result<Answered> {
+    read_alongside(client, text, async {}).await.1
+}
+
+/// The first step of a read's run: it fails outside a transaction block,
+/// and in one that has failed. So the statement after it runs only inside
+/// the `BEGIN READ ONLY` the read sent first, and only once everything
+/// sent in the transaction before it worked: the prepare, which took the
+/// text as one statement, and what went alongside the read. A failure
+/// there fails the transaction, and a failed `BEGIN` (a cancel that landed
+/// on it) leaves none. Nothing of a message runs past the step that
+/// failed.
+const READ_GUARD: &str = "SAVEPOINT tabletist_read";
+
+/// [`read_statement`], with what `alongside` sends going out in the same
+/// flight, inside the read's transaction and before its statement: what
+/// it answered, and the read's answer.
+///
+/// All of the read goes out at once, before any answer comes back: the
+/// `BEGIN READ ONLY`, what goes alongside, the prepare (which yields the
+/// column types, and fails on a text of more than one statement), the run
+/// of `text` behind [`READ_GUARD`], and the `ROLLBACK`. Each goes out when
+/// it is first polled, and the first poll reaches them all, in this order.
+/// So a read that is dropped once it has started leaves its `ROLLBACK` on
+/// its way, and one that fails, wherever it fails, is rolled back by it.
+/// What goes alongside and fails, say because a cancel landed on it,
+/// fails the transaction, and the statement does not run: a cancel stops
+/// the read wherever it lands.
+async fn read_alongside<T>(
+    client: &tokio_postgres::Client,
+    text: &str,
+    alongside: impl Future<Output = T>,
+) -> (T, Result<Answered>) {
+    let run = format!("{READ_GUARD};\n{text}");
+    let (begun, alongside, prepared, ran, rolled_back) = tokio::join!(
+        client.batch_execute("BEGIN READ ONLY"),
+        alongside,
+        client.prepare(text),
+        client.simple_query(&run),
+        client.batch_execute("ROLLBACK"),
+    );
+    // The first step that failed says why: the guard's own failure after a
+    // failed `BEGIN` or prepare says nothing.
+    let read = begun.and(prepared).and_then(|statement| {
+        let columns = column_metas(&statement);
+        // Its close goes out on its own, waited on by nobody.
+        drop(statement);
+        Ok((columns, ran?))
+    });
+    let read = match rolled_back {
+        Ok(()) => read.map_err(query_error),
+        // A cancel that landed on the rollback leaves the transaction
+        // open: once more. A rollback that fails again is a session that
+        // is gone, or a transaction the next read's guard fails on and
+        // its rollback ends.
+        Err(error) => {
+            let _ = client.batch_execute("ROLLBACK").await;
+            Err(query_error(read.err().unwrap_or(error)))
+        }
+    };
+    (alongside, read)
 }
 
 impl Adapter for Conn {
@@ -495,10 +825,7 @@ impl Adapter for Conn {
     }
 
     fn cancel_handle(&self) -> CancelHandle {
-        CancelHandle(CancelInner::Postgres {
-            token: self.cancel.clone(),
-            tls: self.tls.clone(),
-        })
+        CancelHandle(CancelInner::Postgres(self.cancel.clone()))
     }
 
     /// None: a `timestamptz` comes with its offset, and the app shows it in
@@ -521,17 +848,10 @@ impl Adapter for Conn {
     }
 
     async fn list_databases(&self) -> Result<Vec<String>> {
-        if let Some(aliases) = self.database_listing(Duration::from_secs(10)).await {
+        if let Some(aliases) = self.database_probe().await {
             return Ok(aliases);
         }
-        let rows = self
-            .catalog(
-                "SELECT datname::text FROM pg_database \
-                 WHERE datallowconn AND NOT datistemplate ORDER BY datname",
-                &[],
-            )
-            .await?;
-        rows.iter().map(|row| column(row, 0)).collect()
+        self.catalog_databases().await
     }
 
     async fn list_schemas(&self) -> Result<Vec<String>> {
@@ -555,7 +875,7 @@ impl Adapter for Conn {
                      WHERE n.nspname = $1 AND c.relkind IN ('r', 'p', 'f', 'v', 'm') \
                      ORDER BY c.relname LIMIT {MAX_LISTED}"
                 ),
-                &[&schema],
+                &[(&schema, Type::TEXT)],
             )
             .await?;
         rows.iter()
@@ -580,10 +900,31 @@ impl Adapter for Conn {
         self.read_ddl(object).await
     }
 
+    /// The table's structure in one round trip: its five catalog queries
+    /// go out together, each finding the table by its schema and name.
     async fn describe(&self, object: &ObjectRef) -> Result<Structure> {
-        let oid = self.relation(object).await?;
-        let columns = self
-            .catalog(
+        /// The table's oid, from the parameters every query of `describe`
+        /// takes: its schema and its name.
+        macro_rules! relation {
+            () => {
+                "(SELECT rc.oid FROM pg_class rc \
+                  JOIN pg_namespace rn ON rn.oid = rc.relnamespace \
+                  WHERE rn.nspname = $1 AND rc.relname = $2)"
+            };
+        }
+        let params: &[(&(dyn ToSql + Sync), Type)] =
+            &[(&object.schema, Type::TEXT), (&object.name, Type::TEXT)];
+        let client = self.client.lock().await;
+        let (relation, columns, indexes, foreign_keys, referenced_by, shape) = tokio::try_join!(
+            // The comment on the table or view itself, and a row only when
+            // there is a table or view.
+            client.query_typed(
+                "SELECT obj_description(c.oid, 'pg_class') \
+                 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE n.nspname = $1 AND c.relname = $2",
+                params,
+            ),
+            client.query_typed(
                 // An enum's labels in their sort order; a text column's
                 // single-column CHECK constraints, by name. Whether the
                 // column is generated is read through `to_jsonb`, for
@@ -591,7 +932,8 @@ impl Adapter for Conn {
                 // naming a column the server lacks would fail the whole
                 // Structure view. Nothing older is spared by it: the index
                 // query below names `indnkeyatts`, which 11 brought.
-                "SELECT a.attname::text, format_type(a.atttypid, a.atttypmod), NOT a.attnotnull, \
+                concat!(
+                    "SELECT a.attname::text, format_type(a.atttypid, a.atttypmod), NOT a.attnotnull, \
                         pg_get_expr(d.adbin, d.adrelid), col_description(a.attrelid, a.attnum), \
                         CASE WHEN t.typtype = 'e' THEN \
                             ARRAY(SELECT e.enumlabel::text FROM pg_enum e \
@@ -613,11 +955,108 @@ impl Adapter for Conn {
                  FROM pg_attribute a \
                  JOIN pg_type t ON t.oid = a.atttypid \
                  LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
-                 WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped \
-                 ORDER BY a.attnum",
-                &[&oid],
-            )
-            .await?
+                 WHERE a.attrelid = ", relation!(), " AND a.attnum > 0 AND NOT a.attisdropped \
+                 ORDER BY a.attnum"
+                ),
+                params,
+            ),
+            client.query_typed(
+                // An index that is not valid (a `CREATE UNIQUE INDEX
+                // CONCURRENTLY` that failed) does not hold its rows unique,
+                // whatever it is called. The last column is the key's
+                // columns by name, or NULL when an entry is not one whole
+                // column compared as the column compares: an expression (0
+                // in `indkey`), another collation than the column's, or an
+                // operator class that is not the default one. The text
+                // `pg_get_indexdef` shows tells none of these apart.
+                concat!(
+                    "SELECT ic.relname::text, i.indisunique AND i.indisvalid, i.indisprimary, \
+                        am.amname::text, \
+                        ARRAY(SELECT pg_get_indexdef(i.indexrelid, k, true) \
+                              FROM generate_series(1, i.indnkeyatts::int) AS k ORDER BY k), \
+                        i.indpred IS NOT NULL, \
+                        CASE WHEN NOT EXISTS ( \
+                                 SELECT 1 FROM generate_series(1, i.indnkeyatts::int) AS k \
+                                 LEFT JOIN pg_attribute a \
+                                   ON a.attrelid = i.indrelid AND a.attnum = i.indkey[k - 1] \
+                                 LEFT JOIN pg_opclass oc ON oc.oid = i.indclass[k - 1] \
+                                 WHERE i.indkey[k - 1] = 0 \
+                                    OR a.attcollation <> i.indcollation[k - 1] \
+                                    OR NOT oc.opcdefault) \
+                             THEN ARRAY(SELECT a.attname::text \
+                                        FROM generate_series(1, i.indnkeyatts::int) AS k \
+                                        JOIN pg_attribute a \
+                                          ON a.attrelid = i.indrelid AND a.attnum = i.indkey[k - 1] \
+                                        ORDER BY k) END \
+                 FROM pg_index i \
+                 JOIN pg_class ic ON ic.oid = i.indexrelid \
+                 JOIN pg_am am ON am.oid = ic.relam \
+                 WHERE i.indrelid = ", relation!(), " ORDER BY ic.relname"
+                ),
+                params,
+            ),
+            client.query_typed(
+                concat!(
+                    "SELECT con.conname::text, \
+                        ARRAY(SELECT a.attname::text FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) \
+                              JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum \
+                              ORDER BY k.ord), \
+                        rn.nspname::text, rc.relname::text, \
+                        ARRAY(SELECT a.attname::text FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, ord) \
+                              JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum \
+                              ORDER BY k.ord), \
+                        con.confupdtype::text, con.confdeltype::text \
+                 FROM pg_constraint con \
+                 JOIN pg_class rc ON rc.oid = con.confrelid \
+                 JOIN pg_namespace rn ON rn.oid = rc.relnamespace \
+                 WHERE con.conrelid = ", relation!(), " AND con.contype = 'f' ORDER BY con.conname"
+                ),
+                params,
+            ),
+            // The keys that point at the table: the same catalog, read from
+            // the other end. A partitioned table that has such a key has a
+            // row for each of its partitions too, all pointing here: only the
+            // key itself is listed. The copies name their parent in a column
+            // servers before version 11 do not have.
+            client.query_typed(
+                concat!(
+                    "SELECT con.conname::text, cn.nspname::text, cc.relname::text, \
+                        ARRAY(SELECT a.attname::text FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) \
+                              JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum \
+                              ORDER BY k.ord), \
+                        ARRAY(SELECT a.attname::text FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, ord) \
+                              JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum \
+                              ORDER BY k.ord), \
+                        con.confdeltype::text \
+                 FROM pg_constraint con \
+                 JOIN pg_class cc ON cc.oid = con.conrelid \
+                 JOIN pg_namespace cn ON cn.oid = cc.relnamespace \
+                 WHERE con.confrelid = ", relation!(), " AND con.contype = 'f' \
+                   AND COALESCE((to_jsonb(con) ->> 'conparentid')::oid, 0) = 0 \
+                 ORDER BY cn.nspname, cc.relname, con.conname"
+                ),
+                params,
+            ),
+            // What the table's first page builds its statement from, which
+            // it then need not ask first (see `fetch_rows`).
+            client.query_typed(SHAPE_SQL, params),
+        )
+        .map_err(query_error)?;
+        drop(client);
+        self.remember(object, &Shape::from_rows(&shape)?);
+        // PostgreSQL keeps no empty comment (`COMMENT ON ... IS ''` drops
+        // it), and an empty one would be none.
+        let comment: Option<String> = match relation.first() {
+            Some(row) => column(row, 0)?,
+            None => {
+                return Err(Error::query(format!(
+                    "no such table or view: {}",
+                    object.name
+                )));
+            }
+        };
+        let comment = comment.filter(|comment| !comment.is_empty());
+        let columns: Vec<_> = columns
             .iter()
             .map(|row| {
                 let name: String = column(row, 0)?;
@@ -646,41 +1085,7 @@ impl Adapter for Conn {
                 })
             })
             .collect::<Result<_>>()?;
-        let indexes = self
-            .catalog(
-                // An index that is not valid (a `CREATE UNIQUE INDEX
-                // CONCURRENTLY` that failed) does not hold its rows unique,
-                // whatever it is called. The last column is the key's
-                // columns by name, or NULL when an entry is not one whole
-                // column compared as the column compares: an expression (0
-                // in `indkey`), another collation than the column's, or an
-                // operator class that is not the default one. The text
-                // `pg_get_indexdef` shows tells none of these apart.
-                "SELECT ic.relname::text, i.indisunique AND i.indisvalid, i.indisprimary, \
-                        am.amname::text, \
-                        ARRAY(SELECT pg_get_indexdef(i.indexrelid, k, true) \
-                              FROM generate_series(1, i.indnkeyatts::int) AS k ORDER BY k), \
-                        i.indpred IS NOT NULL, \
-                        CASE WHEN NOT EXISTS ( \
-                                 SELECT 1 FROM generate_series(1, i.indnkeyatts::int) AS k \
-                                 LEFT JOIN pg_attribute a \
-                                   ON a.attrelid = i.indrelid AND a.attnum = i.indkey[k - 1] \
-                                 LEFT JOIN pg_opclass oc ON oc.oid = i.indclass[k - 1] \
-                                 WHERE i.indkey[k - 1] = 0 \
-                                    OR a.attcollation <> i.indcollation[k - 1] \
-                                    OR NOT oc.opcdefault) \
-                             THEN ARRAY(SELECT a.attname::text \
-                                        FROM generate_series(1, i.indnkeyatts::int) AS k \
-                                        JOIN pg_attribute a \
-                                          ON a.attrelid = i.indrelid AND a.attnum = i.indkey[k - 1] \
-                                        ORDER BY k) END \
-                 FROM pg_index i \
-                 JOIN pg_class ic ON ic.oid = i.indexrelid \
-                 JOIN pg_am am ON am.oid = ic.relam \
-                 WHERE i.indrelid = $1 ORDER BY ic.relname",
-                &[&oid],
-            )
-            .await?
+        let indexes: Vec<_> = indexes
             .iter()
             .map(|row| {
                 Ok(IndexInfo {
@@ -694,24 +1099,7 @@ impl Adapter for Conn {
                 })
             })
             .collect::<Result<_>>()?;
-        let foreign_keys = self
-            .catalog(
-                "SELECT con.conname::text, \
-                        ARRAY(SELECT a.attname::text FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) \
-                              JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum \
-                              ORDER BY k.ord), \
-                        rn.nspname::text, rc.relname::text, \
-                        ARRAY(SELECT a.attname::text FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, ord) \
-                              JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum \
-                              ORDER BY k.ord), \
-                        con.confupdtype::text, con.confdeltype::text \
-                 FROM pg_constraint con \
-                 JOIN pg_class rc ON rc.oid = con.confrelid \
-                 JOIN pg_namespace rn ON rn.oid = rc.relnamespace \
-                 WHERE con.conrelid = $1 AND con.contype = 'f' ORDER BY con.conname",
-                &[&oid],
-            )
-            .await?
+        let foreign_keys: Vec<_> = foreign_keys
             .iter()
             .map(|row| {
                 let on_update: String = column(row, 5)?;
@@ -727,30 +1115,7 @@ impl Adapter for Conn {
                 })
             })
             .collect::<Result<_>>()?;
-        // The keys that point at the table: the same catalog, read from
-        // the other end. A partitioned table that has such a key has a
-        // row for each of its partitions too, all pointing here: only the
-        // key itself is listed. The copies name their parent in a column
-        // servers before version 11 do not have.
-        let referenced_by = self
-            .catalog(
-                "SELECT con.conname::text, cn.nspname::text, cc.relname::text, \
-                        ARRAY(SELECT a.attname::text FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) \
-                              JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum \
-                              ORDER BY k.ord), \
-                        ARRAY(SELECT a.attname::text FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, ord) \
-                              JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum \
-                              ORDER BY k.ord), \
-                        con.confdeltype::text \
-                 FROM pg_constraint con \
-                 JOIN pg_class cc ON cc.oid = con.conrelid \
-                 JOIN pg_namespace cn ON cn.oid = cc.relnamespace \
-                 WHERE con.confrelid = $1 AND con.contype = 'f' \
-                   AND COALESCE((to_jsonb(con) ->> 'conparentid')::oid, 0) = 0 \
-                 ORDER BY cn.nspname, cc.relname, con.conname",
-                &[&oid],
-            )
-            .await?
+        let referenced_by: Vec<_> = referenced_by
             .iter()
             .map(|row| {
                 let on_delete: String = column(row, 5)?;
@@ -764,21 +1129,20 @@ impl Adapter for Conn {
                 })
             })
             .collect::<Result<_>>()?;
-        // The comment on the table or view itself. PostgreSQL keeps no empty
-        // one (`COMMENT ON ... IS ''` drops it), and an empty one would be
-        // none.
-        let comment: Option<String> = match self
-            .catalog("SELECT obj_description($1, 'pg_class')", &[&oid])
-            .await?
-            .first()
-        {
-            Some(row) => column(row, 0)?,
-            None => None,
-        }
-        .filter(|comment: &String| !comment.is_empty());
+        // The key is the primary index's columns, in key order. An entry
+        // the index rows name no column for, which PostgreSQL does not let
+        // a primary key have, sends the key's own query.
+        let primary_key = match indexes.iter().find(|index: &&IndexInfo| index.primary) {
+            None => Vec::new(),
+            Some(IndexInfo {
+                key_columns: Some(columns),
+                ..
+            }) => columns.clone(),
+            Some(_) => self.primary_key(object).await?,
+        };
         Ok(Structure {
             columns,
-            primary_key: self.primary_key(object).await?,
+            primary_key,
             indexes,
             foreign_keys,
             referenced_by,
@@ -786,43 +1150,112 @@ impl Adapter for Conn {
         })
     }
 
-    /// One page. The SQL is prepared first, which refuses a second statement
-    /// and yields the column types; it then runs through the simple-query
-    /// protocol (every value as text) inside a read-only transaction.
+    /// One page, read as [`read_statement`] reads: prepared (which refuses
+    /// a second statement and yields the column types), then run through
+    /// the simple-query protocol (every value as text) inside a read-only
+    /// transaction, all in one round trip.
+    ///
+    /// The statement is built from the table's shape as this session last
+    /// read it, and the shape is read again in the same flight, in the
+    /// page's transaction and just before it. A page whose statement the shape just read would not have
+    /// built (a key or a `bytea` column that changed) is read again, from
+    /// that shape: what stands is always the page of the shape read just
+    /// before it, as when the shape is asked first. A table this session
+    /// has not read the shape of yet has it asked first: one round trip
+    /// more.
     async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
-        let key = self.primary_key(&query.object).await?;
-        let binary = self.binary_columns(query).await?;
-        let sql = Dialect::Postgres.select_rows(query, &key, &binary);
         let limit = query.limit as usize;
-        let (columns, mut rows, elapsed) = self.read(&sql, limit).await?;
-        let has_more = rows.len() > limit;
-        rows.truncate(limit);
-        Ok(RowPage {
-            columns,
-            rows,
-            has_more,
-            ordered_by_key: !key.is_empty(),
-            elapsed,
-        })
+        let client = self.client.lock().await;
+        let (mut shape, mut checked) = match self.known_shape(&query.object) {
+            Some(shape) => (shape, false),
+            None => {
+                let shape = table_shape(&client, &query.object).await?;
+                self.remember(&query.object, &shape);
+                (shape, true)
+            }
+        };
+        loop {
+            let (key, binary) = shape.for_query(query);
+            let sql = Dialect::Postgres.select_rows(query, &key, &binary)?;
+            // Every value is a literal in the text, so there is nothing to
+            // bind.
+            debug_assert!(sql.params.is_empty());
+            let started = Instant::now();
+            let read = if checked {
+                read_statement(&client, &sql.text).await
+            } else {
+                let (fresh, read) =
+                    read_alongside(&client, &sql.text, table_shape(&client, &query.object)).await;
+                let fresh = fresh?;
+                self.remember(&query.object, &fresh);
+                checked = true;
+                if fresh.for_query(query) != (key.clone(), binary) {
+                    // A cancel that landed on the page stops it: the page
+                    // read again would run to its end.
+                    if let Err(Error::Cancelled) = read {
+                        return Err(Error::Cancelled);
+                    }
+                    // The page may be wrong, or have failed, for the shape
+                    // it was built from.
+                    shape = fresh;
+                    continue;
+                }
+                read
+            };
+            let (columns, messages) = read?;
+            let mut rows = kept_rows(&messages, &columns, limit)?;
+            let has_more = rows.len() > limit;
+            rows.truncate(limit);
+            return Ok(RowPage {
+                columns,
+                rows,
+                has_more,
+                ordered_by_key: !key.is_empty(),
+                elapsed: started.elapsed(),
+            });
+        }
+    }
+
+    async fn export_statement(&self, query: &RowQuery, columns: &[String]) -> Result<String> {
+        let (key, binary) = self.shape(query).await?;
+        Dialect::Postgres.shown_export(query, &key, &binary, columns)
+    }
+
+    /// An export's rows through a cursor in a read-only transaction:
+    /// prepared first (which types the columns and refuses a second
+    /// statement), declared, then fetched a batch at a time through the
+    /// simple-query protocol, so the server holds the rest.
+    async fn stream_rows(
+        &self,
+        query: &RowQuery,
+        columns: &[String],
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        let (key, binary) = self.shape(query).await?;
+        let sql = Dialect::Postgres.export_rows(query, &key, &binary, columns)?;
+        // Every value is a literal in the text, so there is nothing to bind.
+        debug_assert!(sql.params.is_empty());
+        self.stream_text(&sql.text, batch, to, stop).await
+    }
+
+    /// A statement of the person's, as `stream_rows` streams a table's.
+    async fn stream_statement(
+        &self,
+        text: &str,
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        self.stream_text(text, batch, to, stop).await
     }
 
     async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
         let binary = self.binary_columns(query).await?;
-        let sql = Dialect::Postgres.count_rows(query, &binary);
-        let mut client = self.client.lock().await;
-        let transaction = client
-            .build_transaction()
-            .read_only(true)
-            .start()
-            .await
-            .map_err(query_error)?;
-        // Prepare first: refuses a second statement before anything runs.
-        transaction.prepare(&sql.text).await.map_err(query_error)?;
-        let messages = transaction
-            .simple_query(&sql.text)
-            .await
-            .map_err(query_error)?;
-        transaction.rollback().await.map_err(query_error)?;
+        let sql = Dialect::Postgres.count_rows(query, &binary)?;
+        let client = self.client.lock().await;
+        let (_, messages) = read_statement(&client, &sql.text).await?;
         messages
             .iter()
             .find_map(|message| match message {
@@ -1127,6 +1560,606 @@ mod tests {
         Conn::open(config, tls, database_name(&spec), access)
             .await
             .unwrap()
+    }
+
+    /// What a [`trip_counted`] session waited on the server for.
+    pub(super) struct Trips(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl Trips {
+        pub(super) fn count(&self) -> usize {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    /// A read-only session through a proxy in front of the test server,
+    /// and a count of its round trips: the times it sent a query, or a
+    /// step of the extended protocol up to its `Sync`, while it waited on
+    /// no answer. What it sends together counts once: the proxy holds back
+    /// the server's answers a little, so it all arrives before they do. A
+    /// statement's close that goes out on its own is waited on by nobody
+    /// and does not count.
+    pub(super) async fn trip_counted(url: &str) -> (Conn, Trips) {
+        trip_counted_as(url, Access::ReadOnly).await
+    }
+
+    /// A [`trip_counted`] session opened as `access`.
+    pub(super) async fn trip_counted_as(url: &str, access: Access) -> (Conn, Trips) {
+        use std::collections::VecDeque;
+        use std::sync::atomic::AtomicUsize;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        /// One message off `from`: its kind byte, unless it is the first
+        /// one a client sends, and its length and body.
+        async fn message(
+            from: &mut (impl AsyncReadExt + Unpin),
+            kind: bool,
+        ) -> Option<(Option<u8>, Vec<u8>)> {
+            let kind = if kind {
+                Some(from.read_u8().await.ok()?)
+            } else {
+                None
+            };
+            let length = from.read_u32().await.ok()?;
+            let mut message = Vec::from_iter(kind);
+            message.extend_from_slice(&length.to_be_bytes());
+            let start = message.len();
+            message.resize(start + length as usize - 4, 0);
+            from.read_exact(&mut message[start..]).await.ok()?;
+            Some((kind, message))
+        }
+
+        const HELD: Duration = Duration::from_millis(20);
+        let (mut spec, secrets) = ConnectSpec::from_url(url).unwrap();
+        spec.tls = crate::TlsMode::Disable;
+        let server = (spec.host.clone(), spec.port);
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        spec.host = "127.0.0.1".to_owned();
+        spec.port = listener.local_addr().unwrap().port();
+        let trips = Arc::new(AtomicUsize::new(0));
+        // For each answer still to come, whether anyone waits on it.
+        let waiting = Arc::new(std::sync::Mutex::new(VecDeque::<bool>::new()));
+        let (count, answered) = (Arc::clone(&trips), Arc::clone(&waiting));
+        tokio::spawn(async move {
+            let (client, _) = listener.accept().await.unwrap();
+            let upstream = tokio::net::TcpStream::connect(server).await.unwrap();
+            let (mut from_client, mut to_client) = client.into_split();
+            let (mut from_server, mut to_server) = upstream.into_split();
+            let (held, mut released) = tokio::sync::mpsc::unbounded_channel();
+            tokio::spawn(async move {
+                while let Some((kind, message)) = message(&mut from_server, true).await {
+                    let due = tokio::time::Instant::now() + HELD;
+                    if held.send((due, kind == Some(b'Z'), message)).is_err() {
+                        return;
+                    }
+                }
+            });
+            tokio::spawn(async move {
+                while let Some((due, ready, message)) = released.recv().await {
+                    tokio::time::sleep_until(due).await;
+                    if ready {
+                        answered.lock().unwrap().pop_front();
+                    }
+                    if to_client.write_all(&message).await.is_err() {
+                        return;
+                    }
+                }
+            });
+            // The startup message has no kind byte; every one after it has.
+            let mut first = true;
+            // Whether the steps since the last `Sync` are more than closes.
+            let mut asks = false;
+            while let Some((kind, message)) = message(&mut from_client, !first).await {
+                first = false;
+                let ends = match kind {
+                    Some(b'Q') => {
+                        asks = false;
+                        Some(true)
+                    }
+                    Some(b'S') => Some(std::mem::take(&mut asks)),
+                    Some(b'C') => None,
+                    _ => {
+                        asks = true;
+                        None
+                    }
+                };
+                if let Some(asks) = ends {
+                    let mut waiting = waiting.lock().unwrap();
+                    if asks && !waiting.contains(&true) {
+                        count.fetch_add(1, Ordering::SeqCst);
+                    }
+                    waiting.push_back(asks);
+                }
+                if to_server.write_all(&message).await.is_err() {
+                    return;
+                }
+            }
+        });
+        let conn = Conn::connect(&spec, &secrets, None, access).await.unwrap();
+        (conn, Trips(trips))
+    }
+
+    /// What `work` answered, and the round trips it took.
+    async fn counted<T>(trips: &Trips, work: impl Future<Output = T>) -> (T, usize) {
+        let before = trips.count();
+        let done = work.await;
+        (done, trips.count() - before)
+    }
+
+    /// The counter counts a prepare and its run twice, two queries one
+    /// after another twice, and the same two sent together once.
+    #[tokio::test]
+    async fn the_trip_counter_counts_what_goes_out_together_once() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let (conn, trips) = trip_counted(&url).await;
+        let client = conn.client.lock().await;
+        let typed = || client.query_typed("SELECT 1", &[]);
+        let (_, asked) = counted(&trips, client.query("SELECT 1", &[])).await;
+        assert_eq!(asked, 2);
+        let (_, asked) = counted(&trips, async {
+            typed().await.unwrap();
+            typed().await.unwrap();
+        })
+        .await;
+        assert_eq!(asked, 2);
+        let (_, asked) = counted(&trips, async {
+            tokio::try_join!(typed(), typed()).unwrap()
+        })
+        .await;
+        assert_eq!(asked, 1);
+    }
+
+    /// A table whose key is two columns, in another order than the
+    /// table's, with a column the key's index includes, and a `bytea`
+    /// column. Made once: two tests that create it at once can fail.
+    async fn round_trips_table(url: &str) -> ObjectRef {
+        static MADE: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+        MADE.get_or_init(|| make_round_trips_table(url)).await;
+        ObjectRef::new("public", "round_trips")
+    }
+
+    async fn make_round_trips_table(url: &str) {
+        let mut config: tokio_postgres::Config = url.parse().unwrap();
+        config.ssl_mode(tokio_postgres::config::SslMode::Disable);
+        let (client, connection) = config.connect(tokio_postgres::NoTls).await.unwrap();
+        tokio::spawn(connection);
+        client
+            .batch_execute(
+                "CREATE TABLE IF NOT EXISTS round_trips ( \
+                     id int, body bytea, shelf int, name text, \
+                     PRIMARY KEY (shelf, id) INCLUDE (name)); \
+                 INSERT INTO round_trips VALUES (1, '\\x00ff', 1, 'one'), (2, NULL, 1, 'two') \
+                 ON CONFLICT DO NOTHING",
+            )
+            .await
+            .unwrap();
+    }
+
+    /// Whether the session is outside any transaction a read began: the
+    /// first statement of a transaction starts when the transaction does.
+    async fn outside_a_transaction(conn: &Conn) -> bool {
+        outside_a_transaction_of(&*conn.client.lock().await).await
+    }
+
+    /// [`outside_a_transaction`], on a session already locked.
+    async fn outside_a_transaction_of(client: &tokio_postgres::Client) -> bool {
+        let messages = client
+            .simple_query("SELECT statement_timestamp() = transaction_timestamp()")
+            .await
+            .unwrap();
+        first_text(&messages).as_deref() == Some("t")
+    }
+
+    /// A page asks the server once: the table's shape, the `BEGIN`, the
+    /// prepare, the statement and its `ROLLBACK` go out together. Only the
+    /// first page of a table the session knows nothing of asks for its
+    /// shape first. A count and a lookup need no key: once, and a count
+    /// that compares bytes asks for the `bytea` columns first.
+    #[tokio::test]
+    async fn a_page_asks_the_server_once() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = round_trips_table(&url).await;
+        let (conn, trips) = trip_counted(&url).await;
+        let page = RowQuery::new(object.clone(), 10);
+        let mut by_bytes = page.clone();
+        by_bytes.filters = vec![crate::Filter {
+            column: "body".into(),
+            op: crate::FilterOp::Eq,
+            value: "0x00ff".into(),
+        }];
+        // A raw WHERE that ends in a comment does not comment out what
+        // comes after it.
+        let mut commented = page.clone();
+        commented.raw_where = Some("id > 0 -- every row".into());
+        let mut next = RowQuery::new(object.clone(), 1);
+        next.offset = 1;
+
+        let (first, asked) = counted(&trips, conn.fetch_rows(&page)).await;
+        assert_eq!(first.unwrap().rows.len(), 2);
+        assert_eq!(asked, 2);
+        assert!(outside_a_transaction(&conn).await);
+
+        for (query, rows) in [(&page, 2), (&by_bytes, 1), (&commented, 2), (&next, 1)] {
+            let (fetched, asked) = counted(&trips, conn.fetch_rows(query)).await;
+            let fetched = fetched.unwrap();
+            assert_eq!(fetched.rows.len(), rows, "{query:?}");
+            assert!(fetched.ordered_by_key);
+            assert_eq!(asked, 1, "{query:?}");
+            assert!(outside_a_transaction(&conn).await, "{query:?}");
+        }
+        // Ordered by the key, (shelf, id): the second row is id 2.
+        let second = conn.fetch_rows(&next).await.unwrap();
+        assert_eq!(second.rows[0][0], Value::Int(2));
+        assert!(!second.has_more);
+
+        let (shape, asked) = counted(&trips, conn.shape(&by_bytes)).await;
+        assert_eq!(asked, 1);
+        assert_eq!(
+            shape.unwrap(),
+            (
+                vec!["shelf".to_owned(), "id".to_owned()],
+                vec![("body".to_owned(), ColumnClass::Binary)]
+            )
+        );
+        assert_eq!(conn.shape(&page).await.unwrap().1, Vec::new());
+
+        for (query, expected, asks) in [(&page, 2, 1), (&by_bytes, 1, 2)] {
+            let (count, asked) = counted(&trips, conn.count_rows(query)).await;
+            assert_eq!(count.unwrap(), expected, "{query:?}");
+            assert_eq!(asked, asks, "{query:?}");
+        }
+        let lookup = Lookup {
+            object: object.clone(),
+            key: "id".into(),
+            label: Some("name".into()),
+            part: crate::LookupPart::Matching(String::new()),
+            limit: 10,
+        };
+        let (found, asked) = counted(&trips, conn.lookup(&lookup)).await;
+        assert_eq!(found.unwrap().rows.len(), 2);
+        assert_eq!(asked, 1);
+        assert!(outside_a_transaction(&conn).await);
+    }
+
+    /// A page after the table's key changed, or lost the column the last
+    /// page was ordered by, is the page of the table as it is now: the
+    /// shape read with it says the statement was built from an old one,
+    /// and the page is read again. Two round trips, then one again.
+    #[tokio::test]
+    async fn a_page_after_the_key_changed_is_read_again() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let mut config: tokio_postgres::Config = url.parse().unwrap();
+        config.ssl_mode(tokio_postgres::config::SslMode::Disable);
+        let (other, connection) = config.connect(tokio_postgres::NoTls).await.unwrap();
+        tokio::spawn(connection);
+        other
+            .batch_execute(
+                "DROP TABLE IF EXISTS key_changes; \
+                 CREATE TABLE key_changes (a int PRIMARY KEY, b int NOT NULL, c text); \
+                 INSERT INTO key_changes VALUES (1, 2, 'one'), (2, 1, 'two')",
+            )
+            .await
+            .unwrap();
+        let object = ObjectRef::new("public", "key_changes");
+        let (conn, trips) = trip_counted(&url).await;
+        let query = RowQuery::new(object.clone(), 10);
+        let firsts = |page: &RowPage| {
+            page.rows
+                .iter()
+                .map(|row| row[0].clone())
+                .collect::<Vec<_>>()
+        };
+        conn.describe(&object).await.unwrap();
+        let (page, asked) = counted(&trips, conn.fetch_rows(&query)).await;
+        assert_eq!(firsts(&page.unwrap()), [Value::Int(1), Value::Int(2)]);
+        assert_eq!(asked, 1);
+
+        // The key is now `b`: the rows come in its order.
+        other
+            .batch_execute(
+                "ALTER TABLE key_changes DROP CONSTRAINT key_changes_pkey, ADD PRIMARY KEY (b)",
+            )
+            .await
+            .unwrap();
+        let (page, asked) = counted(&trips, conn.fetch_rows(&query)).await;
+        let page = page.unwrap();
+        assert_eq!(firsts(&page), [Value::Int(2), Value::Int(1)]);
+        assert!(page.ordered_by_key);
+        assert_eq!(asked, 2);
+        assert!(outside_a_transaction(&conn).await);
+
+        // `b` is gone, and with it the key: the old statement fails, and
+        // the page is read without one.
+        other
+            .batch_execute("ALTER TABLE key_changes DROP COLUMN b")
+            .await
+            .unwrap();
+        let (page, asked) = counted(&trips, conn.fetch_rows(&query)).await;
+        let page = page.unwrap();
+        assert_eq!(page.rows.len(), 2);
+        assert_eq!(page.columns.len(), 2);
+        assert!(!page.ordered_by_key);
+        assert_eq!(asked, 2);
+        assert!(outside_a_transaction(&conn).await);
+
+        let (page, asked) = counted(&trips, conn.fetch_rows(&query)).await;
+        assert_eq!(page.unwrap().rows.len(), 2);
+        assert_eq!(asked, 1);
+        other.batch_execute("DROP TABLE key_changes").await.unwrap();
+    }
+
+    /// A raw WHERE that ends the read's transaction and writes after it
+    /// writes nothing, in a session that may write: the prepare refuses a
+    /// text of more than one statement, which fails the transaction it
+    /// runs in, and nothing of the run goes on in a failed one. All of it
+    /// in one round trip.
+    #[tokio::test]
+    async fn a_raw_where_that_commits_writes_nothing() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = round_trips_table(&url).await;
+        let (conn, trips) = trip_counted_as(&url, Access::Writable).await;
+        let mut query = RowQuery::new(object.clone(), 10);
+        conn.fetch_rows(&query).await.unwrap();
+        query.raw_where = Some(
+            "true); COMMIT; CREATE TEMP TABLE injected (n int); SELECT * FROM round_trips WHERE (true"
+                .into(),
+        );
+        let (fetched, asked) = counted(&trips, conn.fetch_rows(&query)).await;
+        let error = fetched.unwrap_err().to_string();
+        assert!(error.contains("multiple commands"), "{error}");
+        assert_eq!(asked, 1);
+        assert!(outside_a_transaction(&conn).await);
+        let client = conn.client.lock().await;
+        let messages = client
+            .simple_query("SELECT to_regclass('pg_temp.injected') IS NULL")
+            .await
+            .unwrap();
+        assert_eq!(first_text(&messages).as_deref(), Some("t"));
+    }
+
+    /// What goes alongside a read and fails, as a cancel that lands on it
+    /// does, keeps the read's statement from running. The statement takes
+    /// a session's advisory lock, which a rollback does not release: only
+    /// a statement that ran holds it.
+    #[tokio::test]
+    async fn a_failure_alongside_a_read_keeps_its_statement_from_running() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        let client = conn.client.lock().await;
+        let held = || async {
+            let messages = client
+                .simple_query(
+                    "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' \
+                     AND objid = 31800 AND pid = pg_backend_pid()",
+                )
+                .await
+                .unwrap();
+            first_text(&messages).unwrap()
+        };
+        let text = "SELECT pg_advisory_lock(31800)";
+        let (alongside, read) =
+            read_alongside(&client, text, client.simple_query("SELECT 1 / 0")).await;
+        assert!(alongside.is_err());
+        assert!(read.is_err());
+        assert_eq!(held().await, "0");
+        assert!(outside_a_transaction_of(&client).await);
+        read_statement(&client, text).await.unwrap();
+        assert_eq!(held().await, "1");
+        client
+            .batch_execute("SELECT pg_advisory_unlock_all()")
+            .await
+            .unwrap();
+    }
+
+    /// A cancel that lands on a page built from an old shape ends the
+    /// page: it is not read again from the new one, which would run to its
+    /// end. Each row of the page sleeps.
+    #[tokio::test]
+    async fn a_cancelled_page_of_an_old_shape_is_not_read_again() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let mut config: tokio_postgres::Config = url.parse().unwrap();
+        config.ssl_mode(tokio_postgres::config::SslMode::Disable);
+        let (other, connection) = config.connect(tokio_postgres::NoTls).await.unwrap();
+        tokio::spawn(connection);
+        other
+            .batch_execute(
+                "DROP TABLE IF EXISTS cancelled_shapes; \
+                 CREATE TABLE cancelled_shapes (a int PRIMARY KEY, b int NOT NULL); \
+                 INSERT INTO cancelled_shapes VALUES (1, 2), (2, 1)",
+            )
+            .await
+            .unwrap();
+        let object = ObjectRef::new("public", "cancelled_shapes");
+        let conn = session(&url).await;
+        let mut query = RowQuery::new(object.clone(), 10);
+        conn.fetch_rows(&query).await.unwrap();
+        other
+            .batch_execute(
+                "ALTER TABLE cancelled_shapes \
+                 DROP CONSTRAINT cancelled_shapes_pkey, ADD PRIMARY KEY (b)",
+            )
+            .await
+            .unwrap();
+        query.raw_where = Some("(SELECT true FROM pg_sleep(2))".into());
+        let cancel = conn.cancel.clone();
+        let cancelling = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            cancel.cancel().await.unwrap();
+        });
+        let started = Instant::now();
+        let fetched = conn.fetch_rows(&query).await;
+        cancelling.await.unwrap();
+        assert_eq!(fetched.unwrap_err(), Error::Cancelled);
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(outside_a_transaction(&conn).await);
+        other
+            .batch_execute("DROP TABLE cancelled_shapes")
+            .await
+            .unwrap();
+    }
+
+    /// The guard before a read's statement fails outside a transaction
+    /// block, as after a `BEGIN` that failed, and in a failed one, as after
+    /// a prepare that failed: the statement after it does not run.
+    #[tokio::test]
+    async fn the_read_guard_runs_nothing_outside_a_good_transaction() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session_with(&url, Access::Writable, "").await;
+        let client = conn.client.lock().await;
+        let run = format!("{READ_GUARD};\nCREATE TEMP TABLE guarded (n int)");
+        let outside = client.simple_query(&run).await.unwrap_err();
+        assert_eq!(outside.code(), Some(&SqlState::NO_ACTIVE_SQL_TRANSACTION));
+        client.batch_execute("BEGIN").await.unwrap();
+        assert!(client.batch_execute("SELECT 1 / 0").await.is_err());
+        let failed = client.simple_query(&run).await.unwrap_err();
+        assert_eq!(failed.code(), Some(&SqlState::IN_FAILED_SQL_TRANSACTION));
+        client.batch_execute("ROLLBACK").await.unwrap();
+        let messages = client
+            .simple_query("SELECT to_regclass('pg_temp.guarded') IS NULL")
+            .await
+            .unwrap();
+        assert_eq!(first_text(&messages).as_deref(), Some("t"));
+    }
+
+    /// A read dropped between its `BEGIN` and its statement leaves no
+    /// transaction behind: the proxy holds the prepare's answer back, and
+    /// the read is dropped while it waits. A writable session's next
+    /// script writes: its transaction is its own, not the read's read-only
+    /// one. And the session reads on.
+    #[tokio::test]
+    async fn a_dropped_read_leaves_no_transaction_behind() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        for access in [Access::ReadOnly, Access::Writable] {
+            let (conn, _) = trip_counted_as(&url, access).await;
+            let read = async {
+                let client = conn.client.lock().await;
+                read_statement(&client, "SELECT 1").await
+            };
+            assert!(
+                tokio::time::timeout(Duration::from_millis(10), read)
+                    .await
+                    .is_err()
+            );
+            assert!(outside_a_transaction(&conn).await, "{access:?}");
+            if access == Access::Writable {
+                let texts = ["CREATE TEMP TABLE dropped_read (n int)".to_owned()];
+                let outcome = conn
+                    .script(&texts, 10, ScriptMode::Write, &StopFlag::new())
+                    .await
+                    .unwrap();
+                assert!(
+                    matches!(
+                        outcome.results[..],
+                        [crate::StatementResult {
+                            outcome: crate::StatementOutcome::Done { .. },
+                            ..
+                        }]
+                    ),
+                    "{outcome:?}"
+                );
+            }
+            {
+                let client = conn.client.lock().await;
+                let (_, messages) = read_statement(&client, "SELECT 2").await.unwrap();
+                assert_eq!(first_text(&messages).as_deref(), Some("2"));
+            }
+        }
+    }
+
+    /// A read that fails is rolled back by the `ROLLBACK` sent with it: no
+    /// round trip more. A second statement is refused by the prepare,
+    /// before anything runs, and an error of the statement's own fails the
+    /// transaction the `ROLLBACK` ends.
+    #[tokio::test]
+    async fn a_failed_read_rolls_back_and_the_next_one_reads() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = round_trips_table(&url).await;
+        let (conn, trips) = trip_counted(&url).await;
+        conn.describe(&object).await.unwrap();
+        for raw in ["true; SELECT 1", "1 / (id - id) = 0"] {
+            let mut query = RowQuery::new(object.clone(), 10);
+            query.raw_where = Some(raw.into());
+            let (fetched, asked) = counted(&trips, conn.fetch_rows(&query)).await;
+            assert!(fetched.is_err(), "{raw}");
+            assert_eq!(asked, 1, "{raw}");
+            assert!(outside_a_transaction(&conn).await, "{raw}");
+            let page = RowQuery::new(object.clone(), 10);
+            assert_eq!(conn.fetch_rows(&page).await.unwrap().rows.len(), 2);
+        }
+    }
+
+    /// The structure asks the server once: its queries go out together.
+    /// A table that is not there is still said to be missing.
+    #[tokio::test]
+    async fn the_structure_asks_the_server_once() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = round_trips_table(&url).await;
+        let (conn, trips) = trip_counted(&url).await;
+        let (structure, asked) = counted(&trips, conn.describe(&object)).await;
+        let structure = structure.unwrap();
+        assert_eq!(structure.primary_key, ["shelf", "id"]);
+        assert_eq!(
+            structure
+                .columns
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
+            ["id", "body", "shelf", "name"]
+        );
+        assert_eq!(asked, 1);
+        let missing = ObjectRef::new("public", "no_round_trips");
+        let (structure, asked) = counted(&trips, conn.describe(&missing)).await;
+        let error = structure.unwrap_err().to_string();
+        assert!(error.contains("no such table or view"), "{error}");
+        assert_eq!(asked, 1);
+    }
+
+    /// Opening a table asks the server twice: once for its structure,
+    /// which reads the table's shape too, and once for its first page.
+    #[tokio::test]
+    async fn opening_a_table_asks_the_server_twice() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = round_trips_table(&url).await;
+        let (conn, trips) = trip_counted(&url).await;
+        let (opened, asked) = counted(&trips, async {
+            let structure = conn.describe(&object).await.unwrap();
+            let page = conn
+                .fetch_rows(&RowQuery::new(object.clone(), 10))
+                .await
+                .unwrap();
+            (structure, page)
+        })
+        .await;
+        assert_eq!(opened.1.rows.len(), 2);
+        assert!(opened.1.ordered_by_key);
+        assert_eq!(asked, 2);
     }
 
     /// A server that declines TLS and accepts anyone, answering every

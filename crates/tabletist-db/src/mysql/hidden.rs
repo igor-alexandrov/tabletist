@@ -10,19 +10,30 @@
 //! query as the server rewrote it, every table written `` `db`.`table` ``
 //! with views expanded, and leaves out what the optimizer already
 //! answered. So a table either names is checked, and the reading of the
-//! statement's own text beside them.
+//! statement's own text beside them. MariaDB writes the note on
+//! `EXPLAIN EXTENDED` only, which is asked for where the JSON plan gave
+//! none.
+//!
+//! What each view reads, MySQL's catalog lists. MariaDB's lists nothing of
+//! it, and keeps each view's definition as the server writes it back,
+//! every relation by its database and its name, which is read for it
+//! ([`definition_reads`]).
 
 use mysql_async::prelude::Queryable;
 
 use super::query_error;
 use crate::agent::{
-    Catalog, ColumnName, Hidden, Read, Refusal, Relation, Sources, named_relations, planned,
+    Catalog, ColumnName, Hidden, Read, Refusal, Relation, Sources, function_allowed,
+    named_relations, planned,
 };
 use crate::sql::{self, TokenKind};
 use crate::{Dialect, Error, Result};
 
 /// The system's own schemas, which the catalog leaves out.
 const SYSTEM: &str = "('information_schema', 'mysql', 'performance_schema', 'sys')";
+
+/// [`SYSTEM`]'s schemas, by name.
+const SYSTEM_SCHEMAS: [&str; 4] = ["information_schema", "mysql", "performance_schema", "sys"];
 
 /// The run sets `sql_select_limit` for the agent's rows; a `LIMIT` of a
 /// query's own takes its place, so the catalog is read whole.
@@ -62,9 +73,26 @@ pub(super) async fn check(
         return Ok(Err(Error::Agent(Refusal::NotParsed)));
     };
     // The note on the plan: the query as the server rewrote it. MariaDB
-    // may give none.
-    let notes: Vec<(String, u32, String)> =
+    // gives none on a JSON plan, only on `EXPLAIN EXTENDED`.
+    let mut notes: Vec<(String, u32, String)> =
         conn.query("SHOW WARNINGS").await.map_err(query_error)?;
+    if !notes.iter().any(|(_, code, _)| *code == 1003) {
+        let extended = format!("EXPLAIN EXTENDED {}", planned(read));
+        match conn
+            .exec_drop(extended, super::script::bound(read.params()))
+            .await
+        {
+            Ok(()) => notes = conn.query("SHOW WARNINGS").await.map_err(query_error)?,
+            Err(error) => {
+                let error = query_error(error);
+                if error.is_connection_lost() || error == Error::Cancelled {
+                    return Err(error);
+                }
+                // A server that takes no EXTENDED: without the note, as
+                // before.
+            }
+        }
+    }
     let rewritten: Vec<&String> = notes
         .iter()
         .filter(|(_, code, _)| *code == 1003)
@@ -198,12 +226,15 @@ fn rewritten_reads(note: &str, hidden: &Hidden) -> std::result::Result<(), Refus
 }
 
 /// The catalog as the open transaction sees it: the relations of every
-/// schema but the system's, what each view reads where the server says so
-/// (`VIEW_TABLE_USAGE`, MySQL 8.0.13 and later), and the users' routines.
-/// Where it does not say, every view is taken to read what is hidden. With
-/// the columns of the tables `masked` names; MySQL says what a view reads
-/// table by table, not column by column, so a view over a table with a
-/// masked column is taken to read it.
+/// schema but the system's, what each view reads where the server says so,
+/// and the users' routines. MySQL 8.0.13 and later list what each view
+/// reads (`VIEW_TABLE_USAGE`) and which views call a user's function
+/// (`VIEW_ROUTINE_USAGE`); MariaDB keeps each view's definition as it
+/// writes it back, which [`definition_reads`] reads. Where neither says,
+/// a view is taken to read what is hidden. With the columns of the tables
+/// `masked` names; neither server says what a view reads column by
+/// column, so a view over a table with a masked column is taken to read
+/// it.
 pub(super) async fn catalog(
     conn: &mut mysql_async::Conn,
     masked: &[ColumnName],
@@ -212,6 +243,13 @@ pub(super) async fn catalog(
         .query(format!(
             "SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES \
              WHERE TABLE_SCHEMA NOT IN {SYSTEM} {WHOLE}"
+        ))
+        .await
+        .map_err(query_error)?;
+    let routines: Vec<(String, String)> = conn
+        .query(format!(
+            "SELECT ROUTINE_SCHEMA, ROUTINE_NAME FROM information_schema.ROUTINES \
+             WHERE ROUTINE_SCHEMA NOT IN {SYSTEM} {WHOLE}"
         ))
         .await
         .map_err(query_error)?;
@@ -228,45 +266,79 @@ pub(super) async fn catalog(
             // No such table on this server.
             _ => Ok(None),
         })?;
-    // The views that call a stored function the users wrote, whose reads
-    // no catalog lists. Where the server does not say, every view.
-    let calling: Option<std::collections::HashSet<(String, String)>> = conn
-        .query(format!(
-            "SELECT TABLE_SCHEMA, TABLE_NAME FROM information_schema.VIEW_ROUTINE_USAGE \
-             WHERE SPECIFIC_SCHEMA NOT IN {SYSTEM} {WHOLE}"
-        ))
-        .await
-        .map(|rows: Vec<(String, String)>| Some(rows.into_iter().collect()))
-        .map_err(query_error)
-        .or_else(|error| match error {
-            Error::ConnectionLost(_) | Error::Cancelled => Err(error),
-            // No such table on this server.
-            _ => Ok(None),
-        })?;
-    // What each view reads, by the view.
+    // What each view reads, by the view, and the views of which that is
+    // all they read: any other is taken to read what is hidden.
     let mut reads: std::collections::HashMap<(String, String), Vec<(String, String)>> =
         std::collections::HashMap::new();
-    for (view_schema, view_name, on_schema, on_name) in usage.iter().flatten() {
-        reads
-            .entry((view_schema.clone(), view_name.clone()))
-            .or_default()
-            .push((on_schema.clone(), on_name.clone()));
+    let mut told: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    match usage {
+        Some(usage) => {
+            // The views that call a stored function the users wrote, whose
+            // reads no catalog lists. Where the server does not say, every
+            // view.
+            let calling: Option<std::collections::HashSet<(String, String)>> = conn
+                .query(format!(
+                    "SELECT TABLE_SCHEMA, TABLE_NAME FROM information_schema.VIEW_ROUTINE_USAGE \
+                     WHERE SPECIFIC_SCHEMA NOT IN {SYSTEM} {WHOLE}"
+                ))
+                .await
+                .map(|rows: Vec<(String, String)>| Some(rows.into_iter().collect()))
+                .map_err(query_error)
+                .or_else(|error| match error {
+                    Error::ConnectionLost(_) | Error::Cancelled => Err(error),
+                    // No such table on this server.
+                    _ => Ok(None),
+                })?;
+            for (view_schema, view_name, on_schema, on_name) in usage {
+                let view = (view_schema, view_name);
+                if calling
+                    .as_ref()
+                    .is_some_and(|calling| !calling.contains(&view))
+                {
+                    told.insert(view.clone());
+                }
+                reads.entry(view).or_default().push((on_schema, on_name));
+            }
+            // A view the server lists no table of reads what it does not
+            // say: a user without SHOW VIEW is told nothing of any view.
+            // It is not told, as one that calls a function is not.
+        }
+        None => {
+            // Only MariaDB's own writing is read so: elsewhere (MySQL
+            // before 8.0.13) no row comes back, and every view is taken to
+            // read what is hidden.
+            let definitions: Vec<(String, String, String)> = conn
+                .query(format!(
+                    "SELECT TABLE_SCHEMA, TABLE_NAME, VIEW_DEFINITION FROM information_schema.VIEWS \
+                     WHERE TABLE_SCHEMA NOT IN {SYSTEM} AND VERSION() LIKE '%MariaDB%' {WHOLE}"
+                ))
+                .await
+                .map_err(query_error)?;
+            let functions: std::collections::HashSet<String> = routines
+                .iter()
+                .map(|(_, name)| name.to_lowercase())
+                .collect();
+            for (schema, name, definition) in definitions {
+                if let Some(read) = definition_reads(&definition, &functions) {
+                    told.insert((schema.clone(), name.clone()));
+                    reads.insert((schema, name), read);
+                }
+            }
+        }
     }
     let relations = listed
         .into_iter()
         .map(|(schema, name, kind)| {
             let view = kind.eq_ignore_ascii_case("VIEW");
-            let depends_on = reads
-                .remove(&(schema.clone(), name.clone()))
-                .unwrap_or_default();
-            let calls = calling
-                .as_ref()
-                .is_none_or(|calling| calling.contains(&(schema.clone(), name.clone())));
-            // A view the server lists no table of reads what it does not
-            // say: a user without SHOW VIEW is told nothing of any view.
-            let unsaid = depends_on.is_empty();
+            let key = (schema, name);
+            let depends_on = reads.remove(&key).unwrap_or_default();
+            // A view over a system catalog reads what describes every
+            // table, the hidden ones too, and the catalog leaves the
+            // system's relations out: it is taken to read what is hidden.
+            let opaque = view && (!told.contains(&key) || reads_the_system(&depends_on));
+            let (schema, name) = key;
             Relation {
-                opaque: view && (usage.is_none() || calls || unsaid),
+                opaque,
                 schema,
                 name,
                 depends_on,
@@ -275,13 +347,6 @@ pub(super) async fn catalog(
             }
         })
         .collect();
-    let routines: Vec<(String, String)> = conn
-        .query(format!(
-            "SELECT ROUTINE_SCHEMA, ROUTINE_NAME FROM information_schema.ROUTINES \
-             WHERE ROUTINE_SCHEMA NOT IN {SYSTEM} {WHOLE}"
-        ))
-        .await
-        .map_err(query_error)?;
     // With whether each is generated, which `EXTRA` says on every server
     // (`VIRTUAL GENERATED`, `STORED GENERATED`, MariaDB's `PERSISTENT`).
     let listed: Vec<(String, String, String, String)> = match masked.is_empty() {
@@ -320,6 +385,128 @@ pub(super) async fn catalog(
         generated,
         ..Catalog::default()
     })
+}
+
+/// Whether any of `reads`, by schema and name, is of a system schema.
+fn reads_the_system(reads: &[(String, String)]) -> bool {
+    reads.iter().any(|(schema, _)| {
+        SYSTEM_SCHEMAS
+            .iter()
+            .any(|system| system.eq_ignore_ascii_case(schema))
+    })
+}
+
+/// What a view reads, by its definition as MariaDB writes it back
+/// (`information_schema.VIEWS`), whatever the text it was made with: every
+/// table, view and sequence as `` `db`.`name` ``, a stored function it
+/// calls in backquotes (`` `name`( `` or `` `db`.`name`( ``, the built-in
+/// ones bare), a common table expression by its name alone. Every name of
+/// two parts that is not called is taken for a relation it reads; one the
+/// catalog does not list is passed over (a derived table's column,
+/// `` `d`.`id` ``).
+///
+/// `None` where what it reads cannot be told: an empty definition (a user
+/// without SHOW VIEW is shown none), a call of a function the users wrote
+/// (`functions`, folded), of any name in backquotes or of a built-in
+/// function an agent may not call (`load_file`), a name alone in a
+/// table's place that no common table expression of the definition has,
+/// and what the server never writes, which a misreading could hide a name
+/// in: a comment, or a string with a backquote in it.
+fn definition_reads(
+    definition: &str,
+    functions: &std::collections::HashSet<String>,
+) -> Option<Vec<(String, String)>> {
+    if definition.trim().is_empty() {
+        return None;
+    }
+    let tokens: Vec<sql::Token> = sql::tokenize(Dialect::MySql, definition)
+        .into_iter()
+        .filter(|token| token.kind != TokenKind::Whitespace)
+        .collect();
+    let text = |at: usize| tokens.get(at).map(|token| &definition[token.range.clone()]);
+    let is = |at: usize, word: &str| text(at).is_some_and(|text| text.eq_ignore_ascii_case(word));
+    let quoted = |at: usize| {
+        tokens
+            .get(at)
+            .filter(|token| token.kind == TokenKind::QuotedIdentifier)
+            .and_then(|_| text(at))
+            .filter(|text| text.starts_with('`'))
+            .map(|text| text[1..text.len() - 1].replace("``", "`"))
+    };
+    // A name, in backquotes or bare (a word the tokenizer takes for a
+    // keyword too).
+    let name = |at: usize| match tokens.get(at).map(|token| token.kind) {
+        Some(TokenKind::Identifier | TokenKind::Keyword) => text(at).map(str::to_owned),
+        Some(TokenKind::QuotedIdentifier) => quoted(at),
+        _ => None,
+    };
+    // The common table expressions' names: each one a name that `AS (`
+    // follows, or a list of its columns and then `AS (`.
+    // Where one is named with its columns, a parenthesis follows its name
+    // there, and it is no call.
+    let mut defined = std::collections::HashSet::new();
+    let mut with_columns = std::collections::HashSet::new();
+    for at in 0..tokens.len() {
+        let Some(cte) = name(at) else { continue };
+        let mut after = at + 1;
+        let columns = is(after, "(");
+        if columns {
+            after += 1;
+            while name(after).is_some() || is(after, ",") {
+                after += 1;
+            }
+            if !is(after, ")") {
+                continue;
+            }
+            after += 1;
+        }
+        if is(after, "as") && is(after + 1, "(") {
+            defined.insert(cte.to_lowercase());
+            if columns {
+                with_columns.insert(at);
+            }
+        }
+    }
+    let mut reads = Vec::new();
+    for (at, token) in tokens.iter().enumerate() {
+        match token.kind {
+            TokenKind::Comment | TokenKind::ExecutableComment => return None,
+            TokenKind::String if text(at)?.contains('`') => return None,
+            _ => {}
+        }
+        if ["from", "join", "straight_join"]
+            .iter()
+            .any(|word| is(at, word))
+            && let Some(alone) = name(at + 1)
+            && !is(at + 2, ".")
+            && !is(at + 2, "(")
+            && !defined.contains(&alone.to_lowercase())
+        {
+            return None;
+        }
+        // A call of a function the users wrote, or of a built-in one an
+        // agent may not call (`load_file`), which the statement that reads
+        // the view does not name.
+        if is(at + 1, "(")
+            && !with_columns.contains(&at)
+            && let Some(called) = name(at)
+            && (quoted(at).is_some()
+                || functions.contains(&called.to_lowercase())
+                || function_allowed(Dialect::MySql, &called).is_err())
+        {
+            return None;
+        }
+        // A name of two parts, not of three nor called.
+        if (at == 0 || !is(at - 1, "."))
+            && is(at + 1, ".")
+            && !is(at + 3, ".")
+            && !is(at + 3, "(")
+            && let (Some(schema), Some(relation)) = (name(at), name(at + 2))
+        {
+            reads.push((schema, relation));
+        }
+    }
+    Some(reads)
 }
 
 #[cfg(test)]
@@ -417,5 +604,118 @@ mod tests {
             ] }
         });
         assert!(json_reads(&plan, &hidden, None).is_err());
+    }
+
+    /// Definitions as MariaDB 11.4 wrote them back.
+    #[test]
+    fn a_mariadb_view_reads_each_relation_its_definition_names() {
+        let functions: std::collections::HashSet<String> =
+            ["customer_count".to_owned()].into_iter().collect();
+        let reads = |definition: &str| {
+            definition_reads(definition, &functions).map(|reads| {
+                reads
+                    .iter()
+                    .map(|(schema, name)| format!("{schema}.{name}"))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let recent = "select `bookshop`.`orders`.`id` AS `id`,`bookshop`.`orders`.`email` AS \
+                      `email` from `bookshop`.`orders` where `bookshop`.`orders`.`placed_at` \
+                      >= '2026-01-01'";
+        assert_eq!(reads(recent), Some(vec!["bookshop.orders".into()]));
+        // By aliases, in a join in parentheses, and on another database:
+        // a column by its alias is no relation the catalog lists.
+        let in_stock = "select `b`.`id` AS `book_id`,`p`.`name` AS `publisher` from \
+                        (`bookshop`.`books` `b` join `shop`.`publishers` `p` \
+                        on(`p`.`id` = `b`.`publisher_id`)) where `b`.`in_print` <> 0";
+        assert_eq!(
+            reads(in_stock),
+            Some(vec![
+                "b.id".into(),
+                "p.name".into(),
+                "bookshop.books".into(),
+                "shop.publishers".into(),
+                "p.id".into(),
+                "b.publisher_id".into(),
+                "b.in_print".into(),
+            ])
+        );
+        // Under a subquery, EXISTS, IN, a derived table, a union, and a
+        // sequence read as a table.
+        let nested = "select (select max(`d`.`t`.`id`) from `d`.`t`) AS `m` from `d`.`u` \
+                      where exists(select 1 from `d`.`x` `x` limit 1) and `d`.`u`.`id` in \
+                      (select `d`.`y`.`id` from `d`.`y`) union select `d`.`s`.`cycle_count` AS `n` \
+                      from `d`.`s` join ((select `d`.`z`.`id` AS `id` from `d`.`z`) `q` join `d`.`w`)";
+        let found = reads(nested).unwrap();
+        for relation in ["d.t", "d.u", "d.x", "d.y", "d.s", "d.z", "d.w"] {
+            assert!(
+                found.contains(&relation.to_owned()),
+                "{relation}: {found:?}"
+            );
+        }
+        // A common table expression, by its name alone, with its columns
+        // or without.
+        let cte = "with c as (select `d`.`t`.`id` AS `id` from `d`.`t`)select `c`.`id` AS \
+                   `id` from `c`";
+        assert_eq!(reads(cte), Some(vec!["d.t".into(), "c.id".into()]));
+        let recursive = "with recursive r(`n`) as (select 1 AS `n` union all select `r`.`n` + 1 \
+                         AS `n+1` from `r` where `r`.`n` < 3)select `r`.`n` AS `n` from `r`";
+        assert!(reads(recursive).is_some());
+        // A table function, and a column of it by its alias.
+        let table_function = "select `j`.`a` AS `a` from JSON_TABLE('[1]', '$[*]' COLUMNS \
+                              (`a` int(11) PATH '$')) `j`";
+        assert_eq!(reads(table_function), Some(vec!["j.a".into()]));
+        // Nothing read: a literal, a FROM of a function's own, and a string
+        // that reads like a name.
+        for definition in [
+            "select 'Welcome' AS `greeting`",
+            "values (1),(2)",
+            "select trim(both 'x' from 'xax') AS `y`,extract(year from current_timestamp()) \
+             AS `z`",
+            "select 'it\\'s from \\\\ a' AS `s`",
+        ] {
+            assert_eq!(reads(definition), Some(Vec::new()), "{definition}");
+        }
+        // Not told: a stored function called, however it is written; none
+        // shown; a name alone in a table's place; a comment; a backquote in
+        // a string.
+        for definition in [
+            "select `customer_count`() AS `n`",
+            "select `bookshop`.`customer_count`() AS `n` from `bookshop`.`books`",
+            "select customer_count() AS `n`",
+            "select `own_function`(1) AS `n`",
+            "",
+            "select `customers`.`id` AS `id` from `customers`",
+            "select 1 AS `1` from `d`.`t` join `customers`",
+            "select 1 AS `1` /* from `d`.`customers` */",
+            "select 'a`b' AS `s` from `d`.`t`",
+            // A built-in function an agent may not call.
+            "select load_file('/etc/hosts') AS `f`",
+            "select nextval(`d`.`s`) AS `n`",
+            // A function by a common table expression's name: only the
+            // expression's own columns follow its name unread.
+            "with customer_count as (select 1 AS `id`)select `bookshop`.`customer_count`() AS \
+             `n` from `customer_count`",
+            "with customer_count as (select 1 AS `id`)select customer_count() AS `n` from \
+             `customer_count`",
+        ] {
+            assert_eq!(reads(definition), None, "{definition}");
+        }
+        // A system catalog, merged or not: what it reads is said, and the
+        // view is taken to read what is hidden, as MySQL's own listing of
+        // the same view is.
+        for definition in [
+            "select `information_schema`.`TABLES`.`TABLE_NAME` AS `TABLE_NAME` from \
+             `information_schema`.`TABLES` group by `information_schema`.`TABLES`.`TABLE_NAME`",
+            "select `mysql`.`user`.`User` AS `User` from `mysql`.`user`",
+        ] {
+            let read = definition_reads(definition, &functions).unwrap();
+            assert!(reads_the_system(&read), "{definition}");
+        }
+        assert!(!reads_the_system(
+            &definition_reads(recent, &functions).unwrap()
+        ));
+        let listed = [("INFORMATION_SCHEMA".to_owned(), "COLUMNS".to_owned())];
+        assert!(reads_the_system(&listed));
     }
 }

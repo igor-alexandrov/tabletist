@@ -2,16 +2,17 @@
 //! of a lost connection, the sidebar, the object tabs and the open object.
 
 use egui::{CornerRadius, Frame, Margin, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
-use tabletist_db::TlsMode;
+use tabletist_db::{Access, TlsMode};
 
 use crate::app::App;
+use crate::format::display_safe;
 use crate::i18n::gettext;
 use crate::keymap::Command;
-use crate::model::{Action, ConnTabId, ObjectView, SessionStatus};
-use crate::theme::{Icon, Look, Palette};
+use crate::model::{Action, ConnTabId, ObjectView, SessionStatus, TabId};
+use crate::style::Icon;
+use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Region};
-use crate::ui::format::display_safe;
 use crate::ui::menu;
 use crate::ui::states;
 use crate::ui::widgets::{self, ButtonSpec};
@@ -27,17 +28,17 @@ pub fn bar_height(look: &Look) -> f32 {
 const STRIPE: f32 = 3.0;
 
 /// The bar's height in the window. The bar is the macOS title bar, and at
-/// least as tall as the window has it (window points, which egui's `zoom`
-/// scales away from its own).
-fn top_bar_height(app: &App, zoom: f32) -> f32 {
-    bar_height(&app.look).max(app.titlebar.height / zoom)
+/// least as tall as the window has it: `titlebar` is its height in window
+/// points, which egui's `zoom` scales away from its own.
+fn top_bar_height(look: &Look, titlebar: f32, zoom: f32) -> f32 {
+    bar_height(look).max(titlebar / zoom)
 }
 
 /// The line the bar's contents centre on, below its top: under the macOS
 /// stripe and over the rule, or the middle of the terminal bar.
-pub fn bar_line(app: &App, zoom: f32) -> f32 {
-    let height = top_bar_height(app, zoom);
-    if app.look.terminal {
+pub fn bar_line(look: &Look, titlebar: f32, zoom: f32) -> f32 {
+    let height = top_bar_height(look, titlebar, zoom);
+    if look.terminal {
         height / 2.0
     } else {
         (STRIPE + height - 1.0) / 2.0
@@ -46,23 +47,41 @@ pub fn bar_line(app: &App, zoom: f32) -> f32 {
 
 pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let look = app.look;
-    top_bar(app, ui, tab);
-    super::notices(app, ui);
+    if let Some(info) = bar_info(app, tab) {
+        let paint = super::Paint::of(app);
+        let titlebar = (app.titlebar.inset, app.titlebar.height);
+        let env_bar = app.settings.env_bar;
+        if let Some(workspace) = crate::app::workspace_in_mut(&mut app.tabs, tab) {
+            let asked = top_bar(ui, paint, tab, workspace, &info, env_bar, titlebar);
+            app.actions.extend(asked);
+        }
+    }
+    let (_, asked) = super::notices(
+        ui,
+        super::Paint::of(app),
+        app.notice.as_deref(),
+        &app.agents_held,
+        &app.connections.connections,
+    );
+    app.actions.extend(asked);
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
-    let opened = workspace.opened();
-    if look.terminal && opened {
-        super::object_tabs::show(app, ui, tab);
-        status_line(app, ui, tab);
-    }
-    if !opened {
+    if !workspace.opened() {
         // Nothing of the database to show yet: how connecting goes, or
         // why it failed.
-        opening(app, ui, tab);
+        let asked = opening(ui, super::Paint::of(app), tab, workspace);
+        app.actions.extend(asked);
         return;
     }
-    banner(app, ui, tab);
+    if look.terminal {
+        object_tabs(app, ui, tab);
+        bottom_line(app, ui, tab);
+    }
+    if let Some(workspace) = app.workspace(tab) {
+        let asked = banner(ui, super::Paint::of(app), tab, workspace);
+        app.actions.extend(asked);
+    }
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
@@ -74,11 +93,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     // The tab the row panel shows a row of: a table's Data view, or a SQL
     // editor with a row of its result selected.
     let row_panel = workspace.row_panel_tab();
-    super::sidebar::show(app, ui, tab);
+    sidebar(app, ui, tab);
     if look.terminal
         && let Some(shown) = row_panel
     {
-        super::row_panel::show(app, ui, tab, shown);
+        inspector(app, ui, tab, shown);
     }
     egui::CentralPanel::default()
         .frame(Frame::new().fill(app.palette.window))
@@ -87,9 +106,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 ui.multiply_opacity(states::STALE);
             }
             if !look.terminal {
-                super::object_tabs::show(app, ui, tab);
+                object_tabs(app, ui, tab);
                 if let Some(shown) = row_panel {
-                    super::row_panel::show(app, ui, tab, shown);
+                    inspector(app, ui, tab, shown);
                 }
             }
             let sql = app
@@ -102,35 +121,37 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 .workspace(tab)
                 .is_some_and(crate::model::Workspace::history_in_front);
             match active {
-                Some(sql_tab) if sql => super::sql_editor::show(app, ui, tab, sql_tab),
-                Some(_) if agents => super::agents::show(app, ui, tab),
-                Some(_) if history => super::history::show(app, ui, tab),
+                Some(sql_tab) if sql => sql_editor(app, ui, tab, sql_tab),
+                Some(_) if agents => agents_tab(app, ui, tab),
+                Some(_) if history => history_tab(app, ui, tab),
                 Some(object_tab) => {
-                    super::data_view::header(app, ui, tab, object_tab);
+                    header(app, ui, tab, object_tab);
                     if view == Some(ObjectView::Data) {
-                        super::data_view::toolbar(app, ui, tab, object_tab);
+                        toolbar(app, ui, tab, object_tab);
                     }
                     if !look.terminal {
                         match view {
-                            Some(ObjectView::Ddl) => super::ddl::footer(app, ui, tab, object_tab),
-                            _ => super::data_view::footer(app, ui, tab, object_tab),
+                            Some(ObjectView::Ddl) => ddl_footer(app, ui, tab, object_tab),
+                            _ => footer(app, ui, tab, object_tab),
                         }
                         // Bottom panels stack upwards: the bar of pending
                         // changes stands on the footer.
-                        super::pending_bar::show(app, ui, tab, object_tab);
+                        pending_bar(app, ui, tab, object_tab);
                     }
                     // And what a save would run stands on the bar: in the
                     // terminal look, on the status line.
-                    super::review::show(app, ui, tab, object_tab);
+                    review(app, ui, tab, object_tab);
                     egui::CentralPanel::default()
                         .frame(Frame::new().fill(app.palette.window))
                         .show(ui, |ui| match view {
-                            Some(ObjectView::Structure) => {
-                                super::structure::show(app, ui, tab, object_tab)
-                            }
-                            Some(ObjectView::Ddl) => super::ddl::show(app, ui, tab, object_tab),
+                            Some(ObjectView::Structure) => structure(app, ui, tab, object_tab),
+                            Some(ObjectView::Ddl) => ddl(app, ui, tab, object_tab),
                             _ => {
-                                if super::filter_bar::is_open(app, tab, object_tab) {
+                                let open = app
+                                    .workspace(tab)
+                                    .and_then(|workspace| workspace.object_tab(object_tab))
+                                    .is_some_and(super::filter_bar::is_open);
+                                if open {
                                     let palette = app.palette;
                                     egui::Panel::top(egui::Id::new((
                                         "filter-bar",
@@ -145,7 +166,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                             .inner_margin(Margin::symmetric(12, 8)),
                                     )
                                     .show(ui, |ui| {
-                                        super::filter_bar::show(app, ui, tab, object_tab);
+                                        let paint = super::Paint::of(app);
+                                        if let Some(object) =
+                                            app.workspace_mut(tab).and_then(|workspace| {
+                                                workspace.object_tab_mut(object_tab)
+                                            })
+                                        {
+                                            let asked =
+                                                super::filter_bar::show(ui, paint, tab, object);
+                                            app.actions.extend(asked);
+                                        }
                                         let rect = ui.max_rect().expand2(vec2(12.0, 8.0));
                                         widgets::hline(
                                             ui,
@@ -155,49 +185,361 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                         );
                                     });
                                 }
-                                super::data_view::show(app, ui, tab, object_tab)
+                                data_grid(app, ui, tab, object_tab)
                             }
                         });
                 }
-                None => super::start::show(app, ui, tab),
+                None => start(app, ui, tab),
             }
         });
 }
 
+/// The sidebar, handed its workspace, the keymap, whether the system's
+/// schemas are listed and what its Agents entry says: its terminal filter
+/// line edits the tree's filter in place.
+fn sidebar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    let paint = super::Paint::of(app);
+    let show_system = app.settings.show_system_schemas;
+    let agents = app.agents_here(tab);
+    if let Some(workspace) = crate::app::workspace_in_mut(&mut app.tabs, tab) {
+        let asked =
+            super::sidebar::show(ui, paint, tab, workspace, &app.keymap, show_system, agents);
+        app.actions.extend(asked);
+    }
+}
+
+/// The start screen, handed its workspace, what it asks of the app and the
+/// keymap: its search field edits the workspace's search in place.
+fn start(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    let paint = super::Paint::of(app);
+    let Some(asked) = start_asked(app, tab) else {
+        return;
+    };
+    if let Some(workspace) = crate::app::workspace_in_mut(&mut app.tabs, tab) {
+        let asked = super::start::show(ui, paint, tab, workspace, asked, &app.keymap);
+        app.actions.extend(asked);
+    }
+}
+
+/// What the start screen of `tab` asks of the app: none where the
+/// workspace is gone.
+fn start_asked(app: &App, tab: ConnTabId) -> Option<super::start::Asked> {
+    let workspace = app.workspace(tab)?;
+    let recents = app.start_recents(tab);
+    let largest = if recents.is_empty() {
+        app.start_largest(tab)
+    } else {
+        Vec::new()
+    };
+    let ready = match &app.updates.install {
+        crate::update::Install::Ready { version, .. } => Some(version.clone()),
+        _ => None,
+    };
+    Some(super::start::Asked {
+        info: bar_info(app, tab)?,
+        schema: app.start_schema(tab),
+        recents,
+        largest,
+        agents: app.agents_here(tab),
+        saved: app.connections.get(&workspace.conn_id).is_some(),
+        matches: app.start_matches(tab),
+        ready,
+        grouped: app.settings.grouped(app.layout()),
+    })
+}
+
+/// The Agents tab, handed its workspace, the saved connections, the keymap
+/// and what it asks of the app.
+fn agents_tab(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    let paint = super::Paint::of(app);
+    let Some(asked) = agents_asked(app, tab) else {
+        return;
+    };
+    if let Some(workspace) = app.workspace(tab) {
+        let asked = super::agents::show(
+            ui,
+            paint,
+            tab,
+            workspace,
+            &app.connections,
+            &app.keymap,
+            asked,
+        );
+        app.actions.extend(asked);
+    }
+}
+
+/// What the Agents tab of `tab` asks of the app: none where the workspace
+/// is gone.
+fn agents_asked(app: &App, tab: ConnTabId) -> Option<super::agents::Asked> {
+    let here = app.agents_here(tab)?;
+    let conn = &app.workspace(tab)?.conn_id;
+    let saved = &app.connections.connections;
+    Some(super::agents::Asked {
+        here,
+        connection: app.agents_name(tab).unwrap_or_default(),
+        allowed: app
+            .connections
+            .get(conn)
+            .map(|saved| app.agents_access(saved)),
+        sessions: app.agents.here(conn).into_iter().cloned().collect(),
+        elsewhere: app
+            .agents
+            .elsewhere(conn)
+            .into_iter()
+            .map(|session| super::agents::Elsewhere::of(saved, session))
+            .collect(),
+        calls: app.agents.calls_on(conn).cloned().collect(),
+        selected: app.agents_selected(tab).map(|session| session.id.clone()),
+        log_days: app.settings.mcp_log_days,
+    })
+}
+
+/// The strip of tabs, handed its workspace and the keymap.
+fn object_tabs(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    let paint = super::Paint::of(app);
+    if let Some(workspace) = app.workspace(tab) {
+        let asked = super::object_tabs::show(ui, paint, tab, workspace, &app.keymap);
+        app.actions.extend(asked);
+    }
+}
+
+/// A SQL editor tab, handed its workspace, the settings and the keymap:
+/// the editor edits its tab's text in place.
+fn sql_editor(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, sql_tab: TabId) {
+    let paint = super::Paint::of(app);
+    if let Some(workspace) = crate::app::workspace_in_mut(&mut app.tabs, tab) {
+        let asked = super::sql_editor::show(
+            ui,
+            paint,
+            tab,
+            sql_tab,
+            workspace,
+            &app.settings,
+            &app.keymap,
+        );
+        app.actions.extend(asked);
+    }
+}
+
+/// The History tab, handed its workspace and the name it shows.
+fn history_tab(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    let paint = super::Paint::of(app);
+    let name = app.history_name(tab);
+    let keep = app.settings.history_keep;
+    if let Some(workspace) = app.workspace(tab) {
+        let asked = super::history::show(ui, paint, tab, workspace, &app.keymap, &name, keep);
+        app.actions.extend(asked);
+    }
+}
+
+/// The open object's header, handed its tab and workspace.
+fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let Some(workspace) = app.workspace(tab) else {
+        return;
+    };
+    if let Some(object) = workspace.object_tab(object_tab) {
+        let asked = super::data_view::header(ui, paint, tab, workspace, object);
+        app.actions.extend(asked);
+    }
+}
+
+/// The Data view's toolbar, handed its workspace: the terminal's WHERE
+/// line edits the tab's clause in place.
+fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    if let Some(workspace) = app.workspace_mut(tab) {
+        let asked = super::data_view::toolbar(ui, paint, tab, object_tab, workspace);
+        app.actions.extend(asked);
+    }
+}
+
+/// The open object's footer, handed its tab, the settings and the keymap.
+fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let Some(workspace) = app.workspace(tab) else {
+        return;
+    };
+    if let Some(object) = workspace.object_tab(object_tab) {
+        let asked = super::data_view::footer(
+            ui,
+            paint,
+            tab,
+            workspace,
+            object,
+            &app.settings,
+            &app.keymap,
+        );
+        app.actions.extend(asked);
+    }
+}
+
+/// The table's grid, handed its workspace and what its editor reads of
+/// the rest: the field on a cell edits its editor's text in place.
+fn data_grid(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let hold = app.dialog.is_none();
+    let calendar = app.calendar();
+    if let Some(workspace) = crate::app::workspace_in_mut(&mut app.tabs, tab) {
+        let around = super::data_view::Around {
+            settings: &app.settings,
+            keymap: &app.keymap,
+            hold,
+            calendar,
+        };
+        let asked = super::data_view::show(ui, paint, tab, object_tab, workspace, around);
+        app.actions.extend(asked);
+    }
+}
+
+/// The row panel, of the tab `shown`, handed its workspace and what its
+/// editor reads of the rest: its field edits the editor's text in place.
+fn inspector(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, shown: TabId) {
+    let paint = super::Paint::of(app);
+    let hold = app.dialog.is_none();
+    let calendar = app.calendar();
+    if let Some(workspace) = crate::app::workspace_in_mut(&mut app.tabs, tab) {
+        let around = super::data_view::Around {
+            settings: &app.settings,
+            keymap: &app.keymap,
+            hold,
+            calendar,
+        };
+        let asked = super::row_panel::show(ui, paint, tab, shown, workspace, around);
+        app.actions.extend(asked);
+    }
+}
+
+/// The DDL view's footer, handed its tab.
+fn ddl_footer(app: &App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let Some(workspace) = app.workspace(tab) else {
+        return;
+    };
+    if let Some(object) = workspace.object_tab(object_tab) {
+        super::ddl::footer(ui, paint, tab, object, workspace.driver);
+    }
+}
+
+/// The bar of pending changes, handed its tab and what it asks of the rest.
+fn pending_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let shown = app.workspace(tab).and_then(|workspace| {
+        let object = workspace
+            .object_tab(object_tab)
+            .filter(|object| super::pending_bar::shows(object))?;
+        Some((workspace, object))
+    });
+    let asked = match shown {
+        Some((workspace, object)) => {
+            let asked = super::pending_bar::Asked {
+                doubts: super::key_picker::unmatched(workspace, object).len(),
+                blocked: app.save_blocked(tab, object_tab),
+                lacking: app.lacking(tab, object_tab),
+            };
+            super::pending_bar::show(ui, paint, tab, object, asked)
+        }
+        None => {
+            super::pending_bar::pass(ui);
+            Vec::new()
+        }
+    };
+    app.actions.extend(asked);
+}
+
+/// The Review SQL panel, handed its tab.
+fn review(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let shown = app
+        .workspace(tab)
+        .and_then(|workspace| Some((workspace, workspace.object_tab(object_tab)?)));
+    let asked = match shown {
+        Some((workspace, object)) => {
+            let read_only = workspace.access == Access::ReadOnly;
+            let whole = || app.review_whole(tab, object_tab);
+            super::review::show(ui, paint, tab, object, read_only, whole)
+        }
+        None => {
+            super::review::pass(ui);
+            Vec::new()
+        }
+    };
+    app.actions.extend(asked);
+}
+
+/// The Structure view, handed its tab and the label the app resolves.
+fn structure(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let shown = app
+        .workspace(tab)
+        .and_then(|workspace| Some((workspace, workspace.object_tab(object_tab)?)));
+    let Some((workspace, object)) = shown else {
+        return;
+    };
+    let label = app.structure_label(tab, object_tab);
+    let asked = super::structure::show(ui, paint, tab, workspace, object, label, &app.keymap);
+    app.actions.extend(asked);
+}
+
+/// The DDL view, handed its tab.
+fn ddl(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let paint = super::Paint::of(app);
+    let Some(workspace) = app.workspace(tab) else {
+        return;
+    };
+    let Some(object) = workspace.object_tab(object_tab) else {
+        return;
+    };
+    let asked = super::ddl::show(ui, paint, tab, object, workspace.driver);
+    app.actions.extend(asked);
+}
+
 /// A tab that has not shown its content yet: how connecting goes, or why
 /// it failed.
-fn opening(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
-    let fill = app.palette.window;
-    let failed = app.workspace(tab).is_some_and(|workspace| {
-        matches!(
-            workspace.status,
-            SessionStatus::Disconnected(_) | SessionStatus::Cancelled
-        )
-    });
+fn opening(
+    ui: &mut egui::Ui,
+    paint: super::Paint,
+    tab: ConnTabId,
+    workspace: &crate::model::Workspace,
+) -> Vec<Action> {
+    let failed = matches!(
+        workspace.status,
+        SessionStatus::Disconnected(_) | SessionStatus::Cancelled
+    );
     egui::CentralPanel::default()
-        .frame(Frame::new().fill(fill))
+        .frame(Frame::new().fill(paint.palette.window))
         .show(ui, |ui| {
             if failed {
-                failure(app, ui, tab);
+                failure(ui, paint, tab, workspace)
             } else {
-                connecting(app, ui, tab);
+                connecting(ui, paint, tab, workspace)
             }
-        });
+        })
+        .inner
 }
 
 /// The steps of a connect, the one under way with its time, and, for a
 /// connect with nothing to lose, the button that gives up: in the middle
 /// of the tab, or in the terminal look from its top left.
-fn connecting(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+fn connecting(
+    ui: &mut egui::Ui,
+    paint: super::Paint,
+    tab: ConnTabId,
+    workspace: &crate::model::Workspace,
+) -> Vec<Action> {
     use tabletist_db::Driver;
-    let (locale, palette, look) = (app.locale, app.palette, app.look);
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
+    let super::Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let say = |text: &'static str| look.label(&gettext(locale, text));
     let spec = &workspace.spec;
     let (reach, target) = match spec.driver {
         Driver::Sqlite => ("Open", spec.summary()),
+        // The project is the whole target.
+        Driver::BigQuery => ("Connect to", spec.summary()),
         Driver::Postgres | Driver::MySql => {
             let target = format!("{}:{}", spec.host, spec.port);
             let target = match &spec.ssh {
@@ -271,11 +613,13 @@ fn connecting(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         )
     };
     states::steps(ui, steps, &list, &look, &palette);
+    let mut actions = Vec::new();
     if let Some(cancel) = cancel
         && cancel.show_at(ui, button, &look, &palette).clicked()
     {
-        app.actions.push(Action::Disconnect(tab));
+        actions.push(Action::Disconnect(tab));
     }
+    actions
 }
 
 /// What a connect that failed says first and the sign beside it; `None`
@@ -304,6 +648,10 @@ fn failure_title(
                 Icon::WifiOff,
                 format!("{} {}:{}", say("Can't reach"), spec.host, spec.port),
             ),
+            Driver::BigQuery => (
+                Icon::WifiOff,
+                format!("{} {}", say("Can't reach"), spec.summary()),
+            ),
         },
         Error::Tls(_) => (Icon::ShieldAlert, say("TLS or certificate problem")),
         Error::Ssh {
@@ -328,12 +676,18 @@ fn failure_title(
 /// A connect that failed before the tab showed anything: what failed in
 /// plain words, the exact error under it, and the buttons, the one that
 /// fixes the cause first.
-fn failure(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+fn failure(
+    ui: &mut egui::Ui,
+    paint: super::Paint,
+    tab: ConnTabId,
+    workspace: &crate::model::Workspace,
+) -> Vec<Action> {
     use tabletist_db::Error;
-    let (locale, palette, look) = (app.locale, app.palette, app.look);
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
+    let super::Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let say = |text: &'static str| look.label(&gettext(locale, text));
     let error = match &workspace.status {
         SessionStatus::Disconnected(error) => Some(error),
@@ -341,7 +695,7 @@ fn failure(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     };
     let (icon, title) = failure_title(error, &workspace.spec, say);
     let sentence = error
-        .map(|error| crate::ui::format::describe_error(locale, error))
+        .map(|error| crate::format::describe_error(locale, error))
         .unwrap_or_default();
     let raw = error.map(ToString::to_string).unwrap_or_default();
     // The settings are what is wrong: changing them comes first.
@@ -435,12 +789,14 @@ fn failure(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             .layout(ui.ctx())
             .label(&mut ui);
     }
+    let mut actions = Vec::new();
     if retry {
-        app.actions.push(Action::Reconnect(tab));
+        actions.push(Action::Reconnect(tab));
     }
     if edit {
-        app.actions.push(Action::EditConnection(conn));
+        actions.push(Action::EditConnection(conn));
     }
+    actions
 }
 
 /// What the connection bar says: the open connections, and more about the
@@ -502,6 +858,7 @@ fn is_remote(workspace: &crate::model::Workspace) -> bool {
     match workspace.driver {
         Driver::Sqlite => false,
         Driver::Postgres | Driver::MySql => !crate::model::is_local_host(&workspace.spec.host),
+        Driver::BigQuery => true,
     }
 }
 
@@ -514,7 +871,13 @@ pub(super) fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
     let tls = is_remote(workspace).then(|| {
         let encrypted =
             matches!(workspace.status, SessionStatus::Connected).then_some(workspace.encrypted);
-        let (text, warn) = tls_status(spec.effective_tls(), encrypted);
+        let (text, warn) = match workspace.driver {
+            // HTTPS to Google's API, verified against the system roots.
+            Driver::BigQuery => ("HTTPS", false),
+            Driver::Postgres | Driver::MySql | Driver::Sqlite => {
+                tls_status(spec.effective_tls(), encrypted)
+            }
+        };
         (text, if warn { Tone::Warn } else { Tone::Good })
     });
     Some(BarInfo {
@@ -522,7 +885,8 @@ pub(super) fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
         read_only: workspace.access == tabletist_db::Access::ReadOnly,
         database: match workspace.driver {
             Driver::Sqlite => String::new(),
-            Driver::Postgres | Driver::MySql => spec.database.clone(),
+            // The project.
+            Driver::Postgres | Driver::MySql | Driver::BigQuery => spec.database.clone(),
         },
         databases: workspace.databases.value.clone().unwrap_or_default(),
         tls,
@@ -589,6 +953,12 @@ fn card_rows(
                 .unwrap_or_default();
             rows.push((say("File"), path));
         }
+        Driver::BigQuery => {
+            rows.push((say("Project"), display_safe(&spec.database).into_owned()));
+            if let Some(key) = &spec.bigquery_key {
+                rows.push((say("Key file"), key.display().to_string()));
+            }
+        }
         Driver::Postgres | Driver::MySql => {
             rows.push((say("Host"), format!("{}:{}", spec.host, spec.port)));
             if !spec.database.is_empty() {
@@ -608,7 +978,12 @@ fn card_rows(
     let connected = matches!(workspace.status, SessionStatus::Connected);
     let tls = if is_remote(workspace) {
         let encrypted = connected.then_some(workspace.encrypted);
-        say(tls_status(spec.effective_tls(), encrypted).0)
+        say(match workspace.driver {
+            Driver::BigQuery => "HTTPS",
+            Driver::Postgres | Driver::MySql | Driver::Sqlite => {
+                tls_status(spec.effective_tls(), encrypted).0
+            }
+        })
     } else {
         say("Local")
     };
@@ -873,31 +1248,39 @@ pub(super) fn database_menu(
 }
 
 /// The connection bar: the connection's environment colour behind the open
-/// connections, and the way out.
-fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+/// connections, and the way out. `info` is what it shows of the workspace,
+/// `env_bar` how the settings tint it, and `titlebar` the title bar's inset
+/// and height in window points. It takes the workspace's one-time ask for
+/// its own chip's menu, and returns its actions.
+fn top_bar(
+    ui: &mut egui::Ui,
+    paint: super::Paint,
+    tab: ConnTabId,
+    workspace: &mut crate::model::Workspace,
+    info: &BarInfo,
+    env_bar: crate::settings::EnvBar,
+    (inset, titlebar): (f32, f32),
+) -> Vec<Action> {
     // Quick open's Switch database asks for the chip's menu, as its key
     // does: the menu opens as the chip is drawn.
-    if let Some(workspace) = app.workspace_mut(tab)
-        && std::mem::take(&mut workspace.database_menu_asked)
-    {
+    if std::mem::take(&mut workspace.database_menu_asked) {
         egui::Popup::open_id(ui.ctx(), database_menu_id(tab, false));
     }
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
-    let Some(info) = bar_info(app, tab) else {
-        return;
-    };
+    let super::Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let platform = crate::env::Platform::of(&look);
     let env = crate::env::env_colors(info.env, platform, &palette);
     // The bar's fill and rule as the settings have them, and the lines
     // over it with them.
-    let env = env.on_bar(info.env, app.settings.env_bar, platform, &palette);
+    let env = env.on_bar(info.env, env_bar, platform, &palette);
     let (tint, border) = (env.bar_bg(), env.bar_border());
     // macOS: the bar is the title bar, beside the window buttons.
     let zoom = ui.ctx().zoom_factor();
-    let inset = app.titlebar.inset / zoom;
-    let height = top_bar_height(app, zoom);
+    let inset = inset / zoom;
+    let height = top_bar_height(&look, titlebar, zoom);
     let mut actions = Vec::new();
     egui::Panel::top(egui::Id::new(("workspace-top", tab.0)))
         .exact_size(height)
@@ -920,11 +1303,14 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             }
             widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, border);
             if look.terminal {
+                // Its row starts after the window buttons, as the picker's
+                // header does.
+                let row = Rect::from_min_max(pos2(rect.left() + inset, rect.top()), rect.max);
                 terminal_bar(
                     ui,
                     tab,
-                    rect,
-                    &info,
+                    row,
+                    info,
                     &env,
                     &look,
                     &palette,
@@ -943,7 +1329,7 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     ui,
                     tab,
                     body,
-                    &info,
+                    info,
                     &env,
                     &look,
                     &palette,
@@ -952,7 +1338,7 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 );
             }
         });
-    app.actions.extend(actions);
+    actions
 }
 
 /// macOS: the Connections button, a chip for each open connection (the
@@ -1604,8 +1990,9 @@ struct Editing {
     can_edit: bool,
     /// Insert mode: the column being edited and its type.
     insert: Option<String>,
-    /// A visual selection of rows is on, with this many rows.
-    visual: Option<usize>,
+    /// A visual selection is on, of a table's rows or a result's: its mode,
+    /// and its size in words ("4 rows × 2 columns", "3 rows").
+    visual: Option<(crate::selection::Visual, String)>,
     /// Where Tab moves on to: the next cell from an editor on a cell, the
     /// next field from one in the row panel. Nowhere from the large
     /// editor, in either place: Tab is its text's own.
@@ -1677,17 +2064,58 @@ pub(super) fn drawable(
     marks.iter().copied().find(|mark| has(mark))
 }
 
-/// What editing adds to the line of the table the workspace of `tab`
-/// shows.
-fn editing_status(app: &App, tab: ConnTabId) -> Editing {
+/// What the line asks of the app about the table in front: what editing
+/// says of its new rows and of a save.
+#[derive(Default)]
+struct EditingAsked {
+    /// The columns its new rows still need a value in.
+    lacking: Vec<String>,
+    /// Why what is pending cannot be saved: asked only while anything is.
+    blocked: Option<crate::model::SaveBlock>,
+}
+
+/// What the line of the workspace of `tab` asks of the app about the
+/// table in front: nothing where none is.
+fn editing_asked(app: &App, tab: ConnTabId) -> EditingAsked {
+    let Some(object) = app
+        .workspace(tab)
+        .and_then(crate::model::Workspace::active_object_tab)
+    else {
+        return EditingAsked::default();
+    };
+    EditingAsked {
+        lacking: app.lacking(tab, object.id),
+        blocked: object
+            .edits
+            .pending()
+            .then(|| app.save_blocked(tab, object.id))
+            .flatten(),
+    }
+}
+
+/// What editing adds to the line of the table `workspace` shows, with
+/// what `asked` answers of its new rows and of a save.
+fn editing_status(
+    paint: super::Paint,
+    workspace: &crate::model::Workspace,
+    asked: EditingAsked,
+) -> Editing {
     use super::pending_bar::{block_text, counted, note_line, written_text};
     use crate::edit::Note;
-    let (palette, look, locale) = (&app.palette, &app.look, app.locale);
-    let Some(workspace) = app.workspace(tab) else {
-        return Editing::default();
-    };
+    let (palette, look, locale) = (&paint.palette, &paint.look, paint.locale);
     let Some(object) = workspace.active_object_tab() else {
-        return Editing::default();
+        // A result's visual selection: the line says it as a table's.
+        let visual = workspace.active_sql_tab().and_then(|sql| {
+            // Not under the Messages pane, where the rows do not show.
+            let mode = sql.visual_mode().filter(|_| super::keys::shows_grid(sql))?;
+            let size = sql.selection_size().unwrap_or((1, 1));
+            let rows = mode == crate::selection::Visual::Rows;
+            Some((mode, crate::selection::size_words(locale, size, rows)))
+        });
+        return Editing {
+            visual,
+            ..Editing::default()
+        };
     };
     let say = |text: &'static str| gettext(locale, text);
     let edits = &object.edits;
@@ -1700,7 +2128,7 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
     let insert = edits.editor.as_ref().filter(|_| data).and_then(|editor| {
         let column = object.page()?.columns.get(editor.cell.col)?;
         // The type as the grid's header names it.
-        let kind = crate::ui::format::type_label(&column.type_name, column.kind);
+        let kind = crate::format::type_label(&column.type_name, column.kind);
         Some(format!(
             "{} · {}",
             display_safe(&column.name),
@@ -1725,15 +2153,18 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
         });
     let can_add = data
         && crate::edit::Table::of(workspace, object).is_some_and(|table| table.no_rows().is_none());
-    // The rows of a visual selection, while one is on and the rows show.
-    let visual = (data && object.visual()).then(|| object.selected_rows().len());
+    // A visual selection, while one is on and the rows show.
+    let visual = object.visual_mode().filter(|_| data).map(|mode| {
+        let size = object.selection_size().unwrap_or((1, 1));
+        let rows = mode == crate::selection::Visual::Rows;
+        (mode, crate::selection::size_words(locale, size, rows))
+    });
     let errors = counts.to_fix + counts.failed;
     let errors = (errors > 0).then(|| counted(locale, errors, "error", "errors"));
     // What a new row still needs, by its column: said while a value is
     // typed too.
     let needs = {
-        let lacking = app.lacking(tab, object.id);
-        match lacking.as_slice() {
+        match asked.lacking.as_slice() {
             [] => None,
             [one] => Some(format!("{one} {}", look.label(&say("required")))),
             more => Some(look.label(&format!("{} {}", more.len(), say("values required")))),
@@ -1743,10 +2174,8 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
     let back = palette.secondary;
     // Why what is pending cannot be saved, as the other looks say it on
     // their disabled Save. A save that is running is said by its tab.
-    let blocked = edits
-        .pending()
-        .then(|| app.save_blocked(tab, object.id))
-        .flatten()
+    let blocked = asked
+        .blocked
         .filter(|block| *block != crate::model::SaveBlock::Saving)
         .map(|block| match block {
             // What a new row still needs: in the danger tone, as the
@@ -1766,7 +2195,7 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
         });
     let said = if let Some(line) = &workspace.command_error {
         // What the `:` prompt was given, until the next key.
-        let line = crate::ui::format::capped(line);
+        let line = crate::format::capped(line);
         Some(Said {
             mark: None,
             text: format!("{} {}", say("not a command:"), display_safe(&line)),
@@ -1955,18 +2384,25 @@ fn command_id(tab: ConnTabId) -> egui::Id {
 /// The status line while the `:` prompt is open: the colon, the line being
 /// typed, and at the right what is pending. Enter runs the line; Esc, and
 /// the keyboard going anywhere else, close the prompt. It edits the
-/// prompt's text and takes its focus flag, and nothing else.
-fn command_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
-    let (palette, look, locale) = (app.palette, app.look, app.locale);
-    let editing = editing_status(app, tab);
-    let Some(workspace) = app.workspace_mut(tab) else {
-        return;
-    };
+/// prompt's text and takes its focus flag, and nothing else. `editing` is
+/// what the line says of the table in front; it returns its actions.
+fn command_line(
+    ui: &mut egui::Ui,
+    paint: super::Paint,
+    tab: ConnTabId,
+    workspace: &mut crate::model::Workspace,
+    editing: &Editing,
+) -> Vec<Action> {
+    let super::Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let focus = std::mem::take(&mut workspace.focus_command);
-    let Some(line) = workspace.command.as_mut() else {
-        return;
-    };
     let mut actions = Vec::new();
+    let Some(line) = workspace.command.as_mut() else {
+        return actions;
+    };
     egui::Panel::bottom(egui::Id::new(("status-line", tab.0)))
         .exact_size(STATUS_LINE)
         .resizable(false)
@@ -2037,20 +2473,309 @@ fn command_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 actions.push(Action::CloseCommand(tab));
             }
         });
-    app.actions.extend(actions);
+    actions
+}
+
+/// The terminal look's bottom line: the `:` prompt while it is open, and
+/// the status line else, each handed the workspace and what it asks of
+/// the app. The prompt edits its line in place.
+fn bottom_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    let paint = super::Paint::of(app);
+    let Some(workspace) = app.workspace(tab) else {
+        return;
+    };
+    if workspace.command.is_some() {
+        let editing = editing_status(paint, workspace, editing_asked(app, tab));
+        if let Some(workspace) = crate::app::workspace_in_mut(&mut app.tabs, tab) {
+            let asked = command_line(ui, paint, tab, workspace, &editing);
+            app.actions.extend(asked);
+        }
+        return;
+    }
+    if let Some(asked) = status_asked(app, tab) {
+        status_line(ui, paint, tab, workspace, &app.keymap, &app.settings, asked);
+    }
+}
+
+/// What the status line asks of the app.
+struct StatusAsked {
+    /// What the Agents tab says of agents here, while it is in front.
+    agents: Option<crate::model::AgentsHere>,
+    /// Whether the workspace's connection is still saved.
+    saved: bool,
+    /// Whether the workspace's agents list has sessions, elsewhere ones
+    /// too.
+    listed: bool,
+    /// Whether the call selected in the Agents tab's Log view was made on
+    /// a connection still saved.
+    call_saved: bool,
+    /// Whether the Structure view in front has anything to choose a label
+    /// from: not for a view, nor for a table of its key alone.
+    labels: bool,
+    /// What editing asks of the app about the table in front.
+    editing: EditingAsked,
+    /// The exports' line, and its colour, while one runs or an end is
+    /// told.
+    export: Option<(String, egui::Color32)>,
+}
+
+/// The terminal look's line for the exports, as the progress and states
+/// board writes it (spec 4, S14): an end while it is told (for 4 s, a
+/// failure until Esc), the one that ended last; else one export's bar, or
+/// with several running a word on each, in the order they started.
+pub fn export_line(app: &App) -> Option<(String, egui::Color32)> {
+    if let Some(exporting) = app.shown_export() {
+        return Some(one_export_line(app, exporting));
+    }
+    let running: Vec<&crate::export_sheet::Exporting> = app.running_exports().collect();
+    match running.as_slice() {
+        [] => None,
+        [exporting] => Some(one_export_line(app, exporting)),
+        several => {
+            let locale = app.locale;
+            let cancel = app.keymap.key(
+                crate::keymap::Layout::Omarchy,
+                crate::keymap::Command::CancelExport,
+            );
+            let each: Vec<String> = several
+                .iter()
+                .map(|exporting| export_brief(exporting, locale))
+                .collect();
+            let count = u32::try_from(several.len()).unwrap_or(u32::MAX);
+            let text = crate::i18n::ngettext(
+                locale,
+                "{n} export · {each} · {cancel}",
+                "{n} exports · {each} · {cancel}",
+                count,
+            )
+            .replace("{n}", &several.len().to_string())
+            .replace("{each}", &each.join(" · "))
+            .replace("{cancel}", cancel.as_str());
+            Some((text, app.palette.text))
+        }
+    }
+}
+
+/// An export running, in a few words: "reviews.csv 58%", where its total
+/// is known, else "events.jsonl 4,000 rows". The `:export cancel` picker's
+/// rows say it too.
+pub fn export_brief(
+    exporting: &crate::export_sheet::Exporting,
+    locale: crate::i18n::Locale,
+) -> String {
+    let rows = match exporting.status {
+        crate::export_sheet::ExportStatus::Running { rows, .. } => rows,
+        _ => 0,
+    };
+    match exporting.share() {
+        Some(share) => format!("{} {}%", exporting.name(), (share * 100.0).round() as u32),
+        None => crate::i18n::ngettext(
+            locale,
+            "{name} {n} row",
+            "{name} {n} rows",
+            u32::try_from(rows).unwrap_or(u32::MAX),
+        )
+        .replace("{name}", exporting.name())
+        .replace("{n}", &crate::format::group_digits(rows)),
+    }
+}
+
+/// One export's line: its bar while it runs, else its end.
+fn one_export_line(
+    app: &App,
+    exporting: &crate::export_sheet::Exporting,
+) -> (String, egui::Color32) {
+    use crate::export_sheet::{ExportStatus, count_words, size_words, took_words};
+    let (locale, palette) = (app.locale, &app.palette);
+    let layout = crate::keymap::Layout::Omarchy;
+    let key = |command| app.keymap.key(layout, command);
+    let name = exporting.name().to_owned();
+    match &exporting.status {
+        ExportStatus::Asking | ExportStatus::Running { .. } => {
+            let rows = match exporting.status {
+                ExportStatus::Running { rows, .. } => rows,
+                _ => 0,
+            };
+            let cancel = key(crate::keymap::Command::CancelExport);
+            let done = crate::format::group_digits(rows);
+            let text = match (exporting.share(), exporting.total) {
+                (Some(share), Some(total)) => {
+                    let filled = ((share * 12.0).round() as usize).min(12);
+                    let bar = format!("{}{}", "█".repeat(filled), "░".repeat(12 - filled));
+                    gettext(
+                        locale,
+                        "export {name} [{bar}] {share}% · {done}/{total} · {cancel}",
+                    )
+                    .replace("{name}", &name)
+                    .replace("{bar}", &bar)
+                    .replace("{share}", &((share * 100.0).round() as u32).to_string())
+                    .replace("{done}", &done)
+                    .replace("{total}", &count_words(total))
+                    .replace("{cancel}", cancel.as_str())
+                }
+                _ => gettext(locale, "export {name} · {done} rows · {cancel}")
+                    .replace("{name}", &name)
+                    .replace("{done}", &done)
+                    .replace("{cancel}", cancel.as_str()),
+            };
+            (text, palette.text)
+        }
+        ExportStatus::Done {
+            rows, bytes, took, ..
+        } => {
+            let open = key(crate::keymap::Command::OpenExportFolder);
+            let rows = crate::format::group_digits(*rows);
+            let text = gettext(
+                locale,
+                "✓ exported {rows} rows → {path} · {size} · {time} · {key} open folder",
+            )
+            .replace("{rows}", &rows)
+            .replace("{path}", &exporting.shown_path)
+            .replace("{size}", &size_words(*bytes, locale).to_lowercase())
+            .replace("{time}", &took_words(*took))
+            .replace("{key}", open.as_str());
+            (text, palette.success)
+        }
+        ExportStatus::Cancelled { .. } => (
+            gettext(
+                locale,
+                "export cancelled · nothing saved, the partial file was removed",
+            )
+            .into_owned(),
+            palette.warning,
+        ),
+        ExportStatus::Failed {
+            failure,
+            rows,
+            bytes,
+            ..
+        } => {
+            let text = crate::export_sheet::failure_line(
+                exporting,
+                failure,
+                (*rows, *bytes),
+                app.dirs.home.as_deref(),
+                locale,
+            );
+            let color = match failure {
+                crate::backend::export::ExportFailure::Exists { .. } => palette.warning,
+                _ => palette.danger,
+            };
+            (text, color)
+        }
+    }
+}
+
+/// What the status line of `tab` asks of the app: none where the
+/// workspace is gone.
+fn status_asked(app: &App, tab: ConnTabId) -> Option<StatusAsked> {
+    let workspace = app.workspace(tab)?;
+    let saved = |id: &crate::connections::ConnectionId| app.connections.get(id).is_some();
+    let call_saved = shown_log(workspace)
+        .and_then(|(_, call)| call?.entry.connection_id.clone())
+        .is_some_and(|id| saved(&crate::connections::ConnectionId(id)));
+    let labels = workspace
+        .active_object_tab()
+        .filter(|object| object.view == ObjectView::Structure)
+        .and_then(|object| app.structure_label(tab, object.id))
+        .is_some_and(|label| match label.source {
+            crate::labels::Source::Automatic | crate::labels::Source::User => true,
+            crate::labels::Source::KeysOnly => false,
+        });
+    Some(StatusAsked {
+        agents: workspace
+            .agents_in_front()
+            .then(|| app.agents_here(tab))
+            .flatten(),
+        saved: saved(&workspace.conn_id),
+        listed: !app.agents.listed(&workspace.conn_id).is_empty(),
+        call_saved,
+        labels,
+        editing: editing_asked(app, tab),
+        export: export_line(app),
+    })
+}
+
+/// The Agents tab's log in `workspace`, while its Log view shows, and the
+/// call selected in it.
+fn shown_log(
+    workspace: &crate::model::Workspace,
+) -> Option<(&crate::model::AgentsLog, Option<&tabletist_mcp::Logged>)> {
+    workspace.tabs.iter().find_map(|open| match open {
+        crate::model::Tab::Agents(agents) if agents.view == crate::model::AgentsView::Log => {
+            let log = &agents.log;
+            let call = log
+                .selected
+                .and_then(|id| log.calls.iter().find(|logged| logged.id == id));
+            Some((log, call))
+        }
+        _ => None,
+    })
+}
+
+/// What the status line says of the object under the tree's cursor while
+/// the tree has the keys, in full though the sidebar drops its group's
+/// prefix: "book_covers · table · 13 rows", the rows where the database
+/// has an estimate. Nothing for a row the sidebar does not show (its
+/// group folded, or gone since a reload); `show_system` is the setting
+/// that lists the system's schemas.
+fn tree_summary(
+    workspace: &crate::model::Workspace,
+    locale: crate::i18n::Locale,
+    show_system: bool,
+) -> Option<String> {
+    if workspace.pane != crate::model::Pane::Tree {
+        return None;
+    }
+    let cursor = workspace.tree.cursor.as_ref()?;
+    let crate::model::TreeNode::Object(object, kind) = cursor else {
+        return None;
+    };
+    let rows = workspace.tree.visible_rows(workspace.driver, show_system);
+    if !rows.iter().any(|row| &row.node == cursor) {
+        return None;
+    }
+    let kind = super::sidebar::kind_name(locale, *kind);
+    let name = crate::format::display_safe(&object.name);
+    let rows = workspace
+        .tree
+        .object_info(object)
+        .and_then(|info| info.estimated_rows)
+        .map(|rows| {
+            let plural = u32::try_from(rows).unwrap_or(u32::MAX);
+            crate::i18n::ngettext(locale, "{n} row", "{n} rows", plural)
+                .replace("{n}", &rows.to_string())
+        });
+    Some(match rows {
+        Some(rows) => format!("{name} · {kind} · {rows}"),
+        None => format!("{name} · {kind}"),
+    })
 }
 
 /// Omarchy's bottom line: the keys that work here, and the page's range
 /// or, on a SQL editor, the cursor and what the last run did. On a table it
 /// says what is pending too, and while a cell is edited it is the mode
 /// line: `-- INSERT --`, the column, the counts and the keys that leave.
-/// The `:` prompt takes the whole of it while it is open.
-fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
-    let palette = app.palette;
-    let look = app.look;
-    let locale = app.locale;
+/// The `:` prompt takes the whole of it while it is open (`command_line`).
+/// `asked` is what it asks of the app; `settings` say whether the editor
+/// keys are vim's, and how the columns in view are fitted.
+fn status_line(
+    ui: &mut egui::Ui,
+    paint: super::Paint,
+    tab: ConnTabId,
+    workspace: &crate::model::Workspace,
+    keymap: &crate::keymap::Keymap,
+    settings: &crate::settings::Settings,
+    asked: StatusAsked,
+) {
+    let super::Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
+    let layout = paint.layout();
     // The line's keys, as the keymap writes them for the look.
-    let key = |command: Command| app.keymap.key(app.layout(), command);
+    let key = |command: Command| keymap.key(layout, command);
     let cancel_key = key(Command::CancelQuery);
     let (rows_key, cols_key) = (key(Command::MoveRow), key(Command::MoveColumn));
     let (inspect_key, edit_key) = (key(Command::OpenInspector), key(Command::EditCell));
@@ -2068,17 +2793,10 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         key(Command::StopAgentsHere),
     );
     // The Agents tab in front: its keys, by the state it shows.
-    let agents = app
-        .workspace(tab)
-        .filter(|workspace| workspace.agents_in_front())
-        .and_then(|_| app.agents_here(tab));
+    let agents = asked.agents;
     // The tab's own `l`, not the prompt's `:agents log`.
     let (agents_log_key, agents_scope_key, agents_filter_key) = (
-        app.keymap.key_in(
-            app.layout(),
-            Command::ShowAgentsLog,
-            crate::keymap::Scope::Agents,
-        ),
+        keymap.key_in(layout, Command::ShowAgentsLog, crate::keymap::Scope::Agents),
         key(Command::ToggleAgentsLogScope),
         key(Command::FilterAgentsLog),
     );
@@ -2090,44 +2808,25 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     // Its Log view, while it shows: whether every connection's, whether a
     // call is selected, and whether that call's statement opens (it has
     // one, on a connection still saved).
-    let agents_log = app.workspace(tab).and_then(|workspace| {
-        workspace.tabs.iter().find_map(|open| match open {
-            crate::model::Tab::Agents(agents) if agents.view == crate::model::AgentsView::Log => {
-                let log = &agents.log;
-                let call = log
-                    .selected
-                    .and_then(|id| log.calls.iter().find(|logged| logged.id == id));
-                let opens = call.is_some_and(|logged| {
-                    logged.entry.sql.is_some()
-                        && logged.entry.connection_id.as_ref().is_some_and(|id| {
-                            app.connections
-                                .get(&crate::connections::ConnectionId(id.clone()))
-                                .is_some()
-                        })
-                });
-                Some((log.all, call.is_some(), opens, log.total > 0))
-            }
-            _ => None,
-        })
+    let agents_log = shown_log(workspace).map(|(log, call)| {
+        let opens = call.is_some_and(|logged| logged.entry.sql.is_some() && asked.call_saved);
+        (log.all, call.is_some(), opens, log.total > 0)
     });
     // Whether its connection is saved: one saved no more has nothing to
     // allow.
-    let agents_saved = app
-        .workspace(tab)
-        .is_some_and(|workspace| app.connections.get(&workspace.conn_id).is_some());
+    let agents_saved = asked.saved;
     // Whether its list has sessions, elsewhere ones too.
-    let agents_listed = app
-        .workspace(tab)
-        .is_some_and(|workspace| !app.agents.listed(&workspace.conn_id).is_empty());
+    let agents_listed = asked.listed;
     let (run_key, run_all_key) = (key(Command::RunStatement), key(Command::RunAll));
     let (leave_key, complete_key) = (key(Command::LeaveEditor), key(Command::InsertCompletion));
     let (keep_key, next_key) = (key(Command::KeepEdit), key(Command::CommitNext));
     let (visual_delete_key, leave_visual_key) =
         (key(Command::DeleteSelection), key(Command::LeaveVisual));
+    let visual_copy_key = key(Command::CopySelection);
+    let copy_as_key = key(Command::CopyAs);
+    let export_key = key(Command::Export);
     // The keys of a foreign key's list, while one is open under the field.
-    let pick_keys = app
-        .keymap
-        .together(app.layout(), &[Command::NextPick, Command::PreviousPick]);
+    let pick_keys = keymap.together(layout, &[Command::NextPick, Command::PreviousPick]);
     let (set_key, close_key) = (key(Command::CommitDown), key(Command::ClosePicker));
     // The keys of the chooser of that list's label, while it is open: the
     // pairs that move in it, each as one hint (`j/k`, `ctrl+n/p`). The
@@ -2136,30 +2835,41 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .filter_map(|nth| {
             let moves = (Command::NextLabel, Command::PreviousLabel);
             let scope = crate::keymap::Scope::Prompt;
-            app.keymap.pair(app.layout(), moves, scope, nth)
+            keymap.pair(layout, moves, scope, nth)
         })
         .collect();
     // The key that opens it from the list.
     let label_key = key(Command::ChangeLabelColumn);
     let (choose_key, back_key) = (key(Command::ChooseLabel), key(Command::CloseLabelChooser));
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
-    if workspace.command.is_some() {
-        command_line(app, ui, tab);
-        return;
-    }
     // No tab: the start screen's keys, and that no table is open.
+    // The pane that has the keyboard: the tree, its filter field and the
+    // row panel name their own keys in the place of the view's.
+    use super::pane_hints::{self, Held};
+    let held = Held::of(ui.ctx(), tab, workspace);
+    let own = |editable: bool, pending: pane_hints::Pending| match held {
+        Held::Filter => Some(pane_hints::filter(keymap, layout, locale)),
+        Held::Panel => Some(pane_hints::panel(
+            ui.ctx(),
+            keymap,
+            layout,
+            locale,
+            editable,
+        )),
+        Held::Tree => Some(pane_hints::tree(ui.ctx(), keymap, layout, locale, pending)),
+        Held::View => None,
+    };
     if workspace.active_tab.is_none() {
-        super::start::status_line(app, ui, tab);
+        let tree = tree_summary(workspace, locale, settings.show_system_schemas);
+        let own = own(false, pane_hints::Pending::default());
+        super::start::status_line(ui, paint, tab, keymap, tree, own.as_deref());
         return;
     }
     let read_only = workspace.access == tabletist_db::Access::ReadOnly;
-    let editor = super::sql_editor::status_summary(app, tab);
+    let editor = super::sql_editor::status_summary(workspace, locale);
     let on_editor = editor.is_some();
     // Vim's mode, where the editor has the keyboard: the line starts with
     // it, as vim's does, and out of normal mode Esc goes to normal mode.
-    let vim_mode = super::sql_editor::vim_mode(app, ui.ctx(), tab);
+    let vim_mode = super::sql_editor::vim_mode(ui.ctx(), &look, tab, workspace, settings);
     let to_normal = vim_mode.is_some_and(|mode| mode != crate::vim::Mode::Normal);
     // The Structure view of the table in front shows: the line names
     // that view's keys in the rows' place. The keys that choose what
@@ -2168,12 +2878,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let structure = workspace
         .active_object_tab()
         .filter(|object| object.view == ObjectView::Structure);
-    let labels = structure
-        .and_then(|object| app.structure_label(tab, object.id))
-        .is_some_and(|label| match label.source {
-            crate::labels::Source::Automatic | crate::labels::Source::User => true,
-            crate::labels::Source::KeysOnly => false,
-        });
+    let labels = asked.labels;
     let (column_key, use_key) = (key(Command::MoveInStructure), key(Command::UseAsLabel));
     let (chooser_key, automatic_key) =
         (key(Command::OpenLabelChooser), key(Command::LabelAutomatic));
@@ -2187,8 +2892,8 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         key(Command::SelectDdlLines),
         key(Command::CopyDdl),
         key(Command::OpenDdlInEditor),
-        app.keymap.together(
-            app.layout(),
+        keymap.together(
+            layout,
             &[Command::NextDdlSection, Command::PreviousDdlSection],
         ),
         key(Command::ShowRows),
@@ -2222,7 +2927,8 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             None => at,
         })
     });
-    let summary = editor
+    let summary = tree_summary(workspace, locale, settings.show_system_schemas)
+        .or(editor)
         .or(lines)
         .or_else(|| {
             let object = workspace.active_object_tab()?;
@@ -2237,12 +2943,12 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 .unwrap_or_else(|| "?".into());
             let rows = format!(
                 "{first}–{last}/{total} · {}",
-                crate::ui::format::elapsed(page.elapsed)
+                crate::format::elapsed(page.elapsed)
             );
             // The columns in view first, while some are out of it.
             let columns = (object.view == ObjectView::Data)
                 .then(|| {
-                    let fit = super::data_view::Fit::of(workspace, app);
+                    let fit = super::data_view::Fit::of(workspace, settings, layout);
                     super::data_view::columns_note(ui.ctx(), tab, object, fit, &look, locale)
                 })
                 .flatten();
@@ -2254,9 +2960,9 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .unwrap_or_default();
     // The History tab in front: what its selected entry offers, and what
     // its line says of a key that did nothing.
-    let history_line = app
-        .workspace(tab)
-        .filter(|workspace| workspace.history_in_front())
+    let history_line = workspace
+        .history_in_front()
+        .then_some(workspace)
         .and_then(crate::model::Workspace::history_tab)
         .map(|history| {
             let chosen = history.chosen().map(|row| {
@@ -2268,7 +2974,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             });
             (chosen, history.said.clone(), history.shown().count())
         });
-    let history_key = app.keymap.key(app.layout(), Command::History);
+    let history_key = keymap.key(layout, Command::History);
     let history_keys = [
         Command::MoveInHistory,
         Command::RunHistoryAgain,
@@ -2280,7 +2986,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         Command::ClearHistory,
         Command::CloseHistoryLine,
     ]
-    .map(|command| app.keymap.key(app.layout(), command));
+    .map(|command| keymap.key(layout, command));
     let history_words = [
         "move",
         "run again",
@@ -2293,7 +2999,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         "back",
     ]
     .map(|word| gettext(locale, word));
-    let mut editing = editing_status(app, tab);
+    let mut editing = editing_status(paint, workspace, asked.editing);
     // What was just done (a copy of the review's SQL), where the line has
     // nothing of a lock or of a save to say: this look floats no toast.
     if editing.said.is_none() {
@@ -2304,6 +3010,35 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             color: palette.text,
         });
     }
+    // Then the export: its progress, its end, a failure until Esc.
+    if editing.said.is_none()
+        && let Some((text, color)) = asked.export
+    {
+        editing.said = Some(Said {
+            mark: None,
+            text,
+            tail: None,
+            color,
+        });
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(500));
+    }
+    let pending = editing.pending.is_some() || editing.added.is_some() || editing.deleted.is_some();
+    let pending = pane_hints::Pending {
+        write: pending && !read_only,
+        review: pending,
+    };
+    let own = own(editing.can_edit, pending);
+    // Ctrl+h/l, where it moves from the rows (a table's, or a result's).
+    let grid_panes = pane_hints::panes(ui.ctx(), keymap, layout, super::focus::Region::Grid);
+    let panes_hint = grid_panes
+        .as_ref()
+        .map(|(key, word)| -> widgets::Hint<'_> { (key, word.as_str(), true) });
+    // A SQL editor's results, with a grid to step down to from its script.
+    let results_shown = workspace
+        .active_sql_tab()
+        .is_some_and(crate::ui::keys::shows_grid);
+    let (results_key, editor_key) = (key(Command::FocusResults), key(Command::PaneUp));
     egui::Panel::bottom(egui::Id::new(("status-line", tab.0)))
         .exact_size(STATUS_LINE)
         .resizable(false)
@@ -2311,6 +3046,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .frame(Frame::new().fill(palette.panel))
         .show(ui, |ui| {
             let rect = ui.max_rect();
+            let own_hints = own.as_deref().map(pane_hints::drawn);
             // Where a question that takes the line's place stands.
             let line = super::every_row_prompt::status_line_id(tab);
             ui.ctx().data_mut(|data| data.insert_temp(line, rect));
@@ -2340,8 +3076,9 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             table_hints.extend([
                 (&filter_key, "filter", true),
                 (&sidebar_key, "tables", true),
-                (&copy_key, "copy", true),
             ]);
+            table_hints.extend(panes_hint);
+            table_hints.extend([(&copy_key, "copy", true), (&copy_as_key, "copy as", true)]);
             // The prompt's line that saves, where a save can be made.
             let write = gettext(locale, "write");
             if !read_only {
@@ -2355,6 +3092,8 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             if reviewed {
                 table_hints.push((&review_key, &*review, true));
             }
+            // Export last: the first to give way where room runs out.
+            table_hints.push((&export_key, "export", true));
             // An editor's keys: a table's do nothing on it.
             let words = [
                 "run",
@@ -2363,15 +3102,41 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 if to_normal { "normal" } else { "leave editor" },
                 "tables",
                 "complete",
+                "results",
+                "editor",
             ]
             .map(|word| gettext(locale, word));
-            let mut editor_hints: Vec<widgets::Hint<'_>> = vec![
-                (&run_key, &*words[0], true),
-                (&run_all_key, &*words[1], true),
-                (&cancel_key, &*words[2], true),
-                (&leave_key, &*words[3], true),
-                (&sidebar_key, &*words[4], true),
-            ];
+            // The result's rows have the keys: their own, the way back up
+            // to the script, its copy in a format, and its export (spec
+            // 4), the first to give way.
+            let result_keys = !ui.ctx().text_edit_focused() && results_shown;
+            let mut editor_hints: Vec<widgets::Hint<'_>> = if result_keys {
+                vec![
+                    (&rows_key, "row", true),
+                    (&cols_key, "col", true),
+                    (&inspect_key, "inspect", true),
+                    (&copy_key, "copy", true),
+                    (&copy_as_key, "copy as", true),
+                    (&editor_key, &*words[7], true),
+                ]
+            } else {
+                vec![
+                    (&run_key, &*words[0], true),
+                    (&run_all_key, &*words[1], true),
+                    (&cancel_key, &*words[2], true),
+                    (&leave_key, &*words[3], true),
+                ]
+            };
+            if result_keys {
+                editor_hints.extend(panes_hint);
+                editor_hints.push((&export_key, "export result", true));
+            } else {
+                // The script's: down to the results, where they show rows.
+                if results_shown {
+                    editor_hints.push((&results_key, &*words[6], true));
+                }
+                editor_hints.push((&sidebar_key, &*words[4], true));
+            }
             // An open completion list: its key leads.
             if completing {
                 editor_hints.insert(0, (&complete_key, &*words[5], true));
@@ -2391,6 +3156,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 ]);
             }
             structure_hints.push((&sidebar_key, &*structure_words[3], true));
+            structure_hints.extend(panes_hint);
             // What is pending in the table's rows is saved and reviewed
             // from here too, as from the rows.
             if !read_only {
@@ -2425,6 +3191,14 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 })
                 .map(|(_, (key, word))| (key, &**word, true))
                 .collect();
+            // The pane keys after the views' (`r rows`, `s structure`).
+            if let Some(hint) = panes_hint {
+                let views = ddl_hints
+                    .iter()
+                    .position(|(_, word, _)| *word == &*ddl_words[6])
+                    .map_or(ddl_hints.len(), |at| at + 1);
+                ddl_hints.insert(views, hint);
+            }
             if !read_only {
                 ddl_hints.push((&save_key, &*write, true));
             }
@@ -2513,15 +3287,16 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     (4, Some((_, source, _))) => *source == crate::history::Source::Filter,
                     _ => false,
                 };
-                let hints: Vec<widgets::Hint<'_>> = history_keys
+                let history_hints: Vec<widgets::Hint<'_>> = history_keys
                     .iter()
                     .zip(&history_words)
                     .enumerate()
                     .filter(|(index, _)| offered(*index))
                     .map(|(_, (key, word))| (key, &**word, true))
                     .collect();
+                let hints = own_hints.as_deref().unwrap_or(&history_hints);
                 let left = rect.left() + 12.0;
-                widgets::key_hints(ui, (left, y), &hints, 18.0, &look, &palette);
+                widgets::key_hints(ui, (left, y), hints, 18.0, &look, &palette);
                 // Why a key did nothing, or what was just done, at the
                 // line's end: this look floats no toast.
                 // Else how many it shows: ":history · 184 statements".
@@ -2552,7 +3327,8 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             }
             if agents.is_some() {
                 let left = rect.left() + 12.0;
-                widgets::key_hints(ui, (left, y), &agents_hints, 18.0, &look, &palette);
+                let hints = own_hints.as_deref().unwrap_or(&agents_hints);
+                widgets::key_hints(ui, (left, y), hints, 18.0, &look, &palette);
                 // What was just done (the command copied), at the line's
                 // end: this look floats no toast.
                 if let Some(said) = &editing.said {
@@ -2567,7 +3343,12 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 }
                 return;
             }
-            let hints: &[widgets::Hint<'_>] = if on_editor {
+            // The SQL editor's own line (its mode, its summary) only while
+            // a pane of its own has the keys.
+            let on_editor = on_editor && own_hints.is_none();
+            let hints: &[widgets::Hint<'_>] = if let Some(own) = &own_hints {
+                own
+            } else if on_editor {
                 &editor_hints
             } else if structure.is_some() {
                 &structure_hints
@@ -2580,22 +3361,25 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             let measure = |text: &str| widgets::measure(ui, label_copy(&look, role, text));
             let summary_width = measure(&summary);
             // Everything 18 apart, 12 in from the ends. What does not fit
-            // before the range gives way from the end.
+            // before the range gives way: the last hint (the export), then
+            // the pane keys, then the rest from the end.
             let gap = 18.0;
             let fit = |limit: f32| {
-                (0..=hints.len())
-                    .rev()
-                    .find(|&count| {
-                        rect.left()
-                            + 12.0
-                            + widgets::key_hints_width(ui, &hints[..count], gap, &look, &palette)
-                            <= limit
-                    })
-                    .unwrap_or(0)
+                pane_hints::giving_way(hints, |shown| {
+                    rect.left() + 12.0 + widgets::key_hints_width(ui, shown, gap, &look, &palette)
+                        <= limit
+                })
             };
             if on_editor {
                 // The toolbar says the transaction is read-only; the line
-                // has no editing keys to strike out.
+                // has no editing keys to strike out. What was just done (a
+                // copy of the result) is said at its end in place of the
+                // summary: this look floats no toast.
+                let (summary, summary_color) = match &editing.said {
+                    Some(said) => (said.text.clone(), said.color),
+                    None => (summary.clone(), palette.dim),
+                };
+                let summary_width = measure(&summary);
                 let mut left = rect.left() + 12.0;
                 if let Some(mode) =
                     vim_mode.and_then(|mode| mode.label().map(|label| (mode, label)))
@@ -2610,16 +3394,53 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     let text = Text::one(&look, TextRole::OModeLine, &label, color);
                     left += widgets::paint_label(ui, left, y, text) + gap;
                 }
-                let shown =
-                    fit(rect.right() - 12.0 - summary_width - gap - (left - rect.left() - 12.0));
-                let at = (left, y);
-                widgets::key_hints(ui, at, &hints[..shown], gap, &look, &palette);
-                widgets::paint_text_right(
-                    ui,
-                    rect.right() - 12.0,
-                    y,
-                    Text::one(&look, role, &summary, palette.dim),
-                );
+                // A visual selection of the result: its mode, its size and
+                // its keys, in place of the editor's.
+                if let Some((visual, held)) = &editing.visual {
+                    let mode = gettext(locale, visual.mode());
+                    let mode = Text::one(&look, TextRole::OModeLine, &mode, palette.magenta);
+                    left += widgets::paint_label(ui, left, y, mode) + gap;
+                    let text = Text::one(&look, role, held, palette.secondary);
+                    left += widgets::paint_label(ui, left, y, text) + gap;
+                    let (copies, normal) = (gettext(locale, "copy tsv"), gettext(locale, "normal"));
+                    let copies_as = gettext(locale, "copy as");
+                    let keys = || {
+                        Text::new(&look)
+                            .add(role, &visual_copy_key, palette.text)
+                            .space(role, " ")
+                            .add(role, &copies, palette.dim)
+                            .add(role, " · ", palette.dim)
+                            .add(role, &copy_as_key, palette.text)
+                            .space(role, " ")
+                            .add(role, &copies_as, palette.dim)
+                            .add(role, " · ", palette.dim)
+                            .add(role, &leave_visual_key, palette.text)
+                            .space(role, " ")
+                            .add(role, &normal, palette.dim)
+                    };
+                    if left + widgets::measure(ui, keys())
+                        <= rect.right() - 12.0 - summary_width - gap
+                    {
+                        widgets::paint_label(ui, left, y, keys());
+                    }
+                } else {
+                    let shown = fit(rect.right()
+                        - 12.0
+                        - summary_width
+                        - gap
+                        - (left - rect.left() - 12.0));
+                    let at = (left, y);
+                    widgets::key_hints(ui, at, &shown, gap, &look, &palette);
+                }
+                let text = Text::one(&look, role, &summary, summary_color);
+                let width = widgets::paint_text_right(ui, rect.right() - 12.0, y, text);
+                if editing.said.is_some() {
+                    let place = Rect::from_min_size(
+                        pos2(rect.right() - 12.0 - width, y - 8.0),
+                        vec2(width.max(1.0), 16.0),
+                    );
+                    widgets::announce(ui, place, &summary);
+                }
                 return;
             }
             let left = rect.left() + 12.0;
@@ -2645,19 +3466,33 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 }
                 x
             };
-            if let Some(rows) = editing.visual {
-                // A visual selection of rows: the mode, how many rows it
-                // holds and the counts. Its keys, at the right, give way.
-                let mode = gettext(locale, "-- VISUAL --");
+            // A pane with keys of its own (the tree, its filter, the row
+            // panel) names them over the grid's selection.
+            let visual = editing.visual.as_ref().filter(|_| own_hints.is_none());
+            if let Some((visual, held)) = visual {
+                // A visual selection: the mode, what it holds and the
+                // counts. Its keys, at the right, give way: `V`'s rows
+                // are deleted, the others' cells copied.
+                let mode = gettext(locale, visual.mode());
                 let mode = || Text::one(&look, TextRole::OModeLine, &mode, palette.magenta);
-                let held = crate::ui::pending_bar::counted(locale, rows, "row", "rows");
-                let deletes = gettext(locale, "delete");
+                let rows = *visual == crate::selection::Visual::Rows;
+                let (act_key, acts) = if rows {
+                    (&visual_delete_key, gettext(locale, "delete"))
+                } else {
+                    (&visual_copy_key, gettext(locale, "copy tsv"))
+                };
                 let normal = gettext(locale, "normal");
+                let copies_as = gettext(locale, "copy as");
                 let keys = || {
-                    Text::new(&look)
-                        .add(role, &visual_delete_key, palette.text)
+                    let keys = Text::new(&look)
+                        .add(role, act_key, palette.text)
                         .space(role, " ")
-                        .add(role, &deletes, palette.dim)
+                        .add(role, &acts, palette.dim)
+                        .add(role, " · ", palette.dim);
+                    // The cells, or `V`'s rows, are copied in a format too.
+                    keys.add(role, &copy_as_key, palette.text)
+                        .space(role, " ")
+                        .add(role, &copies_as, palette.dim)
                         .add(role, " · ", palette.dim)
                         .add(role, &leave_visual_key, palette.text)
                         .space(role, " ")
@@ -2665,7 +3500,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 };
                 let right = rect.right() - 12.0;
                 let mut x = left + widgets::paint_label(ui, left, y, mode()) + gap;
-                let text = Text::one(&look, role, &held, palette.secondary);
+                let text = Text::one(&look, role, held, palette.secondary);
                 x += widgets::paint_label(ui, x, y, text) + gap;
                 x = counts(ui, x);
                 if let Some(said) = &editing.said {
@@ -2909,12 +3744,13 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 + 14.0 * disabled.len().saturating_sub(1) as f32;
             let mut x = left;
             let shown = fit(limit);
-            if shown > 0 {
-                x += widgets::key_hints(ui, (x, y), &hints[..shown], gap, &look, &palette) + gap;
+            if !shown.is_empty() {
+                x += widgets::key_hints(ui, (x, y), &shown, gap, &look, &palette) + gap;
             }
             let separator = measure("│");
             let struck = !disabled.is_empty();
-            if struck && shown == hints.len() && x + separator + gap + disabled_width <= limit {
+            if struck && shown.len() == hints.len() && x + separator + gap + disabled_width <= limit
+            {
                 x += widgets::paint_text(ui, x, y, Text::one(&look, role, "│", palette.outline))
                     + gap;
                 // Editing's keys, struck through at half strength.
@@ -2990,21 +3826,25 @@ fn tls_status(mode: TlsMode, encrypted: Option<bool>) -> (&'static str, bool) {
 /// The strip over a tab whose connection was lost: what happened, the way
 /// back (Reconnect) and the way out (Disconnect). What was on screen stays
 /// under it. While a reconnect is on its way the strip says so.
-fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
+fn banner(
+    ui: &mut egui::Ui,
+    paint: super::Paint,
+    tab: ConnTabId,
+    workspace: &crate::model::Workspace,
+) -> Vec<Action> {
+    let super::Paint {
+        locale,
+        palette,
+        look,
+    } = paint;
     let say = |text: &'static str| look.label(&gettext(locale, text));
     let name = display_safe(&workspace.name).into_owned();
     // What happened, the plain sentence when it says more, the exact error.
     let (lead, sentence, raw, reconnecting) = match &workspace.status {
         // Closed on purpose: nothing went wrong, and the next use connects,
         // with no strip of its own.
-        SessionStatus::Connected | SessionStatus::Idle => return,
-        SessionStatus::Connecting { .. } if workspace.woken => return,
+        SessionStatus::Connected | SessionStatus::Idle => return Vec::new(),
+        SessionStatus::Connecting { .. } if workspace.woken => return Vec::new(),
         SessionStatus::Connecting { .. } => (
             format!("{} {name}…", say("Reconnecting to")),
             String::new(),
@@ -3026,7 +3866,7 @@ fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             let sentence = if matches!(error, tabletist_db::Error::ConnectionLost(_)) {
                 String::new()
             } else {
-                crate::ui::format::describe_error(locale, error)
+                crate::format::describe_error(locale, error)
             };
             (
                 format!("{} {name}{env} {}", say("Connection to"), say("lost.")),
@@ -3111,12 +3951,14 @@ fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         strip.bottom() - 0.5,
         tone.line(&look, &palette),
     );
+    let mut actions = Vec::new();
     if reconnect {
-        app.actions.push(Action::Reconnect(tab));
+        actions.push(Action::Reconnect(tab));
     }
     if disconnect {
-        app.actions.push(Action::Disconnect(tab));
+        actions.push(Action::Disconnect(tab));
     }
+    actions
 }
 
 #[cfg(test)]

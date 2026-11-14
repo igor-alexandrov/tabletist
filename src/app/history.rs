@@ -243,9 +243,17 @@ pub(super) fn filtered(
         .map(|structure| structure.primary_key.clone())
         .unwrap_or_default();
     let started = object.rows.started.map(|started| started.elapsed());
+    // The classes the run's own statement was built with, so the entry
+    // reads as what ran (BigQuery writes a number or a boolean bare).
+    let classes = object
+        .structure
+        .value
+        .as_ref()
+        .map(|structure| structure.classes(dialect))
+        .unwrap_or_default();
     let mut entry = Entry {
         detail: object.object.name.clone(),
-        sql: Some(dialect.shown_rows(&object.query, &key, &[])),
+        sql: dialect.shown_rows(&object.query, &key, &classes).ok(),
         query: Some(crate::session::KeptTab::of(object)),
         at_ms: base.at_ms.saturating_sub(
             started.map_or(0, |took| i64::try_from(millis(took)).unwrap_or_default()),
@@ -275,7 +283,7 @@ impl App {
         let Some(workspace) = self.workspace(tab) else {
             return String::new();
         };
-        let name = crate::ui::format::display_safe(&workspace.name);
+        let name = crate::format::display_safe(&workspace.name);
         match workspace
             .environment
             .named(crate::env::Platform::of(&self.look))
@@ -545,7 +553,7 @@ impl App {
                 // ends its own.
                 let sql = match entry.source {
                     Source::Save => unwrapped(&sql),
-                    Source::Sql | Source::Filter | Source::Agent => sql,
+                    Source::Sql | Source::Filter | Source::Agent | Source::Export => sql,
                 };
                 if let Some(editor) = self.sql_tab_mut(tab, id) {
                     editor.text = sql;
@@ -914,6 +922,57 @@ mod tests {
         outcome.end = ScriptEnd::Committed;
         let kept = entries(text, ScriptMode::Write, Ok(outcome));
         assert_eq!(kept[0].message, None);
+    }
+
+    #[test]
+    fn a_filter_is_kept_as_the_statement_that_ran() {
+        use tabletist_db::{ColumnInfo, Filter, FilterOp, RowPage, Structure};
+
+        let mut tab = crate::model::ObjectTab::new(
+            crate::model::TabId(1),
+            tabletist_db::ObjectRef::new("sales", "orders"),
+            tabletist_db::ObjectKind::Table,
+            true,
+            300,
+            None,
+        );
+        tab.query.filters = vec![Filter {
+            column: "id".into(),
+            op: FilterOp::Gt,
+            value: "41".into(),
+        }];
+        tab.structure.value = Some(Structure {
+            columns: vec![ColumnInfo {
+                name: "id".into(),
+                type_name: "INT64".into(),
+                ..ColumnInfo::default()
+            }],
+            ..Structure::default()
+        });
+        let page = || RowPage {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            has_more: false,
+            ordered_by_key: false,
+            elapsed: std::time::Duration::ZERO,
+        };
+        // BigQuery writes the number bare: the entry is the statement
+        // that ran, so Run again runs.
+        let entry = super::filtered(base(), Dialect::BigQuery, &tab, &Ok(page()));
+        assert!(
+            entry
+                .sql
+                .as_deref()
+                .unwrap_or_default()
+                .contains("`id` > 41"),
+            "{:?}",
+            entry.sql
+        );
+        // A value that is none of the column's class keeps no SQL: the
+        // run's own error named the column.
+        tab.query.filters[0].value = "abc".into();
+        let entry = super::filtered(base(), Dialect::BigQuery, &tab, &Ok(page()));
+        assert_eq!(entry.sql, None);
     }
 
     #[test]

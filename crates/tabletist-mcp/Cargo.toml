@@ -18,7 +18,7 @@ workspace = true
 # `server` is the role, and brings the transport over anything that reads
 # and writes. It adds rmcp, schemars with its derive, pastey, dyn-clone and
 # ref-cast; the rest of what it needs is in the tree.
-rmcp = { version = "3.5", default-features = false, features = ["server"] }
+rmcp = { version = "3.9", default-features = false, features = ["server"] }
 # The check on a statement, the run of a read, and the catalog's types.
 # Never `ConnectSpec` or `Secrets`: this crate reaches a database only
 # through `Gateway`, which opens a connection by its id.
@@ -33,7 +33,7 @@ tokio-util = "0.7"
 serde_json = "1"
 # The log of calls, a SQLite file. The crate and its bundled SQLite that
 # tabletist-db builds: nothing new.
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 # A session's id in the log, which must not repeat from one start of the
 # app to the next.
 uuid = { version = "1", features = ["v4"] }
@@ -42,7 +42,7 @@ log = "0.4"
 
 [dev-dependencies]
 # The SDK's client, for the tests that call the server as an agent does.
-rmcp = { version = "3.5", default-features = false, features = ["client"] }
+rmcp = { version = "3.9", default-features = false, features = ["client"] }
 # The tests' runtime, on more than one thread, as the app's is. `test-util`:
 # a paused clock for the test of the server's own timer, which waits ten
 # seconds and two more.

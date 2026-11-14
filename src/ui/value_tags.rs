@@ -399,4 +399,21 @@ mod tests {
         assert!((hue_of(Color32::from_rgb(255, 0, 128)).0 - 329.9).abs() < 0.2);
         assert_eq!(hue_of(Color32::from_gray(128)), (0.0, 0.0));
     }
+
+    #[test]
+    fn value_tags_take_a_themes_rose_and_olive_only_when_they_stand_apart() {
+        // Tokyo Night's bright red and green are its red and green.
+        let palette = crate::fixtures::tokyo_night();
+        assert_eq!(palette.blue, egui::Color32::from_rgb(0x7a, 0xa2, 0xf7));
+        let slots = terminal_slots(&palette);
+        assert_eq!(slots[3], palette.blue);
+        assert_eq!(slots[6], palette.dim);
+        assert_eq!(slots[7], palette.dim);
+        // A file with its own colours but no rose or olive: muted too.
+        let file = r##"{"base": "dark", "colors": {"danger": "#ff0000", "success": "#00ff00"}}"##;
+        let palette: Palette = fastframe_theme::parse_palette(file).unwrap();
+        let slots = terminal_slots(&palette);
+        assert_eq!(slots[6], palette.dim);
+        assert_eq!(slots[7], palette.dim);
+    }
 }

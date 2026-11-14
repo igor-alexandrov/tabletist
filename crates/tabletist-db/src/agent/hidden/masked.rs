@@ -69,7 +69,7 @@ impl std::str::FromStr for ColumnName {
 impl ColumnName {
     /// Whether this names the column `column` of the relation `table` of
     /// `schema`.
-    pub(crate) fn names(&self, schema: Option<&str>, table: &str, column: &str) -> bool {
+    pub fn names(&self, schema: Option<&str>, table: &str, column: &str) -> bool {
         same(&self.column, column) && self.names_table(schema, table)
     }
 
@@ -176,7 +176,7 @@ fn row_id(dialect: crate::Dialect, word: &str) -> bool {
     let names: &[&str] = match dialect {
         crate::Dialect::Sqlite => &["rowid", "_rowid_", "oid"],
         crate::Dialect::MySql => &["_rowid"],
-        crate::Dialect::Postgres => &[],
+        crate::Dialect::Postgres | crate::Dialect::BigQuery => &[],
     };
     names.iter().any(|name| name.eq_ignore_ascii_case(word))
 }
@@ -542,7 +542,7 @@ pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
 fn strings_are_names(dialect: crate::Dialect) -> bool {
     match dialect {
         crate::Dialect::Sqlite => true,
-        crate::Dialect::Postgres | crate::Dialect::MySql => false,
+        crate::Dialect::Postgres | crate::Dialect::MySql | crate::Dialect::BigQuery => false,
     }
 }
 

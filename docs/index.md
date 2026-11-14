@@ -1,12 +1,12 @@
 ---
 layout: home
 title: Tabletist
-description: A fast, native database client for PostgreSQL, MySQL and SQLite.
+description: A fast, native database client for PostgreSQL, MySQL, SQLite and BigQuery.
 permalink: /
 hero:
   name: Tabletist
   text: Your databases, native and fast
-  tagline: A database client for PostgreSQL, MySQL and SQLite. Written in Rust, for Linux, macOS and Windows.
+  tagline: A database client for PostgreSQL, MySQL, SQLite and BigQuery. Written in Rust, for Linux, macOS and Windows.
   actions:
     - theme: brand
       text: Download
@@ -29,8 +29,8 @@ features:
     title: Native
     details: Written in Rust, with no browser inside. One small program for Linux, macOS and Windows.
   - icon: 🗄️
-    title: Three databases
-    details: PostgreSQL, MySQL and SQLite, with the same grid, row panel and SQL editor for each.
+    title: Four databases
+    details: PostgreSQL, MySQL, SQLite and BigQuery, with the same grid, row panel and SQL editor for each.
   - icon: 🔐
     title: Connections that fit your setup
     details: TLS, SSH tunnels with a password, a key file or your agent, and passwords kept in the system keyring.
@@ -46,7 +46,7 @@ features:
     link_text: How editing works
   - icon: 🧭
     title: Made for browsing
-    details: Sort, filter and page on the server. Find any table with quick open, read a row's every field, follow its foreign keys, and read a table's structure and DDL.
+    details: Sort, filter and page on the server. Find any table with quick open, read a row's every field, follow its foreign keys, and read a table's structure and DDL. Copy a selection as CSV, JSON, Markdown or SQL, or export a table or a result to a file.
     link: /browsing-data/
     link_text: Browse a table
   - icon: ⌨️
@@ -71,7 +71,9 @@ features:
 The picture above is the macOS look, and Windows gets a close relative of
 it. On Linux, Tabletist takes the Omarchy look: square, keyboard first,
 with vim keys and the desktop's monospace font throughout. On Omarchy it
-follows the desktop's theme and recolors when you switch themes.
+follows the desktop's theme and recolors when you switch themes. Each
+system can have the other look too: **Settings › Appearance › Interface**
+switches between the classic look and the Omarchy one at once.
 Read about [the Omarchy look]({% link _guide/omarchy.md %}) and
 [Tabletist on macOS]({% link _guide/macos.md %}).
 

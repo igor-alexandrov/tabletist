@@ -125,7 +125,6 @@ fn options_of_a_few_values_are_radio_groups_named_by_the_option() {
     let segmented = [
         (SettingsPane::General, OptionId::Timestamps),
         (SettingsPane::General, OptionId::GroupDigits),
-        (SettingsPane::Appearance, OptionId::InterfaceSize),
         (SettingsPane::Appearance, OptionId::RowHeight),
         (SettingsPane::Appearance, OptionId::TableList),
         (SettingsPane::Appearance, OptionId::EnvBar),
@@ -136,9 +135,6 @@ fn options_of_a_few_values_are_radio_groups_named_by_the_option() {
             .terminal
             .then_some((SettingsPane::General, OptionId::ValueTags));
         for (shown, option) in segmented.into_iter().chain(check) {
-            if look.terminal && option == OptionId::InterfaceSize {
-                continue;
-            }
             let mut harness = pane(look, shown);
             let tree = harness.settle();
             let name = name(&harness, option);
@@ -315,15 +311,17 @@ fn the_terminal_generals_rows_are_described_by_their_hints() {
 fn the_terminal_appearances_rows_are_described_by_their_hints() {
     let mut harness = pane(Look::omarchy(), SettingsPane::Appearance);
     let size = format!(
-        "{} / {} anywhere",
+        "{} / {} / {} anywhere · rows and panes grow with it",
         key(&harness, Command::LargerText),
-        key(&harness, Command::SmallerText)
+        key(&harness, Command::SmallerText),
+        key(&harness, Command::DefaultTextSize)
     );
     let list = format!("default; {} toggles", key(&harness, Command::ToggleTree));
     described_by_hints(
         &mut harness,
         SettingsPane::Appearance,
         &[
+            (OptionId::Look, Some("classic is the system's own look")),
             (OptionId::Theme, Some("now: dark, from the system")),
             // The row has no control but its own: nothing is read from
             // fontconfig in a test.
