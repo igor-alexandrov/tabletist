@@ -467,6 +467,9 @@ const UNKNOWN_SYSTEM_VARIABLE: u16 = 1193;
 /// The server's limit on connections, all of them or one user's.
 const TOO_MANY_CONNECTIONS: u16 = 1040;
 const TOO_MANY_USER_CONNECTIONS: u16 = 1203;
+/// A statement longer than the server's `max_allowed_packet`: the server
+/// says so and closes the connection.
+const PACKET_TOO_LARGE: u16 = 1153;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -2259,7 +2262,21 @@ pub(crate) fn builder(spec: &ConnectSpec, secrets: &Secrets, via: Option<u16>) -
         .db_name((!spec.database.is_empty()).then(|| spec.database.clone()))
         // Never switch a "localhost" connection to the Unix socket.
         .prefer_socket(false)
+        // Given, so the driver does not ask the server for them once it
+        // signed in, a round trip of its own before the session's
+        // settings. It reads and writes no packet longer than this, and
+        // the most a server allows is never above it: the server's own
+        // limit is the one that holds, as when the driver asked for it.
+        // A statement over that limit costs the connection either way,
+        // refused by the driver before it is sent or by the server once
+        // it is (see `query_error`).
+        .max_allowed_packet(Some(LARGEST_PACKET))
+        // The driver uses it only in a pool, which this app has none of.
+        .wait_timeout(Some(28800))
 }
+
+/// The most `max_allowed_packet` can be on a MySQL or MariaDB server.
+const LARGEST_PACKET: usize = 1 << 30;
 
 /// The options with TLS for the spec's mode; through a tunnel the
 /// certificate is still checked against `spec.host`.
@@ -2424,6 +2441,10 @@ pub(crate) fn named(number: u32, message: &str) -> Named {
 pub(crate) fn query_error(error: mysql_async::Error) -> Error {
     match error {
         mysql_async::Error::Server(server) if server.code == QUERY_INTERRUPTED => Error::Cancelled,
+        // The server closed the connection after it said so.
+        mysql_async::Error::Server(server) if server.code == PACKET_TOO_LARGE => {
+            Error::ConnectionLost(server.message)
+        }
         mysql_async::Error::Server(server) => Error::Query {
             named: Box::new(named(u32::from(server.code), &server.message)),
             code: Some(server.state),
@@ -4083,6 +4104,34 @@ mod tests {
         }
     }
 
+    /// The driver reads a row as long as the server's limit allows, and a
+    /// statement over that limit loses the session, which the server
+    /// closes: the server's own limit is the one that holds.
+    #[tokio::test]
+    async fn the_servers_packet_limit_is_the_one_that_holds() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let session = session(&url).await;
+        let mut conn = session.conn.lock().await;
+        let limit: usize = conn
+            .query_first("SELECT @@max_allowed_packet")
+            .await
+            .unwrap()
+            .unwrap();
+        // Longer than the driver's own default, 4 MiB.
+        let long = limit - 1024;
+        assert!(long > 4 << 20);
+        let row: Option<Vec<u8>> = conn
+            .query_first(format!("SELECT REPEAT('x', {long})"))
+            .await
+            .unwrap();
+        assert_eq!(row.map(|row| row.len()), Some(long));
+        let over = format!("SELECT '{}'", "y".repeat(limit));
+        let error = query_error(conn.query_drop(&over).await.unwrap_err());
+        assert!(error.is_connection_lost(), "{error:?}");
+    }
+
     /// Opening a table asks the server twice: its structure, with what its
     /// pages are built from, in one message, then its first page in one. A
     /// next page is one message too.
@@ -4820,8 +4869,9 @@ mod tests {
     }
 
     /// A session is prepared, and says which server it reached and its
-    /// version, in one message: two with the driver's own question at
-    /// connect. A SQL editor run's close prepares it again in one.
+    /// version, in one message, the only one at connect: the driver asks
+    /// nothing of its own. A SQL editor run's close prepares it again in
+    /// one.
     #[tokio::test]
     async fn a_session_is_prepared_and_named_in_one_message() {
         use std::sync::atomic::Ordering;
@@ -4836,7 +4886,7 @@ mod tests {
                 true => "MariaDB ",
                 false => "MySQL 8.",
             };
-            assert_eq!(asked.load(Ordering::SeqCst), 2, "{access:?}");
+            assert_eq!(asked.load(Ordering::SeqCst), 1, "{access:?}");
             assert!(conn.server.starts_with(named_as(&conn)), "{}", conn.server);
             assert!(
                 version_name(&conn.version).starts_with(product),
