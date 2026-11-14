@@ -12,14 +12,18 @@
 //! refused view's name is refused with it. That errs toward refusing, and
 //! only ever where a view calls what it may not.
 //!
-//! Only the views the connection's user is shown are followed. A view the
-//! user holds no privilege on is listed to it nowhere, so a view it may
-//! read that the server runs with its definer's rights (`SQL SECURITY
-//! DEFINER`) may read one that calls what an agent may not, and that call
-//! is not seen.
+//! A view the user holds no privilege on is listed to it nowhere, and a
+//! table it may not read neither: the two cannot be told apart. A view the
+//! server runs with another user's rights (`SQL SECURITY DEFINER`) may read
+//! either, and what such a view calls is not seen. So a view run with
+//! another's rights whose body reads what the user is not shown is refused
+//! as one whose definition it may not see ([`reads_unseen`]), a view that
+//! grants a user its rows from tables it may not read too.
+
+use std::collections::HashSet;
 
 use super::Refusal;
-use super::hidden::refused_call;
+use super::hidden::{qualified_relations, refused_call};
 use crate::Dialect;
 
 /// A view as the catalog gives it: its definition as the server writes it
@@ -33,11 +37,13 @@ pub(crate) struct View {
 }
 
 /// Why a view may not be read by an agent: the function its body calls,
-/// at some depth, or that what it calls cannot be seen.
+/// at some depth, or that what it calls cannot be seen, its body or what
+/// it reads with another user's rights.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Why {
     Calls(String),
     Unseen(String),
+    ReadsUnseen { view: String, relation: String },
 }
 
 impl Why {
@@ -46,6 +52,10 @@ impl Why {
             Self::Calls(function) => Refusal::FunctionNotAllowed(function),
             Self::Unseen(view) => Refusal::NotAllowed(format!(
                 "The view {view}, whose definition this connection's user may not see,"
+            )),
+            Self::ReadsUnseen { view, relation } => Refusal::NotAllowed(format!(
+                "The view {view}, which reads {relation} that this connection's user \
+                 may not see,"
             )),
         }
     }
@@ -68,15 +78,44 @@ fn servers_own(dialect: Dialect, view: &View) -> bool {
     own.iter().any(|own| view.schema.eq_ignore_ascii_case(own))
 }
 
-/// Why `view` itself may not be read, by its own body alone.
-fn by_itself(dialect: Dialect, view: &View) -> Option<Why> {
+/// What a view of `views` reads that the user is not shown, by name: see
+/// [`reads_unseen`]. None where every view is run with the reader's own
+/// rights.
+pub(crate) type Unseen<'a> = &'a dyn Fn(&View) -> Option<String>;
+
+/// Why `view` itself may not be read, by its own body alone and what it
+/// reads that the user is not shown.
+fn by_itself(dialect: Dialect, view: &View, unseen: Unseen<'_>) -> Option<Why> {
     if servers_own(dialect, view) {
         return None;
     }
+    let named = || format!("{}.{}", view.schema, view.name);
     if view.definition.trim().is_empty() {
-        return Some(Why::Unseen(format!("{}.{}", view.schema, view.name)));
+        return Some(Why::Unseen(named()));
     }
-    refused_call(dialect, &view.definition).map(Why::Calls)
+    if let Some(function) = refused_call(dialect, &view.definition) {
+        return Some(Why::Calls(function));
+    }
+    unseen(view).map(|relation| Why::ReadsUnseen {
+        view: named(),
+        relation,
+    })
+}
+
+/// The first relation `view`'s body reads that the user is not shown, as
+/// `schema.name`, for a view the server runs with another user's rights:
+/// `shown` are the tables and views the user is shown, by their folded
+/// schema and name. What it reads may be a view that calls what an agent
+/// may not, which the user is shown nothing of.
+pub(crate) fn reads_unseen(
+    dialect: Dialect,
+    view: &View,
+    shown: &HashSet<(String, String)>,
+) -> Option<String> {
+    qualified_relations(dialect, &view.definition)
+        .into_iter()
+        .find(|(schema, name)| !shown.contains(&(schema.to_lowercase(), name.to_lowercase())))
+        .map(|(schema, name)| format!("{schema}.{name}"))
 }
 
 /// The words, lower-cased, of which a body that calls a function an agent
@@ -91,17 +130,25 @@ pub(crate) fn refused_words(dialect: Dialect) -> impl Iterator<Item = &'static s
 /// Whether any of `views` may not be read by its own body alone. Where
 /// none may not, no view reaches one, and the others need not be read.
 pub(crate) fn any_refused(dialect: Dialect, views: &[View]) -> bool {
-    views.iter().any(|view| by_itself(dialect, view).is_some())
+    views
+        .iter()
+        .any(|view| by_itself(dialect, view, &|_| None).is_some())
 }
 
 /// Refuses `text`, an agent's statement, where it names a view of `views`
 /// (all the database's) whose body calls a function an agent may not
-/// call, or names such a view, at any depth.
-pub(crate) fn check(dialect: Dialect, text: &str, views: &[View]) -> Result<(), Refusal> {
+/// call, or reads what the user is not shown (`unseen`), or names such a
+/// view, at any depth.
+pub(crate) fn check(
+    dialect: Dialect,
+    text: &str,
+    views: &[View],
+    unseen: Unseen<'_>,
+) -> Result<(), Refusal> {
     // The refused views, by their folded names, and why each is.
     let mut refused: Vec<(String, Why)> = views
         .iter()
-        .filter_map(|view| Some((view.name.to_lowercase(), by_itself(dialect, view)?)))
+        .filter_map(|view| Some((view.name.to_lowercase(), by_itself(dialect, view, unseen)?)))
         .collect();
     if refused.is_empty() {
         return Ok(());
@@ -199,7 +246,7 @@ mod tests {
     fn a_view_that_calls_a_refused_function_is_refused_at_any_depth() {
         let views = views();
         let calls = Err(Refusal::FunctionNotAllowed("load_file".into()));
-        let check = |text: &str| check(Dialect::MySql, text, &views);
+        let check = |text: &str| check(Dialect::MySql, text, &views, &|_| None);
         assert_eq!(check("SELECT * FROM leaked"), calls);
         assert_eq!(check("SELECT * FROM bookshop.`Over_Leaked`"), calls);
         assert_eq!(
@@ -229,14 +276,19 @@ mod tests {
             "The view bookshop.titles, whose definition this connection's user may not see,".into(),
         ));
         assert_eq!(
-            check(Dialect::MySql, "SELECT * FROM titles", &views),
+            check(Dialect::MySql, "SELECT * FROM titles", &views, &|_| None),
             unseen
         );
         assert_eq!(
-            check(Dialect::MySql, "SELECT * FROM over_titles", &views),
+            check(Dialect::MySql, "SELECT * FROM over_titles", &views, &|_| {
+                None
+            }),
             unseen
         );
-        assert_eq!(check(Dialect::MySql, "SELECT * FROM books", &views), Ok(()));
+        assert_eq!(
+            check(Dialect::MySql, "SELECT * FROM books", &views, &|_| None),
+            Ok(())
+        );
     }
 
     /// The server's own views, shown without a body to a user who may read
@@ -257,21 +309,53 @@ mod tests {
             "SELECT @@session.time_zone",
             "SELECT * FROM sys.session",
         ] {
-            assert_eq!(check(Dialect::MySql, text, &views), Ok(()), "{text}");
+            assert_eq!(
+                check(Dialect::MySql, text, &views, &|_| None),
+                Ok(()),
+                "{text}"
+            );
         }
     }
 
-    /// A view the user is not shown is not followed: a view it may read,
-    /// whose body names it, reads, whatever it calls.
+    /// A view run with another user's rights that reads what the user is
+    /// not shown, a view or a table, is refused, and a view over it; one
+    /// that reads only what it is shown reads.
     #[test]
-    fn a_view_the_user_is_not_shown_is_not_followed() {
-        let views = [view(
-            "outer_v",
-            "select `v`.`id` AS `id` from `other`.`inner_v` `v`",
-        )];
+    fn a_view_that_reads_what_the_user_is_not_shown_is_refused() {
+        let views = [
+            view(
+                "outer_v",
+                "select `v`.`id` AS `id` from `other`.`inner_v` `v`",
+            ),
+            view(
+                "over_outer",
+                "select `bookshop`.`outer_v`.`id` AS `id` from `bookshop`.`outer_v`",
+            ),
+            view(
+                "named",
+                "with `c` as (select 1 AS `n`) select `bookshop`.`Books`.`id` AS `id` \
+                 from (`bookshop`.`Books` join `c`)",
+            ),
+        ];
+        let shown: HashSet<(String, String)> = [("bookshop", "books"), ("bookshop", "outer_v")]
+            .into_iter()
+            .map(|(schema, name)| (schema.to_owned(), name.to_owned()))
+            .collect();
+        let unseen = |view: &View| reads_unseen(Dialect::MySql, view, &shown);
+        let refused = Err(Refusal::NotAllowed(
+            "The view bookshop.outer_v, which reads other.inner_v that this connection's user \
+             may not see,"
+                .into(),
+        ));
+        let shown_check = |text: &str| check(Dialect::MySql, text, &views, &unseen);
+        assert_eq!(shown_check("SELECT * FROM outer_v"), refused);
+        assert_eq!(shown_check("SELECT * FROM over_outer"), refused);
+        assert_eq!(shown_check("SELECT * FROM named"), Ok(()));
+        // Without what the user is shown, as for views run with their
+        // reader's own rights, nothing is refused for it.
         assert!(!any_refused(Dialect::MySql, &views));
         assert_eq!(
-            check(Dialect::MySql, "SELECT * FROM outer_v", &views),
+            check(Dialect::MySql, "SELECT * FROM outer_v", &views, &|_| None),
             Ok(())
         );
     }

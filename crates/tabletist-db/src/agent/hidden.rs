@@ -1229,6 +1229,18 @@ pub(crate) fn refused_call(dialect: Dialect, definition: &str) -> Option<String>
         .map(|function| function.name)
 }
 
+/// The relations `definition`, a view's body as the server writes it back,
+/// reads by a name with its schema, as written: its tables and views. A
+/// name without one is a common table expression's, as the server writes
+/// every other with its schema.
+pub(crate) fn qualified_relations(dialect: Dialect, definition: &str) -> Vec<(String, String)> {
+    names(dialect, definition)
+        .relations
+        .into_iter()
+        .filter_map(|relation| Some((relation.schema?, relation.name)))
+        .collect()
+}
+
 /// The names the statement's text gives in a table's place, as written,
 /// without their schemas.
 pub(crate) fn named_relations(read: &Read) -> Vec<String> {

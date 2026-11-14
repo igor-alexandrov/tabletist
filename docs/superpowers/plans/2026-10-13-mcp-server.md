@@ -1020,7 +1020,23 @@ where it went otherwise:
   read in one more round trip, a view that names a refused one is refused
   too, at any depth, and the statement is refused where it names one, by
   its name as a word in any schema. A view whose body is not shown is
-  refused, as what it calls cannot be told.
+  refused, as what it calls cannot be told. The views of `sys`, `mysql`,
+  `performance_schema` and `information_schema` are left out: they come
+  with the server. The open sets the time limit before it asks, and a
+  failure of the question is the statement's error, in a session that
+  stays.
+- **A MySQL view run with another user's rights is refused where it reads
+  what the agent's user is not shown** (found by the same review). Neither
+  server lists a view or a table to a user without a privilege on it, so
+  an outer `SQL SECURITY DEFINER` view may read an inner one that calls
+  `get_lock`, which the user is shown nothing of, and an unseen view
+  cannot be told from an unseen table. The open's question also asks for
+  the views run with a definer other than `CURRENT_USER()`; where one is
+  found, the second round trip reads, with every view's body, every table
+  and view `information_schema.TABLES` shows, and such a view whose body
+  names, with its schema, a relation not among them is refused, and every
+  view over it. That refuses a view that grants a user rows of tables it
+  may not read, too, which the guide says.
 - **MySQL's plan is read twice.** Its JSON names a table by the
   statement's alias where it has one, so a name there is checked only
   where the catalog lists it. The note `SHOW WARNINGS` gives after it

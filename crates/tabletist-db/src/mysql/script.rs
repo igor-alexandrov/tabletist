@@ -218,7 +218,7 @@ async fn read_only(
 async fn refused(
     conn: &mut mysql_async::Conn,
     texts: &[String],
-    candidates: &[crate::agent::views::View],
+    candidates: &[super::views::Candidate],
     hiding: Option<Hiding<'_>>,
 ) -> Result<std::result::Result<Vec<bool>, Error>> {
     if let Err(error) = super::views::check(conn, texts, candidates).await? {
@@ -342,7 +342,7 @@ async fn open(
     limit: u32,
     kind: SessionKind,
     sent: Option<Sent<'_>>,
-) -> Result<std::result::Result<Vec<crate::agent::views::View>, Error>> {
+) -> Result<std::result::Result<Vec<super::views::Candidate>, Error>> {
     let names = kind.read_only_names(conn.server_version());
     let [own_limit, other_limit] = match sent {
         Some(sent) => kind.time_limits(sent.timeout_ms()).map(Some),

@@ -1809,6 +1809,83 @@ mod mysql {
         assert!(read.is_ok(), "{read:?}");
     }
 
+    /// A view the server runs with another user's rights reads what the
+    /// agent's user may not see, a view or a table, which the user is shown
+    /// nothing of: what it reads may call `get_lock`. So such a view that
+    /// reads what the user is not shown is refused, on a connection that
+    /// hides nothing, and one that reads only what it is shown reads. Only
+    /// root may make the user and views, with the password `compose.yaml`
+    /// gives it: skipped where it may not connect.
+    #[tokio::test]
+    async fn a_view_that_reads_what_the_user_may_not_see_is_refused_on_mysql() {
+        let Some(url) = url() else {
+            return;
+        };
+        load(&url).await;
+        let (_, place) = url.split_once('@').unwrap();
+        let (server, _) = place.rsplit_once('/').unwrap();
+        let root = format!("mysql://root:tabletist-root@{server}/bookshop?prefer_socket=false");
+        let Ok(mut root) =
+            mysql_async::Conn::new(mysql_async::Opts::from_url(&root).unwrap()).await
+        else {
+            eprintln!("skipped: the test MySQL's root may not connect");
+            return;
+        };
+        for sql in [
+            "DROP USER IF EXISTS tabletist_peek",
+            "CREATE USER tabletist_peek IDENTIFIED BY 'peek'",
+            "CREATE OR REPLACE SQL SECURITY DEFINER VIEW bookshop.peek_locks AS \
+             SELECT id, get_lock('tabletist_peek_lock', 0) AS took FROM bookshop.books",
+            "CREATE OR REPLACE SQL SECURITY DEFINER VIEW bookshop.peek_outer AS \
+             SELECT id FROM bookshop.peek_locks",
+            "CREATE OR REPLACE SQL SECURITY DEFINER VIEW bookshop.peek_titles AS \
+             SELECT id, title FROM bookshop.books",
+            "CREATE OR REPLACE SQL SECURITY DEFINER VIEW bookshop.peek_orders AS \
+             SELECT id FROM bookshop.orders",
+            "GRANT SELECT, SHOW VIEW ON bookshop.peek_outer TO tabletist_peek",
+            "GRANT SELECT, SHOW VIEW ON bookshop.peek_titles TO tabletist_peek",
+            "GRANT SELECT, SHOW VIEW ON bookshop.peek_orders TO tabletist_peek",
+            "GRANT SELECT ON bookshop.orders TO tabletist_peek",
+        ] {
+            root.query_drop(sql).await.unwrap();
+        }
+        let (mut spec, secrets) =
+            ConnectSpec::from_url(&format!("mysql://tabletist_peek:peek@{server}/bookshop"))
+                .unwrap();
+        spec.tls = TlsMode::Disable;
+        let connection =
+            Connection::connect_with(&spec, &secrets, &HostKeys::default(), Access::ReadOnly)
+                .await
+                .unwrap();
+        let reads = |view: &str, relation: &str| {
+            Err(Error::Agent(Refusal::NotAllowed(format!(
+                "The view bookshop.{view}, which reads bookshop.{relation} that this \
+                 connection's user may not see,"
+            ))))
+        };
+        let rows = |answer: Result<Answer, Error>| answer.map(|answer| answer.rows);
+        let outer = rows(asked(&connection, "SELECT count(*) FROM peek_outer", &[], LIMITS).await);
+        let titles =
+            rows(asked(&connection, "SELECT count(*) FROM peek_titles", &[], LIMITS).await);
+        let orders =
+            rows(asked(&connection, "SELECT count(*) FROM peek_orders", &[], LIMITS).await);
+        let own = rows(asked(&connection, "SELECT count(*) FROM orders", &[], LIMITS).await);
+        drop(connection);
+        for sql in [
+            "DROP VIEW bookshop.peek_outer, bookshop.peek_locks, bookshop.peek_titles, \
+             bookshop.peek_orders",
+            "DROP USER tabletist_peek",
+        ] {
+            root.query_drop(sql).await.unwrap();
+        }
+        assert_eq!(outer, reads("peek_outer", "peek_locks"));
+        // A view that grants a user rows of a table it may not read is
+        // refused alike: what it reads cannot be told from a view.
+        assert_eq!(titles, reads("peek_titles", "books"));
+        assert!(orders.is_ok(), "{orders:?}");
+        assert_eq!(orders.unwrap(), own.unwrap());
+    }
+
     /// A view's body runs when an agent reads the view, whose name is all
     /// the statement says: one that calls a function an agent may not
     /// call is refused, at any depth, on a connection that hides nothing
