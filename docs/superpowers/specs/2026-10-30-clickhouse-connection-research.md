@@ -234,7 +234,10 @@ no crate (ureq was in the tree; `Cargo.lock` gains one line).
 What it does: one POST per statement with `readonly=2`,
 `max_result_rows` = page + 1 and `result_overflow_mode=break`, reads
 `TabSeparatedWithNamesAndTypes` a line at a time and stops at the page,
-gives each statement its own `query_id`, and cancels with
+gives each statement its own `query_id` (random per process, then a
+counter: the server holds it, and a pid repeats across machines and
+containers, which would refuse a statement with code 216 or let one copy's
+cancel kill another's), and cancels with
 `KILL QUERY … ASYNC` from a second request.
 
 What the server showed:
