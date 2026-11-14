@@ -56,14 +56,17 @@ pub(super) fn candidates() -> String {
     )
 }
 
-/// Every view's body but the server's own, and after them every table and
-/// view the user is shown, the server's own too, with no body: one query,
-/// one round trip. The first column tells which.
+/// Every view's body but the server's own, whether the server runs it with
+/// another user's rights and whether with its reader's (`INVOKER`), and
+/// after them every table and view the user is shown, the server's own
+/// too, with no body: one query, one round trip. The first column tells
+/// which.
 fn whole() -> String {
     format!(
-        "SELECT 1, TABLE_SCHEMA, TABLE_NAME, COALESCE(VIEW_DEFINITION, ''), {OTHERS_RIGHTS} \
+        "SELECT 1, TABLE_SCHEMA, TABLE_NAME, COALESCE(VIEW_DEFINITION, ''), {OTHERS_RIGHTS}, \
+         IF(SECURITY_TYPE = 'INVOKER', 1, 0) \
          FROM information_schema.VIEWS WHERE {} \
-         UNION ALL SELECT 0, TABLE_SCHEMA, TABLE_NAME, '', 0 FROM information_schema.TABLES \
+         UNION ALL SELECT 0, TABLE_SCHEMA, TABLE_NAME, '', 0, 0 FROM information_schema.TABLES \
          {WHOLE}",
         users()
     )
@@ -98,30 +101,67 @@ pub(super) fn listed(rows: Vec<mysql_async::Row>) -> Result<Vec<Candidate>> {
         .collect()
 }
 
-/// What [`whole`] answered: every view, those run with another user's
-/// rights, and the folded names of what the user is shown.
+/// What [`whole`] answered: every view, by their folded names those run
+/// with another user's rights and those run with their reader's, and the
+/// folded names of what the user is shown.
 struct Whole {
     views: Vec<View>,
     others: HashSet<(String, String)>,
+    invokers: HashSet<(String, String)>,
     shown: HashSet<(String, String)>,
+}
+
+impl Whole {
+    /// The views the server may run with another user's rights: those it
+    /// runs with their definer's, and every view run with its reader's
+    /// rights that one of these reads, at any depth, which the server runs
+    /// with the rights of the view that reads it.
+    fn run_as_others(&self) -> HashSet<(String, String)> {
+        let folded = |view: &View| (view.schema.to_lowercase(), view.name.to_lowercase());
+        let mut run = self.others.clone();
+        loop {
+            let reached: Vec<(String, String)> = self
+                .views
+                .iter()
+                .filter(|view| run.contains(&folded(view)))
+                .flat_map(|view| views::relations(Dialect::MySql, view))
+                .map(|(schema, name)| (schema.to_lowercase(), name.to_lowercase()))
+                .filter(|relation| self.invokers.contains(relation) && !run.contains(relation))
+                .collect();
+            if reached.is_empty() {
+                return run;
+            }
+            run.extend(reached);
+        }
+    }
 }
 
 fn whole_listed(rows: Vec<mysql_async::Row>) -> Result<Whole> {
     let mut whole = Whole {
         views: Vec::new(),
         others: HashSet::new(),
+        invokers: HashSet::new(),
         shown: HashSet::new(),
     };
     for row in rows {
-        let (view, schema, name, definition, others_rights): (i64, String, String, String, i64) =
-            from_row(row)?;
+        let (view, schema, name, definition, others_rights, invoker): (
+            i64,
+            String,
+            String,
+            String,
+            i64,
+            i64,
+        ) = from_row(row)?;
         let folded = (schema.to_lowercase(), name.to_lowercase());
         if view == 0 {
             whole.shown.insert(folded);
             continue;
         }
         if others_rights != 0 {
-            whole.others.insert(folded);
+            whole.others.insert(folded.clone());
+        }
+        if invoker != 0 {
+            whole.invokers.insert(folded);
         }
         whole.views.push(View {
             schema,
@@ -163,9 +203,10 @@ pub(super) async fn check(
         Ok(whole) => whole,
         Err(error) => return Ok(Err(error)),
     };
+    let run_as_others = whole.run_as_others();
     let unseen = |view: &View| {
         let folded = (view.schema.to_lowercase(), view.name.to_lowercase());
-        match whole.others.contains(&folded) {
+        match run_as_others.contains(&folded) {
             true => views::reads_unseen(Dialect::MySql, view, &whole.shown),
             false => None,
         }

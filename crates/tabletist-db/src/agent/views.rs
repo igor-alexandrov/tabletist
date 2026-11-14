@@ -115,6 +115,12 @@ fn by_itself(dialect: Dialect, view: &View, unseen: Unseen<'_>) -> Option<Why> {
     })
 }
 
+/// The relations `view`'s body reads by a name with its schema, as written:
+/// its tables and views.
+pub(crate) fn relations(dialect: Dialect, view: &View) -> Vec<(String, String)> {
+    qualified_relations(dialect, &view.definition)
+}
+
 /// The first relation `view`'s body reads that the user is not shown, as
 /// `schema.name`, for a view the server runs with another user's rights:
 /// `shown` are the tables and views the user is shown, by their folded

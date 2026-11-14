@@ -1036,7 +1036,9 @@ where it went otherwise:
   and view `information_schema.TABLES` shows, and such a view whose body
   names, with its schema, a relation not among them is refused, and every
   view over it. That refuses a view that grants a user rows of tables it
-  may not read, too, which the guide says.
+  may not read, too, which the guide says. A view run with its reader's
+  rights (`SQL SECURITY INVOKER`) that such a view reads, at any depth,
+  runs with the reading view's rights, so it is checked the same way.
 - **On PostgreSQL too a view whose body calls a function the agent may
   not call is refused on every connection**, the one that hides nothing
   too (`pg/views.rs`). PostgreSQL keeps no dependency on its own functions,

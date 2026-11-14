@@ -1905,9 +1905,17 @@ mod mysql {
              SELECT id, title FROM bookshop.books",
             "CREATE OR REPLACE SQL SECURITY DEFINER VIEW bookshop.peek_orders AS \
              SELECT id FROM bookshop.orders",
+            // A view run with its reader's rights runs with the rights of
+            // the view that reads it: here root's.
+            "CREATE OR REPLACE SQL SECURITY INVOKER VIEW bookshop.peek_invoker AS \
+             SELECT id FROM bookshop.peek_locks",
+            "CREATE OR REPLACE SQL SECURITY DEFINER VIEW bookshop.peek_chain AS \
+             SELECT id FROM bookshop.peek_invoker",
             "GRANT SELECT, SHOW VIEW ON bookshop.peek_outer TO tabletist_peek",
             "GRANT SELECT, SHOW VIEW ON bookshop.peek_titles TO tabletist_peek",
             "GRANT SELECT, SHOW VIEW ON bookshop.peek_orders TO tabletist_peek",
+            "GRANT SELECT, SHOW VIEW ON bookshop.peek_invoker TO tabletist_peek",
+            "GRANT SELECT, SHOW VIEW ON bookshop.peek_chain TO tabletist_peek",
             "GRANT SELECT ON bookshop.orders TO tabletist_peek",
         ] {
             root.query_drop(sql).await.unwrap();
@@ -1933,15 +1941,19 @@ mod mysql {
         let orders =
             rows(asked(&connection, "SELECT count(*) FROM peek_orders", &[], LIMITS).await);
         let own = rows(asked(&connection, "SELECT count(*) FROM orders", &[], LIMITS).await);
+        let chain = rows(asked(&connection, "SELECT count(*) FROM peek_chain", &[], LIMITS).await);
         drop(connection);
         for sql in [
-            "DROP VIEW bookshop.peek_outer, bookshop.peek_locks, bookshop.peek_titles, \
-             bookshop.peek_orders",
+            "DROP VIEW bookshop.peek_chain, bookshop.peek_invoker, bookshop.peek_outer, \
+             bookshop.peek_locks, bookshop.peek_titles, bookshop.peek_orders",
             "DROP USER tabletist_peek",
         ] {
             root.query_drop(sql).await.unwrap();
         }
         assert_eq!(outer, reads("peek_outer", "peek_locks"));
+        // Through a view run with its reader's rights, which the user is
+        // shown: the server runs it with root's, and so it is checked.
+        assert_eq!(chain, reads("peek_invoker", "peek_locks"));
         // A view that grants a user rows of a table it may not read is
         // refused alike: what it reads cannot be told from a view.
         assert_eq!(titles, reads("peek_titles", "books"));
