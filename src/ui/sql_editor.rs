@@ -97,7 +97,10 @@ pub fn show(
         child.set_clip_rect(rect.intersect(ui.clip_rect()));
         child
     };
-    let dialect = workspace.driver.dialect();
+    // No SQL editor opens without SQL (Redis).
+    let Some(dialect) = workspace.driver.dialect() else {
+        return Vec::new();
+    };
     let tree_has_arrows = workspace.pane == crate::model::Pane::Tree;
     if let Some(sql) = workspace.sql_tab_mut(id) {
         let mut child = pane(editor, "sql-text");

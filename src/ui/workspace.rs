@@ -74,6 +74,21 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         app.actions.extend(asked);
         return;
     }
+    // A Redis connection's keys and values, in place of tables, under the
+    // strip that says its connection was lost, with Reconnect.
+    let stale = !workspace.takes_commands();
+    let paint = super::Paint::of(app);
+    if workspace.redis.is_some() {
+        let asked = banner(ui, paint, tab, workspace);
+        app.actions.extend(asked);
+    }
+    if let Some(browser) = crate::app::workspace_in_mut(&mut app.tabs, tab)
+        .and_then(|workspace| workspace.redis.as_deref_mut())
+    {
+        let asked = super::redis::show(ui, paint, tab, browser, &app.keymap, stale);
+        app.actions.extend(asked);
+        return;
+    }
     if look.terminal {
         object_tabs(app, ui, tab);
         bottom_line(app, ui, tab);
@@ -540,7 +555,7 @@ fn connecting(
         Driver::Sqlite => ("Open", spec.summary()),
         // The project is the whole target.
         Driver::BigQuery => ("Connect to", spec.summary()),
-        Driver::Postgres | Driver::MySql => {
+        Driver::Postgres | Driver::MySql | Driver::Redis => {
             let target = format!("{}:{}", spec.host, spec.port);
             let target = match &spec.ssh {
                 Some(ssh) => format!("{target} {} {}", say("via"), ssh.host),
@@ -644,7 +659,7 @@ fn failure_title(
                 Icon::CircleAlert,
                 format!("{} {}", say("Can't open"), spec.summary()),
             ),
-            Driver::Postgres | Driver::MySql => (
+            Driver::Postgres | Driver::MySql | Driver::Redis => (
                 Icon::WifiOff,
                 format!("{} {}:{}", say("Can't reach"), spec.host, spec.port),
             ),
@@ -857,7 +872,9 @@ fn is_remote(workspace: &crate::model::Workspace) -> bool {
     use tabletist_db::Driver;
     match workspace.driver {
         Driver::Sqlite => false,
-        Driver::Postgres | Driver::MySql => !crate::model::is_local_host(&workspace.spec.host),
+        Driver::Postgres | Driver::MySql | Driver::Redis => {
+            !crate::model::is_local_host(&workspace.spec.host)
+        }
         Driver::BigQuery => true,
     }
 }
@@ -874,7 +891,7 @@ pub(super) fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
         let (text, warn) = match workspace.driver {
             // HTTPS to Google's API, verified against the system roots.
             Driver::BigQuery => ("HTTPS", false),
-            Driver::Postgres | Driver::MySql | Driver::Sqlite => {
+            Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::Redis => {
                 tls_status(spec.effective_tls(), encrypted)
             }
         };
@@ -887,6 +904,21 @@ pub(super) fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
             Driver::Sqlite => String::new(),
             // The project.
             Driver::Postgres | Driver::MySql | Driver::BigQuery => spec.database.clone(),
+            // The database the window is on, which a switch moves.
+            // As its menu names it ("0 · 1,204 keys"), so the menu marks
+            // it and never switches to it; "db 0" before the server says.
+            Driver::Redis => {
+                let number = workspace.redis_database();
+                let own = format!("{number} ");
+                workspace
+                    .databases
+                    .value
+                    .iter()
+                    .flatten()
+                    .find(|label| label.starts_with(&own) || **label == number.to_string())
+                    .cloned()
+                    .unwrap_or_else(|| format!("db {number}"))
+            }
         },
         databases: workspace.databases.value.clone().unwrap_or_default(),
         tls,
@@ -959,6 +991,18 @@ fn card_rows(
                 rows.push((say("Key file"), key.display().to_string()));
             }
         }
+        Driver::Redis => {
+            rows.push((say("Host"), format!("{}:{}", spec.host, spec.port)));
+            rows.push((
+                say("Database"),
+                format!("db {}", workspace.redis_database()),
+            ));
+            let user = match spec.user.as_str() {
+                "" => say("default user"),
+                user => user.to_owned(),
+            };
+            rows.push((say("User"), user));
+        }
         Driver::Postgres | Driver::MySql => {
             rows.push((say("Host"), format!("{}:{}", spec.host, spec.port)));
             if !spec.database.is_empty() {
@@ -980,7 +1024,7 @@ fn card_rows(
         let encrypted = connected.then_some(workspace.encrypted);
         say(match workspace.driver {
             Driver::BigQuery => "HTTPS",
-            Driver::Postgres | Driver::MySql | Driver::Sqlite => {
+            Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::Redis => {
                 tls_status(spec.effective_tls(), encrypted).0
             }
         })
@@ -1086,9 +1130,21 @@ fn chip_card(ui: &mut egui::Ui, chip: &Chip, hint: Option<&str>, look: &Look, pa
 /// Where a connection points, in a word: its database, or the file's name
 /// for SQLite.
 pub fn target(workspace: &crate::model::Workspace) -> String {
-    match &workspace.spec.sqlite_path {
-        Some(path) => crate::model::file_name(&path.display().to_string()),
-        None => workspace.spec.database.clone(),
+    use tabletist_db::Driver;
+    match workspace.driver {
+        // Where the server is, and the database the window is on.
+        Driver::Redis => format!(
+            "{}:{} · db {}",
+            workspace.spec.host,
+            workspace.spec.port,
+            workspace.redis_database()
+        ),
+        Driver::Sqlite | Driver::Postgres | Driver::MySql | Driver::BigQuery => {
+            match &workspace.spec.sqlite_path {
+                Some(path) => crate::model::file_name(&path.display().to_string()),
+                None => workspace.spec.database.clone(),
+            }
+        }
     }
 }
 

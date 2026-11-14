@@ -69,6 +69,15 @@ pub fn agentable(saved: &[SavedConnection]) -> Vec<Agentable> {
             AgentAccess::Off => false,
             AgentAccess::Read => true,
         })
+        // Agents get no Redis connection in this version, whatever its
+        // table says: one is never opened for them.
+        .filter(|(saved, _)| match saved.spec.driver {
+            tabletist_db::Driver::Redis => false,
+            tabletist_db::Driver::Postgres
+            | tabletist_db::Driver::MySql
+            | tabletist_db::Driver::Sqlite
+            | tabletist_db::Driver::BigQuery => true,
+        })
         .map(|(saved, name)| Agentable {
             id: saved.id.clone(),
             name,
@@ -828,12 +837,16 @@ impl Gateway for AppGateway {
         lock(&self.inner.policy)
             .connections
             .iter()
-            .map(|agentable| Listed {
-                id: agentable.id.0.clone(),
-                name: agentable.name.clone(),
-                dialect: agentable.spec.driver.dialect(),
-                limits: agentable.limits,
-                sources: agentable.sources.clone(),
+            // A connection with no SQL (Redis) is never an agent's: this
+            // version gives agents none of its keys.
+            .filter_map(|agentable| {
+                Some(Listed {
+                    id: agentable.id.0.clone(),
+                    name: agentable.name.clone(),
+                    dialect: agentable.spec.driver.dialect()?,
+                    limits: agentable.limits,
+                    sources: agentable.sources.clone(),
+                })
             })
             .collect()
     }
@@ -1178,6 +1191,28 @@ mod tests {
             tables.join(", "),
             sum.join(" + ")
         )
+    }
+
+    #[test]
+    fn a_redis_connection_is_never_an_agents_whatever_its_access() {
+        let cache = saved(
+            "5e1d0a77-0004",
+            "Bookshop cache",
+            Environment::Dev,
+            ConnectSpec::redis("localhost", 6379),
+        );
+        assert_eq!(cache.agents.access, AgentAccess::Read);
+        let file = saved(
+            "1f0c2a9e-0001",
+            "Bookshop",
+            Environment::Dev,
+            ConnectSpec::sqlite("/tmp/bookshop.db"),
+        );
+        let named: Vec<String> = agentable(&[cache, file])
+            .into_iter()
+            .map(|agentable| agentable.name)
+            .collect();
+        assert_eq!(named, ["Bookshop · dev"]);
     }
 
     #[test]
@@ -2127,7 +2162,7 @@ mod tests {
             .unwrap();
         let gateway = AppGateway::new(keyring);
         gateway.set_policy(agentable(&[connection]), HostKeys::default());
-        Some((gateway, dialect))
+        Some((gateway, dialect?))
     }
 
     async fn the_password_is_the_keyrings_and_a_stop_reaches_the_server(

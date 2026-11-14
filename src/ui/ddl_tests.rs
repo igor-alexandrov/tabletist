@@ -32,6 +32,13 @@ pub(super) fn book_covers(driver: Driver) -> Ddl {
             heading: None,
             parts: Vec::new(),
         },
+        // Never read either: Redis has no SQL.
+        Driver::Redis => Ddl {
+            driver,
+            server: "Redis".into(),
+            heading: None,
+            parts: Vec::new(),
+        },
         Driver::Postgres => Ddl {
             driver,
             server: "PostgreSQL 17.2".into(),

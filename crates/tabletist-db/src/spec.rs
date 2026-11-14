@@ -17,6 +17,9 @@ pub enum Driver {
     MySql,
     Sqlite,
     BigQuery,
+    /// A standalone Redis server (or one that speaks its protocol:
+    /// Valkey, KeyDB, Dragonfly). Keys and values, no SQL.
+    Redis,
 }
 
 impl Driver {
@@ -24,6 +27,7 @@ impl Driver {
         match self {
             Self::Postgres => 5432,
             Self::MySql => 3306,
+            Self::Redis => 6379,
             Self::Sqlite | Self::BigQuery => 0,
         }
     }
@@ -34,16 +38,84 @@ impl Driver {
             Self::MySql => "MySQL",
             Self::Sqlite => "SQLite",
             Self::BigQuery => "BigQuery",
+            Self::Redis => "Redis",
         }
     }
 
-    /// The SQL dialect the driver speaks.
-    pub fn dialect(self) -> crate::Dialect {
+    /// The SQL dialect the driver speaks: none for Redis, which has no
+    /// SQL, so nothing that writes or reads SQL is offered for it.
+    pub fn dialect(self) -> Option<crate::Dialect> {
         match self {
-            Self::Postgres => crate::Dialect::Postgres,
-            Self::MySql => crate::Dialect::MySql,
-            Self::Sqlite => crate::Dialect::Sqlite,
-            Self::BigQuery => crate::Dialect::BigQuery,
+            Self::Postgres => Some(crate::Dialect::Postgres),
+            Self::MySql => Some(crate::Dialect::MySql),
+            Self::Sqlite => Some(crate::Dialect::Sqlite),
+            Self::BigQuery => Some(crate::Dialect::BigQuery),
+            Self::Redis => None,
+        }
+    }
+}
+
+/// What a Redis connection has beside its host, port and user: the
+/// database it opens on, its TLS, and how its keys are browsed.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RedisSpec {
+    /// The database the connection opens on (`SELECT n`); the window can
+    /// switch to another while it is open.
+    pub database: u32,
+    pub tls: RedisTls,
+    pub browsing: Browsing,
+}
+
+/// Redis's TLS (`rediss://`): off, or on with the server's certificate
+/// checked against the CA file (else the system's roots), its name
+/// checked unless `verify_host` is off, and a client certificate where
+/// the server asks for one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RedisTls {
+    pub enabled: bool,
+    pub ca: Option<PathBuf>,
+    pub cert: Option<PathBuf>,
+    pub key: Option<PathBuf>,
+    pub verify_host: bool,
+}
+
+impl Default for RedisTls {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            ca: None,
+            cert: None,
+            key: None,
+            verify_host: true,
+        }
+    }
+}
+
+/// How a Redis connection lists its keys: grouped by `separator`,
+/// `page` at a time (the SCAN COUNT hint, and the page of an open group),
+/// the names that match `pattern`, and at most `key_limit` of them held
+/// before the scan stops and asks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Browsing {
+    pub separator: String,
+    pub page: u32,
+    pub pattern: String,
+    pub key_limit: u64,
+}
+
+/// The pages a Redis connection can list its keys by.
+pub const KEY_PAGES: [u32; 3] = [500, 1000, 5000];
+
+impl Default for Browsing {
+    fn default() -> Self {
+        Self {
+            separator: ":".into(),
+            page: 1000,
+            pattern: "*".into(),
+            key_limit: 100_000,
         }
     }
 }
@@ -116,6 +188,9 @@ pub struct ConnectSpec {
     pub tls: TlsMode,
     pub ca_file: Option<PathBuf>,
     pub ssh: Option<SshSpec>,
+    /// Redis's own settings; `None` for every other driver.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redis: Option<RedisSpec>,
 }
 
 impl Default for ConnectSpec {
@@ -131,6 +206,7 @@ impl Default for ConnectSpec {
             tls: TlsMode::Prefer,
             ca_file: None,
             ssh: None,
+            redis: None,
         }
     }
 }
@@ -172,6 +248,9 @@ impl ParsedUrl {
     /// spellings) is an error rather than the last one silently winning.
     pub fn parse(url: &str) -> Result<Self> {
         let url = url.trim();
+        if let Some(line) = redis_cli_line(url) {
+            return parse_redis_cli(line);
+        }
         if let Some(rest) = url.strip_prefix("sqlite:") {
             let path = rest.strip_prefix("//").unwrap_or(rest);
             if path.is_empty() {
@@ -187,6 +266,7 @@ impl ParsedUrl {
         let parsed = url::Url::parse(url)
             .map_err(|error| Error::InvalidSpec(format!("not a connection URL: {error}")))?;
         let driver = match parsed.scheme() {
+            "redis" | "rediss" => return parse_redis_url(&parsed),
             "postgres" | "postgresql" => Driver::Postgres,
             "mysql" | "mariadb" => Driver::MySql,
             "bigquery" => {
@@ -219,7 +299,7 @@ impl ParsedUrl {
             }
             other => {
                 return Err(Error::InvalidSpec(format!(
-                    "unsupported scheme {other:?}; use postgres://, mysql://, sqlite: or bigquery:"
+                    "unsupported scheme {other:?}; use postgres://, mysql://, redis://, sqlite: or bigquery:"
                 )));
             }
         };
@@ -273,7 +353,237 @@ impl ParsedUrl {
     }
 }
 
+/// The rest of `text` after `redis-cli` and a space, when it is a
+/// redis-cli command line.
+fn redis_cli_line(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix("redis-cli")?;
+    (rest.is_empty() || rest.starts_with(char::is_whitespace)).then_some(rest)
+}
+
+/// `redis://[username[:password]@]host[:port][/db]`; `rediss://` turns
+/// TLS on.
+fn parse_redis_url(parsed: &url::Url) -> Result<ParsedUrl> {
+    let host = parsed
+        .host_str()
+        .unwrap_or("localhost")
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    let mut spec = ConnectSpec::redis(
+        if host.is_empty() { "localhost" } else { host },
+        parsed.port().unwrap_or(Driver::Redis.default_port()),
+    );
+    spec.user = decode(parsed.username());
+    let redis = spec.redis.get_or_insert_with(RedisSpec::default);
+    redis.tls.enabled = parsed.scheme() == "rediss";
+    let path = parsed.path().trim_matches('/');
+    if !path.is_empty() {
+        redis.database = path
+            .parse()
+            .map_err(|_| Error::InvalidSpec(format!("{path:?} is not a database number")))?;
+    }
+    // `?db=` names the database too. Other parameters are left alone, and
+    // never logged: a stray `?word` would log the word.
+    for (key, value) in parsed.query_pairs() {
+        if key == "db" {
+            redis.database = value
+                .parse()
+                .map_err(|_| Error::InvalidSpec(format!("{value:?} is not a database number")))?;
+        }
+    }
+    Ok(ParsedUrl {
+        spec,
+        secrets: Secrets {
+            password: parsed.password().map(decode),
+            ..Secrets::default()
+        },
+        names_tls: true,
+        names_ca_file: false,
+    })
+}
+
+/// Splits a command line into its words as a shell would for the simple
+/// cases: blanks part them, and single or double quotes keep blanks in.
+fn words(line: &str) -> Result<Vec<String>> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quote = None;
+    let mut started = false;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some('"'), '\\') => word.extend(chars.next()),
+            (Some(_), c) => word.push(c),
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                started = true;
+            }
+            (None, '\\') => {
+                word.extend(chars.next());
+                started = true;
+            }
+            (None, c) if c.is_whitespace() => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            (None, c) => {
+                word.push(c);
+                started = true;
+            }
+        }
+    }
+    if quote.is_some() {
+        return Err(Error::InvalidSpec("a quote is not closed".into()));
+    }
+    if started {
+        words.push(word);
+    }
+    Ok(words)
+}
+
+/// `redis-cli -h … -p … -n … [-a …] [--user …] [--pass …] [--tls]
+/// [--cacert …] [--cert …] [--key …] [-u URL]`. Anything else on the line
+/// (a command to run, other options) is left alone.
+fn parse_redis_cli(line: &str) -> Result<ParsedUrl> {
+    let mut parsed = ParsedUrl {
+        spec: ConnectSpec::redis("127.0.0.1", Driver::Redis.default_port()),
+        secrets: Secrets::default(),
+        names_tls: true,
+        names_ca_file: false,
+    };
+    let words = words(line)?;
+    let mut words = words.into_iter();
+    while let Some(word) = words.next() {
+        let mut value = |name: &str| {
+            words
+                .next()
+                .ok_or_else(|| Error::InvalidSpec(format!("{name} needs a value")))
+        };
+        match word.as_str() {
+            "-u" => {
+                let url = value("-u")?;
+                let from = ParsedUrl::parse(&url)?;
+                match from.spec.driver {
+                    Driver::Redis => parsed = from,
+                    Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => {
+                        return Err(Error::InvalidSpec("-u takes a redis:// URL".into()));
+                    }
+                }
+            }
+            "-h" => parsed.spec.host = value("-h")?,
+            "-p" => {
+                let port = value("-p")?;
+                parsed.spec.port = port
+                    .parse()
+                    .map_err(|_| Error::InvalidSpec(format!("{port:?} is not a port")))?;
+            }
+            "-n" => {
+                let db = value("-n")?;
+                parsed
+                    .spec
+                    .redis
+                    .get_or_insert_with(RedisSpec::default)
+                    .database = db
+                    .parse()
+                    .map_err(|_| Error::InvalidSpec(format!("{db:?} is not a database number")))?;
+            }
+            "-a" | "--pass" => parsed.secrets.password = Some(value(&word)?),
+            "--user" => parsed.spec.user = value("--user")?,
+            "--tls" => {
+                parsed
+                    .spec
+                    .redis
+                    .get_or_insert_with(RedisSpec::default)
+                    .tls
+                    .enabled = true;
+            }
+            "--cacert" | "--cert" | "--key" => {
+                let path = PathBuf::from(value(&word)?);
+                let tls = &mut parsed.spec.redis.get_or_insert_with(RedisSpec::default).tls;
+                match word.as_str() {
+                    "--cacert" => {
+                        tls.ca = Some(path);
+                        parsed.names_ca_file = true;
+                    }
+                    "--cert" => tls.cert = Some(path),
+                    _ => tls.key = Some(path),
+                }
+            }
+            // Options with a value that says nothing of the connection.
+            "-r" | "-i" | "-d" | "-D" | "--sni" | "--cacertdir" | "--eval" | "--pattern"
+            | "--count" | "--quoted-pattern" => {
+                let _ = value(&word)?;
+            }
+            // Other words (a command to run, options) are left alone, and
+            // never logged: one may be a password (`AUTH user pass`).
+            _ => {}
+        }
+    }
+    Ok(parsed)
+}
+
 impl ConnectSpec {
+    /// A standalone Redis server at `host:port`, on database 0, as the
+    /// default user, with no TLS.
+    pub fn redis(host: impl Into<String>, port: u16) -> Self {
+        Self {
+            driver: Driver::Redis,
+            host: host.into(),
+            port,
+            tls: TlsMode::Disable,
+            redis: Some(RedisSpec::default()),
+            ..Self::default()
+        }
+    }
+
+    /// The Redis settings of a Redis spec, its defaults where a spec read
+    /// from an older file has none.
+    pub fn redis_spec(&self) -> RedisSpec {
+        self.redis.clone().unwrap_or_default()
+    }
+
+    /// The Redis URL of the spec, without its password: the URL tab
+    /// shows it, and the password stays in the keyring.
+    pub fn redis_url(&self) -> String {
+        use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
+        // What a user name cannot hold as it is in a URL's userinfo.
+        const USER: &AsciiSet = &CONTROLS
+            .add(b' ')
+            .add(b'"')
+            .add(b'#')
+            .add(b'%')
+            .add(b'/')
+            .add(b':')
+            .add(b'<')
+            .add(b'>')
+            .add(b'?')
+            .add(b'@')
+            .add(b'[')
+            .add(b'\\')
+            .add(b']')
+            .add(b'^')
+            .add(b'`')
+            .add(b'{')
+            .add(b'|')
+            .add(b'}');
+        let redis = self.redis_spec();
+        let scheme = if redis.tls.enabled { "rediss" } else { "redis" };
+        let mut url = format!("{scheme}://");
+        if !self.user.is_empty() {
+            url.push_str(&utf8_percent_encode(&self.user, USER).to_string());
+            url.push('@');
+        }
+        if self.host.contains(':') {
+            url.push_str(&format!("[{}]", self.host));
+        } else {
+            url.push_str(&self.host);
+        }
+        url.push_str(&format!(":{}/{}", self.port, redis.database));
+        url
+    }
+
     pub fn sqlite(path: impl Into<PathBuf>) -> Self {
         Self {
             driver: Driver::Sqlite,
@@ -306,8 +616,18 @@ impl ConnectSpec {
 
     /// The TLS mode as it is enforced: PostgreSQL treats `require` with a CA
     /// file as `verify-ca`, like libpq (MySQL refuses that combination).
+    /// Redis's TLS is off, or checks the chain, and the host's name unless
+    /// it is told not to.
     pub fn effective_tls(&self) -> TlsMode {
         match (self.driver, self.tls, &self.ca_file) {
+            (Driver::Redis, _, _) => {
+                let tls = self.redis_spec().tls;
+                match (tls.enabled, tls.verify_host) {
+                    (false, _) => TlsMode::Disable,
+                    (true, true) => TlsMode::VerifyFull,
+                    (true, false) => TlsMode::VerifyCa,
+                }
+            }
             (Driver::Postgres, TlsMode::Require, Some(_)) => TlsMode::VerifyCa,
             (Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery, tls, _) => tls,
         }
@@ -327,7 +647,7 @@ impl ConnectSpec {
             }
             // The project alone: there is no host, port or user.
             Driver::BigQuery => return self.database.clone(),
-            Driver::Postgres | Driver::MySql => {}
+            Driver::Postgres | Driver::MySql | Driver::Redis => {}
         }
         let mut text = String::new();
         if !self.user.is_empty() {
@@ -335,9 +655,14 @@ impl ConnectSpec {
             text.push('@');
         }
         text.push_str(&format!("{}:{}", self.host, self.port));
-        if !self.database.is_empty() {
-            text.push('/');
-            text.push_str(&self.database);
+        match self.driver {
+            Driver::Redis => text.push_str(&format!("/{}", self.redis_spec().database)),
+            Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => {
+                if !self.database.is_empty() {
+                    text.push('/');
+                    text.push_str(&self.database);
+                }
+            }
         }
         if let Some(ssh) = &self.ssh {
             text.push_str(" via ");
@@ -357,9 +682,85 @@ mod tests {
 
     #[test]
     fn each_driver_has_its_dialect() {
-        assert_eq!(Driver::Postgres.dialect(), crate::Dialect::Postgres);
-        assert_eq!(Driver::MySql.dialect(), crate::Dialect::MySql);
-        assert_eq!(Driver::Sqlite.dialect(), crate::Dialect::Sqlite);
+        assert_eq!(Driver::Postgres.dialect(), Some(crate::Dialect::Postgres));
+        assert_eq!(Driver::MySql.dialect(), Some(crate::Dialect::MySql));
+        assert_eq!(Driver::Sqlite.dialect(), Some(crate::Dialect::Sqlite));
+        assert_eq!(Driver::Redis.dialect(), None);
+    }
+
+    #[test]
+    fn redis_urls_parse_their_user_database_and_tls() {
+        let parsed = ParsedUrl::parse("redis://localhost").unwrap();
+        assert_eq!(parsed.spec, ConnectSpec::redis("localhost", 6379));
+        assert_eq!(parsed.secrets.password, None);
+
+        let parsed =
+            ParsedUrl::parse("rediss://app%40corp:p%40ss@cache.example.com:6380/2").unwrap();
+        let redis = parsed.spec.redis_spec();
+        assert_eq!(parsed.spec.driver, Driver::Redis);
+        assert_eq!(parsed.spec.host, "cache.example.com");
+        assert_eq!(parsed.spec.port, 6380);
+        assert_eq!(parsed.spec.user, "app@corp");
+        assert_eq!(redis.database, 2);
+        assert!(redis.tls.enabled);
+        assert_eq!(parsed.secrets.password.as_deref(), Some("p@ss"));
+
+        // A password alone, for the default user.
+        let parsed = ParsedUrl::parse("redis://:secret@h:6379/0").unwrap();
+        assert_eq!(parsed.spec.user, "");
+        assert_eq!(parsed.secrets.password.as_deref(), Some("secret"));
+
+        assert!(matches!(
+            ParsedUrl::parse("redis://h/sixteen"),
+            Err(Error::InvalidSpec(_))
+        ));
+    }
+
+    #[test]
+    fn a_redis_url_round_trips_without_its_password() {
+        let parsed = ParsedUrl::parse("rediss://reader:hunter2@cache.example.com:6380/3").unwrap();
+        let url = parsed.spec.redis_url();
+        assert_eq!(url, "rediss://reader@cache.example.com:6380/3");
+        assert!(!url.contains("hunter2"));
+        assert_eq!(ParsedUrl::parse(&url).unwrap().spec, parsed.spec);
+        assert_eq!(parsed.spec.summary(), "reader@cache.example.com:6380/3");
+        assert_eq!(
+            ConnectSpec::redis("::1", 6379).redis_url(),
+            "redis://[::1]:6379/0"
+        );
+    }
+
+    #[test]
+    fn redis_cli_lines_parse_as_connections() {
+        let parsed = ParsedUrl::parse(
+            "redis-cli -h cache.example.com -p 6380 -n 4 -a 'pa ss' --user reader --tls --cacert /etc/ca.pem",
+        )
+        .unwrap();
+        let redis = parsed.spec.redis_spec();
+        assert_eq!(parsed.spec.driver, Driver::Redis);
+        assert_eq!(parsed.spec.host, "cache.example.com");
+        assert_eq!(parsed.spec.port, 6380);
+        assert_eq!(parsed.spec.user, "reader");
+        assert_eq!(redis.database, 4);
+        assert!(redis.tls.enabled);
+        assert_eq!(redis.tls.ca, Some(PathBuf::from("/etc/ca.pem")));
+        assert_eq!(parsed.secrets.password.as_deref(), Some("pa ss"));
+
+        let parsed = ParsedUrl::parse("redis-cli").unwrap();
+        assert_eq!(parsed.spec, ConnectSpec::redis("127.0.0.1", 6379));
+        let parsed = ParsedUrl::parse("redis-cli -u redis://h:7000/1 GET config").unwrap();
+        assert_eq!((parsed.spec.host.as_str(), parsed.spec.port), ("h", 7000));
+        assert_eq!(parsed.spec.redis_spec().database, 1);
+        assert!(matches!(
+            ParsedUrl::parse("redis-cli -p"),
+            Err(Error::InvalidSpec(_))
+        ));
+        assert!(matches!(
+            ParsedUrl::parse("redis-cli -p http"),
+            Err(Error::InvalidSpec(_))
+        ));
+        // Another program's line is no redis-cli line.
+        assert!(ParsedUrl::parse("redis-client -h x").is_err());
     }
 
     #[test]

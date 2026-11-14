@@ -126,6 +126,19 @@ A group's tables are drawn two cells in, with a `│` before them and
 without the group's prefix. The status line names the table under the
 cursor in full: `book_covers · table · 13 rows`.
 
+### A Redis window
+
+| Keys | Do |
+| --- | --- |
+| `j` `k`, arrows, Home, End | Move in the keys |
+| Enter | Open the key, or open or close the group |
+| `za` | Fold the group the cursor is in |
+| `/` | Filter the keys by a pattern |
+| `r` | Scan the keys again |
+| `y` | Copy the value |
+| `Y` | Copy the key |
+| Ctrl+Shift+D | Switch database |
+
 ### The start screen
 
 A window with no tab open shows the start screen in the main pane: the

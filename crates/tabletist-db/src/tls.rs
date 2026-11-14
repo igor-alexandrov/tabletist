@@ -65,6 +65,46 @@ pub(crate) fn client_config(mode: TlsMode, ca_file: Option<&Path>) -> Result<rus
     Ok(config)
 }
 
+/// Redis's TLS: the server's chain checked against `ca_file`, else the
+/// system's roots, and its name unless `verify_host` is off; with a
+/// client certificate and its key where both are named.
+pub(crate) fn redis_config(
+    ca_file: Option<&Path>,
+    verify_host: bool,
+    client: Option<(&Path, &Path)>,
+) -> Result<rustls::ClientConfig> {
+    use rustls::pki_types::PrivateKeyDer;
+    let provider = provider();
+    let builder = rustls::ClientConfig::builder_with_provider(Arc::clone(&provider))
+        .with_safe_default_protocol_versions()
+        .map_err(tls_error)?;
+    let roots = roots(ca_file)?;
+    let builder = if verify_host {
+        builder.with_root_certificates(roots)
+    } else {
+        let verifier = WebPkiServerVerifier::builder_with_provider(roots, provider)
+            .build()
+            .map_err(tls_error)?;
+        builder
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(IgnoreName(verifier)))
+    };
+    let Some((cert, key)) = client else {
+        return Ok(builder.with_no_client_auth());
+    };
+    let read = |path: &Path, error: &dyn std::fmt::Display| {
+        Error::Tls(format!("could not read {}: {error}", path.display()))
+    };
+    let certificates = CertificateDer::pem_file_iter(cert)
+        .map_err(|error| read(cert, &error))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|error| read(cert, &error))?;
+    let key = PrivateKeyDer::from_pem_file(key).map_err(|error| read(key, &error))?;
+    builder
+        .with_client_auth_cert(certificates, key)
+        .map_err(tls_error)
+}
+
 /// The CA file's certificates, or the operating system's roots.
 fn roots(ca_file: Option<&Path>) -> Result<Arc<rustls::RootCertStore>> {
     let mut roots = rustls::RootCertStore::empty();
@@ -232,6 +272,17 @@ pub(crate) fn is_tls_error(error: &(dyn std::error::Error + 'static)) -> bool {
 mod tests {
     use super::*;
     use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+
+    #[test]
+    fn redis_configs_build_with_and_without_the_host_check() {
+        assert!(redis_config(None, true, None).is_ok());
+        assert!(redis_config(None, false, None).is_ok());
+        let missing = Path::new("/nonexistent/ca.pem");
+        assert!(matches!(
+            redis_config(Some(missing), true, None),
+            Err(Error::Tls(_))
+        ));
+    }
 
     #[test]
     fn every_mode_builds_a_config() {

@@ -5,6 +5,7 @@
 
 mod agents;
 mod choice;
+mod redis;
 mod sheet;
 mod terminal;
 
@@ -975,16 +976,39 @@ fn note(ui: &mut Ui, text: &str, color: Color32, skin: &Skin) {
 
 /// The URL field, with the chosen driver's URL as its placeholder. It
 /// takes the keyboard on the frame it appears.
-fn url_field(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) -> Response {
+fn url_field(
+    ui: &mut Ui,
+    form: &mut ConnectionForm,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) -> Response {
     let role = skin.value_role();
     let example = match form.driver {
         Driver::Sqlite => "sqlite:///path/to/file.db",
         Driver::MySql => "mysql://user@host/db",
         Driver::Postgres => "postgres://user@host/db",
         Driver::BigQuery => "bigquery:project-id?credentials=/path/key.json",
+        Driver::Redis => "redis://user@host:6379/0",
     };
     let hint = hint(ui, example, role, skin);
-    let field = ui.add(input(ui, &mut form.url, role, skin.field_height(), skin).hint_text(hint));
+    // Redis's URL is live: it shows the fields' while it is not being
+    // typed in, and what is typed fills them (`Action::RedisUrlTyped`).
+    let live = match form.driver {
+        Driver::Redis => true,
+        Driver::Sqlite | Driver::Postgres | Driver::MySql | Driver::BigQuery => false,
+    };
+    let id = ui.make_persistent_id("connection-url");
+    if live && !ui.memory(|memory| memory.has_focus(id)) {
+        form.url = form.redis_url();
+    }
+    let field = ui.add(
+        input(ui, &mut form.url, role, skin.field_height(), skin)
+            .id(id)
+            .hint_text(hint),
+    );
+    if live && field.changed() {
+        actions.push(Action::RedisUrlTyped);
+    }
     let focus = ui
         .ctx()
         .data_mut(|data| data.remove_temp::<bool>(focus_url_id()))
@@ -1173,11 +1197,22 @@ impl Messages {
 enum Status {
     Running(String),
     Passed(String),
+    /// Connected, with a warning: a Redis user that can't list keys.
+    Warned(String),
 }
 
 fn status(form: &ConnectionForm, skin: &Skin) -> Option<Status> {
     match form.test {
         TestState::Running(_) => Some(Status::Running(skin.say("Testing…"))),
+        TestState::Passed if form.redis_probe.is_some() => {
+            let probe = form.redis_probe.as_ref()?;
+            Some(
+                match crate::keyspace::test_passed(probe, form.test_took, skin.locale) {
+                    Ok(text) => Status::Passed(skin.look.label(&text)),
+                    Err(text) => Status::Warned(skin.look.label(&text)),
+                },
+            )
+        }
         TestState::Passed => {
             let driver = form
                 .test_spec
@@ -1212,6 +1247,7 @@ fn paint_status(ui: &mut Ui, form: &ConnectionForm, x: StatusAt, y: f32, skin: &
     let (text, color) = match &status {
         Status::Running(text) => (text, palette.dim),
         Status::Passed(text) => (text, palette.success),
+        Status::Warned(text) => (text, palette.warning),
     };
     let laid = Text::one(look, role, text, color).layout(ui.ctx());
     // The mark and the gap after it. The terminal look's are smaller:
@@ -1232,6 +1268,10 @@ fn paint_status(ui: &mut Ui, form: &ConnectionForm, x: StatusAt, y: f32, skin: &
             ui.put(place, egui::Spinner::new().size(mark).color(color));
         }
         Status::Passed(_) => paint_check(ui.painter(), place, color),
+        Status::Warned(_) => {
+            let bang = Text::one(look, role, "!", color).layout(ui.ctx());
+            bang.paint_left(ui.painter(), place.left(), y);
+        }
     }
     let x = left + mark + gap;
     laid.paint_left(ui.painter(), x, y);

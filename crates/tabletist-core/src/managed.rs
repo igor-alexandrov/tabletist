@@ -101,7 +101,7 @@ impl Match {
     /// not followed. A key the driver has no use for does not match.
     pub fn matches(&self, spec: &ConnectSpec, home: Option<&Path>) -> bool {
         let server = match spec.driver {
-            Driver::Postgres | Driver::MySql => true,
+            Driver::Postgres | Driver::MySql | Driver::Redis => true,
             // BigQuery's `database` (its project) is a rule's to match; a
             // host or port rule is never its: it has neither, and a `*`
             // would match the emptiness.
@@ -133,7 +133,7 @@ impl Match {
             return false;
         }
         if let Some(database) = &self.database
-            && !glob(database, &spec.database)
+            && !glob(database, &crate::session::database_of(spec))
         {
             return false;
         }
@@ -164,6 +164,7 @@ fn driver_key(driver: Driver) -> &'static str {
         Driver::MySql => "mysql",
         Driver::Sqlite => "sqlite",
         Driver::BigQuery => "bigquery",
+        Driver::Redis => "redis",
     }
 }
 
@@ -416,12 +417,14 @@ impl MatchTable {
                 Driver::MySql,
                 Driver::Sqlite,
                 Driver::BigQuery,
+                Driver::Redis,
             ]
             .into_iter()
             .any(|known| driver_key(known) == driver)
         {
             return Err(
-                "its driver is none that Tabletist knows: postgres, mysql, sqlite or bigquery"
+                "its driver is none that Tabletist knows: postgres, mysql, sqlite, bigquery or \
+                 redis"
                     .into(),
             );
         }
@@ -760,6 +763,21 @@ access_max = "off"
         assert!(connections.contains("it has connections"), "{connections}");
         let service = problem("version = 1\n[service]\nurl = \"https://example.com\"\n");
         assert!(service.contains("it has a service"), "{service}");
+    }
+
+    #[test]
+    fn a_rule_can_name_redis_and_match_its_connections() {
+        let policy = read(
+            "version = 1\n[[rules]]\nname = \"Caches\"\n\
+             match = { driver = \"redis\", host = \"cache.*\", database = \"2\" }\n",
+        )
+        .expect("a rule for Redis reads");
+        let rule = &policy.rules[0].matches;
+        let mut spec = tabletist_db::ConnectSpec::redis("cache.example.com", 6379);
+        assert!(!rule.matches(&spec, None), "database 0 is not 2");
+        spec.redis.as_mut().unwrap().database = 2;
+        assert!(rule.matches(&spec, None));
+        assert!(!rule.matches(&postgres("cache.example.com", "2"), None));
     }
 
     #[test]

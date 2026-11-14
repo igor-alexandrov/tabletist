@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use tabletist_db::agent::{ColumnName, TableName, Tables};
-use tabletist_db::{ConnectSpec, Driver, SshAuth, SshSpec, TlsMode};
+use tabletist_db::{Browsing, ConnectSpec, Driver, RedisSpec, RedisTls, SshAuth, SshSpec, TlsMode};
 
 use super::{
     AgentAccess, Agents, ConnectionId, MAX_AGENT_ROWS, MAX_AGENT_TIMEOUT_SECS, PasswordMode,
@@ -23,12 +23,15 @@ use crate::util::toml_string;
 
 /// The file's format. 3 is the first that is TOML: 1 and 2 were
 /// `connections.json`. 4 has a connection's settings for agents, 5 the
-/// tables they may not read, and 6 the columns they get masked. A file is
-/// written as the oldest that holds what it has: a Tabletist that does not
-/// know a key refuses only a file it would lose it from, and one that
-/// would read agents' tables as all of them, or a masked column's values
-/// as they are, never reads the file.
-pub(super) const VERSION: u32 = 6;
+/// tables they may not read, 6 the columns they get masked, and 7 Redis
+/// connections. A file is written as the oldest that holds what it has: a
+/// Tabletist that does not know a key refuses only a file it would lose it
+/// from, and one that would read agents' tables as all of them, or a
+/// masked column's values as they are, never reads the file.
+pub(super) const VERSION: u32 = 7;
+
+/// The version that has masked columns and no Redis connection.
+const MASKED_VERSION: u32 = 6;
 
 /// The version that has agents' tables and not their masked columns.
 const TABLES_VERSION: u32 = 5;
@@ -113,7 +116,86 @@ struct Entry {
     tls: TlsMode,
     ca_file: Option<PathBuf>,
     ssh: Option<Tunnel>,
+    /// A Redis connection's database, TLS and browsing.
+    redis: Option<RedisTable>,
     agents: Option<AgentsTable>,
+}
+
+/// What a Redis connection has beside its server, as the file has it. A
+/// key left out takes what a new connection starts with.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RedisTable {
+    #[serde(default)]
+    database: u32,
+    tls: Option<RedisTlsTable>,
+    browsing: Option<BrowsingTable>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RedisTlsTable {
+    #[serde(default)]
+    enabled: bool,
+    ca: Option<PathBuf>,
+    cert: Option<PathBuf>,
+    key: Option<PathBuf>,
+    verify_host: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrowsingTable {
+    separator: Option<String>,
+    page: Option<u32>,
+    #[serde(rename = "match")]
+    pattern: Option<String>,
+    key_limit: Option<u64>,
+}
+
+impl RedisTable {
+    fn spec(self, connection: &str) -> Result<RedisSpec, String> {
+        let starts = RedisSpec::default();
+        let tls = match self.tls {
+            Some(tls) => RedisTls {
+                enabled: tls.enabled,
+                ca: tls.ca,
+                cert: tls.cert,
+                key: tls.key,
+                verify_host: tls.verify_host.unwrap_or(starts.tls.verify_host),
+            },
+            None => starts.tls,
+        };
+        if tls.cert.is_some() != tls.key.is_some() {
+            return Err(format!(
+                "connection {connection:?}: a Redis TLS `cert` goes with its `key`"
+            ));
+        }
+        let browsing = match self.browsing {
+            Some(browsing) => Browsing {
+                separator: browsing.separator.unwrap_or(starts.browsing.separator),
+                page: browsing.page.unwrap_or(starts.browsing.page),
+                pattern: browsing.pattern.unwrap_or(starts.browsing.pattern),
+                key_limit: browsing.key_limit.unwrap_or(starts.browsing.key_limit),
+            },
+            None => starts.browsing,
+        };
+        if !tabletist_db::KEY_PAGES.contains(&browsing.page) {
+            return Err(format!(
+                "connection {connection:?}: Redis's `page` is 500, 1000 or 5000"
+            ));
+        }
+        if browsing.key_limit == 0 {
+            return Err(format!(
+                "connection {connection:?}: Redis's `key_limit` is at least 1"
+            ));
+        }
+        Ok(RedisSpec {
+            database: self.database,
+            tls,
+            browsing,
+        })
+    }
 }
 
 /// What agents may do on a connection, as the file has it. A key left out
@@ -237,6 +319,49 @@ impl Entry {
             Some(table) => table.agents(&self.name)?,
             None => Agents::default(),
         };
+        let redis = match (self.driver, self.redis) {
+            (Driver::Redis, table) => {
+                // Agents get no Redis connection: a table for them would
+                // promise what is never given.
+                if !agents.is_default() {
+                    return Err(format!(
+                        "connection {:?}: a Redis connection has no [connections.agents] table",
+                        self.name
+                    ));
+                }
+                // Its TLS and its database are in its own table: a key of
+                // the others' would be read as nothing.
+                if self.tls != TlsMode::default() || self.ca_file.is_some() {
+                    return Err(format!(
+                        "connection {:?}: a Redis connection's TLS is in \
+                         [connections.redis.tls]",
+                        self.name
+                    ));
+                }
+                if !self.database.is_empty() {
+                    return Err(format!(
+                        "connection {:?}: a Redis connection's `database` is a number in \
+                         [connections.redis]",
+                        self.name
+                    ));
+                }
+                Some(match table {
+                    Some(table) => table.spec(&self.name)?,
+                    None => RedisSpec::default(),
+                })
+            }
+            (Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery, None) => None,
+            (Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery, Some(_)) => {
+                return Err(format!(
+                    "connection {:?}: only a Redis connection has a [connections.redis] table",
+                    self.name
+                ));
+            }
+        };
+        let tls = match self.driver {
+            Driver::Redis => TlsMode::Disable,
+            Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => self.tls,
+        };
         Ok(SavedConnection {
             id,
             name: self.name,
@@ -252,9 +377,10 @@ impl Entry {
                 database: self.database,
                 sqlite_path: self.sqlite_path,
                 bigquery_key: self.bigquery_key,
-                tls: self.tls,
+                tls,
                 ca_file: self.ca_file,
                 ssh,
+                redis,
             },
             agents,
         })
@@ -391,6 +517,7 @@ fn driver(driver: Driver) -> &'static str {
         Driver::MySql => "mysql",
         Driver::Sqlite => "sqlite",
         Driver::BigQuery => "bigquery",
+        Driver::Redis => "redis",
     }
 }
 
@@ -416,18 +543,28 @@ pub(super) fn write(connections: &[SavedConnection]) -> std::io::Result<String> 
         .iter()
         .any(|saved| saved.agents.tables.hides_anything());
     let agents = connections.iter().any(|saved| !saved.agents.is_default());
-    let version = match (masks, hides, agents) {
-        (true, _, _) => VERSION,
-        (false, true, _) => TABLES_VERSION,
-        (false, false, true) => AGENTS_VERSION,
-        (false, false, false) => FIRST_VERSION,
+    let redis = connections.iter().any(|saved| match saved.spec.driver {
+        Driver::Redis => true,
+        Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => false,
+    });
+    let version = match (redis, masks, hides, agents) {
+        (true, _, _, _) => VERSION,
+        (false, true, _, _) => MASKED_VERSION,
+        (false, false, true, _) => TABLES_VERSION,
+        (false, false, false, true) => AGENTS_VERSION,
+        (false, false, false, false) => FIRST_VERSION,
     };
     let mut out = format!("{HEADER}version = {version}\n");
     for connection in connections {
         let spec = &connection.spec;
         let server = match spec.driver {
-            Driver::Postgres | Driver::MySql => true,
+            Driver::Postgres | Driver::MySql | Driver::Redis => true,
             Driver::Sqlite | Driver::BigQuery => false,
+        };
+        // Redis keeps its database and TLS in a table of its own.
+        let sql = match spec.driver {
+            Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => true,
+            Driver::Redis => false,
         };
         let mut lines = Lines::default();
         lines.text("id", &connection.id.0);
@@ -458,13 +595,13 @@ pub(super) fn write(connections: &[SavedConnection]) -> std::io::Result<String> 
         if server || !spec.user.is_empty() {
             lines.text("user", &spec.user);
         }
-        if server || !spec.database.is_empty() {
+        if sql && (server || !spec.database.is_empty()) {
             lines.text("database", &spec.database);
         }
-        if server || spec.tls != TlsMode::default() {
+        if sql && (server || spec.tls != TlsMode::default()) {
             lines.text("tls", tls(spec.tls));
         }
-        if let Some(path) = &spec.ca_file {
+        if let Some(path) = spec.ca_file.as_ref().filter(|_| sql) {
             lines.path("ca_file", path)?;
         }
         out.push_str("\n[[connections]]\n");
@@ -472,7 +609,11 @@ pub(super) fn write(connections: &[SavedConnection]) -> std::io::Result<String> 
         if let Some(ssh) = &spec.ssh {
             tunnel(ssh, &mut out)?;
         }
-        if !connection.agents.is_default() {
+        if !sql {
+            redis_tables(&spec.redis_spec(), &mut out)?;
+        }
+        // A Redis connection has no agents' table (the reader refuses one).
+        if sql && !connection.agents.is_default() {
             let mut lines = Lines::default();
             lines.text("access", connection.agents.access.key());
             lines.bare("rows", connection.agents.rows);
@@ -501,6 +642,37 @@ fn entries<T: std::fmt::Display>(names: &[T]) -> String {
         .map(|name| toml_string(&name.to_string()))
         .collect();
     format!("[{}]", written.join(", "))
+}
+
+/// A Redis connection's database, TLS and browsing, each key written: a
+/// person looks for them.
+fn redis_tables(redis: &RedisSpec, out: &mut String) -> std::io::Result<()> {
+    let mut lines = Lines::default();
+    lines.bare("database", redis.database);
+    out.push_str("\n[connections.redis]\n");
+    lines.write(out);
+    let mut lines = Lines::default();
+    lines.bare("enabled", redis.tls.enabled);
+    lines.bare("verify_host", redis.tls.verify_host);
+    for (key, path) in [
+        ("ca", &redis.tls.ca),
+        ("cert", &redis.tls.cert),
+        ("key", &redis.tls.key),
+    ] {
+        if let Some(path) = path {
+            lines.path(key, path)?;
+        }
+    }
+    out.push_str("\n[connections.redis.tls]\n");
+    lines.write(out);
+    let mut lines = Lines::default();
+    lines.text("separator", &redis.browsing.separator);
+    lines.bare("page", redis.browsing.page);
+    lines.text("match", &redis.browsing.pattern);
+    lines.bare("key_limit", redis.browsing.key_limit);
+    out.push_str("\n[connections.redis.browsing]\n");
+    lines.write(out);
+    Ok(())
 }
 
 /// A connection's SSH tunnel, as a table of its own.
@@ -933,8 +1105,8 @@ auth = "key-file"
         let said = |text: &str| read(text).unwrap_err().to_string();
         assert!(said("").contains("missing field `version`"), "{}", said(""));
         assert_eq!(
-            said("version = 7\n"),
-            "it is version 7 of the file, written by a newer Tabletist; this one reads version 6"
+            said("version = 8\n"),
+            "it is version 8 of the file, written by a newer Tabletist; this one reads version 7"
         );
         assert_eq!(
             said("version = 2\n"),
@@ -1131,6 +1303,113 @@ masked       = ["orders.email", "\"odd.schema\".orders.phone"]
             .unwrap_err()
             .to_string();
         assert!(!secret.contains("hunter2"), "{secret}");
+    }
+
+    /// The Bookshop's cache: a Redis connection with everything the file
+    /// can say of one.
+    fn cache() -> SavedConnection {
+        let mut spec = ConnectSpec::redis("cache.example.com", 6380);
+        spec.user = "app_reader".into();
+        spec.redis = Some(RedisSpec {
+            database: 2,
+            tls: RedisTls {
+                enabled: true,
+                ca: Some("/etc/ssl/cache-ca.pem".into()),
+                cert: Some("/etc/ssl/app.pem".into()),
+                key: Some("/etc/ssl/app.key".into()),
+                verify_host: false,
+            },
+            browsing: Browsing {
+                separator: "/".into(),
+                page: 5000,
+                pattern: "book:*".into(),
+                key_limit: 250_000,
+            },
+        });
+        SavedConnection {
+            environment: Environment::Production,
+            password: PasswordMode::Keyring,
+            ..saved("cache", "Bookshop cache", spec)
+        }
+    }
+
+    #[test]
+    fn a_redis_connection_is_read_back_as_it_was_in_version_seven() {
+        let text = write(&[cache()]).unwrap();
+        assert!(text.contains("version = 7\n"), "{text}");
+        assert!(text.contains("driver      = \"redis\""), "{text}");
+        assert!(
+            text.contains("\n[connections.redis]\ndatabase = 2\n"),
+            "{text}"
+        );
+        assert!(text.contains("\n[connections.redis.tls]\n"), "{text}");
+        assert!(text.contains("match     = \"book:*\""), "{text}");
+        // Its TLS is in its own table, and no password is anywhere.
+        assert!(!text.contains("\ntls "), "{text}");
+        assert!(!text.contains("ca_file"), "{text}");
+        let read = read(&text).unwrap();
+        assert_eq!(read.connections, vec![cache()]);
+        assert_eq!(write(&read.connections).unwrap(), text);
+        // Without one, the file stays at the version that holds the rest.
+        assert!(write(&bookshop()).unwrap().contains("version = 3\n"));
+    }
+
+    #[test]
+    fn a_redis_connection_has_no_agents_table() {
+        let text = "version = 7\n[[connections]]\nid = \"c\"\nname = \"Cache\"\n\
+                    driver = \"redis\"\nhost = \"localhost\"\n\
+                    [connections.agents]\naccess = \"read\"\n";
+        let said = read(text).unwrap_err().to_string();
+        assert!(said.contains("no [connections.agents] table"), "{said}");
+    }
+
+    #[test]
+    fn a_redis_tables_left_out_keys_take_a_new_connections() {
+        let text = "version = 7\n[[connections]]\nid = \"c\"\nname = \"Cache\"\n\
+                    driver = \"redis\"\nhost = \"localhost\"\n";
+        let read = read(text).unwrap();
+        let spec = &read.connections[0].spec;
+        assert_eq!(spec.port, 6379);
+        assert_eq!(spec.redis, Some(RedisSpec::default()));
+        let text = format!("{text}[connections.redis]\n[connections.redis.browsing]\npage = 500\n");
+        let browsing = read_redis(&text).browsing;
+        assert_eq!(browsing.page, 500);
+        assert_eq!(browsing.separator, ":");
+        assert_eq!(browsing.key_limit, 100_000);
+    }
+
+    fn read_redis(text: &str) -> RedisSpec {
+        read(text).unwrap().connections[0].spec.redis_spec()
+    }
+
+    #[test]
+    fn what_a_redis_connection_cannot_say_is_refused() {
+        let entry = "version = 7\n[[connections]]\nid = \"c\"\nname = \"Cache\"\n\
+                     driver = \"redis\"\nhost = \"localhost\"\n";
+        for (extra, why) in [
+            ("tls = \"require\"\n", "[connections.redis.tls]"),
+            ("database = \"0\"\n", "a number in"),
+            (
+                "[connections.redis.browsing]\npage = 2000\n",
+                "500, 1000 or 5000",
+            ),
+            (
+                "[connections.redis.browsing]\nkey_limit = 0\n",
+                "at least 1",
+            ),
+            (
+                "[connections.redis.tls]\ncert = \"/a.pem\"\n",
+                "goes with its `key`",
+            ),
+            ("[connections.redis]\ndb = 1\n", "unknown field"),
+        ] {
+            let said = read(&format!("{entry}{extra}")).unwrap_err().to_string();
+            assert!(said.contains(why), "{extra}: {said}");
+        }
+        let postgres = "version = 7\n[[connections]]\nid = \"p\"\nname = \"Shop\"\n\
+                        driver = \"postgres\"\nhost = \"h\"\n[connections.redis]\n";
+        let said = read(postgres).unwrap_err().to_string();
+        assert!(said.contains("only a Redis connection"), "{said}");
     }
 
     #[test]

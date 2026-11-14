@@ -517,9 +517,9 @@ sqlite_path = "/home/ada/bookshop.db"
 | `read_only` | `true`, `false` | As the environment has it: read-only on production |
 | `password` | `none`, `keyring`, `ask` | `none` |
 | `ssh_secret` | `none`, `keyring`, `ask` | `none` |
-| `driver` | `postgres`, `mysql`, `sqlite` | Required |
+| `driver` | `postgres`, `mysql`, `sqlite`, `bigquery`, `redis` | Required |
 | `host`, `user`, `database` | Text | Empty |
-| `port` | A number up to 65535 | 5432 for PostgreSQL, 3306 for MySQL |
+| `port` | A number up to 65535 | 5432 for PostgreSQL, 3306 for MySQL, 6379 for Redis |
 | `tls` | `disable`, `prefer`, `require`, `verify-ca`, `verify-full` | `prefer` |
 | `ca_file` | The path of a certificate file | None |
 | `sqlite_path` | The path of a SQLite file | None |
@@ -527,6 +527,46 @@ sqlite_path = "/home/ada/bookshop.db"
 A tunnel is the connection's `[connections.ssh]` table: `host`, and
 optionally `port` and `user`, `auth` (`password`, `key-file` or `agent`),
 and with `key-file` the `key` to use.
+
+A Redis connection keeps its `user` (empty for the default user) beside
+its host and port, and the rest in tables of its own: no `tls`,
+`ca_file` or `database` at its top.
+
+```toml
+[[connections]]
+id          = "3f0c8f2f-7a11-4b7b-9c56-6a0c1f0e5a52"
+name        = "Bookshop cache"
+environment = "dev"
+password    = "keyring"
+driver      = "redis"
+host        = "localhost"
+port        = 6379
+user        = ""
+
+[connections.redis]
+database = 0
+
+[connections.redis.tls]
+enabled     = false
+verify_host = true
+
+[connections.redis.browsing]
+separator = ":"
+page      = 1000
+match     = "*"
+key_limit = 100000
+```
+
+| Key | Values | Without it |
+| --- | --- | --- |
+| `redis.database` | A number | 0 |
+| `redis.tls.enabled` | `true`, `false` | `false` |
+| `redis.tls.ca`, `redis.tls.cert`, `redis.tls.key` | The path of a file; `cert` and `key` go together | None |
+| `redis.tls.verify_host` | `true`, `false` | `true` |
+| `redis.browsing.separator` | Text; empty lists the keys flat | `":"` |
+| `redis.browsing.page` | `500`, `1000`, `5000` | `1000` |
+| `redis.browsing.match` | A `SCAN MATCH` pattern | `"*"` |
+| `redis.browsing.key_limit` | A number from 1 | `100000` |
 
 What agents may do on a connection is its `[connections.agents]` table:
 `access` (`off` or `read`), `rows`, the most rows of an answer (1 to 5000),
@@ -574,7 +614,8 @@ If a column that `masked` names is renamed or dropped, agents may not use
 the connection at all until you take it out of the list or put the right
 one in.
 
-A file in which a connection masks a column says `version = 6`, one in
+A file with a Redis connection says `version = 7`. Otherwise, one in
+which a connection masks a column says `version = 6`, one in
 which a connection hides a table and masks none says `version = 5`, one
 in which a connection has the table and neither hides nor masks says
 `version = 4`, and one in which none has it stays `version = 3`. Agents

@@ -5,6 +5,8 @@ use std::path::Path;
 
 use crate::{Error, Result};
 
+pub mod redis_server;
+
 /// The fixture script.
 pub const SQLITE_SQL: &str = include_str!("../fixtures/sqlite.sql");
 

@@ -68,10 +68,12 @@ pub enum Scope {
     Start,
     /// The History tab.
     History,
+    /// A Redis connection's window: its keys and the value open.
+    Redis,
 }
 
 impl Scope {
-    pub const ALL: [Scope; 12] = [
+    pub const ALL: [Scope; 13] = [
         Scope::Global,
         Scope::Connections,
         Scope::Sidebar,
@@ -84,6 +86,7 @@ impl Scope {
         Scope::Agents,
         Scope::Start,
         Scope::History,
+        Scope::Redis,
     ];
 
     /// The scope's name in `settings.toml` (`[keys.<scope>]`).
@@ -101,6 +104,7 @@ impl Scope {
             Self::Agents => "agents",
             Self::Start => "start",
             Self::History => "history",
+            Self::Redis => "redis",
         }
     }
 
@@ -122,6 +126,7 @@ impl Scope {
                 Self::Agents => "Agents",
                 Self::Start => "Start screen",
                 Self::History => "History",
+                Self::Redis => "Redis keys",
             },
             // As the terminal look writes its scopes: lower case, and the
             // global one by its own word, as its board does.
@@ -156,6 +161,7 @@ impl Scope {
             Self::Agents => "agents",
             Self::Start => "start",
             Self::History => "history",
+            Self::Redis => "redis",
         }
     }
 
@@ -528,6 +534,13 @@ commands! {
     NextTab = "next_tab",
     MoveInTree = "move_in_tree",
     OpenObject = "open_object",
+    MoveInKeys = "move_in_keys",
+    OpenKey = "open_key",
+    FoldKeyGroup = "fold_key_group",
+    FilterKeys = "filter_keys",
+    ReloadKeys = "reload_keys",
+    CopyKeyValue = "copy_key_value",
+    CopyKeyName = "copy_key_name",
     ToggleTree = "toggle_tree",
     FoldGroup = "fold_group",
     FoldAllGroups = "fold_all_groups",
@@ -950,6 +963,13 @@ impl Command {
             C::NextTab => info("Next tab", "", Navigation),
             C::MoveInTree => info("Move in the sidebar", "", Navigation),
             C::OpenObject => info("Open the table or view", "", Navigation),
+            C::MoveInKeys => info("Move in the keys", "", Navigation),
+            C::OpenKey => info("Open the key, or fold its group", "", Navigation),
+            C::FoldKeyGroup => info("Fold or unfold the key's group", "", Navigation),
+            C::FilterKeys => info("Filter the keys by a pattern", "", Navigation),
+            C::ReloadKeys => info("Scan the keys again", "", Navigation),
+            C::CopyKeyValue => info("Copy the key's value", "", Editing),
+            C::CopyKeyName => info("Copy the key's name", "", Editing),
             C::ToggleTree => info("Tree or flat list", "", Navigation),
             C::FoldGroup => info("Fold or open the group", "", Navigation),
             C::FoldAllGroups => info("Fold every group", "", Navigation),
@@ -1333,7 +1353,8 @@ impl Binding {
                 | Scope::Results
                 | Scope::Agents
                 | Scope::Start
-                | Scope::History => Mode::Normal,
+                | Scope::History
+                | Scope::Redis => Mode::Normal,
             },
             set => set,
         }
@@ -1379,6 +1400,7 @@ const PROMPT: &[Scope] = &[Scope::Prompt];
 const ROWS: &[Scope] = &[Scope::Grid, Scope::Results];
 const AGENTS: &[Scope] = &[Scope::Agents];
 const HISTORY: &[Scope] = &[Scope::History];
+const REDIS: &[Scope] = &[Scope::Redis];
 const TREE_AND_GRID: &[Scope] = &[Scope::Sidebar, Scope::Grid];
 /// Where a SQL result's rows are, and the row panel's row.
 const RESULTS_AND_INSPECTOR: &[Scope] = &[Scope::Results, Scope::Inspector];
@@ -1410,6 +1432,9 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("ctrl+shift+1..9")]),
         ),
         bind(C::SwitchDatabase, GLOBAL, NONE, keys(&[k("ctrl+shift+d")])),
+        // A Redis window's databases have a chord of their own on macOS
+        // and Windows: on a table's rows it reviews the pending SQL.
+        bind(C::SwitchDatabase, REDIS, keys(&[k("cmd+shift+d")]), NONE),
         // macOS's Tabletist menu has it; Omarchy's prompt.
         bind(C::CheckForUpdates, GLOBAL, NONE, keys(&[k(":update")])),
         bind(
@@ -1703,6 +1728,46 @@ pub const BINDINGS: &[Binding] = {
         bind(C::FoldGroup, SIDEBAR, NONE, keys(&[k("za")])),
         bind(C::FoldAllGroups, SIDEBAR, NONE, keys(&[k("zM")])),
         bind(C::OpenAllGroups, SIDEBAR, NONE, keys(&[k("zR")])),
+        // A Redis connection's keys, and the value open.
+        bind(
+            C::MoveInKeys,
+            REDIS,
+            keys(&[
+                k("up"),
+                k("down"),
+                k("left"),
+                k("right"),
+                k("home"),
+                k("end"),
+            ]),
+            keys(&[
+                k("j"),
+                k("k"),
+                k("up"),
+                k("down"),
+                k("left"),
+                k("right"),
+                k("home"),
+                k("end"),
+            ])
+            .shown("j/k"),
+        ),
+        bind(C::OpenKey, REDIS, keys(&[k("enter")]), keys(&[k("enter")])),
+        bind(C::FoldKeyGroup, REDIS, NONE, keys(&[k("za")])),
+        bind(
+            C::FilterKeys,
+            REDIS,
+            keys(&[k("cmd+f")]).any(),
+            keys(&[k("/")]),
+        ),
+        bind(
+            C::ReloadKeys,
+            REDIS,
+            keys(&[k("cmd+r")]).any(),
+            keys(&[k("r")]),
+        ),
+        bind(C::CopyKeyValue, REDIS, NONE, keys(&[k("y")])),
+        bind(C::CopyKeyName, REDIS, NONE, keys(&[k("Y")])),
         bind(
             C::Reload,
             &[Scope::Grid, Scope::Sidebar],
@@ -3454,8 +3519,18 @@ impl Keymap {
         if !command.info().built {
             return None;
         }
+        // A command the window runs from anywhere shows the chord that
+        // runs it anywhere: one scope's own chord (Switch database's in a
+        // Redis window) would name a key the item lacks in most windows,
+        // and the menu would hand that press to whatever else holds it.
+        let anywhere = self
+            .of(command)
+            .any(|binding| binding.scopes.contains(&Scope::Global));
         let mut found: Option<MenuKey> = None;
-        for binding in self.of(command) {
+        for binding in self
+            .of(command)
+            .filter(|binding| !anywhere || binding.scopes.contains(&Scope::Global))
+        {
             for chord in binding.bound(layout).chords {
                 if chord.kind != Kind::Own {
                     continue;
@@ -5778,6 +5853,15 @@ mod tests {
         );
         assert_eq!(keymap.menu_key(Command::Explain, Layout::Mac), None);
         // No key on the Mac.
+        assert_eq!(keymap.menu_key(Command::CheckForUpdates, Layout::Mac), None);
+        // Nor one the item runs from anywhere: Switch database's ⇧⌘D is a
+        // Redis window's alone (on a table's rows it reviews the pending
+        // SQL), so the menu names none.
+        assert!(
+            keymap
+                .of(Command::SwitchDatabase)
+                .any(|binding| !binding.mac.chords.is_empty())
+        );
         assert_eq!(keymap.menu_key(Command::SwitchDatabase, Layout::Mac), None);
         // A typed character, not a chord.
         assert_eq!(keymap.menu_key(Command::Help, Layout::Mac), None);

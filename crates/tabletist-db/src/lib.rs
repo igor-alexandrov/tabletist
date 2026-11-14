@@ -1,4 +1,4 @@
-//! Access to PostgreSQL, MySQL, SQLite and BigQuery for Tabletist.
+//! Access to PostgreSQL, MySQL, SQLite, BigQuery and Redis for Tabletist.
 //!
 //! The crate writes to a connected database in two places:
 //! [`Connection::write`], which saves edited rows, and
@@ -8,6 +8,7 @@
 //! transactions (on SQLite under `query_only`), and a script run in
 //! [`ScriptMode::ReadOnly`] cannot write. Neither can
 //! [`Connection::run_agent_read`], which is such a run of one statement.
+//! A Redis connection sends only the commands of [`redis::READS`].
 
 mod adapter;
 pub mod agent;
@@ -24,6 +25,7 @@ mod lookup;
 mod mysql;
 mod pg;
 mod query;
+pub mod redis;
 mod reserved;
 mod script;
 mod spec;
@@ -62,7 +64,10 @@ pub use query::{Filter, FilterOp, RowPage, RowQuery, Sort, SortDir};
 pub use script::{
     ScriptEnd, ScriptMode, ScriptOutcome, StatementOutcome, StatementResult, StopFlag,
 };
-pub use spec::{ConnectSpec, Driver, ParsedUrl, Secrets, SshAuth, SshSpec, TlsMode};
+pub use spec::{
+    Browsing, ConnectSpec, Driver, KEY_PAGES, ParsedUrl, RedisSpec, RedisTls, Secrets, SshAuth,
+    SshSpec, TlsMode,
+};
 pub use ssh::HostKeys;
 pub use stream::Streamed;
 pub use value::{ColumnMeta, Value, ValueKind, is_plain_number, value_from_pg_text};
@@ -98,6 +103,7 @@ enum Inner {
     Postgres(Box<pg::Conn>),
     MySql(Box<mysql::Conn>),
     BigQuery(Box<bigquery::Conn>),
+    Redis(Box<redis::Conn>),
 }
 
 impl Inner {
@@ -124,6 +130,9 @@ impl Inner {
             Driver::BigQuery => Ok(Self::BigQuery(Box::new(
                 bigquery::Conn::connect(spec, access).await?,
             ))),
+            Driver::Redis => Ok(Self::Redis(Box::new(redis::Conn {
+                handle: redis::connect(spec, secrets, via).await?,
+            }))),
         }
     }
 }
@@ -147,14 +156,16 @@ impl Connection {
         // BigQuery's API is HTTPS to Google: no tunnel runs to it.
         let ssh = match spec.driver {
             Driver::Sqlite | Driver::BigQuery => None,
-            Driver::Postgres | Driver::MySql => spec.ssh.as_ref(),
+            Driver::Postgres | Driver::MySql | Driver::Redis => spec.ssh.as_ref(),
         };
         // BigQuery has no transactions or row locks to save rows with,
         // and no read-only one to fence a script's writes: a session is
         // read-only whatever was asked, and its adapter runs only reads.
         let access = match spec.driver {
             Driver::BigQuery => Access::ReadOnly,
-            Driver::Sqlite | Driver::Postgres | Driver::MySql => access,
+            // Kept as asked, for what the window shows: the connection
+            // sends only reads either way (`redis::READS`).
+            Driver::Sqlite | Driver::Postgres | Driver::MySql | Driver::Redis => access,
         };
         let Some(ssh) = ssh else {
             return Ok(Self {
@@ -190,6 +201,16 @@ impl Connection {
             Inner::Postgres(_) => Driver::Postgres,
             Inner::MySql(_) => Driver::MySql,
             Inner::BigQuery(_) => Driver::BigQuery,
+            Inner::Redis(_) => Driver::Redis,
+        }
+    }
+
+    /// The Redis connections of a Redis session, which every Redis read
+    /// goes through; `None` for every other driver.
+    pub fn redis(&self) -> Option<&redis::Handle> {
+        match &self.inner {
+            Inner::Redis(conn) => Some(&conn.handle),
+            Inner::Sqlite(_) | Inner::Postgres(_) | Inner::MySql(_) | Inner::BigQuery(_) => None,
         }
     }
 
@@ -202,11 +223,20 @@ impl Connection {
             Inner::Postgres(conn) => conn.is_encrypted(),
             Inner::MySql(conn) => conn.is_encrypted(),
             Inner::BigQuery(conn) => conn.is_encrypted(),
+            Inner::Redis(conn) => conn.is_encrypted(),
         }
     }
 
-    pub fn dialect(&self) -> Dialect {
+    /// The session's SQL dialect: none on Redis.
+    pub fn dialect(&self) -> Option<Dialect> {
         self.driver().dialect()
+    }
+
+    /// The dialect of a session that runs SQL, or the refusal of one
+    /// that runs none (Redis).
+    fn sql_dialect(&self) -> Result<Dialect> {
+        self.dialect()
+            .ok_or(Error::Unsupported("this connection has no SQL"))
     }
 
     /// Runs `statements` in order in one transaction, keeping at most
@@ -231,7 +261,7 @@ impl Connection {
         if mode == ScriptMode::Write && self.access == Access::ReadOnly {
             return Err(Error::ReadOnly);
         }
-        let dialect = self.dialect();
+        let dialect = self.sql_dialect()?;
         for statement in statements {
             if let Some(what) = sql::refusal(dialect, &statement.text) {
                 return Err(Error::Refused {
@@ -250,6 +280,7 @@ impl Connection {
             Inner::Postgres(conn) => conn.run_script(texts, limit, mode, stop).await,
             Inner::MySql(conn) => conn.run_script(texts, limit, mode, stop).await,
             Inner::BigQuery(conn) => conn.run_script(texts, limit, mode, stop).await,
+            Inner::Redis(conn) => conn.run_script(texts, limit, mode, stop).await,
         }
     }
 
@@ -296,7 +327,7 @@ impl Connection {
         sources: &agent::Sources,
         stop: &StopFlag,
     ) -> Result<agent::Answer> {
-        if read.dialect() != self.dialect() {
+        if Some(read.dialect()) != self.dialect() {
             return Err(Error::query(
                 "the statement was checked for another kind of database",
             ));
@@ -306,6 +337,7 @@ impl Connection {
             Inner::Postgres(conn) => conn.run_read(read, limits, sources, stop).await,
             Inner::MySql(conn) => conn.run_read(read, limits, sources, stop).await,
             Inner::BigQuery(conn) => conn.run_read(read, limits, sources, stop).await,
+            Inner::Redis(conn) => conn.run_read(read, limits, sources, stop).await,
         }?;
         agent::answer(outcome, stop).map(|answer| agent::masked(answer, masked))
     }
@@ -323,11 +355,12 @@ impl Connection {
                     Inner::Postgres(conn) => conn.agents_catalog(&masked).await?,
                     Inner::MySql(conn) => conn.agents_catalog(&masked).await?,
                     Inner::BigQuery(conn) => conn.agents_catalog(&masked).await?,
+                    Inner::Redis(conn) => conn.agents_catalog(&masked).await?,
                 }
             }
             false => agent::Catalog::default(),
         };
-        Ok(agent::Hidden::of(self.dialect(), &catalog, sources))
+        Ok(agent::Hidden::of(self.sql_dialect()?, &catalog, sources))
     }
 
     /// The server's name and version for the footer: `PostgreSQL 17.2`,
@@ -338,6 +371,7 @@ impl Connection {
             Inner::Postgres(conn) => conn.server_version().await,
             Inner::MySql(conn) => conn.server_version().await,
             Inner::BigQuery(conn) => conn.server_version().await,
+            Inner::Redis(conn) => conn.server_version().await,
         }
     }
 
@@ -351,6 +385,7 @@ impl Connection {
             Inner::Postgres(conn) => conn.session_zone().await,
             Inner::MySql(conn) => conn.session_zone().await,
             Inner::BigQuery(conn) => conn.session_zone().await,
+            Inner::Redis(conn) => conn.session_zone().await,
         }
     }
 
@@ -362,6 +397,7 @@ impl Connection {
             Inner::Postgres(conn) => conn.list_databases().await,
             Inner::MySql(conn) => conn.list_databases().await,
             Inner::BigQuery(conn) => conn.list_databases().await,
+            Inner::Redis(conn) => conn.list_databases().await,
         }
     }
 
@@ -372,7 +408,7 @@ impl Connection {
     pub fn database_probe(&self) -> Option<DatabaseProbe> {
         match &self.inner {
             Inner::Postgres(conn) => Some(Box::pin(conn.database_probe())),
-            Inner::Sqlite(_) | Inner::MySql(_) | Inner::BigQuery(_) => None,
+            Inner::Sqlite(_) | Inner::MySql(_) | Inner::BigQuery(_) | Inner::Redis(_) => None,
         }
     }
 
@@ -381,7 +417,9 @@ impl Connection {
     pub async fn catalog_databases(&self) -> Result<Vec<String>> {
         match &self.inner {
             Inner::Postgres(conn) => conn.catalog_databases().await,
-            Inner::Sqlite(_) | Inner::MySql(_) | Inner::BigQuery(_) => self.list_databases().await,
+            Inner::Sqlite(_) | Inner::MySql(_) | Inner::BigQuery(_) | Inner::Redis(_) => {
+                self.list_databases().await
+            }
         }
     }
 
@@ -392,6 +430,7 @@ impl Connection {
             Inner::Postgres(conn) => conn.list_schemas().await,
             Inner::MySql(conn) => conn.list_schemas().await,
             Inner::BigQuery(conn) => conn.list_schemas().await,
+            Inner::Redis(conn) => conn.list_schemas().await,
         }
     }
 
@@ -402,6 +441,7 @@ impl Connection {
             Inner::Postgres(conn) => conn.list_objects(schema).await,
             Inner::MySql(conn) => conn.list_objects(schema).await,
             Inner::BigQuery(conn) => conn.list_objects(schema).await,
+            Inner::Redis(conn) => conn.list_objects(schema).await,
         }
     }
 
@@ -411,6 +451,7 @@ impl Connection {
             Inner::Postgres(conn) => conn.describe(object).await,
             Inner::MySql(conn) => conn.describe(object).await,
             Inner::BigQuery(conn) => conn.describe(object).await,
+            Inner::Redis(conn) => conn.describe(object).await,
         }
     }
 
@@ -426,6 +467,7 @@ impl Connection {
             Inner::Postgres(conn) => conn.ddl(object).await,
             Inner::MySql(conn) => conn.ddl(object).await,
             Inner::BigQuery(conn) => conn.ddl(object).await,
+            Inner::Redis(conn) => conn.ddl(object).await,
         }
     }
 
@@ -439,6 +481,7 @@ impl Connection {
             Inner::Postgres(conn) => conn.fetch_rows(query).await,
             Inner::MySql(conn) => conn.fetch_rows(query).await,
             Inner::BigQuery(conn) => conn.fetch_rows(query).await,
+            Inner::Redis(conn) => conn.fetch_rows(query).await,
         }
     }
 
@@ -451,6 +494,7 @@ impl Connection {
             Inner::Postgres(conn) => conn.export_statement(query, columns).await,
             Inner::MySql(conn) => conn.export_statement(query, columns).await,
             Inner::BigQuery(conn) => conn.export_statement(query, columns).await,
+            Inner::Redis(conn) => conn.export_statement(query, columns).await,
         }
     }
 
@@ -481,6 +525,7 @@ impl Connection {
             Inner::Postgres(conn) => conn.stream_rows(query, columns, batch, to, stop).await,
             Inner::MySql(conn) => conn.stream_rows(query, columns, batch, to, stop).await,
             Inner::BigQuery(conn) => conn.stream_rows(query, columns, batch, to, stop).await,
+            Inner::Redis(conn) => conn.stream_rows(query, columns, batch, to, stop).await,
         }
     }
 
@@ -503,7 +548,7 @@ impl Connection {
         to: &tokio::sync::mpsc::Sender<Streamed>,
         stop: &StopFlag,
     ) -> Result<u64> {
-        let dialect = self.dialect();
+        let dialect = self.sql_dialect()?;
         let refused = |what: String| Error::Refused {
             line: statement.first_line,
             what,
@@ -524,6 +569,7 @@ impl Connection {
             Inner::Postgres(conn) => conn.stream_statement(text, batch, to, stop).await,
             Inner::MySql(conn) => conn.stream_statement(text, batch, to, stop).await,
             Inner::BigQuery(conn) => conn.stream_statement(text, batch, to, stop).await,
+            Inner::Redis(conn) => conn.stream_statement(text, batch, to, stop).await,
         }
     }
 
@@ -533,6 +579,7 @@ impl Connection {
             Inner::Postgres(conn) => conn.count_rows(query).await,
             Inner::MySql(conn) => conn.count_rows(query).await,
             Inner::BigQuery(conn) => conn.count_rows(query).await,
+            Inner::Redis(conn) => conn.count_rows(query).await,
         }
     }
 
@@ -547,6 +594,7 @@ impl Connection {
             Inner::Postgres(conn) => conn.lookup(lookup).await,
             Inner::MySql(conn) => conn.lookup(lookup).await,
             Inner::BigQuery(conn) => conn.lookup(lookup).await,
+            Inner::Redis(conn) => conn.lookup(lookup).await,
         }
     }
 
@@ -594,6 +642,7 @@ impl Connection {
             Inner::Postgres(conn) => conn.write(changes, stop).await,
             Inner::MySql(conn) => conn.write(changes, stop).await,
             Inner::BigQuery(conn) => conn.write(changes, stop).await,
+            Inner::Redis(conn) => conn.write(changes, stop).await,
         }
     }
 
@@ -604,6 +653,7 @@ impl Connection {
             Inner::Postgres(conn) => conn.cancel_handle(),
             Inner::MySql(conn) => conn.cancel_handle(),
             Inner::BigQuery(conn) => conn.cancel_handle(),
+            Inner::Redis(conn) => conn.cancel_handle(),
         }
     }
 
@@ -623,6 +673,10 @@ impl Connection {
                 Ok(())
             }
             Inner::BigQuery(conn) => {
+                drop(conn);
+                Ok(())
+            }
+            Inner::Redis(conn) => {
                 drop(conn);
                 Ok(())
             }
@@ -661,9 +715,17 @@ enum CancelInner {
     },
     /// Boxed: a BigQuery client is much larger than the other handles.
     BigQuery(Box<bigquery::Cancel>),
+    /// Redis's commands are short reads, each with its own timeout:
+    /// nothing to cancel.
+    Nothing,
 }
 
 impl CancelHandle {
+    /// A handle that cancels nothing.
+    pub(crate) fn nothing() -> Self {
+        Self(CancelInner::Nothing)
+    }
+
     pub async fn cancel(&self) -> Result<()> {
         match &self.0 {
             CancelInner::Sqlite(handle) => {
@@ -679,6 +741,7 @@ impl CancelHandle {
             } => mysql::cancel_session(opts, *id, server, spare, resetting).await,
             CancelInner::Postgres(cancel) => cancel.cancel().await,
             CancelInner::BigQuery(cancel) => cancel.cancel().await,
+            CancelInner::Nothing => Ok(()),
         }
     }
 }

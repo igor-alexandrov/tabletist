@@ -616,7 +616,7 @@ pub fn release(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
     }
 }
 
-use crate::backend::{Command, Event, RequestId, SessionId};
+use crate::backend::{Command, Event, RedisAnswer, RedisAsk, RequestId, SessionId};
 use crate::connections::SavedConnection;
 use crate::model::{Action, ConnTabId, TabId};
 use tabletist_db::{Driver, ObjectInfo, ObjectKind};
@@ -711,6 +711,105 @@ impl Harness {
 }
 
 impl Harness {
+    /// Connects the Bookshop's cache (Redis) in the active tab through the
+    /// recording backend, and answers its probe and its scan with the
+    /// Bookshop's 65 keys in one step.
+    pub fn connect_redis(&mut self) -> ConnTabId {
+        let tab = self.connect_redis_unscanned();
+        let (session, request) = self.last_redis(|ask| matches!(ask, RedisAsk::Scan { .. }));
+        let step = crate::keyspace::ScanStep {
+            total: Some(65),
+            names: bookshop_keys(),
+            cursor: 0,
+            end: crate::keyspace::ScanEnd::Done,
+            took: std::time::Duration::from_millis(38),
+        };
+        self.app.apply(Action::Backend(Event::Redis {
+            session,
+            request,
+            answer: RedisAnswer::Scanned(Ok(step)),
+        }));
+        tab
+    }
+
+    /// Connects the Bookshop's cache and answers its probe; its scan is
+    /// left running.
+    pub fn connect_redis_unscanned(&mut self) -> ConnTabId {
+        let saved = bookshop_cache();
+        let conn = saved.id.clone();
+        self.app.connections.upsert(saved);
+        let tab = self.app.active_tab_id();
+        self.app.apply(Action::Connect { tab, conn });
+        let Command::Connect {
+            session, request, ..
+        } = *last_sent(&self.app)
+        else {
+            panic!("expected Connect");
+        };
+        self.app.apply(Action::Backend(Event::Connected {
+            session,
+            request,
+            driver: Driver::Redis,
+            encrypted: false,
+            access: asked_access(&self.app),
+        }));
+        let (session, request) = self.last_redis(|ask| matches!(ask, RedisAsk::Probe { .. }));
+        self.app.apply(Action::Backend(Event::Redis {
+            session,
+            request,
+            answer: RedisAnswer::Probed(Ok(bookshop_probe(0))),
+        }));
+        tab
+    }
+
+    /// The session and request of the last Redis ask `which` takes.
+    pub fn last_redis(&self, which: impl Fn(&RedisAsk) -> bool) -> (SessionId, RequestId) {
+        self.app
+            .backend
+            .sent
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::Redis {
+                    session,
+                    request,
+                    ask,
+                } if which(ask) => Some((*session, *request)),
+                _ => None,
+            })
+            .expect("a Redis ask was sent")
+    }
+
+    /// Answers every Types ask sent so far that is not answered, with the
+    /// Bookshop's types.
+    pub fn answer_redis_types(&mut self) {
+        let asks: Vec<(SessionId, RequestId, Vec<Vec<u8>>)> = self
+            .app
+            .backend
+            .sent
+            .iter()
+            .filter_map(|command| match command {
+                Command::Redis {
+                    session,
+                    request,
+                    ask: RedisAsk::Types { keys },
+                } => Some((*session, *request, keys.clone())),
+                _ => None,
+            })
+            .collect();
+        for (session, request, keys) in asks {
+            let types = keys.iter().map(|key| bookshop_type(key)).collect();
+            self.app.apply(Action::Backend(Event::Redis {
+                session,
+                request,
+                answer: RedisAnswer::Types {
+                    keys,
+                    result: Ok(types),
+                },
+            }));
+        }
+    }
+
     /// Sets the "Open read-only" box of `tab`'s saved connection and
     /// reconnects, as a user who changed the box and pressed Reconnect: the
     /// session comes back as the box says. The tree's requests are left

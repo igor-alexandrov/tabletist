@@ -140,7 +140,8 @@ fn keeps_comments(driver: Driver) -> bool {
     match driver {
         // BigQuery's column descriptions are its comments.
         Driver::Postgres | Driver::MySql | Driver::BigQuery => true,
-        Driver::Sqlite => false,
+        // Redis has no structure to show.
+        Driver::Sqlite | Driver::Redis => false,
     }
 }
 
@@ -463,7 +464,10 @@ pub fn show(
         .map(|(_, name, why)| refused_text(name, *why, &object.object.name, &look, locale));
     // The view's cursor shows while the view has the keys.
     let cursor = (workspace.pane == Pane::Grid).then_some(object.structure_cursor);
-    let dialect = workspace.driver.dialect();
+    // Nothing of a structure without SQL (Redis).
+    let Some(dialect) = workspace.driver.dialect() else {
+        return Vec::new();
+    };
     // Where the engine keeps no comment, the view has no place for one.
     let comments = keeps_comments(workspace.driver);
     let mut asked = Asked::default();

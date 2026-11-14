@@ -216,7 +216,9 @@ impl Live {
                 })),
                 // Nothing is written, saved, stored, watched, exported,
                 // revealed, notified or closed here.
+                // The promo's scenes are of a SQL database: no Redis.
                 Command::Test { .. }
+                | Command::Redis { .. }
                 | Command::Close { .. }
                 | Command::Cancel { .. }
                 | Command::Export(_)

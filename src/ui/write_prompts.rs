@@ -569,7 +569,10 @@ pub fn confirm_write(
             }
         },
     };
-    let dialect = workspace.driver.dialect();
+    // Nothing writes without SQL (Redis).
+    let Some(dialect) = workspace.driver.dialect() else {
+        return Vec::new();
+    };
     // What the tab's own panel shows: the box leaves its statements to no
     // other lines than its own.
     let shown = workspace

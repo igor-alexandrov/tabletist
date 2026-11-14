@@ -13,15 +13,17 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
   <a href="rust-toolchain.toml"><img src="https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Figor-alexandrov%2Ftabletist%2Fmain%2FCargo.toml&query=%24.workspace.package.rust-version&label=rust&logo=rust&color=orange" alt="Rust version"></a>
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey" alt="Platforms: Linux, macOS, Windows">
-  <img src="https://img.shields.io/badge/databases-PostgreSQL%20%7C%20MySQL%20%7C%20SQLite%20%7C%20BigQuery-336791" alt="Databases: PostgreSQL, MySQL, SQLite, BigQuery">
+  <img src="https://img.shields.io/badge/databases-PostgreSQL%20%7C%20MySQL%20%7C%20SQLite%20%7C%20BigQuery%20%7C%20Redis-336791" alt="Databases: PostgreSQL, MySQL, SQLite, BigQuery, Redis">
 </p>
 
 A fast, native database client for **PostgreSQL**, **MySQL** (and
-**MariaDB**), **SQLite** and **BigQuery**. Written in Rust with egui; runs on
-Linux (Omarchy and Hyprland first), macOS and Windows. BigQuery
+**MariaDB**), **SQLite**, **BigQuery** and **Redis**. Written in Rust with
+egui; runs on Linux (Omarchy and Hyprland first), macOS and Windows. BigQuery
 connections sign in with a service-account key file or Google Cloud's
 default credentials, and open read-only (browse, filter and run SELECTs;
-BigQuery has no transactions to edit rows with).
+BigQuery has no transactions to edit rows with). Redis connections list a
+standalone server's keys, grouped by prefix, and show their values,
+read-only.
 
 The guide and the reference are on the website:
 **[igor.works/tabletist](https://igor.works/tabletist/)**.

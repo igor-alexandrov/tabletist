@@ -86,7 +86,8 @@ impl Ddl {
     pub fn source(&self) -> Source {
         match self.driver {
             Driver::Postgres => Source::Catalog,
-            Driver::MySql | Driver::Sqlite | Driver::BigQuery => Source::Stored,
+            // Never made for Redis, which has no DDL.
+            Driver::MySql | Driver::Sqlite | Driver::BigQuery | Driver::Redis => Source::Stored,
         }
     }
 
@@ -119,7 +120,7 @@ impl Ddl {
         }
         let sections = match self.driver {
             Driver::Postgres | Driver::MySql => true,
-            Driver::Sqlite | Driver::BigQuery => false,
+            Driver::Sqlite | Driver::BigQuery | Driver::Redis => false,
         };
         let mut written = false;
         for part in &self.parts {

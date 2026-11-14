@@ -954,8 +954,9 @@ pub fn refuses_writes(error: &tabletist_db::Error, driver: tabletist_db::Driver)
         } => match driver {
             Driver::Sqlite => code == "8",
             Driver::Postgres | Driver::MySql => code == "25006",
-            // A BigQuery error carries no SQLSTATE here.
-            Driver::BigQuery => false,
+            // A BigQuery error carries no SQLSTATE here, and Redis is
+            // never written to.
+            Driver::BigQuery | Driver::Redis => false,
         },
         _ => false,
     }

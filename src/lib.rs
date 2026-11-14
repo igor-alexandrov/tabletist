@@ -24,6 +24,6 @@ pub use tabletist_core::fixtures;
 pub use tabletist_core::{
     agents_shown, backend, clock, completion, connections, dates, desktop_theme, edit, endpoint,
     env, export, export_sheet, font_files, format, history, i18n, json, key_picker, keymap,
-    known_hosts, labels, managed, model, paths, recents, relay, review, search, secrets, selection,
-    session, settings, theme, update, util, vim, zones,
+    keyspace, known_hosts, labels, managed, model, paths, recents, relay, review, search, secrets,
+    selection, session, settings, theme, update, util, vim, zones,
 };

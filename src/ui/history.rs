@@ -104,7 +104,10 @@ pub fn show(
     let Some(history) = workspace.history_tab() else {
         return Vec::new();
     };
-    let dialect = workspace.driver.dialect();
+    // Nothing of it without SQL (Redis).
+    let Some(dialect) = workspace.driver.dialect() else {
+        return Vec::new();
+    };
     let production = workspace.environment.is_production();
     let database = crate::session::database_of(&workspace.spec);
     let mut asks = Vec::new();
