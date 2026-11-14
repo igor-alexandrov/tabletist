@@ -99,8 +99,21 @@ async fn read_only(
 ) -> Result<(ScriptOutcome, Vec<bool>)> {
     let mut outcome = ScriptOutcome::default();
     let mut masked = Vec::new();
-    let tx = match open(client, sent).await {
-        // A lost session ends the run here: nothing to close.
+    let mode = ScriptMode::ReadOnly;
+    // The SQL editor's run rides its opening and its close on its row
+    // statements' flights (see `cursor_flight`). An agent's run does not:
+    // its timeout and its check go between the opening and the statement.
+    let editor = sent.is_none() && hiding.is_none();
+    let flights = Flights {
+        opens: editor && texts.first().is_some_and(|text| flies(text, mode, None)),
+        closes: editor,
+    };
+    let opened = if flights.opens {
+        Ok(Tx::Open)
+    } else {
+        open(client, sent).await
+    };
+    let stand = match opened {
         Ok(Tx::Open) => match refused_for_hiding(client, hiding).await {
             Ok(Err((error, tx))) => {
                 outcome.stopped = error == Error::Cancelled;
@@ -108,30 +121,55 @@ async fn read_only(
                     elapsed: Duration::ZERO,
                     outcome: statement_failed(error, None)?,
                 });
-                tx
+                Stand::Tx(tx)
             }
             Ok(Ok(columns)) => {
                 masked = columns;
                 let params = sent.map(|sent| sent.params);
-                let mode = ScriptMode::ReadOnly;
-                statements(client, texts, limit, mode, stop, params, &mut outcome).await?
+                statements(
+                    client,
+                    texts,
+                    limit,
+                    mode,
+                    stop,
+                    params,
+                    flights,
+                    &mut outcome,
+                )
+                .await?
             }
             Err(error) => return Err(error),
         },
+        Ok(_) => Stand::Unopened(Error::Cancelled),
+        Err(error) => Stand::Unopened(error),
+    };
+    let tx = match stand {
+        Stand::Tx(tx) => tx,
+        // A lost session ends the run here: nothing to close.
+        Stand::Unopened(error) if error.is_connection_lost() => return Err(error),
         // A cancel landed on the opening queries: no results.
-        Ok(tx) => {
+        Stand::Unopened(Error::Cancelled) => {
             outcome.stopped = true;
-            tx
+            Tx::Aborted
         }
-        Err(error) if error.is_connection_lost() => return Err(error),
         // The transaction could not start, say because the session is
         // stuck in a failed one. The next run would fail the same way,
         // so the session is closed, after an attempt to end what is
         // open.
-        Err(error) => {
+        Stand::Unopened(error) => {
             stop.finish();
             close(client, Tx::Aborted).await.ok();
-            return Err(cannot_start(ScriptMode::ReadOnly, &error));
+            return Err(cannot_start(mode, &error));
+        }
+        // The last statement's flight carried the close: what it did not
+        // get to runs now. Its answers are read once the backend stopped
+        // repeating its cancel, since reading them may ask the server
+        // again (see `confirmed`).
+        Stand::Closing(closing) => {
+            stop.finish();
+            let ended = confirmed(client, &closing.messages, closing.failure).await;
+            end(client, ended).await?;
+            return Ok((outcome, masked));
         }
     };
     // From here on a cancel would land on the cleanup: tell the
@@ -139,6 +177,30 @@ async fn read_only(
     stop.finish();
     close(client, tx).await?;
     Ok((outcome, masked))
+}
+
+/// What the SQL editor's run that reads sends along with its row
+/// statements (see `cursor_flight`).
+#[derive(Debug, Clone, Copy, Default)]
+struct Flights {
+    /// The opening goes out with the first statement, which is a row
+    /// statement.
+    opens: bool,
+    /// The close goes out with the last statement, where that is a row
+    /// statement.
+    closes: bool,
+}
+
+/// Where a script's statements left the session.
+enum Stand {
+    /// In the transaction or out of it, for the close to end.
+    Tx(Tx),
+    /// The last statement's flight carried the close: what the server
+    /// answered to it.
+    Closing(Closing),
+    /// The opening that went out with the first statement failed, and
+    /// nothing of the statement ran.
+    Unopened(Error),
 }
 
 /// Why an agent's statement may not run on a connection that hides tables
@@ -264,18 +326,28 @@ enum Tx {
 ///
 /// All of it is one message, one round trip to the server. It runs in
 /// order and stops at the first step that fails; past `BEGIN` that leaves
-/// a failed transaction, which the close rolls back as before.
+/// a failed transaction, which the close rolls back as before. The SQL
+/// editor's run sends it in the same flight as its first statement, when
+/// that is a row statement (see `cursor_flight`).
 async fn open(client: &tokio_postgres::Client, sent: Option<Sent<'_>>) -> Result<Tx> {
-    let timeout = sent.map(|sent| format!("SET LOCAL statement_timeout = {}; ", sent.timeout_ms()));
-    let steps = format!(
-        "BEGIN READ ONLY; SET LOCAL cursor_tuple_fraction = 1; SELECT 1; {}SAVEPOINT tabletist_guard",
-        timeout.unwrap_or_default()
-    );
-    match client.batch_execute(&steps).await.map_err(query_error) {
+    match client
+        .batch_execute(&opening(sent))
+        .await
+        .map_err(query_error)
+    {
         Ok(()) => Ok(Tx::Open),
         Err(Error::Cancelled) => Ok(Tx::Aborted),
         Err(error) => Err(error),
     }
+}
+
+/// The message [`open`] sends.
+fn opening(sent: Option<Sent<'_>>) -> String {
+    let timeout = sent.map(|sent| format!("SET LOCAL statement_timeout = {}; ", sent.timeout_ms()));
+    format!(
+        "BEGIN READ ONLY; SET LOCAL cursor_tuple_fraction = 1; SELECT 1; {}SAVEPOINT tabletist_guard",
+        timeout.unwrap_or_default()
+    )
 }
 
 /// Runs the statements in order, up to the first that fails or is
@@ -288,7 +360,14 @@ async fn open(client: &tokio_postgres::Client, sent: Option<Sent<'_>>) -> Result
 /// swap: it would only find what `open` left. What may run in between, an
 /// agent's check against what its connection hides, is the run's own
 /// queries, which can fail the transaction but not end it, and a failure
-/// there runs no statement.
+/// there runs no statement. With `flights.opens` the opening has not been
+/// sent yet: it goes out with the first statement.
+///
+/// A statement after a row statement of the SQL editor goes without the
+/// separate swap too: that statement's flight made the swap's check before
+/// its cursor, and a row statement cannot end the transaction. Its own
+/// flight makes the check again.
+#[allow(clippy::too_many_arguments)] // two call sites: the run that reads and the run that writes
 async fn statements(
     client: &tokio_postgres::Client,
     texts: &[String],
@@ -296,19 +375,34 @@ async fn statements(
     mode: ScriptMode,
     stop: &StopFlag,
     params: Option<&[Param]>,
+    flights: Flights,
     outcome: &mut ScriptOutcome,
-) -> Result<Tx> {
+) -> Result<Stand> {
+    // Whether the session is known to be in the script's own transaction,
+    // and it did not fail.
+    let mut known = true;
     for (index, text) in texts.iter().enumerate() {
+        let opens = flights.opens && index == 0;
         let ready = if stop.is_stopped() {
+            if opens {
+                // Nothing was sent, not even the opening: no transaction
+                // to ask about, and the rollback finds nothing to do.
+                outcome.stopped = true;
+                outcome.results.push(StatementResult {
+                    elapsed: Duration::ZERO,
+                    outcome: StatementOutcome::Cancelled,
+                });
+                return Ok(Stand::Tx(Tx::Aborted));
+            }
             Err(Error::Cancelled)
-        } else if index == 0 {
+        } else if known {
             Ok(Tx::Open)
         } else {
             in_transaction(client).await
         };
         let failure = match ready {
             Ok(Tx::Open) => None,
-            Ok(Tx::Left) => return Ok(Tx::Left),
+            Ok(Tx::Left) => return Ok(Stand::Tx(Tx::Left)),
             // Not after a statement that succeeded; said rather than a
             // run that ends without a word. Whose failed transaction it
             // is, the close asks.
@@ -334,10 +428,24 @@ async fn statements(
                 elapsed: Duration::ZERO,
                 outcome: result,
             });
-            return Ok(tx);
+            return Ok(Stand::Tx(tx));
         }
         let started = Instant::now();
-        let (result, tx) = run_statement(client, text, limit, mode, stop, params).await?;
+        let flight = Flights {
+            opens,
+            closes: flights.closes && index + 1 == texts.len(),
+        };
+        let flown = flies(text, mode, params);
+        let (result, tx, closing) = if flown {
+            match cursor_flight(client, text, limit, flight).await? {
+                Flown::Unopened(error) => return Ok(Stand::Unopened(error)),
+                Flown::Ran(result, tx, closing) => (result, tx, closing),
+            }
+        } else {
+            let (result, tx) = run_statement(client, text, limit, mode, stop, params).await?;
+            (result, tx, None)
+        };
+        known = flown;
         outcome.stopped |= result == StatementOutcome::Cancelled;
         let last = !matches!(
             result,
@@ -347,11 +455,14 @@ async fn statements(
             elapsed: started.elapsed(),
             outcome: result,
         });
+        if let Some(closing) = closing {
+            return Ok(Stand::Closing(closing));
+        }
         if last {
-            return Ok(tx);
+            return Ok(Stand::Tx(tx));
         }
     }
-    Ok(Tx::Open)
+    Ok(Stand::Tx(Tx::Open))
 }
 
 /// Ends the script's transaction, whatever state it is in: confirms an
@@ -368,6 +479,13 @@ async fn close(client: &tokio_postgres::Client, tx: Tx) -> Result<()> {
             released: None,
         },
     };
+    end(client, ended).await
+}
+
+/// The rest of [`close`] once it is known how far the close got: the
+/// rollback and the release where they did not run, or a cancel landed on
+/// them, and the run's answer.
+async fn end(client: &tokio_postgres::Client, ended: Ended) -> Result<()> {
     // Whatever is open is rolled back as far as that works, also when the
     // session is closed anyway. A step the close's message did not reach
     // runs on its own; one a cancel landed on runs once more.
@@ -399,6 +517,8 @@ struct Ended {
 /// The close of a transaction the run believes open, as one message: the
 /// guard's check, the question, the rollback and the release (see
 /// `confirm`). Each step is one answer the server completes, in this order.
+/// The SQL editor's run sends it at the end of its last row statement's
+/// cursor message (see `cursor_flight`).
 const CONFIRM_AND_END: &str = "RELEASE tabletist_guard; SAVEPOINT tabletist_guard; \
      SHOW transaction_read_only; ROLLBACK; SELECT pg_advisory_unlock_all()";
 
@@ -434,10 +554,20 @@ fn unlocked(released: Result<()>) -> Result<()> {
 /// left to [`close`], which runs them on their own.
 async fn confirm(client: &tokio_postgres::Client) -> Ended {
     let (messages, failure) = answers(client, CONFIRM_AND_END).await;
-    let completed = messages
-        .iter()
-        .filter(|message| matches!(message, SimpleQueryMessage::CommandComplete(_)))
-        .count();
+    confirmed(client, &messages, failure).await
+}
+
+/// How far [`CONFIRM_AND_END`] got from what the server answered to it,
+/// on its own or behind a cursor (see `cursor_flight`): its `messages`, up
+/// to the step that failed, and that step's error. Where the check or the
+/// question failed it asks the server whose failed block it is, so it runs
+/// once the run is finishing: a repeated cancel must not land on that.
+async fn confirmed(
+    client: &tokio_postgres::Client,
+    messages: &[SimpleQueryMessage],
+    failure: Option<tokio_postgres::Error>,
+) -> Ended {
+    let completed = completed(messages);
     if completed < ROLLBACK_STEP {
         // The check or the question failed. Without a failure the server
         // answered something other than the five steps.
@@ -462,7 +592,7 @@ async fn confirm(client: &tokio_postgres::Client) -> Ended {
         };
     }
     // Only an explicit `off` says it is no longer read-only.
-    let tx = match first_text(&messages).as_deref() {
+    let tx = match first_text(messages).as_deref() {
         Some("off") => Ok(Tx::Left),
         _ => Ok(Tx::Open),
     };
@@ -477,6 +607,14 @@ async fn confirm(client: &tokio_postgres::Client) -> Ended {
         rolled_back,
         released,
     }
+}
+
+/// How many steps of a message of several the server completed.
+fn completed(messages: &[SimpleQueryMessage]) -> usize {
+    messages
+        .iter()
+        .filter(|message| matches!(message, SimpleQueryMessage::CommandComplete(_)))
+        .count()
 }
 
 /// What the server answered to `sql`, a message of several steps, up to the
@@ -541,14 +679,17 @@ async fn own_failed(client: &tokio_postgres::Client) -> Result<Tx> {
 ///
 /// `Err` is a cancel that landed on the check, or a lost session.
 async fn in_transaction(client: &tokio_postgres::Client) -> Result<Tx> {
-    match client
-        .batch_execute("RELEASE tabletist_guard; SAVEPOINT tabletist_guard")
-        .await
-    {
+    match client.batch_execute(GUARD).await {
         Ok(()) => Ok(Tx::Open),
         Err(error) => standing(error),
     }
 }
+
+/// The guard's swap (see [`in_transaction`]): two steps.
+const GUARD: &str = "RELEASE tabletist_guard; SAVEPOINT tabletist_guard";
+
+/// How many steps [`GUARD`] is.
+const GUARD_STEPS: usize = 2;
 
 /// Where the session stands after the guard's swap failed with `error`:
 /// `Aborted` in the script's own failed transaction, `Left` anywhere else.
@@ -599,10 +740,14 @@ fn failed(error: tokio_postgres::Error, offset: Option<usize>) -> Result<(Statem
 }
 
 /// [`failed`] for the message that declares, fetches and closes the
-/// cursor: the user's text follows the cursor prefix, and a position past
-/// it points into the `FETCH` or `CLOSE` after it, so it is dropped.
-fn failed_in_cursor(error: tokio_postgres::Error, text: &str) -> Result<(StatementOutcome, Tx)> {
-    let (outcome, tx) = failed(error, Some(CURSOR_PREFIX.chars().count()))?;
+/// cursor: the user's text follows `prefix`, and a position past it points
+/// into the `FETCH` or `CLOSE` after it, so it is dropped.
+fn failed_in_cursor(
+    error: tokio_postgres::Error,
+    prefix: &str,
+    text: &str,
+) -> Result<(StatementOutcome, Tx)> {
+    let (outcome, tx) = failed(error, Some(prefix.chars().count()))?;
     Ok((within_text(outcome, text), tx))
 }
 
@@ -657,6 +802,36 @@ fn cursor_steps(text: &str, limit: usize) -> (String, String) {
         fetch_count(limit)
     );
     (declare, fetch)
+}
+
+/// What comes before the user's text in a flight's cursor message: the
+/// guard's swap and the cursor's prefix.
+const FLIGHT_PREFIX: &str = "RELEASE tabletist_guard; SAVEPOINT tabletist_guard; \
+     DECLARE tabletist_sql NO SCROLL CURSOR FOR ";
+
+/// How many steps a flight's cursor message is up to its close: the
+/// guard's swap, `DECLARE`, `FETCH` and `CLOSE`.
+const CURSOR_STEPS: usize = GUARD_STEPS + 3;
+
+/// The cursor message of a row statement's flight (see `cursor_flight`):
+/// the guard's swap, the cursor's steps, and with `closes` the close's.
+fn cursor_message(text: &str, limit: usize, closes: bool) -> String {
+    let (declare, fetch) = cursor_steps(text, limit);
+    let close = if closes {
+        format!("; {CONFIRM_AND_END}")
+    } else {
+        String::new()
+    };
+    format!("{GUARD}; {declare};{fetch}{close}")
+}
+
+/// Whether a statement runs as a flight (see `cursor_flight`): the SQL
+/// editor's row statement in a run that reads, which the driver can send.
+fn flies(text: &str, mode: ScriptMode, params: Option<&[Param]>) -> bool {
+    params.is_none()
+        && mode == ScriptMode::ReadOnly
+        && !text.contains('\0')
+        && cursor_statement(text)
 }
 
 /// A row statement's outcome from the rows kept: at most `limit` of them,
@@ -739,8 +914,12 @@ async fn run_statement(
     }
     // The SQL editor's row statement in a run that reads: its prepare goes
     // out with its cursor.
-    if params.is_none() && mode == ScriptMode::ReadOnly && cursor_statement(text) {
-        return cursor_with_prepare(client, text, limit).await;
+    if flies(text, mode, params) {
+        return match cursor_flight(client, text, limit, Flights::default()).await? {
+            Flown::Ran(outcome, tx, _) => Ok((outcome, tx)),
+            // Only a flight with the opening says this.
+            Flown::Unopened(error) => Ok((statement_failed(error, None)?, Tx::Aborted)),
+        };
     }
     // Every other statement is prepared first: that yields the column
     // types and refuses a second statement hidden in one piece. A prepare
@@ -806,7 +985,7 @@ async fn run_statement(
             // The server stops at the first that fails.
             match client.simple_query(&format!("{declare};{fetch}")).await {
                 Ok(messages) => messages,
-                Err(error) => return failed_in_cursor(error, text),
+                Err(error) => return failed_in_cursor(error, CURSOR_PREFIX, text),
             }
         } else {
             // Values are bound where the cursor is declared, which takes
@@ -856,42 +1035,147 @@ async fn run_statement(
     Ok((rows_outcome(columns, &kept, limit), Tx::Open))
 }
 
+/// What came back from a row statement's flight (see [`cursor_flight`]).
+enum Flown {
+    /// The opening that went out with it failed: nothing of the statement
+    /// ran.
+    Unopened(Error),
+    /// The statement's outcome and where it left the transaction, with
+    /// what the server answered to the close where it went along and the
+    /// cursor got that far.
+    Ran(StatementOutcome, Tx, Option<Closing>),
+}
+
+/// What the server answered to the close's steps at the end of a cursor's
+/// message: their answers, up to the step that failed, and that step's
+/// error. [`confirmed`] reads them once the run is finishing.
+struct Closing {
+    messages: Vec<SimpleQueryMessage>,
+    failure: Option<tokio_postgres::Error>,
+}
+
 /// A row statement of the SQL editor's run that reads, in one round trip:
-/// the prepare and the cursor's message (its `DECLARE`, `FETCH` and
-/// `CLOSE`) go out together, and the client waits on both at once. Each
-/// goes out when it is first polled, and the first poll reaches both, in
-/// this order.
+/// the prepare and the cursor's message (the guard's swap, the cursor's
+/// `DECLARE`, `FETCH` and `CLOSE`) go out together, and the client waits on
+/// both at once. With `flight.opens` the opening (see [`open`]) goes out in
+/// front of them, and with `flight.closes` the close's steps (see
+/// [`confirm`]) go at the end of the cursor's message. Each goes out when
+/// it is first polled, and the first poll reaches all of them, in this
+/// order.
 ///
-/// The server still takes the prepare first, and it still decides whether
-/// the cursor runs. A prepare that fails (a text of two statements, a quote
-/// or a comment left open, a cancel that landed on it) fails the
-/// transaction the run is inside, and a failed transaction refuses the
-/// `DECLARE` the message starts with, whatever the text is: nothing of the
-/// message runs. A prepare that works took the text as one statement, with
-/// no quote or comment left open but a -- one, so the text cannot reach
-/// into the `FETCH` and `CLOSE` after it. The prepare also types the
-/// columns: a simple query's rows carry no types.
+/// The server still takes them one after another, and the prepare still
+/// decides whether the cursor runs. A prepare that fails (a text of two
+/// statements, a quote or a comment left open, a cancel that landed on it)
+/// fails the transaction the run is inside, and a failed transaction
+/// refuses the guard's `RELEASE` the message starts with, whatever the text
+/// is: nothing of the message runs. A prepare that works took the text as
+/// one statement, with no quote or comment left open but a -- one, so the
+/// text cannot reach into the `FETCH`, the `CLOSE` and the close's steps
+/// after it. The prepare also types the columns: a simple query's rows
+/// carry no types.
+///
+/// The guard's swap keeps the cursor inside the script's transaction when
+/// the opening went along and failed. Past `BEGIN` that leaves a failed
+/// transaction, which refuses everything after it. A cancel that lands on
+/// `BEGIN` itself leaves no transaction at all, and a message of several
+/// statements outside one runs them in a transaction of its own, which is
+/// not read-only and commits: there the `RELEASE` fails, and the cursor
+/// never runs.
+///
+/// The close needs no check of its own before it: a row statement cannot
+/// end the transaction, so the session stands where the guard found it,
+/// and the close's own steps still ask the server, after the cursor. A
+/// cursor that fails stops the message before the close's steps, and the
+/// close runs on its own, as after any other failed statement.
 ///
 /// A column of a type the driver does not know yet is looked up after the
 /// prepare answered, behind the cursor's message. Where the cursor failed,
 /// that lookup fails too, on the failed transaction: the cursor's error is
-/// the one that says why.
-async fn cursor_with_prepare(
+/// the one that says why. Where the close went along, the lookup runs after
+/// it, outside the transaction.
+async fn cursor_flight(
     client: &tokio_postgres::Client,
     text: &str,
     limit: usize,
-) -> Result<(StatementOutcome, Tx)> {
-    let (declare, fetch) = cursor_steps(text, limit);
-    let message = format!("{declare};{fetch}");
-    let (prepared, ran) = tokio::join!(client.prepare(text), client.simple_query(&message));
-    let (prepared, messages) = match (prepared, ran) {
-        (Ok(prepared), Ok(messages)) => (prepared, messages),
-        (Ok(_), Err(error)) => return failed_in_cursor(error, text),
-        (Err(error), Err(ran)) if error.code() == Some(&SqlState::IN_FAILED_SQL_TRANSACTION) => {
-            return failed_in_cursor(ran, text);
+    flight: Flights,
+) -> Result<Flown> {
+    let opening = flight.opens.then(|| opening(None));
+    let message = cursor_message(text, limit, flight.closes);
+    let open = async {
+        match &opening {
+            Some(steps) => Some(client.batch_execute(steps).await.map_err(query_error)),
+            None => None,
         }
-        // The prepare's own failure, which kept the cursor from running.
-        (Err(error), _) => return failed(error, Some(0)),
+    };
+    let (opened, prepared, (mut messages, mut failure)) =
+        tokio::join!(open, client.prepare(text), answers(client, &message));
+    let steps = completed(&messages);
+    if let Some(Err(error)) = opened {
+        if steps < GUARD_STEPS {
+            return Ok(Flown::Unopened(error));
+        }
+        // The guard let the cursor through all the same: the session is
+        // not where the script started.
+        let error = Error::query("the transaction did not start before this statement ran");
+        let outcome = StatementOutcome::Error {
+            error,
+            position: None,
+        };
+        return Ok(Flown::Ran(outcome, Tx::Left, None));
+    }
+    // The cursor's answers, and the close's after them.
+    let split = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| matches!(message, SimpleQueryMessage::CommandComplete(_)))
+        .nth(CURSOR_STEPS - 1)
+        .map_or(messages.len(), |(index, _)| index + 1);
+    let closing = messages.split_off(split);
+    let close_failure = if steps >= CURSOR_STEPS {
+        failure.take()
+    } else {
+        None
+    };
+    let (outcome, tx) = cursor_outcome(prepared, steps, failure, messages, text, limit)?;
+    let closing = (flight.closes && steps >= CURSOR_STEPS).then(|| Closing {
+        messages: closing,
+        failure: close_failure,
+    });
+    Ok(Flown::Ran(outcome, tx, closing))
+}
+
+/// A flight's statement from what came back for it: the prepare, how many
+/// steps of the cursor's message the server `completed`, the step that
+/// failed, and the cursor's answers.
+fn cursor_outcome(
+    prepared: std::result::Result<tokio_postgres::Statement, tokio_postgres::Error>,
+    completed: usize,
+    failure: Option<tokio_postgres::Error>,
+    answered: Vec<SimpleQueryMessage>,
+    text: &str,
+    limit: usize,
+) -> Result<(StatementOutcome, Tx)> {
+    if completed < CURSOR_STEPS {
+        let Some(error) = failure else {
+            let error = Error::query("the server did not answer the cursor step by step");
+            let position = None;
+            // Where that leaves the transaction, the close asks.
+            return Ok((StatementOutcome::Error { error, position }, Tx::Open));
+        };
+        if completed < GUARD_STEPS {
+            return guarded(prepared, error);
+        }
+        return match prepared {
+            // The prepare's own failure, which kept the cursor from running.
+            Err(own) if own.code() != Some(&SqlState::IN_FAILED_SQL_TRANSACTION) => {
+                failed(own, Some(0))
+            }
+            _ => failed_in_cursor(error, FLIGHT_PREFIX, text),
+        };
+    }
+    let prepared = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => return failed(error, Some(0)),
     };
     let columns = column_metas(&prepared);
     // Its close goes out on its own, waited on by nobody.
@@ -908,7 +1192,7 @@ async fn cursor_with_prepare(
             Tx::Open,
         ));
     }
-    let kept: Vec<_> = messages
+    let kept: Vec<_> = answered
         .into_iter()
         .filter_map(|message| match message {
             SimpleQueryMessage::Row(row) => Some(row),
@@ -916,6 +1200,46 @@ async fn cursor_with_prepare(
         })
         .collect();
     Ok((rows_outcome(columns, &kept, limit), Tx::Open))
+}
+
+/// A flight's statement whose guard's swap failed with `error`: nothing of
+/// the cursor ran.
+///
+/// Where the prepare failed on its own, its error is the statement's: it
+/// failed the transaction, which refused the swap, or the text left a
+/// quote or a comment open, and the server refused the whole message
+/// before any of it ran. A flight goes only where the session is known to
+/// be in the script's transaction (see `statements`), or with the opening,
+/// whose own failure comes first.
+fn guarded(
+    prepared: std::result::Result<tokio_postgres::Statement, tokio_postgres::Error>,
+    error: tokio_postgres::Error,
+) -> Result<(StatementOutcome, Tx)> {
+    if let Err(own) = prepared
+        && own.code() != Some(&SqlState::IN_FAILED_SQL_TRANSACTION)
+    {
+        return failed(own, Some(0));
+    }
+    let refused = |message| StatementOutcome::Error {
+        error: Error::query(message),
+        position: None,
+    };
+    match standing(error) {
+        // Whose failed transaction it is, the close asks.
+        Ok(Tx::Aborted) => Ok((
+            refused("the transaction failed before this statement ran"),
+            Tx::Open,
+        )),
+        Ok(_) => Ok((
+            refused("the transaction ended before this statement ran"),
+            Tx::Left,
+        )),
+        // A cancel that landed on the swap. It fails the transaction block
+        // the session is in; whether that is still the script's, the close
+        // asks.
+        Err(Error::Cancelled) => Ok((StatementOutcome::Cancelled, Tx::Open)),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]
@@ -1189,9 +1513,9 @@ mod tests {
 
     /// A read-only session through a proxy in front of the test server,
     /// which sends the server `instead` for a simple query that is exactly
-    /// `sql`, given as `(sql, instead)`. Connections after the session's, a
-    /// cancel's, pass through as they are.
-    async fn proxied_session(url: &str, swap: (&'static str, &'static str)) -> Conn {
+    /// `sql`, given as `(sql, instead)` among `swaps`. Connections after the
+    /// session's, a cancel's, pass through as they are.
+    async fn proxied_session(url: &str, swaps: &[(&'static str, &'static str)]) -> Conn {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let (mut spec, secrets) = crate::ConnectSpec::from_url(url).unwrap();
@@ -1202,6 +1526,7 @@ mod tests {
             .unwrap();
         spec.host = "127.0.0.1".to_owned();
         spec.port = listener.local_addr().unwrap().port();
+        let swaps = swaps.to_vec();
         tokio::spawn(async move {
             let (client, _) = listener.accept().await.unwrap();
             let upstream = tokio::net::TcpStream::connect(server.clone())
@@ -1235,8 +1560,10 @@ mod tests {
                 if from_client.read_exact(&mut body).await.is_err() {
                     return;
                 }
-                let (sql, instead) = swap;
-                if kind == Some(b'Q') && body.strip_suffix(b"\0") == Some(sql.as_bytes()) {
+                let swap = swaps
+                    .iter()
+                    .find(|(sql, _)| body.strip_suffix(b"\0") == Some(sql.as_bytes()));
+                if let (Some(b'Q'), Some((_, instead))) = (kind, swap) {
                     body = [instead.as_bytes(), b"\0"].concat();
                 }
                 let length = body.len() as u32 + 4;
@@ -1257,18 +1584,21 @@ mod tests {
             .unwrap()
     }
 
-    /// A SELECT asks the server three times: the opening, the cursor with
-    /// its prepare, and the close. The first statement needs no guard's
-    /// swap, the prepare goes out with the cursor, and the close's check,
-    /// rollback and release go as one message. Each statement after it adds
-    /// the swap and the cursor with its prepare.
+    /// A SELECT asks the server once: the opening, the prepare and the
+    /// cursor go out together, and the close's check, rollback and release
+    /// ride at the end of the cursor's message. Each statement after it
+    /// adds its prepare and cursor, with no swap of its own before them.
     #[tokio::test]
-    async fn a_select_asks_the_server_three_times() {
+    async fn a_select_asks_the_server_once() {
         let Some(url) = test_url() else {
             return;
         };
         let (conn, trips) = super::super::tests::trip_counted(&url).await;
-        for (script, expected) in [(&["SELECT 1"][..], 3), (&["SELECT 1", "SELECT 2"][..], 5)] {
+        for (script, expected) in [
+            (&["SELECT 1"][..], 1),
+            (&["SELECT 1", "SELECT 2"][..], 2),
+            (&["SELECT 1", "SELECT 2", "SELECT 3"][..], 3),
+        ] {
             let before = trips.count();
             let outcome = past_the_refusal(&conn, script, &StopFlag::new())
                 .await
@@ -1284,6 +1614,185 @@ mod tests {
             assert_eq!(trips.count() - before, expected, "{script:?}");
         }
         // The close left no transaction behind.
+        let client = conn.client.lock().await;
+        assert_eq!(in_transaction(&client).await, Ok(Tx::Left));
+    }
+
+    #[test]
+    fn a_flights_cursor_message_is_the_guard_the_cursor_and_the_close() {
+        assert_eq!(FLIGHT_PREFIX, format!("{GUARD}; {CURSOR_PREFIX}"));
+        let message = cursor_message("SELECT 1 -- note", 10, false);
+        assert_eq!(
+            message,
+            format!(
+                "{FLIGHT_PREFIX}SELECT 1 -- note\n;FETCH 11 FROM tabletist_sql; CLOSE tabletist_sql"
+            )
+        );
+        let message = cursor_message("SELECT 1", 10, true);
+        assert!(message.starts_with(FLIGHT_PREFIX), "{message}");
+        assert!(
+            message.ends_with(&format!("CLOSE tabletist_sql; {CONFIRM_AND_END}")),
+            "{message}"
+        );
+    }
+
+    /// A flight's cursor message runs nothing outside the script's own
+    /// transaction: not outside any, where a message of several statements
+    /// would run it in a transaction of its own that is not read-only, nor
+    /// in another one, which does not have the guard's savepoint.
+    #[tokio::test]
+    async fn a_flight_runs_nothing_outside_the_scripts_transaction() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        let other = session(&url).await;
+        let client = conn.client.lock().await;
+        let (stop, mode) = (StopFlag::new(), ScriptMode::ReadOnly);
+        let text = "SELECT pg_advisory_lock(424265)";
+        for begin in [None, Some("BEGIN READ ONLY")] {
+            if let Some(begin) = begin {
+                client.batch_execute(begin).await.unwrap();
+            }
+            let (outcome, tx) = run_statement(&client, text, 10, mode, &stop, None)
+                .await
+                .unwrap();
+            assert!(
+                matches!(outcome, StatementOutcome::Error { .. }),
+                "{begin:?}: {outcome:?}"
+            );
+            assert_eq!(tx, Tx::Left, "{begin:?}");
+            assert!(lock_is_free(&other, 424265).await, "{begin:?}");
+            rollback(&client).await.unwrap();
+        }
+    }
+
+    /// The opening goes out with the first statement. A cancel that lands
+    /// on its `BEGIN` leaves no transaction, and the statement must not run
+    /// in a transaction of its own: here one that would keep a setting.
+    /// The run is stopped, with no results, and the session goes on.
+    #[tokio::test]
+    async fn a_cancel_on_the_opening_runs_nothing_of_the_statement() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let opening: &'static str = Box::leak(opening(None).into_boxed_str());
+        let cancelled = "DO $$ BEGIN RAISE EXCEPTION USING ERRCODE = 'query_canceled'; END $$";
+        let conn = proxied_session(&url, &[(opening, cancelled)]).await;
+        let text = "SELECT set_config('tabletist.probe', 'ran', false)";
+        let stop = StopFlag::new();
+        let outcome = past_the_refusal(&conn, &[text], &stop).await.unwrap();
+        assert!(outcome.stopped, "{outcome:?}");
+        assert!(outcome.results.is_empty(), "{outcome:?}");
+        assert!(stop.is_finishing());
+        let client = conn.client.lock().await;
+        let probe = "SELECT coalesce(current_setting('tabletist.probe', true), '')";
+        let kept = client.simple_query(probe).await.unwrap();
+        assert_eq!(first_text(&kept).as_deref(), Some(""));
+        assert_eq!(in_transaction(&client).await, Ok(Tx::Left));
+    }
+
+    /// A cancel that lands on the rollback, or on the release of the
+    /// advisory locks, that ride at the end of the cursor's message stops
+    /// the rest of it; the close runs that step once more, and the rows
+    /// stand. The proxy sends the server a slow statement in the step's
+    /// place, as for the close on its own.
+    #[tokio::test]
+    async fn a_cancel_on_the_close_in_a_flight_runs_the_cancelled_step_again() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let other = session(&url).await;
+        let text = "SELECT pg_advisory_lock(424266)";
+        let message = cursor_message(text, 10, true);
+        let slow_rollback = message.replacen("; ROLLBACK;", "; SELECT pg_sleep(10);", 1);
+        let slow_release =
+            message.replacen("SELECT pg_advisory_unlock_all()", "SELECT pg_sleep(10)", 1);
+        let message: &'static str = Box::leak(message.into_boxed_str());
+        for (step, slow) in [("rollback", slow_rollback), ("release", slow_release)] {
+            assert_ne!(slow, message, "{step}");
+            let slow: &'static str = Box::leak(slow.into_boxed_str());
+            let conn = proxied_session(&url, &[(message, slow)]).await;
+            let cancel = conn.cancel_handle();
+            let cancelling = async {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                cancel.cancel().await
+            };
+            let (script, stop) = ([text], StopFlag::new());
+            let (ran, cancelled) =
+                tokio::join!(past_the_refusal(&conn, &script, &stop), cancelling);
+            assert_eq!(cancelled, Ok(()), "{step}");
+            let outcome = ran.unwrap();
+            assert!(
+                matches!(
+                    &outcome.results[..],
+                    [StatementResult {
+                        outcome: StatementOutcome::Rows { .. },
+                        ..
+                    }]
+                ),
+                "{step}: {outcome:?}"
+            );
+            let client = conn.client.lock().await;
+            assert_eq!(in_transaction(&client).await, Ok(Tx::Left), "{step}");
+            assert!(lock_is_free(&other, 424266).await, "{step}");
+        }
+    }
+
+    /// A cancel that lands on the close's question at the end of the
+    /// cursor's message leaves the asking whose failed block it is to the
+    /// close, and the backend repeats its cancel until the run is
+    /// finishing. So the close asks only once the run is finishing, and a
+    /// cancel sent before then does not land on the asking twice and close
+    /// the session. The proxy sends the server a slow statement in the
+    /// question's place, and makes the asking slow too.
+    #[tokio::test]
+    async fn repeated_cancels_do_not_land_on_the_close_after_a_flight() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let text = "SELECT 1";
+        let message = cursor_message(text, 10, true);
+        let slow = message.replacen("SHOW transaction_read_only", "SELECT pg_sleep(10)", 1);
+        assert_ne!(slow, message);
+        let asking = "ROLLBACK TO SAVEPOINT tabletist_guard";
+        let slow_asking = "ROLLBACK TO SAVEPOINT tabletist_guard; SELECT pg_sleep(1)";
+        let message: &'static str = Box::leak(message.into_boxed_str());
+        let slow: &'static str = Box::leak(slow.into_boxed_str());
+        let conn = proxied_session(&url, &[(message, slow), (asking, slow_asking)]).await;
+        let cancel = conn.cancel_handle();
+        let (script, stop) = ([text], StopFlag::new());
+        // As the backend does: a cancel every 100 ms until the run is
+        // finishing, or over.
+        let over = std::sync::atomic::AtomicBool::new(false);
+        let running = async {
+            let ran = past_the_refusal(&conn, &script, &stop).await;
+            over.store(true, std::sync::atomic::Ordering::SeqCst);
+            ran
+        };
+        let cancelling = async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let mut sent = 0;
+            while !stop.is_finishing() && !over.load(std::sync::atomic::Ordering::SeqCst) {
+                cancel.cancel().await.unwrap();
+                sent += 1;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            sent
+        };
+        let (ran, sent) = tokio::join!(running, cancelling);
+        assert!(sent >= 1);
+        let outcome = ran.unwrap();
+        assert!(
+            matches!(
+                &outcome.results[..],
+                [StatementResult {
+                    outcome: StatementOutcome::Rows { .. },
+                    ..
+                }]
+            ),
+            "{outcome:?}"
+        );
         let client = conn.client.lock().await;
         assert_eq!(in_transaction(&client).await, Ok(Tx::Left));
     }
@@ -1550,7 +2059,7 @@ mod tests {
         let slow_release = "RELEASE tabletist_guard; SAVEPOINT tabletist_guard; \
              SHOW transaction_read_only; ROLLBACK; SELECT pg_sleep(10)";
         for (step, slow) in [("rollback", slow_rollback), ("release", slow_release)] {
-            let conn = proxied_session(&url, (CONFIRM_AND_END, slow)).await;
+            let conn = proxied_session(&url, &[(CONFIRM_AND_END, slow)]).await;
             let cancel = conn.cancel_handle();
             let client = conn.client.lock().await;
             assert_eq!(open(&client, None).await, Ok(Tx::Open), "{step}");
@@ -1740,10 +2249,11 @@ mod tests {
             ScriptMode::ReadOnly,
             &stop,
             None,
+            Flights::default(),
             &mut outcome,
         )
         .await;
-        assert_eq!(tx, Ok(Tx::Open));
+        assert!(matches!(tx, Ok(Stand::Tx(Tx::Open))));
         assert_eq!(outcome.results.len(), 1);
         assert_eq!(outcome.results[0].outcome, StatementOutcome::Cancelled);
         assert!(outcome.stopped);

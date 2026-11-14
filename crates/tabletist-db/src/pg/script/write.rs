@@ -3,7 +3,9 @@
 //! every statement succeeded, and the session put back afterwards.
 
 use super::super::session_setup;
-use super::{Tx, in_transaction, own_failed, rollback, statements, unlock, unlocked};
+use super::{
+    Flights, Stand, Tx, in_transaction, own_failed, rollback, statements, unlock, unlocked,
+};
 use crate::pg::query_error;
 use crate::script::{cannot_start, cleanup_failed, retry_cancelled};
 use crate::{Access, Error, Result, ScriptEnd, ScriptMode, ScriptOutcome, StopFlag};
@@ -21,16 +23,24 @@ pub(super) async fn run(
     let tx = match open(client).await {
         // A lost session ends the run here: nothing to close.
         Ok(Tx::Open) => {
-            statements(
+            let flights = Flights::default();
+            let mode = ScriptMode::Write;
+            match statements(
                 client,
                 texts,
                 limit,
-                ScriptMode::Write,
+                mode,
                 stop,
                 None,
+                flights,
                 &mut outcome,
             )
             .await?
+            {
+                Stand::Tx(tx) => tx,
+                // A run that writes sends no flight, so neither of these.
+                Stand::Closing(_) | Stand::Unopened(_) => Tx::Aborted,
+            }
         }
         // A cancel landed on the opening queries: no results.
         Ok(tx) => {
