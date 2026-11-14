@@ -30,15 +30,24 @@ refused, and so are several statements at once and `COPY`. An agent sees
 what the connection's database user can see, and never more. You can
 also [hide tables](#hide-tables) from them.
 
-A view runs what its definition calls. On MySQL and MariaDB, a query that
-reads a view calling a function an agent may not call (`sleep`,
-`get_lock`, `load_file` and the like), directly or through other views the
-connection's user can see, is refused, on every connection. So is one
-that reads a view whose definition the connection's user may not see:
-grant that user `SHOW VIEW` on it, and agents can read it. Tabletist finds
-such a view by its name, so a query that only uses that name, for a column
-or a table elsewhere, is refused too. The views MySQL and MariaDB make for
-themselves (`sys` and the rest) are not affected.
+A view runs what its definition calls. A query that reads a view calling
+a function an agent may not call, directly or through other views, is
+refused, on every connection: `pg_sleep`, `pg_advisory_lock`,
+`set_config`, `query_to_xml` and the like on PostgreSQL, and `sleep`,
+`get_lock`, `load_file` and the like on MySQL and MariaDB. Tabletist
+finds such a view by its name, so a query that only uses that name, for
+a column or a table elsewhere, is refused too.
+
+On PostgreSQL every view of the database is checked, those in
+`information_schema` too. PostgreSQL's own views in `pg_catalog` are not
+affected. A function your users wrote whose name has capital letters is
+not looked for in a view, as an agent may call such a function itself.
+
+On MySQL and MariaDB, only the views the connection's user can see are
+followed. A query that reads a view whose definition the connection's
+user may not see is refused too: grant that user `SHOW VIEW` on it, and
+agents can read it. The views MySQL and MariaDB make for themselves
+(`sys` and the rest) are not affected.
 
 A view the user has no privilege on at all is shown to it nowhere, so what
 such a view calls is not seen when a view the user may read runs it with
