@@ -10,11 +10,11 @@
 //! its statements the same way, in one read-only transaction, and the
 //! session is reset afterwards: MySQL session state is not transactional.
 //!
-//! MariaDB is meant to work, but the tests run against MySQL only. What is
-//! written for MariaDB alone (in `script`) has never met a MariaDB server:
-//! the older name of the read-only setting (`READ_ONLY_SETTINGS`), its
-//! version for the session reset (`can_reset`), and its marking of a
-//! read-only transaction in the server status (`begin`).
+//! MariaDB too: the tests run against MariaDB 11.4 as well as MySQL. What
+//! is written for an older MariaDB alone (in `script`) has not met one
+//! yet: the older name of the read-only setting (`READ_ONLY_SETTINGS`),
+//! which MariaDB before 11.1 knows only, and the lowest version
+//! `can_reset` lets reset a session.
 
 use std::borrow::Cow;
 use std::path::Path;
@@ -248,6 +248,67 @@ fn structure_questions(version: &str, object: &ObjectRef) -> (Vec<String>, &'sta
     (steps, checks_then)
 }
 
+/// A column's default as MySQL writes it, from MariaDB's (10.2.7 and
+/// later), which is the default's SQL: a string is a quoted literal
+/// (`'it''s'`), a column without one says `NULL`, and anything else (a
+/// number, `current_timestamp()`, an expression) is as MySQL has it. MySQL
+/// gives a string's value bare and no default at all for none, and a
+/// `binary` column's in hex (`0x6162`), as it is here where `binary`.
+/// MariaDB writes a `BINARY(n)`'s padded with zero bytes to its width,
+/// which MySQL leaves off, and so they are here where `padded`. (MySQL
+/// stops at a zero byte anywhere, `0x` for `'\0a'`: that is not
+/// followed.) A byte MariaDB could not write as text is a `?` already,
+/// and stays one.
+fn mariadb_default(written: String, binary: bool, padded: bool) -> Option<String> {
+    if written == "NULL" {
+        return None;
+    }
+    let Some(literal) = written
+        .strip_prefix('\'')
+        .and_then(|rest| rest.strip_suffix('\''))
+    else {
+        return Some(written);
+    };
+    let mut value = String::with_capacity(literal.len());
+    let mut letters = literal.chars();
+    while let Some(letter) = letters.next() {
+        match letter {
+            // A doubled quote is one.
+            '\'' => {
+                letters.next();
+                value.push('\'');
+            }
+            '\\' => match letters.next() {
+                Some('n') => value.push('\n'),
+                Some('r') => value.push('\r'),
+                Some('t') => value.push('\t'),
+                Some('0') => value.push('\0'),
+                Some('Z') => value.push('\x1a'),
+                Some(other) => value.push(other),
+                None => value.push('\\'),
+            },
+            other => value.push(other),
+        }
+    }
+    if binary {
+        use std::fmt::Write;
+        let mut hex = String::from("0x");
+        let bytes = value.as_bytes();
+        let end = match padded {
+            true => bytes
+                .iter()
+                .rposition(|&byte| byte != 0)
+                .map_or(0, |at| at + 1),
+            false => bytes.len(),
+        };
+        for byte in &bytes[..end] {
+            let _ = write!(hex, "{byte:02X}");
+        }
+        return Some(hex);
+    }
+    Some(value)
+}
+
 /// Each row as `T` (see [`from_row`]).
 fn typed<T: mysql_async::prelude::FromRow>(rows: Vec<mysql_async::Row>) -> Result<Vec<T>> {
     rows.into_iter().map(from_row).collect()
@@ -269,8 +330,9 @@ struct Described {
 
 impl Described {
     /// The table's structure, with the conditions of its CHECK
-    /// constraints that hold.
-    fn structure(self, checks: &[String]) -> Structure {
+    /// constraints that hold. `mariadb`: the defaults are MariaDB's SQL
+    /// (see [`mariadb_default`]).
+    fn structure(self, checks: &[String], mariadb: bool) -> Structure {
         let columns = self
             .columns
             .into_iter()
@@ -282,6 +344,8 @@ impl Described {
                     // apart has one here.
                     let class = column_class(Dialect::MySql, &type_name);
                     let text = matches!(class, ColumnClass::Text { .. });
+                    // MariaDB pads a BINARY(n)'s default to its width.
+                    let padded = type_name.starts_with("binary(");
                     let allowed_values = (text && compares_exactly(&collation))
                         .then(|| {
                             checks
@@ -293,7 +357,13 @@ impl Described {
                         name,
                         type_name,
                         nullable: nullable == "YES",
-                        default,
+                        default: if mariadb {
+                            default.and_then(|written| {
+                                mariadb_default(written, class == ColumnClass::Binary, padded)
+                            })
+                        } else {
+                            default
+                        },
                         comment: (!comment.is_empty()).then_some(comment),
                         allowed_values,
                         // `VIRTUAL GENERATED`, `STORED GENERATED`, and on an older
@@ -872,7 +942,7 @@ impl Conn {
             comment: self.catalog(COMMENT, at).await?,
             primary_key: self.primary_key(object).await?,
         };
-        Ok(described.structure(&checks))
+        Ok(described.structure(&checks, self.version.contains("MariaDB")))
     }
 
     /// The byte string columns a filter of `query` compares as bytes when
@@ -1062,7 +1132,7 @@ impl Adapter for Conn {
                 ));
             }
         };
-        Ok(described.structure(&checks))
+        Ok(described.structure(&checks, self.version.contains("MariaDB")))
     }
 
     /// `SHOW CREATE TABLE`, or `SHOW CREATE VIEW` for a view, as the
@@ -2238,6 +2308,30 @@ pub(crate) fn connect_error(error: mysql_async::Error) -> Error {
     }
 }
 
+/// The names `message` quotes in backticks, in order, a doubled backtick
+/// read as one.
+fn backticked(message: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut letters = message.chars().peekable();
+    while let Some(letter) = letters.next() {
+        if letter != '`' {
+            continue;
+        }
+        let mut name = String::new();
+        while let Some(letter) = letters.next() {
+            if letter != '`' {
+                name.push(letter);
+            } else if letters.next_if_eq(&'`').is_some() {
+                name.push('`');
+            } else {
+                names.push(name);
+                break;
+            }
+        }
+    }
+    names
+}
+
 /// What the server's error `number` with this `message` is of. MySQL says
 /// it only in the message, so the parts it quotes are read by the number:
 /// never by the message's words, which follow the server's language.
@@ -2295,11 +2389,24 @@ pub(crate) fn named(number: u32, message: &str) -> Named {
         // ER_CHECK_CONSTRAINT_VIOLATED: the constraint, quoted.
         3819 => (quoted(message, '\''), Vec::new()),
         // MariaDB's ER_CONSTRAINT_FAILED, its CHECK refusing a row:
-        // "CONSTRAINT `name` failed for `db`.`table`". The constraint comes
-        // first in every language the server speaks. MySQL's 4025 is
+        // "CONSTRAINT `name` failed for `db`.`table`". The constraint is what
+        // it quotes first, in every language the server speaks, and the
+        // table what it quotes last; a column's own CHECK is named
+        // `table.column` there, and `column` in the catalog. MySQL's 4025 is
         // ER_INNODB_AUTOEXTEND_SIZE_OUT_OF_RANGE, which quotes no name, and
         // so names nothing here.
-        4025 => (quoted(message, '`'), Vec::new()),
+        4025 => {
+            let names = backticked(message);
+            let constraint = names.first().map(|name| match names.last() {
+                Some(table) if names.len() > 1 => name
+                    .strip_prefix(table.as_str())
+                    .and_then(|rest| rest.strip_prefix('.'))
+                    .unwrap_or(name)
+                    .to_owned(),
+                _ => name.clone(),
+            });
+            (constraint, Vec::new())
+        }
         _ => (None, Vec::new()),
     };
     Named {
@@ -2525,6 +2632,35 @@ mod tests {
     }
 
     #[test]
+    fn a_mariadb_default_is_read_as_mysql_writes_it() {
+        let read = |written: &str| mariadb_default(written.to_owned(), false, false);
+        assert_eq!(read("NULL"), None);
+        assert_eq!(read("'NULL'").as_deref(), Some("NULL"));
+        assert_eq!(read("''").as_deref(), Some(""));
+        assert_eq!(read("'print'").as_deref(), Some("print"));
+        assert_eq!(read(r"'it''s \\ x'").as_deref(), Some(r"it's \ x"));
+        assert_eq!(read(r"'a\nb'").as_deref(), Some("a\nb"));
+        assert_eq!(read("'a(b'").as_deref(), Some("a(b"));
+        for kept in ["5", "1.50", "current_timestamp()", "(1 + 2)"] {
+            assert_eq!(read(kept).as_deref(), Some(kept));
+        }
+        // A binary column's, in hex as MySQL gives it.
+        let binary = |written: &str| mariadb_default(written.to_owned(), true, false);
+        assert_eq!(binary("'ab'").as_deref(), Some("0x6162"));
+        assert_eq!(binary(r"'a''b\0'").as_deref(), Some("0x61276200"));
+        assert_eq!(binary(r"'\0a'").as_deref(), Some("0x0061"));
+        assert_eq!(binary("NULL"), None);
+        assert_eq!(binary("0x41").as_deref(), Some("0x41"));
+        // A BINARY(n)'s without the zero bytes MariaDB pads it with, as
+        // MySQL 8.4 gives `0x6162` for BINARY(4) DEFAULT 'ab', and `0x`
+        // for DEFAULT ''.
+        let fixed = |written: &str| mariadb_default(written.to_owned(), true, true);
+        assert_eq!(fixed(r"'ab\0\0'").as_deref(), Some("0x6162"));
+        assert_eq!(fixed(r"'\0\0\0'").as_deref(), Some("0x"));
+        assert_eq!(fixed(r"'\0a'").as_deref(), Some("0x0061"));
+    }
+
+    #[test]
     fn a_failure_is_named_from_its_number_and_what_the_message_quotes() {
         let of = |number: u32, message: &str| {
             let named = named(number, message);
@@ -2593,18 +2729,34 @@ mod tests {
                 vec![]
             )
         );
-        // MariaDB's CHECK, by another number and in other words.
+        // MariaDB's CHECK, by another number and in other words, in any
+        // language it is told to speak.
+        for message in [
+            "CONSTRAINT `audit_book_covers_kind_check` failed for \
+             `tabletist`.`audit_book_covers`",
+            "No se cumple la RESTRICCIÓN `audit_book_covers_kind_check` para \
+             `tabletist`.`audit_book_covers`",
+        ] {
+            assert_eq!(
+                of(4025, message),
+                (
+                    Some(4025),
+                    Some("audit_book_covers_kind_check".into()),
+                    vec![]
+                )
+            );
+        }
+        // A column's own CHECK, by the column's name, as the catalog has it.
         assert_eq!(
             of(
                 4025,
-                "CONSTRAINT `audit_book_covers_kind_check` failed for \
-                 `tabletist`.`audit_book_covers`"
+                "CONSTRAINT `covers.kind` failed for `tabletist`.`covers`"
             ),
-            (
-                Some(4025),
-                Some("audit_book_covers_kind_check".into()),
-                vec![]
-            )
+            (Some(4025), Some("kind".into()), vec![])
+        );
+        assert_eq!(
+            of(4025, "CONSTRAINT `we``ird` failed for `tabletist`.`t`"),
+            (Some(4025), Some("we`ird".into()), vec![])
         );
         // MySQL's 4025 is another error, of a table's AUTOEXTEND_SIZE.
         assert_eq!(

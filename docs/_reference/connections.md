@@ -36,7 +36,7 @@ what was last open on it.
 | Field | Notes |
 | --- | --- |
 | **Name** | Left empty, it becomes `user@host:port/database`, the file's name or the BigQuery project |
-| **Type** | SQLite, PostgreSQL, MySQL or BigQuery |
+| **Type** | SQLite, PostgreSQL, MySQL or BigQuery. MySQL is also for [MariaDB](#mariadb) |
 | **Environment** | local, dev, staging, production or none. Sets the connection's color |
 | **File** | SQLite only |
 | **Project**, **Key file** | BigQuery only. See [BigQuery](#bigquery) |
@@ -51,6 +51,20 @@ what was last open on it.
 **Test** checks the connection without saving it.
 
 {% include shot.html file="macos-connection-edit" alt="The connection dialog with every field filled in for a production database behind an SSH tunnel" width="2880" height="1800" %}
+
+### MariaDB
+
+A MariaDB server is opened as MySQL, and a `mariadb://` URL means the
+same as `mysql://`. The footer names the server: `MariaDB 11.4.5`. Where
+MariaDB is not MySQL:
+
+- A JSON column is text to MariaDB (`LONGTEXT` with a check), and shows
+  as text.
+- Integer types keep their display width: `int(11)`.
+- MariaDB does not list what a view reads, so Tabletist reads its
+  definition. While anything is hidden or masked, agents may not read a
+  view whose definition you may not see (without SHOW VIEW) or that
+  Tabletist cannot read for its tables (see [Agents](#agents)).
 
 ## Connection URLs
 

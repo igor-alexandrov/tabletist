@@ -146,6 +146,37 @@ jobs:
         env:
           TABLETIST_TEST_MYSQL_URL: mysql://tabletist:tabletist@localhost:53306/tabletist
 
+  # The MySQL tests again, against MariaDB.
+  mariadb:
+    name: mariadb ${{ matrix.version }} integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["11.4"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Start MariaDB
+        run: docker compose up -d --wait mariadb
+        env:
+          MARIADB_VERSION: ${{ matrix.version }}
+      - run: cargo test --locked -p tabletist-db --lib --test mysql --test insert_audit --test lookup --test delete_rows --test agent --test ddl --test export
+        env:
+          TABLETIST_TEST_MYSQL_URL: mysql://tabletist:tabletist@localhost:53307/tabletist
+      # The app's gateway for the MCP server, which opens its own sessions:
+      # tabletist-core's. Its file dialogs (rfd) build a Wayland client,
+      # which wants these.
+      - name: GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+      - run: cargo test --locked -p tabletist-core --lib backend::agents
+        env:
+          TABLETIST_TEST_MYSQL_URL: mysql://tabletist:tabletist@localhost:53307/tabletist
+
   ssh:
     name: ssh integration
     runs-on: ubuntu-latest
