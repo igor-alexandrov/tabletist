@@ -1872,6 +1872,68 @@ mod mysql {
         assert!(read.is_ok(), "{read:?}");
     }
 
+    /// A session as root, with the password `compose.yaml` gives it, and the
+    /// server's `host:port`; `None` (test skipped) where it may not connect.
+    async fn root(url: &str) -> Option<(mysql_async::Conn, String)> {
+        let (_, place) = url.split_once('@').unwrap();
+        let (server, _) = place.rsplit_once('/').unwrap();
+        let root = format!("mysql://root:tabletist-root@{server}/bookshop?prefer_socket=false");
+        match mysql_async::Conn::new(mysql_async::Opts::from_url(&root).unwrap()).await {
+            Ok(conn) => Some((conn, server.to_owned())),
+            Err(_) => {
+                eprintln!("skipped: the test MySQL's root may not connect");
+                None
+            }
+        }
+    }
+
+    /// A schema of the user's named like one of the server's but for its
+    /// case, `SYS`, is another schema where the server tells names by their
+    /// case: its views are found and checked as any other's. Only root may
+    /// make a database; skipped where the server folds names, as `SYS`
+    /// would be its `sys` there.
+    #[tokio::test]
+    async fn a_view_in_a_schema_named_like_the_servers_is_checked_on_mysql() {
+        let (Some(connection), Some(url)) = (bookshop().await, url()) else {
+            return;
+        };
+        let Some((mut root, _)) = root(&url).await else {
+            return;
+        };
+        let folds: Option<i64> = root
+            .query_first("SELECT @@lower_case_table_names")
+            .await
+            .unwrap();
+        if folds != Some(0) {
+            eprintln!("skipped: the test MySQL folds the names of databases");
+            return;
+        }
+        // Made here, or the test leaves it alone: it drops only its own.
+        if let Err(error) = root.query_drop("CREATE DATABASE `SYS`").await {
+            eprintln!("skipped: no database `SYS` could be made ({error})");
+            return;
+        }
+        for sql in [
+            "CREATE VIEW `SYS`.lock_takers AS SELECT get_lock('tabletist_sys_lock', 0) AS took",
+            "GRANT SELECT, SHOW VIEW ON `SYS`.* TO tabletist",
+        ] {
+            root.query_drop(sql).await.unwrap();
+        }
+        let found = asked(&connection, "SELECT * FROM `SYS`.lock_takers", &[], LIMITS)
+            .await
+            .map(|answer| answer.rows);
+        for sql in [
+            "REVOKE SELECT, SHOW VIEW ON `SYS`.* FROM tabletist",
+            "DROP DATABASE `SYS`",
+        ] {
+            root.query_drop(sql).await.unwrap();
+        }
+        assert_eq!(
+            found,
+            Err(Error::Agent(Refusal::FunctionNotAllowed("get_lock".into())))
+        );
+    }
+
     /// A view the server runs with another user's rights reads what the
     /// agent's user may not see, a view or a table, which the user is shown
     /// nothing of: what it reads may call `get_lock`. So such a view that
@@ -1885,13 +1947,7 @@ mod mysql {
             return;
         };
         load(&url).await;
-        let (_, place) = url.split_once('@').unwrap();
-        let (server, _) = place.rsplit_once('/').unwrap();
-        let root = format!("mysql://root:tabletist-root@{server}/bookshop?prefer_socket=false");
-        let Ok(mut root) =
-            mysql_async::Conn::new(mysql_async::Opts::from_url(&root).unwrap()).await
-        else {
-            eprintln!("skipped: the test MySQL's root may not connect");
+        let Some((mut root, server)) = root(&url).await else {
             return;
         };
         for sql in [
