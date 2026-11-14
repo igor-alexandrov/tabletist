@@ -713,6 +713,18 @@ mod mysql {
             .unwrap()
     }
 
+    /// The expected text of `object` on the session's server: MariaDB
+    /// shows a table, its triggers and a view otherwise than MySQL
+    /// (`int(11)`, a column's `DEFAULT NULL`, unquoted trigger names,
+    /// fewer parentheses in a view).
+    async fn golden(connection: &Connection, object: &str) -> String {
+        let version = connection.server_version().await.unwrap();
+        match version.starts_with("MariaDB") {
+            true => format!("mariadb_{object}"),
+            false => format!("mysql_{object}"),
+        }
+    }
+
     /// `SHOW CREATE ...`'s text, read by the driver alone.
     async fn shown(url: &str, sql: &str, column: usize) -> String {
         let row: mysql_async::Row = admin(url, "bookshop")
@@ -740,7 +752,8 @@ mod mysql {
             eprintln!("skipped: book_covers has no triggers on this server");
             return;
         }
-        assert_eq!(steady(&ddl.text()), expected("mysql_book_covers"));
+        let name = golden(&connection, "book_covers").await;
+        assert_eq!(steady(&ddl.text()), expected(&name));
         let triggers = ddl.part(PartKind::Triggers).unwrap();
         assert_eq!(
             triggers.statements,
@@ -765,7 +778,8 @@ mod mysql {
             ddl.parts[0].statements,
             [shown(&url, "SHOW CREATE VIEW in_stock", 1).await]
         );
-        assert_eq!(steady(&ddl.text()), expected("mysql_in_stock"));
+        let name = golden(&connection, "in_stock").await;
+        assert_eq!(steady(&ddl.text()), expected(&name));
     }
 
     /// A user who may read a view but not see its definition is told so

@@ -41,6 +41,12 @@ mod write;
 use std::fmt;
 use std::sync::Arc;
 
+/// The PgBouncer check of a PostgreSQL session (see
+/// `Connection::database_probe`): it owns what it needs, so it can run
+/// apart from the session.
+pub type DatabaseProbe =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<String>>> + Send>>;
+
 use adapter::Adapter;
 pub use catalog::{
     Acts, ColumnInfo, ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef,
@@ -395,6 +401,28 @@ impl Connection {
         }
     }
 
+    /// The part of `list_databases` that needs no turn on this session:
+    /// on PostgreSQL, the check for PgBouncer, on a connection of its own.
+    /// `Some` aliases are the listing; `None` leaves it to
+    /// `catalog_databases`. No probe on the other engines.
+    pub fn database_probe(&self) -> Option<DatabaseProbe> {
+        match &self.inner {
+            Inner::Postgres(conn) => Some(Box::pin(conn.database_probe())),
+            Inner::Sqlite(_) | Inner::MySql(_) | Inner::BigQuery(_) | Inner::Redis(_) => None,
+        }
+    }
+
+    /// The rest of `list_databases`, on this session: what its catalog
+    /// lists, for when `database_probe` found no PgBouncer.
+    pub async fn catalog_databases(&self) -> Result<Vec<String>> {
+        match &self.inner {
+            Inner::Postgres(conn) => conn.catalog_databases().await,
+            Inner::Sqlite(_) | Inner::MySql(_) | Inner::BigQuery(_) | Inner::Redis(_) => {
+                self.list_databases().await
+            }
+        }
+    }
+
     /// At most `MAX_LISTED` schemas.
     pub async fn list_schemas(&self) -> Result<Vec<String>> {
         match &self.inner {
@@ -478,6 +506,11 @@ impl Connection {
     /// a batch is read ahead of what `to` has taken. Returns the rows sent.
     /// `stop`, or `to` closing, ends it as [`Error::Cancelled`]; a
     /// statement the server's own timeout ended is [`Error::Timeout`].
+    /// A connection whose stream failed once its statement ran (a closed
+    /// `to` included, before any row was sent) is to be closed: on MySQL
+    /// the rows not yet read are still on their way, and the read-only
+    /// transaction they come in is left open, which a rollback could end
+    /// only by reading them all.
     pub async fn stream_rows(
         &self,
         query: &RowQuery,
@@ -506,7 +539,8 @@ impl Connection {
     /// [`Error::Cancelled`], and the server's own timeout as
     /// [`Error::Timeout`]. On PostgreSQL it runs as a cursor, so a
     /// statement no cursor holds (`SHOW`, `EXPLAIN`) fails with the
-    /// server's words.
+    /// server's words. A connection whose stream failed once its statement
+    /// ran is to be closed, as for [`Self::stream_rows`].
     pub async fn stream_statement(
         &self,
         statement: &sql::Statement,
@@ -654,22 +688,30 @@ impl Connection {
 }
 
 /// Cancels the query a session is running. Cancelling when nothing runs
-/// does nothing.
+/// does nothing. A cancel returns once the server has acted on it, so it
+/// cannot stop what the session runs after: PostgreSQL's waits for the
+/// server to close the cancel's connection (see `pg::Cancel`), MySQL's
+/// `KILL QUERY` for its answer. Not always on PostgreSQL: a cancel that
+/// hears nothing for ten seconds gives up with [`Error::Timeout`], and a
+/// session over a Unix socket, or on a host the session could not resolve
+/// itself, takes the driver's cancel, which does not wait.
 #[derive(Clone)]
 pub struct CancelHandle(CancelInner);
 
 #[derive(Clone)]
 enum CancelInner {
     Sqlite(Arc<rusqlite::InterruptHandle>),
-    Postgres {
-        token: tokio_postgres::CancelToken,
-        tls: tokio_postgres_rustls::MakeRustlsConnect,
-    },
+    Postgres(pg::Cancel),
     MySql {
         opts: mysql_async::Opts,
         id: u32,
         /// The server that thread id belongs to.
         server: String,
+        /// The connection the cancels go through (see `mysql::cancel`).
+        spare: mysql::Spare,
+        /// Whether a run's reset goes on, which a cancel waits for (see
+        /// `mysql::Resetting`).
+        resetting: tokio::sync::watch::Receiver<bool>,
     },
     /// Boxed: a BigQuery client is much larger than the other handles.
     BigQuery(Box<bigquery::Cancel>),
@@ -690,11 +732,14 @@ impl CancelHandle {
                 handle.interrupt();
                 Ok(())
             }
-            CancelInner::MySql { opts, id, server } => mysql::cancel(opts, *id, server).await,
-            CancelInner::Postgres { token, tls } => token
-                .cancel_query(tls.clone())
-                .await
-                .map_err(|error| Error::Connect(format!("could not cancel: {error}"))),
+            CancelInner::MySql {
+                opts,
+                id,
+                server,
+                spare,
+                resetting,
+            } => mysql::cancel_session(opts, *id, server, spare, resetting).await,
+            CancelInner::Postgres(cancel) => cancel.cancel().await,
             CancelInner::BigQuery(cancel) => cancel.cancel().await,
             CancelInner::Nothing => Ok(()),
         }

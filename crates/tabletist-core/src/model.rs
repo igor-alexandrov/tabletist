@@ -1068,6 +1068,12 @@ pub enum Action {
     GiveTreeKeys(ConnTabId),
     /// Show the keyboard shortcuts.
     ShowHelp,
+    /// The keyboard shortcuts' search: what its field holds. A chord
+    /// looked for is dropped.
+    HelpSearch(String),
+    /// List the commands a chord is a key of; none lists them all again.
+    /// The words typed are dropped.
+    HelpFind(Option<&'static str>),
     /// Show the About dialog.
     ShowAbout,
     /// Show the Settings window.
@@ -1383,6 +1389,9 @@ pub struct Workspace {
     pub secrets: tabletist_db::Secrets,
     /// Databases on the server (PostgreSQL), for the switcher.
     pub databases: Fetch<Vec<String>>,
+    /// A listing of `databases` started by a connect and not sent yet: it
+    /// goes once the schemas answer, after the default schema's objects.
+    pub databases_after_tree: Option<RequestId>,
     /// Save the typed password in the keyring once the server accepts it.
     pub save_password: bool,
     /// Why the next connect must ask for the password (the saved or typed
@@ -3045,8 +3054,8 @@ pub enum Dialog {
     Password(Box<PasswordPrompt>),
     HostKey(Box<HostKeyPrompt>),
     QuickOpen(Box<QuickOpen>),
-    /// The keyboard shortcuts.
-    Help,
+    /// The keyboard shortcuts, with their search.
+    Help(HelpSearch),
     /// The app's name, version and where it lives.
     About,
     /// The Settings window.
@@ -3604,6 +3613,15 @@ pub struct SettingsDialog {
     pub reveal: bool,
     /// The Keyboard pane's.
     pub keyboard: KeyboardPage,
+}
+
+/// The keyboard shortcuts dialog's search.
+#[derive(Debug, Default)]
+pub struct HelpSearch {
+    /// What its field holds.
+    pub search: String,
+    /// A chord pressed in the field, to list what it does.
+    pub found: Option<&'static str>,
 }
 
 /// What the Keyboard pane lists, and what it records.
@@ -6399,6 +6417,7 @@ impl Workspace {
             password_mode: saved.password,
             secrets,
             databases: Fetch::default(),
+            databases_after_tree: None,
             save_password: false,
             needs_prompt: None,
             keyring_empty: false,

@@ -6,7 +6,11 @@ nav_order: 1
 
 Press `?` in the app for a shorter version of this list, with the keys of
 the look you are using. It leaves out the keys of the dialogs and of the
-lists that open in an editor, which are here.
+lists that open in an editor, which are here. Type in its search field
+to find a command by its name, its group or its keys (`ctrl+r`, `cmd r`,
+`⌘R`), or press keys in it with Mod, Ctrl or Alt held to list the commands
+they are keys of. Esc clears the search, and closes the list once it is
+clear.
 
 The menu bar on macOS and Windows shows the keys of this page, and your
 own from **Settings › Keyboard**.
@@ -37,8 +41,8 @@ command with no key. A changed row has a dot before its keys and, under
 the pointer, a button that puts its defaults back (a default another
 command has been given since stays that command's); **Reset all…** puts
 every key back. The search field finds a command by
-its name, or by its keys when you press them in it with Mod, Ctrl or Alt
-held, and **Changed** lists the keys you changed. **Export cheat sheet**
+its name or its group, or by its keys when you type them (`ctrl+r`) or
+press them in it with Mod, Ctrl or Alt held, and **Changed** lists the keys you changed. **Export cheat sheet**
 saves the keys in force as a Markdown file.
 
 A few commands are not built yet, among them Ask AI, Explain and Commit:

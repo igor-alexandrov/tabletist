@@ -71,6 +71,11 @@ On MySQL, statements such as `CREATE`, `ALTER` and `DROP` are committed by
 the server as they run, so they cannot be rolled back. The messages say
 which lines were written.
 
+A run that leaves a `CREATE`, `DROP`, `ALTER` or `RENAME` written (and,
+on SQLite, an `ATTACH` or `DETACH`) refreshes the sidebar when it ends,
+so a table you made or dropped shows there without a refresh by hand. A
+run that was rolled back leaves the sidebar as it is.
+
 ## Results and messages
 
 **Results** shows the rows of the statement you ran. Select a row and

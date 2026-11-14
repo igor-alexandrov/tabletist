@@ -78,6 +78,22 @@ async fn connect() -> Option<Connection> {
     connect_as(Access::ReadOnly).await
 }
 
+/// Whether the connection's server is MariaDB, which some tests find
+/// answering otherwise than MySQL.
+async fn on_mariadb(connection: &Connection) -> bool {
+    let version = connection.server_version().await.unwrap();
+    version.starts_with("MariaDB")
+}
+
+/// How `meta`, a `JSON` column, is described: MariaDB's `JSON` is a
+/// `LONGTEXT`, and a result says nothing more of it than that.
+async fn json_column(connection: &Connection) -> (&'static str, ValueKind) {
+    match on_mariadb(connection).await {
+        true => ("text", ValueKind::Text),
+        false => ("json", ValueKind::Json),
+    }
+}
+
 #[tokio::test]
 async fn connections_report_mysql_and_list_databases_as_schemas() {
     let Some(connection) = connect().await else {
@@ -92,6 +108,43 @@ async fn connections_report_mysql_and_list_databases_as_schemas() {
             "{schema} in {schemas:?}"
         );
     }
+}
+
+/// Objects are listed by their names' bytes, as PostgreSQL lists them:
+/// capitals before small letters, and `_` between the two. MariaDB's
+/// catalog would put `ab` before `a_x`, and `B_x` after both.
+#[tokio::test]
+async fn objects_are_listed_by_their_names_bytes() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let names = ["listed_ab", "listed_B_x", "listed_a_y", "listed_a_x"];
+    let mut admin = admin().await;
+    for name in names {
+        admin
+            .query_drop(format!(
+                "CREATE TABLE IF NOT EXISTS `{name}` (id INT PRIMARY KEY)"
+            ))
+            .await
+            .unwrap();
+    }
+    let objects = connection.list_objects("tabletist").await;
+    for name in names {
+        admin
+            .query_drop(format!("DROP TABLE `{name}`"))
+            .await
+            .unwrap();
+    }
+    let listed: Vec<String> = objects
+        .unwrap()
+        .into_iter()
+        .map(|object| object.name)
+        .filter(|name| name.starts_with("listed_"))
+        .collect();
+    assert_eq!(
+        listed,
+        ["listed_B_x", "listed_a_x", "listed_a_y", "listed_ab"]
+    );
 }
 
 #[tokio::test]
@@ -178,6 +231,39 @@ async fn a_user_is_required() {
 
 use tabletist_db::ObjectRef;
 
+/// A binary column's default is in hex on both servers, as MySQL gives
+/// it: MariaDB's quoted literal is read, and a BINARY(n)'s without the
+/// zero bytes it is padded with.
+#[tokio::test]
+async fn a_binary_default_is_hex_on_both_servers() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    on_its_own_tables(
+        "binary_defaults",
+        &["CREATE TABLE binary_defaults (
+               id INT PRIMARY KEY,
+               fixed BINARY(4) DEFAULT 'ab',
+               blank BINARY(3) DEFAULT '',
+               vary VARBINARY(4) DEFAULT 'ab'
+           )"],
+        async {
+            let structure = connection
+                .describe(&ObjectRef::new("tabletist", "binary_defaults"))
+                .await
+                .unwrap();
+            let default = |name: &str| {
+                let column = structure.columns.iter().find(|c| c.name == name);
+                column.unwrap().default.clone()
+            };
+            assert_eq!(default("fixed").as_deref(), Some("0x6162"));
+            assert_eq!(default("blank").as_deref(), Some("0x"));
+            assert_eq!(default("vary").as_deref(), Some("0x6162"));
+        },
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn users_structure_has_full_types_comments_key_and_indexes() {
     let Some(connection) = connect().await else {
@@ -189,21 +275,26 @@ async fn users_structure_has_full_types_comments_key_and_indexes() {
         .unwrap();
     let column = |name: &str| structure.columns.iter().find(|c| c.name == name).unwrap();
     assert_eq!(structure.columns[0].name, "id");
-    assert_eq!(column("id").type_name, "int");
+    // The server's own words: MariaDB still gives an integer its width.
+    let mariadb = on_mariadb(&connection).await;
+    let (int, bigint) = match mariadb {
+        true => ("int(11)", "bigint(20) unsigned"),
+        false => ("int", "bigint unsigned"),
+    };
+    assert_eq!(column("id").type_name, int);
     assert!(!column("id").nullable);
     assert!(column("name").nullable);
+    // No default: MariaDB says `NULL`, which is none.
+    assert_eq!(column("name").default, None);
     assert_eq!(column("email").type_name, "varchar(255)");
     assert_eq!(column("email").comment.as_deref(), Some("Login address"));
     assert_eq!(column("balance").type_name, "decimal(14,2)");
-    assert_eq!(column("counter").type_name, "bigint unsigned");
+    assert_eq!(column("counter").type_name, bigint);
     assert_eq!(column("mood").type_name, "enum('happy','sad')");
-    assert!(
-        column("created_at")
-            .default
-            .as_deref()
-            .unwrap()
-            .starts_with("2026-01-01 00:00:00")
-    );
+    // As MySQL writes it: MariaDB's quoted literal is read without its
+    // quotes.
+    let default = column("created_at").default.clone().unwrap();
+    assert!(default.starts_with("2026-01-01 00:00:00"), "{default}");
     assert_eq!(structure.primary_key, vec!["id".to_owned()]);
     let primary = structure
         .indexes
@@ -388,19 +479,27 @@ async fn only_an_index_over_whole_columns_is_the_row_key() {
     let Some(connection) = connect().await else {
         return;
     };
+    // MariaDB indexes no expression.
+    let expressions = !on_mariadb(&connection).await;
     let mut admin = admin().await;
+    let expression = match expressions {
+        true => "UNIQUE KEY k0_expression ((code + 1)),",
+        false => "",
+    };
     for statement in [
-        "DROP TABLE IF EXISTS catalog_keys",
-        "CREATE TABLE catalog_keys (
-             name VARCHAR(20) COLLATE utf8mb4_0900_ai_ci NOT NULL,
-             code INT NOT NULL,
-             title VARCHAR(20) NOT NULL,
-             `<expression>` INT NOT NULL,
-             UNIQUE KEY k0_expression ((code + 1)),
-             UNIQUE KEY k1_prefix (name(1)),
-             UNIQUE KEY k2_plain (code, title DESC)
-         )",
-        "INSERT INTO catalog_keys VALUES ('ssa', 1, 't', 1), ('ßa', 2, 'u', 2)",
+        "DROP TABLE IF EXISTS catalog_keys".to_owned(),
+        format!(
+            "CREATE TABLE catalog_keys (
+                 name VARCHAR(20) COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                 code INT NOT NULL,
+                 title VARCHAR(20) NOT NULL,
+                 `<expression>` INT NOT NULL,
+                 {expression}
+                 UNIQUE KEY k1_prefix (name(1)),
+                 UNIQUE KEY k2_plain (code, title DESC)
+             )"
+        ),
+        "INSERT INTO catalog_keys VALUES ('ssa', 1, 't', 1), ('ßa', 2, 'u', 2)".to_owned(),
     ] {
         admin.query_drop(statement).await.unwrap();
     }
@@ -431,18 +530,19 @@ async fn only_an_index_over_whole_columns_is_the_row_key() {
             )
         })
         .collect();
-    assert_eq!(
-        indexes,
-        [
-            ("k0_expression", list(&["<expression>"]), None),
-            ("k1_prefix", list(&["name"]), None),
-            (
-                "k2_plain",
-                list(&["code", "title"]),
-                Some(list(&["code", "title"]))
-            ),
-        ]
-    );
+    let mut expected = vec![
+        ("k0_expression", list(&["<expression>"]), None),
+        ("k1_prefix", list(&["name"]), None),
+        (
+            "k2_plain",
+            list(&["code", "title"]),
+            Some(list(&["code", "title"])),
+        ),
+    ];
+    if !expressions {
+        expected.remove(0);
+    }
+    assert_eq!(indexes, expected);
     assert_eq!(structure.row_key(), Some(list(&["code", "title"])));
 }
 
@@ -512,7 +612,7 @@ async fn pages_have_typed_values_and_kinds() {
     assert_eq!(ids(&page), vec![1, 2, 3]);
     assert!(page.has_more && page.ordered_by_key);
     let kind = |name: &str| page.columns.iter().find(|c| c.name == name).unwrap().kind;
-    assert_eq!(kind("meta"), ValueKind::Json);
+    assert_eq!(kind("meta"), json_column(&connection).await.1);
     assert_eq!(kind("avatar"), ValueKind::Binary);
     assert_eq!(kind("created_at"), ValueKind::Temporal);
     assert_eq!(kind("balance"), ValueKind::Numeric);
@@ -787,12 +887,22 @@ async fn quotes_backslashes_and_wildcards_are_just_text() {
     assert!(page.rows.is_empty());
 }
 
+/// Also once a page of the table was read, after which a page is read in
+/// one message, through a statement the server prepares from text.
 #[tokio::test]
 async fn a_raw_where_cannot_write_or_chain_statements() {
-    for access in [Access::ReadOnly, Access::Writable] {
+    for (access, read_first) in [
+        (Access::ReadOnly, false),
+        (Access::Writable, false),
+        (Access::ReadOnly, true),
+        (Access::Writable, true),
+    ] {
         let Some(connection) = connect_as(access).await else {
             return;
         };
+        if read_first {
+            connection.fetch_rows(&users(1)).await.unwrap();
+        }
         for raw in [
             "1 = 1; DELETE FROM users",
             "1=1) ; COMMIT; DELETE FROM users; SELECT (1",
@@ -822,12 +932,14 @@ async fn a_bad_raw_where_is_a_query_error_and_the_session_survives() {
 
 /// The driver closes the connection when a statement runs without a value
 /// for each parameter, and it reads `:name` as one too, also in a quote
-/// right after a `-`.
+/// right after a `-`. A page read in one message, once a first page was
+/// read, refuses the same.
 #[tokio::test]
 async fn a_raw_where_with_a_parameter_is_a_query_error_and_the_session_survives() {
     let Some(connection) = connect().await else {
         return;
     };
+    assert!(connection.fetch_rows(&users(1)).await.is_ok());
     for raw in [
         "id = ?",
         "name = :x",
@@ -912,6 +1024,21 @@ async fn a_running_query_can_be_cancelled() {
     }
     assert_eq!(running.await.unwrap(), Err(Error::Cancelled));
     assert!(connection.fetch_rows(&users(1)).await.is_ok());
+}
+
+/// A cancel is over once the server has acted on it: `KILL QUERY` waits
+/// for its answer. One that finds the session idle does not stop what it
+/// runs next.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancel_of_an_idle_session_does_not_stop_its_next_query() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let all = connection.count_rows(&users(5)).await.unwrap();
+    connection.cancel_handle().cancel().await.unwrap();
+    let mut query = users(5);
+    query.raw_where = Some("(SELECT SLEEP(0.5)) = 0".into());
+    assert_eq!(connection.count_rows(&query).await, Ok(all));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1137,13 +1264,14 @@ async fn a_script_has_typed_columns_and_truncates_at_the_limit() {
         .iter()
         .map(|column| (column.name.as_str(), column.type_name.as_str(), column.kind))
         .collect();
+    let (json, json_kind) = json_column(&connection).await;
     assert_eq!(
         described,
         [
             ("id", "int", ValueKind::Numeric),
             ("email", "varchar", ValueKind::Text),
             ("created_at", "datetime", ValueKind::Temporal),
-            ("meta", "json", ValueKind::Json),
+            ("meta", json, json_kind),
             ("avatar", "varbinary", ValueKind::Binary),
             ("balance", "decimal", ValueKind::Numeric),
         ]
@@ -1326,14 +1454,27 @@ async fn what_the_prepared_protocol_refuses_is_the_statements_error() {
     )
     .await
     .unwrap();
-    assert_eq!(outcome.results.len(), 2);
-    let StatementOutcome::Error { error, .. } = &outcome.results[1].outcome else {
-        panic!("{outcome:?}");
-    };
-    assert!(
-        error.to_string().contains("prepared statement protocol"),
-        "{error}"
-    );
+    if on_mariadb(&connection).await {
+        // MariaDB prepares it, and every statement the SQL editor lets
+        // through: the script runs to its end.
+        assert_eq!(outcome.results.len(), 3, "{outcome:?}");
+        assert!(
+            outcome
+                .results
+                .iter()
+                .all(|result| !matches!(result.outcome, StatementOutcome::Error { .. })),
+            "{outcome:?}"
+        );
+    } else {
+        assert_eq!(outcome.results.len(), 2);
+        let StatementOutcome::Error { error, .. } = &outcome.results[1].outcome else {
+            panic!("{outcome:?}");
+        };
+        assert!(
+            error.to_string().contains("prepared statement protocol"),
+            "{error}"
+        );
+    }
     // The splitter would never hand over such a piece.
     let mut statements = script("SELECT 1");
     statements[0].text = "SELECT 1; SELECT 2".into();
@@ -1506,7 +1647,9 @@ async fn a_script_keeps_no_lock() {
         .unwrap();
     // A named lock outlives a ROLLBACK, and a transaction left open would
     // keep the table's metadata lock: after a run that worked and one that
-    // failed, the session holds neither.
+    // failed, the session holds neither. The rollback comes before the
+    // outcome; the reset that drops the named lock follows it, before the
+    // session's next use, which waits for it.
     for (text, results) in [
         (
             "SELECT * FROM script_lock_probe; SELECT GET_LOCK('tabletist_script_lock', 0)",
@@ -1519,6 +1662,7 @@ async fn a_script_keeps_no_lock() {
     ] {
         let outcome = run(&connection, text, 10).await.unwrap();
         assert_eq!(outcome.results.len(), results, "{text}: {outcome:?}");
+        connection.list_schemas().await.unwrap();
         let free: Option<i64> = admin
             .query_first("SELECT IS_FREE_LOCK('tabletist_script_lock')")
             .await

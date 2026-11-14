@@ -363,6 +363,26 @@ fn a_rows_reset_takes_its_lines_and_reset_all_every_table() {
     );
 }
 
+/// Keys typed in the search, as the look writes them or as they are
+/// spelled, list the rows they are keys of.
+#[test]
+fn the_search_finds_keys_typed() {
+    for (look, typed) in [
+        (Look::macos(), ["cmd+n", "⌘N"]),
+        (Look::standard(), ["ctrl+n", "Ctrl-N"]),
+    ] {
+        let mut harness = keyboard(look);
+        for text in typed {
+            harness.app.apply(Action::KeyboardSearch(text.into()));
+            let listed = rows(&mut harness);
+            let named = |name: &str| listed.iter().any(|row| row.starts_with(name));
+            assert!(named("New connection"), "{}, {text}: {listed:?}", look.name);
+            assert!(named("Add row"), "{}, {text}: {listed:?}", look.name);
+            assert!(!named("Reload"), "{}, {text}: {listed:?}", look.name);
+        }
+    }
+}
+
 /// Test 9: the search lists the rows a name or a group names, a chord
 /// pressed in it the rows it is a key of in every scope, and Changed the
 /// changed rows alone, its count in its name.

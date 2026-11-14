@@ -79,6 +79,8 @@ pub mod grid;
 #[cfg(test)]
 mod grid_keys_tests;
 pub mod help;
+#[cfg(test)]
+mod help_tests;
 pub mod history;
 #[cfg(test)]
 mod history_tests;
@@ -92,6 +94,7 @@ pub mod json_view;
 mod key_picker;
 #[cfg(test)]
 mod key_picker_tests;
+pub(crate) mod key_search;
 #[cfg(test)]
 mod keyboard_tests;
 pub mod keys;
@@ -146,6 +149,8 @@ mod theme_settings_tests;
 pub mod toast;
 #[cfg(test)]
 mod tree_groups_tests;
+#[cfg(test)]
+mod tree_reload_tests;
 #[cfg(test)]
 mod typing_settings_tests;
 #[cfg(test)]
@@ -256,9 +261,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let asked = quick_open::show(&ui.ctx().clone(), paint, open, &app.keymap, asked);
         app.actions.extend(asked);
     }
-    if matches!(app.dialog, Some(Dialog::Help)) {
-        let asked = help::show(&ui.ctx().clone(), paint, &app.keymap);
+    if let Some(Dialog::Help(search)) = &app.dialog {
+        let asked = help::show(&ui.ctx().clone(), paint, &app.keymap, search);
         app.actions.extend(asked);
+    } else {
+        help::fold(ui.ctx());
     }
     if matches!(app.dialog, Some(Dialog::About)) {
         let asked = about::show(&ui.ctx().clone(), paint);
@@ -15138,7 +15145,7 @@ value_tags   = true
             assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
             assert!(matches!(
                 harness.app.dialog,
-                Some(crate::model::Dialog::Help)
+                Some(crate::model::Dialog::Help(_))
             ));
             harness.press(Key::Escape, Modifiers::NONE);
             assert!(harness.app.dialog.is_none());
@@ -19483,7 +19490,7 @@ value_tags   = true
         // It is that dialog still, in every look: closing the question
         // unanswered would leave the same line.
         assert!(
-            matches!(harness.app.dialog, Some(crate::model::Dialog::Help)),
+            matches!(harness.app.dialog, Some(crate::model::Dialog::Help(_))),
             "{:?}",
             harness.app.dialog
         );
@@ -20722,7 +20729,7 @@ value_tags   = true
         assert!(sends(&harness, CancelClose));
         assert!(matches!(
             harness.app.dialog,
-            Some(crate::model::Dialog::Help)
+            Some(crate::model::Dialog::Help(_))
         ));
         assert_eq!(
             harness.app.notice.as_deref(),

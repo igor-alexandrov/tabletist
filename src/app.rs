@@ -962,7 +962,7 @@ impl App {
     /// shortcuts dialog, which offers it and gives way to it. Every way
     /// in (its key, quick open, a menu item, a pane asked for) holds to it.
     fn settings_may_open(&self) -> bool {
-        matches!(self.dialog, None | Some(Dialog::Help))
+        matches!(self.dialog, None | Some(Dialog::Help(_)))
     }
 
     fn tab_index(&self, id: ConnTabId) -> Option<usize> {
@@ -2408,7 +2408,20 @@ impl App {
             Action::CancelQuery(tab) => {
                 if let Some(workspace) = self.workspace(tab) {
                     let session = workspace.session;
-                    let pending = self.cancellable(tab);
+                    let mut pending = self.cancellable(tab);
+                    // The databases' listing a connect still holds back is
+                    // not with the session, so the session cannot skip it:
+                    // it ends here, as a skipped one answers.
+                    if let Some(workspace) = self.workspace_mut(tab)
+                        && let Some(request) = workspace.databases_after_tree
+                        && pending.contains(&request)
+                    {
+                        workspace.databases_after_tree = None;
+                        workspace
+                            .databases
+                            .finish(request, Err(tabletist_db::Error::Cancelled));
+                        pending.retain(|id| *id != request);
+                    }
                     self.cancel(session, pending);
                 }
             }
@@ -2702,12 +2715,24 @@ impl App {
             Action::CountRows { tab, object_tab } => self.count_rows(tab, object_tab),
             Action::ShowHelp => {
                 if self.dialog.is_none() {
-                    self.dialog = Some(Dialog::Help);
+                    self.dialog = Some(Dialog::Help(crate::model::HelpSearch::default()));
+                }
+            }
+            Action::HelpSearch(text) => {
+                if let Some(Dialog::Help(help)) = &mut self.dialog {
+                    help.search = text;
+                    help.found = None;
+                }
+            }
+            Action::HelpFind(keys) => {
+                if let Some(Dialog::Help(help)) = &mut self.dialog {
+                    help.found = keys;
+                    help.search.clear();
                 }
             }
             Action::ShowAbout => {
                 // The shortcuts dialog offers it, and gives way to it.
-                if matches!(self.dialog, None | Some(Dialog::Help)) {
+                if matches!(self.dialog, None | Some(Dialog::Help(_))) {
                     self.dialog = Some(Dialog::About);
                 }
             }
@@ -4582,6 +4607,7 @@ impl App {
                 if let Some(schema) = default {
                     self.expand_schema(tab, &schema);
                 }
+                self.send_databases_after_tree(tab);
             }
             Event::Objects {
                 session,
@@ -5138,6 +5164,10 @@ impl App {
                         cancel,
                     )
                 });
+                let catalog_changed = sql
+                    .in_flight
+                    .as_ref()
+                    .is_some_and(|run| changed_catalog(dialect, &run.statements, &result));
                 let messages = opens_messages(&result, cancel);
                 if sql.finish_run(request, result, cancel) {
                     sql.set_cursor(None, Reach::End);
@@ -5149,6 +5179,11 @@ impl App {
                 }
                 for entry in ran.unwrap_or_default() {
                     self.record(entry);
+                }
+                // A table made or dropped shows in the sidebar without a
+                // click on its refresh.
+                if catalog_changed && let Some(tab) = self.tab_for_session(session) {
+                    self.refresh_tree(tab);
                 }
             }
         }
@@ -6253,27 +6288,39 @@ impl App {
     pub fn after_connect(&mut self, tab: ConnTabId) {
         if let Some(workspace) = self.workspace(tab) {
             match workspace.driver {
-                // The one driver with other databases to switch to.
-                Driver::Postgres => {
-                    let session = workspace.session;
-                    let request = RequestId(self.next_id());
-                    if let Some(workspace) = self.workspace_mut(tab) {
-                        workspace.databases.start(request);
-                    }
-                    self.backend
-                        .send(Command::ListDatabases { session, request });
-                }
-                Driver::MySql | Driver::Sqlite | Driver::BigQuery => {}
-                // Keys, not tables: the browser reads them.
+                // Keys, not tables: the browser reads them, and there is no
+                // server version, zone or tree to ask for.
                 Driver::Redis => {
                     self.redis_after_connect(tab);
                     return;
                 }
+                Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => {}
             }
         }
         self.ask_server_version(tab);
         self.ask_session_zone(tab);
         self.refresh_tree(tab);
+        // After the tree: the databases' listing waits on a check of its
+        // own for PgBouncer, and its catalog query would hold up the
+        // default schema's objects, so it goes when the schemas answer.
+        if let Some(workspace) = self.workspace(tab) {
+            match workspace.driver {
+                // The one driver with other databases to switch to.
+                Driver::Postgres => {
+                    let waits = workspace.tree.schemas.is_loading();
+                    let request = RequestId(self.next_id());
+                    if let Some(workspace) = self.workspace_mut(tab) {
+                        workspace.databases.start(request);
+                        workspace.databases_after_tree = Some(request);
+                    }
+                    if !waits {
+                        self.send_databases_after_tree(tab);
+                    }
+                }
+                // Redis went to its browser above.
+                Driver::MySql | Driver::Sqlite | Driver::BigQuery | Driver::Redis => {}
+            }
+        }
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
@@ -6529,6 +6576,22 @@ impl App {
             request,
             schema: schema.to_owned(),
         });
+    }
+
+    /// Sends the databases' listing a connect held back for the tree, if
+    /// it is still the one the switcher waits for.
+    fn send_databases_after_tree(&mut self, tab: ConnTabId) {
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        let Some(request) = workspace.databases_after_tree.take() else {
+            return;
+        };
+        if workspace.databases.pending == Some(request) {
+            let session = workspace.session;
+            self.backend
+                .send(Command::ListDatabases { session, request });
+        }
     }
 
     pub fn expand_schema(&mut self, tab: ConnTabId, schema: &str) {
@@ -9064,6 +9127,38 @@ fn script_mode(
 /// is written, its commit failed, the database could not undo all of it,
 /// or its session had to be closed. A run the user stopped after rows came
 /// back stays on Results.
+/// Whether a run left a change to the catalog behind: one of the
+/// statements whose work remains once its transaction ended creates, drops
+/// or alters something. A run rolled back leaves none, unless the database
+/// could not say so (MySQL's DDL that failed half done): then any statement
+/// that started counts.
+fn changed_catalog(
+    dialect: tabletist_db::Dialect,
+    statements: &[tabletist_db::sql::Statement],
+    result: &Result<tabletist_db::ScriptOutcome, Error>,
+) -> bool {
+    use tabletist_db::ScriptEnd;
+    let Ok(outcome) = result else {
+        return false;
+    };
+    let started = outcome.results.len();
+    let kept = if outcome.rollback_warning.is_some() {
+        started
+    } else {
+        match outcome.end {
+            ScriptEnd::RolledBack => 0,
+            ScriptEnd::Committed => started,
+            ScriptEnd::Partly { committed } | ScriptEnd::CommitFailed { committed, .. } => {
+                committed
+            }
+        }
+    };
+    statements
+        .iter()
+        .take(kept.min(started))
+        .any(|statement| tabletist_db::sql::changes_catalog(dialect, &statement.text))
+}
+
 fn opens_messages(
     result: &Result<tabletist_db::ScriptOutcome, Error>,
     cancel: Option<CancelReason>,
@@ -15155,6 +15250,55 @@ masked = ["orders.email"]
     }
 
     #[test]
+    fn a_run_that_made_or_dropped_a_table_refreshes_the_sidebar() {
+        use crate::testing::{done_outcome, error_outcome, write_outcome};
+        use tabletist_db::ScriptEnd;
+        let mut harness = Harness::new();
+        let (tab, id) = writable_sql(&mut harness);
+        set_mode(&mut harness, tab, id, RunMode::ReadWrite);
+        let done = || done_outcome(None);
+        let failed = || error_outcome("no", None);
+        for (text, outcome, refreshes) in [
+            (
+                "CREATE TABLE notes (seen int)",
+                write_outcome(vec![done()], ScriptEnd::Committed),
+                true,
+            ),
+            (
+                "DELETE FROM users WHERE id = 1; DROP TABLE users",
+                write_outcome(vec![done(), done()], ScriptEnd::Committed),
+                true,
+            ),
+            // Rolled back: the tables are as they were.
+            (
+                "CREATE TABLE notes (seen int); SELECT x",
+                write_outcome(vec![done(), failed()], ScriptEnd::RolledBack),
+                false,
+            ),
+            // MySQL committed the first on its own; the DROP never ran.
+            (
+                "INSERT INTO users (email) VALUES ('a'); SELECT x; DROP TABLE users",
+                write_outcome(vec![done(), failed()], ScriptEnd::Partly { committed: 1 }),
+                false,
+            ),
+            (
+                "UPDATE users SET email = 'x' WHERE id = 1",
+                write_outcome(vec![done()], ScriptEnd::Committed),
+                false,
+            ),
+        ] {
+            type_sql(&mut harness, tab, id, text, 0);
+            run(&mut harness, tab, id, true);
+            let sent = harness.app.backend.sent.len();
+            harness.answer_sql(Ok(outcome), None);
+            let listed = harness.app.backend.sent[sent..]
+                .iter()
+                .any(|command| matches!(command, Command::ListSchemas { .. }));
+            assert_eq!(listed, refreshes, "{text}");
+        }
+    }
+
+    #[test]
     fn nothing_is_sent_to_write_where_the_session_cannot() {
         use tabletist_db::ScriptMode::ReadOnly;
         let write = "DELETE FROM users WHERE id = 1";
@@ -17111,7 +17255,7 @@ masked = ["orders.email"]
         }
     }
 
-    fn connected_postgres(app: &mut App) -> ConnTabId {
+    fn connected_postgres_unanswered(app: &mut App) -> ConnTabId {
         let conn = postgres_saved(app, PasswordMode::None);
         let tab = app.active_tab_id();
         app.apply(Action::Connect { tab, conn });
@@ -17130,6 +17274,86 @@ masked = ["orders.email"]
             access: crate::testing::asked_access(app),
         }));
         tab
+    }
+
+    /// [`connected_postgres_unanswered`], with the schemas answered: the
+    /// databases' listing is sent.
+    fn connected_postgres(app: &mut App) -> ConnTabId {
+        let tab = connected_postgres_unanswered(app);
+        answer_schemas(app, Ok(vec!["public".into()]));
+        tab
+    }
+
+    /// Answers the schemas' listing the last connect sent.
+    fn answer_schemas(app: &mut App, result: Result<Vec<String>, tabletist_db::Error>) {
+        let Some((session, request)) = app.backend.sent.iter().rev().find_map(|c| match c {
+            Command::ListSchemas { session, request } => Some((*session, *request)),
+            _ => None,
+        }) else {
+            panic!("expected ListSchemas");
+        };
+        app.apply(Action::Backend(Event::Schemas {
+            session,
+            request,
+            result,
+        }));
+    }
+
+    fn sent_databases(app: &App) -> usize {
+        app.backend
+            .sent
+            .iter()
+            .filter(|c| matches!(c, Command::ListDatabases { .. }))
+            .count()
+    }
+
+    #[test]
+    fn postgres_tabs_ask_for_the_default_schema_before_the_databases() {
+        let (mut app, _dir) = app();
+        let tab = connected_postgres_unanswered(&mut app);
+        // The listing waits for the schemas, while the switcher shows it
+        // loading.
+        assert_eq!(sent_databases(&app), 0);
+        assert!(app.workspace(tab).unwrap().databases.is_loading());
+        answer_schemas(&mut app, Ok(vec!["public".into()]));
+        let at = |wanted: fn(&Command) -> bool| app.backend.sent.iter().position(wanted);
+        let objects = at(|c| matches!(c, Command::ListObjects { .. })).expect("ListObjects");
+        let databases = at(|c| matches!(c, Command::ListDatabases { .. })).expect("ListDatabases");
+        assert!(objects < databases);
+    }
+
+    #[test]
+    fn a_cancel_before_the_schemas_answer_keeps_the_databases_from_being_listed() {
+        let (mut app, _dir) = app();
+        let tab = connected_postgres_unanswered(&mut app);
+        let held = app.workspace(tab).unwrap().databases.pending;
+        app.apply(Action::CancelQuery(tab));
+        // Not sent to the session: it never had it.
+        assert!(
+            !app.backend
+                .sent
+                .iter()
+                .any(|c| matches!(c, Command::Cancel { request, .. } if Some(*request) == held))
+        );
+        let databases = &app.workspace(tab).unwrap().databases;
+        assert!(!databases.is_loading());
+        assert!(matches!(
+            databases.error,
+            Some(tabletist_db::Error::Cancelled)
+        ));
+        // The schemas' answer the cancel came too late for.
+        answer_schemas(&mut app, Ok(vec!["public".into()]));
+        assert_eq!(sent_databases(&app), 0);
+    }
+
+    #[test]
+    fn postgres_tabs_list_their_databases_when_the_schemas_fail_or_are_empty() {
+        for result in [Err(tabletist_db::Error::query("denied")), Ok(Vec::new())] {
+            let (mut app, _dir) = app();
+            connected_postgres_unanswered(&mut app);
+            answer_schemas(&mut app, result);
+            assert_eq!(sent_databases(&app), 1);
+        }
     }
 
     #[test]
@@ -21618,7 +21842,7 @@ masked = ["orders.email"]
             type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
             harness.app.apply(Action::ShowHelp);
             harness.app.apply(Action::CloseTab { tab, id });
-            assert!(matches!(harness.app.dialog, Some(Dialog::Help)));
+            assert!(matches!(harness.app.dialog, Some(Dialog::Help(_))));
             assert!(harness.app.notice.is_some());
             assert!(harness.app.workspace(tab).unwrap().object_tab(id).is_some());
             harness.app.apply(Action::CloseDialog);
@@ -23191,7 +23415,7 @@ masked = ["orders.email"]
                 Action::CancelWrite,
             ] {
                 harness.app.apply(answer);
-                assert!(matches!(harness.app.dialog, Some(Dialog::Help)));
+                assert!(matches!(harness.app.dialog, Some(Dialog::Help(_))));
             }
             assert_eq!(object(&harness, tab, id).edits.cells.len(), 1);
             assert_eq!(writes(&harness), 0);
@@ -23204,7 +23428,7 @@ masked = ["orders.email"]
             type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
             harness.app.apply(Action::ShowHelp);
             harness.app.apply(Action::WriteEdits { tab, id });
-            assert!(matches!(harness.app.dialog, Some(Dialog::Help)));
+            assert!(matches!(harness.app.dialog, Some(Dialog::Help(_))));
             assert_eq!(writes(&harness), 0);
             assert!(object(&harness, tab, id).edits.saving.is_none());
             // With the dialog closed it asks.
@@ -23820,7 +24044,7 @@ masked = ["orders.email"]
                 at: 0,
                 answer: Answer::UseServer,
             });
-            assert!(matches!(harness.app.dialog, Some(Dialog::Help)));
+            assert!(matches!(harness.app.dialog, Some(Dialog::Help(_))));
             assert_eq!(pending(&harness, tab, id), [(1, 1), (3, 1)]);
         }
 
@@ -24033,7 +24257,7 @@ masked = ["orders.email"]
                 2,
                 "eve@example.com",
             )])));
-            assert!(matches!(harness.app.dialog, Some(Dialog::Help)));
+            assert!(matches!(harness.app.dialog, Some(Dialog::Help(_))));
             let line = Some(crate::edit::Note::Conflict {
                 row: 1,
                 gone: false,

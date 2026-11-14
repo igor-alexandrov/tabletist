@@ -318,6 +318,13 @@ async fn hiding(connection: &Connection, tables: &Tables, sql: &str) -> Result<A
         .await
 }
 
+/// Whether the connection's server is MariaDB, which some tests find
+/// answering otherwise than MySQL.
+async fn on_mariadb(connection: &Connection) -> bool {
+    let version = connection.server_version().await.unwrap();
+    version.starts_with("MariaDB")
+}
+
 /// Refused as hidden: `name`, read for `through` where that is given.
 fn hidden_refusal(name: &str, through: Option<&str>) -> Error {
     Error::Agent(Refusal::TableHidden {
@@ -447,23 +454,29 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
             assert_eq!(error, hidden_refusal("stock_moves", None), "{on}");
         }
         Dialect::MySql => {
-            // A view of which the server lists no table it reads, as for a
-            // user without SHOW VIEW: what it reads cannot be told, so it
-            // is hidden while anything is, and reads where nothing is.
+            // A view of which MySQL lists no table it reads, as it lists
+            // none for a user without SHOW VIEW: what it reads cannot be
+            // told, so it is hidden while anything is, and reads where
+            // nothing is. MariaDB's definition says it reads none.
             let greeting = "SELECT * FROM shop_greeting";
-            let error = hiding(connection, &customers, greeting).await.unwrap_err();
-            assert_eq!(error, hidden_refusal("shop_greeting", None), "{on}");
+            let welcome = Ok(vec![vec![Value::Text("Welcome".into())]]);
+            let mariadb = on_mariadb(connection).await;
+            let found = hiding(connection, &customers, greeting).await;
+            match mariadb {
+                true => assert_eq!(found.map(|answer| answer.rows), welcome, "{on}"),
+                false => assert_eq!(
+                    found.unwrap_err(),
+                    hidden_refusal("shop_greeting", None),
+                    "{on}"
+                ),
+            }
             let hidden = connection
                 .agent_hidden(&Sources::person(customers.clone(), Vec::new()))
                 .await
                 .unwrap();
-            assert!(hidden.hides("bookshop", "shop_greeting"), "{on}");
+            assert_eq!(hidden.hides("bookshop", "shop_greeting"), !mariadb, "{on}");
             let found = hiding(connection, &Tables::All, greeting).await;
-            assert_eq!(
-                found.map(|answer| answer.rows),
-                Ok(vec![vec![Value::Text("Welcome".into())]]),
-                "{on}"
-            );
+            assert_eq!(found.map(|answer| answer.rows), welcome, "{on}");
             // An index hint's FOR, and an alias after it.
             let hinted = "SELECT * FROM books FORCE INDEX FOR JOIN (PRIMARY), customers c";
             let error = hiding(connection, &customers, hinted).await.unwrap_err();
@@ -1772,6 +1785,35 @@ mod mysql {
         }
     }
 
+    /// A view over a system catalog, which describes the hidden tables
+    /// too: hidden while anything is, merged or not, whatever the catalog
+    /// says it reads.
+    #[tokio::test]
+    async fn a_view_over_a_system_catalog_is_hidden_on_mysql() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        let url = std::env::var("TABLETIST_TEST_MYSQL_URL").unwrap();
+        let mut owner = admin(&url).await;
+        owner
+            .query_drop(
+                "CREATE OR REPLACE VIEW bookshop.table_names AS SELECT table_name AS name \
+                 FROM information_schema.tables GROUP BY table_name",
+            )
+            .await
+            .unwrap();
+        let customers = Tables::AllExcept(vec![named("customers")]);
+        let sql = "SELECT count(*) FROM table_names";
+        let found = hiding(&connection, &customers, sql).await;
+        let read = hiding(&connection, &Tables::All, sql).await;
+        owner
+            .query_drop("DROP VIEW bookshop.table_names")
+            .await
+            .unwrap();
+        assert_eq!(found.unwrap_err(), hidden_refusal("table_names", None));
+        assert!(read.is_ok(), "{read:?}");
+    }
+
     #[tokio::test]
     async fn a_masked_columns_values_are_never_answered_on_mysql() {
         let Some(connection) = bookshop().await else {
@@ -1922,7 +1964,12 @@ mod mysql {
             return;
         };
         let on = "mysql";
-        let limit = "SELECT @@session.max_execution_time";
+        // MariaDB has no `max_execution_time`: its `max_statement_time`
+        // is in seconds.
+        let limit = match on_mariadb(&connection).await {
+            true => "SELECT CAST(@@session.max_statement_time * 1000 AS SIGNED)",
+            false => "SELECT @@session.max_execution_time",
+        };
         let none = [[Value::Int(0)]];
         read(&connection, "SELECT count(*) FROM books", &[], on).await;
         assert_eq!(rows_of(&connection, limit, on).await, none);

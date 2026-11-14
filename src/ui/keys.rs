@@ -973,7 +973,9 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         {
             menu_asked = true;
         }
-        if !on_sql && on(input, Command::Reload, Scope::Grid).count > 0 {
+        // A SQL editor has nothing to reload, but the tree beside it does
+        // when it has the keys.
+        if (!on_sql || tree_arrows) && on(input, Command::Reload, Scope::Grid).count > 0 {
             // The tree reloads itself when it has the arrows (spec 5.10).
             actions.push(if tree_arrows {
                 Action::RefreshTree(active)
@@ -1458,6 +1460,12 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
 /// The text size keys, wherever the keyboard is: under a dialog too, where
 /// [`handle`] reads no key. The Settings window shows what they change.
 pub fn text_size(app: &mut App, ctx: &egui::Context) {
+    // The shortcuts' search field finds them instead.
+    if matches!(app.dialog, Some(crate::model::Dialog::Help(_)))
+        && crate::ui::help::field_has_keyboard(ctx)
+    {
+        return;
+    }
     let layout = app.layout();
     // In a field as out of one: no field takes these chords.
     let normal = !ctx.text_edit_focused();
@@ -2661,9 +2669,10 @@ fn letters(
         take_char(ctx, char);
         let tab = app.active_tab_id();
         match command {
-            // A SQL editor has nothing to reload.
-            Command::Reload if app.active_sql().is_some() => {}
+            // The tree reloads itself whatever tab is in front; a SQL
+            // editor has nothing to reload.
             Command::Reload if tree_arrows => actions.push(Action::RefreshTree(tab)),
+            Command::Reload if app.active_sql().is_some() => {}
             Command::Reload => actions.push(Action::Refresh(tab)),
             Command::FilterObjects => {
                 use crate::ui::focus::{self, Region};

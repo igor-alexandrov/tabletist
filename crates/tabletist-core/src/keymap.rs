@@ -3093,6 +3093,72 @@ pub fn spells(keys: &str) -> bool {
     }
 }
 
+/// What a person typed as a key, read as a spelling: `cmd`, `command` or
+/// `⌘`; `ctrl`, `control` or `⌃`; `alt`, `opt`, `option` or `⌥`; `shift`
+/// or `⇧`; joined by `+`, `-` or spaces, the key last, in any case. With
+/// nothing held it is one character, which keeps its case (Omarchy's `R`
+/// is not its `r`), or a key's name (`f5`). None for what reads as no key:
+/// a word is matched as the words it is.
+pub fn spell_typed(text: &str) -> Option<Spelled> {
+    let mut expanded = String::new();
+    for char in text.trim().chars() {
+        match char {
+            '⌘' => expanded.push_str(" cmd "),
+            '⌃' => expanded.push_str(" ctrl "),
+            '⌥' => expanded.push_str(" alt "),
+            '⇧' => expanded.push_str(" shift "),
+            other => expanded.push(other),
+        }
+    }
+    let joins = |char: char| char == '+' || char == '-' || char.is_whitespace();
+    let expanded = expanded.trim();
+    // A `-` or `+` at the end after a join is the key itself (`cmd+-`,
+    // `⌘-`), not one more join.
+    let last = expanded
+        .char_indices()
+        .last()
+        .filter(|(at, char)| joins(*char) && expanded[..*at].chars().last().is_none_or(joins));
+    let (held_text, key) = match last {
+        Some((at, _)) => (&expanded[..at], Some(&expanded[at..])),
+        None => (expanded, None),
+    };
+    let mut parts: Vec<&str> = held_text
+        .split(joins)
+        .filter(|part| !part.is_empty())
+        .collect();
+    parts.extend(key);
+    let (key, held) = parts.split_last()?;
+    if held.is_empty() {
+        if let Some(key) = named(&key.to_lowercase()) {
+            let mods = Mods::default();
+            return Some(Spelled::Strokes(vec![Stroke::Key { mods, key }]));
+        }
+        return (key.chars().count() == 1)
+            .then(|| spell_keys(key).ok())
+            .flatten();
+    }
+    // The order the keymap spells them in.
+    let mut mods = [false; 4];
+    for word in held {
+        let at = match word.to_lowercase().as_str() {
+            "cmd" | "command" => 0,
+            "ctrl" | "control" => 1,
+            "alt" | "opt" | "option" => 2,
+            "shift" => 3,
+            _ => return None,
+        };
+        mods[at] = true;
+    }
+    let mut spelled = String::new();
+    for (held, word) in mods.iter().zip(["cmd+", "ctrl+", "alt+", "shift+"]) {
+        if *held {
+            spelled.push_str(word);
+        }
+    }
+    spelled.push_str(&key.to_lowercase());
+    spell_keys(&spelled).ok()
+}
+
 /// Reads a spelling that is no line of the prompt: keys, or a range of
 /// digits, which hold nothing of the text.
 fn spell_keys(keys: &str) -> Result<Spelled, Unread> {
@@ -3537,6 +3603,17 @@ impl Keymap {
     /// Every key of `command` as `layout` writes them, for a list of keys:
     /// each line's keys once, `, ` between them. Empty where it has none.
     pub fn label(&self, layout: Layout, command: Command) -> Written {
+        let caps: Vec<String> = self
+            .caps(layout, command)
+            .into_iter()
+            .map(|cap| cap.0)
+            .collect();
+        Written(caps.join(", "))
+    }
+
+    /// [`Keymap::label`]'s keys one by one, as `layout` writes each: what
+    /// a key typed in a search is compared with.
+    pub fn caps(&self, layout: Layout, command: Command) -> Vec<Written> {
         let built = command.info().built;
         let mut all: Vec<String> = Vec::new();
         for binding in self.of(command) {
@@ -3559,7 +3636,21 @@ impl Keymap {
                 }
             }
         }
-        Written(all.join(", "))
+        all.into_iter().map(Written).collect()
+    }
+
+    /// A command's keys in `layout`, every line of it, as spelled: what a
+    /// key pressed or typed to find it is compared with.
+    pub fn command_keys(&self, layout: Layout, command: Command) -> Vec<&'static str> {
+        let mut keys: Vec<&'static str> = Vec::new();
+        for binding in self.of(command) {
+            for chord in binding.bound(layout).chords {
+                if chord.kind != Kind::Via && !keys.contains(&chord.keys) {
+                    keys.push(chord.keys);
+                }
+            }
+        }
+        keys
     }
 
     /// The lines that can answer in `scope`: its own and the global ones
@@ -4415,6 +4506,69 @@ pub fn spoken(layout: Layout, keys: &'static str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_keys_read_as_a_person_types_them() {
+        let cmd_r = spell("cmd+r").unwrap();
+        for text in ["cmd+r", "cmd r", "Cmd-R", "command+r", "⌘r", "⌘R", " ⌘ R "] {
+            let typed = spell_typed(text).unwrap_or_else(|| panic!("{text}"));
+            assert!(same(Layout::Mac, &typed, &cmd_r), "{text}");
+        }
+        let shifted = spell("cmd+shift+f").unwrap();
+        for text in ["shift+cmd+f", "⇧⌘F", "cmd+shift+F"] {
+            let typed = spell_typed(text).unwrap();
+            assert!(same(Layout::Mac, &typed, &shifted), "{text}");
+        }
+        for (typed, spelled) in [
+            ("opt+e", "alt+e"),
+            ("control+r", "ctrl+r"),
+            ("F5", "f5"),
+            ("Enter", "enter"),
+            ("?", "?"),
+        ] {
+            let typed = spell_typed(typed).unwrap();
+            let spelled = spell(spelled).unwrap();
+            assert!(same(Layout::Mac, &typed, &spelled), "{spelled:?}");
+        }
+        // A `-` or `+` at the end is the key, whatever joins it.
+        let smaller = spell("cmd+-").unwrap();
+        for text in ["cmd+-", "cmd -", "cmd--", "⌘-", "command+-"] {
+            let typed = spell_typed(text).unwrap_or_else(|| panic!("{text}"));
+            assert!(same(Layout::Mac, &typed, &smaller), "{text}");
+        }
+        let typed = spell_typed("ctrl+-").unwrap();
+        assert!(same(Layout::Omarchy, &typed, &spell("ctrl+-").unwrap()));
+        assert!(spell_typed("cmd-").is_none());
+        // A key alone keeps its case: Omarchy's R is not its r.
+        let shift_r = spell_typed("R").unwrap();
+        assert!(same(Layout::Omarchy, &shift_r, &spell("R").unwrap()));
+        assert!(!same(Layout::Omarchy, &shift_r, &spell("r").unwrap()));
+        // Words are words, and a word held is no key.
+        for text in ["row", "", "  ", "super+t", "ctrl+", "reload all"] {
+            assert!(spell_typed(text).is_none(), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_commands_caps_are_its_label_one_by_one() {
+        let keymap = Keymap::default();
+        for layout in [Layout::Mac, Layout::Windows, Layout::Omarchy] {
+            for command in Command::ALL {
+                let caps: Vec<String> = keymap
+                    .caps(layout, *command)
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect();
+                let label = keymap.label(layout, *command);
+                assert_eq!(caps.join(", "), label.as_str(), "{command:?}");
+            }
+        }
+        assert!(
+            keymap
+                .command_keys(Layout::Mac, Command::Reload)
+                .contains(&"cmd+r")
+        );
+    }
 
     #[test]
     fn a_command_is_named_in_the_file_by_a_stable_snake_case_id() {
