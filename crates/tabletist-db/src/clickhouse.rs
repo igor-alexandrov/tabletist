@@ -10,9 +10,10 @@
 //! which is how [`Canceller`] stops it: `KILL QUERY` on another request,
 //! for a dropped connection does not stop a query.
 
+use std::hash::{BuildHasher, RandomState};
 use std::io::{BufRead, BufReader};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::{ColumnMeta, Error, Result, RowPage, Value, ValueKind};
@@ -191,12 +192,16 @@ impl Http {
 
 type Rows = Vec<Vec<Value>>;
 
-/// A `query_id` no other statement of this process has.
+/// A `query_id` no other statement has. The server holds it, so it must
+/// differ from other machines' and other copies' too: a pid repeats across
+/// containers, so the process's part is random (`RandomState` keys come
+/// from the system's randomness), and a counter tells this process's apart.
 fn query_id() -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
+    static PROCESS: OnceLock<u64> = OnceLock::new();
+    let process = *PROCESS.get_or_init(|| RandomState::new().hash_one(std::process::id()));
     format!(
-        "tabletist-{}-{}",
-        std::process::id(),
+        "tabletist-{process:016x}-{}",
         NEXT.fetch_add(1, Ordering::Relaxed)
     )
 }
@@ -448,6 +453,31 @@ fn value(type_name: &str, field: &[u8]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_query_id_holds_a_random_part_for_the_process() {
+        let first = query_id();
+        let second = query_id();
+        assert_ne!(first, second);
+        // `tabletist-<16 hex digits, random per process>-<counter>`: a
+        // pid alone repeats across machines and containers.
+        let (process, _) = first
+            .strip_prefix("tabletist-")
+            .and_then(|rest| rest.split_once('-'))
+            .unwrap();
+        assert_eq!(process.len(), 16, "{first}");
+        assert!(process.bytes().all(|b| b.is_ascii_hexdigit()), "{first}");
+        assert_eq!(
+            first.rsplit_once('-').unwrap().0,
+            second.rsplit_once('-').unwrap().0
+        );
+        // `kill` quotes it as it is.
+        assert!(
+            first
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        );
+    }
 
     fn read(body: &str, wanted: u64, tag: Option<&str>) -> Result<(Vec<ColumnMeta>, Rows)> {
         read_tsv(body.as_bytes(), wanted, tag)
