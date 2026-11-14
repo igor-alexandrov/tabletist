@@ -9,7 +9,7 @@ mod support;
 use std::time::{Duration, Instant};
 
 use rmcp::model::{CallToolRequest, ClientRequest};
-use rmcp::service::{PeerRequestOptions, ServiceError};
+use rmcp::service::PeerRequestOptions;
 use serde_json::json;
 use support::{Agent, LIMITS, Raw, Shop, entries, request, server, slow};
 use tabletist_db::agent::Limits;
@@ -98,22 +98,24 @@ async fn a_call_the_client_cancels_is_ended_at_the_database() {
     let shop = Shop::new();
     let (server, log) = server(&shop);
     let agent = Agent::connect(&server).await;
-    // The SDK's client cancels a request it has waited this long for.
     let arguments = json!({ "connection": "Bookshop · dev", "sql": slow(6) });
     let sent = agent
         .client
         .send_cancellable_request(
             ClientRequest::CallToolRequest(CallToolRequest::new(request("run_query", arguments))),
-            PeerRequestOptions::with_timeout(Duration::from_millis(300)),
+            PeerRequestOptions::no_options(),
         )
         .await
         .unwrap();
+    // The client cancels once the statement runs. A cancel that came
+    // sooner would end the call before anything ran, on a slow machine.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while shop.reads_begun() == 0 {
+        assert!(Instant::now() < deadline, "the read never began");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     let started = Instant::now();
-    let answer = sent.await_response().await;
-    assert!(
-        matches!(answer, Err(ServiceError::Timeout { .. })),
-        "{answer:?}"
-    );
+    sent.cancel(Some("enough".into())).await.unwrap();
     let entries = logged(&log, 1).await;
     assert_eq!(entries[0].result, "cancelled");
     assert_eq!(entries[0].code.as_deref(), Some("cancelled"));
