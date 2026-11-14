@@ -69,6 +69,36 @@ async fn a_page_keeps_its_rows_and_says_whether_more_follow() {
 }
 
 #[tokio::test]
+async fn the_page_limit_does_not_cut_a_subquery_short() {
+    let Some(http) = http() else { return };
+    // `max_result_rows` with `result_overflow_mode=break` caps the page.
+    // The documentation says it is checked for subqueries too, which would
+    // let one stop at its first block and the page show a wrong answer:
+    // each subquery here is far past the page and past a block.
+    for (sql, expected) in [
+        (
+            "SELECT count() FROM (SELECT number FROM numbers(1000000)) \
+             SETTINGS max_block_size = 1000",
+            1_000_000,
+        ),
+        (
+            "SELECT count() FROM numbers(1000000) \
+             WHERE number IN (SELECT number FROM numbers(500000)) \
+             SETTINGS max_block_size = 1000",
+            500_000,
+        ),
+        (
+            "SELECT sum(c) FROM (SELECT number % 1000 AS k, count() AS c \
+             FROM numbers(1000000) GROUP BY k) SETTINGS max_block_size = 1000",
+            1_000_000,
+        ),
+    ] {
+        let page = http.select_page(sql.into(), 10).await.unwrap();
+        assert_eq!(page.rows, [vec![Value::Int(expected)]], "{sql}");
+    }
+}
+
+#[tokio::test]
 async fn a_read_cannot_write() {
     let Some(http) = http() else { return };
     let error = http

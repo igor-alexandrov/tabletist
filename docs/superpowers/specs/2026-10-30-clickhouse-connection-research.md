@@ -271,6 +271,14 @@ as PostgreSQL and MySQL have them, makes the reads async instead of
 `spawn_blocking`, and still adds no crate. The official `clickhouse`
 crate is no longer needed as a fallback: nothing the spike did needed it.
 
+The page's cap (`max_result_rows` with `result_overflow_mode=break`)
+does not cut a subquery short, though the settings' documentation says
+the limit is checked for subqueries too: probed on 25.8 and 26.10 with
+a page of 10 rows and 1000-row blocks, `count()` over a subquery of a
+million rows, `IN (SELECT …)` and a sum over a `GROUP BY` all came back
+exact. `the_page_limit_does_not_cut_a_subquery_short` holds it, so a
+server that starts cutting fails a test.
+
 Not tried: a user whose profile is `readonly=1` (every setting in the
 URL is refused), HTTPS, ClickHouse Cloud.
 
