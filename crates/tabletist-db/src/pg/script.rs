@@ -363,7 +363,7 @@ fn opening(sent: Option<Sent<'_>>) -> String {
 /// separate swap too: that statement's flight made the swap's check before
 /// its cursor, and a row statement cannot end the transaction. Its own
 /// flight makes the check again.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // two call sites: the run that reads and the run that writes
 async fn statements(
     client: &tokio_postgres::Client,
     texts: &[String],
