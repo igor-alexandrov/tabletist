@@ -29,6 +29,7 @@ pub(crate) use cancel::Cancel;
 mod ddl;
 mod hidden;
 mod script;
+mod views;
 mod write;
 
 /// How every session prints a float and a time, whatever the server, the
