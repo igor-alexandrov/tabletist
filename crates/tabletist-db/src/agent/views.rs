@@ -11,6 +11,12 @@
 //! any letters, wherever they stand, so a column or a string that bears a
 //! refused view's name is refused with it. That errs toward refusing, and
 //! only ever where a view calls what it may not.
+//!
+//! Only the views the connection's user is shown are followed. A view the
+//! user holds no privilege on is listed to it nowhere, so a view it may
+//! read that the server runs with its definer's rights (`SQL SECURITY
+//! DEFINER`) may read one that calls what an agent may not, and that call
+//! is not seen.
 
 use super::Refusal;
 use super::hidden::refused_call;
@@ -45,8 +51,28 @@ impl Why {
     }
 }
 
+/// The schemas MySQL and MariaDB make and keep for themselves. Their views
+/// come with the server and call nothing an agent may not; a user who may
+/// read every table but not see a view's body (`GRANT SELECT ON *.*`) is
+/// shown each of them, `sys`'s `session` and `metrics` among them, with
+/// none.
+pub(crate) const MYSQL_OWN_SCHEMAS: [&str; 4] =
+    ["information_schema", "mysql", "performance_schema", "sys"];
+
+/// Whether `view` is one the server made for itself.
+fn servers_own(dialect: Dialect, view: &View) -> bool {
+    let own: &[&str] = match dialect {
+        Dialect::MySql => &MYSQL_OWN_SCHEMAS,
+        Dialect::Postgres | Dialect::Sqlite | Dialect::BigQuery => &[],
+    };
+    own.iter().any(|own| view.schema.eq_ignore_ascii_case(own))
+}
+
 /// Why `view` itself may not be read, by its own body alone.
 fn by_itself(dialect: Dialect, view: &View) -> Option<Why> {
+    if servers_own(dialect, view) {
+        return None;
+    }
     if view.definition.trim().is_empty() {
         return Some(Why::Unseen(format!("{}.{}", view.schema, view.name)));
     }
@@ -213,6 +239,43 @@ mod tests {
             unseen
         );
         assert_eq!(check(Dialect::MySql, "SELECT * FROM books", &views), Ok(()));
+    }
+
+    /// The server's own views, shown without a body to a user who may read
+    /// every table, refuse nothing, a table of the same name least of all.
+    #[test]
+    fn the_servers_own_views_are_not_refused() {
+        let views: Vec<View> = ["sys", "SYS", "mysql", "performance_schema"]
+            .into_iter()
+            .map(|schema| View {
+                schema: schema.into(),
+                name: "session".into(),
+                definition: String::new(),
+            })
+            .collect();
+        assert!(!any_refused(Dialect::MySql, &views));
+        for text in [
+            "SELECT * FROM bookshop.session",
+            "SELECT @@session.time_zone",
+            "SELECT * FROM sys.session",
+        ] {
+            assert_eq!(check(Dialect::MySql, text, &views), Ok(()), "{text}");
+        }
+    }
+
+    /// A view the user is not shown is not followed: a view it may read,
+    /// whose body names it, reads, whatever it calls.
+    #[test]
+    fn a_view_the_user_is_not_shown_is_not_followed() {
+        let views = [view(
+            "outer_v",
+            "select `v`.`id` AS `id` from `other`.`inner_v` `v`",
+        )];
+        assert!(!any_refused(Dialect::MySql, &views));
+        assert_eq!(
+            check(Dialect::MySql, "SELECT * FROM outer_v", &views),
+            Ok(())
+        );
     }
 
     #[test]
