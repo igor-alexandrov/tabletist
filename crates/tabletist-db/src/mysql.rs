@@ -1233,9 +1233,17 @@ impl Adapter for Conn {
         self.stream_sql(&sql, batch, to, stop).await
     }
 
+    /// The number of rows, inside a read-only transaction, in one message
+    /// (see [`count_in_one`]). A count that one message did not read is
+    /// read in three round trips: the start with the byte string columns
+    /// asked in its message, the prepared statement's run, the rollback.
     async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
         let mut session = self.conn.lock().await;
         let conn = session.conn()?;
+        let known = self.known_shape(&query.object);
+        if let Some(counted) = count_in_one(conn, query, known.as_ref()).await? {
+            return Ok(counted);
+        }
         let outcome = async {
             let binary = begin_shaped(conn, query).await?;
             let sql = Dialect::MySql.count_rows(query, &binary)?;
@@ -1663,12 +1671,13 @@ async fn page_in_three(
     end_read(conn, outcome).await
 }
 
-/// The name of the statement [`page_in_one`] prepares on the server, and
-/// of the user variables it sets: the text as `@tabletist_page`, the
-/// values as `@tabletist_page_1` and on. They are set back to NULL, and the
-/// statement deallocated, in the same message, after the run; a message
-/// that stopped before then leaves them for the next page to replace, or
-/// the session reset after a SQL editor run to drop.
+/// The name of the statement [`page_in_one`] and [`count_in_one`] prepare
+/// on the server, and of the user variables they set: the text as
+/// `@tabletist_page`, the values as `@tabletist_page_1` and on. They are
+/// set back to NULL, and the statement deallocated, in the same message,
+/// after the run; a message that stopped before then leaves them for the
+/// next page or count to replace, or the session reset after a SQL editor
+/// run to drop.
 const PAGE: &str = "tabletist_page";
 
 /// What `EXECUTE` answers when it is given another number of values than
@@ -1707,43 +1716,14 @@ async fn page_in_one(
     };
     let at = [query.object.schema.as_str(), query.object.name.as_str()];
     let reads_bytes = crate::dialect::reads_bytes(query);
-    let mut steps = Vec::new();
-    // As `begin_read_asking`: `START TRANSACTION` would commit it.
-    if status(conn).contains(StatusFlags::SERVER_STATUS_IN_TRANS) {
-        steps.push(write::ROLLBACK.to_owned());
-    }
-    steps.push("START TRANSACTION READ ONLY".to_owned());
+    let mut steps = read_start(conn);
     let asked = steps.len();
     steps.push(inlined(PRIMARY_KEY, &at));
     if reads_bytes {
         steps.push(inlined(BINARY_COLUMNS, &at));
     }
-    let names: Vec<String> = (1..=values.len())
-        .map(|number| format!("@{PAGE}_{number}"))
-        .collect();
-    let text = hex_literal("_utf8mb4", sql.text.as_bytes());
-    let set: Vec<String> = std::iter::once(format!("@{PAGE} = {text}"))
-        .chain(
-            names
-                .iter()
-                .zip(&values)
-                .map(|(name, value)| format!("{name} = {value}")),
-        )
-        .collect();
-    steps.push(format!("SET {}", set.join(", ")));
-    steps.push(format!("PREPARE {PAGE} FROM @{PAGE}"));
-    let ran = steps.len();
-    steps.push(if names.is_empty() {
-        format!("EXECUTE {PAGE}")
-    } else {
-        format!("EXECUTE {PAGE} USING {}", names.join(", "))
-    });
-    steps.push(format!("DEALLOCATE PREPARE {PAGE}"));
-    let cleared: Vec<String> = std::iter::once(format!("@{PAGE}"))
-        .chain(names)
-        .map(|name| format!("{name} = NULL"))
-        .collect();
-    steps.push(format!("SET {}", cleared.join(", ")));
+    let ran = steps.len() + RUN;
+    steps.extend(prepared_run(&sql.text, &values));
     steps.push(write::ROLLBACK.to_owned());
     let (mut answers, error) = script::answers(conn, &steps).await;
     // The message's own rollback answered: the transaction is over.
@@ -1754,6 +1734,154 @@ async fn page_in_one(
     } else {
         end_read(conn, outcome).await
     }
+}
+
+/// The start of a read's transaction in a message of its own, as
+/// [`begin_read_asking`] starts it: `START TRANSACTION` would commit a
+/// transaction left open, so that one is rolled back first.
+fn read_start(conn: &mysql_async::Conn) -> Vec<String> {
+    let mut steps = Vec::new();
+    if status(conn).contains(StatusFlags::SERVER_STATUS_IN_TRANS) {
+        steps.push(write::ROLLBACK.to_owned());
+    }
+    steps.push("START TRANSACTION READ ONLY".to_owned());
+    steps
+}
+
+/// The place of the run among [`prepared_run`]'s steps.
+const RUN: usize = 2;
+
+/// The steps that run `text` as the server prepares it from a user
+/// variable set to it in hex (see [`inlined`]), with `values` (as
+/// [`literal`]s) in user variables of their own: the variables set, the
+/// prepare, the run, the deallocation, the variables set back to NULL.
+/// The run is the step at [`RUN`].
+fn prepared_run(text: &str, values: &[String]) -> [String; 5] {
+    let names: Vec<String> = (1..=values.len())
+        .map(|number| format!("@{PAGE}_{number}"))
+        .collect();
+    let text = hex_literal("_utf8mb4", text.as_bytes());
+    let set: Vec<String> = std::iter::once(format!("@{PAGE} = {text}"))
+        .chain(
+            names
+                .iter()
+                .zip(values)
+                .map(|(name, value)| format!("{name} = {value}")),
+        )
+        .collect();
+    let run = if names.is_empty() {
+        format!("EXECUTE {PAGE}")
+    } else {
+        format!("EXECUTE {PAGE} USING {}", names.join(", "))
+    };
+    let cleared: Vec<String> = std::iter::once(format!("@{PAGE}"))
+        .chain(names)
+        .map(|name| format!("{name} = NULL"))
+        .collect();
+    [
+        format!("SET {}", set.join(", ")),
+        format!("PREPARE {PAGE} FROM @{PAGE}"),
+        run,
+        format!("DEALLOCATE PREPARE {PAGE}"),
+        format!("SET {}", cleared.join(", ")),
+    ]
+}
+
+/// `query`'s count in one round trip, or `None` where it is to be read
+/// the other way ([`Adapter::count_rows`]).
+///
+/// One message, through the text protocol, as [`page_in_one`]'s: the
+/// start of the read-only transaction, the statement as the server
+/// prepares it from a user variable, its run with the values in user
+/// variables, and the rollback. The server stops a message at the first
+/// statement that fails, so the count runs inside the transaction, alone,
+/// and the same texts are refused as the other way refuses.
+///
+/// A count with a filter whose value reads as bytes is built from the
+/// byte string columns of the table's `known` shape, and asks for them
+/// again in the message: one whose statement those would not have built
+/// is read the other way, as is one with no shape known, unless a cancel
+/// stopped it.
+async fn count_in_one(
+    conn: &mut mysql_async::Conn,
+    query: &RowQuery,
+    known: Option<&Shape>,
+) -> Result<Option<u64>> {
+    let reads_bytes = crate::dialect::reads_bytes(query);
+    let classes = match known {
+        Some(shape) => shape.classes(query),
+        None if reads_bytes => return Ok(None),
+        None => Vec::new(),
+    };
+    let sql = Dialect::MySql.count_rows(query, &classes)?;
+    driver_parameter(&sql.text)?;
+    let Some(values) = sql.params.iter().map(literal).collect::<Option<Vec<_>>>() else {
+        return Ok(None);
+    };
+    let mut steps = read_start(conn);
+    let asked = steps.len();
+    if reads_bytes {
+        let at = [query.object.schema.as_str(), query.object.name.as_str()];
+        steps.push(inlined(BINARY_COLUMNS, &at));
+    }
+    let ran = steps.len() + RUN;
+    steps.extend(prepared_run(&sql.text, &values));
+    steps.push(write::ROLLBACK.to_owned());
+    let (mut answers, error) = script::answers(conn, &steps).await;
+    // The message's own rollback answered: the transaction is over.
+    let ended = answers.len() == steps.len();
+    let outcome = counted(&mut answers, error, &sql, query, (asked, ran));
+    if ended {
+        outcome
+    } else {
+        end_read(conn, outcome).await
+    }
+}
+
+/// What [`count_in_one`]'s message came to, from its `answers` and the
+/// `error` that stopped it: `asked` is the place of its question for the
+/// byte string columns, if it asked, `ran` that of the statement's run.
+fn counted(
+    answers: &mut [script::Answer],
+    error: Option<mysql_async::Error>,
+    sql: &crate::dialect::Sql,
+    query: &RowQuery,
+    (asked, ran): (usize, usize),
+) -> Result<Option<u64>> {
+    if crate::dialect::reads_bytes(query) && answers.len() > asked {
+        let binary: Vec<String> = typed(std::mem::take(&mut answers[asked].rows))?;
+        let fresh = Shape {
+            binary,
+            ..Shape::default()
+        };
+        let built = Dialect::MySql.count_rows(query, &fresh.classes(query));
+        if built.as_ref().ok() != Some(sql) {
+            // As in `answered`: read again, unless a cancel or a lost
+            // connection stopped it.
+            return match error.map(query_error) {
+                Some(error @ (Error::Cancelled | Error::ConnectionLost(_))) => Err(error),
+                _ => Ok(None),
+            };
+        }
+    }
+    let Some(answer) = answers.get_mut(ran) else {
+        return Err(match error {
+            Some(mysql_async::Error::Server(refused))
+                if answers.len() == ran && refused.code == WRONG_ARGUMENTS =>
+            {
+                parameter("?", None)
+            }
+            Some(error) => query_error(error),
+            None => Error::query("unexpected data from the server: an answer is missing"),
+        });
+    };
+    std::mem::take(&mut answer.rows)
+        .into_iter()
+        .next()
+        .map(from_row::<u64>)
+        .transpose()?
+        .map(Some)
+        .ok_or_else(|| Error::query("the count returned no number"))
 }
 
 /// What [`page_in_one`]'s message came to, from its `answers` and the
@@ -4035,9 +4163,10 @@ mod tests {
     }
 
     /// Each read starts its read-only transaction in one statement and ends
-    /// it with one: a count is the start, the statement and the end, once
-    /// the driver has its statements prepared. A page of a table whose shape
-    /// the session has read is one message, start to end.
+    /// it with one: a lookup is the start, the statement and the end, once
+    /// the driver has its statements prepared. A count, and a page of a
+    /// table whose shape the session has read, is one message, start to
+    /// end.
     #[tokio::test]
     async fn a_read_starts_its_transaction_in_one_statement() {
         use std::sync::atomic::Ordering;
@@ -4074,13 +4203,181 @@ mod tests {
                     // The DDL: its kind, `SHOW CREATE TABLE`, its triggers.
                     assert_eq!(
                         (fetched, counted_rows, looked_up, shown),
-                        (1, 3, 3, 5),
+                        (1, 1, 3, 5),
                         "{access:?}"
                     );
                 }
             }
             assert!(!in_transaction(&conn).await, "{access:?}");
         }
+    }
+
+    /// A count in one message runs inside its read-only transaction, which
+    /// the message ends: a function that writes is refused by the server
+    /// (in a writable session too, whose own transactions may write), and
+    /// writes nothing. A raw WHERE that chains statements, or has a
+    /// parameter, is refused as the other way refuses it. A refused count
+    /// is the message and the rollback, one that runs one message: after
+    /// either, the session is in no transaction and the user variables the
+    /// message set are NULL again.
+    #[tokio::test]
+    async fn a_count_in_one_message_reads_in_a_read_only_transaction() {
+        use std::sync::atomic::Ordering;
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = trips(&url).await;
+        {
+            let _turn = TRIPS.lock().await;
+            let opts = Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+            let mut admin = mysql_async::Conn::new(opts).await.unwrap();
+            admin
+                .query_drop(
+                    "CREATE TABLE IF NOT EXISTS counted_writes (id int); \
+                     TRUNCATE counted_writes; \
+                     DROP FUNCTION IF EXISTS tabletist_count_writes; \
+                     CREATE FUNCTION tabletist_count_writes() RETURNS int \
+                     DETERMINISTIC MODIFIES SQL DATA \
+                     BEGIN INSERT INTO counted_writes VALUES (1); RETURN 1; END",
+                )
+                .await
+                .unwrap();
+        }
+        for access in [Access::ReadOnly, Access::Writable] {
+            let (conn, asked) = counted_session(&url, access).await;
+            let refused = |raw: &str| {
+                let mut query = RowQuery::new(object.clone(), 10);
+                query.raw_where = Some(raw.into());
+                query
+            };
+            let before = asked.load(Ordering::SeqCst);
+            match conn
+                .count_rows(&refused("tabletist_count_writes() = 1"))
+                .await
+            {
+                Err(Error::Query { code, .. }) => {
+                    assert_eq!(code.as_deref(), Some("25006"), "{access:?}");
+                }
+                other => panic!("{access:?}: {other:?}"),
+            }
+            for raw in [
+                "1 = 1; DELETE FROM trips",
+                "1=1) ; COMMIT; DELETE FROM trips; SELECT (1",
+            ] {
+                assert!(
+                    matches!(
+                        conn.count_rows(&refused(raw)).await,
+                        Err(Error::Query { .. })
+                    ),
+                    "{access:?} {raw}"
+                );
+            }
+            // Refused by the server, without a value for its parameter.
+            match conn.count_rows(&refused("id = ?")).await {
+                Err(Error::Query { code: None, .. }) => {}
+                other => panic!("{access:?}: {other:?}"),
+            }
+            // The message the server stopped, then the rollback.
+            assert_eq!(asked.load(Ordering::SeqCst) - before, 4 * 2, "{access:?}");
+            assert!(!in_transaction(&conn).await, "{access:?}");
+            let before = asked.load(Ordering::SeqCst);
+            assert_eq!(
+                conn.count_rows(&RowQuery::new(object.clone(), 10)).await,
+                Ok(3)
+            );
+            assert_eq!(asked.load(Ordering::SeqCst) - before, 1, "{access:?}");
+            let mut session = conn.conn.lock().await;
+            let left: mysql_async::Row = session
+                .query_first("SELECT @tabletist_page, @tabletist_page_1")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(left.unwrap(), [My::NULL, My::NULL], "{access:?}");
+            assert!(!status(&session).contains(StatusFlags::SERVER_STATUS_IN_TRANS));
+        }
+        let opts = Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+        let mut admin = mysql_async::Conn::new(opts).await.unwrap();
+        let written: Option<i64> = admin
+            .query_first("SELECT count(*) FROM counted_writes")
+            .await
+            .unwrap();
+        assert_eq!(written, Some(0));
+    }
+
+    /// A count in one message is the count the binary protocol reads, with
+    /// filters of each kind, bytes among them, and a raw WHERE. One with a
+    /// filter whose value reads as bytes is one message once the table's
+    /// shape is known, and is read again, right, where the byte string
+    /// columns have changed since; with no shape known it is read in three
+    /// round trips, as before.
+    #[tokio::test]
+    async fn a_count_in_one_message_is_the_count_the_binary_protocol_reads() {
+        use crate::FilterOp;
+        use std::sync::atomic::Ordering;
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = table_of(
+            &url,
+            "counted_types",
+            "id int PRIMARY KEY, vc varchar(40), vb varbinary(8), d double, dt datetime(3)",
+            "(1, 'O''Brien', x'00ff', 0.25, '2024-01-02 03:04:05.120'), \
+             (2, NULL, x'61', NULL, NULL), (3, 'é', x'', -1e300, '1999-12-31 23:59:59')",
+        )
+        .await;
+        let mut raw = RowQuery::new(object.clone(), 10);
+        raw.raw_where = Some("dt > '2000-01-01' -- ? :x".into());
+        let mut queries = vec![RowQuery::new(object.clone(), 10), raw];
+        for (column, op, value) in [
+            ("vc", FilterOp::Eq, "O'Brien"),
+            ("vc", FilterOp::Contains, "%"),
+            ("vc", FilterOp::Eq, "É"),
+            ("d", FilterOp::Lt, "0.3"),
+            ("dt", FilterOp::Ge, "2024-01-02 03:04:05.12"),
+            ("vb", FilterOp::In, "0x00ff, 0x61"),
+            ("vb", FilterOp::Eq, "0x"),
+            ("vc", FilterOp::IsNull, ""),
+        ] {
+            queries.push(filtered(&object, column, op, value));
+        }
+        let shape = Shape {
+            key: vec!["id".into()],
+            binary: vec!["vb".into()],
+            floats: false,
+        };
+        for access in [Access::ReadOnly, Access::Writable] {
+            let conn = session_as(&url, access).await;
+            let mut session = conn.conn.lock().await;
+            for query in &queries {
+                let sql = Dialect::MySql
+                    .count_rows(query, &shape.classes(query))
+                    .unwrap();
+                let three = {
+                    begin_read(&mut session).await.unwrap();
+                    let row = count(&mut session, &sql).await;
+                    end_read(&mut session, row).await.unwrap()
+                };
+                let three = from_row::<u64>(three.unwrap()).unwrap();
+                let one = count_in_one(&mut session, query, Some(&shape)).await;
+                assert_eq!(one, Ok(Some(three)), "{access:?} {query:?}");
+                assert!(!status(&session).contains(StatusFlags::SERVER_STATUS_IN_TRANS));
+            }
+        }
+        let bytes = filtered(&object, "vb", FilterOp::In, "0x00ff, 0x61");
+        let (conn, asked) = counted_session(&url, Access::ReadOnly).await;
+        let mut trips = Vec::new();
+        for known in [None, Some(shape.clone()), Some(Shape::default())] {
+            if let Some(known) = known {
+                conn.remember(&object, known);
+            }
+            let before = asked.load(Ordering::SeqCst);
+            assert_eq!(conn.count_rows(&bytes).await, Ok(2));
+            trips.push(asked.load(Ordering::SeqCst) - before);
+        }
+        // With the statement's prepare the first time; a shape that had no
+        // byte string column is read again the other way.
+        assert_eq!(trips, [4, 1, 4]);
+        assert!(!in_transaction(&conn).await);
     }
 
     /// Opening a table asks the server twice: its structure, with what its
