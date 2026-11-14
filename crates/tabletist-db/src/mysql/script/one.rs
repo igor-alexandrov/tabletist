@@ -83,7 +83,7 @@ struct Message {
 /// prepare does. The server stops the message at the first statement
 /// that fails, so the statement runs only after the open, and alone.
 fn message(kind: SessionKind, limit: u32, read_only: &str, text: &str) -> Message {
-    let mut steps = opening(kind.access, limit, None, read_only);
+    let mut steps = opening(kind.access, limit, None, None, read_only);
     let asked = steps.len() - 1;
     let guard = steps.len();
     steps.push(format!(

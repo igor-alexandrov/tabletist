@@ -419,14 +419,15 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
             assert_eq!(found, Ok(vec![vec![Value::Int(8)]]), "{on}");
             let found = count(hiding(connection, &Tables::All, tally).await);
             assert_eq!(found, Ok(vec![vec![Value::Int(8)]]), "{on}");
-            // A view that runs SQL held in a string.
+            // A view that runs SQL held in a string, which an agent may
+            // not call: refused on every connection, the one that hides
+            // nothing too.
             let sheet = "SELECT * FROM customer_sheet";
-            let error = hiding(connection, &customers, sheet).await.unwrap_err();
-            assert_eq!(error, hidden_refusal("customer_sheet", None), "{on}");
-            assert!(
-                hiding(connection, &Tables::All, sheet).await.is_ok(),
-                "{on}"
-            );
+            let refused = Error::Agent(Refusal::FunctionNotAllowed("query_to_xml".into()));
+            for tables in [&customers, &Tables::All] {
+                let error = hiding(connection, tables, sheet).await.unwrap_err();
+                assert_eq!(error, refused, "{on}");
+            }
             // A function of a row, called as its column.
             for sql in [
                 "SELECT b.book_reach FROM books b",
@@ -1375,27 +1376,26 @@ mod postgres {
         a_masked_column_is_used_only_as_it_is(&connection, "postgres").await;
     }
 
-    /// A database of the test's own, `bookshop_gifts`, made where it is
-    /// not there: what it makes and drops there is in no other test's
-    /// catalog while that one reads it.
-    async fn gifts(url: &str) -> Connection {
+    /// A database of the test's own, `database`, made where it is not
+    /// there: what it makes and drops there is in no other test's catalog
+    /// while that one reads it.
+    async fn own(url: &str, database: &str) -> Connection {
         let server = admin(url, None).await;
         let made = server
-            .query_opt(
-                "SELECT 1 FROM pg_database WHERE datname = 'bookshop_gifts'",
-                &[],
-            )
+            .query_opt("SELECT 1 FROM pg_database WHERE datname = $1", &[&database])
             .await
             .unwrap()
             .is_some();
         if !made {
             // Two runs may race to make it: the second's error is the
             // first's database.
-            let _ = server.batch_execute("CREATE DATABASE bookshop_gifts").await;
+            let _ = server
+                .batch_execute(&format!("CREATE DATABASE {database}"))
+                .await;
         }
         let (mut spec, secrets) = ConnectSpec::from_url(url).unwrap();
         spec.tls = TlsMode::Disable;
-        spec.database = "bookshop_gifts".into();
+        spec.database = database.into();
         Connection::connect_with(&spec, &secrets, &HostKeys::default(), Access::ReadOnly)
             .await
             .unwrap()
@@ -1407,7 +1407,7 @@ mod postgres {
             eprintln!("skipped: TABLETIST_TEST_PG_URL is not set");
             return;
         };
-        let connection = gifts(&url).await;
+        let connection = own(&url, "bookshop_gifts").await;
         let owner = admin(&url, Some("bookshop_gifts")).await;
         owner
             .batch_execute(
@@ -1437,6 +1437,66 @@ mod postgres {
         );
         owner
             .batch_execute("DROP TABLE gift_notes CASCADE")
+            .await
+            .unwrap();
+    }
+
+    /// A view's body runs when an agent reads the view, whose name is all
+    /// the statement says: one that calls a function an agent may not
+    /// call is refused, at any depth, on a connection that hides nothing
+    /// as on one that hides a table. A view that only says such a name
+    /// reads, as the others do.
+    #[tokio::test]
+    async fn a_view_that_calls_a_refused_function_is_refused_on_postgres() {
+        let Some(url) = url() else {
+            eprintln!("skipped: TABLETIST_TEST_PG_URL is not set");
+            return;
+        };
+        let connection = own(&url, "bookshop_locks").await;
+        let owner = admin(&url, Some("bookshop_locks")).await;
+        owner
+            .batch_execute(
+                "DROP TABLE IF EXISTS shelf_books, shelf_notes CASCADE;
+                 CREATE TABLE shelf_books (id int PRIMARY KEY, title text);
+                 INSERT INTO shelf_books SELECT n, 'Book ' || n FROM generate_series(1, 12) n;
+                 CREATE TABLE shelf_notes (id int PRIMARY KEY, note text);
+                 CREATE VIEW lock_takers AS
+                     SELECT id, pg_advisory_lock(id) IS NULL AS took FROM shelf_books;
+                 CREATE VIEW over_lock_takers AS SELECT id FROM lock_takers;
+                 CREATE VIEW sleepy_books AS SELECT id, 'pg_sleep(1)' AS mood FROM shelf_books;",
+            )
+            .await
+            .unwrap();
+        let calls = Err(Error::Agent(Refusal::FunctionNotAllowed(
+            "pg_advisory_lock".into(),
+        )));
+        let rows = |answer: Result<Answer, Error>| answer.map(|answer| answer.rows);
+        for sql in [
+            "SELECT count(*) FROM lock_takers",
+            "SELECT count(*) FROM public.over_lock_takers",
+            "SELECT title FROM shelf_books b \
+             WHERE EXISTS (SELECT 1 FROM over_lock_takers o WHERE o.id = b.id)",
+        ] {
+            assert_eq!(
+                rows(asked(&connection, sql, &[], LIMITS).await),
+                calls,
+                "{sql}"
+            );
+        }
+        let notes = Tables::AllExcept(vec![named("shelf_notes")]);
+        let hidden = hiding(&connection, &notes, "SELECT count(*) FROM over_lock_takers").await;
+        assert_eq!(rows(hidden), calls);
+        for sql in [
+            "SELECT count(*) FROM sleepy_books",
+            "SELECT count(*) FROM shelf_books",
+        ] {
+            assert_eq!(
+                read(&connection, sql, &[], "postgres").await,
+                [[Value::Int(12)]]
+            );
+        }
+        owner
+            .batch_execute("DROP TABLE shelf_books, shelf_notes CASCADE")
             .await
             .unwrap();
     }
@@ -1643,6 +1703,9 @@ mod postgres {
             rows_of(&connection, "SHOW statement_timeout", on).await,
             none
         );
+        // The open's question which views call what an agent may not runs
+        // under the timeout too: `pg/script.rs` tests it with a question
+        // made slow, which no server's speed decides.
     }
 }
 
@@ -1807,6 +1870,228 @@ mod mysql {
             .unwrap();
         assert_eq!(found.unwrap_err(), hidden_refusal("table_names", None));
         assert!(read.is_ok(), "{read:?}");
+    }
+
+    /// A session as root, with the password `compose.yaml` gives it, and the
+    /// server's `host:port`; `None` (test skipped) where it may not connect.
+    async fn root(url: &str) -> Option<(mysql_async::Conn, String)> {
+        let (_, place) = url.split_once('@').unwrap();
+        let (server, _) = place.rsplit_once('/').unwrap();
+        let root = format!("mysql://root:tabletist-root@{server}/bookshop?prefer_socket=false");
+        match mysql_async::Conn::new(mysql_async::Opts::from_url(&root).unwrap()).await {
+            Ok(conn) => Some((conn, server.to_owned())),
+            Err(_) => {
+                eprintln!("skipped: the test MySQL's root may not connect");
+                None
+            }
+        }
+    }
+
+    /// A schema of the user's named like one of the server's but for its
+    /// case, `SYS`, is another schema where the server tells names by their
+    /// case: its views are found and checked as any other's. Only root may
+    /// make a database; skipped where the server folds names, as `SYS`
+    /// would be its `sys` there.
+    #[tokio::test]
+    async fn a_view_in_a_schema_named_like_the_servers_is_checked_on_mysql() {
+        let (Some(connection), Some(url)) = (bookshop().await, url()) else {
+            return;
+        };
+        let Some((mut root, _)) = root(&url).await else {
+            return;
+        };
+        let folds: Option<i64> = root
+            .query_first("SELECT @@lower_case_table_names")
+            .await
+            .unwrap();
+        if folds != Some(0) {
+            eprintln!("skipped: the test MySQL folds the names of databases");
+            return;
+        }
+        // Made here, or the test leaves it alone: it drops only its own.
+        if let Err(error) = root.query_drop("CREATE DATABASE `SYS`").await {
+            eprintln!("skipped: no database `SYS` could be made ({error})");
+            return;
+        }
+        for sql in [
+            "CREATE VIEW `SYS`.lock_takers AS SELECT get_lock('tabletist_sys_lock', 0) AS took",
+            "GRANT SELECT, SHOW VIEW ON `SYS`.* TO tabletist",
+        ] {
+            root.query_drop(sql).await.unwrap();
+        }
+        let found = asked(&connection, "SELECT * FROM `SYS`.lock_takers", &[], LIMITS)
+            .await
+            .map(|answer| answer.rows);
+        for sql in [
+            "REVOKE SELECT, SHOW VIEW ON `SYS`.* FROM tabletist",
+            "DROP DATABASE `SYS`",
+        ] {
+            root.query_drop(sql).await.unwrap();
+        }
+        assert_eq!(
+            found,
+            Err(Error::Agent(Refusal::FunctionNotAllowed("get_lock".into())))
+        );
+    }
+
+    /// A view the server runs with another user's rights reads what the
+    /// agent's user may not see, a view or a table, which the user is shown
+    /// nothing of: what it reads may call `get_lock`. So such a view that
+    /// reads what the user is not shown is refused, on a connection that
+    /// hides nothing, and one that reads only what it is shown reads. Only
+    /// root may make the user and views, with the password `compose.yaml`
+    /// gives it: skipped where it may not connect.
+    #[tokio::test]
+    async fn a_view_that_reads_what_the_user_may_not_see_is_refused_on_mysql() {
+        let Some(url) = url() else {
+            return;
+        };
+        load(&url).await;
+        let Some((mut root, server)) = root(&url).await else {
+            return;
+        };
+        for sql in [
+            "DROP USER IF EXISTS tabletist_peek",
+            "CREATE USER tabletist_peek IDENTIFIED BY 'peek'",
+            "CREATE OR REPLACE SQL SECURITY DEFINER VIEW bookshop.peek_locks AS \
+             SELECT id, get_lock('tabletist_peek_lock', 0) AS took FROM bookshop.books",
+            "CREATE OR REPLACE SQL SECURITY DEFINER VIEW bookshop.peek_outer AS \
+             SELECT id FROM bookshop.peek_locks",
+            "CREATE OR REPLACE SQL SECURITY DEFINER VIEW bookshop.peek_titles AS \
+             SELECT id, title FROM bookshop.books",
+            "CREATE OR REPLACE SQL SECURITY DEFINER VIEW bookshop.peek_orders AS \
+             SELECT id FROM bookshop.orders",
+            // A view run with its reader's rights runs with the rights of
+            // the view that reads it: here root's.
+            "CREATE OR REPLACE SQL SECURITY INVOKER VIEW bookshop.peek_invoker AS \
+             SELECT id FROM bookshop.peek_locks",
+            "CREATE OR REPLACE SQL SECURITY DEFINER VIEW bookshop.peek_chain AS \
+             SELECT id FROM bookshop.peek_invoker",
+            "GRANT SELECT, SHOW VIEW ON bookshop.peek_outer TO tabletist_peek",
+            "GRANT SELECT, SHOW VIEW ON bookshop.peek_titles TO tabletist_peek",
+            "GRANT SELECT, SHOW VIEW ON bookshop.peek_orders TO tabletist_peek",
+            "GRANT SELECT, SHOW VIEW ON bookshop.peek_invoker TO tabletist_peek",
+            "GRANT SELECT, SHOW VIEW ON bookshop.peek_chain TO tabletist_peek",
+            "GRANT SELECT ON bookshop.orders TO tabletist_peek",
+        ] {
+            root.query_drop(sql).await.unwrap();
+        }
+        // Where the server tells names by their case, a `PEEK_LOCKS` the
+        // user is shown is another view than the `peek_locks` it is not.
+        let folds: Option<i64> = root
+            .query_first("SELECT @@lower_case_table_names")
+            .await
+            .unwrap();
+        let cased = folds == Some(0);
+        if cased {
+            for sql in [
+                "CREATE OR REPLACE VIEW bookshop.PEEK_LOCKS AS SELECT 1 AS id",
+                "GRANT SELECT, SHOW VIEW ON bookshop.PEEK_LOCKS TO tabletist_peek",
+            ] {
+                root.query_drop(sql).await.unwrap();
+            }
+        }
+        let (mut spec, secrets) =
+            ConnectSpec::from_url(&format!("mysql://tabletist_peek:peek@{server}/bookshop"))
+                .unwrap();
+        spec.tls = TlsMode::Disable;
+        let connection =
+            Connection::connect_with(&spec, &secrets, &HostKeys::default(), Access::ReadOnly)
+                .await
+                .unwrap();
+        let reads = |view: &str, relation: &str| {
+            Err(Error::Agent(Refusal::NotAllowed(format!(
+                "The view bookshop.{view}, which reads bookshop.{relation} that this \
+                 connection's user may not see,"
+            ))))
+        };
+        let rows = |answer: Result<Answer, Error>| answer.map(|answer| answer.rows);
+        let outer = rows(asked(&connection, "SELECT count(*) FROM peek_outer", &[], LIMITS).await);
+        let titles =
+            rows(asked(&connection, "SELECT count(*) FROM peek_titles", &[], LIMITS).await);
+        let orders =
+            rows(asked(&connection, "SELECT count(*) FROM peek_orders", &[], LIMITS).await);
+        let own = rows(asked(&connection, "SELECT count(*) FROM orders", &[], LIMITS).await);
+        let chain = rows(asked(&connection, "SELECT count(*) FROM peek_chain", &[], LIMITS).await);
+        drop(connection);
+        for sql in [
+            "DROP VIEW bookshop.peek_chain, bookshop.peek_invoker, bookshop.peek_outer, \
+             bookshop.peek_locks, bookshop.peek_titles, bookshop.peek_orders",
+            "DROP VIEW IF EXISTS bookshop.PEEK_LOCKS",
+            "DROP USER tabletist_peek",
+        ] {
+            root.query_drop(sql).await.unwrap();
+        }
+        assert_eq!(outer, reads("peek_outer", "peek_locks"));
+        // Through a view run with its reader's rights, which the user is
+        // shown: the server runs it with root's, and so it is checked.
+        assert_eq!(chain, reads("peek_invoker", "peek_locks"));
+        // A view that grants a user rows of a table it may not read is
+        // refused alike: what it reads cannot be told from a view.
+        assert_eq!(titles, reads("peek_titles", "books"));
+        assert!(orders.is_ok(), "{orders:?}");
+        assert_eq!(orders.unwrap(), own.unwrap());
+    }
+
+    /// A view's body runs when an agent reads the view, whose name is all
+    /// the statement says: one that calls a function an agent may not
+    /// call is refused, at any depth, on a connection that hides nothing
+    /// as on one that hides a table. A view that only says such a name
+    /// reads, as the others do.
+    #[tokio::test]
+    async fn a_view_that_calls_a_refused_function_is_refused_on_mysql() {
+        let (Some(connection), Some(url)) = (bookshop().await, url()) else {
+            return;
+        };
+        let mut owner = admin(&url).await;
+        for sql in [
+            "CREATE OR REPLACE VIEW bookshop.lock_takers AS \
+             SELECT id, get_lock('tabletist_view_lock', 0) AS took FROM bookshop.books",
+            "CREATE OR REPLACE VIEW bookshop.over_lock_takers AS \
+             SELECT id FROM bookshop.lock_takers",
+            "CREATE OR REPLACE VIEW bookshop.sleepy_books AS \
+             SELECT id, 'sleep(1)' AS mood FROM bookshop.books",
+        ] {
+            owner.query_drop(sql).await.unwrap();
+        }
+        let calls = Err(Error::Agent(Refusal::FunctionNotAllowed("get_lock".into())));
+        let rows = |answer: Result<Answer, Error>| answer.map(|answer| answer.rows);
+        for sql in [
+            "SELECT count(*) FROM lock_takers",
+            "SELECT count(*) FROM bookshop.over_lock_takers",
+            "SELECT title FROM books b WHERE EXISTS (SELECT 1 FROM over_lock_takers o WHERE o.id = b.id)",
+        ] {
+            assert_eq!(
+                rows(asked(&connection, sql, &[], LIMITS).await),
+                calls,
+                "{sql}"
+            );
+        }
+        let customers = Tables::AllExcept(vec![named("customers")]);
+        let hidden = hiding(
+            &connection,
+            &customers,
+            "SELECT count(*) FROM over_lock_takers",
+        )
+        .await;
+        assert_eq!(rows(hidden), calls);
+        for (sql, count) in [
+            ("SELECT count(*) FROM sleepy_books", 12),
+            ("SELECT count(*) FROM recent_orders", 7),
+            ("SELECT count(*) FROM books", 12),
+        ] {
+            assert_eq!(
+                read(&connection, sql, &[], "mysql").await,
+                [[Value::Int(count)]]
+            );
+        }
+        for sql in [
+            "DROP VIEW bookshop.over_lock_takers",
+            "DROP VIEW bookshop.lock_takers",
+            "DROP VIEW bookshop.sleepy_books",
+        ] {
+            owner.query_drop(sql).await.unwrap();
+        }
     }
 
     #[tokio::test]

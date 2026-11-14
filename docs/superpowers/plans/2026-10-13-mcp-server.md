@@ -1008,6 +1008,59 @@ where it went otherwise:
   its definition, as the server writes it back, is read for such a call,
   as PostgreSQL keeps no dependency on its own functions. Such a function
   in the plan's `Function Scan` is refused wherever it came from.
+- **On MySQL and MariaDB a view whose body calls a function the agent may
+  not call is refused on every connection** (found by the review of the
+  pull request that read MariaDB's view definitions). The statement names
+  only the view, the server runs `load_file` or `get_lock` in its body,
+  and neither server lists the built-in functions a view calls. The open's
+  one message asks `information_schema.VIEWS` for the views whose body
+  holds a refused function's name, or that the server shows no body of (a
+  user without `SHOW VIEW`): on most databases none, and no round trip of
+  its own. Where one of them calls such a function, every view's body is
+  read in one more round trip, a view that names a refused one is refused
+  too, at any depth, and the statement is refused where it names one, by
+  its name as a word in any schema. A view whose body is not shown is
+  refused, as what it calls cannot be told. The views of `sys`, `mysql`,
+  `performance_schema` and `information_schema` are left out: they come
+  with the server. The open sets the time limit before it asks, and a
+  failure of the question is the statement's error, in a session that
+  stays.
+- **A MySQL view run with another user's rights is refused where it reads
+  what the agent's user is not shown** (found by the same review). Neither
+  server lists a view or a table to a user without a privilege on it, so
+  an outer `SQL SECURITY DEFINER` view may read an inner one that calls
+  `get_lock`, which the user is shown nothing of, and an unseen view
+  cannot be told from an unseen table. The open's question also asks for
+  the views run with a definer other than `CURRENT_USER()`; where one is
+  found, the second round trip reads, with every view's body, every table
+  and view `information_schema.TABLES` shows, and such a view whose body
+  names, with its schema, a relation not among them is refused, and every
+  view over it. That refuses a view that grants a user rows of tables it
+  may not read, too, which the guide says. A view run with its reader's
+  rights (`SQL SECURITY INVOKER`) that such a view reads, at any depth,
+  runs with the reading view's rights, so it is checked the same way.
+- **On PostgreSQL too a view whose body calls a function the agent may
+  not call is refused on every connection**, the one that hides nothing
+  too (`pg/views.rs`). PostgreSQL keeps no dependency on its own functions,
+  so each view's rule is read as the server stores it, the parsed tree in
+  text (`pg_rewrite.ev_action`), for a call of a refused function by its
+  number in `pg_proc` (`:funcid`, `:aggfnoid`, `:winfnoid`); nothing is
+  decompiled for that. The views that read one of those, at any depth,
+  are found by `pg_depend`, and only all of these are written back as SQL
+  (`pg_get_viewdef`), for the same check as MySQL's. The query takes the
+  place of the open's `SELECT 1`, which took the snapshot, after the
+  agent's timeout is set, which bounds it as it bounds the statement: no
+  round trip of its own, ever. The question failing, a timeout or the
+  server's own error, is the statement's error in a session that stays. An agent's read stays four round trips (the open, the
+  prepare, the cursor, the close; five with values). The server's own
+  time is about 7 ms on a stock database, most of it reading the rules of
+  `information_schema`, which a superuser may replace; those of
+  `pg_catalog` are not read, which no one changes without
+  `allow_system_table_mods`. The functions are found by their names as
+  `pg_proc` holds them: one the users wrote and named in capitals is not,
+  as any function they wrote may be called on such a connection. Where
+  something is hidden, this check runs first: `customer_sheet`, which runs
+  `query_to_xml`, is refused for the call, not hidden.
 - **MySQL's plan is read twice.** Its JSON names a table by the
   statement's alias where it has one, so a name there is checked only
   where the catalog lists it. The note `SHOW WARNINGS` gives after it
