@@ -21,12 +21,17 @@ use crate::{
     StopFlag,
 };
 
+mod one;
 mod write;
+
+pub(super) use one::Lossy;
 
 impl Conn {
     /// See [`crate::Connection::run_script`]. Statements run through the
     /// prepared protocol, which cannot hold two, and `sql_select_limit`
-    /// makes the server stop at `limit + 1` rows. The transaction is
+    /// makes the server stop at `limit + 1` rows. A script of one
+    /// statement that only reads runs in one round trip, prepared on the
+    /// server (see `one`), unless its answer lost digits in text before. The transaction is
     /// managed by hand, and the session is reset afterwards: what a script
     /// set must not reach table browsing or the next run. A run that only
     /// reads hands its outcome back before the reset, which goes on under
@@ -55,6 +60,29 @@ impl Conn {
         }
         if mode == ScriptMode::Write {
             return write::run(conn, texts, limit as usize, stop).await;
+        }
+        if let [text] = texts
+            && !stop.is_stopped()
+            && !self.lossy.knows(text)
+        {
+            match one::run(conn, text, limit, kind, stop).await? {
+                one::One::Ran(outcome, unfinished) => {
+                    unfinished.finish_later(session, &self.resetting);
+                    return Ok(*outcome);
+                }
+                one::One::Again { lossy: false } => {}
+                // It ran: the session is put back as it was before, as the
+                // reset after a run does, so that it runs again on the
+                // same session. A cancel waits for that (see `Resetting`),
+                // and then lands on the run below.
+                one::One::Again { lossy: true } => {
+                    self.lossy.remember(text);
+                    let _reset = Reset::begins(&self.resetting);
+                    put_back(conn, kind.access)
+                        .await
+                        .map_err(|error| cleanup_failed(ScriptMode::ReadOnly, &error))?;
+                }
+            }
         }
         let (outcome, _, unfinished) =
             read_only(conn, texts, limit, kind, stop, None, None).await?;
@@ -117,11 +145,13 @@ struct SessionKind {
 
 impl SessionKind {
     /// The read-only setting's names (`READ_ONLY_SETTINGS`), the one the
-    /// server knows first: MariaDB before 11.1 knows only the older one.
-    /// Asked under the other too where the server does not know the first.
+    /// server knows first: MariaDB before 11.1 and MySQL before 5.7.20 know
+    /// only the older one. Asked under the other too where the server does
+    /// not know the first.
     fn read_only_names(self, version: (u16, u16, u16)) -> [&'static str; 2] {
         let [name, older] = READ_ONLY_SETTINGS;
-        if self.mariadb && version < (11, 1, 0) {
+        let oldest = if self.mariadb { (11, 1, 0) } else { (5, 7, 20) };
+        if version < oldest {
             [older, name]
         } else {
             [name, older]
@@ -733,6 +763,18 @@ async fn end(conn: &mut mysql_async::Conn, ended: Ended, kind: SessionKind) -> R
         Ended::Unconfirmed => confirm(conn, kind.read_only_names(conn.server_version())).await,
         known => (known, None),
     };
+    settle(conn, ended, rolled_back, kind).await
+}
+
+/// The rest of `end`, once the check has answered: `ended` is what it
+/// found, and `rolled_back` the rollback's answer (`None` where it did not
+/// run).
+async fn settle(
+    conn: &mut mysql_async::Conn,
+    ended: Ended,
+    rolled_back: Option<Result<()>>,
+    kind: SessionKind,
+) -> Result<Unfinished> {
     // Whatever is open is rolled back and reset as far as that works, also
     // when the session is closed anyway.
     let rolled_back = match rolled_back {
@@ -1346,7 +1388,7 @@ mod tests {
     /// Everything of a session that a script could change and the close
     /// puts back, by name: its settings, a user variable, the default
     /// database, and whether a transaction is open.
-    async fn settings(conn: &Conn) -> Vec<(&'static str, Option<String>)> {
+    pub(super) async fn settings(conn: &Conn) -> Vec<(&'static str, Option<String>)> {
         let mut conn = conn.conn.lock().await;
         let asked: Vec<String> = SETTINGS
             .iter()
@@ -1384,7 +1426,7 @@ mod tests {
     }
 
     /// Waits until a statement holding `marker` runs on the server.
-    async fn runs_on_the_server(admin: &mut mysql_async::Conn, marker: &str) {
+    pub(super) async fn runs_on_the_server(admin: &mut mysql_async::Conn, marker: &str) {
         let running = async {
             loop {
                 let found: Option<i64> = admin
@@ -1551,7 +1593,9 @@ mod tests {
     /// The open fails as a whole when any of its steps fails, or when its
     /// answer does not say the session is inside a read-only transaction:
     /// no statement runs, the run closes the session, and the close has
-    /// left it as it connected.
+    /// left it as it connected. A script of two statements, which opens
+    /// on its own (a script of one opens in its message: see
+    /// `one::tests`).
     #[tokio::test]
     async fn an_open_that_fails_on_any_step_runs_no_statement() {
         let Some(url) = test_url() else {
@@ -1583,7 +1627,7 @@ mod tests {
                     .await;
             let connected = settings(&conn).await;
             let stop = StopFlag::new();
-            let ran = past_the_refusal(&conn, &["SELECT 1"], &stop).await;
+            let ran = past_the_refusal(&conn, &["SELECT 1", "SELECT 2"], &stop).await;
             assert!(
                 matches!(&ran, Err(Error::ConnectionLost(message))
                     if message.starts_with("could not start the read-only transaction")
@@ -1596,7 +1640,8 @@ mod tests {
     }
 
     /// A cancel that lands on the open stops the run before its first
-    /// statement: no results, and the session as it connected.
+    /// statement: no results, and the session as it connected. A script
+    /// of two, which opens on its own.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_cancel_on_the_open_runs_no_statement() {
         let Some(url) = test_url() else {
@@ -1611,9 +1656,9 @@ mod tests {
         let connected = settings(&conn).await;
         let running = {
             let conn = std::sync::Arc::clone(&conn);
-            tokio::spawn(
-                async move { past_the_refusal(&conn, &["SELECT 1"], &StopFlag::new()).await },
-            )
+            tokio::spawn(async move {
+                past_the_refusal(&conn, &["SELECT 1", "SELECT 2"], &StopFlag::new()).await
+            })
         };
         runs_on_the_server(&mut admin, "SLEEP(46)").await;
         cancel(&conn.opts, conn.id, &conn.server, &conn.spare)
@@ -1630,7 +1675,8 @@ mod tests {
     /// more. Either way the run ends cleanly, the session as it connected.
     /// A real check or `ROLLBACK` is over too soon to cancel on cue, so the
     /// proxy sends the server a slow statement in the step's place; the
-    /// count shows the steps that ran again.
+    /// count shows the steps that ran again. A script of two, whose close
+    /// is a message of its own.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_cancel_on_the_close_runs_the_cancelled_step_again() {
         use std::sync::atomic::Ordering;
@@ -1642,11 +1688,11 @@ mod tests {
                           ROLLBACK AND NO CHAIN NO RELEASE";
         let slow_rollback = "DO 0; SELECT @@session.transaction_read_only LIMIT 1; \
                              SELECT 1 FROM DUAL WHERE SLEEP(48) = 0";
-        // The run's six, and the steps that ran again: the check and the
+        // The run's nine, and the steps that ran again: the check and the
         // rollback, or the rollback.
         for (slow, sleep, asked) in [
-            (slow_check, "SLEEP(47)", 8),
-            (slow_rollback, "SLEEP(48)", 7),
+            (slow_check, "SLEEP(47)", 11),
+            (slow_rollback, "SLEEP(48)", 10),
         ] {
             let (conn, count) =
                 super::super::tests::swapping_session(&url, Access::ReadOnly, (CLOSE, slow)).await;
@@ -1656,7 +1702,7 @@ mod tests {
             let running = {
                 let conn = std::sync::Arc::clone(&conn);
                 tokio::spawn(async move {
-                    past_the_refusal(&conn, &["SELECT 1"], &StopFlag::new()).await
+                    past_the_refusal(&conn, &["SELECT 1", "SELECT 2"], &StopFlag::new()).await
                 })
             };
             runs_on_the_server(&mut admin, sleep).await;
@@ -1671,10 +1717,16 @@ mod tests {
             assert!(
                 matches!(
                     outcome.results.as_slice(),
-                    [StatementResult {
-                        outcome: StatementOutcome::Rows { .. },
-                        ..
-                    }]
+                    [
+                        StatementResult {
+                            outcome: StatementOutcome::Rows { .. },
+                            ..
+                        },
+                        StatementResult {
+                            outcome: StatementOutcome::Rows { .. },
+                            ..
+                        }
+                    ]
                 ),
                 "{outcome:?}"
             );
@@ -1727,9 +1779,9 @@ mod tests {
         cancel(&conn.opts, conn.id, &conn.server, &conn.spare)
             .await
             .unwrap();
-        // The run's six, and the settings again.
+        // The run's three, and the settings again.
         drop(conn.conn.lock().await);
-        assert_eq!(count.load(Ordering::SeqCst) - before, 7);
+        assert_eq!(count.load(Ordering::SeqCst) - before, 4);
         assert_eq!(settings(&conn).await, connected);
     }
 
@@ -1773,8 +1825,8 @@ mod tests {
         first.unwrap();
         second.unwrap();
         drop(conn.conn.lock().await);
-        // The run's six, the settings not run again.
-        assert_eq!(count.load(Ordering::SeqCst) - before, 6);
+        // The run's three, the settings not run again.
+        assert_eq!(count.load(Ordering::SeqCst) - before, 3);
         assert_eq!(settings(&conn).await, connected);
         past_the_refusal(&conn, &["SELECT 1"], &StopFlag::new())
             .await
@@ -1960,7 +2012,7 @@ mod tests {
 
     /// Runs statements straight through the driver, as if the refusal had
     /// missed them.
-    async fn past_the_refusal(
+    pub(super) async fn past_the_refusal(
         conn: &Conn,
         script: &[&str],
         stop: &StopFlag,
@@ -1987,19 +2039,20 @@ mod tests {
 
     const INSERT: &str = "INSERT INTO probe VALUES (1)";
 
-    /// A SELECT's outcome is back after four round trips: the open, the
-    /// prepare, the execute, the close's check with its rollback. The
-    /// reset and the settings follow before anything else uses the
-    /// session: six in all. The first statement needs no check of its own:
-    /// the open asked. Each statement after it adds the check, the prepare
-    /// and the execute. A writable session's fence goes in the open's
-    /// message.
+    /// A SELECT on its own is back after one round trip: the open, the
+    /// statement and the close's check with its rollback go as one message
+    /// (see `one`). The reset and the settings follow before anything else
+    /// uses the session: three in all. A script of two takes the other
+    /// way: the open, the prepare, the execute, the close's check with its
+    /// rollback, and for the second statement the check, the prepare and
+    /// the execute. A writable session's fence goes in the open's message
+    /// either way. Nothing the message set is left after the reset.
     ///
     /// On one thread, so the task that resets the session cannot run
     /// before the count is read: a test that waits for nothing yields
     /// nothing.
     #[tokio::test(flavor = "current_thread")]
-    async fn a_select_waits_for_four_answers() {
+    async fn a_select_waits_for_one_answer() {
         use std::sync::atomic::Ordering;
         let Some(url) = test_url() else {
             return;
@@ -2008,7 +2061,7 @@ mod tests {
             let (conn, asked) = super::super::tests::counted_session(&url, access).await;
             let connected = settings(&conn).await;
             for (script, waited, all) in [
-                (&["SELECT 1"][..], 4, 6),
+                (&["SELECT 1"][..], 1, 3),
                 (&["SELECT 1", "SELECT 2"][..], 7, 9),
             ] {
                 let before = asked.load(Ordering::SeqCst);
@@ -2030,6 +2083,16 @@ mod tests {
                 let reset = asked.load(Ordering::SeqCst) - before;
                 assert_eq!(reset, all, "{access:?} {script:?}");
                 assert_eq!(settings(&conn).await, connected, "{access:?} {script:?}");
+                let mut session = conn.conn.lock().await;
+                let left: mysql_async::Row = session
+                    .query_first("SELECT @tabletist_run")
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(left.unwrap(), [mysql_async::Value::NULL]);
+                let prepared = session.query_drop("EXECUTE tabletist_run").await;
+                assert!(prepared.is_err(), "{access:?} {script:?}");
+                drop(session);
             }
         }
     }
