@@ -132,6 +132,38 @@ async fn a_page_stopped_early_leaves_the_session_working() {
 }
 
 #[tokio::test]
+async fn the_page_limit_does_not_cut_a_subquery_short() {
+    let Some(session) = session().await else {
+        return;
+    };
+    // `max_result_rows` with `result_overflow_mode=break` caps the page.
+    // The documentation says it is checked for subqueries too, which would
+    // let one stop at its first block and the page show a wrong answer:
+    // each subquery here is far past the page and past a block.
+    for (sql, expected) in [
+        (
+            "SELECT count() FROM (SELECT number FROM numbers(1000000)) \
+             SETTINGS max_block_size = 1000",
+            1_000_000,
+        ),
+        (
+            "SELECT count() FROM numbers(1000000) \
+             WHERE number IN (SELECT number FROM numbers(500000)) \
+             SETTINGS max_block_size = 1000",
+            500_000,
+        ),
+        (
+            "SELECT sum(c) FROM (SELECT number % 1000 AS k, count() AS c \
+             FROM numbers(1000000) GROUP BY k) SETTINGS max_block_size = 1000",
+            1_000_000,
+        ),
+    ] {
+        let page = session.select_page(sql, 10).await.unwrap();
+        assert_eq!(page.rows, [vec![Value::Int(expected)]], "{sql}");
+    }
+}
+
+#[tokio::test]
 async fn a_session_idle_past_the_servers_keep_alive_still_works() {
     let Some(session) = session().await else {
         return;
