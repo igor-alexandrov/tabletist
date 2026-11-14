@@ -432,6 +432,9 @@ pub(crate) struct Conn {
     _opening: Opening,
     /// The shape of each table this session read last (see [`Shape`]).
     shapes: std::sync::Mutex<std::collections::HashMap<ObjectRef, Shape>>,
+    /// The SQL editor's statements whose answer lost digits in text (see
+    /// `script::Lossy`).
+    lossy: script::Lossy,
 }
 
 /// A session's connection, and whether it may still be used: the reset
@@ -819,6 +822,7 @@ impl Conn {
             resetting: std::sync::Arc::new(tokio::sync::watch::Sender::new(false)),
             _opening: Opening(opening.abort_handle()),
             shapes: Default::default(),
+            lossy: Default::default(),
         })
     }
 
@@ -2897,7 +2901,7 @@ mod tests {
     }
 
     /// A fresh session opened as `access`.
-    async fn session_as(url: &str, access: Access) -> Conn {
+    pub(super) async fn session_as(url: &str, access: Access) -> Conn {
         let (mut spec, secrets) = ConnectSpec::from_url(url).unwrap();
         spec.tls = TlsMode::Disable;
         Conn::connect(&spec, &secrets, None, access).await.unwrap()
@@ -3963,7 +3967,7 @@ mod tests {
 
     /// A table made afresh by `admin`, from `columns` and `rows`, with
     /// strict modes off so that zero dates go in.
-    async fn table_of(url: &str, name: &str, columns: &str, rows: &str) -> ObjectRef {
+    pub(super) async fn table_of(url: &str, name: &str, columns: &str, rows: &str) -> ObjectRef {
         let _turn = TRIPS.lock().await;
         let opts = Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
         let mut admin = mysql_async::Conn::new(opts).await.unwrap();
@@ -4671,7 +4675,9 @@ mod tests {
         let Some(url) = test_url() else {
             return;
         };
-        for (access, read_only, run) in [(Access::ReadOnly, 1, 6), (Access::Writable, 0, 6)] {
+        // A SQL editor run of one statement is one round trip, its reset
+        // and settings two more.
+        for (access, read_only, run) in [(Access::ReadOnly, 1, 3), (Access::Writable, 0, 3)] {
             let (conn, asked) = counted_session(&url, access).await;
             let product = match on_mariadb(&conn) {
                 true => "MariaDB ",
