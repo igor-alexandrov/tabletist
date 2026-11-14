@@ -47,7 +47,7 @@ pub(super) fn reaching() -> String {
     format!(
         "\
 WITH RECURSIVE refused AS (
-    SELECT p.oid FROM pg_proc p WHERE {starts}
+    SELECT p.oid FROM pg_catalog.pg_proc p WHERE {starts}
 ),
 pattern AS (
     SELECT ':(funcid|aggfnoid|winfnoid) (' || string_agg(oid::text, '|') || ')([^0-9]|$)'
@@ -56,8 +56,8 @@ pattern AS (
 ),
 reaching AS (
     SELECT r.ev_class AS view
-    FROM pg_rewrite r
-    JOIN pg_class c ON c.oid = r.ev_class
+    FROM pg_catalog.pg_rewrite r
+    JOIN pg_catalog.pg_class c ON c.oid = r.ev_class
     CROSS JOIN pattern
     -- The rule is read only once the view is known to be one to read:
     -- a CASE is evaluated in its order.
@@ -68,15 +68,15 @@ reaching AS (
     UNION
     SELECT r.ev_class
     FROM reaching
-    JOIN pg_depend d ON d.refclassid = 'pg_class'::regclass AND d.refobjid = reaching.view
-        AND d.classid = 'pg_rewrite'::regclass
-    JOIN pg_rewrite r ON r.oid = d.objid AND r.ev_type = '1' AND r.ev_class <> reaching.view
-    JOIN pg_class c ON c.oid = r.ev_class AND c.relkind = 'v'
+    JOIN pg_catalog.pg_depend d ON d.refclassid = 'pg_catalog.pg_class'::regclass AND d.refobjid = reaching.view
+        AND d.classid = 'pg_catalog.pg_rewrite'::regclass
+    JOIN pg_catalog.pg_rewrite r ON r.oid = d.objid AND r.ev_type = '1' AND r.ev_class <> reaching.view
+    JOIN pg_catalog.pg_class c ON c.oid = r.ev_class AND c.relkind = 'v'
 )
-SELECT n.nspname, c.relname, coalesce(pg_get_viewdef(c.oid), '')
+SELECT n.nspname, c.relname, coalesce(pg_catalog.pg_get_viewdef(c.oid), '')
 FROM reaching
-JOIN pg_class c ON c.oid = reaching.view
-JOIN pg_namespace n ON n.oid = c.relnamespace",
+JOIN pg_catalog.pg_class c ON c.oid = reaching.view
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace",
         starts = starts.join(" OR ")
     )
 }

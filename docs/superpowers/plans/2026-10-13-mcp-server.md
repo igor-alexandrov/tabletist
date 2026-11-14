@@ -1032,7 +1032,8 @@ where it went otherwise:
   (`pg_get_viewdef`), for the same check as MySQL's. The query takes the
   place of the open's `SELECT 1`, which took the snapshot, after the
   agent's timeout is set, which bounds it as it bounds the statement: no
-  round trip of its own, ever. An agent's read stays four round trips (the open, the
+  round trip of its own, ever. The question failing, a timeout or the
+  server's own error, is the statement's error in a session that stays. An agent's read stays four round trips (the open, the
   prepare, the cursor, the close; five with values). The server's own
   time is about 7 ms on a stock database, most of it reading the rules of
   `information_schema`, which a superuser may replace; those of
