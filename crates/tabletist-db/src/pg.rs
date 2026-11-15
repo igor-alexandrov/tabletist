@@ -730,10 +730,10 @@ impl Conn {
         shapes.insert(object.clone(), shape.clone());
     }
 
-    /// The [`Structure`] in what [`structure_reads`] read of `object`, its
-    /// shape remembered as what the table's next page builds its statement
-    /// from. Call it with the session unlocked: a primary key whose index
-    /// rows name no column sends the key's own query.
+    /// The [`Structure`] in what [`structure_reads`] read of `object`, but
+    /// for its shape, which the caller remembers. Call it with the session
+    /// unlocked: a primary key whose index rows name no column sends the
+    /// key's own query.
     async fn structure_from(&self, object: &ObjectRef, rows: StructureRows) -> Result<Structure> {
         let StructureRows {
             relation,
@@ -741,9 +741,8 @@ impl Conn {
             indexes,
             foreign_keys,
             referenced_by,
-            shape,
+            shape: _,
         } = rows;
-        self.remember(object, &shape);
         // PostgreSQL keeps no empty comment (`COMMENT ON ... IS ''` drops
         // it), and an empty one would be none.
         let comment: Option<String> = match relation.first() {
@@ -1014,28 +1013,27 @@ async fn read_alongside<T>(
 }
 
 /// What [`structure_reads`] reads of a table: the rows of each of its
-/// catalog queries, and the table's [`Shape`].
+/// catalog queries, the last of them [`SHAPE_SQL`]'s.
 struct StructureRows {
     relation: Vec<tokio_postgres::Row>,
     columns: Vec<tokio_postgres::Row>,
     indexes: Vec<tokio_postgres::Row>,
     foreign_keys: Vec<tokio_postgres::Row>,
     referenced_by: Vec<tokio_postgres::Row>,
-    shape: Shape,
+    shape: Vec<tokio_postgres::Row>,
 }
 
 /// What a table's structure is read from, in one round trip: its six
 /// catalog queries go out together, each finding the table by its schema
 /// and name. A table that is not there answers no rows, and
-/// [`Conn::structure_from`] says it is missing.
+/// [`Conn::structure_from`] says it is missing. The error is the driver's,
+/// for the caller to tell a cancel from the server's own timeout.
 async fn structure_reads(
     client: &tokio_postgres::Client,
     object: &ObjectRef,
-) -> Result<StructureRows> {
+) -> std::result::Result<StructureRows, tokio_postgres::Error> {
     /// The table's oid, from the parameters every query of a table's
     /// structure takes: its schema and its name.
-    /// The table's oid, from the parameters every query of `describe`
-    /// takes: its schema and its name.
     macro_rules! relation {
         () => {
             "(SELECT rc.oid FROM pg_class rc \
@@ -1045,15 +1043,21 @@ async fn structure_reads(
     }
     let params: &[(&(dyn ToSql + Sync), Type)] =
         &[(&object.schema, Type::TEXT), (&object.name, Type::TEXT)];
+    // The comment on the table or view itself, and a row only when there
+    // is a table or view.
+    let relation_sql = "SELECT obj_description(c.oid, 'pg_class') \
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+         WHERE n.nspname = $1 AND c.relname = $2";
+    // A test fails it, or slows it, for a table of its own.
+    #[cfg(test)]
+    let relation_sql = tests::relation_stand_in(object).unwrap_or(relation_sql);
+    // In order, each time: the answers come in the order the queries went
+    // out, and a query that fails inside a transaction fails every one
+    // after it with "current transaction is aborted". The first error in
+    // order is the one that says why, and whether it was a cancel.
     let (relation, columns, indexes, foreign_keys, referenced_by, shape) = tokio::try_join!(
-        // The comment on the table or view itself, and a row only when
-        // there is a table or view.
-        client.query_typed(
-            "SELECT obj_description(c.oid, 'pg_class') \
-             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
-             WHERE n.nspname = $1 AND c.relname = $2",
-            params,
-        ),
+        biased;
+        client.query_typed(relation_sql, params),
         client.query_typed(
             // An enum's labels in their sort order; a text column's
             // single-column CHECK constraints, by name. Whether the
@@ -1171,15 +1175,14 @@ async fn structure_reads(
         // then need not ask first (see `fetch_rows`), and what the page
         // that goes with the structure is checked against (see `open`).
         client.query_typed(SHAPE_SQL, params),
-    )
-    .map_err(query_error)?;
+    )?;
     Ok(StructureRows {
         relation,
         columns,
         indexes,
         foreign_keys,
         referenced_by,
-        shape: Shape::from_rows(&shape)?,
+        shape,
     })
 }
 
@@ -1269,7 +1272,9 @@ impl Adapter for Conn {
         let client = self.client.lock().await;
         let rows = structure_reads(&client, object).await;
         drop(client);
-        self.structure_from(object, rows?).await
+        let rows = rows.map_err(query_error)?;
+        self.remember(object, &Shape::from_rows(&rows.shape)?);
+        self.structure_from(object, rows).await
     }
 
     /// One page, read as [`read_statement`] reads: prepared (which refuses
@@ -1310,8 +1315,10 @@ impl Adapter for Conn {
     /// it as it is. One that lands on the structure's queries fails the
     /// page's transaction, so the page did not run and is cancelled too;
     /// so are both when it lands on the shape asked first. A structure
-    /// that fails otherwise fails the page's transaction as well, and the
-    /// page is then read on its own.
+    /// query that fails otherwise, the server's own timeout among them,
+    /// fails the page's transaction as well, and the page is then read on
+    /// its own. So is a page whose shape's rows, read with it, cannot be
+    /// made out: it ran, but nothing says it stands.
     async fn open(
         &self,
         object: &ObjectRef,
@@ -1344,22 +1351,36 @@ impl Adapter for Conn {
         // Every value is a literal in the text, so there is nothing to bind.
         debug_assert!(sql.params.is_empty());
         let started = Instant::now();
-        let (structure, read) =
+        let (reads, read) =
             read_alongside(&client, &sql.text, structure_reads(&client, object)).await;
-        let page = match &structure {
-            Ok(rows) => {
-                self.remember(object, &rows.shape);
-                if stands(&read, &rows.shape, query, &(key.clone(), binary)) {
-                    row_page(read, query, &key, started)
-                } else {
-                    self.page_from(&client, query, rows.shape.clone(), true)
-                        .await
+        let (structure, page) = match reads {
+            Ok(rows) => match Shape::from_rows(&rows.shape) {
+                Ok(fresh) => {
+                    // What the table's next page builds its statement from.
+                    self.remember(object, &fresh);
+                    let page = if stands(&read, &fresh, query, &(key.clone(), binary)) {
+                        row_page(read, query, &key, started)
+                    } else {
+                        self.page_from(&client, query, fresh, true).await
+                    };
+                    (Ok(rows), page)
                 }
-            }
-            // The cancel failed the transaction before the page's guard:
-            // the page did not run, and reading it again is not wanted.
-            Err(Error::Cancelled) => Err(Error::Cancelled),
-            Err(_) => self.page_from(&client, query, shape, checked).await,
+                Err(error) => {
+                    let page = self.page_from(&client, query, shape, checked).await;
+                    (Err(error), page)
+                }
+            },
+            // A cancel failed the transaction before the page's guard: the
+            // page did not run, and reading it again is not wanted. The
+            // server's own timeout says the same as a cancel to
+            // `query_error`, and is a failure like any other.
+            Err(error) => match stream_error(error) {
+                Error::Cancelled => (Err(Error::Cancelled), Err(Error::Cancelled)),
+                error => {
+                    let page = self.page_from(&client, query, shape, checked).await;
+                    (Err(error), page)
+                }
+            },
         };
         drop(client);
         let structure = match structure {
@@ -2471,6 +2492,125 @@ mod tests {
         assert_eq!(page.unwrap_err(), Error::Cancelled);
         assert!(
             started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(outside_a_transaction(&conn).await);
+    }
+
+    /// The table whose structure's first query fails, on the server.
+    const STRUCTURE_FAILS: &str = "open_structure_fails";
+
+    /// The table whose structure's first query sleeps for two seconds.
+    const STRUCTURE_SLEEPS: &str = "open_structure_sleeps";
+
+    /// What [`structure_reads`] sends in place of its first query for one
+    /// of the tables above, which [`structure_stand_ins`] makes: a failure
+    /// of the server's own, or a query a cancel can land on.
+    pub(super) fn relation_stand_in(object: &ObjectRef) -> Option<&'static str> {
+        match object.name.as_str() {
+            STRUCTURE_FAILS => Some("SELECT $1::text || $2::text || (1 / 0)::text"),
+            STRUCTURE_SLEEPS => Some("SELECT $1::text || $2::text FROM pg_sleep(2)"),
+            _ => None,
+        }
+    }
+
+    /// The tables of [`relation_stand_in`], with two rows each. Made once:
+    /// two tests that create them at once can fail.
+    async fn structure_stand_ins(url: &str) {
+        static MADE: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+        MADE.get_or_init(|| async {
+            let mut config: tokio_postgres::Config = url.parse().unwrap();
+            config.ssl_mode(tokio_postgres::config::SslMode::Disable);
+            let (client, connection) = config.connect(tokio_postgres::NoTls).await.unwrap();
+            tokio::spawn(connection);
+            for name in [STRUCTURE_FAILS, STRUCTURE_SLEEPS] {
+                client
+                    .batch_execute(&format!(
+                        "CREATE TABLE IF NOT EXISTS {name} (id int PRIMARY KEY, name text); \
+                         INSERT INTO {name} VALUES (1, 'one'), (2, 'two') ON CONFLICT DO NOTHING"
+                    ))
+                    .await
+                    .unwrap();
+            }
+        })
+        .await;
+    }
+
+    /// A structure whose query fails on the server still leaves the page
+    /// to show, read on its own: one round trip more, and no transaction
+    /// left open. The structure's error is its query's own, not that of
+    /// the queries after it, which fail only because the transaction
+    /// already has. Six times, so that every query has been the first one
+    /// polled.
+    #[tokio::test]
+    async fn a_failed_structure_leaves_the_page_and_says_why() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        structure_stand_ins(&url).await;
+        let object = ObjectRef::new("public", STRUCTURE_FAILS);
+        let query = RowQuery::new(object.clone(), 10);
+        let (conn, trips) = trip_counted(&url).await;
+        conn.fetch_rows(&query).await.unwrap();
+        for _ in 0..6 {
+            let ((structure, page), asked) = counted(&trips, conn.open(&object, &query)).await;
+            let error = structure.unwrap_err().to_string();
+            assert!(error.contains("division by zero"), "{error}");
+            let page = page.unwrap();
+            assert_eq!(page.rows.len(), 2);
+            assert!(page.ordered_by_key);
+            assert_eq!(asked, 2);
+            assert!(outside_a_transaction(&conn).await);
+        }
+    }
+
+    /// The server's own timeout on an open's structure is no cancel: the
+    /// structure says it timed out, and the page is read on its own.
+    #[tokio::test]
+    async fn a_timed_out_structure_leaves_the_page() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        structure_stand_ins(&url).await;
+        let object = ObjectRef::new("public", STRUCTURE_SLEEPS);
+        let query = RowQuery::new(object.clone(), 10);
+        let conn = session_with(&url, Access::ReadOnly, "-c statement_timeout=300").await;
+        conn.fetch_rows(&query).await.unwrap();
+        let (structure, page) = conn.open(&object, &query).await;
+        assert_eq!(structure.unwrap_err(), Error::Timeout);
+        assert_eq!(page.unwrap().rows.len(), 2);
+        assert!(outside_a_transaction(&conn).await);
+    }
+
+    /// A cancel that lands on an open's structure cancels its page too:
+    /// the page did not run, and is not read again, which would take two
+    /// seconds more. Each row of the page sleeps.
+    #[tokio::test]
+    async fn a_cancel_on_an_opens_structure_cancels_both_parts() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        structure_stand_ins(&url).await;
+        let object = ObjectRef::new("public", STRUCTURE_SLEEPS);
+        let conn = session(&url).await;
+        conn.fetch_rows(&RowQuery::new(object.clone(), 10))
+            .await
+            .unwrap();
+        let mut query = RowQuery::new(object.clone(), 10);
+        query.raw_where = Some("(SELECT true FROM pg_sleep(2))".into());
+        let cancel = conn.cancel.clone();
+        let cancelling = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            cancel.cancel().await.unwrap();
+        });
+        let started = Instant::now();
+        let (structure, page) = conn.open(&object, &query).await;
+        cancelling.await.unwrap();
+        assert_eq!(structure.unwrap_err(), Error::Cancelled);
+        assert_eq!(page.unwrap_err(), Error::Cancelled);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
             "{:?}",
             started.elapsed()
         );
