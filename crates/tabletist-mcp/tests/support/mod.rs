@@ -55,7 +55,9 @@ struct Inner {
     /// Whether the database is given the connection's timeout. Without it
     /// only the server's own timer ends a statement.
     database_times_out: AtomicBool,
-    /// The reads that were awaited to their end.
+    /// The reads that were begun at the database, and those that were
+    /// awaited to their end.
+    reads_begun: AtomicUsize,
     reads_ended: AtomicUsize,
 }
 
@@ -80,6 +82,7 @@ impl Shop {
                 connections: Mutex::default(),
                 comments: Mutex::default(),
                 database_times_out: AtomicBool::new(true),
+                reads_begun: AtomicUsize::new(0),
                 reads_ended: AtomicUsize::new(0),
             }),
         };
@@ -184,6 +187,10 @@ impl Shop {
         self.inner.database_times_out.store(false, Ordering::SeqCst);
     }
 
+    pub fn reads_begun(&self) -> usize {
+        self.inner.reads_begun.load(Ordering::SeqCst)
+    }
+
     pub fn reads_ended(&self) -> usize {
         self.inner.reads_ended.load(Ordering::SeqCst)
     }
@@ -280,6 +287,7 @@ impl Session for ShopSession {
         let flag = StopFlag::new();
         let run = self.connection.run_agent_read(read, limits, sources, &flag);
         tokio::pin!(run);
+        self.shop.inner.reads_begun.fetch_add(1, Ordering::SeqCst);
         let answer = tokio::select! {
             answer = &mut run => answer,
             () = self.stop.cancelled() => {
