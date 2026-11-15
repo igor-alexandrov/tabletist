@@ -221,11 +221,13 @@ fn hex_literal(introducer: &str, bytes: &[u8]) -> String {
     text
 }
 
-/// The questions [`Adapter::describe`] sends as one message, with the
-/// CHECK constraints asked last the way of the server `version` names;
-/// and the other way's question, asked alone where that one is refused.
-/// The byte string columns are asked for the table's [`Shape`].
-fn structure_questions(version: &str, object: &ObjectRef) -> (Vec<String>, &'static str) {
+/// The questions of a table's structure, as [`Adapter::describe`] and
+/// [`Adapter::open`] send them in one message: all but the CHECK
+/// constraints' ([`STRUCTURE_QUESTIONS`] of them); the CHECK constraints' question
+/// the way of the server `version` names, which goes last in the message;
+/// and the other way's, asked alone where that one is refused. The byte
+/// string columns are asked for the table's [`Shape`].
+fn structure_questions(version: &str, object: &ObjectRef) -> (Vec<String>, String, &'static str) {
     let (checks_first, checks_then) = if version.contains("MariaDB") {
         (MARIADB_CHECKS, MYSQL_CHECKS)
     } else {
@@ -240,13 +242,21 @@ fn structure_questions(version: &str, object: &ObjectRef) -> (Vec<String>, &'sta
         COMMENT,
         PRIMARY_KEY,
         BINARY_COLUMNS,
-        checks_first,
     ]
     .iter()
     .map(|sql| inlined(sql, &at))
     .collect();
-    (steps, checks_then)
+    (steps, inlined(checks_first, &at), checks_then)
 }
+
+/// How many questions [`structure_questions`] asks before the CHECK
+/// constraints'.
+const STRUCTURE_QUESTIONS: usize = 7;
+
+/// The place of the primary key's question among [`structure_questions`]'
+/// questions, with the byte string columns' just after it: what a page's
+/// [`Shape`] is read from (see [`answered`]).
+const STRUCTURE_SHAPE: usize = 5;
 
 /// A column's default as MySQL writes it, from MariaDB's (10.2.7 and
 /// later), which is the default's SQL: a string is a quoted literal
@@ -927,6 +937,72 @@ impl Conn {
         }
     }
 
+    /// The structure's answers but the CHECK constraints' (see
+    /// [`structure_questions`]), read; or that there is no such table. The
+    /// table's [`Shape`] they read is remembered, and given with them: what
+    /// its next page builds its statement from, which that page then need
+    /// not ask first (see [`Adapter::fetch_rows`]).
+    fn described(
+        &self,
+        object: &ObjectRef,
+        sets: [Vec<mysql_async::Row>; STRUCTURE_QUESTIONS],
+    ) -> Result<(Described, Shape)> {
+        let [
+            columns,
+            indexes,
+            keys_out,
+            keys_in,
+            comment,
+            primary_key,
+            binary,
+        ] = sets;
+        let described = Described {
+            columns: typed(columns)?,
+            indexes: typed(indexes)?,
+            keys_out: typed(keys_out)?,
+            keys_in: typed(keys_in)?,
+            comment: typed(comment)?,
+            primary_key: typed(primary_key)?,
+        };
+        if described.columns.is_empty() {
+            return Err(no_such_object(object));
+        }
+        let shape = Shape {
+            key: described.primary_key.clone(),
+            binary: typed(binary)?,
+            floats: described
+                .columns
+                .iter()
+                .any(|column| column.1.to_ascii_lowercase().starts_with("float")),
+        };
+        self.remember(object, shape.clone());
+        Ok((described, shape))
+    }
+
+    /// The conditions of `object`'s CHECK constraints, from the answer to
+    /// the server's own question for them, or from the `error` that
+    /// refused it: then the other kind's question, `checks_then`, is asked
+    /// alone, and where that is refused too there are none (see
+    /// [`MARIADB_CHECKS`]).
+    async fn checks_answered(
+        &self,
+        object: &ObjectRef,
+        checks: Option<Vec<mysql_async::Row>>,
+        error: Option<mysql_async::Error>,
+        checks_then: &str,
+    ) -> Result<Vec<String>> {
+        match (checks, error) {
+            (Some(checks), None) => typed(checks),
+            (_, Some(error)) => match query_error(error) {
+                Error::Query { .. } => self.checks(checks_then, object).await,
+                other => Err(other),
+            },
+            (None, None) => Err(Error::query(
+                "unexpected data from the server: an answer is missing",
+            )),
+        }
+    }
+
     /// [`Adapter::describe`] as it asked before its questions went in one
     /// message: each bound and prepared on its own, MariaDB's checks first.
     /// What the tests hold the message's answer to.
@@ -967,6 +1043,44 @@ impl Conn {
             .into_iter()
             .map(|name| (name, ColumnClass::Binary))
             .collect())
+    }
+
+    /// The CHECK constraints' `question` (see [`structure_questions`])
+    /// asked alone, where the message it went last in stopped before it:
+    /// see [`Conn::checks_answered`].
+    async fn checks_alone(
+        &self,
+        object: &ObjectRef,
+        question: String,
+        checks_then: &str,
+    ) -> Result<Vec<String>> {
+        let (mut answers, error) = {
+            let mut session = self.conn.lock().await;
+            let conn = session.conn()?;
+            script::answers(conn, &[question]).await
+        };
+        let checks = answers.pop().map(|answer| answer.rows);
+        self.checks_answered(object, checks, error, checks_then)
+            .await
+    }
+
+    /// `query`'s page as it was `read`, `started` when its read did: at
+    /// most `limit` rows, and whether there are more. The shape it was
+    /// built from is remembered, for the next page to build from.
+    fn paged(&self, query: &RowQuery, read: (Page, Shape), started: Instant) -> RowPage {
+        let ((columns, mut rows), shape) = read;
+        let limit = query.limit as usize;
+        let ordered_by_key = !shape.key.is_empty();
+        self.remember(&query.object, shape);
+        let has_more = rows.len() > limit;
+        rows.truncate(limit);
+        RowPage {
+            columns,
+            rows,
+            has_more,
+            ordered_by_key,
+            elapsed: started.elapsed(),
+        }
     }
 
     /// The shape this session last read of `object`, if it read one.
@@ -1074,7 +1188,8 @@ impl Adapter for Conn {
     /// no list of them refuses that question, and everything before it has
     /// answered by then.
     async fn describe(&self, object: &ObjectRef) -> Result<Structure> {
-        let (steps, checks_then) = structure_questions(&self.version, object);
+        let (mut steps, checks, checks_then) = structure_questions(&self.version, object);
+        steps.push(checks);
         let (answers, error) = {
             let mut session = self.conn.lock().await;
             let conn = session.conn()?;
@@ -1083,63 +1198,17 @@ impl Adapter for Conn {
         let mut sets: Vec<Vec<mysql_async::Row>> =
             answers.into_iter().map(|answer| answer.rows).collect();
         let checks = (sets.len() == steps.len()).then(|| sets.pop()).flatten();
-        let Ok(
-            [
-                columns,
-                indexes,
-                keys_out,
-                keys_in,
-                comment,
-                primary_key,
-                binary,
-            ],
-        ) = <[_; 7]>::try_from(sets)
-        else {
+        let Ok(sets) = <[_; STRUCTURE_QUESTIONS]>::try_from(sets) else {
             // A question before the checks failed: that is the error.
             return Err(error.map_or_else(
                 || Error::query("unexpected data from the server: an answer is missing"),
                 query_error,
             ));
         };
-        let described = Described {
-            columns: typed(columns)?,
-            indexes: typed(indexes)?,
-            keys_out: typed(keys_out)?,
-            keys_in: typed(keys_in)?,
-            comment: typed(comment)?,
-            primary_key: typed(primary_key)?,
-        };
-        if described.columns.is_empty() {
-            return Err(no_such_object(object));
-        }
-        // What the table's first page builds its statement from, which it
-        // then need not ask first (see `fetch_rows`).
-        self.remember(
-            object,
-            Shape {
-                key: described.primary_key.clone(),
-                binary: typed(binary)?,
-                floats: described
-                    .columns
-                    .iter()
-                    .any(|column| column.1.to_ascii_lowercase().starts_with("float")),
-            },
-        );
-        // The server's own question for its checks answered, or it was
-        // refused: the other kind's, alone, then none (see
-        // `MARIADB_CHECKS`).
-        let checks = match (checks, error) {
-            (Some(checks), None) => typed(checks)?,
-            (_, Some(error)) => match query_error(error) {
-                Error::Query { .. } => self.checks(checks_then, object).await?,
-                other => return Err(other),
-            },
-            (None, None) => {
-                return Err(Error::query(
-                    "unexpected data from the server: an answer is missing",
-                ));
-            }
-        };
+        let (described, _) = self.described(object, sets)?;
+        let checks = self
+            .checks_answered(object, checks, error, checks_then)
+            .await?;
         Ok(described.structure(&checks, self.version.contains("MariaDB")))
     }
 
@@ -1183,21 +1252,147 @@ impl Adapter for Conn {
             Some(known) => page_in_one(conn, query, &known).await?,
             None => None,
         };
-        let ((columns, mut rows), shape) = match read {
+        let read = match read {
             Some(read) => read,
             None => page_in_three(conn, query, limit).await?,
         };
-        let key = shape.key.clone();
-        self.remember(&query.object, shape);
-        let has_more = rows.len() > limit;
-        rows.truncate(limit);
-        Ok(RowPage {
-            columns,
-            rows,
-            has_more,
-            ordered_by_key: !key.is_empty(),
-            elapsed: started.elapsed(),
-        })
+        Ok(self.paged(query, read, started))
+    }
+
+    /// The structure and the first page in one round trip, where this
+    /// session knows the table's [`Shape`] and it has no FLOAT: the
+    /// message [`page_in_one`] sends, with the structure's questions in
+    /// place of the shape's (they ask for the shape too), and the CHECK
+    /// constraints' question last, after the rollback, so that a server
+    /// with no list of them has answered everything else when it refuses
+    /// it. The structure is read from its answers as
+    /// [`Adapter::describe`] reads it, and the page as `fetch_rows` reads
+    /// it: a page whose statement the shape just read would not have
+    /// built, or that the message could not read, is read the other way
+    /// (see [`page_in_three`]). Any other open is the structure and then
+    /// the page, each read on its own: two round trips, or more.
+    ///
+    /// A cancel says so for the part it stopped. One that lands on the
+    /// structure's questions stops the message before the page, which is
+    /// cancelled too. One that lands on the page keeps the structure read
+    /// before it, whose CHECK constraints are then asked alone, as they
+    /// are wherever the message stopped at the page. One that lands on the
+    /// CHECK constraints' question, after the rollback, cancels the
+    /// structure and keeps the page, which has run by then: the pair that
+    /// `describe` and then `fetch_rows` would give. A structure question
+    /// that fails otherwise stops the message as well: its transaction is
+    /// ended, and the page is read on its own.
+    async fn open(
+        &self,
+        object: &ObjectRef,
+        query: &RowQuery,
+    ) -> (Result<Structure>, Result<RowPage>) {
+        // The structure's shape is `object`'s, and says nothing of another
+        // table's page. A statement `page_in_one` would refuse, or leave to
+        // the other way, is read as `fetch_rows` reads it.
+        let planned = (*object == query.object)
+            .then(|| self.known_shape(object))
+            .flatten()
+            .filter(|shape| !shape.floats)
+            .and_then(|known| {
+                let (sql, values) = page_statement(query, &known).ok().flatten()?;
+                Some((known, sql, values))
+            });
+        let Some((known, sql, values)) = planned else {
+            return (self.describe(object).await, self.fetch_rows(query).await);
+        };
+        let mut session = self.conn.lock().await;
+        let conn = match session.conn() {
+            Ok(conn) => conn,
+            Err(error) => return (Err(error.clone()), Err(error)),
+        };
+        let started = Instant::now();
+        let message = open_message(conn, &self.version, object, &sql.text, &values);
+        let OpenMessage {
+            asked,
+            ran,
+            rolled_back,
+            ..
+        } = message;
+        let (mut answers, error) = script::answers(conn, &message.steps).await;
+        if answers.len() < asked + STRUCTURE_QUESTIONS {
+            // The message stopped before the page: at the start of its
+            // transaction, or at a structure question.
+            let error = error.map_or_else(
+                || Error::query("unexpected data from the server: an answer is missing"),
+                query_error,
+            );
+            let Err(error) = end_read(conn, Err::<std::convert::Infallible, _>(error)).await;
+            if error == Error::Cancelled || error.is_connection_lost() {
+                return (Err(error.clone()), Err(error));
+            }
+            drop(session);
+            return (Err(error), self.fetch_rows(query).await);
+        }
+        // `answered` takes the two answers the page's shape is read from,
+        // which the structure reads too.
+        let shape_at = STRUCTURE_SHAPE..STRUCTURE_SHAPE + 2;
+        let sets = std::array::from_fn(|at| {
+            let answer = &mut answers[asked + at];
+            if shape_at.contains(&at) {
+                answer.rows.clone()
+            } else {
+                std::mem::take(&mut answer.rows)
+            }
+        });
+        let described = self.described(object, sets);
+        // `answered` reads the byte string columns only where a filter
+        // compares bytes, and keeps `known`'s otherwise: here they are the
+        // structure's, just read, so that the shape the page remembers is.
+        let known = match &described {
+            Ok((_, shape)) => Shape {
+                binary: shape.binary.clone(),
+                ..known
+            },
+            Err(_) => known,
+        };
+        // The message's own rollback answered: the transaction is over,
+        // and what stopped the message after it was the checks' question.
+        let ended = answers.len() > rolled_back;
+        let (error, checks_error) = if ended { (None, error) } else { (error, None) };
+        let outcome = answered(
+            &mut answers,
+            error,
+            &sql,
+            query,
+            &known,
+            (asked + STRUCTURE_SHAPE, ran),
+        );
+        let checks_answer = answers
+            .get_mut(rolled_back + 1)
+            .map(|answer| std::mem::take(&mut answer.rows));
+        let outcome = if ended {
+            outcome
+        } else {
+            end_read(conn, outcome).await
+        };
+        let page = match outcome {
+            Ok(Some(read)) => Ok(read),
+            Ok(None) => page_in_three(conn, query, query.limit as usize).await,
+            Err(error) => Err(error),
+        }
+        .map(|read| self.paged(query, read, started));
+        drop(session);
+        let structure = match described {
+            Ok((described, _)) => {
+                let checks = if ended {
+                    self.checks_answered(object, checks_answer, checks_error, message.checks_then)
+                        .await
+                } else {
+                    let question = message.steps[rolled_back + 1].clone();
+                    self.checks_alone(object, question, message.checks_then)
+                        .await
+                };
+                checks.map(|checks| described.structure(&checks, self.version.contains("MariaDB")))
+            }
+            Err(error) => Err(error),
+        };
+        (structure, page)
     }
 
     async fn export_statement(&self, query: &RowQuery, columns: &[String]) -> Result<String> {
@@ -1712,9 +1907,7 @@ async fn page_in_one(
     query: &RowQuery,
     shape: &Shape,
 ) -> Result<Option<(Page, Shape)>> {
-    let sql = shape.page(query)?;
-    driver_parameter(&sql.text)?;
-    let Some(values) = sql.params.iter().map(literal).collect::<Option<Vec<_>>>() else {
+    let Some((sql, values)) = page_statement(query, shape)? else {
         return Ok(None);
     };
     let at = [query.object.schema.as_str(), query.object.name.as_str()];
@@ -1736,6 +1929,68 @@ async fn page_in_one(
         outcome
     } else {
         end_read(conn, outcome).await
+    }
+}
+
+/// `query`'s statement as `shape` builds it, for [`page_in_one`] to run,
+/// with its values as [`literal`]s; `None` where a value has none, and
+/// the page is to be read the other way. A text the driver would rewrite
+/// is refused here, as the other way refuses it (see
+/// [`driver_parameter`]).
+fn page_statement(
+    query: &RowQuery,
+    shape: &Shape,
+) -> Result<Option<(crate::dialect::Sql, Vec<String>)>> {
+    let sql = shape.page(query)?;
+    driver_parameter(&sql.text)?;
+    let values = sql.params.iter().map(literal).collect::<Option<Vec<_>>>();
+    Ok(values.map(|values| (sql, values)))
+}
+
+/// The message [`Adapter::open`] sends, and the places in it.
+struct OpenMessage {
+    /// The start of the read-only transaction ([`read_start`]), the
+    /// structure's questions but the CHECK constraints', the page's run
+    /// ([`prepared_run`]), the rollback, and the CHECK constraints'
+    /// question (see [`structure_questions`]).
+    steps: Vec<String>,
+    /// The place of the structure's first question.
+    asked: usize,
+    /// The place of the page's run.
+    ran: usize,
+    /// The place of the rollback, which the CHECK constraints' question
+    /// follows.
+    rolled_back: usize,
+    /// The other way's question for the CHECK constraints, asked alone
+    /// where the server refuses the message's.
+    checks_then: &'static str,
+}
+
+/// The message [`Adapter::open`] sends from `conn` as it stands, to the
+/// server `version` names, for `object`'s structure and the page of `text`
+/// with `values` (see [`page_statement`]).
+fn open_message(
+    conn: &mysql_async::Conn,
+    version: &str,
+    object: &ObjectRef,
+    text: &str,
+    values: &[String],
+) -> OpenMessage {
+    let (questions, checks, checks_then) = structure_questions(version, object);
+    let mut steps = read_start(conn);
+    let asked = steps.len();
+    steps.extend(questions);
+    let ran = steps.len() + RUN;
+    steps.extend(prepared_run(text, values));
+    let rolled_back = steps.len();
+    steps.push(write::ROLLBACK.to_owned());
+    steps.push(checks);
+    OpenMessage {
+        steps,
+        asked,
+        ran,
+        rolled_back,
+        checks_then,
     }
 }
 
@@ -4493,6 +4748,359 @@ mod tests {
         }
     }
 
+    /// The backend runs an open on a task it spawns: its future must be
+    /// `Send`. This fails to compile, not to run.
+    #[test]
+    fn an_open_can_run_on_a_spawned_task() {
+        fn send<T: Send>(_: &T) {}
+        let _check =
+            |conn: &Conn, object: &ObjectRef, query: &RowQuery| send(&conn.open(object, query));
+    }
+
+    /// What a fresh session answers for `object`'s structure and then for
+    /// `query`'s page, each read on its own.
+    async fn read_apart(
+        url: &str,
+        object: &ObjectRef,
+        query: &RowQuery,
+    ) -> (Result<Structure>, Result<RowPage>) {
+        let apart = session(url).await;
+        let structure = apart.describe(object).await;
+        (structure, apart.fetch_rows(query).await)
+    }
+
+    /// Whether two pages hold the same: their columns, rows and how they
+    /// end (not how long they took).
+    fn same_page(one: &RowPage, other: &RowPage) -> bool {
+        one.columns == other.columns
+            && one.rows == other.rows
+            && one.has_more == other.has_more
+            && one.ordered_by_key == other.ordered_by_key
+    }
+
+    /// Opening a table the session has not read the shape of reads its
+    /// structure, which reads the shape, and then its first page: twice.
+    /// What it answers is what the two read one after the other answer.
+    #[tokio::test]
+    async fn opening_a_table_first_reads_its_structure() {
+        use std::sync::atomic::Ordering;
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = trips(&url).await;
+        let query = RowQuery::new(object.clone(), 1);
+        let (conn, asked) = counted_session(&url, Access::ReadOnly).await;
+        let before = asked.load(Ordering::SeqCst);
+        let (structure, page) = conn.open(&object, &query).await;
+        assert_eq!(asked.load(Ordering::SeqCst) - before, 2);
+        assert!(!in_transaction(&conn).await);
+        let (described, fetched) = read_apart(&url, &object, &query).await;
+        assert_eq!(structure.unwrap(), described.unwrap());
+        let (page, fetched) = (page.unwrap(), fetched.unwrap());
+        assert!(same_page(&page, &fetched), "{page:?} {fetched:?}");
+        assert_eq!(page.rows[0][0], Value::Int(1));
+        assert!(page.has_more && page.ordered_by_key);
+    }
+
+    /// A table with a FLOAT is opened as its structure and then its page,
+    /// which is read through the binary protocol (see
+    /// `a_table_with_a_float_has_its_pages_read_through_the_binary_protocol`),
+    /// and answers what the two read one after the other answer.
+    #[tokio::test]
+    async fn opening_a_table_with_a_float_reads_it_apart() {
+        use std::sync::atomic::Ordering;
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = table_of(
+            &url,
+            "opened_floats",
+            "id int PRIMARY KEY, f float",
+            "(1, 1.2345679), (2, 16777217)",
+        )
+        .await;
+        let query = RowQuery::new(object.clone(), 10);
+        let (conn, asked) = counted_session(&url, Access::ReadOnly).await;
+        conn.describe(&object).await.unwrap();
+        let before = asked.load(Ordering::SeqCst);
+        let (structure, page) = conn.open(&object, &query).await;
+        // The structure, then the page's three round trips and its
+        // statement's prepare.
+        assert_eq!(asked.load(Ordering::SeqCst) - before, 5);
+        assert!(!in_transaction(&conn).await);
+        let (described, fetched) = read_apart(&url, &object, &query).await;
+        assert_eq!(structure.unwrap(), described.unwrap());
+        let (page, fetched) = (page.unwrap(), fetched.unwrap());
+        assert!(same_page(&page, &fetched), "{page:?} {fetched:?}");
+        let floats: Vec<&Value> = page.rows.iter().map(|row| &row[1]).collect();
+        assert_eq!(
+            floats,
+            [&Value::Float(1.2345679), &Value::Float(16777216.0)]
+        );
+    }
+
+    /// An open of a table that is not there says so for each part: the
+    /// structure that the table is missing, the page what the server said
+    /// of its statement. So it does where the session read the table's
+    /// shape before it was dropped, in one message. No transaction is left
+    /// open, and the session reads on.
+    #[tokio::test]
+    async fn opening_a_missing_table_fails_each_part_on_its_own() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = trips(&url).await;
+        let gone = table_of(&url, "opened_gone", "id int PRIMARY KEY", "(1)").await;
+        let never = ObjectRef {
+            schema: object.schema.clone(),
+            name: "opened_never".into(),
+        };
+        let conn = session(&url).await;
+        conn.describe(&gone).await.unwrap();
+        {
+            let _turn = TRIPS.lock().await;
+            let opts = Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+            let mut admin = mysql_async::Conn::new(opts).await.unwrap();
+            admin.query_drop("DROP TABLE opened_gone").await.unwrap();
+        }
+        for missing in [never, gone] {
+            let (structure, page) = conn
+                .open(&missing, &RowQuery::new(missing.clone(), 10))
+                .await;
+            let error = structure.unwrap_err().to_string();
+            assert!(error.contains("no such table or view"), "{error}");
+            let error = page.unwrap_err().to_string();
+            assert!(error.contains("doesn't exist"), "{error}");
+            assert!(!in_transaction(&conn).await, "{}", missing.name);
+        }
+        let (structure, page) = conn.open(&object, &RowQuery::new(object.clone(), 10)).await;
+        assert_eq!(structure.unwrap().primary_key, ["id"]);
+        assert_eq!(page.unwrap().rows.len(), 3);
+    }
+
+    /// The message an open of `query`'s table sends from `conn` as it
+    /// stands, which knows the table's shape.
+    async fn sent_by_open(conn: &Conn, query: &RowQuery) -> OpenMessage {
+        let shape = conn.known_shape(&query.object).unwrap();
+        let (sql, values) = page_statement(query, &shape).unwrap().unwrap();
+        let session = conn.conn.lock().await;
+        open_message(&session, &conn.version, &query.object, &sql.text, &values)
+    }
+
+    /// `steps` as one message's text, as the proxy of [`swapping_session`]
+    /// is to find it.
+    fn as_sent(steps: &[String]) -> &'static str {
+        Box::leak(steps.join("; ").into_boxed_str())
+    }
+
+    /// A session opened as `access` whose proxy swaps the message an open
+    /// of `query`'s table sends (see [`sent_by_open`]) for `instead`, made
+    /// from its steps; or, `alone`, the CHECK constraints' question sent on
+    /// its own. The session knows the table's shape.
+    async fn swapping_an_open(
+        url: &str,
+        access: Access,
+        query: &RowQuery,
+        alone: bool,
+        instead: impl FnOnce(&mut OpenMessage),
+    ) -> (Conn, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        // What the session sends: the text to find, the whole message or
+        // its last step.
+        let sent = |message: &OpenMessage| match alone {
+            true => as_sent(&message.steps[message.rolled_back + 1..]),
+            false => as_sent(&message.steps),
+        };
+        let plain = session_as(url, access).await;
+        plain.describe(&query.object).await.unwrap();
+        let mut message = sent_by_open(&plain, query).await;
+        let (whole, found) = (as_sent(&message.steps), sent(&message));
+        instead(&mut message);
+        let swap = sent(&message);
+        assert_ne!(swap, found);
+        let (conn, asked) = swapping_session(url, access, (found, swap)).await;
+        conn.describe(&query.object).await.unwrap();
+        // The swapped session sends what the plain one would.
+        assert_eq!(as_sent(&sent_by_open(&conn, query).await.steps), whole);
+        (conn, asked)
+    }
+
+    /// A server that refuses an open's checks question, which goes last,
+    /// still gives the structure, after asking the other way, and the
+    /// page. One that refuses a question of the structure before the page
+    /// fails the structure, ends the message's transaction, and reads the
+    /// page on its own. The proxy swaps the message for one whose question
+    /// names a view that does not exist.
+    #[tokio::test]
+    async fn a_refused_question_in_an_opens_message() {
+        use std::sync::atomic::Ordering;
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = trips(&url).await;
+        let query = RowQuery::new(object.clone(), 10);
+        let expected = session(&url)
+            .await
+            .describe_one_by_one(&object)
+            .await
+            .unwrap();
+        // The message, then the other way's question for the checks, which
+        // both servers refuse as they prepare it; the message, its
+        // rollback, then the page alone. Where nothing was swapped, the
+        // message alone.
+        for (view, fails, messages) in [
+            ("information_schema.check_constraints", false, 2),
+            ("information_schema.columns", true, 3),
+        ] {
+            let (conn, asked) =
+                swapping_an_open(&url, Access::ReadOnly, &query, false, |message| {
+                    for step in &mut message.steps {
+                        *step = step.replace(view, "information_schema.no_such_view");
+                    }
+                })
+                .await;
+            let before = asked.load(Ordering::SeqCst);
+            let (structure, page) = conn.open(&object, &query).await;
+            let sent = asked.load(Ordering::SeqCst) - before;
+            if fails {
+                assert!(
+                    matches!(structure, Err(Error::Query { .. })),
+                    "{structure:?}"
+                );
+            } else {
+                // `trips` has no CHECK, so no list of values either way.
+                assert_eq!(structure.as_ref(), Ok(&expected));
+            }
+            assert_eq!(sent, messages, "{view}");
+            assert_eq!(page.unwrap().rows.len(), 3, "{view}");
+            assert!(!in_transaction(&conn).await, "{view}");
+        }
+    }
+
+    /// A statement over `trips` that sleeps for each of its rows, which a
+    /// cancel stops: in place of a question an open's message asks.
+    const SLOW: &str = "SELECT name FROM trips WHERE SLEEP(5) = 0";
+
+    /// `conn`'s open of `query`, cancelled a moment after it starts, and
+    /// how long it took.
+    async fn open_cancelled(
+        conn: &Conn,
+        query: &RowQuery,
+    ) -> ((Result<Structure>, Result<RowPage>), Duration) {
+        let cancel = conn.cancel_handle();
+        let cancelling = async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            cancel.cancel().await
+        };
+        let started = Instant::now();
+        let (opened, cancelled) = tokio::join!(conn.open(&query.object, query), cancelling);
+        cancelled.unwrap();
+        (opened, started.elapsed())
+    }
+
+    /// A cancel that lands on a question of an open's structure stops the
+    /// message before the page: both are cancelled, no transaction is left
+    /// open, and the next open reads both. The proxy swaps the comment's
+    /// question for a slow one.
+    #[tokio::test]
+    async fn a_cancel_on_an_opens_structure_cancels_both() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = trips(&url).await;
+        let query = RowQuery::new(object.clone(), 10);
+        for access in [Access::ReadOnly, Access::Writable] {
+            let (conn, _) = swapping_an_open(&url, access, &query, false, |message| {
+                // The comment's question: the fifth of the structure's.
+                message.steps[message.asked + 4] = SLOW.to_owned();
+            })
+            .await;
+            let ((structure, page), took) = open_cancelled(&conn, &query).await;
+            assert_eq!(structure, Err(Error::Cancelled), "{access:?}");
+            assert_eq!(page.unwrap_err(), Error::Cancelled, "{access:?}");
+            assert!(took < Duration::from_secs(5), "{took:?}");
+            assert!(!in_transaction(&conn).await, "{access:?}");
+            let (structure, page) = conn.open(&object, &query).await;
+            assert_eq!(structure.unwrap().primary_key, ["id"], "{access:?}");
+            assert_eq!(page.unwrap().rows.len(), 3, "{access:?}");
+        }
+    }
+
+    /// A cancel that lands on an open's checks question, after its
+    /// rollback, cancels the structure and keeps the page, which ran
+    /// before it. No transaction is left open.
+    #[tokio::test]
+    async fn a_cancel_on_an_opens_checks_keeps_its_page() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = trips(&url).await;
+        let query = RowQuery::new(object.clone(), 10);
+        for access in [Access::ReadOnly, Access::Writable] {
+            let (conn, _) = swapping_an_open(&url, access, &query, false, |message| {
+                message.steps[message.rolled_back + 1] = SLOW.to_owned();
+            })
+            .await;
+            let ((structure, page), took) = open_cancelled(&conn, &query).await;
+            assert_eq!(structure, Err(Error::Cancelled), "{access:?}");
+            assert_eq!(page.unwrap().rows.len(), 3, "{access:?}");
+            assert!(took < Duration::from_secs(5), "{took:?}");
+            assert!(!in_transaction(&conn).await, "{access:?}");
+        }
+    }
+
+    /// An open whose page fails stops its message there, so its checks
+    /// question is asked alone afterwards: a cancel that lands on it
+    /// cancels the structure, and the page keeps its own error. No
+    /// transaction is left open.
+    #[tokio::test]
+    async fn a_cancel_on_the_checks_asked_after_an_opens_page_failed() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = trips(&url).await;
+        let mut query = RowQuery::new(object.clone(), 10);
+        query.raw_where = Some("no_such_column = 1".into());
+        let (conn, _) = swapping_an_open(&url, Access::ReadOnly, &query, true, |message| {
+            message.steps[message.rolled_back + 1] = SLOW.to_owned();
+        })
+        .await;
+        let ((structure, page), took) = open_cancelled(&conn, &query).await;
+        assert_eq!(structure, Err(Error::Cancelled));
+        assert!(matches!(page, Err(Error::Query { .. })), "{page:?}");
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        assert!(!in_transaction(&conn).await);
+    }
+
+    /// A cancel that lands on an open's page stops the page and keeps the
+    /// structure read before it in the same message. No transaction is left
+    /// open.
+    #[tokio::test]
+    async fn a_cancel_on_an_opens_page_keeps_its_structure() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = trips(&url).await;
+        for access in [Access::ReadOnly, Access::Writable] {
+            let conn = session_as(&url, access).await;
+            let expected = conn.describe(&object).await.unwrap();
+            let mut slow = RowQuery::new(object.clone(), 10);
+            slow.raw_where = Some("SLEEP(5) = 0".into());
+            let cancel = conn.cancel_handle();
+            let cancelling = async {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                cancel.cancel().await
+            };
+            let started = Instant::now();
+            let ((structure, page), cancelled) =
+                tokio::join!(conn.open(&object, &slow), cancelling);
+            cancelled.unwrap();
+            assert_eq!(structure, Ok(expected), "{access:?}");
+            assert_eq!(page.unwrap_err(), Error::Cancelled, "{access:?}");
+            assert!(started.elapsed() < Duration::from_secs(5));
+            assert!(!in_transaction(&conn).await, "{access:?}");
+        }
+    }
+
     /// A table made afresh by `admin`, from `columns` and `rows`, with
     /// strict modes off so that zero dates go in.
     pub(super) async fn table_of(url: &str, name: &str, columns: &str, rows: &str) -> ObjectRef {
@@ -4917,7 +5525,8 @@ mod tests {
         let object = trips(&url).await;
         let (checked, _) = counted_session(&url, Access::ReadOnly).await;
         let expected = checked.describe_one_by_one(&object).await.unwrap();
-        let (steps, _) = structure_questions(&checked.version, &object);
+        let (mut steps, checks, _) = structure_questions(&checked.version, &object);
+        steps.push(checks);
         let sent: &'static str = Box::leak(steps.join("; ").into_boxed_str());
         for (view, fails) in [
             ("information_schema.check_constraints", false),
