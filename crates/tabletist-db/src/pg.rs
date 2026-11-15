@@ -729,322 +729,21 @@ impl Conn {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         shapes.insert(object.clone(), shape.clone());
     }
-}
 
-/// The rows of `messages`, typed by `columns`: at most one more than
-/// `limit`.
-fn kept_rows(
-    messages: &[SimpleQueryMessage],
-    columns: &[ColumnMeta],
-    limit: usize,
-) -> Result<Vec<Vec<Value>>> {
-    let mut rows = Vec::new();
-    for message in messages {
-        if let SimpleQueryMessage::Row(row) = message {
-            if rows.len() > limit {
-                break;
-            }
-            rows.push(row_values(row, columns)?);
-        }
-    }
-    Ok(rows)
-}
-
-/// What a [`read_statement`] answers: the statement's columns, as the
-/// prepare typed them, and what the server answered to its run.
-type Answered = (Vec<ColumnMeta>, Vec<SimpleQueryMessage>);
-
-/// Runs `text`, one reading statement, in a read-only transaction: what
-/// the server answered, and the columns, as the prepare typed them. One
-/// round trip: see [`read_alongside`].
-async fn read_statement(client: &tokio_postgres::Client, text: &str) -> Result<Answered> {
-    read_alongside(client, text, async {}).await.1
-}
-
-/// The first step of a read's run: it fails outside a transaction block,
-/// and in one that has failed. So the statement after it runs only inside
-/// the `BEGIN READ ONLY` the read sent first, and only once everything
-/// sent in the transaction before it worked: the prepare, which took the
-/// text as one statement, and what went alongside the read. A failure
-/// there fails the transaction, and a failed `BEGIN` (a cancel that landed
-/// on it) leaves none. Nothing of a message runs past the step that
-/// failed.
-const READ_GUARD: &str = "SAVEPOINT tabletist_read";
-
-/// [`read_statement`], with what `alongside` sends going out in the same
-/// flight, inside the read's transaction and before its statement: what
-/// it answered, and the read's answer.
-///
-/// All of the read goes out at once, before any answer comes back: the
-/// `BEGIN READ ONLY`, what goes alongside, the prepare (which yields the
-/// column types, and fails on a text of more than one statement), the run
-/// of `text` behind [`READ_GUARD`], and the `ROLLBACK`. Each goes out when
-/// it is first polled, and the first poll reaches them all, in this order.
-/// So a read that is dropped once it has started leaves its `ROLLBACK` on
-/// its way, and one that fails, wherever it fails, is rolled back by it.
-/// What goes alongside and fails, say because a cancel landed on it,
-/// fails the transaction, and the statement does not run: a cancel stops
-/// the read wherever it lands.
-async fn read_alongside<T>(
-    client: &tokio_postgres::Client,
-    text: &str,
-    alongside: impl Future<Output = T>,
-) -> (T, Result<Answered>) {
-    let run = format!("{READ_GUARD};\n{text}");
-    let (begun, alongside, prepared, ran, rolled_back) = tokio::join!(
-        client.batch_execute("BEGIN READ ONLY"),
-        alongside,
-        client.prepare(text),
-        client.simple_query(&run),
-        client.batch_execute("ROLLBACK"),
-    );
-    // The first step that failed says why: the guard's own failure after a
-    // failed `BEGIN` or prepare says nothing.
-    let read = begun.and(prepared).and_then(|statement| {
-        let columns = column_metas(&statement);
-        // Its close goes out on its own, waited on by nobody.
-        drop(statement);
-        Ok((columns, ran?))
-    });
-    let read = match rolled_back {
-        Ok(()) => read.map_err(query_error),
-        // A cancel that landed on the rollback leaves the transaction
-        // open: once more. A rollback that fails again is a session that
-        // is gone, or a transaction the next read's guard fails on and
-        // its rollback ends.
-        Err(error) => {
-            let _ = client.batch_execute("ROLLBACK").await;
-            Err(query_error(read.err().unwrap_or(error)))
-        }
-    };
-    (alongside, read)
-}
-
-impl Adapter for Conn {
-    fn is_encrypted(&self) -> bool {
-        self.encrypted
-    }
-
-    fn cancel_handle(&self) -> CancelHandle {
-        CancelHandle(CancelInner::Postgres(self.cancel.clone()))
-    }
-
-    /// None: a `timestamptz` comes with its offset, and the app shows it in
-    /// the zone of its own settings.
-    async fn session_zone(&self) -> Result<Option<String>> {
-        Ok(None)
-    }
-
-    /// See [`crate::Connection::server_version`].
-    async fn server_version(&self) -> Result<String> {
-        let client = self.client.lock().await;
-        let messages = client
-            .simple_query("SHOW server_version")
-            .await
-            .map_err(query_error)?;
-        let version = first_text(&messages).unwrap_or_default();
-        // "17.2 (Debian 17.2-1.pgdg120+1)" reads as "17.2".
-        let version = version.split_whitespace().next().unwrap_or_default();
-        Ok(format!("PostgreSQL {version}"))
-    }
-
-    async fn list_databases(&self) -> Result<Vec<String>> {
-        if let Some(aliases) = self.database_probe().await {
-            return Ok(aliases);
-        }
-        self.catalog_databases().await
-    }
-
-    async fn list_schemas(&self) -> Result<Vec<String>> {
-        let rows = self
-            .catalog(
-                &format!(
-                    "SELECT nspname::text FROM pg_namespace ORDER BY nspname LIMIT {MAX_LISTED}"
-                ),
-                &[],
-            )
-            .await?;
-        rows.iter().map(|row| column(row, 0)).collect()
-    }
-
-    async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>> {
-        let rows = self
-            .catalog(
-                &format!(
-                    "SELECT c.relname::text, c.relkind::text, c.reltuples::float8 \
-                     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
-                     WHERE n.nspname = $1 AND c.relkind IN ('r', 'p', 'f', 'v', 'm') \
-                     ORDER BY c.relname LIMIT {MAX_LISTED}"
-                ),
-                &[(&schema, Type::TEXT)],
-            )
-            .await?;
-        rows.iter()
-            .map(|row| {
-                let kind: String = column(row, 1)?;
-                let tuples: f64 = column(row, 2)?;
-                Ok(ObjectInfo {
-                    name: column(row, 0)?,
-                    kind: match kind.as_str() {
-                        "v" => ObjectKind::View,
-                        "m" => ObjectKind::MaterializedView,
-                        _ => ObjectKind::Table,
-                    },
-                    // -1 means never analyzed (PostgreSQL 14+).
-                    estimated_rows: (tuples >= 0.0).then_some(tuples as u64),
-                })
-            })
-            .collect()
-    }
-
-    async fn ddl(&self, object: &ObjectRef) -> Result<Ddl> {
-        self.read_ddl(object).await
-    }
-
-    /// The table's structure in one round trip: its five catalog queries
-    /// go out together, each finding the table by its schema and name.
-    async fn describe(&self, object: &ObjectRef) -> Result<Structure> {
-        /// The table's oid, from the parameters every query of `describe`
-        /// takes: its schema and its name.
-        macro_rules! relation {
-            () => {
-                "(SELECT rc.oid FROM pg_class rc \
-                  JOIN pg_namespace rn ON rn.oid = rc.relnamespace \
-                  WHERE rn.nspname = $1 AND rc.relname = $2)"
-            };
-        }
-        let params: &[(&(dyn ToSql + Sync), Type)] =
-            &[(&object.schema, Type::TEXT), (&object.name, Type::TEXT)];
-        let client = self.client.lock().await;
-        let (relation, columns, indexes, foreign_keys, referenced_by, shape) = tokio::try_join!(
-            // The comment on the table or view itself, and a row only when
-            // there is a table or view.
-            client.query_typed(
-                "SELECT obj_description(c.oid, 'pg_class') \
-                 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
-                 WHERE n.nspname = $1 AND c.relname = $2",
-                params,
-            ),
-            client.query_typed(
-                // An enum's labels in their sort order; a text column's
-                // single-column CHECK constraints, by name. Whether the
-                // column is generated is read through `to_jsonb`, for
-                // PostgreSQL 11: `attgenerated` only exists from 12, and
-                // naming a column the server lacks would fail the whole
-                // Structure view. Nothing older is spared by it: the index
-                // query below names `indnkeyatts`, which 11 brought.
-                concat!(
-                    "SELECT a.attname::text, format_type(a.atttypid, a.atttypmod), NOT a.attnotnull, \
-                        pg_get_expr(d.adbin, d.adrelid), col_description(a.attrelid, a.attnum), \
-                        CASE WHEN t.typtype = 'e' THEN \
-                            ARRAY(SELECT e.enumlabel::text FROM pg_enum e \
-                                  WHERE e.enumtypid = t.oid ORDER BY e.enumsortorder) END, \
-                        CASE WHEN t.oid IN ('text'::regtype, 'varchar'::regtype) THEN \
-                            ARRAY(SELECT pg_get_expr(c.conbin, c.conrelid) FROM pg_constraint c \
-                                  WHERE c.conrelid = a.attrelid AND c.contype = 'c' \
-                                    AND c.conkey = ARRAY[a.attnum] ORDER BY c.conname) END, \
-                        COALESCE(to_jsonb(a) ->> 'attgenerated', '') <> '' \
-                            OR COALESCE(to_jsonb(a) ->> 'attidentity', '') = 'a', \
-                        COALESCE(to_jsonb(a) ->> 'attidentity', '') <> '' \
-                            OR EXISTS (SELECT 1 FROM pg_depend p \
-                                       WHERE p.classid = 'pg_attrdef'::regclass \
-                                         AND p.objid = d.oid \
-                                         AND p.refclassid = 'pg_class'::regclass \
-                                         AND p.refobjid = pg_get_serial_sequence( \
-                                             a.attrelid::regclass::text, \
-                                             a.attname::text)::regclass) \
-                 FROM pg_attribute a \
-                 JOIN pg_type t ON t.oid = a.atttypid \
-                 LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
-                 WHERE a.attrelid = ", relation!(), " AND a.attnum > 0 AND NOT a.attisdropped \
-                 ORDER BY a.attnum"
-                ),
-                params,
-            ),
-            client.query_typed(
-                // An index that is not valid (a `CREATE UNIQUE INDEX
-                // CONCURRENTLY` that failed) does not hold its rows unique,
-                // whatever it is called. The last column is the key's
-                // columns by name, or NULL when an entry is not one whole
-                // column compared as the column compares: an expression (0
-                // in `indkey`), another collation than the column's, or an
-                // operator class that is not the default one. The text
-                // `pg_get_indexdef` shows tells none of these apart.
-                concat!(
-                    "SELECT ic.relname::text, i.indisunique AND i.indisvalid, i.indisprimary, \
-                        am.amname::text, \
-                        ARRAY(SELECT pg_get_indexdef(i.indexrelid, k, true) \
-                              FROM generate_series(1, i.indnkeyatts::int) AS k ORDER BY k), \
-                        i.indpred IS NOT NULL, \
-                        CASE WHEN NOT EXISTS ( \
-                                 SELECT 1 FROM generate_series(1, i.indnkeyatts::int) AS k \
-                                 LEFT JOIN pg_attribute a \
-                                   ON a.attrelid = i.indrelid AND a.attnum = i.indkey[k - 1] \
-                                 LEFT JOIN pg_opclass oc ON oc.oid = i.indclass[k - 1] \
-                                 WHERE i.indkey[k - 1] = 0 \
-                                    OR a.attcollation <> i.indcollation[k - 1] \
-                                    OR NOT oc.opcdefault) \
-                             THEN ARRAY(SELECT a.attname::text \
-                                        FROM generate_series(1, i.indnkeyatts::int) AS k \
-                                        JOIN pg_attribute a \
-                                          ON a.attrelid = i.indrelid AND a.attnum = i.indkey[k - 1] \
-                                        ORDER BY k) END \
-                 FROM pg_index i \
-                 JOIN pg_class ic ON ic.oid = i.indexrelid \
-                 JOIN pg_am am ON am.oid = ic.relam \
-                 WHERE i.indrelid = ", relation!(), " ORDER BY ic.relname"
-                ),
-                params,
-            ),
-            client.query_typed(
-                concat!(
-                    "SELECT con.conname::text, \
-                        ARRAY(SELECT a.attname::text FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) \
-                              JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum \
-                              ORDER BY k.ord), \
-                        rn.nspname::text, rc.relname::text, \
-                        ARRAY(SELECT a.attname::text FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, ord) \
-                              JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum \
-                              ORDER BY k.ord), \
-                        con.confupdtype::text, con.confdeltype::text \
-                 FROM pg_constraint con \
-                 JOIN pg_class rc ON rc.oid = con.confrelid \
-                 JOIN pg_namespace rn ON rn.oid = rc.relnamespace \
-                 WHERE con.conrelid = ", relation!(), " AND con.contype = 'f' ORDER BY con.conname"
-                ),
-                params,
-            ),
-            // The keys that point at the table: the same catalog, read from
-            // the other end. A partitioned table that has such a key has a
-            // row for each of its partitions too, all pointing here: only the
-            // key itself is listed. The copies name their parent in a column
-            // servers before version 11 do not have.
-            client.query_typed(
-                concat!(
-                    "SELECT con.conname::text, cn.nspname::text, cc.relname::text, \
-                        ARRAY(SELECT a.attname::text FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) \
-                              JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum \
-                              ORDER BY k.ord), \
-                        ARRAY(SELECT a.attname::text FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, ord) \
-                              JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum \
-                              ORDER BY k.ord), \
-                        con.confdeltype::text \
-                 FROM pg_constraint con \
-                 JOIN pg_class cc ON cc.oid = con.conrelid \
-                 JOIN pg_namespace cn ON cn.oid = cc.relnamespace \
-                 WHERE con.confrelid = ", relation!(), " AND con.contype = 'f' \
-                   AND COALESCE((to_jsonb(con) ->> 'conparentid')::oid, 0) = 0 \
-                 ORDER BY cn.nspname, cc.relname, con.conname"
-                ),
-                params,
-            ),
-            // What the table's first page builds its statement from, which
-            // it then need not ask first (see `fetch_rows`).
-            client.query_typed(SHAPE_SQL, params),
-        )
-        .map_err(query_error)?;
-        drop(client);
-        self.remember(object, &Shape::from_rows(&shape)?);
+    /// The [`Structure`] in what [`structure_reads`] read of `object`, its
+    /// shape remembered as what the table's next page builds its statement
+    /// from. Call it with the session unlocked: a primary key whose index
+    /// rows name no column sends the key's own query.
+    async fn structure_from(&self, object: &ObjectRef, rows: StructureRows) -> Result<Structure> {
+        let StructureRows {
+            relation,
+            columns,
+            indexes,
+            foreign_keys,
+            referenced_by,
+            shape,
+        } = rows;
+        self.remember(object, &shape);
         // PostgreSQL keeps no empty comment (`COMMENT ON ... IS ''` drops
         // it), and an empty one would be none.
         let comment: Option<String> = match relation.first() {
@@ -1151,6 +850,428 @@ impl Adapter for Conn {
         })
     }
 
+    /// The page of `query`, built from `shape`, as
+    /// [`Adapter::fetch_rows`] reads it: unless `checked` says the shape
+    /// was just read, the shape is read again in the page's flight, and a
+    /// page it would not have built is read again from it.
+    async fn page_from(
+        &self,
+        client: &tokio_postgres::Client,
+        query: &RowQuery,
+        mut shape: Shape,
+        mut checked: bool,
+    ) -> Result<RowPage> {
+        loop {
+            let (key, binary) = shape.for_query(query);
+            let sql = Dialect::Postgres.select_rows(query, &key, &binary)?;
+            // Every value is a literal in the text, so there is nothing to
+            // bind.
+            debug_assert!(sql.params.is_empty());
+            let started = Instant::now();
+            let read = if checked {
+                read_statement(client, &sql.text).await
+            } else {
+                let (fresh, read) =
+                    read_alongside(client, &sql.text, table_shape(client, &query.object)).await;
+                let fresh = fresh?;
+                self.remember(&query.object, &fresh);
+                checked = true;
+                if !stands(&read, &fresh, query, &(key.clone(), binary)) {
+                    shape = fresh;
+                    continue;
+                }
+                read
+            };
+            return row_page(read, query, &key, started);
+        }
+    }
+}
+
+/// Whether `read`, the page of `query` built as `built`, stands with
+/// `fresh`, the table's shape read in its flight. One that `fresh` would
+/// not have built (a key or a `bytea` column that changed) may be wrong,
+/// or have failed, for the shape it was built from, and is read again. A
+/// cancel that landed on it stops it all the same: the page read again
+/// would run to its end.
+fn stands(
+    read: &Result<Answered>,
+    fresh: &Shape,
+    query: &RowQuery,
+    built: &(Vec<String>, Vec<(String, ColumnClass)>),
+) -> bool {
+    matches!(read, Err(Error::Cancelled)) || fresh.for_query(query) == *built
+}
+
+/// The rows of `messages`, typed by `columns`: at most one more than
+/// `limit`.
+fn kept_rows(
+    messages: &[SimpleQueryMessage],
+    columns: &[ColumnMeta],
+    limit: usize,
+) -> Result<Vec<Vec<Value>>> {
+    let mut rows = Vec::new();
+    for message in messages {
+        if let SimpleQueryMessage::Row(row) = message {
+            if rows.len() > limit {
+                break;
+            }
+            rows.push(row_values(row, columns)?);
+        }
+    }
+    Ok(rows)
+}
+
+/// The page of `query` in `read`, its statement ordered by `key` and
+/// started at `started`.
+fn row_page(
+    read: Result<Answered>,
+    query: &RowQuery,
+    key: &[String],
+    started: Instant,
+) -> Result<RowPage> {
+    let limit = query.limit as usize;
+    let (columns, messages) = read?;
+    let mut rows = kept_rows(&messages, &columns, limit)?;
+    let has_more = rows.len() > limit;
+    rows.truncate(limit);
+    Ok(RowPage {
+        columns,
+        rows,
+        has_more,
+        ordered_by_key: !key.is_empty(),
+        elapsed: started.elapsed(),
+    })
+}
+
+/// What a [`read_statement`] answers: the statement's columns, as the
+/// prepare typed them, and what the server answered to its run.
+type Answered = (Vec<ColumnMeta>, Vec<SimpleQueryMessage>);
+
+/// Runs `text`, one reading statement, in a read-only transaction: what
+/// the server answered, and the columns, as the prepare typed them. One
+/// round trip: see [`read_alongside`].
+async fn read_statement(client: &tokio_postgres::Client, text: &str) -> Result<Answered> {
+    read_alongside(client, text, async {}).await.1
+}
+
+/// The first step of a read's run: it fails outside a transaction block,
+/// and in one that has failed. So the statement after it runs only inside
+/// the `BEGIN READ ONLY` the read sent first, and only once everything
+/// sent in the transaction before it worked: the prepare, which took the
+/// text as one statement, and what went alongside the read. A failure
+/// there fails the transaction, and a failed `BEGIN` (a cancel that landed
+/// on it) leaves none. Nothing of a message runs past the step that
+/// failed.
+const READ_GUARD: &str = "SAVEPOINT tabletist_read";
+
+/// [`read_statement`], with what `alongside` sends going out in the same
+/// flight, inside the read's transaction and before its statement: what
+/// it answered, and the read's answer.
+///
+/// All of the read goes out at once, before any answer comes back: the
+/// `BEGIN READ ONLY`, what goes alongside, the prepare (which yields the
+/// column types, and fails on a text of more than one statement), the run
+/// of `text` behind [`READ_GUARD`], and the `ROLLBACK`. Each goes out when
+/// it is first polled, and the first poll reaches them all, in this order.
+/// So a read that is dropped once it has started leaves its `ROLLBACK` on
+/// its way, and one that fails, wherever it fails, is rolled back by it.
+/// What goes alongside and fails, say because a cancel landed on it,
+/// fails the transaction, and the statement does not run: a cancel stops
+/// the read wherever it lands.
+async fn read_alongside<T>(
+    client: &tokio_postgres::Client,
+    text: &str,
+    alongside: impl Future<Output = T>,
+) -> (T, Result<Answered>) {
+    let run = format!("{READ_GUARD};\n{text}");
+    let (begun, alongside, prepared, ran, rolled_back) = tokio::join!(
+        client.batch_execute("BEGIN READ ONLY"),
+        alongside,
+        client.prepare(text),
+        client.simple_query(&run),
+        client.batch_execute("ROLLBACK"),
+    );
+    // The first step that failed says why: the guard's own failure after a
+    // failed `BEGIN` or prepare says nothing.
+    let read = begun.and(prepared).and_then(|statement| {
+        let columns = column_metas(&statement);
+        // Its close goes out on its own, waited on by nobody.
+        drop(statement);
+        Ok((columns, ran?))
+    });
+    let read = match rolled_back {
+        Ok(()) => read.map_err(query_error),
+        // A cancel that landed on the rollback leaves the transaction
+        // open: once more. A rollback that fails again is a session that
+        // is gone, or a transaction the next read's guard fails on and
+        // its rollback ends.
+        Err(error) => {
+            let _ = client.batch_execute("ROLLBACK").await;
+            Err(query_error(read.err().unwrap_or(error)))
+        }
+    };
+    (alongside, read)
+}
+
+/// What [`structure_reads`] reads of a table: the rows of each of its
+/// catalog queries, and the table's [`Shape`].
+struct StructureRows {
+    relation: Vec<tokio_postgres::Row>,
+    columns: Vec<tokio_postgres::Row>,
+    indexes: Vec<tokio_postgres::Row>,
+    foreign_keys: Vec<tokio_postgres::Row>,
+    referenced_by: Vec<tokio_postgres::Row>,
+    shape: Shape,
+}
+
+/// What a table's structure is read from, in one round trip: its six
+/// catalog queries go out together, each finding the table by its schema
+/// and name. A table that is not there answers no rows, and
+/// [`Conn::structure_from`] says it is missing.
+async fn structure_reads(
+    client: &tokio_postgres::Client,
+    object: &ObjectRef,
+) -> Result<StructureRows> {
+    /// The table's oid, from the parameters every query of a table's
+    /// structure takes: its schema and its name.
+    /// The table's oid, from the parameters every query of `describe`
+    /// takes: its schema and its name.
+    macro_rules! relation {
+        () => {
+            "(SELECT rc.oid FROM pg_class rc \
+              JOIN pg_namespace rn ON rn.oid = rc.relnamespace \
+              WHERE rn.nspname = $1 AND rc.relname = $2)"
+        };
+    }
+    let params: &[(&(dyn ToSql + Sync), Type)] =
+        &[(&object.schema, Type::TEXT), (&object.name, Type::TEXT)];
+    let (relation, columns, indexes, foreign_keys, referenced_by, shape) = tokio::try_join!(
+        // The comment on the table or view itself, and a row only when
+        // there is a table or view.
+        client.query_typed(
+            "SELECT obj_description(c.oid, 'pg_class') \
+             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE n.nspname = $1 AND c.relname = $2",
+            params,
+        ),
+        client.query_typed(
+            // An enum's labels in their sort order; a text column's
+            // single-column CHECK constraints, by name. Whether the
+            // column is generated is read through `to_jsonb`, for
+            // PostgreSQL 11: `attgenerated` only exists from 12, and
+            // naming a column the server lacks would fail the whole
+            // Structure view. Nothing older is spared by it: the index
+            // query below names `indnkeyatts`, which 11 brought.
+            concat!(
+                "SELECT a.attname::text, format_type(a.atttypid, a.atttypmod), NOT a.attnotnull, \
+                    pg_get_expr(d.adbin, d.adrelid), col_description(a.attrelid, a.attnum), \
+                    CASE WHEN t.typtype = 'e' THEN \
+                        ARRAY(SELECT e.enumlabel::text FROM pg_enum e \
+                              WHERE e.enumtypid = t.oid ORDER BY e.enumsortorder) END, \
+                    CASE WHEN t.oid IN ('text'::regtype, 'varchar'::regtype) THEN \
+                        ARRAY(SELECT pg_get_expr(c.conbin, c.conrelid) FROM pg_constraint c \
+                              WHERE c.conrelid = a.attrelid AND c.contype = 'c' \
+                                AND c.conkey = ARRAY[a.attnum] ORDER BY c.conname) END, \
+                    COALESCE(to_jsonb(a) ->> 'attgenerated', '') <> '' \
+                        OR COALESCE(to_jsonb(a) ->> 'attidentity', '') = 'a', \
+                    COALESCE(to_jsonb(a) ->> 'attidentity', '') <> '' \
+                        OR EXISTS (SELECT 1 FROM pg_depend p \
+                                   WHERE p.classid = 'pg_attrdef'::regclass \
+                                     AND p.objid = d.oid \
+                                     AND p.refclassid = 'pg_class'::regclass \
+                                     AND p.refobjid = pg_get_serial_sequence( \
+                                         a.attrelid::regclass::text, \
+                                         a.attname::text)::regclass) \
+             FROM pg_attribute a \
+             JOIN pg_type t ON t.oid = a.atttypid \
+             LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+             WHERE a.attrelid = ", relation!(), " AND a.attnum > 0 AND NOT a.attisdropped \
+             ORDER BY a.attnum"
+            ),
+            params,
+        ),
+        client.query_typed(
+            // An index that is not valid (a `CREATE UNIQUE INDEX
+            // CONCURRENTLY` that failed) does not hold its rows unique,
+            // whatever it is called. The last column is the key's
+            // columns by name, or NULL when an entry is not one whole
+            // column compared as the column compares: an expression (0
+            // in `indkey`), another collation than the column's, or an
+            // operator class that is not the default one. The text
+            // `pg_get_indexdef` shows tells none of these apart.
+            concat!(
+                "SELECT ic.relname::text, i.indisunique AND i.indisvalid, i.indisprimary, \
+                    am.amname::text, \
+                    ARRAY(SELECT pg_get_indexdef(i.indexrelid, k, true) \
+                          FROM generate_series(1, i.indnkeyatts::int) AS k ORDER BY k), \
+                    i.indpred IS NOT NULL, \
+                    CASE WHEN NOT EXISTS ( \
+                             SELECT 1 FROM generate_series(1, i.indnkeyatts::int) AS k \
+                             LEFT JOIN pg_attribute a \
+                               ON a.attrelid = i.indrelid AND a.attnum = i.indkey[k - 1] \
+                             LEFT JOIN pg_opclass oc ON oc.oid = i.indclass[k - 1] \
+                             WHERE i.indkey[k - 1] = 0 \
+                                OR a.attcollation <> i.indcollation[k - 1] \
+                                OR NOT oc.opcdefault) \
+                         THEN ARRAY(SELECT a.attname::text \
+                                    FROM generate_series(1, i.indnkeyatts::int) AS k \
+                                    JOIN pg_attribute a \
+                                      ON a.attrelid = i.indrelid AND a.attnum = i.indkey[k - 1] \
+                                    ORDER BY k) END \
+             FROM pg_index i \
+             JOIN pg_class ic ON ic.oid = i.indexrelid \
+             JOIN pg_am am ON am.oid = ic.relam \
+             WHERE i.indrelid = ", relation!(), " ORDER BY ic.relname"
+            ),
+            params,
+        ),
+        client.query_typed(
+            concat!(
+                "SELECT con.conname::text, \
+                    ARRAY(SELECT a.attname::text FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) \
+                          JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum \
+                          ORDER BY k.ord), \
+                    rn.nspname::text, rc.relname::text, \
+                    ARRAY(SELECT a.attname::text FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, ord) \
+                          JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum \
+                          ORDER BY k.ord), \
+                    con.confupdtype::text, con.confdeltype::text \
+             FROM pg_constraint con \
+             JOIN pg_class rc ON rc.oid = con.confrelid \
+             JOIN pg_namespace rn ON rn.oid = rc.relnamespace \
+             WHERE con.conrelid = ", relation!(), " AND con.contype = 'f' ORDER BY con.conname"
+            ),
+            params,
+        ),
+        // The keys that point at the table: the same catalog, read from
+        // the other end. A partitioned table that has such a key has a
+        // row for each of its partitions too, all pointing here: only the
+        // key itself is listed. The copies name their parent in a column
+        // servers before version 11 do not have.
+        client.query_typed(
+            concat!(
+                "SELECT con.conname::text, cn.nspname::text, cc.relname::text, \
+                    ARRAY(SELECT a.attname::text FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) \
+                          JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum \
+                          ORDER BY k.ord), \
+                    ARRAY(SELECT a.attname::text FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, ord) \
+                          JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum \
+                          ORDER BY k.ord), \
+                    con.confdeltype::text \
+             FROM pg_constraint con \
+             JOIN pg_class cc ON cc.oid = con.conrelid \
+             JOIN pg_namespace cn ON cn.oid = cc.relnamespace \
+             WHERE con.confrelid = ", relation!(), " AND con.contype = 'f' \
+               AND COALESCE((to_jsonb(con) ->> 'conparentid')::oid, 0) = 0 \
+             ORDER BY cn.nspname, cc.relname, con.conname"
+            ),
+            params,
+        ),
+        // What the table's next page builds its statement from, which it
+        // then need not ask first (see `fetch_rows`), and what the page
+        // that goes with the structure is checked against (see `open`).
+        client.query_typed(SHAPE_SQL, params),
+    )
+    .map_err(query_error)?;
+    Ok(StructureRows {
+        relation,
+        columns,
+        indexes,
+        foreign_keys,
+        referenced_by,
+        shape: Shape::from_rows(&shape)?,
+    })
+}
+
+impl Adapter for Conn {
+    fn is_encrypted(&self) -> bool {
+        self.encrypted
+    }
+
+    fn cancel_handle(&self) -> CancelHandle {
+        CancelHandle(CancelInner::Postgres(self.cancel.clone()))
+    }
+
+    /// None: a `timestamptz` comes with its offset, and the app shows it in
+    /// the zone of its own settings.
+    async fn session_zone(&self) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    /// See [`crate::Connection::server_version`].
+    async fn server_version(&self) -> Result<String> {
+        let client = self.client.lock().await;
+        let messages = client
+            .simple_query("SHOW server_version")
+            .await
+            .map_err(query_error)?;
+        let version = first_text(&messages).unwrap_or_default();
+        // "17.2 (Debian 17.2-1.pgdg120+1)" reads as "17.2".
+        let version = version.split_whitespace().next().unwrap_or_default();
+        Ok(format!("PostgreSQL {version}"))
+    }
+
+    async fn list_databases(&self) -> Result<Vec<String>> {
+        if let Some(aliases) = self.database_probe().await {
+            return Ok(aliases);
+        }
+        self.catalog_databases().await
+    }
+
+    async fn list_schemas(&self) -> Result<Vec<String>> {
+        let rows = self
+            .catalog(
+                &format!(
+                    "SELECT nspname::text FROM pg_namespace ORDER BY nspname LIMIT {MAX_LISTED}"
+                ),
+                &[],
+            )
+            .await?;
+        rows.iter().map(|row| column(row, 0)).collect()
+    }
+
+    async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>> {
+        let rows = self
+            .catalog(
+                &format!(
+                    "SELECT c.relname::text, c.relkind::text, c.reltuples::float8 \
+                     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+                     WHERE n.nspname = $1 AND c.relkind IN ('r', 'p', 'f', 'v', 'm') \
+                     ORDER BY c.relname LIMIT {MAX_LISTED}"
+                ),
+                &[(&schema, Type::TEXT)],
+            )
+            .await?;
+        rows.iter()
+            .map(|row| {
+                let kind: String = column(row, 1)?;
+                let tuples: f64 = column(row, 2)?;
+                Ok(ObjectInfo {
+                    name: column(row, 0)?,
+                    kind: match kind.as_str() {
+                        "v" => ObjectKind::View,
+                        "m" => ObjectKind::MaterializedView,
+                        _ => ObjectKind::Table,
+                    },
+                    // -1 means never analyzed (PostgreSQL 14+).
+                    estimated_rows: (tuples >= 0.0).then_some(tuples as u64),
+                })
+            })
+            .collect()
+    }
+
+    async fn ddl(&self, object: &ObjectRef) -> Result<Ddl> {
+        self.read_ddl(object).await
+    }
+
+    /// The table's structure in one round trip: see [`structure_reads`].
+    async fn describe(&self, object: &ObjectRef) -> Result<Structure> {
+        let client = self.client.lock().await;
+        let rows = structure_reads(&client, object).await;
+        drop(client);
+        self.structure_from(object, rows?).await
+    }
+
     /// One page, read as [`read_statement`] reads: prepared (which refuses
     /// a second statement and yields the column types), then run through
     /// the simple-query protocol (every value as text) inside a read-only
@@ -1165,9 +1286,8 @@ impl Adapter for Conn {
     /// has not read the shape of yet has it asked first: one round trip
     /// more.
     async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
-        let limit = query.limit as usize;
         let client = self.client.lock().await;
-        let (mut shape, mut checked) = match self.known_shape(&query.object) {
+        let (shape, checked) = match self.known_shape(&query.object) {
             Some(shape) => (shape, false),
             None => {
                 let shape = table_shape(&client, &query.object).await?;
@@ -1175,46 +1295,76 @@ impl Adapter for Conn {
                 (shape, true)
             }
         };
-        loop {
-            let (key, binary) = shape.for_query(query);
-            let sql = Dialect::Postgres.select_rows(query, &key, &binary)?;
-            // Every value is a literal in the text, so there is nothing to
-            // bind.
-            debug_assert!(sql.params.is_empty());
-            let started = Instant::now();
-            let read = if checked {
-                read_statement(&client, &sql.text).await
-            } else {
-                let (fresh, read) =
-                    read_alongside(&client, &sql.text, table_shape(&client, &query.object)).await;
-                let fresh = fresh?;
-                self.remember(&query.object, &fresh);
-                checked = true;
-                if fresh.for_query(query) != (key.clone(), binary) {
-                    // A cancel that landed on the page stops it: the page
-                    // read again would run to its end.
-                    if let Err(Error::Cancelled) = read {
-                        return Err(Error::Cancelled);
-                    }
-                    // The page may be wrong, or have failed, for the shape
-                    // it was built from.
-                    shape = fresh;
-                    continue;
-                }
-                read
-            };
-            let (columns, messages) = read?;
-            let mut rows = kept_rows(&messages, &columns, limit)?;
-            let has_more = rows.len() > limit;
-            rows.truncate(limit);
-            return Ok(RowPage {
-                columns,
-                rows,
-                has_more,
-                ordered_by_key: !key.is_empty(),
-                elapsed: started.elapsed(),
-            });
+        self.page_from(&client, query, shape, checked).await
+    }
+
+    /// The structure and the first page in one round trip: the page is
+    /// read as [`Adapter::fetch_rows`] reads it, with the structure's
+    /// queries in its flight in place of the shape alone, and the shape
+    /// they read says whether the page stands. A table this session has
+    /// not read the shape of yet has it asked first, as `fetch_rows` does:
+    /// one round trip more.
+    ///
+    /// A cancel that lands on the flight stops all of it, and both parts
+    /// say so: the part it did not land on is not what it would have been,
+    /// or not wanted on its own. A structure that fails otherwise fails
+    /// the page's transaction too, and the page is then read on its own.
+    async fn open(
+        &self,
+        object: &ObjectRef,
+        query: &RowQuery,
+    ) -> (Result<Structure>, Result<RowPage>) {
+        // The structure's shape is `object`'s, and says nothing of another
+        // table's page.
+        if *object != query.object {
+            return (self.describe(object).await, self.fetch_rows(query).await);
         }
+        let client = self.client.lock().await;
+        let (shape, checked) = match self.known_shape(object) {
+            Some(shape) => (shape, false),
+            None => match table_shape(&client, object).await {
+                Ok(shape) => {
+                    self.remember(object, &shape);
+                    (shape, true)
+                }
+                Err(error) => return (Err(error.clone()), Err(error)),
+            },
+        };
+        let (key, binary) = shape.for_query(query);
+        let sql = match Dialect::Postgres.select_rows(query, &key, &binary) {
+            Ok(sql) => sql,
+            Err(error) => {
+                drop(client);
+                return (self.describe(object).await, Err(error));
+            }
+        };
+        // Every value is a literal in the text, so there is nothing to bind.
+        debug_assert!(sql.params.is_empty());
+        let started = Instant::now();
+        let (structure, read) =
+            read_alongside(&client, &sql.text, structure_reads(&client, object)).await;
+        let page = match &structure {
+            Ok(rows) => {
+                self.remember(object, &rows.shape);
+                if stands(&read, &rows.shape, query, &(key.clone(), binary)) {
+                    row_page(read, query, &key, started)
+                } else {
+                    self.page_from(&client, query, rows.shape.clone(), true)
+                        .await
+                }
+            }
+            Err(Error::Cancelled) => Err(Error::Cancelled),
+            Err(_) => self.page_from(&client, query, shape, checked).await,
+        };
+        drop(client);
+        if matches!(structure, Err(Error::Cancelled)) || matches!(page, Err(Error::Cancelled)) {
+            return (Err(Error::Cancelled), Err(Error::Cancelled));
+        }
+        let structure = match structure {
+            Ok(rows) => self.structure_from(object, rows).await,
+            Err(error) => Err(error),
+        };
+        (structure, page)
     }
 
     async fn export_statement(&self, query: &RowQuery, columns: &[String]) -> Result<String> {
@@ -2183,6 +2333,146 @@ mod tests {
         assert_eq!(page.rows.len(), 2);
         assert!(page.ordered_by_key);
         assert_eq!(asked, 1);
+    }
+
+    /// The backend runs an open on a task it spawns: its future must be
+    /// `Send`. This fails to compile, not to run.
+    #[test]
+    fn an_open_can_run_on_a_spawned_task() {
+        fn send<T: Send>(_: &T) {}
+        let _check =
+            |conn: &Conn, object: &ObjectRef, query: &RowQuery| send(&conn.open(object, query));
+    }
+
+    /// Opening a table the session has not read the shape of asks for the
+    /// shape first, then for the rest together: twice. What it answers is
+    /// what the structure and then the page answer, read one after the
+    /// other.
+    #[tokio::test]
+    async fn opening_a_table_first_asks_for_its_shape() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = round_trips_table(&url).await;
+        let query = RowQuery::new(object.clone(), 1);
+        let (conn, trips) = trip_counted(&url).await;
+        let ((structure, page), asked) = counted(&trips, conn.open(&object, &query)).await;
+        assert_eq!(asked, 2);
+        assert!(outside_a_transaction(&conn).await);
+        let apart = session(&url).await;
+        let described = apart.describe(&object).await.unwrap();
+        let fetched = apart.fetch_rows(&query).await.unwrap();
+        assert_eq!(structure.unwrap(), described);
+        let page = page.unwrap();
+        assert_eq!(page.columns, fetched.columns);
+        assert_eq!(page.rows, fetched.rows);
+        assert_eq!(page.rows[0][0], Value::Int(1));
+        assert!(page.has_more && fetched.has_more);
+        assert!(page.ordered_by_key && fetched.ordered_by_key);
+    }
+
+    /// An open after the table's key changed is the table as it is now:
+    /// the structure's key, and the page read again in its order. Two
+    /// round trips.
+    #[tokio::test]
+    async fn opening_a_table_after_its_key_changed_reads_the_page_again() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let mut config: tokio_postgres::Config = url.parse().unwrap();
+        config.ssl_mode(tokio_postgres::config::SslMode::Disable);
+        let (other, connection) = config.connect(tokio_postgres::NoTls).await.unwrap();
+        tokio::spawn(connection);
+        other
+            .batch_execute(
+                "DROP TABLE IF EXISTS opened_key_changes; \
+                 CREATE TABLE opened_key_changes (a int PRIMARY KEY, b int NOT NULL); \
+                 INSERT INTO opened_key_changes VALUES (1, 2), (2, 1)",
+            )
+            .await
+            .unwrap();
+        let object = ObjectRef::new("public", "opened_key_changes");
+        let (conn, trips) = trip_counted(&url).await;
+        conn.describe(&object).await.unwrap();
+        other
+            .batch_execute(
+                "ALTER TABLE opened_key_changes \
+                 DROP CONSTRAINT opened_key_changes_pkey, ADD PRIMARY KEY (b)",
+            )
+            .await
+            .unwrap();
+        let query = RowQuery::new(object.clone(), 10);
+        let ((structure, page), asked) = counted(&trips, conn.open(&object, &query)).await;
+        assert_eq!(structure.unwrap().primary_key, ["b"]);
+        let page = page.unwrap();
+        let firsts: Vec<_> = page.rows.iter().map(|row| row[0].clone()).collect();
+        assert_eq!(firsts, [Value::Int(2), Value::Int(1)]);
+        assert!(page.ordered_by_key);
+        assert_eq!(asked, 2);
+        assert!(outside_a_transaction(&conn).await);
+        other
+            .batch_execute("DROP TABLE opened_key_changes")
+            .await
+            .unwrap();
+    }
+
+    /// An open of a table that is not there says so for each part: the
+    /// structure that the table is missing, the page what the server said
+    /// of its statement. No transaction is left open, and the session
+    /// reads on.
+    #[tokio::test]
+    async fn opening_a_missing_table_fails_each_part_on_its_own() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = round_trips_table(&url).await;
+        let missing = ObjectRef::new("public", "no_round_trips");
+        let (conn, trips) = trip_counted(&url).await;
+        for asks in [2, 1] {
+            let query = RowQuery::new(missing.clone(), 10);
+            let ((structure, page), asked) = counted(&trips, conn.open(&missing, &query)).await;
+            let error = structure.unwrap_err().to_string();
+            assert!(error.contains("no such table or view"), "{error}");
+            let error = page.unwrap_err().to_string();
+            assert!(error.contains("does not exist"), "{error}");
+            assert_eq!(asked, asks);
+            assert!(outside_a_transaction(&conn).await);
+        }
+        let query = RowQuery::new(object.clone(), 10);
+        let (structure, page) = conn.open(&object, &query).await;
+        assert_eq!(structure.unwrap().primary_key, ["shelf", "id"]);
+        assert_eq!(page.unwrap().rows.len(), 2);
+    }
+
+    /// A cancel that lands on an open stops all of it: both parts say they
+    /// were cancelled, and the page does not run to its end. Each row of
+    /// the page sleeps.
+    #[tokio::test]
+    async fn a_cancelled_open_cancels_both_parts() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = round_trips_table(&url).await;
+        let conn = session(&url).await;
+        conn.describe(&object).await.unwrap();
+        let mut query = RowQuery::new(object.clone(), 10);
+        query.raw_where = Some("(SELECT true FROM pg_sleep(2))".into());
+        let cancel = conn.cancel.clone();
+        let cancelling = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            cancel.cancel().await.unwrap();
+        });
+        let started = Instant::now();
+        let (structure, page) = conn.open(&object, &query).await;
+        cancelling.await.unwrap();
+        assert_eq!(structure.unwrap_err(), Error::Cancelled);
+        assert_eq!(page.unwrap_err(), Error::Cancelled);
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(outside_a_transaction(&conn).await);
     }
 
     /// A server that declines TLS and accepts anyone, answering every
