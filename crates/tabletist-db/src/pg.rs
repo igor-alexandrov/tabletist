@@ -2163,6 +2163,28 @@ mod tests {
         assert_eq!(asked, 2);
     }
 
+    /// Opening a table the session knows the shape of asks the server once:
+    /// its structure and its first page together.
+    #[tokio::test]
+    async fn opening_a_table_asks_the_server_once() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = round_trips_table(&url).await;
+        let (conn, trips) = trip_counted(&url).await;
+        // An earlier open has read the table's shape.
+        conn.describe(&object).await.unwrap();
+        let ((structure, page), asked) = counted(&trips, async {
+            conn.open(&object, &RowQuery::new(object.clone(), 10)).await
+        })
+        .await;
+        assert_eq!(structure.unwrap().primary_key, ["shelf", "id"]);
+        let page = page.unwrap();
+        assert_eq!(page.rows.len(), 2);
+        assert!(page.ordered_by_key);
+        assert_eq!(asked, 1);
+    }
+
     /// A server that declines TLS and accepts anyone, answering every
     /// query with one empty result.
     async fn plain_server() -> u16 {

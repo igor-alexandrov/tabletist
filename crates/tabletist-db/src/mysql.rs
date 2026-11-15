@@ -4468,6 +4468,31 @@ mod tests {
         }
     }
 
+    /// Opening a table the session knows the shape of is one message: its
+    /// structure and its first page together, and no transaction left open.
+    #[tokio::test]
+    async fn opening_a_table_asks_the_server_once() {
+        use std::sync::atomic::Ordering;
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = trips(&url).await;
+        for access in [Access::ReadOnly, Access::Writable] {
+            let (conn, asked) = counted_session(&url, access).await;
+            // An earlier open has read the table's shape.
+            conn.describe(&object).await.unwrap();
+            let before = asked.load(Ordering::SeqCst);
+            let (structure, page) = conn.open(&object, &RowQuery::new(object.clone(), 1)).await;
+            let messages = asked.load(Ordering::SeqCst) - before;
+            assert_eq!(structure.unwrap().primary_key, ["id"], "{access:?}");
+            let page = page.unwrap();
+            assert_eq!(page.rows.len(), 1, "{access:?}");
+            assert!(page.has_more && page.ordered_by_key, "{access:?}");
+            assert_eq!(messages, 1, "{access:?}");
+            assert!(!in_transaction(&conn).await, "{access:?}");
+        }
+    }
+
     /// A table made afresh by `admin`, from `columns` and `rows`, with
     /// strict modes off so that zero dates go in.
     pub(super) async fn table_of(url: &str, name: &str, columns: &str, rows: &str) -> ObjectRef {

@@ -414,6 +414,23 @@ impl Connection {
         }
     }
 
+    /// The structure of `object` and the first page of `query`, in one round
+    /// trip where the adapter can: the same results as [`Connection::describe`]
+    /// and then [`Connection::fetch_rows`], each its own, so that a failed
+    /// structure still leaves the page to show.
+    pub async fn open(
+        &self,
+        object: &ObjectRef,
+        query: &RowQuery,
+    ) -> (Result<Structure>, Result<RowPage>) {
+        match &self.inner {
+            Inner::Sqlite(conn) => conn.open(object, query).await,
+            Inner::Postgres(conn) => conn.open(object, query).await,
+            Inner::MySql(conn) => conn.open(object, query).await,
+            Inner::BigQuery(conn) => conn.open(object, query).await,
+        }
+    }
+
     /// The definition of the table or view `object` as text, by its parts
     /// (see [`Ddl`]): built from PostgreSQL's catalog, and as MySQL's
     /// `SHOW CREATE` and SQLite's `sqlite_master` return it. It only

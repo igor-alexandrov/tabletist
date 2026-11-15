@@ -9,9 +9,11 @@ use crate::{
 /// An open session with one kind of database. [`crate::Connection`] holds
 /// one and forwards to it, and says there what each of these does.
 ///
-/// No method has a default. An adapter answers every one, if only to say
-/// that it has nothing to list: a default would answer for a new database
-/// without anyone choosing it.
+/// No method has a default but `open`. An adapter answers every other one,
+/// if only to say that it has nothing to list: a default would answer for a
+/// new database without anyone choosing it. `open`'s default is the two
+/// reads it stands for, one after the other, which is right for every
+/// database and only slower than one that sends them together.
 pub(crate) trait Adapter {
     fn is_encrypted(&self) -> bool;
 
@@ -32,6 +34,18 @@ pub(crate) trait Adapter {
     async fn ddl(&self, object: &ObjectRef) -> Result<Ddl>;
 
     async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage>;
+
+    /// See [`crate::Connection::open`]. The structure is read first and the
+    /// page after it, the page read even when the structure failed.
+    async fn open(
+        &self,
+        object: &ObjectRef,
+        query: &RowQuery,
+    ) -> (Result<Structure>, Result<RowPage>) {
+        let structure = self.describe(object).await;
+        let page = self.fetch_rows(query).await;
+        (structure, page)
+    }
 
     async fn count_rows(&self, query: &RowQuery) -> Result<u64>;
 
