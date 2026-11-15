@@ -1305,10 +1305,13 @@ impl Adapter for Conn {
     /// not read the shape of yet has it asked first, as `fetch_rows` does:
     /// one round trip more.
     ///
-    /// A cancel that lands on the flight stops all of it, and both parts
-    /// say so: the part it did not land on is not what it would have been,
-    /// or not wanted on its own. A structure that fails otherwise fails
-    /// the page's transaction too, and the page is then read on its own.
+    /// A cancel says so for the part it stopped. One that lands on the
+    /// page, or on the page read again, leaves the structure read before
+    /// it as it is. One that lands on the structure's queries fails the
+    /// page's transaction, so the page did not run and is cancelled too;
+    /// so are both when it lands on the shape asked first. A structure
+    /// that fails otherwise fails the page's transaction as well, and the
+    /// page is then read on its own.
     async fn open(
         &self,
         object: &ObjectRef,
@@ -1353,13 +1356,12 @@ impl Adapter for Conn {
                         .await
                 }
             }
+            // The cancel failed the transaction before the page's guard:
+            // the page did not run, and reading it again is not wanted.
             Err(Error::Cancelled) => Err(Error::Cancelled),
             Err(_) => self.page_from(&client, query, shape, checked).await,
         };
         drop(client);
-        if matches!(structure, Err(Error::Cancelled)) || matches!(page, Err(Error::Cancelled)) {
-            return (Err(Error::Cancelled), Err(Error::Cancelled));
-        }
         let structure = match structure {
             Ok(rows) => self.structure_from(object, rows).await,
             Err(error) => Err(error),
@@ -2444,11 +2446,11 @@ mod tests {
         assert_eq!(page.unwrap().rows.len(), 2);
     }
 
-    /// A cancel that lands on an open stops all of it: both parts say they
-    /// were cancelled, and the page does not run to its end. Each row of
+    /// A cancel that lands on an open's page stops the page, which does not
+    /// run to its end, and keeps the structure read before it. Each row of
     /// the page sleeps.
     #[tokio::test]
-    async fn a_cancelled_open_cancels_both_parts() {
+    async fn a_cancel_on_an_opens_page_keeps_its_structure() {
         let Some(url) = test_url() else {
             return;
         };
@@ -2465,7 +2467,7 @@ mod tests {
         let started = Instant::now();
         let (structure, page) = conn.open(&object, &query).await;
         cancelling.await.unwrap();
-        assert_eq!(structure.unwrap_err(), Error::Cancelled);
+        assert_eq!(structure.unwrap().primary_key, ["shelf", "id"]);
         assert_eq!(page.unwrap_err(), Error::Cancelled);
         assert!(
             started.elapsed() < Duration::from_secs(3),
