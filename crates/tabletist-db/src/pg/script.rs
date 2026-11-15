@@ -598,6 +598,23 @@ async fn close(client: &tokio_postgres::Client, tx: Tx) -> Result<()> {
 /// rollback and the release where they did not run, or a cancel landed on
 /// them, and the run's answer.
 async fn end(client: &tokio_postgres::Client, ended: Ended) -> Result<()> {
+    // A transaction the run knows is its own, where neither step ran yet
+    // (a cancel stopped the run), ends with both steps in one message.
+    let ended = match ended {
+        Ended {
+            tx: tx @ Ok(Tx::Open | Tx::Aborted),
+            rolled_back: None,
+            released: None,
+        } => {
+            let (rolled_back, released) = rollback_and_unlock(client).await;
+            Ended {
+                tx,
+                rolled_back: Some(rolled_back),
+                released,
+            }
+        }
+        ended => ended,
+    };
     // Whatever is open is rolled back as far as that works, also when the
     // session is closed anyway. A step the close's message did not reach
     // runs on its own; one a cancel landed on runs once more.
@@ -823,6 +840,23 @@ fn standing(error: tokio_postgres::Error) -> Result<Tx> {
 async fn rollback(client: &tokio_postgres::Client) -> Result<()> {
     client.batch_execute("ROLLBACK").await.map_err(query_error)
 }
+
+/// [`rollback`] and [`unlock`] in one message, one round trip: the answer
+/// to the rollback, and to the release where the server got to it. A
+/// failed rollback stops the message, as it stops the close before the
+/// release.
+async fn rollback_and_unlock(client: &tokio_postgres::Client) -> (Result<()>, Option<Result<()>>) {
+    let (messages, failure) = answers(client, ROLLBACK_AND_UNLOCK).await;
+    match (completed(&messages), failure.map(query_error)) {
+        (_, None) => (Ok(()), Some(Ok(()))),
+        (0, Some(error)) => (Err(error), None),
+        (_, Some(error)) => (Ok(()), Some(Err(error))),
+    }
+}
+
+/// The steps of [`rollback_and_unlock`], as the end of [`CONFIRM_AND_END`]
+/// has them.
+const ROLLBACK_AND_UNLOCK: &str = "ROLLBACK; SELECT pg_advisory_unlock_all()";
 
 /// Releases the session's advisory locks: a script can take one
 /// (`pg_advisory_lock`), and they outlive its transaction.
@@ -2304,6 +2338,113 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(first_text(&taken).as_deref(), Some("t"), "{step}");
+        }
+    }
+
+    #[test]
+    fn the_close_after_a_cancel_ends_as_the_close_message_does() {
+        assert!(CONFIRM_AND_END.ends_with(&format!("; {ROLLBACK_AND_UNLOCK}")));
+    }
+
+    /// A stop that cancels a statement leaves the rollback and the release
+    /// of the advisory locks to the close, which sends them in one message:
+    /// the run is back one round trip after the cancel, the transaction is
+    /// over, and the lock the script took is free. The proxy counts trips,
+    /// so another session sends the cancel.
+    #[tokio::test]
+    async fn the_close_after_a_cancel_rolls_back_and_releases_in_one_trip() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let other = session(&url).await;
+        let (conn, trips) = super::super::tests::trip_counted(&url).await;
+        let pid = {
+            let client = conn.client.lock().await;
+            let messages = client
+                .simple_query("SELECT pg_backend_pid()")
+                .await
+                .unwrap();
+            first_text(&messages).unwrap()
+        };
+        let script = ["SELECT pg_advisory_lock(424267)", "SELECT pg_sleep(10)"];
+        let stop = StopFlag::new();
+        let before = trips.count();
+        let cancelling = async {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            stop.stop();
+            let client = other.client.lock().await;
+            let sql = format!("SELECT pg_cancel_backend({pid})");
+            first_text(&client.simple_query(&sql).await.unwrap())
+        };
+        let (ran, cancelled) = tokio::join!(past_the_refusal(&conn, &script, &stop), cancelling);
+        assert_eq!(cancelled.as_deref(), Some("t"));
+        let outcome = ran.unwrap();
+        assert!(outcome.stopped, "{outcome:?}");
+        assert!(
+            matches!(
+                &outcome.results[..],
+                [
+                    StatementResult {
+                        outcome: StatementOutcome::Rows { .. },
+                        ..
+                    },
+                    StatementResult {
+                        outcome: StatementOutcome::Cancelled,
+                        ..
+                    },
+                ]
+            ),
+            "{outcome:?}"
+        );
+        // A flight for each statement, and the close.
+        assert_eq!(trips.count() - before, 3);
+        let client = conn.client.lock().await;
+        assert_eq!(in_transaction(&client).await, Ok(Tx::Left));
+        assert!(lock_is_free(&other, 424267).await);
+    }
+
+    /// A cancel that lands on the rollback, or on the release, of the close
+    /// after a cancel stops the rest of its message; the close runs that
+    /// step once more, so the transaction ends and the lock goes all the
+    /// same. The proxy sends the server a slow statement in the step's
+    /// place.
+    #[tokio::test]
+    async fn a_cancel_on_the_close_after_a_cancel_runs_the_cancelled_step_again() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let other = session(&url).await;
+        let slow_rollback = "SELECT pg_sleep(10); SELECT pg_advisory_unlock_all()";
+        let slow_release = "ROLLBACK; SELECT pg_sleep(10)";
+        for (step, slow) in [("rollback", slow_rollback), ("release", slow_release)] {
+            let conn = proxied_session(&url, &[(ROLLBACK_AND_UNLOCK, slow)]).await;
+            let cancel = conn.cancel_handle();
+            let client = conn.client.lock().await;
+            assert_eq!(
+                open(&client, None).await,
+                Ok(Opened::Open(Vec::new())),
+                "{step}"
+            );
+            // The script took a lock. The close is told the transaction
+            // failed, as after a cancel; it is left whole, where the slow
+            // statement in the step's place can run.
+            client
+                .batch_execute("SELECT pg_advisory_lock(424268)")
+                .await
+                .unwrap();
+            let cancelling = async {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                cancel.cancel().await
+            };
+            let (closed, cancelled) = tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::join!(close(&client, Tx::Aborted), cancelling)
+            })
+            .await
+            .expect(step);
+            assert_eq!(cancelled, Ok(()), "{step}");
+            assert_eq!(closed, Ok(()), "{step}");
+            assert_eq!(in_transaction(&client).await, Ok(Tx::Left), "{step}");
+            assert!(lock_is_free(&other, 424268).await, "{step}");
         }
     }
 
