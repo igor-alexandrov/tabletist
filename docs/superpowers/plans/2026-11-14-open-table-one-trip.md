@@ -39,7 +39,7 @@ Measured on main 1d72801e through 100 ms each way (the throwaway `slow_bench`): 
 
 **Files:** `crates/tabletist-db/src/pg.rs` (tests), `crates/tabletist-db/src/mysql.rs` (tests)
 
-- [ ] `opening_a_table_asks_the_server_once` in `pg::tests`, next to `opening_a_table_asks_the_server_twice`: `round_trips_table`, `trip_counted`; `conn.describe` once (fills the shape, as an earlier open would), then counted: `conn.open(&object, &RowQuery::new(object.clone(), 10))`. Expect the structure's primary key `["id"]`, 2 rows, `ordered_by_key`, and 1 trip.
+- [ ] `opening_a_table_asks_the_server_once` in `pg::tests`, next to `opening_a_table_asks_the_server_twice`: `round_trips_table`, `trip_counted`; `conn.describe` once (fills the shape, as an earlier open would), then counted: `conn.open(&object, &RowQuery::new(object.clone(), 10))`. Expect the structure's primary key `["shelf", "id"]` (the fixture's), 2 rows, `ordered_by_key`, and 1 trip.
 - [ ] The same in `mysql::tests` with `counted_session`, for `Access::ReadOnly` and `Access::Writable`: 1 message, and `!in_transaction(&conn)` after.
 - [ ] Run: `~/.cargo/bin/cargo test -p tabletist-db opening_a_table_asks_the_server_once` with `TABLETIST_TEST_PG_URL` and `TABLETIST_TEST_MYSQL_URL` set. Expected: fails to compile (`open` does not exist yet).
 
