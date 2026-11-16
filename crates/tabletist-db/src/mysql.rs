@@ -2803,12 +2803,20 @@ const LARGEST_PACKET: usize = 1 << 30;
 
 /// The options with TLS for the spec's mode; through a tunnel the
 /// certificate is still checked against `spec.host`.
+///
+/// With TLS, a server that asks for `mysql_clear_password` gets the
+/// password: AWS RDS IAM signs in that way, with a token for the password.
+/// It travels only inside TLS, as `caching_sha2_password` already sends it
+/// there in full authentication. Without TLS (`disable`, or `prefer`
+/// falling back to a plain connection from `builder`) the driver refuses
+/// the plugin, so a password never crosses the network in plain text.
 pub(crate) fn with_tls(builder: OptsBuilder, spec: &ConnectSpec, via: Option<u16>) -> OptsBuilder {
     let ssl = ssl_opts(spec.tls, spec.ca_file.as_deref()).map(|ssl| match via {
         Some(_) => ssl.with_danger_tls_hostname_override(Some(spec.host.clone())),
         None => ssl,
     });
-    builder.ssl_opts(ssl)
+    let encrypted = ssl.is_some();
+    builder.ssl_opts(ssl).enable_cleartext_plugin(encrypted)
 }
 
 /// `mysql_async` TLS options for our mode (`None` means no TLS).
@@ -4436,6 +4444,33 @@ mod tests {
                 .and_then(|ssl| ssl.tls_hostname_override()),
             None
         );
+    }
+
+    #[test]
+    fn mysql_sends_a_cleartext_password_only_inside_tls() {
+        let (mut spec, secrets) = ConnectSpec::from_url("mysql://me@db.example.com/shop").unwrap();
+        for mode in [
+            TlsMode::Disable,
+            TlsMode::Prefer,
+            TlsMode::Require,
+            TlsMode::VerifyCa,
+            TlsMode::VerifyFull,
+        ] {
+            spec.tls = mode;
+            for via in [None, Some(40002)] {
+                let opts: Opts = with_tls(builder(&spec, &secrets, via), &spec, via).into();
+                assert_eq!(
+                    opts.enable_cleartext_plugin(),
+                    opts.ssl_opts().is_some(),
+                    "{mode:?} via {via:?}"
+                );
+            }
+        }
+        // `prefer`'s fallback to a plain connection is made from `builder`.
+        let plain: Opts = builder(&spec, &secrets, None)
+            .ssl_opts(None::<mysql_async::SslOpts>)
+            .into();
+        assert!(!plain.enable_cleartext_plugin());
     }
 
     /// A session through a proxy in front of the test server, with a count
