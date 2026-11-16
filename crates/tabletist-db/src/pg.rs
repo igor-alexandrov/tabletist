@@ -2572,6 +2572,11 @@ mod tests {
     /// The table whose structure's first query sleeps for two seconds.
     const STRUCTURE_SLEEPS: &str = "open_structure_sleeps";
 
+    /// The same as [`STRUCTURE_SLEEPS`] for the test that cancels it, with
+    /// a sleep of its own: [`sleeps_on_the_server`] then finds that test's
+    /// session alone, never one of the timeout test's.
+    const STRUCTURE_CANCELLED: &str = "open_structure_cancelled";
+
     /// What [`structure_reads`] sends in place of its first query for one
     /// of the tables above, which [`structure_stand_ins`] makes: a failure
     /// of the server's own, or a query a cancel can land on.
@@ -2579,6 +2584,7 @@ mod tests {
         match object.name.as_str() {
             STRUCTURE_FAILS => Some("SELECT $1::text || $2::text || (1 / 0)::text"),
             STRUCTURE_SLEEPS => Some("SELECT $1::text || $2::text FROM pg_sleep(2.02)"),
+            STRUCTURE_CANCELLED => Some("SELECT $1::text || $2::text FROM pg_sleep(2.03)"),
             _ => None,
         }
     }
@@ -2592,7 +2598,7 @@ mod tests {
             config.ssl_mode(tokio_postgres::config::SslMode::Disable);
             let (client, connection) = config.connect(tokio_postgres::NoTls).await.unwrap();
             tokio::spawn(connection);
-            for name in [STRUCTURE_FAILS, STRUCTURE_SLEEPS] {
+            for name in [STRUCTURE_FAILS, STRUCTURE_SLEEPS, STRUCTURE_CANCELLED] {
                 client
                     .batch_execute(&format!(
                         "CREATE TABLE IF NOT EXISTS {name} (id int PRIMARY KEY, name text); \
@@ -2661,7 +2667,7 @@ mod tests {
             return;
         };
         structure_stand_ins(&url).await;
-        let object = ObjectRef::new("public", STRUCTURE_SLEEPS);
+        let object = ObjectRef::new("public", STRUCTURE_CANCELLED);
         let conn = session(&url).await;
         conn.fetch_rows(&RowQuery::new(object.clone(), 10))
             .await
@@ -2671,7 +2677,7 @@ mod tests {
         let cancel = conn.cancel.clone();
         let sleeping = url.clone();
         let cancelling = tokio::spawn(async move {
-            sleeps_on_the_server(&sleeping, "pg_sleep(2.02)").await;
+            sleeps_on_the_server(&sleeping, "pg_sleep(2.03)").await;
             cancel.cancel().await.unwrap();
         });
         let started = Instant::now();
