@@ -3450,12 +3450,12 @@ mod tests {
     /// Waits until the `SLEEP` that `marker` names is sleeping on the
     /// server. Its text alone is not enough: MariaDB shows a whole message
     /// of several statements while an earlier one of them runs, and a
-    /// cancel sent then lands on that one. Each test's marker is its own
-    /// (`SLEEP(36.…)`, `SLEEP(37.…)`, `SLEEP(40)`, `SLEEP(50.…)` and
-    /// `SLEEP(51.…)` here, a pass of a test its own after the dot,
-    /// `SLEEP(41)` to `SLEEP(49)` in `script`, `SLEEP(38)` and `SLEEP(39)`
-    /// in `script::one`), so tests that run side by side never find each
-    /// other's.
+    /// cancel sent then lands on that one. Each test's marker is its own,
+    /// and each pass of a test its own after the dot: `SLEEP(36.…)`,
+    /// `SLEEP(37.…)`, `SLEEP(40)`, `SLEEP(50.…)`, `SLEEP(51.…)` and
+    /// `SLEEP(52)` here, `SLEEP(41)` to `SLEEP(49)` in `script`, and
+    /// `SLEEP(38)` and `SLEEP(39)` in `script::one`. Tests that run side by
+    /// side then never find each other's statements.
     pub(super) async fn runs_on_the_server(admin: &mut mysql_async::Conn, marker: &str) {
         let running = async {
             loop {
@@ -3650,7 +3650,6 @@ mod tests {
             mysql_async::Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
         let mut admin = mysql_async::Conn::new(admin_opts).await.unwrap();
         admin.query_drop(format!("KILL {first}")).await.unwrap();
-        admin.disconnect().await.unwrap();
 
         let running = {
             let session = std::sync::Arc::clone(&session);
@@ -3658,10 +3657,11 @@ mod tests {
                 let mut conn = session.conn.lock().await;
                 // SLEEP answers 1 when a KILL QUERY interrupts it
                 // (see `interrupted`).
-                conn.query_first::<i64, _>("SELECT SLEEP(5)").await
+                conn.query_first::<i64, _>("SELECT SLEEP(52)").await
             })
         };
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        runs_on_the_server(&mut admin, "SLEEP(52)").await;
+        admin.disconnect().await.unwrap();
         cancel(opts, id, server, &session.spare).await.unwrap();
         interrupted(&session, running.await.unwrap());
         let second = spare_id(&session).await;

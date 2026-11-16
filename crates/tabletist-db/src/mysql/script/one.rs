@@ -576,7 +576,9 @@ mod tests {
             "SELECT * FROM tabletist_nowhere".to_owned(),
             "SELECT ?".to_owned(),
             "SELECT :name".to_owned(),
-            "SHOW TABLES".to_owned(),
+            // Its own table alone: tests that run beside this one make and
+            // drop tables between its two reads.
+            "SHOW TABLES LIKE 'editor\\_types'".to_owned(),
             "SHOW PROFILE".to_owned(),
             "USE tabletist".to_owned(),
             "COMMIT".to_owned(),
