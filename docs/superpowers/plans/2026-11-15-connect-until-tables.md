@@ -205,7 +205,7 @@ const SESSION_ZONE: &str =
 
 - [ ] **Red tests** in `pg::tests` and `mysql::tests` (MySQL in both access modes): a fresh counted session, `conn.list_tree("public")` (MySQL: the test database's name): 1 round trip / 1 message; the schemas are `list_schemas`'s, the objects are `list_objects`'s for that schema, and each listed table's shape is remembered (a following `open` is 1 trip). A schema that does not exist: the schemas answer, the objects answer as `list_objects` does for it today.
 - [ ] `Adapter::list_tree(&self, schema: &str) -> (Result<Vec<String>>, Result<Vec<ObjectInfo>>)` with a default of `list_schemas`, then `list_objects`; `Connection::list_tree` dispatches it.
-- [ ] PostgreSQL: the schemas' query goes in the same pipelined flight as `listed_with`'s two (one client lock held across the three; `try_join!(biased; …)` keeps the first error the query's own, as `structure_reads` does). A failed listing part does not fail the schemas, and the reverse.
+- [ ] PostgreSQL: the schemas' query goes in the same pipelined flight as `listed_with`'s two (one client lock held across the three; `join!(biased; …)`, not `try_join!` as in `structure_reads`: each query has its own Sync outside a transaction and answers on its own, and `try_join!` would drop the parts that succeeded). A failed listing part does not fail the schemas, and the reverse.
 - [ ] MySQL: the schemas' `SELECT` is the first statement of the listing's one message (`listed_with`); a refusal of a later statement leaves the schemas answered.
 - [ ] Commit: `git commit -m "List the schemas and a schema's tables in one round trip"`
 

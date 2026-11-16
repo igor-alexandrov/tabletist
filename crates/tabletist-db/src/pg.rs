@@ -92,6 +92,16 @@ const SHAPE_SQL: &str = "SELECT a.attname::text, k.ord IS NOT NULL, a.atttypid =
        AND (k.ord IS NOT NULL OR a.atttypid = 'bytea'::regtype) \
      ORDER BY k.ord, a.attnum";
 
+/// The schemas [`Adapter::list_schemas`] lists, by name.
+fn schemas_sql() -> String {
+    format!("SELECT nspname::text FROM pg_namespace ORDER BY nspname LIMIT {MAX_LISTED}")
+}
+
+/// The names in the rows [`schemas_sql`] answers.
+fn schema_names(rows: &[tokio_postgres::Row]) -> Result<Vec<String>> {
+    rows.iter().map(|row| column(row, 0)).collect()
+}
+
 /// The tables and views [`Adapter::list_objects`] lists, with their schema
 /// as `$1`, in its order and number: the end of a query over them, as
 /// `pg_class c`. The listing and the shapes read with it both end so, and
@@ -820,17 +830,8 @@ impl Conn {
 
     /// `schema`'s tables and views, as [`listing_sql`] lists them, and in
     /// the same flight the shapes `shapes_sql` reads of them, as
-    /// [`listed_shapes_sql`] does, which the session remembers.
-    ///
-    /// The two are statements of their own, outside a transaction, and so
-    /// read the catalog at two moments: a shape can have changed between
-    /// the listing and its own read, or since. That costs the page read
-    /// with it one round trip more, never a wrong page (see `open`).
-    ///
-    /// The listing goes out first, and the shapes failing fail nothing:
-    /// a server's error, or a cancel that lands on them, leaves the
-    /// listing as it was read, and nothing is remembered. A session that
-    /// is lost fails the listing, which says so.
+    /// [`listed_shapes_sql`] does, which the session remembers (see
+    /// [`Conn::listed_from`]).
     async fn listed_with(&self, schema: &str, shapes_sql: &str) -> Result<Vec<ObjectInfo>> {
         let listing = listing_sql();
         let params: &[(&(dyn ToSql + Sync), Type)] = &[(&schema, Type::TEXT)];
@@ -842,6 +843,62 @@ impl Conn {
                 client.query_typed(shapes_sql, params),
             )
         };
+        self.listed_from(schema, rows, shapes)
+    }
+
+    /// The schemas the query given as `schemas_sql` lists (the function
+    /// [`schemas_sql`]'s outside tests), and `schema`'s tables and views
+    /// with their shapes, as
+    /// [`Conn::listed_with`] reads them, all in one flight: the schemas'
+    /// query goes out first.
+    ///
+    /// Each query is a statement of its own, outside a transaction, and
+    /// answers on its own: the schemas' query failing, refused by the
+    /// server or stopped by a cancel that lands on it, fails nothing else,
+    /// and the listing failing fails nothing of the schemas. So they are
+    /// joined, not tried: one's error stops none of the others' answers
+    /// being read.
+    async fn tree_with(
+        &self,
+        schemas_sql: &str,
+        schema: &str,
+        shapes_sql: &str,
+    ) -> (Result<Vec<String>>, Result<Vec<ObjectInfo>>) {
+        let listing = listing_sql();
+        let params: &[(&(dyn ToSql + Sync), Type)] = &[(&schema, Type::TEXT)];
+        let (schemas, rows, shapes) = {
+            let client = self.client.lock().await;
+            tokio::join!(
+                biased;
+                client.query_typed(schemas_sql, &[]),
+                client.query_typed(&listing, params),
+                client.query_typed(shapes_sql, params),
+            )
+        };
+        let schemas = schemas
+            .map_err(query_error)
+            .and_then(|rows| schema_names(&rows));
+        (schemas, self.listed_from(schema, rows, shapes))
+    }
+
+    /// `schema`'s tables and views from the listing's `rows`, and the
+    /// shapes read with them, which the session remembers.
+    ///
+    /// The two are statements of their own, outside a transaction, and so
+    /// read the catalog at two moments: a shape can have changed between
+    /// the listing and its own read, or since. That costs the page read
+    /// with it one round trip more, never a wrong page (see `open`).
+    ///
+    /// The listing goes out first, and the shapes failing fail nothing:
+    /// a server's error, or a cancel that lands on them, leaves the
+    /// listing as it was read, and nothing is remembered. A session that
+    /// is lost fails the listing, which says so.
+    fn listed_from(
+        &self,
+        schema: &str,
+        rows: std::result::Result<Vec<tokio_postgres::Row>, tokio_postgres::Error>,
+        shapes: std::result::Result<Vec<tokio_postgres::Row>, tokio_postgres::Error>,
+    ) -> Result<Vec<ObjectInfo>> {
         let rows = rows.map_err(query_error)?;
         match shapes
             .map_err(query_error)
@@ -1375,15 +1432,7 @@ impl Adapter for Conn {
     }
 
     async fn list_schemas(&self) -> Result<Vec<String>> {
-        let rows = self
-            .catalog(
-                &format!(
-                    "SELECT nspname::text FROM pg_namespace ORDER BY nspname LIMIT {MAX_LISTED}"
-                ),
-                &[],
-            )
-            .await?;
-        rows.iter().map(|row| column(row, 0)).collect()
+        schema_names(&self.catalog(&schemas_sql(), &[]).await?)
     }
 
     /// With the listing, in its flight, the [`Shape`] of each table and
@@ -1391,6 +1440,13 @@ impl Adapter for Conn {
     /// is then one round trip too (see `open`). See [`Conn::listed_with`].
     async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>> {
         self.listed_with(schema, &listed_shapes_sql()).await
+    }
+
+    /// The schemas and `schema`'s tables in one round trip: the schemas'
+    /// query goes in the listing's flight. See [`Conn::tree_with`].
+    async fn list_tree(&self, schema: &str) -> (Result<Vec<String>>, Result<Vec<ObjectInfo>>) {
+        self.tree_with(&schemas_sql(), schema, &listed_shapes_sql())
+            .await
     }
 
     async fn ddl(&self, object: &ObjectRef) -> Result<Ddl> {
@@ -2753,6 +2809,111 @@ mod tests {
             .batch_execute("DROP TABLE key_changes_after_listing")
             .await
             .unwrap();
+    }
+
+    /// The schemas and a schema's tables are one round trip on a fresh
+    /// session, and the listing in it reads the shape of each table it
+    /// names: the first open of one is one round trip too.
+    #[tokio::test]
+    async fn listing_the_tree_asks_the_server_once() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = round_trips_table(&url).await;
+        let (conn, trips) = trip_counted(&url).await;
+        let ((schemas, objects), asked) = counted(&trips, conn.list_tree(&object.schema)).await;
+        assert_eq!(asked, 1);
+        let schemas = schemas.unwrap();
+        assert!(schemas.contains(&object.schema), "{schemas:?}");
+        let objects = objects.unwrap();
+        assert!(objects.iter().any(|listed| listed.name == object.name));
+        for listed in &objects {
+            let listed = ObjectRef::new(&object.schema, &listed.name);
+            assert!(conn.known_shape(&listed).is_some(), "{listed:?}");
+        }
+        assert!(outside_a_transaction(&conn).await);
+        let query = RowQuery::new(object.clone(), 10);
+        let ((structure, page), asked) =
+            counted(&trips, conn.open(&object, &query, &StopFlag::new())).await;
+        assert_eq!(structure.unwrap().primary_key, ["shelf", "id"]);
+        assert!(page.unwrap().ordered_by_key);
+        assert_eq!(asked, 1);
+    }
+
+    /// Each part of the tree fails on its own, in its one round trip: the
+    /// schemas failing leave the listing and the shapes it read; the
+    /// shapes failing leave the schemas and the listing, and no shape is
+    /// remembered.
+    #[tokio::test]
+    async fn a_failed_part_of_the_tree_leaves_the_rest() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = round_trips_table(&url).await;
+        let failing_schemas = "SELECT (1 / 0)::text";
+        let failing_shapes = "SELECT $1::text, ''::text, true, (1 / 0) = 1";
+        let (conn, trips) = trip_counted(&url).await;
+        let ((schemas, objects), asked) = counted(
+            &trips,
+            conn.tree_with(failing_schemas, &object.schema, &listed_shapes_sql()),
+        )
+        .await;
+        assert_eq!(asked, 1);
+        assert!(matches!(schemas, Err(Error::Query { .. })), "{schemas:?}");
+        assert!(
+            objects
+                .unwrap()
+                .iter()
+                .any(|listed| listed.name == object.name)
+        );
+        assert!(conn.known_shape(&object).is_some());
+        let (conn, trips) = trip_counted(&url).await;
+        let ((schemas, objects), asked) = counted(
+            &trips,
+            conn.tree_with(&schemas_sql(), &object.schema, failing_shapes),
+        )
+        .await;
+        assert_eq!(asked, 1);
+        assert!(schemas.unwrap().contains(&object.schema));
+        let objects = objects.unwrap();
+        assert!(objects.iter().any(|listed| listed.name == object.name));
+        for listed in &objects {
+            let listed = ObjectRef::new(&object.schema, &listed.name);
+            assert_eq!(conn.known_shape(&listed), None, "{listed:?}");
+        }
+        assert!(outside_a_transaction(&conn).await);
+    }
+
+    /// The tree is what listing the schemas and then the schema's tables
+    /// answers, on a schema that is not there too. Other tests make and
+    /// drop tables and schemas meanwhile: the two are asked again, a few
+    /// times, until they read the same moment.
+    #[tokio::test]
+    async fn the_tree_is_the_schemas_then_the_schemas_tables() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        round_trips_table(&url).await;
+        let conn = session(&url).await;
+        let apart = session(&url).await;
+        for schema in ["public", "no_such_schema"] {
+            let mut tries = 0;
+            let (read, alone) = loop {
+                let (schemas, objects) = conn.list_tree(schema).await;
+                let read = (schemas.unwrap(), objects.unwrap());
+                let alone = (
+                    apart.list_schemas().await.unwrap(),
+                    apart.list_objects(schema).await.unwrap(),
+                );
+                tries += 1;
+                if read == alone || tries == 10 {
+                    break (read, alone);
+                }
+            };
+            assert_eq!(read, alone, "{schema}");
+            assert!(read.0.iter().any(|listed| listed == "public"), "{schema}");
+            assert_eq!(read.1.is_empty(), schema == "no_such_schema", "{schema}");
+        }
     }
 
     /// The backend runs an open on a task it spawns: its future must be
