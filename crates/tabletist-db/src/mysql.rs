@@ -1382,6 +1382,9 @@ impl Adapter for Conn {
         };
         let page = match outcome {
             Ok(Some(read)) => Ok(read),
+            // The page is read again on its own here, so a Stop that came
+            // during the message keeps it from being sent at all.
+            Ok(None) if page_stop.is_stopped() => Err(Error::Cancelled),
             Ok(None) => page_in_three(conn, query, query.limit as usize).await,
             Err(error) => Err(error),
         }
@@ -5391,6 +5394,46 @@ mod tests {
         // The message, then three round trips and the new statement's
         // prepare; then the message alone.
         assert_eq!(trips, [5, 1]);
+        assert!(!in_transaction(&conn).await);
+    }
+
+    /// An open whose page was built from a key that has changed since,
+    /// and whose page was stopped meanwhile, does not read the page again
+    /// from the new key: the page answers as cancelled, the structure
+    /// shows the new key, and the message is the only one sent.
+    #[tokio::test]
+    async fn a_stopped_open_whose_key_changed_does_not_read_its_page_again() {
+        use std::sync::atomic::Ordering;
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = table_of(
+            &url,
+            "opened_rekeyed_stopped",
+            "id int PRIMARY KEY, other int NOT NULL",
+            "(1, 3), (2, 2), (3, 1)",
+        )
+        .await;
+        let (conn, asked) = counted_session(&url, Access::ReadOnly).await;
+        conn.describe(&object).await.unwrap();
+        {
+            let opts = Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+            let mut admin = mysql_async::Conn::new(opts).await.unwrap();
+            admin
+                .query_drop(
+                    "ALTER TABLE opened_rekeyed_stopped DROP PRIMARY KEY, ADD PRIMARY KEY (other)",
+                )
+                .await
+                .unwrap();
+        }
+        let query = RowQuery::new(object.clone(), 10);
+        let page_stop = StopFlag::new();
+        page_stop.stop();
+        let before = asked.load(Ordering::SeqCst);
+        let (structure, page) = conn.open(&object, &query, &page_stop).await;
+        assert_eq!(asked.load(Ordering::SeqCst) - before, 1);
+        assert_eq!(structure.unwrap().primary_key, ["other"]);
+        assert_eq!(page.unwrap_err(), Error::Cancelled);
         assert!(!in_transaction(&conn).await);
     }
 
