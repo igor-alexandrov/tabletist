@@ -1425,14 +1425,20 @@ mod tests {
         value.as_deref()
     }
 
-    /// Waits until a statement holding `marker` runs on the server.
+    /// Waits until the `SLEEP` that `marker` names is sleeping on the
+    /// server. Its text alone is not enough: MariaDB shows a whole message
+    /// of several statements while an earlier one of them runs, and a
+    /// cancel sent then lands on that one. Each test's marker is its own
+    /// (`SLEEP(41)` to `SLEEP(49)` here, `SLEEP(38)` and `SLEEP(39)` in
+    /// `one`), so tests that run side by side never find each other's.
     pub(super) async fn runs_on_the_server(admin: &mut mysql_async::Conn, marker: &str) {
         let running = async {
             loop {
                 let found: Option<i64> = admin
                     .exec_first(
                         "SELECT count(*) FROM information_schema.processlist \
-                         WHERE id <> CONNECTION_ID() AND info LIKE ?",
+                         WHERE id <> CONNECTION_ID() AND info LIKE ? \
+                         AND state = 'User sleep'",
                         (format!("%{marker}%"),),
                     )
                     .await

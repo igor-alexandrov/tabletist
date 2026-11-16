@@ -820,7 +820,7 @@ mod tests {
         let full: &'static str = sent("SELECT 1").leak();
         let slow = full.replacen(
             "SELECT @@session.transaction_read_only LIMIT 1",
-            "SELECT 1 FROM DUAL WHERE SLEEP(43) = 0",
+            "SELECT 1 FROM DUAL WHERE SLEEP(38) = 0",
             1,
         );
         let (conn, _) = swapping_session(&url, Access::ReadOnly, (full, slow.leak())).await;
@@ -835,7 +835,7 @@ mod tests {
                 async move { past_the_refusal(&conn, &["SELECT 1"], &StopFlag::new()).await },
             )
         };
-        runs_on_the_server(&mut admin, "SLEEP(43)").await;
+        runs_on_the_server(&mut admin, "SLEEP(38)").await;
         super::super::super::cancel(&conn.opts, conn.id, &conn.server, &conn.spare)
             .await
             .unwrap();
@@ -866,10 +866,10 @@ mod tests {
             let conn = std::sync::Arc::clone(&conn);
             let stop = stop.clone();
             tokio::spawn(async move {
-                past_the_refusal(&conn, &["SELECT 1 FROM DUAL WHERE SLEEP(44) = 0"], &stop).await
+                past_the_refusal(&conn, &["SELECT 1 FROM DUAL WHERE SLEEP(39) = 0"], &stop).await
             })
         };
-        runs_on_the_server(&mut admin, "SLEEP(44)").await;
+        runs_on_the_server(&mut admin, "SLEEP(39)").await;
         stop.stop();
         super::super::super::cancel(&conn.opts, conn.id, &conn.server, &conn.spare)
             .await
