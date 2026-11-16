@@ -4999,8 +4999,8 @@ mod tests {
     /// object has a shape. The listing is what it was, in its order, with
     /// the schema named in another case too (MariaDB's catalog compares
     /// names without case). The tables are the test's own, in a schema
-    /// other tests change at the same time: they are made again at the
-    /// start, and left for the next run, as [`table_of`] leaves its own.
+    /// other tests change at the same time: they are made where they are
+    /// missing, and left for the next run.
     #[tokio::test]
     async fn the_listing_remembers_the_shape_each_object_has() {
         let Some(url) = test_url() else {
@@ -5012,9 +5012,20 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        admin
-            .query_drop(
-                "DROP VIEW IF EXISTS ls_a_view, ls_float_view; \
+        // Made only where they are not all there as below, by their count
+        // and their columns': DDL each run would hold up the tests beside
+        // this one, on the same schema.
+        let made: Option<(i64, i64)> = admin
+            .query_first(
+                "SELECT COUNT(DISTINCT table_name), COUNT(*) FROM information_schema.columns \
+                 WHERE table_schema = DATABASE() AND table_name LIKE 'ls\\_%'",
+            )
+            .await
+            .unwrap();
+        if made != Some((12, 29)) {
+            admin
+                .query_drop(
+                    "DROP VIEW IF EXISTS ls_a_view, ls_float_view; \
                  DROP TABLE IF EXISTS ls_composite, ls_no_key, ls_plain, `ls_Odd \"Name\"`, \
                      `ls_it's`, ls_byte_key, `ls_Upper`, ls__under, ls_floats, ls_doubles; \
                  CREATE TABLE ls_composite (a int, b int, c varbinary(8), d text, \
@@ -5031,9 +5042,10 @@ mod tests {
                  CREATE TABLE ls_doubles (id int PRIMARY KEY, d double, w float(30)); \
                  CREATE VIEW ls_a_view AS SELECT a, c FROM ls_composite; \
                  CREATE VIEW ls_float_view AS SELECT f FROM ls_floats",
-            )
-            .await
-            .unwrap();
+                )
+                .await
+                .unwrap();
+        }
         let ours = |name: &str| name.starts_with(LISTED_SHAPES);
         let conn = session(&url).await;
         let listed = conn.list_objects(&schema).await.unwrap();
@@ -5140,27 +5152,31 @@ mod tests {
 
     /// A cancel that lands on the shapes' questions keeps the listing,
     /// answered before them, and the session remembers no shape. It reads
-    /// on after, in no transaction.
+    /// on after, in no transaction. The cancel goes once the server shows
+    /// the test's own `SLEEP`, one for each pass (see
+    /// [`runs_on_the_server`]).
     #[tokio::test]
     async fn a_cancel_on_the_listings_shapes_keeps_the_listing() {
         let Some(url) = test_url() else {
             return;
         };
         let object = trips(&url).await;
-        let sleeping = "SELECT name, name FROM trips WHERE SLEEP(4) = 0";
-        for access in [Access::ReadOnly, Access::Writable] {
+        for (pass, access) in [Access::ReadOnly, Access::Writable].into_iter().enumerate() {
+            let marker = format!("SLEEP(52.{})", pass + 1);
+            let sleeping = format!("SELECT name, name FROM trips WHERE {marker} = 0");
             let conn = session_as(&url, access).await;
             let cancel = conn.cancel_handle();
+            let mut admin = admin(&url).await;
             let cancelling = async {
-                tokio::time::sleep(Duration::from_millis(300)).await;
+                runs_on_the_server(&mut admin, &marker).await;
                 cancel.cancel().await
             };
             let started = Instant::now();
             let (listed, cancelled) =
-                tokio::join!(conn.listed_with(&object.schema, sleeping), cancelling);
+                tokio::join!(conn.listed_with(&object.schema, &sleeping), cancelling);
             cancelled.unwrap();
             let took = started.elapsed();
-            assert!(took < Duration::from_secs(4), "{access:?} {took:?}");
+            assert!(took < Duration::from_secs(5), "{access:?} {took:?}");
             let listed = listed.unwrap();
             assert!(listed.iter().any(|listed| listed.name == object.name));
             for listed in &listed {
@@ -5181,21 +5197,21 @@ mod tests {
     /// it was answered: the caller hears that the session is gone. The
     /// keys' question is two here, one that answers at once and one that
     /// sleeps, so that the loss comes once the listing's answer is read
-    /// to its end (which reads the next answer's start). The test's own
-    /// connection kills the session's.
+    /// to its end (which reads the next answer's start). The sleep is on
+    /// no table, and the test's own (see [`runs_on_the_server`]): once the
+    /// server shows it, the test's own connection kills the session's.
     #[tokio::test]
     async fn a_session_lost_on_the_listings_shapes_fails_the_listing() {
         let Some(url) = test_url() else {
             return;
         };
         let object = trips(&url).await;
-        let sleeping = "SELECT name, name FROM trips WHERE false; \
-                        SELECT name, name FROM trips WHERE SLEEP(39) = 0";
+        let sleeping = "SELECT 'a', 'b' FROM DUAL WHERE false; \
+                        SELECT 'a', 'b' FROM DUAL WHERE SLEEP(52.9) = 0";
         let conn = session(&url).await;
         let mut admin = admin(&url).await;
         let killing = async {
-            // The listing answers at once; the shapes then sleep.
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            runs_on_the_server(&mut admin, "SLEEP(52.9)").await;
             admin.query_drop(format!("KILL {}", conn.id)).await.unwrap();
         };
         let (listed, ()) = tokio::join!(conn.listed_with(&object.schema, sleeping), killing);
@@ -5204,37 +5220,56 @@ mod tests {
         assert_eq!(conn.known_shape(&object), None);
     }
 
+    /// The primary key `object` has now, by the test's own connection.
+    async fn key_of(admin: &mut mysql_async::Conn, object: &ObjectRef) -> Vec<String> {
+        admin
+            .exec(PRIMARY_KEY, (&object.schema, &object.name))
+            .await
+            .unwrap()
+    }
+
     /// A key that changed after the listing read the table's shape is the
     /// key the open shows, and the order of its page, which is read again
-    /// from the shape read with it.
+    /// from the shape read with it. The table is made once and kept: each
+    /// pass moves its key, from `a` to `b` and back, and nothing else
+    /// changes it, so that the tests beside this one wait on no DDL but
+    /// those two.
     #[tokio::test]
     async fn an_open_after_the_listing_shows_a_key_changed_since() {
         use std::sync::atomic::Ordering;
         let Some(url) = test_url() else {
             return;
         };
-        let object = table_of(
-            &url,
-            "key_changes_after_listing",
-            "a int PRIMARY KEY, b int NOT NULL",
-            "(1, 3), (2, 2), (3, 1)",
-        )
-        .await;
-        for access in [Access::ReadOnly, Access::Writable] {
-            let mut admin = admin(&url).await;
+        let mut admin = admin(&url).await;
+        let schema: String = admin
+            .query_first("SELECT DATABASE()")
+            .await
+            .unwrap()
+            .unwrap();
+        let object = ObjectRef::new(&schema, "key_changes_after_listing");
+        if key_of(&mut admin, &object).await != ["a"] {
             admin
                 .query_drop(
-                    "ALTER TABLE key_changes_after_listing DROP PRIMARY KEY, ADD PRIMARY KEY (a)",
+                    "DROP TABLE IF EXISTS key_changes_after_listing; \
+                     CREATE TABLE key_changes_after_listing (a int PRIMARY KEY, b int NOT NULL); \
+                     INSERT INTO key_changes_after_listing VALUES (1, 3), (2, 2), (3, 1)",
                 )
                 .await
                 .unwrap();
+        }
+        let passes = [
+            (Access::ReadOnly, ["a"], ["b"], [3, 2, 1]),
+            (Access::Writable, ["b"], ["a"], [1, 2, 3]),
+        ];
+        for (access, from, to, firsts) in passes {
             let (conn, asked) = counted_session(&url, access).await;
             conn.list_objects(&object.schema).await.unwrap();
-            assert_eq!(conn.known_shape(&object).unwrap().key, ["a"]);
+            assert_eq!(conn.known_shape(&object).unwrap().key, from, "{access:?}");
             admin
-                .query_drop(
-                    "ALTER TABLE key_changes_after_listing DROP PRIMARY KEY, ADD PRIMARY KEY (b)",
-                )
+                .query_drop(format!(
+                    "ALTER TABLE key_changes_after_listing DROP PRIMARY KEY, ADD PRIMARY KEY ({})",
+                    to[0]
+                ))
                 .await
                 .unwrap();
             let before = asked.load(Ordering::SeqCst);
@@ -5246,10 +5281,10 @@ mod tests {
                 )
                 .await;
             let messages = asked.load(Ordering::SeqCst) - before;
-            assert_eq!(structure.unwrap().primary_key, ["b"], "{access:?}");
+            assert_eq!(structure.unwrap().primary_key, to, "{access:?}");
             let page = page.unwrap();
-            let firsts: Vec<_> = page.rows.iter().map(|row| row[0].clone()).collect();
-            assert_eq!(firsts, [Value::Int(3), Value::Int(2), Value::Int(1)]);
+            let shown: Vec<_> = page.rows.iter().map(|row| row[0].clone()).collect();
+            assert_eq!(shown, firsts.map(Value::Int), "{access:?}");
             assert!(page.ordered_by_key, "{access:?}");
             // The open's message, then the page read the other way: its
             // start with the shape, its statement's prepare, its run and
