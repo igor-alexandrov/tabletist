@@ -1285,16 +1285,20 @@ impl Adapter for Conn {
         Ok(Vec::new())
     }
 
-    /// By name, byte by byte (see `list_objects`).
+    /// By name, byte by byte (see `list_objects`). The SQL is fixed and has
+    /// no parameters, so it goes as text: one round trip, where a prepared
+    /// statement takes two on a fresh session.
     async fn list_schemas(&self) -> Result<Vec<String>> {
-        self.catalog(
-            &format!(
+        let mut session = self.conn.lock().await;
+        let conn = session.conn()?;
+        let rows: Vec<mysql_async::Row> = conn
+            .query(format!(
                 "SELECT schema_name FROM information_schema.schemata \
                  ORDER BY CAST(schema_name AS BINARY) LIMIT {MAX_LISTED}"
-            ),
-            Params::Empty,
-        )
-        .await
+            ))
+            .await
+            .map_err(query_error)?;
+        rows.into_iter().map(from_row).collect()
     }
 
     /// By name, byte by byte, as PostgreSQL lists them, and with them the
@@ -6568,6 +6572,24 @@ mod tests {
             assert_eq!(zone, asked_alone, "{access:?}");
             admin.disconnect().await.unwrap();
         }
+    }
+
+    /// The schemas are listed in one message on a fresh session: fixed
+    /// SQL, sent as text, with nothing to prepare first.
+    #[tokio::test]
+    async fn listing_the_schemas_asks_the_server_once() {
+        use std::sync::atomic::Ordering;
+        let Some(url) = test_url() else {
+            return;
+        };
+        let (conn, asked) = counted_session(&url, Access::ReadOnly).await;
+        let before = asked.load(Ordering::SeqCst);
+        let schemas = conn.list_schemas().await.unwrap();
+        assert_eq!(asked.load(Ordering::SeqCst) - before, 1);
+        assert!(
+            schemas.iter().any(|schema| schema == "tabletist"),
+            "{schemas:?}"
+        );
     }
 
     /// A setting sent before the question who the server is that fails
