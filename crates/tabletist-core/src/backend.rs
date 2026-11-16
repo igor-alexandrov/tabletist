@@ -115,6 +115,26 @@ pub enum Command {
         request: RequestId,
         query: RowQuery,
     },
+    /// Open a table: its structure and its first page (see
+    /// `Connection::open`), answered as a `FetchRows` of `rows` and then a
+    /// `Describe` of `structure` would be. One command, so that PostgreSQL
+    /// and MySQL read both in one round trip. A Cancel of either request
+    /// stops the run; the part it did not name still answers with its own
+    /// result, read again alone where the cancel stopped it too. A part
+    /// read again answers after the other, whichever it is. A Cancel of
+    /// the page keeps it from being sent where it is read after the
+    /// structure; the cancel that goes to the server may stop the
+    /// structure's read instead, which is then read again alone: one
+    /// round trip more.
+    Open {
+        session: SessionId,
+        /// The request the structure answers.
+        structure: RequestId,
+        /// The request the page answers.
+        rows: RequestId,
+        object: ObjectRef,
+        query: RowQuery,
+    },
     CountRows {
         session: SessionId,
         request: RequestId,
@@ -919,6 +939,31 @@ impl Backend {
         Some((running.request?, running.save.clone()?))
     }
 
+    /// Has the next `Open` of `session` whose page is `fake.rows` come
+    /// back with `fake`'s results.
+    #[cfg(test)]
+    fn fake_open(&self, session: SessionId, fake: FakeOpen) {
+        let watched = lock(&self.watched);
+        lock(watched.get(&session).expect("the session is up")).opens = Some(fake);
+    }
+
+    /// Runs `change` on the state of `session`.
+    #[cfg(test)]
+    fn with_running(&self, session: SessionId, change: impl FnOnce(&mut Running)) {
+        let watched = lock(&self.watched);
+        change(&mut lock(watched.get(&session).expect("the session is up")));
+    }
+
+    /// The running requests of `session` a Cancel named.
+    #[cfg(test)]
+    fn cancelled(&self, session: SessionId) -> Vec<RequestId> {
+        let watched = lock(&self.watched);
+        watched
+            .get(&session)
+            .map(|running| lock(running).cancelled.clone())
+            .unwrap_or_default()
+    }
+
     /// Whether cancels are being sent for the script `session` runs.
     #[cfg(test)]
     fn cancelling(&self, session: SessionId) -> bool {
@@ -943,8 +988,14 @@ struct SessionHandle {
 /// session task (which runs one command at a time).
 #[derive(Default)]
 struct Running {
-    /// The request running now.
+    /// The request running now: for an `Open`, its page's.
     request: Option<RequestId>,
+    /// The other request of a running `Open`: its structure's.
+    also: Option<RequestId>,
+    /// The running requests a Cancel named. An `Open` answers two: the
+    /// part whose request no Cancel named is read again alone when the
+    /// cancel of the other stopped it too (see `run_open`).
+    cancelled: Vec<RequestId>,
     /// Queued requests to skip when their turn comes.
     skip: HashSet<RequestId>,
     /// Cancels sent for the running request. The session waits for them
@@ -953,6 +1004,10 @@ struct Running {
     /// The running SQL editor script's stop flag: a Cancel and a Close set
     /// it too, so the script also stops between statements.
     stop: Option<StopFlag>,
+    /// The running `Open`'s page's stop flag: a Cancel of its page and a
+    /// Close set it, so that a page read after the structure is never sent
+    /// once it is cancelled (see `Connection::open`).
+    page_stop: Option<StopFlag>,
     /// The running save's stop flag: a Cancel and a Close set it too, so
     /// the save also stops between two of its statements, where a cancel
     /// finds nothing to stop. Apart from a script's: a save takes one
@@ -982,9 +1037,40 @@ struct Running {
     /// ended: a lost connection, on a connection that is still there.
     #[cfg(test)]
     loses: Option<RequestId>,
+    /// What a test has an `Open` come back with in place of its read.
+    #[cfg(test)]
+    opens: Option<FakeOpen>,
+}
+
+/// How a test has an `Open` whose page is `rows` run: held until `gate`
+/// opens, and a Cancel finds it running meanwhile. Then it comes back with
+/// `answer`, or, with none, reads as it would have.
+#[cfg(test)]
+struct FakeOpen {
+    rows: RequestId,
+    gate: tokio::sync::oneshot::Receiver<()>,
+    answer: Option<(Result<Structure, Error>, Result<RowPage, Error>)>,
 }
 
 impl Running {
+    /// Whether `request` is running now: for an `Open`, either of its two.
+    fn runs(&self, request: RequestId) -> bool {
+        self.request == Some(request) || self.also == Some(request)
+    }
+
+    /// Readies the session for its next command: nothing runs.
+    fn end_command(&mut self) {
+        self.request = None;
+        self.also = None;
+        self.cancelled.clear();
+        self.stop = None;
+        self.save = None;
+        self.page_stop = None;
+        self.cancelling = false;
+        self.read = false;
+        self.deferred = false;
+    }
+
     /// Tells the running script or save, if there is one, to stop: it
     /// runs no further statement, whether or not a cancel reaches the one
     /// running.
@@ -999,6 +1085,9 @@ impl Running {
     fn close(&mut self) {
         self.closed = true;
         self.stop_run();
+        if let Some(page) = &self.page_stop {
+            page.stop();
+        }
     }
 
     /// Whether a script is running and a cancel can still reach one of its
@@ -1059,10 +1148,7 @@ impl Drop for SessionEnd {
     fn drop(&mut self) {
         {
             let mut running = lock(&self.running);
-            running.request = None;
-            running.stop = None;
-            running.save = None;
-            running.cancelling = false;
+            running.end_command();
             running.closed = true;
         }
         // The worker let go of the session (a Close, or the backend is
@@ -2120,11 +2206,16 @@ impl Worker {
                 } else if let Some(waiting) = self.waiting.get_mut(&session)
                     && let Some(at) = waiting
                         .iter()
-                        .position(|command| request_of(command) == Some(request))
+                        .position(|command| requests_of(command).contains(&request))
                 {
                     // Never sent: it is answered as a command the session
-                    // skipped.
-                    skip(&self.outbox, waiting.remove(at));
+                    // skipped. Of an `Open` only that part: the other
+                    // waits on in its place.
+                    let (part, rest) = take_part(waiting.remove(at), request);
+                    skip(&self.outbox, part);
+                    if let Some(rest) = rest {
+                        waiting.insert(at, rest);
+                    }
                 }
             }
             Command::LoadSecret { request, account } => {
@@ -2342,6 +2433,7 @@ fn session_of(command: &Command) -> SessionId {
         | Command::Describe { session, .. }
         | Command::ReadDdl { session, .. }
         | Command::FetchRows { session, .. }
+        | Command::Open { session, .. }
         | Command::CountRows { session, .. }
         | Command::Lookup { session, .. }
         | Command::Write { session, .. }
@@ -2392,9 +2484,13 @@ fn list_folder(folder: &Path, start: &str) -> Vec<crate::export_sheet::Listed> {
     crate::export_sheet::completions(names, start)
 }
 
-/// The request a queued command answers.
-fn request_of(command: &Command) -> Option<RequestId> {
+/// The requests a queued command answers: one, or none, or an `Open`'s
+/// two, its page's first.
+fn requests_of(command: &Command) -> Vec<RequestId> {
     match command {
+        Command::Open {
+            structure, rows, ..
+        } => vec![*rows, *structure],
         Command::ListSchemas { request, .. }
         | Command::ListObjects { request, .. }
         | Command::Describe { request, .. }
@@ -2406,7 +2502,7 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::ListDatabases { request, .. }
         | Command::RunSql { request, .. }
         | Command::ServerVersion { request, .. }
-        | Command::SessionZone { request, .. } => Some(*request),
+        | Command::SessionZone { request, .. } => vec![*request],
         Command::Connect { .. }
         | Command::Test { .. }
         | Command::Close { .. }
@@ -2430,7 +2526,7 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::ListFolder { .. }
         | Command::Agents(_)
         | Command::History(_)
-        | Command::Updates(_) => None,
+        | Command::Updates(_) => Vec::new(),
     }
 }
 
@@ -2473,6 +2569,23 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
             request,
             result: Err(error),
         },
+        Command::Open {
+            session,
+            structure,
+            rows,
+            ..
+        } => {
+            outbox.emit(Event::Rows {
+                session,
+                request: rows,
+                result: Err(error.clone()),
+            });
+            Event::Structure {
+                session,
+                request: structure,
+                result: Err(error),
+            }
+        }
         Command::CountRows {
             session, request, ..
         } => Event::Count {
@@ -2545,6 +2658,38 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
     outbox.emit(event);
 }
 
+/// The part of `command` that answers `request`, and what is left of it:
+/// an `Open` is a `FetchRows` and a `Describe`, and the one `request` does
+/// not name stays a command of its own. Any other command is all one part.
+fn take_part(command: Command, request: RequestId) -> (Command, Option<Command>) {
+    match command {
+        Command::Open {
+            session,
+            structure,
+            rows,
+            object,
+            query,
+        } => {
+            let page = Command::FetchRows {
+                session,
+                request: rows,
+                query,
+            };
+            let described = Command::Describe {
+                session,
+                request: structure,
+                object,
+            };
+            if request == structure {
+                (described, Some(page))
+            } else {
+                (page, Some(described))
+            }
+        }
+        command => (command, None),
+    }
+}
+
 /// Answers a command the user cancelled while it was still queued: it
 /// never ran. A script answers as one stopped before its first statement
 /// does.
@@ -2593,13 +2738,19 @@ async fn run_session(
     // Dropped when this task ends, however it ends: a PgBouncer probe still
     // running then is stopped (see `list_databases`).
     let (_ending, ended) = tokio::sync::watch::channel(());
+    // What is left of an `Open` one of whose parts was skipped: it runs
+    // next, before anything queued after it.
+    let mut left = None;
     loop {
-        let command = tokio::select! {
-            biased;
-            _ = &mut stop => break,
-            command = end.commands.recv() => match command {
-                Some(command) => command,
-                None => break,
+        let command = match left.take() {
+            Some(command) => command,
+            None => tokio::select! {
+                biased;
+                _ = &mut stop => break,
+                command = end.commands.recv() => match command {
+                    Some(command) => command,
+                    None => break,
+                },
             },
         };
         // Kept by `end` until it has answered, so that it is answered even
@@ -2611,7 +2762,7 @@ async fn run_session(
         for cancel in cancels {
             let _ = cancel.await;
         }
-        let request = request_of(command);
+        let requests = requests_of(command);
         // The stop flag of a script or a save; any other command leaves it
         // unused.
         let run_stop = StopFlag::new();
@@ -2623,36 +2774,61 @@ async fn run_session(
             if running.closed {
                 break;
             }
-            let skipped = request.is_some_and(|request| running.skip.remove(&request));
+            let skipped: Vec<RequestId> = requests
+                .iter()
+                .copied()
+                .filter(|request| running.skip.remove(request))
+                .collect();
             // Requests run in the order they were made, so an id at or
-            // before this one will never come again.
-            if let Some(request) = request {
-                running.skip.retain(|id| id.0 > request.0);
+            // before this one's will never come again. An `Open`'s two
+            // were made together, one after the other.
+            if let Some(last) = requests.iter().map(|request| request.0).max() {
+                running.skip.retain(|id| id.0 > last);
             }
-            if !skipped {
-                running.request = request;
+            if skipped.is_empty() {
+                (running.request, running.also) = match command {
+                    Command::Open {
+                        structure, rows, ..
+                    } => (Some(*rows), Some(*structure)),
+                    _ => (requests.first().copied(), None),
+                };
                 // In the same critical section, so a Cancel that arrives
                 // right after the run starts always finds the flag.
                 running.stop = matches!(command, Command::RunSql { .. }).then(|| run_stop.clone());
                 running.save = matches!(command, Command::Write { .. }).then(|| run_stop.clone());
+                running.page_stop =
+                    matches!(command, Command::Open { .. }).then(|| run_stop.clone());
                 running.read = matches!(
                     command,
                     Command::FetchRows { .. }
                         | Command::Describe { .. }
+                        | Command::Open { .. }
                         | Command::ReadDdl { .. }
                         | Command::Lookup { .. }
                 );
             }
             skipped
         };
-        if skipped {
-            if let Some(command) = end.command.take() {
-                skip(&outbox, command);
+        if !skipped.is_empty() {
+            // Each skipped part answers as skipped; of an `Open` with one
+            // part skipped, the other runs next, alone.
+            let mut rest = end.command.take();
+            for request in skipped {
+                if let Some(command) = rest.take() {
+                    let (part, other) = take_part(command, request);
+                    skip(&outbox, part);
+                    rest = other;
+                }
             }
+            left = rest;
             continue;
         }
         #[cfg(test)]
-        if request.is_some() && lock(&running).panics == request {
+        let panics = lock(&running).panics;
+        #[cfg(test)]
+        if let Some(request) = panics
+            && requests.contains(&request)
+        {
             panic!("a test has the session panic at {request:?}");
         }
         let lost = match command {
@@ -2722,6 +2898,22 @@ async fn run_session(
                     result,
                 });
                 lost
+            }
+            Command::Open {
+                session,
+                structure,
+                rows,
+                object,
+                query,
+            } => {
+                let opening = Opening {
+                    session: *session,
+                    structure_request: *structure,
+                    rows_request: *rows,
+                    object,
+                    query,
+                };
+                run_open(&connection, &running, &outbox, opening, &run_stop).await
             }
             Command::CountRows {
                 session,
@@ -2866,15 +3058,7 @@ async fn run_session(
             | Command::Updates(_) => None,
         };
         end.command = None;
-        {
-            let mut running = lock(&running);
-            running.request = None;
-            running.stop = None;
-            running.save = None;
-            running.cancelling = false;
-            running.read = false;
-            running.deferred = false;
-        }
+        lock(&running).end_command();
         if let Some(error) = lost {
             fail_queued(&mut end.commands, &outbox, &error);
             outbox.emit(Event::Disconnected { session, error });
@@ -2883,6 +3067,152 @@ async fn run_session(
     }
     end.finished = true;
     let _ = connection.close().await;
+}
+
+/// An `Open` as `run_open` runs it.
+struct Opening<'a> {
+    session: SessionId,
+    structure_request: RequestId,
+    rows_request: RequestId,
+    object: &'a ObjectRef,
+    query: &'a RowQuery,
+}
+
+/// Runs an `Open`: the table's structure and first page in one go,
+/// answered rows first. A Cancel of either request stops that one run, so
+/// it may stop the other part too: that part, whose own request no Cancel
+/// named, is read again alone, and answers once it is, after the other.
+/// The part the user cancelled answers with what came back, as a
+/// cancelled read does.
+async fn run_open(
+    connection: &Connection,
+    running: &Mutex<Running>,
+    outbox: &Outbox,
+    opening: Opening<'_>,
+    page_stop: &StopFlag,
+) -> Option<Error> {
+    let Opening {
+        session,
+        structure_request,
+        rows_request,
+        object,
+        query,
+    } = opening;
+    let (structure, page) =
+        read_open(connection, running, rows_request, object, query, page_stop).await;
+    let lost = lost_error(&page).or_else(|| lost_error(&structure));
+    let (page_again, structure_again) = {
+        let running = lock(running);
+        let again = |stopped, own, other| {
+            lost.is_none() && runs_again(stopped, own, other, &running.cancelled)
+        };
+        (
+            again(is_cancelled(&page), rows_request, structure_request),
+            again(is_cancelled(&structure), structure_request, rows_request),
+        )
+    };
+    let rows_event = |result| Event::Rows {
+        session,
+        request: rows_request,
+        result,
+    };
+    let structure_event = |result| Event::Structure {
+        session,
+        request: structure_request,
+        result,
+    };
+    if page_again {
+        outbox.emit(structure_event(structure));
+        let page = if ready_again(running, rows_request).await {
+            connection.fetch_rows(query).await
+        } else {
+            Err(Error::Cancelled)
+        };
+        let lost = lost_error(&page);
+        outbox.emit(rows_event(page));
+        return lost;
+    }
+    outbox.emit(rows_event(page));
+    if structure_again {
+        let structure = if ready_again(running, structure_request).await {
+            connection.describe(object).await
+        } else {
+            Err(Error::Cancelled)
+        };
+        let lost = lost_error(&structure);
+        outbox.emit(structure_event(structure));
+        return lost;
+    }
+    outbox.emit(structure_event(structure));
+    lost
+}
+
+/// The structure and the page an `Open` reads, or what a test has it come
+/// back with (see `FakeOpen`).
+async fn read_open(
+    connection: &Connection,
+    running: &Mutex<Running>,
+    rows_request: RequestId,
+    object: &ObjectRef,
+    query: &RowQuery,
+    page_stop: &StopFlag,
+) -> (Result<Structure, Error>, Result<RowPage, Error>) {
+    #[cfg(test)]
+    {
+        let fake = {
+            let mut running = lock(running);
+            match &running.opens {
+                Some(fake) if fake.rows == rows_request => running.opens.take(),
+                _ => None,
+            }
+        };
+        if let Some(fake) = fake {
+            let _ = fake.gate.await;
+            if let Some(answer) = fake.answer {
+                return answer;
+            }
+        }
+    }
+    #[cfg(not(test))]
+    let _ = (running, rows_request);
+    connection.open(object, query, page_stop).await
+}
+
+fn is_cancelled<T>(result: &Result<T, Error>) -> bool {
+    matches!(result, Err(Error::Cancelled))
+}
+
+/// Whether the part of an `Open` that answers `own` runs again alone: it
+/// was `stopped` by a cancel, and the Cancel named only `other`, the other
+/// part, whose run it shared.
+fn runs_again(stopped: bool, own: RequestId, other: RequestId, cancelled: &[RequestId]) -> bool {
+    stopped && !cancelled.contains(&own) && cancelled.contains(&other)
+}
+
+/// Readies the session to run `request` alone after the `Open` it was part
+/// of, as the session readies its next command: the cancels sent for the
+/// `Open` land first, so none can stop this run. False when it must not
+/// run: the session closed, or a Cancel named `request`, while the `Open`
+/// still ran (after it was told the part runs again) or since.
+async fn ready_again(running: &Mutex<Running>, request: RequestId) -> bool {
+    let (cancelled, cancels) = {
+        let mut running = lock(running);
+        let cancelled = running.cancelled.contains(&request);
+        running.end_command();
+        (cancelled, std::mem::take(&mut running.cancels))
+    };
+    for cancel in cancels {
+        let _ = cancel.await;
+    }
+    let mut running = lock(running);
+    // Both checked, so a skip noted meanwhile is not left behind.
+    let skipped = running.skip.remove(&request);
+    if cancelled || skipped || running.closed {
+        return false;
+    }
+    running.request = Some(request);
+    running.read = true;
+    true
 }
 
 /// Answers `ListDatabases`. On PostgreSQL the check for PgBouncer opens a
@@ -3004,11 +3334,22 @@ fn cancel_request<C>(
     C: Future<Output = ()> + Send + 'static,
 {
     let mut state = lock(running);
-    if state.request != Some(request) {
+    if !state.runs(request) {
         // Queued, or already answered: the session drops the id once it
         // passes it.
         state.skip.insert(request);
         return;
+    }
+    // Which of a running `Open`'s two parts the user stopped.
+    if !state.cancelled.contains(&request) {
+        state.cancelled.push(request);
+    }
+    // An `Open`'s page, under the same lock: one read after the structure
+    // is then never sent.
+    if state.request == Some(request)
+        && let Some(page) = &state.page_stop
+    {
+        page.stop();
     }
     // Before a cancel is sent: a script it ends at once must already see
     // who stopped it, and a save must not start its next statement.
@@ -3052,7 +3393,7 @@ async fn cancel_after<C>(
 {
     tokio::time::sleep(grace).await;
     let mut running = lock(&running);
-    if running.request != Some(request) || running.closed {
+    if !running.runs(request) || running.closed {
         return;
     }
     // No longer a read that is cheap to wait for: should this cancel fail,
@@ -5209,9 +5550,9 @@ mod tests {
             request: RequestId(3),
         };
         assert_eq!(session_of(&script), SessionId(7));
-        assert_eq!(request_of(&script), Some(RequestId(2)));
+        assert_eq!(requests_of(&script), [RequestId(2)]);
         assert_eq!(session_of(&version), SessionId(7));
-        assert_eq!(request_of(&version), Some(RequestId(3)));
+        assert_eq!(requests_of(&version), [RequestId(3)]);
     }
 
     #[test]
@@ -5543,6 +5884,455 @@ mod tests {
             ),
             "{answer:?}"
         );
+    }
+
+    /// An `Open` of `query`'s table, its structure answering `structure`
+    /// and its page `rows`.
+    fn open(session: SessionId, structure: u64, rows: u64, query: RowQuery) -> Command {
+        Command::Open {
+            session,
+            structure: RequestId(structure),
+            rows: RequestId(rows),
+            object: query.object.clone(),
+            query,
+        }
+    }
+
+    /// A few rows of `users`, quick to read.
+    fn users() -> RowQuery {
+        RowQuery::new(ObjectRef::new("main", "users"), 2)
+    }
+
+    /// The next `count` events, with a Cancel of `request` sent again and
+    /// again until they are in: SQLite ignores an interrupt that comes
+    /// before its query starts.
+    fn answers_while_cancelling(
+        backend: &mut Backend,
+        session: SessionId,
+        request: RequestId,
+        count: usize,
+    ) -> Vec<Event> {
+        let deadline = std::time::Instant::now() + WAIT;
+        let mut events = Vec::new();
+        while events.len() < count {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{count} answers must come"
+            );
+            backend.send(Command::Cancel { session, request });
+            events.extend(backend.wait(Duration::from_millis(200)));
+        }
+        events
+    }
+
+    /// What each of an Open's answers says: which part, its request, and
+    /// how it ended.
+    fn said(events: &[Event]) -> Vec<(&'static str, u64, &'static str)> {
+        fn ended<T>(result: &Result<T, Error>) -> &'static str {
+            match result {
+                Ok(_) => "ok",
+                Err(Error::Cancelled) => "cancelled",
+                Err(error) if error.is_connection_lost() => "lost",
+                Err(_) => "failed",
+            }
+        }
+        events
+            .iter()
+            .map(|event| match event {
+                Event::Rows {
+                    request, result, ..
+                } => ("rows", request.0, ended(result)),
+                Event::Structure {
+                    request, result, ..
+                } => ("structure", request.0, ended(result)),
+                Event::Count {
+                    request, result, ..
+                } => ("count", request.0, ended(result)),
+                other => panic!("expected an open's or a count's answer, got {other:?}"),
+            })
+            .collect()
+    }
+
+    /// Asserts that nothing more is answered.
+    fn assert_quiet(backend: &mut Backend) {
+        if let Some(event) = backend.wait(Duration::from_millis(300)) {
+            panic!("expected nothing more, got {event:?}");
+        }
+    }
+
+    #[test]
+    fn an_open_answers_its_rows_and_then_its_structure() {
+        let (_dir, mut backend, session) = connected_sqlite();
+        backend.send(open(session, 2, 3, users()));
+        match backend.wait(WAIT) {
+            Some(Event::Rows {
+                request: RequestId(3),
+                result: Ok(page),
+                ..
+            }) => assert_eq!(page.rows.len(), 2),
+            other => panic!("expected rows, got {other:?}"),
+        }
+        match backend.wait(WAIT) {
+            Some(Event::Structure {
+                request: RequestId(2),
+                result: Ok(structure),
+                ..
+            }) => assert!(!structure.columns.is_empty()),
+            other => panic!("expected a structure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_open_for_an_unknown_session_fails_both_its_parts_as_lost() {
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        backend.send(open(SessionId(99), 1, 2, users()));
+        let events: Vec<Event> = (0..2).filter_map(|_| backend.wait(WAIT)).collect();
+        assert_eq!(
+            said(&events),
+            [("rows", 2, "lost"), ("structure", 1, "lost")]
+        );
+    }
+
+    #[test]
+    fn a_cancel_of_an_opens_rows_leaves_its_structure() {
+        let (_dir, mut backend, session) = connected_sqlite();
+        backend.send(open(session, 2, 3, slow_count(100_000)));
+        wait_until_running(&backend, session, RequestId(3), false);
+        let events = answers_while_cancelling(&mut backend, session, RequestId(3), 2);
+        assert_eq!(
+            said(&events),
+            [("rows", 3, "cancelled"), ("structure", 2, "ok")]
+        );
+        assert_quiet(&mut backend);
+        backend.send(Command::ListSchemas {
+            session,
+            request: RequestId(4),
+        });
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::Schemas {
+                request: RequestId(4),
+                result: Ok(_),
+                ..
+            })
+        ));
+    }
+
+    /// Has the `Open` of `session` whose page is request 3 run until the
+    /// sender returned opens its gate, and then come back with `structure`
+    /// and `page`.
+    fn held_open(
+        backend: &Backend,
+        session: SessionId,
+        structure: Result<tabletist_db::Structure, Error>,
+        page: Result<tabletist_db::RowPage, Error>,
+    ) -> tokio::sync::oneshot::Sender<()> {
+        hold_open(backend, session, Some((structure, page)))
+    }
+
+    /// Has the `Open` of `session` whose page is request 3 wait until the
+    /// sender returned opens its gate, and then come back with `answer`,
+    /// or read as it would have.
+    fn hold_open(
+        backend: &Backend,
+        session: SessionId,
+        answer: Option<(
+            Result<tabletist_db::Structure, Error>,
+            Result<tabletist_db::RowPage, Error>,
+        )>,
+    ) -> tokio::sync::oneshot::Sender<()> {
+        let (release, gate) = tokio::sync::oneshot::channel();
+        let fake = FakeOpen {
+            rows: RequestId(3),
+            gate,
+            answer,
+        };
+        backend.fake_open(session, fake);
+        release
+    }
+
+    /// Cancels `request` of the `Open` `session` runs, and waits until the
+    /// session has noted it.
+    fn cancel_while_open(backend: &mut Backend, session: SessionId, request: RequestId) {
+        wait_until_running(backend, session, RequestId(3), false);
+        backend.send(Command::Cancel { session, request });
+        let deadline = std::time::Instant::now() + WAIT;
+        while !backend.cancelled(session).contains(&request) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the session must note the cancel"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn a_cancel_of_an_opens_structure_that_stops_its_page_reads_the_page_again() {
+        let (_dir, mut backend, session) = connected_sqlite();
+        let release = held_open(
+            &backend,
+            session,
+            Ok(tabletist_db::Structure::default()),
+            Err(Error::Cancelled),
+        );
+        backend.send(open(session, 2, 3, users()));
+        cancel_while_open(&mut backend, session, RequestId(2));
+        release.send(()).unwrap();
+        let events: Vec<Event> = (0..2).filter_map(|_| backend.wait(WAIT)).collect();
+        // The structure answers as it came back. The page, stopped by a
+        // cancel nobody sent for it, is read again alone, and answers
+        // after it.
+        assert_eq!(said(&events), [("structure", 2, "ok"), ("rows", 3, "ok")]);
+        match &events[1] {
+            Event::Rows {
+                result: Ok(page), ..
+            } => assert_eq!(page.rows.len(), 2),
+            other => panic!("expected rows, got {other:?}"),
+        }
+        assert_quiet(&mut backend);
+    }
+
+    #[test]
+    fn a_cancel_of_an_opens_rows_that_stops_its_structure_reads_the_structure_again() {
+        let (_dir, mut backend, session) = connected_sqlite();
+        let release = held_open(
+            &backend,
+            session,
+            Err(Error::Cancelled),
+            Err(Error::Cancelled),
+        );
+        backend.send(open(session, 2, 3, users()));
+        cancel_while_open(&mut backend, session, RequestId(3));
+        release.send(()).unwrap();
+        let events: Vec<Event> = (0..2).filter_map(|_| backend.wait(WAIT)).collect();
+        assert_eq!(
+            said(&events),
+            [("rows", 3, "cancelled"), ("structure", 2, "ok")]
+        );
+        match &events[1] {
+            Event::Structure {
+                result: Ok(structure),
+                ..
+            } => assert!(!structure.columns.is_empty(), "read again, not the fake"),
+            other => panic!("expected a structure, got {other:?}"),
+        }
+        assert_quiet(&mut backend);
+    }
+
+    /// The state of a session running an `Open` of structure 2 and page 3,
+    /// a cancel of whose page was noted: the structure runs again.
+    fn running_open() -> Running {
+        Running {
+            request: Some(RequestId(3)),
+            also: Some(RequestId(2)),
+            cancelled: vec![RequestId(3)],
+            read: true,
+            ..Running::default()
+        }
+    }
+
+    #[test]
+    fn a_part_cancelled_after_it_was_told_to_run_again_does_not_run() {
+        paused().block_on(async {
+            let running = Mutex::new(running_open());
+            // Its Cancel came once the `Open` was over, while it still
+            // counted as running.
+            lock(&running).cancelled.push(RequestId(2));
+            assert!(!ready_again(&running, RequestId(2)).await);
+            assert_eq!(lock(&running).request, None);
+        });
+    }
+
+    #[test]
+    fn a_part_runs_again_only_once_the_cancels_of_the_open_are_over() {
+        paused().block_on(async {
+            let running = Arc::new(Mutex::new(running_open()));
+            let (finish, held) = tokio::sync::oneshot::channel::<()>();
+            let held = Arc::new(Mutex::new(Some(held)));
+            // A cancel of the page that is slow to land.
+            cancel_request(&running, RequestId(3), move || {
+                let held = lock(&held).take();
+                async move {
+                    if let Some(held) = held {
+                        let _ = held.await;
+                    }
+                }
+            });
+            assert_eq!(lock(&running).cancels.len(), 1);
+            let ready = ready_again(&running, RequestId(2));
+            tokio::pin!(ready);
+            assert!(
+                tokio::time::timeout(Duration::from_secs(60), &mut ready)
+                    .await
+                    .is_err(),
+                "it waits for the cancel"
+            );
+            assert_eq!(lock(&running).request, None, "and nothing runs meanwhile");
+            finish.send(()).unwrap();
+            assert!(ready.await);
+            assert_eq!(lock(&running).request, Some(RequestId(2)));
+        });
+    }
+
+    #[test]
+    fn a_page_cancelled_before_an_open_reads_it_is_never_read() {
+        let (_dir, mut backend, session) = connected_sqlite();
+        // No cancel goes to the server while the test runs: only the
+        // page's flag can keep the page from being read.
+        backend.with_running(session, |running| running.grace = Duration::from_secs(600));
+        let release = hold_open(&backend, session, None);
+        // A page that fails if it is read: one that is not answers as
+        // cancelled.
+        let mut query = users();
+        query.raw_where = Some("no_such_column = 1".into());
+        backend.send(open(session, 2, 3, query));
+        cancel_while_open(&mut backend, session, RequestId(3));
+        release.send(()).unwrap();
+        let events: Vec<Event> = (0..2).filter_map(|_| backend.wait(WAIT)).collect();
+        assert_eq!(
+            said(&events),
+            [("rows", 3, "cancelled"), ("structure", 2, "ok")]
+        );
+        assert_quiet(&mut backend);
+    }
+
+    #[test]
+    fn only_the_part_a_cancel_of_the_other_stopped_runs_again() {
+        let (structure, rows) = (RequestId(2), RequestId(3));
+        // Stopped by the cancel of the page: the structure runs again.
+        assert!(runs_again(true, structure, rows, &[rows]));
+        // Its own request was cancelled: answered as it came back.
+        assert!(!runs_again(true, structure, rows, &[structure]));
+        assert!(!runs_again(true, structure, rows, &[rows, structure]));
+        // Not stopped, or stopped with no cancel of the other part.
+        assert!(!runs_again(false, structure, rows, &[rows]));
+        assert!(!runs_again(true, structure, rows, &[]));
+    }
+
+    #[test]
+    fn a_queued_open_with_one_request_cancelled_runs_only_the_other_part() {
+        for (cancelled, expected) in [
+            (3, [("structure", 3, "cancelled"), ("rows", 4, "ok")]),
+            (4, [("rows", 4, "cancelled"), ("structure", 3, "ok")]),
+        ] {
+            let (_dir, mut backend, session) = connected_sqlite();
+            backend.send(Command::CountRows {
+                session,
+                request: RequestId(2),
+                query: slow_count(100_000),
+            });
+            backend.send(open(session, 3, 4, users()));
+            backend.send(Command::ListSchemas {
+                session,
+                request: RequestId(5),
+            });
+            backend.send(Command::Cancel {
+                session,
+                request: RequestId(cancelled),
+            });
+            let mut events = answers_while_cancelling(&mut backend, session, RequestId(2), 3);
+            let mut all = vec![("count", 2, "cancelled")];
+            all.extend(expected);
+            assert_eq!(said(&events), all, "cancelled {cancelled}");
+            // The part left runs before what was queued after the `Open`.
+            events.extend(backend.wait(WAIT));
+            assert!(
+                matches!(
+                    events.last(),
+                    Some(Event::Schemas {
+                        request: RequestId(5),
+                        result: Ok(_),
+                        ..
+                    })
+                ),
+                "{:?}",
+                events.last()
+            );
+            assert_quiet(&mut backend);
+        }
+    }
+
+    #[test]
+    fn a_queued_open_with_both_requests_cancelled_never_runs() {
+        let (_dir, mut backend, session) = connected_sqlite();
+        backend.send(Command::CountRows {
+            session,
+            request: RequestId(2),
+            query: slow_count(100_000),
+        });
+        backend.send(open(session, 3, 4, users()));
+        for request in [4, 3] {
+            backend.send(Command::Cancel {
+                session,
+                request: RequestId(request),
+            });
+        }
+        let events = answers_while_cancelling(&mut backend, session, RequestId(2), 3);
+        assert_eq!(
+            said(&events),
+            [
+                ("count", 2, "cancelled"),
+                ("rows", 4, "cancelled"),
+                ("structure", 3, "cancelled"),
+            ]
+        );
+        assert_quiet(&mut backend);
+    }
+
+    #[test]
+    fn a_cancel_of_one_request_of_an_open_that_waits_for_the_session_leaves_the_other() {
+        let (outbox, received) = quiet_outbox();
+        let (_dir, spec) = fixture();
+        let session = SessionId(1);
+        let queued = vec![
+            open(session, 2, 3, users()),
+            Command::Cancel {
+                session,
+                request: RequestId(2),
+            },
+        ];
+        runtime().block_on(async {
+            let (mut worker, done) = connecting_with(outbox, session, spec, queued).await;
+            // Skipped at once, as a session skips what it was told to
+            // cancel.
+            assert_eq!(
+                said(&[next_event(&received)]),
+                [("structure", 2, "cancelled")]
+            );
+            worker.adopt(done);
+            assert!(matches!(next_event(&received), Event::Connected { .. }));
+            assert_eq!(said(&[next_event(&received)]), [("rows", 3, "ok")]);
+            assert!(received.recv_timeout(Duration::from_millis(300)).is_err());
+        });
+    }
+
+    #[test]
+    fn a_cancel_of_both_requests_of_an_open_that_waits_for_the_session_takes_it_away() {
+        let (outbox, received) = quiet_outbox();
+        let (_dir, spec) = fixture();
+        let session = SessionId(1);
+        let queued = vec![
+            open(session, 2, 3, users()),
+            Command::Cancel {
+                session,
+                request: RequestId(3),
+            },
+            Command::Cancel {
+                session,
+                request: RequestId(2),
+            },
+        ];
+        runtime().block_on(async {
+            let (mut worker, done) = connecting_with(outbox, session, spec, queued).await;
+            let events = [next_event(&received), next_event(&received)];
+            assert_eq!(
+                said(&events),
+                [("rows", 3, "cancelled"), ("structure", 2, "cancelled")]
+            );
+            worker.adopt(done);
+            assert!(matches!(next_event(&received), Event::Connected { .. }));
+            assert!(received.recv_timeout(Duration::from_millis(300)).is_err());
+        });
     }
 
     fn named(name: &str) -> StateFile {
@@ -6203,7 +6993,7 @@ mod tests {
             changes: rename("Grace"),
         };
         assert_eq!(session_of(&queued), SessionId(7));
-        assert_eq!(request_of(&queued), Some(RequestId(6)));
+        assert_eq!(requests_of(&queued), [RequestId(6)]);
         sender.send(queued).unwrap();
         fail_queued(&mut commands, &outbox, &Error::LeftReadOnly);
         let answered: Vec<Event> = received.try_iter().collect();

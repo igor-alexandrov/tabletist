@@ -918,10 +918,12 @@ mod tests {
             .iter()
             .rev()
             .find_map(|command| match command {
-                Command::FetchRows { query, .. } => Some((query.offset, query.limit)),
+                Command::FetchRows { query, .. } | Command::Open { query, .. } => {
+                    Some((query.offset, query.limit))
+                }
                 _ => None,
             })
-            .expect("a FetchRows was sent")
+            .expect("a FetchRows or an Open was sent")
     }
 
     /// `harness`'s settings with Rows per page at `size`.
@@ -4583,7 +4585,7 @@ value_tags   = true
             .backend
             .sent
             .iter()
-            .filter(|c| matches!(c, Command::FetchRows { .. }))
+            .filter(|c| matches!(c, Command::FetchRows { .. } | Command::Open { .. }))
             .count()
     }
 
@@ -4758,9 +4760,7 @@ value_tags   = true
         harness.connect_fake();
         harness.click("users");
         let (session, request) = match crate::testing::last_sent(&harness.app) {
-            Command::FetchRows {
-                session, request, ..
-            } => (*session, *request),
+            Command::Open { session, rows, .. } => (*session, *rows),
             other => panic!("{other:?}"),
         };
         harness
@@ -4797,9 +4797,7 @@ value_tags   = true
             harness.connect_fake();
             harness.click("users");
             let (session, request) = match crate::testing::last_sent(&harness.app) {
-                Command::FetchRows {
-                    session, request, ..
-                } => (*session, *request),
+                Command::Open { session, rows, .. } => (*session, *rows),
                 other => panic!("{other:?}"),
             };
             harness

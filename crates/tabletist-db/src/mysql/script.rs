@@ -1141,7 +1141,7 @@ mod tests {
     use mysql_async::Opts;
 
     use super::super::cancel;
-    use super::super::tests::{on_mariadb, session, test_url};
+    use super::super::tests::{on_mariadb, runs_on_the_server, session, test_url};
     use super::*;
     use crate::adapter::Adapter;
 
@@ -1423,29 +1423,6 @@ mod tests {
             .find(|(setting, _)| *setting == name)
             .unwrap_or_else(|| panic!("no setting {name}"));
         value.as_deref()
-    }
-
-    /// Waits until a statement holding `marker` runs on the server.
-    pub(super) async fn runs_on_the_server(admin: &mut mysql_async::Conn, marker: &str) {
-        let running = async {
-            loop {
-                let found: Option<i64> = admin
-                    .exec_first(
-                        "SELECT count(*) FROM information_schema.processlist \
-                         WHERE id <> CONNECTION_ID() AND info LIKE ?",
-                        (format!("%{marker}%"),),
-                    )
-                    .await
-                    .unwrap();
-                if found.unwrap_or(0) > 0 {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        };
-        tokio::time::timeout(Duration::from_secs(10), running)
-            .await
-            .expect("the statement never ran");
     }
 
     #[test]

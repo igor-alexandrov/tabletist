@@ -839,7 +839,8 @@ impl Harness {
         (tab, id)
     }
 
-    /// Answers the newest FetchRows command with `page`.
+    /// Answers the newest FetchRows command, or the page of the newest
+    /// Open, with `page`.
     pub fn answer_rows(&mut self, page: RowPage) {
         let (session, request) = self
             .app
@@ -850,10 +851,15 @@ impl Harness {
             .find_map(|command| match command {
                 Command::FetchRows {
                     session, request, ..
+                }
+                | Command::Open {
+                    session,
+                    rows: request,
+                    ..
                 } => Some((*session, *request)),
                 _ => None,
             })
-            .expect("a FetchRows was sent");
+            .expect("a FetchRows or an Open was sent");
         self.app.apply(Action::Backend(Event::Rows {
             session,
             request,
@@ -861,7 +867,8 @@ impl Harness {
         }));
     }
 
-    /// Answers the latest `Describe` with `structure`.
+    /// Answers the latest `Describe`, or the structure of the latest
+    /// `Open`, with `structure`.
     pub fn answer_structure(&mut self, structure: tabletist_db::Structure) {
         let (session, request) = self
             .app
@@ -872,10 +879,15 @@ impl Harness {
             .find_map(|command| match command {
                 Command::Describe {
                     session, request, ..
+                }
+                | Command::Open {
+                    session,
+                    structure: request,
+                    ..
                 } => Some((*session, *request)),
                 _ => None,
             })
-            .expect("a Describe was sent");
+            .expect("a Describe or an Open was sent");
         self.app.apply(Action::Backend(Event::Structure {
             session,
             request,
