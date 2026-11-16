@@ -586,6 +586,8 @@ pub(crate) struct Conn {
     /// `SELECT VERSION()` at connect, like `8.4.3` or
     /// `10.11.6-MariaDB-1:10.11.6+maria~ubu2204`.
     pub(crate) version: String,
+    /// The session's time zone at connect (see [`SESSION_ZONE`]).
+    zone: Option<String>,
     /// What the session was opened as: a script puts it back.
     pub(crate) access: Access,
     /// A second connection kept for KILL QUERY (see [`cancel`]).
@@ -945,7 +947,7 @@ impl Conn {
         // The settings and the question who the server is go as one
         // message: the settings run first, and the server stops at the
         // first statement that fails.
-        let (server, version) = server_identity(&mut conn, &session_settings(access)).await?;
+        let (server, version, zone) = server_identity(&mut conn, &session_settings(access)).await?;
         let id = conn.id();
         // mysql_async fails rather than go on in plain text when it was
         // given TLS options, so the options that connected say it.
@@ -979,6 +981,7 @@ impl Conn {
             encrypted,
             server,
             version,
+            zone,
             access,
             spare,
             resetting: std::sync::Arc::new(tokio::sync::watch::Sender::new(false)),
@@ -1269,17 +1272,14 @@ impl Adapter for Conn {
         Ok(version_name(&self.version))
     }
 
-    /// See [`crate::Connection::session_zone`]: the session's zone, or the
-    /// server's own where the session follows it (`SYSTEM`).
+    /// See [`crate::Connection::session_zone`]: read at connect, with the
+    /// server's identity ([`SESSION_ZONE`]). The connect's settings leave the
+    /// zone as the server has it, and the reset that ends every SQL editor
+    /// run puts the server's global zone back, so the zone read then holds
+    /// unless that global zone is changed while the session is open. The
+    /// app asks the zone once per session either way, at connect.
     async fn session_zone(&self) -> Result<Option<String>> {
-        let zones: Vec<String> = self
-            .catalog(
-                "SELECT IF(@@session.time_zone = 'SYSTEM', @@global.system_time_zone, \
-                 @@session.time_zone)",
-                (),
-            )
-            .await?;
-        Ok(zones.into_iter().next())
+        Ok(self.zone.clone())
     }
 
     /// None: MySQL's databases are listed as its schemas.
@@ -1287,16 +1287,20 @@ impl Adapter for Conn {
         Ok(Vec::new())
     }
 
-    /// By name, byte by byte (see `list_objects`).
+    /// By name, byte by byte (see `list_objects`). The SQL is fixed and has
+    /// no parameters, so it goes as text: one round trip, where a prepared
+    /// statement takes two on a fresh session.
     async fn list_schemas(&self) -> Result<Vec<String>> {
-        self.catalog(
-            &format!(
+        let mut session = self.conn.lock().await;
+        let conn = session.conn()?;
+        let rows: Vec<mysql_async::Row> = conn
+            .query(format!(
                 "SELECT schema_name FROM information_schema.schemata \
                  ORDER BY CAST(schema_name AS BINARY) LIMIT {MAX_LISTED}"
-            ),
-            Params::Empty,
-        )
-        .await
+            ))
+            .await
+            .map_err(query_error)?;
+        rows.into_iter().map(from_row).collect()
     }
 
     /// By name, byte by byte, as PostgreSQL lists them, and with them the
@@ -2567,6 +2571,10 @@ fn session_settings(access: Access) -> String {
         .concat()
 }
 
+/// The session's zone, or the server's own where the session follows it.
+const SESSION_ZONE: &str =
+    "IF(@@session.time_zone = 'SYSTEM', @@global.system_time_zone, @@session.time_zone)";
+
 /// Sets [`session_settings`]. After a reset a cancel meant for a
 /// statement can land here, so a message it interrupts runs once more: the
 /// session is not left in the wrong mode because a `SET` was interrupted.
@@ -3074,7 +3082,7 @@ async fn open_checked(opts: &Opts, server: &str, settings: &str) -> Result<mysql
     let checked = match identity {
         // Dropped, not disconnected: the goodbye would wait as long.
         Err(_) => return Err(Error::Timeout),
-        Ok(Ok((reached, _))) => same_server(server, &reached),
+        Ok(Ok((reached, _, _))) => same_server(server, &reached),
         Ok(Err(error)) => Err(Error::Connect(format!("could not cancel: {error}"))),
     };
     match checked {
@@ -3100,16 +3108,22 @@ fn cancel_failed(error: mysql_async::Error) -> Error {
     Error::Connect(format!("could not cancel: {error}"))
 }
 
-/// Names the server a connection reached, with its `VERSION()`: by
-/// `@@server_uuid`, or by host name and port on MariaDB, which has no
-/// server UUID. `before` is statements that answer no rows, sent in the
-/// same message to run first ([`session_settings`]). The UUID is asked
-/// last, so one message serves both servers: MariaDB fails only that
-/// question, with error 1193, after the host's row came. A statement of
-/// `before` that fails stops the message before that row, so it is never
-/// taken for the missing UUID.
-async fn server_identity(conn: &mut mysql_async::Conn, before: &str) -> Result<(String, String)> {
-    let text = format!("{before}SELECT @@hostname, @@port, VERSION(); SELECT @@server_uuid");
+/// Names the server a connection reached, with its `VERSION()` and the
+/// session's zone ([`SESSION_ZONE`]): by `@@server_uuid`, or by host name
+/// and port on MariaDB, which has no server UUID. `before` is statements
+/// that answer no rows, sent in the same message to run first
+/// ([`session_settings`]). The UUID is asked last, so one message serves
+/// both servers: MariaDB fails only that question, with error 1193, after
+/// the host's row came. A statement of `before` that fails stops the
+/// message before that row, so it is never taken for the missing UUID. A
+/// zone that is not UTF-8 is taken as unknown, not as a failed connect.
+async fn server_identity(
+    conn: &mut mysql_async::Conn,
+    before: &str,
+) -> Result<(String, String, Option<String>)> {
+    let text = format!(
+        "{before}SELECT @@hostname, @@port, VERSION(), {SESSION_ZONE}; SELECT @@server_uuid"
+    );
     let (mut rows, stopped) = answered_rows(conn, &text).await;
     let uuid = match stopped {
         Ok(()) => rows.pop(),
@@ -3120,17 +3134,18 @@ async fn server_identity(conn: &mut mysql_async::Conn, before: &str) -> Result<(
         }
         Err(error) => return Err(query_error(error)),
     };
-    let Some((host, port, version)) = rows
+    let Some((host, port, version, zone)) = rows
         .pop()
-        .map(from_row::<(String, u16, String)>)
+        .map(from_row::<(String, u16, String, Option<Vec<u8>>)>)
         .transpose()?
     else {
         return Ok(Default::default());
     };
+    let zone = zone.and_then(|zone| String::from_utf8(zone).ok());
     let uuid = uuid.map(from_row::<Option<String>>).transpose()?.flatten();
     Ok(match uuid {
-        Some(uuid) => (format!("uuid {uuid}"), version),
-        None => (format!("host {host}:{port}"), version),
+        Some(uuid) => (format!("uuid {uuid}"), version, zone),
+        None => (format!("host {host}:{port}"), version, zone),
     })
 }
 
@@ -6569,6 +6584,51 @@ mod tests {
         assert!(rows.is_empty());
     }
 
+    /// The session's zone is read with the server's identity at connect:
+    /// asking it later sends nothing, and it is what the server says.
+    #[tokio::test]
+    async fn the_session_zone_is_known_from_the_connect() {
+        use std::sync::atomic::Ordering;
+        let Some(url) = test_url() else {
+            return;
+        };
+        for access in [Access::ReadOnly, Access::Writable] {
+            let (conn, asked) = counted_session(&url, access).await;
+            let before = asked.load(Ordering::SeqCst);
+            let zone = conn.session_zone().await.unwrap();
+            assert_eq!(asked.load(Ordering::SeqCst) - before, 0, "{access:?}");
+            let opts = mysql_async::Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+            let mut admin = mysql_async::Conn::new(opts).await.unwrap();
+            let asked_alone: Option<String> = admin
+                .query_first(
+                    "SELECT IF(@@session.time_zone = 'SYSTEM', @@global.system_time_zone, \
+                     @@session.time_zone)",
+                )
+                .await
+                .unwrap();
+            assert_eq!(zone, asked_alone, "{access:?}");
+            admin.disconnect().await.unwrap();
+        }
+    }
+
+    /// The schemas are listed in one message on a fresh session: fixed
+    /// SQL, sent as text, with nothing to prepare first.
+    #[tokio::test]
+    async fn listing_the_schemas_asks_the_server_once() {
+        use std::sync::atomic::Ordering;
+        let Some(url) = test_url() else {
+            return;
+        };
+        let (conn, asked) = counted_session(&url, Access::ReadOnly).await;
+        let before = asked.load(Ordering::SeqCst);
+        let schemas = conn.list_schemas().await.unwrap();
+        assert_eq!(asked.load(Ordering::SeqCst) - before, 1);
+        assert!(
+            schemas.iter().any(|schema| schema == "tabletist"),
+            "{schemas:?}"
+        );
+    }
+
     /// A setting sent before the question who the server is that fails
     /// with error 1193, MariaDB's answer to the UUID, fails the question:
     /// it is never taken for the missing UUID. The connection is usable
@@ -6582,7 +6642,7 @@ mod tests {
         let mut conn = conn.conn.lock().await;
         let failed = server_identity(&mut conn, "SET SESSION no_such_var = 1; ").await;
         assert!(matches!(failed, Err(Error::Query { .. })), "{failed:?}");
-        let (server, version) = server_identity(&mut conn, "SET @a = 1; ").await.unwrap();
+        let (server, version, _) = server_identity(&mut conn, "SET @a = 1; ").await.unwrap();
         let named = if version.contains("MariaDB") {
             "host "
         } else {
