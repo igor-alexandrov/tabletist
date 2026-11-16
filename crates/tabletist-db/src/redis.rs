@@ -744,7 +744,6 @@ impl Handle {
         Ok(probe)
     }
 
-    /// Moves both connections to `database`.
     /// Moves both connections to `database`, or neither: the main one
     /// goes back to the database it was on where the scans' cannot follow.
     pub async fn select(&self, database: u32) -> Result<()> {
