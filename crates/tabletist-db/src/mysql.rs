@@ -139,7 +139,8 @@ macro_rules! binary_types {
 const BINARY_COLUMNS: &str = concat!(
     "SELECT column_name FROM information_schema.columns \
      WHERE table_schema = ? AND table_name = ? AND data_type IN ",
-    binary_types!()
+    binary_types!(),
+    " ORDER BY ordinal_position"
 );
 
 // The questions of the listing, as one message (see `Adapter::list_objects`).
@@ -154,15 +155,16 @@ fn listing_sql() -> String {
 }
 
 /// The primary key of each table of a schema, a row for each column, with
-/// its table's name: by table, and in the key's order.
+/// its table's name: each table's in the key's order, which is all
+/// [`listed_shapes`] needs.
 const LISTED_KEYS: &str = "SELECT table_name, column_name FROM information_schema.statistics \
                            WHERE table_schema = ? AND index_name = 'PRIMARY' \
-                           ORDER BY CAST(table_name AS BINARY), seq_in_index";
+                           ORDER BY seq_in_index";
 
 /// The byte string columns and the FLOATs of each table and view of a
 /// schema, with their table's name, and whether each is the one or the
 /// other: a FLOAT is any column whose type starts with it, as
-/// [`Conn::described`] tells one.
+/// [`Conn::described`] tells one. Each table's in their order in it.
 const LISTED_COLUMNS: &str = concat!(
     "SELECT table_name, column_name, data_type IN ",
     binary_types!(),
@@ -171,16 +173,13 @@ const LISTED_COLUMNS: &str = concat!(
      WHERE table_schema = ? AND (data_type IN ",
     binary_types!(),
     " OR LOWER(column_type) LIKE 'float%') \
-     ORDER BY CAST(table_name AS BINARY), ordinal_position"
+     ORDER BY ordinal_position"
 );
 
 /// The listing's questions of `schema`, in the order they go: the listing
-/// first, then what the shapes are read from (see [`listed_shapes`]).
-fn listing_questions(schema: &str) -> [String; 3] {
-    let keys = LISTED_KEYS;
-    // A test fails it, for a schema of its own.
-    #[cfg(test)]
-    let keys = tests::listed_shapes_stand_in(schema).unwrap_or(keys);
+/// first, then what the shapes are read from, `keys` as [`LISTED_KEYS`]
+/// asks and [`LISTED_COLUMNS`] (see [`listed_shapes`]).
+fn listing_questions(schema: &str, keys: &str) -> [String; 3] {
     [listing_sql().as_str(), keys, LISTED_COLUMNS].map(|sql| inlined(sql, &[schema]))
 }
 
@@ -1179,6 +1178,62 @@ impl Conn {
         shapes.insert(object.clone(), shape);
     }
 
+    /// `schema`'s tables and views, as [`listing_sql`] lists them, and in
+    /// the same message (see [`inlined`]) the shapes read of them, the
+    /// keys as `keys` asks for them, as [`LISTED_KEYS`] does; the session
+    /// remembers them. A shape that has changed since is read again with
+    /// the page, as ever (see `open`).
+    ///
+    /// The shapes' questions go after the listing's, so that one the
+    /// server refuses, or a cancel that lands on one, leaves the listing
+    /// answered, and nothing is remembered. A session that is lost fails
+    /// the listing, which says so.
+    async fn listed_with(&self, schema: &str, keys: &str) -> Result<Vec<ObjectInfo>> {
+        let steps = listing_questions(schema, keys);
+        let (answers, error) = {
+            let mut session = self.conn.lock().await;
+            let conn = session.conn()?;
+            script::answers(conn, &steps).await
+        };
+        let mut sets = answers.into_iter().map(|answer| answer.rows);
+        let Some(listing) = sets.next() else {
+            return Err(error.map_or_else(
+                || Error::query("unexpected data from the server: an answer is missing"),
+                query_error,
+            ));
+        };
+        let rows: Vec<(String, String, Option<u64>)> = typed(listing)?;
+        let shapes = match (sets.next(), sets.next()) {
+            (Some(keys), Some(columns)) => listed_shapes(&rows, keys, columns),
+            _ => Err(error.map_or_else(
+                || Error::query("unexpected data from the server: an answer is missing"),
+                query_error,
+            )),
+        };
+        match shapes {
+            Ok(shapes) => self.remember_all(schema, shapes),
+            // The session is gone: the listing that came before says
+            // nothing of it.
+            Err(error) if error.is_connection_lost() => return Err(error),
+            Err(error) => log::info!("the listing read no shapes of {schema}: {error}"),
+        }
+        Ok(rows
+            .into_iter()
+            .map(|(name, kind, estimate)| {
+                let view = kind.contains("VIEW");
+                ObjectInfo {
+                    name,
+                    kind: if view {
+                        ObjectKind::View
+                    } else {
+                        ObjectKind::Table
+                    },
+                    estimated_rows: if view { None } else { estimate },
+                }
+            })
+            .collect())
+    }
+
     /// The shapes of `schema`'s tables, by name, as the session's last read
     /// of each.
     fn remember_all(&self, schema: &str, read: std::collections::HashMap<String, Shape>) {
@@ -1246,54 +1301,11 @@ impl Adapter for Conn {
     /// first [`MAX_LISTED`]: MariaDB's catalog compares names without case,
     /// and puts `_` after the letters.
     ///
-    /// With the listing, in its message (see [`inlined`]), the [`Shape`]
-    /// of each table and view it lists, which the session remembers: the
-    /// first open of one is then one round trip too (see `open`), and a
-    /// shape that has changed since is read again with the page, as ever.
-    /// The shapes' questions go after the listing's, so that one the
-    /// server refuses leaves the listing answered; then nothing is
-    /// remembered.
+    /// With the listing, in its message, the [`Shape`] of each table and
+    /// view it lists, which the session remembers: the first open of one
+    /// is then one round trip too (see `open`). See [`Conn::listed_with`].
     async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>> {
-        let steps = listing_questions(schema);
-        let (answers, error) = {
-            let mut session = self.conn.lock().await;
-            let conn = session.conn()?;
-            script::answers(conn, &steps).await
-        };
-        let mut sets = answers.into_iter().map(|answer| answer.rows);
-        let Some(listing) = sets.next() else {
-            return Err(error.map_or_else(
-                || Error::query("unexpected data from the server: an answer is missing"),
-                query_error,
-            ));
-        };
-        let rows: Vec<(String, String, Option<u64>)> = typed(listing)?;
-        let shapes = match (sets.next(), sets.next()) {
-            (Some(keys), Some(columns)) => listed_shapes(&rows, keys, columns),
-            _ => Err(error.map_or_else(
-                || Error::query("unexpected data from the server: an answer is missing"),
-                query_error,
-            )),
-        };
-        match shapes {
-            Ok(shapes) => self.remember_all(schema, shapes),
-            Err(error) => log::info!("the listing read no shapes of {schema}: {error}"),
-        }
-        Ok(rows
-            .into_iter()
-            .map(|(name, kind, estimate)| {
-                let view = kind.contains("VIEW");
-                ObjectInfo {
-                    name,
-                    kind: if view {
-                        ObjectKind::View
-                    } else {
-                        ObjectKind::Table
-                    },
-                    estimated_rows: if view { None } else { estimate },
-                }
-            })
-            .collect())
+        self.listed_with(schema, LISTED_KEYS).await
     }
 
     /// The structure's questions as one message (see [`inlined`]): one
@@ -5086,56 +5098,96 @@ mod tests {
         assert_eq!(shape("float_view"), shape_of(&[], &[], true));
     }
 
-    /// The schema whose listing's shapes [`listed_shapes_stand_in`] fails:
-    /// one no other test of this crate's own lists.
-    const SHAPES_FAIL: &str = "billing";
-
-    /// What [`Adapter::list_objects`] asks in place of its first question
-    /// of shapes for the schema above: one the server refuses.
-    pub(super) fn listed_shapes_stand_in(schema: &str) -> Option<&'static str> {
-        (schema == SHAPES_FAIL).then_some("SELECT * FROM information_schema.no_such_view")
-    }
-
     /// The shapes failing on the server leaves the listing as it is, and
-    /// the session remembers no shape: the open reads it first, as it did.
+    /// the session remembers no shape: the open reads it first, as it did
+    /// before the listing read shapes.
     #[tokio::test]
     async fn a_failed_shape_read_leaves_the_listing() {
         use std::sync::atomic::Ordering;
         let Some(url) = test_url() else {
             return;
         };
-        let mut admin = admin(&url).await;
-        admin
-            .query_drop(format!(
-                "CREATE TABLE IF NOT EXISTS {SHAPES_FAIL}.listed_shapes_kept (id int PRIMARY KEY)"
-            ))
-            .await
-            .unwrap();
+        let object = trips(&url).await;
+        let refused = "SELECT * FROM information_schema.no_such_view";
         let (conn, asked) = counted_session(&url, Access::ReadOnly).await;
         let before = asked.load(Ordering::SeqCst);
-        let listed = conn.list_objects(SHAPES_FAIL).await.unwrap();
+        let listed = conn.listed_with(&object.schema, refused).await.unwrap();
         assert_eq!(asked.load(Ordering::SeqCst) - before, 1);
-        let now: Vec<_> = listed
-            .into_iter()
-            .map(|listed| {
-                let view = listed.kind == ObjectKind::View;
-                (listed.name, view, listed.estimated_rows)
-            })
-            .collect();
-        assert!(now.iter().any(|(name, ..)| name == "listed_shapes_kept"));
-        assert_eq!(now, listed_bound(&conn, SHAPES_FAIL).await);
-        for (name, ..) in &now {
-            assert_eq!(conn.known_shape(&ObjectRef::new(SHAPES_FAIL, name)), None);
+        assert!(listed.iter().any(|listed| listed.name == object.name));
+        for listed in &listed {
+            let listed = ObjectRef::new(&object.schema, &listed.name);
+            assert_eq!(conn.known_shape(&listed), None, "{listed:?}");
         }
         assert!(!in_transaction(&conn).await);
-        let object = ObjectRef::new(SHAPES_FAIL, "listed_shapes_kept");
         let (structure, page) = conn.open(&object, &RowQuery::new(object.clone(), 10)).await;
         assert_eq!(structure.unwrap().primary_key, ["id"]);
-        assert!(page.unwrap().rows.is_empty());
-        admin
-            .query_drop(format!("DROP TABLE {SHAPES_FAIL}.listed_shapes_kept"))
-            .await
-            .unwrap();
+        assert!(page.unwrap().ordered_by_key);
+    }
+
+    /// A cancel that lands on the shapes' questions keeps the listing,
+    /// answered before them, and the session remembers no shape. It reads
+    /// on after, in no transaction.
+    #[tokio::test]
+    async fn a_cancel_on_the_listings_shapes_keeps_the_listing() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = trips(&url).await;
+        let sleeping = "SELECT name, name FROM trips WHERE SLEEP(4) = 0";
+        for access in [Access::ReadOnly, Access::Writable] {
+            let conn = session_as(&url, access).await;
+            let cancel = conn.cancel_handle();
+            let cancelling = async {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                cancel.cancel().await
+            };
+            let started = Instant::now();
+            let (listed, cancelled) =
+                tokio::join!(conn.listed_with(&object.schema, sleeping), cancelling);
+            cancelled.unwrap();
+            let took = started.elapsed();
+            assert!(took < Duration::from_secs(4), "{access:?} {took:?}");
+            let listed = listed.unwrap();
+            assert!(listed.iter().any(|listed| listed.name == object.name));
+            for listed in &listed {
+                let listed = ObjectRef::new(&object.schema, &listed.name);
+                assert_eq!(conn.known_shape(&listed), None, "{access:?} {listed:?}");
+            }
+            assert!(!in_transaction(&conn).await, "{access:?}");
+            conn.list_objects(&object.schema).await.unwrap();
+            assert_eq!(
+                conn.known_shape(&object).map(|shape| shape.key),
+                Some(vec!["id".to_owned()]),
+                "{access:?}"
+            );
+        }
+    }
+
+    /// A session lost while the shapes are read fails the listing, though
+    /// it was answered: the caller hears that the session is gone. The
+    /// keys' question is two here, one that answers at once and one that
+    /// sleeps, so that the loss comes once the listing's answer is read
+    /// to its end (which reads the next answer's start). The test's own
+    /// connection kills the session's.
+    #[tokio::test]
+    async fn a_session_lost_on_the_listings_shapes_fails_the_listing() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = trips(&url).await;
+        let sleeping = "SELECT name, name FROM trips WHERE false; \
+                        SELECT name, name FROM trips WHERE SLEEP(39) = 0";
+        let conn = session(&url).await;
+        let mut admin = admin(&url).await;
+        let killing = async {
+            // The listing answers at once; the shapes then sleep.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            admin.query_drop(format!("KILL {}", conn.id)).await.unwrap();
+        };
+        let (listed, ()) = tokio::join!(conn.listed_with(&object.schema, sleeping), killing);
+        let error = listed.unwrap_err();
+        assert!(error.is_connection_lost(), "{error:?}");
+        assert_eq!(conn.known_shape(&object), None);
     }
 
     /// A key that changed after the listing read the table's shape is the
