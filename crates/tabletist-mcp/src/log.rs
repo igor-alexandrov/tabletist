@@ -875,8 +875,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agents.sqlite3");
         let log = open(&path);
-        for n in 0..2_000 {
-            log.record(entry(n, "run_query")).await.unwrap();
+        // In one transaction: one at a time, they took a minute on Windows.
+        let entries = (0..2_000).map(|n| entry(n, "run_query")).collect();
+        for recorded in record_at_once(&log, entries).await {
+            recorded.unwrap();
         }
         drop(log);
         // A writer half way through, which spills to the file: the file

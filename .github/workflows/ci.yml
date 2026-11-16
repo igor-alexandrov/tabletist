@@ -41,8 +41,8 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Windows builds the app a second time, in release, for the relay's
-    # step: about 30 minutes with a warm cache.
+    # Windows builds the app a second time, without debug assertions, for
+    # the relay's step.
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -68,11 +68,12 @@ jobs:
         run: cargo clippy --locked -p tabletist-appkit -p tabletist-menubar -p tabletist-sqlite-ffi --all-targets -- -D warnings
       # The relay is the app's own program, which a release build on
       # Windows makes a GUI program: an agent must reach the app through
-      # that one too.
+      # that one too. `release-check` is the release profile without its
+      # optimization (Cargo.toml).
       - name: The relay from the GUI build (Windows)
         if: runner.os == 'Windows'
         timeout-minutes: 30
-        run: cargo test --locked --release --test cli -- "mcp::" a_release_build_on_windows_is_a_gui_program
+        run: cargo test --locked --profile release-check --test cli -- "mcp::" a_release_build_on_windows_is_a_gui_program
       - name: Native keyring round trip
         if: runner.os == 'Windows' || runner.os == 'macOS'
         timeout-minutes: 2
