@@ -2516,10 +2516,11 @@ mod tests {
         let conn = session(&url).await;
         conn.describe(&object).await.unwrap();
         let mut query = RowQuery::new(object.clone(), 10);
-        query.raw_where = Some("(SELECT true FROM pg_sleep(2))".into());
+        query.raw_where = Some("(SELECT true FROM pg_sleep(2.01))".into());
         let cancel = conn.cancel.clone();
+        let sleeping = url.clone();
         let cancelling = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            sleeps_on_the_server(&sleeping, "pg_sleep(2.01)").await;
             cancel.cancel().await.unwrap();
         });
         let started = Instant::now();
@@ -2535,6 +2536,36 @@ mod tests {
         assert!(outside_a_transaction(&conn).await);
     }
 
+    /// Waits until a query holding `marker`, a `pg_sleep(…)` of the test's
+    /// own, sleeps on the server: a cancel sent before then would land on
+    /// an earlier query of the flight, or on none.
+    async fn sleeps_on_the_server(url: &str, marker: &str) {
+        let mut config: tokio_postgres::Config = url.parse().unwrap();
+        config.ssl_mode(tokio_postgres::config::SslMode::Disable);
+        let (client, connection) = config.connect(tokio_postgres::NoTls).await.unwrap();
+        tokio::spawn(connection);
+        let sleeping = async {
+            loop {
+                let row = client
+                    .query_one(
+                        "SELECT count(*) FROM pg_stat_activity \
+                         WHERE pid <> pg_backend_pid() AND wait_event = 'PgSleep' \
+                         AND query LIKE $1",
+                        &[&format!("%{marker}%")],
+                    )
+                    .await
+                    .unwrap();
+                if row.get::<_, i64>(0) > 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), sleeping)
+            .await
+            .expect("the query never slept");
+    }
+
     /// The table whose structure's first query fails, on the server.
     const STRUCTURE_FAILS: &str = "open_structure_fails";
 
@@ -2547,7 +2578,7 @@ mod tests {
     pub(super) fn relation_stand_in(object: &ObjectRef) -> Option<&'static str> {
         match object.name.as_str() {
             STRUCTURE_FAILS => Some("SELECT $1::text || $2::text || (1 / 0)::text"),
-            STRUCTURE_SLEEPS => Some("SELECT $1::text || $2::text FROM pg_sleep(2)"),
+            STRUCTURE_SLEEPS => Some("SELECT $1::text || $2::text FROM pg_sleep(2.02)"),
             _ => None,
         }
     }
@@ -2638,8 +2669,9 @@ mod tests {
         let mut query = RowQuery::new(object.clone(), 10);
         query.raw_where = Some("(SELECT true FROM pg_sleep(2))".into());
         let cancel = conn.cancel.clone();
+        let sleeping = url.clone();
         let cancelling = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            sleeps_on_the_server(&sleeping, "pg_sleep(2.02)").await;
             cancel.cancel().await.unwrap();
         });
         let started = Instant::now();

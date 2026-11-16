@@ -409,11 +409,10 @@ mod tests {
 
     use super::super::super::Conn;
     use super::super::super::tests::{
-        counted_session, on_mariadb, session, session_as, swapping_session, table_of, test_url,
+        counted_session, on_mariadb, runs_on_the_server, session, session_as, swapping_session,
+        table_of, test_url,
     };
-    use super::super::tests::{
-        admin, past_the_refusal, probe, probe_rows, runs_on_the_server, settings,
-    };
+    use super::super::tests::{admin, past_the_refusal, probe, probe_rows, settings};
     use super::super::{SessionKind, read_only};
     use super::*;
     use crate::{Access, Value};

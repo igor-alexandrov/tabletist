@@ -3447,6 +3447,38 @@ mod tests {
         }
     }
 
+    /// Waits until the `SLEEP` that `marker` names is sleeping on the
+    /// server. Its text alone is not enough: MariaDB shows a whole message
+    /// of several statements while an earlier one of them runs, and a
+    /// cancel sent then lands on that one. Each test's marker is its own
+    /// (`SLEEP(36.…)`, `SLEEP(37.…)`, `SLEEP(40)`, `SLEEP(50.…)` and
+    /// `SLEEP(51.…)` here, a pass of a test its own after the dot,
+    /// `SLEEP(41)` to `SLEEP(49)` in `script`, `SLEEP(38)` and `SLEEP(39)`
+    /// in `script::one`), so tests that run side by side never find each
+    /// other's.
+    pub(super) async fn runs_on_the_server(admin: &mut mysql_async::Conn, marker: &str) {
+        let running = async {
+            loop {
+                let found: Option<i64> = admin
+                    .exec_first(
+                        "SELECT count(*) FROM information_schema.processlist \
+                         WHERE id <> CONNECTION_ID() AND info LIKE ? \
+                         AND state = 'User sleep'",
+                        (format!("%{marker}%"),),
+                    )
+                    .await
+                    .unwrap();
+                if found.unwrap_or(0) > 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), running)
+            .await
+            .expect("the statement never ran");
+    }
+
     /// What a `SELECT SLEEP(…)` that a KILL QUERY interrupted answers: 1 on
     /// MySQL. MariaDB fails it with error 1317 instead.
     fn interrupted(session: &Conn, slept: mysql_async::Result<Option<i64>>) {
@@ -5000,17 +5032,25 @@ mod tests {
 
     /// A statement over `trips` that sleeps for each of its rows, which a
     /// cancel stops: in place of a question an open's message asks.
-    const SLOW: &str = "SELECT name FROM trips WHERE SLEEP(5) = 0";
+    /// `marker` is a `SLEEP(…)` of the test's own (see
+    /// [`runs_on_the_server`]).
+    fn slow(marker: &str) -> String {
+        format!("SELECT name FROM trips WHERE {marker} = 0")
+    }
 
-    /// `conn`'s open of `query`, cancelled a moment after it starts, and
-    /// how long it took.
+    /// `conn`'s open of `query`, cancelled once the `SLEEP` that `marker`
+    /// names sleeps on the server, and how long it took.
     async fn open_cancelled(
+        url: &str,
         conn: &Conn,
         query: &RowQuery,
+        marker: &str,
     ) -> ((Result<Structure>, Result<RowPage>), Duration) {
         let cancel = conn.cancel_handle();
+        let opts = Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+        let mut admin = mysql_async::Conn::new(opts).await.unwrap();
         let cancelling = async {
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            runs_on_the_server(&mut admin, marker).await;
             cancel.cancel().await
         };
         let started = Instant::now();
@@ -5032,13 +5072,16 @@ mod tests {
         };
         let object = trips(&url).await;
         let query = RowQuery::new(object.clone(), 10);
-        for access in [Access::ReadOnly, Access::Writable] {
+        for (pass, access) in [Access::ReadOnly, Access::Writable].into_iter().enumerate() {
+            // A pass of its own: the server can still show the last pass's
+            // statement, killed, as sleeping.
+            let marker = format!("SLEEP(36.{})", pass + 1);
             let (conn, _) = swapping_an_open(&url, access, &query, false, |message| {
                 // The comment's question: the fifth of the structure's.
-                message.steps[message.asked + 4] = SLOW.to_owned();
+                message.steps[message.asked + 4] = slow(&marker);
             })
             .await;
-            let ((structure, page), took) = open_cancelled(&conn, &query).await;
+            let ((structure, page), took) = open_cancelled(&url, &conn, &query, &marker).await;
             assert_eq!(structure, Err(Error::Cancelled), "{access:?}");
             assert_eq!(page.unwrap_err(), Error::Cancelled, "{access:?}");
             assert!(took < Duration::from_secs(5), "{took:?}");
@@ -5059,12 +5102,15 @@ mod tests {
         };
         let object = trips(&url).await;
         let query = RowQuery::new(object.clone(), 10);
-        for access in [Access::ReadOnly, Access::Writable] {
+        for (pass, access) in [Access::ReadOnly, Access::Writable].into_iter().enumerate() {
+            // A pass of its own: the server can still show the last pass's
+            // statement, killed, as sleeping.
+            let marker = format!("SLEEP(37.{})", pass + 1);
             let (conn, _) = swapping_an_open(&url, access, &query, false, |message| {
-                message.steps[message.rolled_back + 1] = SLOW.to_owned();
+                message.steps[message.rolled_back + 1] = slow(&marker);
             })
             .await;
-            let ((structure, page), took) = open_cancelled(&conn, &query).await;
+            let ((structure, page), took) = open_cancelled(&url, &conn, &query, &marker).await;
             assert_eq!(structure, Err(Error::Cancelled), "{access:?}");
             assert_eq!(page.unwrap().rows.len(), 3, "{access:?}");
             assert!(took < Duration::from_secs(5), "{took:?}");
@@ -5085,10 +5131,10 @@ mod tests {
         let mut query = RowQuery::new(object.clone(), 10);
         query.raw_where = Some("no_such_column = 1".into());
         let (conn, _) = swapping_an_open(&url, Access::ReadOnly, &query, true, |message| {
-            message.steps[message.rolled_back + 1] = SLOW.to_owned();
+            message.steps[message.rolled_back + 1] = slow("SLEEP(40)");
         })
         .await;
-        let ((structure, page), took) = open_cancelled(&conn, &query).await;
+        let ((structure, page), took) = open_cancelled(&url, &conn, &query, "SLEEP(40)").await;
         assert_eq!(structure, Err(Error::Cancelled));
         assert!(matches!(page, Err(Error::Query { .. })), "{page:?}");
         assert!(took < Duration::from_secs(5), "{took:?}");
@@ -5104,14 +5150,19 @@ mod tests {
             return;
         };
         let object = trips(&url).await;
-        for access in [Access::ReadOnly, Access::Writable] {
+        for (pass, access) in [Access::ReadOnly, Access::Writable].into_iter().enumerate() {
+            // A pass of its own: the server can still show the last pass's
+            // statement, killed, as sleeping.
+            let marker = format!("SLEEP(50.{})", pass + 1);
             let conn = session_as(&url, access).await;
             let expected = conn.describe(&object).await.unwrap();
             let mut slow = RowQuery::new(object.clone(), 10);
-            slow.raw_where = Some("SLEEP(5) = 0".into());
+            slow.raw_where = Some(format!("{marker} = 0"));
             let cancel = conn.cancel_handle();
+            let opts = Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+            let mut admin = mysql_async::Conn::new(opts).await.unwrap();
             let cancelling = async {
-                tokio::time::sleep(Duration::from_millis(300)).await;
+                runs_on_the_server(&mut admin, &marker).await;
                 cancel.cancel().await
             };
             let started = Instant::now();
@@ -5393,14 +5444,19 @@ mod tests {
             return;
         };
         let object = trips(&url).await;
-        for access in [Access::ReadOnly, Access::Writable] {
+        for (pass, access) in [Access::ReadOnly, Access::Writable].into_iter().enumerate() {
+            // A pass of its own: the server can still show the last pass's
+            // statement, killed, as sleeping.
+            let marker = format!("SLEEP(51.{})", pass + 1);
             let conn = session_as(&url, access).await;
             conn.describe(&object).await.unwrap();
             let mut slow = RowQuery::new(object.clone(), 10);
-            slow.raw_where = Some("SLEEP(5) = 0".into());
+            slow.raw_where = Some(format!("{marker} = 0"));
             let cancel = conn.cancel_handle();
+            let opts = Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+            let mut admin = mysql_async::Conn::new(opts).await.unwrap();
             let cancelling = async {
-                tokio::time::sleep(Duration::from_millis(300)).await;
+                runs_on_the_server(&mut admin, &marker).await;
                 cancel.cancel().await
             };
             let started = Instant::now();
