@@ -3583,10 +3583,10 @@ mod tests {
     /// of several statements while an earlier one of them runs, and a
     /// cancel sent then lands on that one. Each test's marker is its own,
     /// and each pass of a test its own after the dot: `SLEEP(36.…)`,
-    /// `SLEEP(37.…)`, `SLEEP(40)`, `SLEEP(50.…)`, `SLEEP(51.…)` and
-    /// `SLEEP(52)` here, `SLEEP(41)` to `SLEEP(49)` in `script`, and
-    /// `SLEEP(38)` and `SLEEP(39)` in `script::one`. Tests that run side by
-    /// side then never find each other's statements.
+    /// `SLEEP(37.…)`, `SLEEP(40)`, `SLEEP(50.…)`, `SLEEP(51.…)`,
+    /// `SLEEP(52)` and `SLEEP(53.…)` here, `SLEEP(41)` to `SLEEP(49)` in
+    /// `script`, and `SLEEP(38)` and `SLEEP(39)` in `script::one`. Tests
+    /// that run side by side then never find each other's statements.
     pub(super) async fn runs_on_the_server(admin: &mut mysql_async::Conn, marker: &str) {
         let running = async {
             loop {
@@ -5162,7 +5162,7 @@ mod tests {
         };
         let object = trips(&url).await;
         for (pass, access) in [Access::ReadOnly, Access::Writable].into_iter().enumerate() {
-            let marker = format!("SLEEP(52.{})", pass + 1);
+            let marker = format!("SLEEP(53.{})", pass + 1);
             let sleeping = format!("SELECT name, name FROM trips WHERE {marker} = 0");
             let conn = session_as(&url, access).await;
             let cancel = conn.cancel_handle();
@@ -5207,11 +5207,11 @@ mod tests {
         };
         let object = trips(&url).await;
         let sleeping = "SELECT 'a', 'b' FROM DUAL WHERE false; \
-                        SELECT 'a', 'b' FROM DUAL WHERE SLEEP(52.9) = 0";
+                        SELECT 'a', 'b' FROM DUAL WHERE SLEEP(53.9) = 0";
         let conn = session(&url).await;
         let mut admin = admin(&url).await;
         let killing = async {
-            runs_on_the_server(&mut admin, "SLEEP(52.9)").await;
+            runs_on_the_server(&mut admin, "SLEEP(53.9)").await;
             admin.query_drop(format!("KILL {}", conn.id)).await.unwrap();
         };
         let (listed, ()) = tokio::join!(conn.listed_with(&object.schema, sleeping), killing);
