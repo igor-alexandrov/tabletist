@@ -1920,14 +1920,20 @@ fn table(name: &str) -> ObjectInfo {
 }
 
 /// How many times the backend was asked for the tables and views of the
-/// schema `of`.
+/// schema `of`: alone, or with the schemas.
 fn asked_for_objects(harness: &Harness, of: &str) -> usize {
     let sent = harness.app.backend.sent.iter();
-    sent.filter(|command| matches!(command, Command::ListObjects { schema, .. } if schema == of))
-        .count()
+    sent.filter(|command| {
+        matches!(
+            command,
+            Command::ListObjects { schema, .. } | Command::ListTree { schema, .. } if schema == of
+        )
+    })
+    .count()
 }
 
-/// Answers the newest `ListObjects`.
+/// Answers the newest listing of a schema's objects, alone or with the
+/// schemas.
 fn answer_objects(harness: &mut Harness, result: Result<Vec<ObjectInfo>, tabletist_db::Error>) {
     let sent = harness.app.backend.sent.iter().rev();
     let (session, request, schema) = sent
@@ -1936,11 +1942,17 @@ fn answer_objects(harness: &mut Harness, result: Result<Vec<ObjectInfo>, tableti
                 session,
                 request,
                 schema,
+            }
+            | Command::ListTree {
+                session,
+                objects: request,
+                schema,
+                ..
             } => Some((*session, *request, schema.clone())),
             _ => None,
         })
         .next()
-        .expect("a ListObjects was sent");
+        .expect("a ListObjects or a ListTree was sent");
     harness.app.apply(Action::Backend(Event::Objects {
         session,
         request,
@@ -1950,16 +1962,22 @@ fn answer_objects(harness: &mut Harness, result: Result<Vec<ObjectInfo>, tableti
     harness.settle();
 }
 
-/// Answers the newest `ListSchemas` with `schemas`.
+/// Answers the newest listing of the schemas, alone or with a schema's
+/// objects, with `schemas`.
 fn answer_schemas(harness: &mut Harness, schemas: &[&str]) {
     let sent = harness.app.backend.sent.iter().rev();
     let (session, request) = sent
         .filter_map(|command| match command {
-            Command::ListSchemas { session, request } => Some((*session, *request)),
+            Command::ListSchemas { session, request }
+            | Command::ListTree {
+                session,
+                schemas: request,
+                ..
+            } => Some((*session, *request)),
             _ => None,
         })
         .next()
-        .expect("a ListSchemas was sent");
+        .expect("a ListSchemas or a ListTree was sent");
     harness.app.apply(Action::Backend(Event::Schemas {
         session,
         request,
@@ -2170,7 +2188,8 @@ fn refreshing_the_tree_forgets_what_only_the_list_loaded() {
 #[test]
 fn refreshing_a_tree_with_nothing_unfolded_reaches_an_open_list() {
     let (mut harness, tab) = editor_before_reports();
-    // Nothing is the sidebar's to load again.
+    // Nothing is the sidebar's to load again on its own: `main`, folded,
+    // comes again only with the schemas, as the default of those listed.
     let workspace = harness.app.workspace_mut(tab).unwrap();
     workspace.tree.nodes.get_mut("main").unwrap().expanded = false;
     type_text(&mut harness, ".");
@@ -2183,11 +2202,16 @@ fn refreshing_a_tree_with_nothing_unfolded_reaches_an_open_list() {
     };
     let before = objects(&harness);
     harness.app.apply(Action::RefreshTree(tab));
-    assert_eq!(objects(&harness), before, "the refresh asks for no tables");
-    // No names are left: the ones a list loaded and the ones of a schema
-    // the sidebar folded are both forgotten.
+    assert_eq!(
+        objects(&harness),
+        before,
+        "the refresh asks for no tables alone"
+    );
+    // No names are left: the ones a list loaded are forgotten, and those
+    // of `main`, the default, come again with the schemas.
     let nodes = &harness.app.workspace(tab).unwrap().tree.nodes;
-    assert!(nodes.values().all(|node| node.objects.needs_load()));
+    assert!(nodes["reports"].objects.needs_load());
+    assert!(nodes["main"].objects.is_loading());
     // The list's own are asked for again.
     harness.settle();
     assert_eq!(asked_for_objects(&harness, "reports"), 2);

@@ -13,7 +13,7 @@ use crate::ui::tests::{focused_name, type_key};
 /// How many times the tree has been asked for again.
 fn tree_loads(harness: &Harness) -> usize {
     let sent = harness.app.backend.sent.iter();
-    sent.filter(|command| matches!(command, Command::ListSchemas { .. }))
+    sent.filter(|command| matches!(command, Command::ListTree { .. }))
         .count()
 }
 
