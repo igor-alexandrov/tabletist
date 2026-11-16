@@ -157,7 +157,7 @@ panic = "abort"
 [profile.release-check]
 inherits = "release"
 opt-level = 1
-lto = false
+lto = "off"
 codegen-units = 256
 
 # Immediate-mode layout is too slow at opt-level 0 to try the app in
