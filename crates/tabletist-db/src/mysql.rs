@@ -143,6 +143,15 @@ const BINARY_COLUMNS: &str = concat!(
     " ORDER BY ordinal_position"
 );
 
+/// The schemas [`Adapter::list_schemas`] lists: by name, byte by byte.
+/// Fixed, with no `?`.
+fn schemas_sql() -> String {
+    format!(
+        "SELECT schema_name FROM information_schema.schemata \
+         ORDER BY CAST(schema_name AS BINARY) LIMIT {MAX_LISTED}"
+    )
+}
+
 // The questions of the listing, as one message (see `Adapter::list_objects`).
 // Each has a `?` for the schema, and no other `?`.
 
@@ -395,6 +404,12 @@ fn mariadb_default(written: String, binary: bool, padded: bool) -> Option<String
         return Some(hex);
     }
     Some(value)
+}
+
+/// What a message's answer that is not there failed with: `error`, which
+/// stopped the answers, or else data the server should not have sent.
+fn missing_answer(error: Option<Error>) -> Error {
+    error.unwrap_or_else(|| Error::query("unexpected data from the server: an answer is missing"))
 }
 
 /// Each row as `T` (see [`from_row`]).
@@ -1184,13 +1199,7 @@ impl Conn {
     /// `schema`'s tables and views, as [`listing_sql`] lists them, and in
     /// the same message (see [`inlined`]) the shapes read of them, the
     /// keys as `keys` asks for them, as [`LISTED_KEYS`] does; the session
-    /// remembers them. A shape that has changed since is read again with
-    /// the page, as ever (see `open`).
-    ///
-    /// The shapes' questions go after the listing's, so that one the
-    /// server refuses, or a cancel that lands on one, leaves the listing
-    /// answered, and nothing is remembered. A session that is lost fails
-    /// the listing, which says so.
+    /// remembers them (see [`Conn::listed_from`]).
     async fn listed_with(&self, schema: &str, keys: &str) -> Result<Vec<ObjectInfo>> {
         let steps = listing_questions(schema, keys);
         let (answers, error) = {
@@ -1198,20 +1207,64 @@ impl Conn {
             let conn = session.conn()?;
             script::answers(conn, &steps).await
         };
+        let sets = answers.into_iter().map(|answer| answer.rows);
+        self.listed_from(schema, sets, error.map(query_error))
+    }
+
+    /// The schemas, as [`schemas_sql`] lists them, and `schema`'s tables
+    /// and views with their shapes, as [`Conn::listed_with`] reads them,
+    /// in one message: the schemas' question goes first. The server
+    /// answers in order and stops at the first question it refuses, so
+    /// that a refusal of the listing's, or a cancel that lands on one,
+    /// leaves the schemas answered. The schemas refused leave the listing
+    /// unasked, and it fails as they do.
+    async fn tree_with(
+        &self,
+        schema: &str,
+        keys: &str,
+    ) -> (Result<Vec<String>>, Result<Vec<ObjectInfo>>) {
+        let steps: Vec<String> = std::iter::once(schemas_sql())
+            .chain(listing_questions(schema, keys))
+            .collect();
+        let (answers, error) = {
+            let mut session = self.conn.lock().await;
+            match session.conn() {
+                Ok(conn) => script::answers(conn, &steps).await,
+                Err(error) => return (Err(error.clone()), Err(error)),
+            }
+        };
+        let error = error.map(query_error);
         let mut sets = answers.into_iter().map(|answer| answer.rows);
+        let schemas = match sets.next() {
+            Some(rows) => typed(rows),
+            None => Err(missing_answer(error.clone())),
+        };
+        (schemas, self.listed_from(schema, sets, error))
+    }
+
+    /// `schema`'s tables and views from the answers to the listing's
+    /// questions (see [`listing_questions`]), in their order, and the
+    /// shapes read with them, which the session remembers. `error` is what
+    /// stopped the answers, if anything did. A shape that has changed
+    /// since is read again with the page, as ever (see `open`).
+    ///
+    /// The shapes' questions go after the listing's, so that one the
+    /// server refuses, or a cancel that lands on one, leaves the listing
+    /// answered, and nothing is remembered. A session that is lost fails
+    /// the listing, which says so.
+    fn listed_from(
+        &self,
+        schema: &str,
+        mut sets: impl Iterator<Item = Vec<mysql_async::Row>>,
+        error: Option<Error>,
+    ) -> Result<Vec<ObjectInfo>> {
         let Some(listing) = sets.next() else {
-            return Err(error.map_or_else(
-                || Error::query("unexpected data from the server: an answer is missing"),
-                query_error,
-            ));
+            return Err(missing_answer(error));
         };
         let rows: Vec<(String, String, Option<u64>)> = typed(listing)?;
         let shapes = match (sets.next(), sets.next()) {
             (Some(keys), Some(columns)) => listed_shapes(&rows, keys, columns),
-            _ => Err(error.map_or_else(
-                || Error::query("unexpected data from the server: an answer is missing"),
-                query_error,
-            )),
+            _ => Err(missing_answer(error)),
         };
         match shapes {
             Ok(shapes) => self.remember_all(schema, shapes),
@@ -1293,13 +1346,7 @@ impl Adapter for Conn {
     async fn list_schemas(&self) -> Result<Vec<String>> {
         let mut session = self.conn.lock().await;
         let conn = session.conn()?;
-        let rows: Vec<mysql_async::Row> = conn
-            .query(format!(
-                "SELECT schema_name FROM information_schema.schemata \
-                 ORDER BY CAST(schema_name AS BINARY) LIMIT {MAX_LISTED}"
-            ))
-            .await
-            .map_err(query_error)?;
+        let rows: Vec<mysql_async::Row> = conn.query(schemas_sql()).await.map_err(query_error)?;
         rows.into_iter().map(from_row).collect()
     }
 
@@ -1312,6 +1359,12 @@ impl Adapter for Conn {
     /// is then one round trip too (see `open`). See [`Conn::listed_with`].
     async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>> {
         self.listed_with(schema, LISTED_KEYS).await
+    }
+
+    /// The schemas and `schema`'s tables in one message: the schemas'
+    /// question goes first in the listing's. See [`Conn::tree_with`].
+    async fn list_tree(&self, schema: &str) -> (Result<Vec<String>>, Result<Vec<ObjectInfo>>) {
+        self.tree_with(schema, LISTED_KEYS).await
     }
 
     /// The structure's questions as one message (see [`inlined`]): one
@@ -5005,6 +5058,112 @@ mod tests {
             assert!(page.ordered_by_key, "{access:?}");
             assert_eq!(messages, 1, "{access:?}");
             assert!(!in_transaction(&conn).await, "{access:?}");
+        }
+    }
+
+    /// The schemas and a schema's tables are one message on a fresh
+    /// session, and the listing in it reads the shape of each table it
+    /// names: the first open of one is one message too.
+    #[tokio::test]
+    async fn listing_the_tree_asks_the_server_once() {
+        use std::sync::atomic::Ordering;
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = trips(&url).await;
+        for access in [Access::ReadOnly, Access::Writable] {
+            let (conn, asked) = counted_session(&url, access).await;
+            let before = asked.load(Ordering::SeqCst);
+            let (schemas, objects) = conn.list_tree(&object.schema).await;
+            let messages = asked.load(Ordering::SeqCst) - before;
+            assert_eq!(messages, 1, "{access:?}");
+            let schemas = schemas.unwrap();
+            assert!(schemas.contains(&object.schema), "{access:?} {schemas:?}");
+            let objects = objects.unwrap();
+            assert!(objects.iter().any(|listed| listed.name == object.name));
+            for listed in &objects {
+                let listed = ObjectRef::new(&object.schema, &listed.name);
+                assert!(conn.known_shape(&listed).is_some(), "{access:?} {listed:?}");
+            }
+            assert!(!in_transaction(&conn).await, "{access:?}");
+            let before = asked.load(Ordering::SeqCst);
+            let (structure, page) = conn
+                .open(
+                    &object,
+                    &RowQuery::new(object.clone(), 10),
+                    &StopFlag::new(),
+                )
+                .await;
+            let messages = asked.load(Ordering::SeqCst) - before;
+            assert_eq!(structure.unwrap().primary_key, ["id"], "{access:?}");
+            assert!(page.unwrap().ordered_by_key, "{access:?}");
+            assert_eq!(messages, 1, "{access:?}");
+        }
+    }
+
+    /// A question of the listing's the server refuses, in the tree's one
+    /// message, leaves the schemas answered before it, and the listing:
+    /// only the shapes are not read, and none is remembered.
+    #[tokio::test]
+    async fn a_refusal_in_the_tree_leaves_the_schemas() {
+        use std::sync::atomic::Ordering;
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = trips(&url).await;
+        let refused = "SELECT * FROM information_schema.no_such_view";
+        for access in [Access::ReadOnly, Access::Writable] {
+            let (conn, asked) = counted_session(&url, access).await;
+            let before = asked.load(Ordering::SeqCst);
+            let (schemas, objects) = conn.tree_with(&object.schema, refused).await;
+            assert_eq!(asked.load(Ordering::SeqCst) - before, 1, "{access:?}");
+            let schemas = schemas.unwrap();
+            assert!(schemas.contains(&object.schema), "{access:?} {schemas:?}");
+            let objects = objects.unwrap();
+            assert!(objects.iter().any(|listed| listed.name == object.name));
+            for listed in &objects {
+                let listed = ObjectRef::new(&object.schema, &listed.name);
+                assert_eq!(conn.known_shape(&listed), None, "{access:?} {listed:?}");
+            }
+            assert!(!in_transaction(&conn).await, "{access:?}");
+        }
+    }
+
+    /// The tree is what listing the schemas and then the schema's tables
+    /// answers, on a schema that is not there too. Other tests make and
+    /// drop tables meanwhile: the two are asked again, a few times, until
+    /// they read the same moment.
+    #[tokio::test]
+    async fn the_tree_is_the_schemas_then_the_schemas_tables() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = trips(&url).await;
+        for access in [Access::ReadOnly, Access::Writable] {
+            let conn = session_as(&url, access).await;
+            let apart = session_as(&url, access).await;
+            for schema in [object.schema.as_str(), "no_such_schema"] {
+                let mut tries = 0;
+                let (read, alone) = loop {
+                    let (schemas, objects) = conn.list_tree(schema).await;
+                    let read = (schemas.unwrap(), objects.unwrap());
+                    let alone = (
+                        apart.list_schemas().await.unwrap(),
+                        apart.list_objects(schema).await.unwrap(),
+                    );
+                    tries += 1;
+                    if read == alone || tries == 10 {
+                        break (read, alone);
+                    }
+                };
+                assert_eq!(read, alone, "{access:?} {schema}");
+                assert!(read.0.contains(&object.schema), "{access:?} {schema}");
+                assert_eq!(
+                    read.1.is_empty(),
+                    schema == "no_such_schema",
+                    "{access:?} {schema}"
+                );
+            }
         }
     }
 

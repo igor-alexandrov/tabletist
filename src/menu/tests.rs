@@ -724,6 +724,7 @@ fn a_replayed_cmd_r_on_a_table_s_rows_reloads_the_rows() {
                 command,
                 crate::backend::Command::ListSchemas { .. }
                     | crate::backend::Command::ListObjects { .. }
+                    | crate::backend::Command::ListTree { .. }
             )
         })
         .count()

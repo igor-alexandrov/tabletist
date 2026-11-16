@@ -903,20 +903,15 @@ fn a_failed_listing_keeps_the_recents() {
         encrypted: false,
         access: crate::testing::asked_access(&harness.app),
     }));
-    let Command::ListSchemas { request, .. } = *crate::testing::last_sent(&harness.app) else {
-        panic!("expected ListSchemas");
-    };
+    let (session, schemas, objects, _) = crate::testing::tree_asked(&harness.app);
     harness.app.apply(Action::Backend(Event::Schemas {
         session,
-        request,
+        request: schemas,
         result: Ok(vec!["main".into()]),
     }));
-    let Command::ListObjects { request, .. } = *crate::testing::last_sent(&harness.app) else {
-        panic!("expected ListObjects");
-    };
     harness.app.apply(Action::Backend(Event::Objects {
         session,
-        request,
+        request: objects,
         schema: "main".into(),
         result: Err(tabletist_db::Error::query(
             "permission denied for schema main",
