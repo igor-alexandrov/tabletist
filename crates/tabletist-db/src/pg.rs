@@ -849,6 +849,23 @@ impl Conn {
         })
     }
 
+    /// An open's page, read on its own after its structure failed, as
+    /// `page_from` reads it: answered as cancelled, and never sent, when
+    /// `page_stop` says a cancel of it came first.
+    async fn page_alone(
+        &self,
+        client: &tokio_postgres::Client,
+        query: &RowQuery,
+        shape: Shape,
+        checked: bool,
+        page_stop: &StopFlag,
+    ) -> Result<RowPage> {
+        if page_stop.is_stopped() {
+            return Err(Error::Cancelled);
+        }
+        self.page_from(client, query, shape, checked).await
+    }
+
     /// The page of `query`, built from `shape`, as
     /// [`Adapter::fetch_rows`] reads it: unless `checked` says the shape
     /// was just read, the shape is read again in the page's flight, and a
@@ -1319,15 +1336,22 @@ impl Adapter for Conn {
     /// fails the page's transaction as well, and the page is then read on
     /// its own. So is a page whose shape's rows, read with it, cannot be
     /// made out: it ran, but nothing says it stands.
+    ///
+    /// A page read on its own after the structure (another table's, or
+    /// after a structure that failed) is never sent once `page_stop` says
+    /// it was cancelled, and answers [`Error::Cancelled`].
     async fn open(
         &self,
         object: &ObjectRef,
         query: &RowQuery,
+        page_stop: &StopFlag,
     ) -> (Result<Structure>, Result<RowPage>) {
         // The structure's shape is `object`'s, and says nothing of another
         // table's page.
         if *object != query.object {
-            return (self.describe(object).await, self.fetch_rows(query).await);
+            let structure = self.describe(object).await;
+            let page = crate::adapter::page_unless_stopped(self, query, page_stop).await;
+            return (structure, page);
         }
         let client = self.client.lock().await;
         let (shape, checked) = match self.known_shape(object) {
@@ -1366,7 +1390,9 @@ impl Adapter for Conn {
                     (Ok(rows), page)
                 }
                 Err(error) => {
-                    let page = self.page_from(&client, query, shape, checked).await;
+                    let page = self
+                        .page_alone(&client, query, shape, checked, page_stop)
+                        .await;
                     (Err(error), page)
                 }
             },
@@ -1377,7 +1403,9 @@ impl Adapter for Conn {
             Err(error) => match stream_error(error) {
                 Error::Cancelled => (Err(Error::Cancelled), Err(Error::Cancelled)),
                 error => {
-                    let page = self.page_from(&client, query, shape, checked).await;
+                    let page = self
+                        .page_alone(&client, query, shape, checked, page_stop)
+                        .await;
                     (Err(error), page)
                 }
             },
@@ -2348,7 +2376,12 @@ mod tests {
         // An earlier open has read the table's shape.
         conn.describe(&object).await.unwrap();
         let ((structure, page), asked) = counted(&trips, async {
-            conn.open(&object, &RowQuery::new(object.clone(), 10)).await
+            conn.open(
+                &object,
+                &RowQuery::new(object.clone(), 10),
+                &StopFlag::new(),
+            )
+            .await
         })
         .await;
         assert_eq!(structure.unwrap().primary_key, ["shelf", "id"]);
@@ -2363,8 +2396,9 @@ mod tests {
     #[test]
     fn an_open_can_run_on_a_spawned_task() {
         fn send<T: Send>(_: &T) {}
-        let _check =
-            |conn: &Conn, object: &ObjectRef, query: &RowQuery| send(&conn.open(object, query));
+        let _check = |conn: &Conn, object: &ObjectRef, query: &RowQuery| {
+            send(&conn.open(object, query, &StopFlag::new()))
+        };
     }
 
     /// Opening a table the session has not read the shape of asks for the
@@ -2379,7 +2413,8 @@ mod tests {
         let object = round_trips_table(&url).await;
         let query = RowQuery::new(object.clone(), 1);
         let (conn, trips) = trip_counted(&url).await;
-        let ((structure, page), asked) = counted(&trips, conn.open(&object, &query)).await;
+        let ((structure, page), asked) =
+            counted(&trips, conn.open(&object, &query, &StopFlag::new())).await;
         assert_eq!(asked, 2);
         assert!(outside_a_transaction(&conn).await);
         let apart = session(&url).await;
@@ -2425,7 +2460,8 @@ mod tests {
             .await
             .unwrap();
         let query = RowQuery::new(object.clone(), 10);
-        let ((structure, page), asked) = counted(&trips, conn.open(&object, &query)).await;
+        let ((structure, page), asked) =
+            counted(&trips, conn.open(&object, &query, &StopFlag::new())).await;
         assert_eq!(structure.unwrap().primary_key, ["b"]);
         let page = page.unwrap();
         let firsts: Vec<_> = page.rows.iter().map(|row| row[0].clone()).collect();
@@ -2453,7 +2489,8 @@ mod tests {
         let (conn, trips) = trip_counted(&url).await;
         for asks in [2, 1] {
             let query = RowQuery::new(missing.clone(), 10);
-            let ((structure, page), asked) = counted(&trips, conn.open(&missing, &query)).await;
+            let ((structure, page), asked) =
+                counted(&trips, conn.open(&missing, &query, &StopFlag::new())).await;
             let error = structure.unwrap_err().to_string();
             assert!(error.contains("no such table or view"), "{error}");
             let error = page.unwrap_err().to_string();
@@ -2462,7 +2499,7 @@ mod tests {
             assert!(outside_a_transaction(&conn).await);
         }
         let query = RowQuery::new(object.clone(), 10);
-        let (structure, page) = conn.open(&object, &query).await;
+        let (structure, page) = conn.open(&object, &query, &StopFlag::new()).await;
         assert_eq!(structure.unwrap().primary_key, ["shelf", "id"]);
         assert_eq!(page.unwrap().rows.len(), 2);
     }
@@ -2486,7 +2523,7 @@ mod tests {
             cancel.cancel().await.unwrap();
         });
         let started = Instant::now();
-        let (structure, page) = conn.open(&object, &query).await;
+        let (structure, page) = conn.open(&object, &query, &StopFlag::new()).await;
         cancelling.await.unwrap();
         assert_eq!(structure.unwrap().primary_key, ["shelf", "id"]);
         assert_eq!(page.unwrap_err(), Error::Cancelled);
@@ -2554,7 +2591,8 @@ mod tests {
         let (conn, trips) = trip_counted(&url).await;
         conn.fetch_rows(&query).await.unwrap();
         for _ in 0..6 {
-            let ((structure, page), asked) = counted(&trips, conn.open(&object, &query)).await;
+            let ((structure, page), asked) =
+                counted(&trips, conn.open(&object, &query, &StopFlag::new())).await;
             let error = structure.unwrap_err().to_string();
             assert!(error.contains("division by zero"), "{error}");
             let page = page.unwrap();
@@ -2577,7 +2615,7 @@ mod tests {
         let query = RowQuery::new(object.clone(), 10);
         let conn = session_with(&url, Access::ReadOnly, "-c statement_timeout=300").await;
         conn.fetch_rows(&query).await.unwrap();
-        let (structure, page) = conn.open(&object, &query).await;
+        let (structure, page) = conn.open(&object, &query, &StopFlag::new()).await;
         assert_eq!(structure.unwrap_err(), Error::Timeout);
         assert_eq!(page.unwrap().rows.len(), 2);
         assert!(outside_a_transaction(&conn).await);
@@ -2605,7 +2643,7 @@ mod tests {
             cancel.cancel().await.unwrap();
         });
         let started = Instant::now();
-        let (structure, page) = conn.open(&object, &query).await;
+        let (structure, page) = conn.open(&object, &query, &StopFlag::new()).await;
         cancelling.await.unwrap();
         assert_eq!(structure.unwrap_err(), Error::Cancelled);
         assert_eq!(page.unwrap_err(), Error::Cancelled);

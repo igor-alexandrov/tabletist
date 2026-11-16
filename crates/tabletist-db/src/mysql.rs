@@ -1282,10 +1282,16 @@ impl Adapter for Conn {
     /// `describe` and then `fetch_rows` would give. A structure question
     /// that fails otherwise stops the message as well: its transaction is
     /// ended, and the page is read on its own.
+    ///
+    /// A page read on its own after the structure, the other way or after
+    /// a structure that failed, is never sent once `page_stop` says it was
+    /// cancelled, and answers [`Error::Cancelled`]. The cancel that goes
+    /// with it may stop the structure's read too.
     async fn open(
         &self,
         object: &ObjectRef,
         query: &RowQuery,
+        page_stop: &StopFlag,
     ) -> (Result<Structure>, Result<RowPage>) {
         // The structure's shape is `object`'s, and says nothing of another
         // table's page. A statement `page_in_one` would refuse, or leave to
@@ -1299,7 +1305,9 @@ impl Adapter for Conn {
                 Some((known, sql, values))
             });
         let Some((known, sql, values)) = planned else {
-            return (self.describe(object).await, self.fetch_rows(query).await);
+            let structure = self.describe(object).await;
+            let page = crate::adapter::page_unless_stopped(self, query, page_stop).await;
+            return (structure, page);
         };
         let mut session = self.conn.lock().await;
         let conn = match session.conn() {
@@ -1327,7 +1335,8 @@ impl Adapter for Conn {
                 return (Err(error.clone()), Err(error));
             }
             drop(session);
-            return (Err(error), self.fetch_rows(query).await);
+            let page = crate::adapter::page_unless_stopped(self, query, page_stop).await;
+            return (Err(error), page);
         }
         // `answered` takes the two answers the page's shape is read from,
         // which the structure reads too.
@@ -4737,7 +4746,9 @@ mod tests {
             // An earlier open has read the table's shape.
             conn.describe(&object).await.unwrap();
             let before = asked.load(Ordering::SeqCst);
-            let (structure, page) = conn.open(&object, &RowQuery::new(object.clone(), 1)).await;
+            let (structure, page) = conn
+                .open(&object, &RowQuery::new(object.clone(), 1), &StopFlag::new())
+                .await;
             let messages = asked.load(Ordering::SeqCst) - before;
             assert_eq!(structure.unwrap().primary_key, ["id"], "{access:?}");
             let page = page.unwrap();
@@ -4753,8 +4764,9 @@ mod tests {
     #[test]
     fn an_open_can_run_on_a_spawned_task() {
         fn send<T: Send>(_: &T) {}
-        let _check =
-            |conn: &Conn, object: &ObjectRef, query: &RowQuery| send(&conn.open(object, query));
+        let _check = |conn: &Conn, object: &ObjectRef, query: &RowQuery| {
+            send(&conn.open(object, query, &StopFlag::new()))
+        };
     }
 
     /// What a fresh session answers for `object`'s structure and then for
@@ -4791,7 +4803,7 @@ mod tests {
         let query = RowQuery::new(object.clone(), 1);
         let (conn, asked) = counted_session(&url, Access::ReadOnly).await;
         let before = asked.load(Ordering::SeqCst);
-        let (structure, page) = conn.open(&object, &query).await;
+        let (structure, page) = conn.open(&object, &query, &StopFlag::new()).await;
         assert_eq!(asked.load(Ordering::SeqCst) - before, 2);
         assert!(!in_transaction(&conn).await);
         let (described, fetched) = read_apart(&url, &object, &query).await;
@@ -4823,7 +4835,7 @@ mod tests {
         let (conn, asked) = counted_session(&url, Access::ReadOnly).await;
         conn.describe(&object).await.unwrap();
         let before = asked.load(Ordering::SeqCst);
-        let (structure, page) = conn.open(&object, &query).await;
+        let (structure, page) = conn.open(&object, &query, &StopFlag::new()).await;
         // The structure, then the page's three round trips and its
         // statement's prepare.
         assert_eq!(asked.load(Ordering::SeqCst) - before, 5);
@@ -4865,7 +4877,11 @@ mod tests {
         }
         for missing in [never, gone] {
             let (structure, page) = conn
-                .open(&missing, &RowQuery::new(missing.clone(), 10))
+                .open(
+                    &missing,
+                    &RowQuery::new(missing.clone(), 10),
+                    &StopFlag::new(),
+                )
                 .await;
             let error = structure.unwrap_err().to_string();
             assert!(error.contains("no such table or view"), "{error}");
@@ -4873,7 +4889,13 @@ mod tests {
             assert!(error.contains("doesn't exist"), "{error}");
             assert!(!in_transaction(&conn).await, "{}", missing.name);
         }
-        let (structure, page) = conn.open(&object, &RowQuery::new(object.clone(), 10)).await;
+        let (structure, page) = conn
+            .open(
+                &object,
+                &RowQuery::new(object.clone(), 10),
+                &StopFlag::new(),
+            )
+            .await;
         assert_eq!(structure.unwrap().primary_key, ["id"]);
         assert_eq!(page.unwrap().rows.len(), 3);
     }
@@ -4959,7 +4981,7 @@ mod tests {
                 })
                 .await;
             let before = asked.load(Ordering::SeqCst);
-            let (structure, page) = conn.open(&object, &query).await;
+            let (structure, page) = conn.open(&object, &query, &StopFlag::new()).await;
             let sent = asked.load(Ordering::SeqCst) - before;
             if fails {
                 assert!(
@@ -4992,7 +5014,9 @@ mod tests {
             cancel.cancel().await
         };
         let started = Instant::now();
-        let (opened, cancelled) = tokio::join!(conn.open(&query.object, query), cancelling);
+        let page_stop = StopFlag::new();
+        let (opened, cancelled) =
+            tokio::join!(conn.open(&query.object, query, &page_stop), cancelling);
         cancelled.unwrap();
         (opened, started.elapsed())
     }
@@ -5019,7 +5043,7 @@ mod tests {
             assert_eq!(page.unwrap_err(), Error::Cancelled, "{access:?}");
             assert!(took < Duration::from_secs(5), "{took:?}");
             assert!(!in_transaction(&conn).await, "{access:?}");
-            let (structure, page) = conn.open(&object, &query).await;
+            let (structure, page) = conn.open(&object, &query, &StopFlag::new()).await;
             assert_eq!(structure.unwrap().primary_key, ["id"], "{access:?}");
             assert_eq!(page.unwrap().rows.len(), 3, "{access:?}");
         }
@@ -5091,8 +5115,9 @@ mod tests {
                 cancel.cancel().await
             };
             let started = Instant::now();
+            let page_stop = StopFlag::new();
             let ((structure, page), cancelled) =
-                tokio::join!(conn.open(&object, &slow), cancelling);
+                tokio::join!(conn.open(&object, &slow, &page_stop), cancelling);
             cancelled.unwrap();
             assert_eq!(structure, Ok(expected), "{access:?}");
             assert_eq!(page.unwrap_err(), Error::Cancelled, "{access:?}");

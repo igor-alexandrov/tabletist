@@ -129,7 +129,8 @@ impl Live {
                     object,
                     query,
                 } => {
-                    let (described, page) = run.block_on(connection.open(object, query));
+                    let (described, page) =
+                        run.block_on(connection.open(object, query, &StopFlag::new()));
                     rows_first = Some(Event::Rows {
                         session: *session,
                         request: *rows,

@@ -418,16 +418,24 @@ impl Connection {
     /// trip where the adapter can: the same results as [`Connection::describe`]
     /// and then [`Connection::fetch_rows`], each its own, so that a failed
     /// structure still leaves the page to show.
+    ///
+    /// `page_stop` is the page's own cancel. Where the page is read on its
+    /// own after the structure (SQLite, BigQuery, and PostgreSQL's and
+    /// MySQL's other ways), a page stopped by then is never sent and
+    /// answers [`Error::Cancelled`]. The cancel that goes with it may have
+    /// stopped the structure's read as well. Where both go in one round
+    /// trip, there is nothing left to skip, and only the cancel stops it.
     pub async fn open(
         &self,
         object: &ObjectRef,
         query: &RowQuery,
+        page_stop: &StopFlag,
     ) -> (Result<Structure>, Result<RowPage>) {
         match &self.inner {
-            Inner::Sqlite(conn) => conn.open(object, query).await,
-            Inner::Postgres(conn) => conn.open(object, query).await,
-            Inner::MySql(conn) => conn.open(object, query).await,
-            Inner::BigQuery(conn) => conn.open(object, query).await,
+            Inner::Sqlite(conn) => conn.open(object, query, page_stop).await,
+            Inner::Postgres(conn) => conn.open(object, query, page_stop).await,
+            Inner::MySql(conn) => conn.open(object, query, page_stop).await,
+            Inner::BigQuery(conn) => conn.open(object, query, page_stop).await,
         }
     }
 

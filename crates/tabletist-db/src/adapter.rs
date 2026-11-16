@@ -36,14 +36,16 @@ pub(crate) trait Adapter {
     async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage>;
 
     /// See [`crate::Connection::open`]. The structure is read first and the
-    /// page after it, the page read even when the structure failed.
+    /// page after it, the page read even when the structure failed, unless
+    /// `page_stop` says it was cancelled meanwhile.
     async fn open(
         &self,
         object: &ObjectRef,
         query: &RowQuery,
+        page_stop: &StopFlag,
     ) -> (Result<Structure>, Result<RowPage>) {
         let structure = self.describe(object).await;
-        let page = self.fetch_rows(query).await;
+        let page = page_unless_stopped(self, query, page_stop).await;
         (structure, page)
     }
 
@@ -104,4 +106,19 @@ pub(crate) trait Adapter {
 
     /// `changes` have passed their own check, and the session may write.
     async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome>;
+}
+
+/// The page of an open, read on its own after its structure: answered as
+/// cancelled, and never sent, when `page_stop` says a cancel of it came
+/// while the structure was read. A queued page cancelled that way would
+/// have been skipped.
+pub(crate) async fn page_unless_stopped<A: Adapter + ?Sized>(
+    adapter: &A,
+    query: &RowQuery,
+    page_stop: &StopFlag,
+) -> Result<RowPage> {
+    if page_stop.is_stopped() {
+        return Err(crate::Error::Cancelled);
+    }
+    adapter.fetch_rows(query).await
 }

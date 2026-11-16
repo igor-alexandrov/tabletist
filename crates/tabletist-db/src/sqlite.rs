@@ -3056,6 +3056,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_open_whose_page_was_cancelled_reads_only_the_structure() {
+        let (conn, _dir) = fixture().await;
+        let object = ObjectRef::new("main", "users");
+        // A page that fails if it is read: one that is not answers as
+        // cancelled.
+        let mut query = RowQuery::new(object.clone(), 10);
+        query.raw_where = Some("no_such_column = 1".into());
+        let page_stop = StopFlag::new();
+        let (structure, page) = Adapter::open(&conn, &object, &query, &page_stop).await;
+        assert!(structure.is_ok());
+        assert!(matches!(page, Err(Error::Query { .. })), "{page:?}");
+        page_stop.stop();
+        let (structure, page) = Adapter::open(&conn, &object, &query, &page_stop).await;
+        assert!(!structure.unwrap().columns.is_empty());
+        assert_eq!(page.unwrap_err(), Error::Cancelled);
+    }
+
+    #[tokio::test]
     async fn users_structure_has_columns_key_and_indexes() {
         let (conn, _dir) = fixture().await;
         let structure = conn

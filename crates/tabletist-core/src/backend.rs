@@ -121,7 +121,11 @@ pub enum Command {
     /// and MySQL read both in one round trip. A Cancel of either request
     /// stops the run; the part it did not name still answers with its own
     /// result, read again alone where the cancel stopped it too. A part
-    /// read again answers after the other, whichever it is.
+    /// read again answers after the other, whichever it is. A Cancel of
+    /// the page keeps it from being sent where it is read after the
+    /// structure; the cancel that goes to the server may stop the
+    /// structure's read instead, which is then read again alone: one
+    /// round trip more.
     Open {
         session: SessionId,
         /// The request the structure answers.
@@ -943,6 +947,13 @@ impl Backend {
         lock(watched.get(&session).expect("the session is up")).opens = Some(fake);
     }
 
+    /// Runs `change` on the state of `session`.
+    #[cfg(test)]
+    fn with_running(&self, session: SessionId, change: impl FnOnce(&mut Running)) {
+        let watched = lock(&self.watched);
+        change(&mut lock(watched.get(&session).expect("the session is up")));
+    }
+
     /// The running requests of `session` a Cancel named.
     #[cfg(test)]
     fn cancelled(&self, session: SessionId) -> Vec<RequestId> {
@@ -993,6 +1004,10 @@ struct Running {
     /// The running SQL editor script's stop flag: a Cancel and a Close set
     /// it too, so the script also stops between statements.
     stop: Option<StopFlag>,
+    /// The running `Open`'s page's stop flag: a Cancel of its page and a
+    /// Close set it, so that a page read after the structure is never sent
+    /// once it is cancelled (see `Connection::open`).
+    page_stop: Option<StopFlag>,
     /// The running save's stop flag: a Cancel and a Close set it too, so
     /// the save also stops between two of its statements, where a cancel
     /// finds nothing to stop. Apart from a script's: a save takes one
@@ -1027,14 +1042,14 @@ struct Running {
     opens: Option<FakeOpen>,
 }
 
-/// The answer a test gives an `Open` whose page is `rows`, once `gate`
-/// opens: until then the `Open` runs, and a Cancel finds it running.
+/// How a test has an `Open` whose page is `rows` run: held until `gate`
+/// opens, and a Cancel finds it running meanwhile. Then it comes back with
+/// `answer`, or, with none, reads as it would have.
 #[cfg(test)]
 struct FakeOpen {
     rows: RequestId,
     gate: tokio::sync::oneshot::Receiver<()>,
-    structure: Result<Structure, Error>,
-    page: Result<RowPage, Error>,
+    answer: Option<(Result<Structure, Error>, Result<RowPage, Error>)>,
 }
 
 impl Running {
@@ -1050,6 +1065,7 @@ impl Running {
         self.cancelled.clear();
         self.stop = None;
         self.save = None;
+        self.page_stop = None;
         self.cancelling = false;
         self.read = false;
         self.deferred = false;
@@ -1069,6 +1085,9 @@ impl Running {
     fn close(&mut self) {
         self.closed = true;
         self.stop_run();
+        if let Some(page) = &self.page_stop {
+            page.stop();
+        }
     }
 
     /// Whether a script is running and a cancel can still reach one of its
@@ -2777,6 +2796,8 @@ async fn run_session(
                 // right after the run starts always finds the flag.
                 running.stop = matches!(command, Command::RunSql { .. }).then(|| run_stop.clone());
                 running.save = matches!(command, Command::Write { .. }).then(|| run_stop.clone());
+                running.page_stop =
+                    matches!(command, Command::Open { .. }).then(|| run_stop.clone());
                 running.read = matches!(
                     command,
                     Command::FetchRows { .. }
@@ -2892,7 +2913,7 @@ async fn run_session(
                     object,
                     query,
                 };
-                run_open(&connection, &running, &outbox, opening).await
+                run_open(&connection, &running, &outbox, opening, &run_stop).await
             }
             Command::CountRows {
                 session,
@@ -3068,6 +3089,7 @@ async fn run_open(
     running: &Mutex<Running>,
     outbox: &Outbox,
     opening: Opening<'_>,
+    page_stop: &StopFlag,
 ) -> Option<Error> {
     let Opening {
         session,
@@ -3076,7 +3098,8 @@ async fn run_open(
         object,
         query,
     } = opening;
-    let (structure, page) = read_open(connection, running, rows_request, object, query).await;
+    let (structure, page) =
+        read_open(connection, running, rows_request, object, query, page_stop).await;
     let lost = lost_error(&page).or_else(|| lost_error(&structure));
     let (page_again, structure_again) = {
         let running = lock(running);
@@ -3132,6 +3155,7 @@ async fn read_open(
     rows_request: RequestId,
     object: &ObjectRef,
     query: &RowQuery,
+    page_stop: &StopFlag,
 ) -> (Result<Structure, Error>, Result<RowPage, Error>) {
     #[cfg(test)]
     {
@@ -3144,12 +3168,14 @@ async fn read_open(
         };
         if let Some(fake) = fake {
             let _ = fake.gate.await;
-            return (fake.structure, fake.page);
+            if let Some(answer) = fake.answer {
+                return answer;
+            }
         }
     }
     #[cfg(not(test))]
     let _ = (running, rows_request);
-    connection.open(object, query).await
+    connection.open(object, query, page_stop).await
 }
 
 fn is_cancelled<T>(result: &Result<T, Error>) -> bool {
@@ -3317,6 +3343,13 @@ fn cancel_request<C>(
     // Which of a running `Open`'s two parts the user stopped.
     if !state.cancelled.contains(&request) {
         state.cancelled.push(request);
+    }
+    // An `Open`'s page, under the same lock: one read after the structure
+    // is then never sent.
+    if state.request == Some(request)
+        && let Some(page) = &state.page_stop
+    {
+        page.stop();
     }
     // Before a cancel is sent: a script it ends at once must already see
     // who stopped it, and a save must not start its next statement.
@@ -5994,12 +6027,25 @@ mod tests {
         structure: Result<tabletist_db::Structure, Error>,
         page: Result<tabletist_db::RowPage, Error>,
     ) -> tokio::sync::oneshot::Sender<()> {
+        hold_open(backend, session, Some((structure, page)))
+    }
+
+    /// Has the `Open` of `session` whose page is request 3 wait until the
+    /// sender returned opens its gate, and then come back with `answer`,
+    /// or read as it would have.
+    fn hold_open(
+        backend: &Backend,
+        session: SessionId,
+        answer: Option<(
+            Result<tabletist_db::Structure, Error>,
+            Result<tabletist_db::RowPage, Error>,
+        )>,
+    ) -> tokio::sync::oneshot::Sender<()> {
         let (release, gate) = tokio::sync::oneshot::channel();
         let fake = FakeOpen {
             rows: RequestId(3),
             gate,
-            structure,
-            page,
+            answer,
         };
         backend.fake_open(session, fake);
         release
@@ -6126,6 +6172,28 @@ mod tests {
             assert!(ready.await);
             assert_eq!(lock(&running).request, Some(RequestId(2)));
         });
+    }
+
+    #[test]
+    fn a_page_cancelled_before_an_open_reads_it_is_never_read() {
+        let (_dir, mut backend, session) = connected_sqlite();
+        // No cancel goes to the server while the test runs: only the
+        // page's flag can keep the page from being read.
+        backend.with_running(session, |running| running.grace = Duration::from_secs(600));
+        let release = hold_open(&backend, session, None);
+        // A page that fails if it is read: one that is not answers as
+        // cancelled.
+        let mut query = users();
+        query.raw_where = Some("no_such_column = 1".into());
+        backend.send(open(session, 2, 3, query));
+        cancel_while_open(&mut backend, session, RequestId(3));
+        release.send(()).unwrap();
+        let events: Vec<Event> = (0..2).filter_map(|_| backend.wait(WAIT)).collect();
+        assert_eq!(
+            said(&events),
+            [("rows", 3, "cancelled"), ("structure", 2, "ok")]
+        );
+        assert_quiet(&mut backend);
     }
 
     #[test]
