@@ -7749,9 +7749,38 @@ impl App {
         if let Some(replaced) = replaced {
             self.cancel(session, replaced.pending());
         }
-        // The keys and foreign keys label the grid and the row panel.
-        self.describe(tab, new_id);
-        self.fetch_rows(tab, new_id);
+        // The keys and foreign keys label the grid and the row panel. Both
+        // go as one command: PostgreSQL and MySQL read them in one round
+        // trip. A new tab is at the settings' page size and not reopened,
+        // so this is all `fetch_rows` would do.
+        let structure = self.start_describe(tab, new_id);
+        let page = self.start_page(tab, new_id, page_size);
+        match (structure, page) {
+            (Some((session, structure, object)), Some((_, rows, query))) => {
+                self.backend.send(Command::Open {
+                    session,
+                    structure,
+                    rows,
+                    object,
+                    query,
+                });
+            }
+            (Some((session, request, object)), None) => {
+                self.backend.send(Command::Describe {
+                    session,
+                    request,
+                    object,
+                });
+            }
+            (None, Some((session, request, query))) => {
+                self.backend.send(Command::FetchRows {
+                    session,
+                    request,
+                    query,
+                });
+            }
+            (None, None) => {}
+        }
     }
 
     /// Opens `object` filtered to the rows that hold each value of `by` in
@@ -7861,15 +7890,29 @@ impl App {
     /// settings' size. Previous asks for the tab's size, or for the rows
     /// before a page that begins less than a page from the start.
     fn fetch_page(&mut self, tab: ConnTabId, id: TabId, limit: u32) {
+        if let Some((session, request, query)) = self.start_page(tab, id, limit) {
+            self.backend.send(Command::FetchRows {
+                session,
+                request,
+                query,
+            });
+        }
+    }
+
+    /// Starts the load of a page of `limit` rows, replacing one still
+    /// pending, and says what to send for it: its session, its request and
+    /// the query. `None` when nothing is to be sent now.
+    fn start_page(
+        &mut self,
+        tab: ConnTabId,
+        id: TabId,
+        limit: u32,
+    ) -> Option<(SessionId, RequestId, tabletist_db::RowQuery)> {
         let reads = self.wake_to_read(tab);
         let request = RequestId(self.next_id());
-        let Some(workspace) = self.workspace_mut(tab) else {
-            return;
-        };
+        let workspace = self.workspace_mut(tab)?;
         let session = workspace.session;
-        let Some(object) = workspace.object_tab_mut(id) else {
-            return;
-        };
+        let object = workspace.object_tab_mut(id)?;
         // Until here the limit was the size of the page on screen. Next
         // has just moved past that page by it. Previous has moved back by
         // the size it asks for here, so that the page fetched ends where
@@ -7883,17 +7926,13 @@ impl App {
         }
         if !reads {
             object.rows.asked = true;
-            return;
+            return None;
         }
         let superseded = object.rows.pending;
         object.rows.start(request);
         let query = object.query.clone();
         self.cancel(session, superseded);
-        self.backend.send(Command::FetchRows {
-            session,
-            request,
-            query,
-        });
+        Some((session, request, query))
     }
 
     fn tree_key(&mut self, tab: ConnTabId, key: TreeKey) {
@@ -8085,28 +8124,37 @@ impl App {
     }
 
     pub fn describe(&mut self, tab: ConnTabId, id: TabId) {
+        if let Some((session, request, object)) = self.start_describe(tab, id) {
+            self.backend.send(Command::Describe {
+                session,
+                request,
+                object,
+            });
+        }
+    }
+
+    /// Starts the read of the tab's structure, replacing one still on its
+    /// way, and says what to send for it: its session, its request and
+    /// the object. `None` when nothing is to be sent now.
+    fn start_describe(
+        &mut self,
+        tab: ConnTabId,
+        id: TabId,
+    ) -> Option<(SessionId, RequestId, ObjectRef)> {
         let reads = self.wake_to_read(tab);
         let request = RequestId(self.next_id());
-        let Some(workspace) = self.workspace_mut(tab) else {
-            return;
-        };
+        let workspace = self.workspace_mut(tab)?;
         let session = workspace.session;
-        let Some(object) = workspace.object_tab_mut(id) else {
-            return;
-        };
+        let object = workspace.object_tab_mut(id)?;
         if !reads {
             object.structure.asked = true;
-            return;
+            return None;
         }
         let superseded = object.structure.pending;
         object.structure.start(request);
         let target = object.object.clone();
         self.cancel(session, superseded);
-        self.backend.send(Command::Describe {
-            session,
-            request,
-            object: target,
-        });
+        Some((session, request, target))
     }
 
     /// Asks for the definition the DDL view of the tab `id` shows,
@@ -14112,10 +14160,12 @@ masked = ["orders.email"]
         harness.app.workspace(tab).unwrap().object_tab(id).unwrap()
     }
 
+    /// The query of the last page asked for: alone, or with the
+    /// structure as a table opens.
     fn last_query(harness: &Harness) -> tabletist_db::RowQuery {
         match last_sent(&harness.app) {
-            Command::FetchRows { query, .. } => query.clone(),
-            other => panic!("expected FetchRows, got {other:?}"),
+            Command::FetchRows { query, .. } | Command::Open { query, .. } => query.clone(),
+            other => panic!("expected FetchRows or Open, got {other:?}"),
         }
     }
 
@@ -15873,9 +15923,7 @@ masked = ["orders.email"]
         let tab = connect_tab(&mut harness);
         let id = open(&mut harness, tab, "users", true);
         let (session, first) = match last_sent(&harness.app) {
-            Command::FetchRows {
-                session, request, ..
-            } => (*session, *request),
+            Command::Open { session, rows, .. } => (*session, *rows),
             other => panic!("{other:?}"),
         };
         harness.app.apply(Action::SortBy {
@@ -15990,6 +16038,42 @@ masked = ["orders.email"]
     }
 
     #[test]
+    fn opening_a_table_asks_for_its_structure_and_first_page_in_one_command() {
+        let mut harness = Harness::new();
+        let tab = connect_tab(&mut harness);
+        let sent = harness.app.backend.sent.len();
+        let id = open(&mut harness, tab, "users", true);
+        let opened = object(&harness, tab, id);
+        let (structure, rows) = (
+            opened.structure.pending.unwrap(),
+            opened.rows.pending.unwrap(),
+        );
+        let session = harness.app.workspace(tab).unwrap().session;
+        // Beside the recents, saved as the table opens.
+        let asked: Vec<&Command> = harness.app.backend.sent[sent..]
+            .iter()
+            .filter(|command| !matches!(command, Command::Save { .. }))
+            .collect();
+        match asked.as_slice() {
+            [
+                Command::Open {
+                    session: s,
+                    structure: asked_structure,
+                    rows: asked_rows,
+                    object,
+                    query,
+                },
+            ] => {
+                assert_eq!(*s, session);
+                assert_eq!((*asked_structure, *asked_rows), (structure, rows));
+                assert_eq!(*object, users());
+                assert_eq!(*query, opened.query);
+            }
+            other => panic!("expected one Open, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn opening_describes_once_for_the_keys() {
         let mut harness = Harness::new();
         let tab = connect_tab(&mut harness);
@@ -16001,7 +16085,7 @@ masked = ["orders.email"]
                 .backend
                 .sent
                 .iter()
-                .filter(|command| matches!(command, Command::Describe { object, .. } if *object == users()))
+                .filter(|command| matches!(command, Command::Describe { object, .. } | Command::Open { object, .. } if *object == users()))
                 .count()
         };
         assert_eq!(describes(&harness), 1);

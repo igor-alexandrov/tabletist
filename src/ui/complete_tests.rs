@@ -2294,16 +2294,21 @@ fn users() -> Structure {
     structure(&[("id", "INTEGER"), ("email", "TEXT"), ("meta", "JSON")])
 }
 
-/// How many times the backend was asked for the structure of `table`.
+/// How many times the backend was asked for the structure of `table`:
+/// alone, or with a page as a table opens.
 fn asked_to_describe(harness: &Harness, table: &str) -> usize {
     let sent = harness.app.backend.sent.iter();
-    sent.filter(
-        |command| matches!(command, Command::Describe { object, .. } if object.name == table),
-    )
+    sent.filter(|command| {
+        matches!(
+            command,
+            Command::Describe { object, .. } | Command::Open { object, .. } if object.name == table
+        )
+    })
     .count()
 }
 
-/// Answers the newest `Describe` of `table`.
+/// Answers the newest `Describe` of `table`, or the structure of the
+/// newest `Open` of it.
 fn answer_describe(
     harness: &mut Harness,
     table: &str,
@@ -2316,11 +2321,17 @@ fn answer_describe(
                 session,
                 request,
                 object,
+            }
+            | Command::Open {
+                session,
+                structure: request,
+                object,
+                ..
             } if object.name == table => Some((*session, *request)),
             _ => None,
         })
         .next()
-        .unwrap_or_else(|| panic!("no Describe of {table} was sent"));
+        .unwrap_or_else(|| panic!("no Describe or Open of {table} was sent"));
     harness.app.apply(Action::Backend(Event::Structure {
         session,
         request,

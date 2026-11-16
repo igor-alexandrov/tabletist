@@ -21,12 +21,17 @@ use crate::{
     StopFlag,
 };
 
+mod one;
 mod write;
+
+pub(super) use one::Lossy;
 
 impl Conn {
     /// See [`crate::Connection::run_script`]. Statements run through the
     /// prepared protocol, which cannot hold two, and `sql_select_limit`
-    /// makes the server stop at `limit + 1` rows. The transaction is
+    /// makes the server stop at `limit + 1` rows. A script of one
+    /// statement that only reads runs in one round trip, prepared on the
+    /// server (see `one`), unless its answer lost digits in text before. The transaction is
     /// managed by hand, and the session is reset afterwards: what a script
     /// set must not reach table browsing or the next run. A run that only
     /// reads hands its outcome back before the reset, which goes on under
@@ -55,6 +60,29 @@ impl Conn {
         }
         if mode == ScriptMode::Write {
             return write::run(conn, texts, limit as usize, stop).await;
+        }
+        if let [text] = texts
+            && !stop.is_stopped()
+            && !self.lossy.knows(text)
+        {
+            match one::run(conn, text, limit, kind, stop).await? {
+                one::One::Ran(outcome, unfinished) => {
+                    unfinished.finish_later(session, &self.resetting);
+                    return Ok(*outcome);
+                }
+                one::One::Again { lossy: false } => {}
+                // It ran: the session is put back as it was before, as the
+                // reset after a run does, so that it runs again on the
+                // same session. A cancel waits for that (see `Resetting`),
+                // and then lands on the run below.
+                one::One::Again { lossy: true } => {
+                    self.lossy.remember(text);
+                    let _reset = Reset::begins(&self.resetting);
+                    put_back(conn, kind.access)
+                        .await
+                        .map_err(|error| cleanup_failed(ScriptMode::ReadOnly, &error))?;
+                }
+            }
         }
         let (outcome, _, unfinished) =
             read_only(conn, texts, limit, kind, stop, None, None).await?;
@@ -117,11 +145,13 @@ struct SessionKind {
 
 impl SessionKind {
     /// The read-only setting's names (`READ_ONLY_SETTINGS`), the one the
-    /// server knows first: MariaDB before 11.1 knows only the older one.
-    /// Asked under the other too where the server does not know the first.
+    /// server knows first: MariaDB before 11.1 and MySQL before 5.7.20 know
+    /// only the older one. Asked under the other too where the server does
+    /// not know the first.
     fn read_only_names(self, version: (u16, u16, u16)) -> [&'static str; 2] {
         let [name, older] = READ_ONLY_SETTINGS;
-        if self.mariadb && version < (11, 1, 0) {
+        let oldest = if self.mariadb { (11, 1, 0) } else { (5, 7, 20) };
+        if version < oldest {
             [older, name]
         } else {
             [name, older]
@@ -167,23 +197,30 @@ async fn read_only(
     let mut masked = Vec::new();
     let names = kind.read_only_names(conn.server_version());
     let ended = match open(conn, limit, kind, sent).await {
-        // A lost session ends the run here: nothing to close.
-        Ok(()) => match refused_for_hiding(conn, hiding).await? {
-            Err(error) => {
-                outcome.stopped = error == Error::Cancelled;
-                outcome.results.push(StatementResult {
-                    elapsed: Duration::ZERO,
-                    outcome: statement_failed(error, None)?,
-                });
-                Ended::Unconfirmed
+        // A lost session ends the run here: nothing to close. The views'
+        // question failing is the statement's error, in an open session.
+        Ok(candidates) => {
+            let checked = match candidates {
+                Ok(candidates) => refused(conn, texts, &candidates, hiding).await?,
+                Err(error) => Err(error),
+            };
+            match checked {
+                Err(error) => {
+                    outcome.stopped = error == Error::Cancelled;
+                    outcome.results.push(StatementResult {
+                        elapsed: Duration::ZERO,
+                        outcome: statement_failed(error, None)?,
+                    });
+                    Ended::Unconfirmed
+                }
+                Ok(columns) => {
+                    masked = columns;
+                    let params = sent.map(|sent| sent.params);
+                    let limit = limit as usize;
+                    statements(conn, texts, limit, names, stop, params, &mut outcome).await?
+                }
             }
-            Ok(columns) => {
-                masked = columns;
-                let params = sent.map(|sent| sent.params);
-                let limit = limit as usize;
-                statements(conn, texts, limit, names, stop, params, &mut outcome).await?
-            }
-        },
+        }
         // A cancel landed on the opening queries: no results.
         Err(Error::Cancelled) => {
             outcome.stopped = true;
@@ -200,6 +237,24 @@ async fn read_only(
     stop.finish();
     let unfinished = end(conn, ended, kind).await?;
     Ok((outcome, masked, unfinished))
+}
+
+/// Why an agent's statement may not run: it reaches a view that calls a
+/// function an agent may not call (`super::views`, on every connection;
+/// `candidates` are the views the open found that may), or it reads what
+/// its connection hides or masks ([`refused_for_hiding`]). A refusal, the
+/// server's own error, or a cancel. `Ok` where it may run, with which of
+/// its result columns are a masked column's. `Err` is a lost session.
+async fn refused(
+    conn: &mut mysql_async::Conn,
+    texts: &[String],
+    candidates: &[super::views::Candidate],
+    hiding: Option<Hiding<'_>>,
+) -> Result<std::result::Result<Vec<bool>, Error>> {
+    if let Err(error) = super::views::check(conn, texts, candidates).await? {
+        return Ok(Err(error));
+    }
+    refused_for_hiding(conn, hiding).await
 }
 
 /// Why an agent's statement may not run on a connection that hides tables
@@ -303,7 +358,11 @@ fn started(status: StatusFlags) -> Result<()> {
 /// queries, a lost session, or a transaction that could not start.
 ///
 /// An agent's run also sets the server's own limit on a statement's time
-/// (`time_limits`), which the same reset takes away.
+/// (`time_limits`), which the same reset takes away, and then asks which
+/// views may call a function an agent may not call (`super::views`), so
+/// the limit holds that question too: `Ok(Ok)` holds those views, none for
+/// a script's run, and `Ok(Err)` the question's own error, in a session
+/// that is open all the same.
 ///
 /// The steps go as one message, one round trip (`opening`). A failed step
 /// stops the rest; where a setting the message names is unknown to the
@@ -313,35 +372,56 @@ async fn open(
     limit: u32,
     kind: SessionKind,
     sent: Option<Sent<'_>>,
-) -> Result<()> {
+) -> Result<std::result::Result<Vec<super::views::Candidate>, Error>> {
     let names = kind.read_only_names(conn.server_version());
     let [own_limit, other_limit] = match sent {
         Some(sent) => kind.time_limits(sent.timeout_ms()).map(Some),
         None => [None, None],
     };
-    let steps = opening(kind.access, limit, own_limit.as_deref(), names[0]);
-    let (answers, failure) = answers(conn, &steps).await;
+    let views = sent.map(|_| super::views::candidates());
+    let steps = opening(
+        kind.access,
+        limit,
+        own_limit.as_deref(),
+        views.as_deref(),
+        names[0],
+    );
+    let (mut answers, failure) = answers(conn, &steps).await;
     let step = answers.len();
+    let at = |sql: Option<&str>| sql.and_then(|sql| steps.iter().position(|step| step == sql));
+    let views_step = at(views.as_deref());
+    let time_step = at(own_limit.as_deref());
     if step == steps.len() {
         let last = &answers[step - 1];
         let read_only = last.rows.first().cloned().map(from_row).transpose()?;
-        return opened(read_only, last.status);
+        opened(read_only, last.status)?;
+        return Ok(views_step.map_or(Ok(Vec::new()), |at| {
+            super::views::listed(std::mem::take(&mut answers[at].rows))
+        }));
     }
     let failure = failure.ok_or_else(|| Error::query("the server did not answer the open"))?;
-    // A setting the server does not know under the name the message used:
-    // the time limit, second last, or the question, last.
     let unknown = matches!(&failure, mysql_async::Error::Server(error)
         if error.code == UNKNOWN_SYSTEM_VARIABLE);
     let question_step = steps.len() - 1;
-    let time_step = other_limit.as_ref().map(|_| question_step - 1);
-    if !unknown || (step != question_step && Some(step) != time_step) {
-        return Err(query_error(failure));
-    }
-    if Some(step) == time_step
-        && let Some(other) = &other_limit
-    {
-        execute(conn, other).await?;
-    }
+    let views_answer = match failed_step(step, unknown, time_step, views_step, question_step) {
+        Failed::Open => return Err(query_error(failure)),
+        Failed::Views => Err(unless_lost(failure)?),
+        Failed::TimeLimit => {
+            if let Some(other) = &other_limit {
+                execute(conn, other).await?;
+            }
+            match views.as_deref() {
+                Some(views) => match conn.query(views).await {
+                    Ok(rows) => super::views::listed(rows),
+                    Err(error) => Err(unless_lost(error)?),
+                },
+                None => Ok(Vec::new()),
+            }
+        }
+        Failed::Question => views_step.map_or(Ok(Vec::new()), |at| {
+            super::views::listed(std::mem::take(&mut answers[at].rows))
+        }),
+    };
     let [first, second] = names;
     let asked = if step == question_step {
         [second, first]
@@ -349,16 +429,74 @@ async fn open(
         names
     };
     let read_only = read_only_setting(conn, asked).await?;
-    opened(read_only, status(conn))
+    opened(read_only, status(conn))?;
+    Ok(views_answer)
+}
+
+/// Which of the open's steps failed, and so what the open does next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Failed {
+    /// The time limit, under a name the server does not know: it is set
+    /// under the other, and the views' question and the read-only one run
+    /// on their own.
+    TimeLimit,
+    /// The views' question: a slow catalog, cut off by the time limit, or
+    /// one the server would not read. Its error is the statement's, and
+    /// the read-only question runs on its own: the session stays.
+    Views,
+    /// The read-only question, under a name the server does not know: it
+    /// is asked under the other.
+    Question,
+    /// Any other step: the open fails.
+    Open,
+}
+
+/// Which step of the open failed: `step`, of whose position in the message
+/// `time_step`, `views_step` and `question_step` say, and `unknown` where
+/// the server did not know a setting's name.
+fn failed_step(
+    step: usize,
+    unknown: bool,
+    time_step: Option<usize>,
+    views_step: Option<usize>,
+    question_step: usize,
+) -> Failed {
+    if Some(step) == views_step {
+        Failed::Views
+    } else if unknown && Some(step) == time_step {
+        Failed::TimeLimit
+    } else if unknown && step == question_step {
+        Failed::Question
+    } else {
+        Failed::Open
+    }
+}
+
+/// The error `error` is where it did not lose the session: `Err` where it
+/// did.
+fn unless_lost(error: mysql_async::Error) -> Result<Error> {
+    let error = query_error(error);
+    match error.is_connection_lost() {
+        true => Err(error),
+        false => Ok(error),
+    }
 }
 
 /// The open's steps, in order: a writable session is made read-only first
 /// (the checks read the session's own setting, and only that setting makes
 /// the server refuse DDL after the commit DDL implies; the close puts
-/// read-write back), the transaction, its row limit, an agent's time limit
-/// in the server's form, and last the question whether the session is
-/// read-only, whose answer carries the server's status after all of them.
-fn opening(access: Access, limit: u32, time_limit: Option<&str>, read_only: &str) -> Vec<String> {
+/// read-write back), the transaction, its row limit, for an agent its time
+/// limit in the server's form and the question which views may call what
+/// it may not, under that limit, and last the question whether the session
+/// is read-only, whose answer carries the server's status after all of
+/// them.
+fn opening(
+    access: Access,
+    limit: u32,
+    time_limit: Option<&str>,
+    views: Option<&str>,
+    read_only: &str,
+) -> Vec<String> {
     // One row more than the limit, to know whether more exist.
     let rows = u64::from(limit) + 1;
     let fence = (access == Access::Writable).then_some(READ_ONLY.to_owned());
@@ -369,6 +507,7 @@ fn opening(access: Access, limit: u32, time_limit: Option<&str>, read_only: &str
             format!("SET SESSION sql_select_limit = {rows}"),
         ])
         .chain(time_limit.map(str::to_owned))
+        .chain(views.map(str::to_owned))
         .chain([question(read_only)])
         .collect()
 }
@@ -466,8 +605,9 @@ fn time_limits(ms: u32) -> [String; 2] {
 /// The open has just asked where the session stands, and nothing of the
 /// script has run since, so the first statement goes without the check:
 /// it would only hear what the open did. What may run in between, an
-/// agent's check against what its connection hides (`EXPLAIN`, `SHOW
-/// WARNINGS`), ends no transaction and sets nothing.
+/// agent's checks against the views it reaches and what its connection
+/// hides (`information_schema.VIEWS`, `EXPLAIN`, `SHOW WARNINGS`), ends no
+/// transaction and sets nothing.
 async fn statements(
     conn: &mut mysql_async::Conn,
     texts: &[String],
@@ -623,6 +763,18 @@ async fn end(conn: &mut mysql_async::Conn, ended: Ended, kind: SessionKind) -> R
         Ended::Unconfirmed => confirm(conn, kind.read_only_names(conn.server_version())).await,
         known => (known, None),
     };
+    settle(conn, ended, rolled_back, kind).await
+}
+
+/// The rest of `end`, once the check has answered: `ended` is what it
+/// found, and `rolled_back` the rollback's answer (`None` where it did not
+/// run).
+async fn settle(
+    conn: &mut mysql_async::Conn,
+    ended: Ended,
+    rolled_back: Option<Result<()>>,
+    kind: SessionKind,
+) -> Result<Unfinished> {
     // Whatever is open is rolled back and reset as far as that works, also
     // when the session is closed anyway.
     let rolled_back = match rolled_back {
@@ -989,7 +1141,7 @@ mod tests {
     use mysql_async::Opts;
 
     use super::super::cancel;
-    use super::super::tests::{on_mariadb, session, test_url};
+    use super::super::tests::{on_mariadb, runs_on_the_server, session, test_url};
     use super::*;
     use crate::adapter::Adapter;
 
@@ -1236,7 +1388,7 @@ mod tests {
     /// Everything of a session that a script could change and the close
     /// puts back, by name: its settings, a user variable, the default
     /// database, and whether a transaction is open.
-    async fn settings(conn: &Conn) -> Vec<(&'static str, Option<String>)> {
+    pub(super) async fn settings(conn: &Conn) -> Vec<(&'static str, Option<String>)> {
         let mut conn = conn.conn.lock().await;
         let asked: Vec<String> = SETTINGS
             .iter()
@@ -1271,29 +1423,6 @@ mod tests {
             .find(|(setting, _)| *setting == name)
             .unwrap_or_else(|| panic!("no setting {name}"));
         value.as_deref()
-    }
-
-    /// Waits until a statement holding `marker` runs on the server.
-    async fn runs_on_the_server(admin: &mut mysql_async::Conn, marker: &str) {
-        let running = async {
-            loop {
-                let found: Option<i64> = admin
-                    .exec_first(
-                        "SELECT count(*) FROM information_schema.processlist \
-                         WHERE id <> CONNECTION_ID() AND info LIKE ?",
-                        (format!("%{marker}%"),),
-                    )
-                    .await
-                    .unwrap();
-                if found.unwrap_or(0) > 0 {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        };
-        tokio::time::timeout(Duration::from_secs(10), running)
-            .await
-            .expect("the statement never ran");
     }
 
     #[test]
@@ -1388,15 +1517,33 @@ mod tests {
                          ROLLBACK AND NO CHAIN NO RELEASE";
 
     #[test]
+    fn a_failed_step_of_the_open_is_told_by_its_place() {
+        // An agent's writable open: fence, begin, row limit, time limit,
+        // views, question.
+        let (time, views, question) = (Some(3), Some(4), 5);
+        let at = |step, unknown| failed_step(step, unknown, time, views, question);
+        assert_eq!(at(4, false), Failed::Views);
+        assert_eq!(at(4, true), Failed::Views);
+        assert_eq!(at(3, true), Failed::TimeLimit);
+        assert_eq!(at(5, true), Failed::Question);
+        assert_eq!(at(3, false), Failed::Open);
+        assert_eq!(at(5, false), Failed::Open);
+        assert_eq!(at(1, true), Failed::Open);
+        // A script's open asks neither.
+        assert_eq!(failed_step(2, false, None, None, 3), Failed::Open);
+        assert_eq!(failed_step(3, true, None, None, 3), Failed::Question);
+    }
+
+    #[test]
     fn the_open_and_the_close_are_one_message_each() {
         let names = on_mysql(Access::ReadOnly).read_only_names((8, 4, 3));
         assert_eq!(
-            opening(Access::ReadOnly, 10, None, names[0]).join("; "),
+            opening(Access::ReadOnly, 10, None, None, names[0]).join("; "),
             OPEN
         );
         assert_eq!(closing(names[0]).join("; "), CLOSE);
-        // A writable session's fence comes first; an agent's time limit
-        // just before the question, in the server's own form.
+        // A writable session's fence comes first; an agent's time limit, in
+        // the server's own form, before the views' question it bounds.
         let mariadb = SessionKind {
             access: Access::Writable,
             mariadb: true,
@@ -1404,12 +1551,13 @@ mod tests {
         let [own, _] = mariadb.time_limits(1_500);
         let names = mariadb.read_only_names((10, 11, 6));
         assert_eq!(
-            opening(Access::Writable, 5, Some(&own), names[0]),
+            opening(Access::Writable, 5, Some(&own), Some("SELECT 1"), names[0]),
             [
                 "SET SESSION TRANSACTION READ ONLY",
                 "START TRANSACTION READ ONLY",
                 "SET SESSION sql_select_limit = 6",
                 "SET SESSION max_statement_time = 1.500",
+                "SELECT 1",
                 "SELECT @@session.tx_read_only LIMIT 1",
             ]
         );
@@ -1422,7 +1570,9 @@ mod tests {
     /// The open fails as a whole when any of its steps fails, or when its
     /// answer does not say the session is inside a read-only transaction:
     /// no statement runs, the run closes the session, and the close has
-    /// left it as it connected.
+    /// left it as it connected. A script of two statements, which opens
+    /// on its own (a script of one opens in its message: see
+    /// `one::tests`).
     #[tokio::test]
     async fn an_open_that_fails_on_any_step_runs_no_statement() {
         let Some(url) = test_url() else {
@@ -1454,7 +1604,7 @@ mod tests {
                     .await;
             let connected = settings(&conn).await;
             let stop = StopFlag::new();
-            let ran = past_the_refusal(&conn, &["SELECT 1"], &stop).await;
+            let ran = past_the_refusal(&conn, &["SELECT 1", "SELECT 2"], &stop).await;
             assert!(
                 matches!(&ran, Err(Error::ConnectionLost(message))
                     if message.starts_with("could not start the read-only transaction")
@@ -1467,7 +1617,8 @@ mod tests {
     }
 
     /// A cancel that lands on the open stops the run before its first
-    /// statement: no results, and the session as it connected.
+    /// statement: no results, and the session as it connected. A script
+    /// of two, which opens on its own.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_cancel_on_the_open_runs_no_statement() {
         let Some(url) = test_url() else {
@@ -1482,9 +1633,9 @@ mod tests {
         let connected = settings(&conn).await;
         let running = {
             let conn = std::sync::Arc::clone(&conn);
-            tokio::spawn(
-                async move { past_the_refusal(&conn, &["SELECT 1"], &StopFlag::new()).await },
-            )
+            tokio::spawn(async move {
+                past_the_refusal(&conn, &["SELECT 1", "SELECT 2"], &StopFlag::new()).await
+            })
         };
         runs_on_the_server(&mut admin, "SLEEP(46)").await;
         cancel(&conn.opts, conn.id, &conn.server, &conn.spare)
@@ -1501,7 +1652,8 @@ mod tests {
     /// more. Either way the run ends cleanly, the session as it connected.
     /// A real check or `ROLLBACK` is over too soon to cancel on cue, so the
     /// proxy sends the server a slow statement in the step's place; the
-    /// count shows the steps that ran again.
+    /// count shows the steps that ran again. A script of two, whose close
+    /// is a message of its own.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_cancel_on_the_close_runs_the_cancelled_step_again() {
         use std::sync::atomic::Ordering;
@@ -1513,11 +1665,11 @@ mod tests {
                           ROLLBACK AND NO CHAIN NO RELEASE";
         let slow_rollback = "DO 0; SELECT @@session.transaction_read_only LIMIT 1; \
                              SELECT 1 FROM DUAL WHERE SLEEP(48) = 0";
-        // The run's six, and the steps that ran again: the check and the
+        // The run's nine, and the steps that ran again: the check and the
         // rollback, or the rollback.
         for (slow, sleep, asked) in [
-            (slow_check, "SLEEP(47)", 8),
-            (slow_rollback, "SLEEP(48)", 7),
+            (slow_check, "SLEEP(47)", 11),
+            (slow_rollback, "SLEEP(48)", 10),
         ] {
             let (conn, count) =
                 super::super::tests::swapping_session(&url, Access::ReadOnly, (CLOSE, slow)).await;
@@ -1527,7 +1679,7 @@ mod tests {
             let running = {
                 let conn = std::sync::Arc::clone(&conn);
                 tokio::spawn(async move {
-                    past_the_refusal(&conn, &["SELECT 1"], &StopFlag::new()).await
+                    past_the_refusal(&conn, &["SELECT 1", "SELECT 2"], &StopFlag::new()).await
                 })
             };
             runs_on_the_server(&mut admin, sleep).await;
@@ -1542,10 +1694,16 @@ mod tests {
             assert!(
                 matches!(
                     outcome.results.as_slice(),
-                    [StatementResult {
-                        outcome: StatementOutcome::Rows { .. },
-                        ..
-                    }]
+                    [
+                        StatementResult {
+                            outcome: StatementOutcome::Rows { .. },
+                            ..
+                        },
+                        StatementResult {
+                            outcome: StatementOutcome::Rows { .. },
+                            ..
+                        }
+                    ]
                 ),
                 "{outcome:?}"
             );
@@ -1598,9 +1756,9 @@ mod tests {
         cancel(&conn.opts, conn.id, &conn.server, &conn.spare)
             .await
             .unwrap();
-        // The run's six, and the settings again.
+        // The run's three, and the settings again.
         drop(conn.conn.lock().await);
-        assert_eq!(count.load(Ordering::SeqCst) - before, 7);
+        assert_eq!(count.load(Ordering::SeqCst) - before, 4);
         assert_eq!(settings(&conn).await, connected);
     }
 
@@ -1644,8 +1802,8 @@ mod tests {
         first.unwrap();
         second.unwrap();
         drop(conn.conn.lock().await);
-        // The run's six, the settings not run again.
-        assert_eq!(count.load(Ordering::SeqCst) - before, 6);
+        // The run's three, the settings not run again.
+        assert_eq!(count.load(Ordering::SeqCst) - before, 3);
         assert_eq!(settings(&conn).await, connected);
         past_the_refusal(&conn, &["SELECT 1"], &StopFlag::new())
             .await
@@ -1831,7 +1989,7 @@ mod tests {
 
     /// Runs statements straight through the driver, as if the refusal had
     /// missed them.
-    async fn past_the_refusal(
+    pub(super) async fn past_the_refusal(
         conn: &Conn,
         script: &[&str],
         stop: &StopFlag,
@@ -1858,19 +2016,20 @@ mod tests {
 
     const INSERT: &str = "INSERT INTO probe VALUES (1)";
 
-    /// A SELECT's outcome is back after four round trips: the open, the
-    /// prepare, the execute, the close's check with its rollback. The
-    /// reset and the settings follow before anything else uses the
-    /// session: six in all. The first statement needs no check of its own:
-    /// the open asked. Each statement after it adds the check, the prepare
-    /// and the execute. A writable session's fence goes in the open's
-    /// message.
+    /// A SELECT on its own is back after one round trip: the open, the
+    /// statement and the close's check with its rollback go as one message
+    /// (see `one`). The reset and the settings follow before anything else
+    /// uses the session: three in all. A script of two takes the other
+    /// way: the open, the prepare, the execute, the close's check with its
+    /// rollback, and for the second statement the check, the prepare and
+    /// the execute. A writable session's fence goes in the open's message
+    /// either way. Nothing the message set is left after the reset.
     ///
     /// On one thread, so the task that resets the session cannot run
     /// before the count is read: a test that waits for nothing yields
     /// nothing.
     #[tokio::test(flavor = "current_thread")]
-    async fn a_select_waits_for_four_answers() {
+    async fn a_select_waits_for_one_answer() {
         use std::sync::atomic::Ordering;
         let Some(url) = test_url() else {
             return;
@@ -1879,7 +2038,7 @@ mod tests {
             let (conn, asked) = super::super::tests::counted_session(&url, access).await;
             let connected = settings(&conn).await;
             for (script, waited, all) in [
-                (&["SELECT 1"][..], 4, 6),
+                (&["SELECT 1"][..], 1, 3),
                 (&["SELECT 1", "SELECT 2"][..], 7, 9),
             ] {
                 let before = asked.load(Ordering::SeqCst);
@@ -1901,6 +2060,16 @@ mod tests {
                 let reset = asked.load(Ordering::SeqCst) - before;
                 assert_eq!(reset, all, "{access:?} {script:?}");
                 assert_eq!(settings(&conn).await, connected, "{access:?} {script:?}");
+                let mut session = conn.conn.lock().await;
+                let left: mysql_async::Row = session
+                    .query_first("SELECT @tabletist_run")
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(left.unwrap(), [mysql_async::Value::NULL]);
+                let prepared = session.query_drop("EXECUTE tabletist_run").await;
+                assert!(prepared.is_err(), "{access:?} {script:?}");
+                drop(session);
             }
         }
     }
@@ -2014,6 +2183,7 @@ mod tests {
             // The server marks the transaction read-only, or this fails.
             open(&mut conn, 10, on_mysql(Access::ReadOnly), None)
                 .await
+                .unwrap()
                 .unwrap();
             assert_eq!(
                 standing(&mut conn, READ_ONLY_SETTINGS).await,
@@ -2072,6 +2242,7 @@ mod tests {
             // A script's own sql_select_limit does not blind the check.
             open(&mut conn, 10, on_mysql(Access::ReadOnly), None)
                 .await
+                .unwrap()
                 .unwrap();
             conn.query_drop("SET SESSION sql_select_limit = 0")
                 .await
@@ -2112,6 +2283,7 @@ mod tests {
             let mut conn = conn.conn.lock().await;
             open(&mut conn, 10, on_mysql(Access::ReadOnly), None)
                 .await
+                .unwrap()
                 .unwrap();
             // What the first statement of the script would have done.
             conn.query_drop("SET SESSION TRANSACTION READ WRITE")

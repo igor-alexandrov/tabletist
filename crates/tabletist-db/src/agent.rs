@@ -30,6 +30,7 @@ use crate::{Dialect, sql};
 
 mod hidden;
 mod run;
+pub(crate) mod views;
 
 pub(crate) use hidden::column_references;
 pub use hidden::{

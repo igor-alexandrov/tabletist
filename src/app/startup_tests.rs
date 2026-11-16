@@ -481,23 +481,25 @@ fn connected_to(app: &mut App, driver: tabletist_db::Driver) {
     }));
 }
 
-/// The pages asked for since the `from`th command, by table.
+/// The pages asked for since the `from`th command, by table: alone, or
+/// with a structure as a table opens.
 fn fetched(app: &App, from: usize) -> Vec<tabletist_db::RowQuery> {
     app.backend.sent[from..]
         .iter()
         .filter_map(|command| match command {
-            Command::FetchRows { query, .. } => Some(query.clone()),
+            Command::FetchRows { query, .. } | Command::Open { query, .. } => Some(query.clone()),
             _ => None,
         })
         .collect()
 }
 
-/// The tables whose structure was asked for since the `from`th command.
+/// The tables whose structure was asked for since the `from`th command:
+/// alone, or with a page as a table opens.
 fn described(app: &App, from: usize) -> Vec<ObjectRef> {
     app.backend.sent[from..]
         .iter()
         .filter_map(|command| match command {
-            Command::Describe { object, .. } => Some(object.clone()),
+            Command::Describe { object, .. } | Command::Open { object, .. } => Some(object.clone()),
             _ => None,
         })
         .collect()
