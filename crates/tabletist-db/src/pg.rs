@@ -57,6 +57,8 @@ pub(crate) struct Conn {
     /// page, in the same flight as the page, and a page built from a shape
     /// that has changed since is read again (see `Adapter::fetch_rows`).
     shapes: std::sync::Mutex<std::collections::HashMap<ObjectRef, Shape>>,
+    /// The server's version, read with the session's settings at connect.
+    version: String,
 }
 
 /// What a statement over a table needs to know of it: its primary key's
@@ -580,10 +582,10 @@ impl Conn {
                 log::info!("PostgreSQL connection ended: {error}");
             }
         });
-        client
-            .batch_execute(&session_setup(access))
-            .await
-            .map_err(query_error)?;
+        // The server's version with the settings: one round trip for both.
+        let setup = format!("{}; SHOW server_version", session_setup(access));
+        let messages = client.simple_query(&setup).await.map_err(query_error)?;
+        let version = version_named(&first_text(&messages).unwrap_or_default());
         let cancel = Cancel {
             token: client.cancel_token(),
             tls: tls.clone(),
@@ -597,6 +599,7 @@ impl Conn {
             requested_database: database.to_owned(),
             encrypted: handshake.load(Ordering::Relaxed),
             shapes: Default::default(),
+            version,
         })
     }
 
@@ -1358,17 +1361,10 @@ impl Adapter for Conn {
         Ok(None)
     }
 
-    /// See [`crate::Connection::server_version`].
+    /// See [`crate::Connection::server_version`]. Read at connect, with the
+    /// session's settings.
     async fn server_version(&self) -> Result<String> {
-        let client = self.client.lock().await;
-        let messages = client
-            .simple_query("SHOW server_version")
-            .await
-            .map_err(query_error)?;
-        let version = first_text(&messages).unwrap_or_default();
-        // "17.2 (Debian 17.2-1.pgdg120+1)" reads as "17.2".
-        let version = version.split_whitespace().next().unwrap_or_default();
-        Ok(format!("PostgreSQL {version}"))
+        Ok(self.version.clone())
     }
 
     async fn list_databases(&self) -> Result<Vec<String>> {
@@ -1622,6 +1618,12 @@ impl Adapter for Conn {
     async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
         self.save(changes, stop).await
     }
+}
+
+/// "17.2 (Debian 17.2-1.pgdg120+1)" reads as "PostgreSQL 17.2".
+fn version_named(shown: &str) -> String {
+    let version = shown.split_whitespace().next().unwrap_or_default();
+    format!("PostgreSQL {version}")
 }
 
 /// The first row's first value.
@@ -2506,6 +2508,31 @@ mod tests {
         assert_eq!(page.rows.len(), 2);
         assert!(page.ordered_by_key);
         assert_eq!(asked, 1);
+    }
+
+    /// The server's version is read with the settings the connect sends
+    /// after sign-in: asking it later asks the server nothing.
+    #[tokio::test]
+    async fn the_server_version_is_known_from_the_connect() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let (conn, trips) = trip_counted(&url).await;
+        assert_eq!(trips.count(), 1, "the settings and the version go together");
+        let (version, asked) = counted(&trips, conn.server_version()).await;
+        let version = version.unwrap();
+        assert!(version.starts_with("PostgreSQL "), "{version}");
+        assert!(!version.contains('('), "{version}");
+        assert_eq!(asked, 0);
+    }
+
+    #[test]
+    fn a_version_reads_without_its_packaging() {
+        assert_eq!(
+            version_named("17.2 (Debian 17.2-1.pgdg120+1)"),
+            "PostgreSQL 17.2"
+        );
+        assert_eq!(version_named(""), "PostgreSQL ");
     }
 
     /// A client of the test server's own, for the tests to set up and
