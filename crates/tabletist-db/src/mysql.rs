@@ -1275,7 +1275,9 @@ impl Adapter for Conn {
     /// See [`crate::Connection::session_zone`]: read at connect, with the
     /// server's identity ([`SESSION_ZONE`]). The connect's settings leave the
     /// zone as the server has it, and the reset that ends every SQL editor
-    /// run puts the server's back, so the zone read then holds.
+    /// run puts the server's global zone back, so the zone read then holds
+    /// unless that global zone is changed while the session is open. The
+    /// app asks the zone once per session either way, at connect.
     async fn session_zone(&self) -> Result<Option<String>> {
         Ok(self.zone.clone())
     }
