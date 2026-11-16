@@ -1215,7 +1215,9 @@ impl Conn {
             // The session is gone: the listing that came before says
             // nothing of it.
             Err(error) if error.is_connection_lost() => return Err(error),
-            Err(error) => log::info!("the listing read no shapes of {schema}: {error}"),
+            // Neither the schema, which an agent may have sent, nor the
+            // server's words, which can quote what it holds, go in the log.
+            Err(_) => log::info!("the listing read no shapes"),
         }
         Ok(rows
             .into_iter()
@@ -4938,7 +4940,13 @@ mod tests {
             assert!(listed.iter().any(|listed| listed.name == object.name));
             assert_eq!(messages, 1, "{access:?}");
             let before = asked.load(Ordering::SeqCst);
-            let (structure, page) = conn.open(&object, &RowQuery::new(object.clone(), 10)).await;
+            let (structure, page) = conn
+                .open(
+                    &object,
+                    &RowQuery::new(object.clone(), 10),
+                    &StopFlag::new(),
+                )
+                .await;
             let messages = asked.load(Ordering::SeqCst) - before;
             assert_eq!(structure.unwrap().primary_key, ["id"], "{access:?}");
             let page = page.unwrap();
@@ -5119,7 +5127,13 @@ mod tests {
             assert_eq!(conn.known_shape(&listed), None, "{listed:?}");
         }
         assert!(!in_transaction(&conn).await);
-        let (structure, page) = conn.open(&object, &RowQuery::new(object.clone(), 10)).await;
+        let (structure, page) = conn
+            .open(
+                &object,
+                &RowQuery::new(object.clone(), 10),
+                &StopFlag::new(),
+            )
+            .await;
         assert_eq!(structure.unwrap().primary_key, ["id"]);
         assert!(page.unwrap().ordered_by_key);
     }
@@ -5224,7 +5238,13 @@ mod tests {
                 .await
                 .unwrap();
             let before = asked.load(Ordering::SeqCst);
-            let (structure, page) = conn.open(&object, &RowQuery::new(object.clone(), 10)).await;
+            let (structure, page) = conn
+                .open(
+                    &object,
+                    &RowQuery::new(object.clone(), 10),
+                    &StopFlag::new(),
+                )
+                .await;
             let messages = asked.load(Ordering::SeqCst) - before;
             assert_eq!(structure.unwrap().primary_key, ["b"], "{access:?}");
             let page = page.unwrap();

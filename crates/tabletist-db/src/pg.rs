@@ -848,7 +848,9 @@ impl Conn {
             // The session is gone: the listing that came before says
             // nothing of it.
             Err(error) if error.is_connection_lost() => return Err(error),
-            Err(error) => log::info!("the listing read no shapes of {schema}: {error}"),
+            // Neither the schema, which an agent may have sent, nor the
+            // server's words, which can quote what it holds, go in the log.
+            Err(_) => log::info!("the listing read no shapes"),
         }
         rows.iter()
             .map(|row| {
@@ -2535,7 +2537,8 @@ mod tests {
         );
         assert_eq!(asked, 1);
         let query = RowQuery::new(object.clone(), 10);
-        let ((structure, page), asked) = counted(&trips, conn.open(&object, &query)).await;
+        let ((structure, page), asked) =
+            counted(&trips, conn.open(&object, &query, &StopFlag::new())).await;
         assert_eq!(structure.unwrap().primary_key, ["shelf", "id"]);
         let page = page.unwrap();
         let ids: Vec<_> = page.rows.iter().map(|row| row[0].clone()).collect();
@@ -2637,7 +2640,8 @@ mod tests {
         }
         assert!(outside_a_transaction(&conn).await);
         let query = RowQuery::new(object.clone(), 10);
-        let ((structure, page), asked) = counted(&trips, conn.open(&object, &query)).await;
+        let ((structure, page), asked) =
+            counted(&trips, conn.open(&object, &query, &StopFlag::new())).await;
         assert_eq!(structure.unwrap().primary_key, ["shelf", "id"]);
         assert!(page.unwrap().ordered_by_key);
         assert_eq!(asked, 2);
@@ -2709,7 +2713,8 @@ mod tests {
             .await
             .unwrap();
         let query = RowQuery::new(object.clone(), 10);
-        let ((structure, page), asked) = counted(&trips, conn.open(&object, &query)).await;
+        let ((structure, page), asked) =
+            counted(&trips, conn.open(&object, &query, &StopFlag::new())).await;
         assert_eq!(structure.unwrap().primary_key, ["b"]);
         let page = page.unwrap();
         let firsts: Vec<_> = page.rows.iter().map(|row| row[0].clone()).collect();
