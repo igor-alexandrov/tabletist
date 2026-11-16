@@ -150,6 +150,16 @@ codegen-units = 1
 strip = true
 panic = "abort"
 
+# A release build as CI's relay step on Windows needs it: no debug
+# assertions, so the program is the GUI program a person installs
+# (`src/main.rs`). Its tests need nothing of the release's optimization,
+# which took eight of the job's minutes.
+[profile.release-check]
+inherits = "release"
+opt-level = 1
+lto = false
+codegen-units = 256
+
 # Immediate-mode layout is too slow at opt-level 0 to try the app in
 # development. Dependencies are optimized; the app crate stays incremental.
 [profile.dev.package."*"]
