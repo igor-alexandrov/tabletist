@@ -401,6 +401,7 @@ fn typing_queries_nothing() {
                     command,
                     Command::ListSchemas { .. }
                         | Command::ListObjects { .. }
+                        | Command::ListTree { .. }
                         | Command::Describe { .. }
                         | Command::FetchRows { .. }
                         | Command::CountRows { .. }

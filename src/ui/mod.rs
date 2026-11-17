@@ -3339,7 +3339,7 @@ value_tags   = true
         assert!(
             harness.app.backend.sent[sent..]
                 .iter()
-                .any(|c| matches!(c, Command::ListSchemas { .. })),
+                .any(|c| matches!(c, Command::ListTree { .. })),
             "the tree reloads its schemas"
         );
     }
@@ -12078,7 +12078,7 @@ value_tags   = true
         harness.click("Reload");
         assert!(
             harness.app.backend.sent[before..].iter().any(
-                |c| matches!(c, crate::backend::Command::ListObjects { schema, .. } if schema == "main")
+                |c| matches!(c, crate::backend::Command::ListTree { schema, .. } if schema == "main")
             ),
             "the empty schema reloads its objects"
         );
@@ -12099,6 +12099,7 @@ value_tags   = true
         assert!(!harness.has("Or pick another database in the top bar."));
         let before = harness.app.backend.sent.len();
         harness.click("Reload");
+        // Alone: with none listed, there is no default to list with them.
         assert!(
             harness.app.backend.sent[before..]
                 .iter()
@@ -13033,7 +13034,7 @@ value_tags   = true
         assert!(
             harness.app.backend.sent[before..]
                 .iter()
-                .any(|c| matches!(c, crate::backend::Command::ListSchemas { .. })),
+                .any(|c| matches!(c, crate::backend::Command::ListTree { .. })),
             "the tree reloads its schemas"
         );
     }

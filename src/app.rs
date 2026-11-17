@@ -4598,6 +4598,23 @@ impl App {
                 }
                 workspace.catalog_changed();
                 let database = workspace.spec.database.clone();
+                // A guessed schema the listing does not have was asked for
+                // with it (see `load_tree`): its node goes, and the answer
+                // of its objects finds none, unless the person unfolded it.
+                // A listing that failed says nothing of what exists.
+                let guess = workspace.tree.listed_with.take();
+                if workspace.tree.schemas.error.is_none()
+                    && let Some(schemas) = &workspace.tree.schemas.value
+                    && let Some(guess) = guess
+                    && !schemas.contains(&guess)
+                    && workspace
+                        .tree
+                        .nodes
+                        .get(&guess)
+                        .is_some_and(|node| !node.expanded)
+                {
+                    workspace.tree.nodes.remove(&guess);
+                }
                 let default = workspace
                     .tree
                     .schemas
@@ -6578,6 +6595,47 @@ impl App {
         });
     }
 
+    /// Lists the schemas, and with them `guess`'s objects where there is a
+    /// guess (see `refresh_tree`): one command, which PostgreSQL and MySQL
+    /// answer in one round trip. The guessed schema's node is loading from
+    /// here, so the schemas' answer finds it so and asks nothing more when
+    /// the guess was the default.
+    fn load_tree(&mut self, tab: ConnTabId, guess: Option<String>) {
+        let Some(schema) = guess else {
+            if let Some(workspace) = self.workspace_mut(tab) {
+                workspace.tree.listed_with = None;
+            }
+            self.load_schemas(tab);
+            return;
+        };
+        if !self.wake_to_read(tab) {
+            return;
+        }
+        let schemas = RequestId(self.next_id());
+        let objects = RequestId(self.next_id());
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        workspace.tree.schemas.start(schemas);
+        workspace.tree.listed_with = Some(schema.clone());
+        workspace
+            .tree
+            .nodes
+            .entry(schema.clone())
+            .or_default()
+            .objects
+            .start(objects);
+        // An open completion list says it waits for them.
+        workspace.catalog_changed();
+        let session = workspace.session;
+        self.backend.send(Command::ListTree {
+            session,
+            schemas,
+            objects,
+            schema,
+        });
+    }
+
     /// Sends the databases' listing a connect held back for the tree, if
     /// it is still the one the switcher waits for.
     fn send_databases_after_tree(&mut self, tab: ConnTabId) {
@@ -6606,12 +6664,23 @@ impl App {
     }
 
     fn refresh_tree(&mut self, tab: ConnTabId) {
-        self.load_schemas(tab);
+        // The schema the schemas' answer will unfold is listed with them:
+        // the default of the schemas listed already, or, before any are
+        // (at connect), a guess at it. A wrong guess costs the round trip
+        // it always did: the schemas' answer lists the default.
+        let guess = self
+            .workspace(tab)
+            .and_then(|workspace| match &workspace.tree.schemas.value {
+                Some(schemas) => crate::model::first_schema(schemas, &workspace.spec.database),
+                None => crate::model::guessed_schema(workspace.driver, &workspace.spec.database),
+            });
+        self.load_tree(tab, guess.clone());
         // The names of a schema the sidebar does not show unfolded (one
         // only a completion list loaded, or one that was folded) are not
         // loaded again here: they are forgotten, and load again when a
-        // list or the sidebar needs them. Its node stays: the prefix
-        // groups unfolded in it are the user's. The columns a list
+        // list or the sidebar needs them. The one listed with the schemas
+        // is the exception: its names come with them. Its node stays: the
+        // prefix groups unfolded in it are the user's. The columns a list
         // fetched go too.
         if let Some(workspace) = self.workspace_mut(tab) {
             for node in workspace.tree.nodes.values_mut() {
@@ -6631,6 +6700,7 @@ impl App {
                     .iter()
                     .filter(|(_, node)| node.expanded || node.objects.is_loading())
                     .map(|(name, _)| name.clone())
+                    .filter(|name| Some(name) != guess.as_ref())
                     .collect()
             })
             .unwrap_or_default();
@@ -13608,10 +13678,14 @@ masked = ["orders.email"]
         let before = harness.app.backend.sent.len();
         harness.app.apply(Action::RefreshTree(tab));
         let new: Vec<_> = harness.app.backend.sent[before..].iter().collect();
-        assert!(new.iter().any(|c| matches!(c, Command::ListSchemas { .. })));
+        // `main`, the default, with the schemas.
         assert!(
             new.iter()
-                .any(|c| matches!(c, Command::ListObjects { schema, .. } if schema == "main"))
+                .any(|c| matches!(c, Command::ListTree { schema, .. } if schema == "main"))
+        );
+        assert!(
+            !new.iter()
+                .any(|c| matches!(c, Command::ListSchemas { .. } | Command::ListObjects { .. }))
         );
     }
 
@@ -13628,7 +13702,9 @@ masked = ["orders.email"]
             tab,
             schema: "main".into(),
         };
-        // Folded: its tables are not the refresh's to load again.
+        // Folded: its tables are not the refresh's to load again on their
+        // own. As the default, they come with the schemas, which unfold it
+        // again when they answer.
         harness.app.apply(toggle());
         let before = harness.app.backend.sent.len();
         harness.app.apply(Action::RefreshTree(tab));
@@ -13636,12 +13712,40 @@ masked = ["orders.email"]
         assert!(!new.iter().any(|c| matches!(c, Command::ListObjects { .. })));
         let node = &harness.app.workspace(tab).unwrap().tree.nodes["main"];
         assert!(node.open_groups.contains("order"), "the user's stays");
+        assert!(!node.expanded && node.objects.is_loading());
+        crate::testing::answer_tree(
+            &mut harness.app,
+            vec!["main".into()],
+            crate::testing::fixture_objects(),
+        );
+        let node = &harness.app.workspace(tab).unwrap().tree.nodes["main"];
+        assert!(node.expanded && node.objects.value.is_some());
+        assert!(node.open_groups.contains("order"), "the user's stays");
+    }
+
+    #[test]
+    fn refreshing_the_tree_forgets_the_names_of_a_folded_schema_other_than_the_default() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        let other = workspace.tree.nodes.entry("audit".into()).or_default();
+        other.objects.value = Some(Vec::new());
+        other.open_groups.insert("log_".into());
+        let before = harness.app.backend.sent.len();
+        harness.app.apply(Action::RefreshTree(tab));
+        let new = &harness.app.backend.sent[before..];
+        assert!(!new.iter().any(|c| matches!(c, Command::ListObjects { .. })));
+        let node = &harness.app.workspace(tab).unwrap().tree.nodes["audit"];
+        assert!(node.open_groups.contains("log_"), "the user's stays");
         // Its names are forgotten, and load again once it is unfolded.
         assert!(node.objects.needs_load());
-        harness.app.apply(toggle());
+        harness.app.apply(Action::ToggleSchema {
+            tab,
+            schema: "audit".into(),
+        });
         assert!(matches!(
             last_sent(&harness.app),
-            Command::ListObjects { schema, .. } if schema == "main"
+            Command::ListObjects { schema, .. } if schema == "audit"
         ));
     }
 
@@ -13696,14 +13800,9 @@ masked = ["orders.email"]
             access: crate::testing::asked_access(&harness.app),
         }));
         let new: Vec<_> = harness.app.backend.sent[before..].iter().collect();
-        assert!(
-            new.iter()
-                .any(|c| matches!(c, Command::ListSchemas { session: s, .. } if *s == session))
-        );
-        assert!(
-            new.iter()
-                .any(|c| matches!(c, Command::ListObjects { session: s, .. } if *s == session))
-        );
+        assert!(new.iter().any(
+            |c| matches!(c, Command::ListTree { session: s, schema, .. } if *s == session && schema == "main")
+        ));
         assert!(
             new.iter()
                 .any(|c| matches!(c, Command::FetchRows { session: s, .. } if *s == session))
@@ -15343,7 +15442,7 @@ masked = ["orders.email"]
             harness.answer_sql(Ok(outcome), None);
             let listed = harness.app.backend.sent[sent..]
                 .iter()
-                .any(|command| matches!(command, Command::ListSchemas { .. }));
+                .any(|command| matches!(command, Command::ListTree { .. }));
             assert_eq!(listed, refreshes, "{text}");
         }
     }
@@ -17368,13 +17467,19 @@ masked = ["orders.email"]
         tab
     }
 
-    /// Answers the schemas' listing the last connect sent.
+    /// Answers the schemas' listing the last connect sent, alone or with
+    /// the guessed schema's objects.
     fn answer_schemas(app: &mut App, result: Result<Vec<String>, tabletist_db::Error>) {
         let Some((session, request)) = app.backend.sent.iter().rev().find_map(|c| match c {
-            Command::ListSchemas { session, request } => Some((*session, *request)),
+            Command::ListSchemas { session, request }
+            | Command::ListTree {
+                session,
+                schemas: request,
+                ..
+            } => Some((*session, *request)),
             _ => None,
         }) else {
-            panic!("expected ListSchemas");
+            panic!("expected ListSchemas or ListTree");
         };
         app.apply(Action::Backend(Event::Schemas {
             session,
@@ -17401,9 +17506,197 @@ masked = ["orders.email"]
         assert!(app.workspace(tab).unwrap().databases.is_loading());
         answer_schemas(&mut app, Ok(vec!["public".into()]));
         let at = |wanted: fn(&Command) -> bool| app.backend.sent.iter().position(wanted);
-        let objects = at(|c| matches!(c, Command::ListObjects { .. })).expect("ListObjects");
+        // Asked with the schemas, `public` guessed.
+        let objects = at(|c| matches!(c, Command::ListTree { schema, .. } if schema == "public"))
+            .expect("ListTree");
         let databases = at(|c| matches!(c, Command::ListDatabases { .. })).expect("ListDatabases");
         assert!(objects < databases);
+        assert_eq!(at(|c| matches!(c, Command::ListObjects { .. })), None);
+    }
+
+    /// The commands sent to list the tree: the schemas, alone or with a
+    /// schema's objects, and a schema's objects alone.
+    fn tree_commands(sent: &[Command]) -> Vec<String> {
+        sent.iter()
+            .filter_map(|command| match command {
+                Command::ListSchemas { .. } => Some("schemas".to_owned()),
+                Command::ListTree { schema, .. } => Some(format!("schemas and {schema}")),
+                Command::ListObjects { schema, .. } => Some(schema.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Answers the objects of the newest `ListTree` with one table,
+    /// `listed`.
+    fn answer_guessed_objects(app: &mut App, listed: &str) {
+        let (session, _, request, schema) = crate::testing::tree_asked(app);
+        app.apply(Action::Backend(Event::Objects {
+            session,
+            request,
+            schema,
+            result: Ok(vec![tabletist_db::ObjectInfo {
+                name: listed.into(),
+                kind: ObjectKind::Table,
+                estimated_rows: None,
+            }]),
+        }));
+    }
+
+    #[test]
+    fn a_connect_asks_for_the_schemas_and_the_default_schemas_tables_at_once() {
+        let (mut app, _dir) = app();
+        let tab = connected_postgres_unanswered(&mut app);
+        assert_eq!(tree_commands(&app.backend.sent), ["schemas and public"]);
+        let node = &app.workspace(tab).unwrap().tree.nodes["public"];
+        assert!(node.objects.is_loading() && !node.expanded);
+        answer_schemas(&mut app, Ok(vec!["public".into()]));
+        // The guess was right: it unfolds, and nothing more is asked.
+        assert_eq!(tree_commands(&app.backend.sent), ["schemas and public"]);
+        assert!(app.workspace(tab).unwrap().tree.nodes["public"].expanded);
+        answer_guessed_objects(&mut app, "books");
+        let node = &app.workspace(tab).unwrap().tree.nodes["public"];
+        assert_eq!(node.objects.value.as_ref().unwrap()[0].name, "books");
+    }
+
+    #[test]
+    fn a_wrong_guess_lists_the_default_schema_once_the_schemas_answer() {
+        let (mut app, _dir) = app();
+        let tab = connected_postgres_unanswered(&mut app);
+        // No `public`: the guessed schema is not there.
+        answer_schemas(&mut app, Ok(vec!["sales".into()]));
+        assert_eq!(
+            tree_commands(&app.backend.sent),
+            ["schemas and public", "sales"]
+        );
+        let nodes = &app.workspace(tab).unwrap().tree.nodes;
+        assert!(nodes["sales"].expanded && nodes["sales"].objects.is_loading());
+        assert!(
+            !nodes.contains_key("public"),
+            "no node for what is not there"
+        );
+        // Its answer finds none, and makes none.
+        answer_guessed_objects(&mut app, "ghost");
+        assert!(
+            !app.workspace(tab)
+                .unwrap()
+                .tree
+                .nodes
+                .contains_key("public")
+        );
+    }
+
+    #[test]
+    fn a_wrong_guess_keeps_the_guessed_schemas_tables_for_when_it_unfolds() {
+        let (mut app, _dir) = app();
+        let tab = connected_postgres_unanswered(&mut app);
+        // A schema named like the database comes first.
+        answer_schemas(&mut app, Ok(vec!["app".into(), "public".into()]));
+        assert_eq!(
+            tree_commands(&app.backend.sent),
+            ["schemas and public", "app"]
+        );
+        answer_guessed_objects(&mut app, "books");
+        let node = &app.workspace(tab).unwrap().tree.nodes["public"];
+        assert!(!node.expanded);
+        assert_eq!(node.objects.value.as_ref().unwrap()[0].name, "books");
+        app.apply(Action::ToggleSchema {
+            tab,
+            schema: "public".into(),
+        });
+        assert!(app.workspace(tab).unwrap().tree.nodes["public"].expanded);
+        assert_eq!(
+            tree_commands(&app.backend.sent),
+            ["schemas and public", "app"],
+            "already listed"
+        );
+    }
+
+    #[test]
+    fn a_refresh_lists_the_guessed_schema_with_the_schemas_and_the_other_unfolded_one_alone() {
+        let (mut app, _dir) = app();
+        let tab = connected_postgres_unanswered(&mut app);
+        answer_schemas(&mut app, Ok(vec!["public".into(), "sales".into()]));
+        answer_guessed_objects(&mut app, "books");
+        app.apply(Action::ToggleSchema {
+            tab,
+            schema: "sales".into(),
+        });
+        let before = app.backend.sent.len();
+        app.apply(Action::RefreshTree(tab));
+        assert_eq!(
+            tree_commands(&app.backend.sent[before..]),
+            ["schemas and public", "sales"]
+        );
+    }
+
+    #[test]
+    fn a_reload_lists_the_default_of_the_schemas_listed_with_them() {
+        for (listed, default) in [
+            (vec!["sales".to_owned()], "sales"),
+            // A schema named like the database comes first.
+            (vec!["app".to_owned(), "public".to_owned()], "app"),
+        ] {
+            let (mut app, _dir) = app();
+            let tab = connected_postgres_unanswered(&mut app);
+            answer_schemas(&mut app, Ok(listed));
+            answer_guessed_objects(&mut app, "books");
+            let before = app.backend.sent.len();
+            app.apply(Action::RefreshTree(tab));
+            // No guess: the default, and no node for a `public` that is
+            // not there.
+            assert_eq!(
+                tree_commands(&app.backend.sent[before..]),
+                [format!("schemas and {default}")]
+            );
+            answer_schemas(&mut app, Ok(vec![default.to_owned()]));
+            assert_eq!(
+                tree_commands(&app.backend.sent[before..]),
+                [format!("schemas and {default}")],
+                "one round trip"
+            );
+            let nodes = &app.workspace(tab).unwrap().tree.nodes;
+            assert!(nodes[default].expanded && nodes[default].objects.is_loading());
+        }
+    }
+
+    #[test]
+    fn a_mysql_connection_with_no_database_lists_the_schemas_alone() {
+        let (mut app, _dir) = app();
+        let (spec, _) = ConnectSpec::from_url("mysql://root@db").unwrap();
+        assert_eq!(spec.database, "");
+        let saved = SavedConnection {
+            id: ConnectionId::new(),
+            name: "Shop".into(),
+            environment: crate::env::Environment::None,
+            read_only: None,
+            password: PasswordMode::None,
+            ssh_secret: crate::connections::PasswordMode::None,
+            spec,
+            agents: Default::default(),
+        };
+        let conn = saved.id.clone();
+        app.connections.upsert(saved);
+        let tab = app.active_tab_id();
+        app.apply(Action::Connect { tab, conn });
+        let Some(Command::Connect {
+            session, request, ..
+        }) = app.backend.sent.last()
+        else {
+            panic!()
+        };
+        let (session, request) = (*session, *request);
+        app.apply(Action::Backend(Event::Connected {
+            session,
+            request,
+            driver: Driver::MySql,
+            encrypted: false,
+            access: crate::testing::asked_access(&app),
+        }));
+        assert_eq!(tree_commands(&app.backend.sent), ["schemas"]);
+        answer_schemas(&mut app, Ok(vec!["shop".into()]));
+        // The only one, listed once the schemas answer, as before.
+        assert_eq!(tree_commands(&app.backend.sent), ["schemas", "shop"]);
     }
 
     #[test]
@@ -17648,16 +17941,10 @@ masked = ["orders.email"]
             encrypted: false,
             access: crate::testing::asked_access(&app),
         }));
-        let Some(Command::ListSchemas { request, .. }) = app
-            .backend
-            .sent
-            .iter()
-            .rev()
-            .find(|c| matches!(c, Command::ListSchemas { .. }))
-        else {
-            panic!("ListSchemas")
-        };
-        let request = *request;
+        // Its tables are asked for with the schemas.
+        let (_, request, _, guessed) = crate::testing::tree_asked(&app);
+        assert_eq!(guessed, "shop");
+        let before = app.backend.sent.len();
         app.apply(Action::Backend(Event::Schemas {
             session,
             request,
@@ -17669,7 +17956,14 @@ masked = ["orders.email"]
         }));
         let nodes = &app.workspace(tab).unwrap().tree.nodes;
         assert!(nodes["shop"].expanded);
+        assert!(nodes["shop"].objects.is_loading());
         assert!(!nodes.get("analytics").is_some_and(|node| node.expanded));
+        // And not again.
+        assert!(
+            !app.backend.sent[before..]
+                .iter()
+                .any(|c| matches!(c, Command::ListObjects { .. }))
+        );
     }
 
     #[test]
@@ -19362,6 +19656,7 @@ masked = ["orders.email"]
                 matches!(
                     command,
                     Command::ListSchemas { .. }
+                        | Command::ListTree { .. }
                         | Command::FetchRows { .. }
                         | Command::Describe { .. }
                 )
@@ -19470,7 +19765,7 @@ masked = ["orders.email"]
                 access: crate::testing::asked_access(&harness.app),
             }));
             let new = &harness.app.backend.sent[before..];
-            assert!(new.iter().any(|c| matches!(c, Command::ListSchemas { .. })));
+            assert!(new.iter().any(|c| matches!(c, Command::ListTree { .. })));
             assert!(new.iter().any(|c| matches!(c, Command::FetchRows { .. })));
         }
 
@@ -19519,23 +19814,8 @@ masked = ["orders.email"]
                 access: crate::testing::asked_access(&harness.app),
             }));
             // Its tree, answered: nothing waits for the session.
-            let Command::ListSchemas { request, .. } = *last_sent(&harness.app) else {
-                panic!("expected ListSchemas");
-            };
-            harness.app.apply(Action::Backend(Event::Schemas {
-                session,
-                request,
-                result: Ok(vec!["main".into()]),
-            }));
-            let Command::ListObjects { request, .. } = *last_sent(&harness.app) else {
-                panic!("expected ListObjects");
-            };
-            harness.app.apply(Action::Backend(Event::Objects {
-                session,
-                request,
-                schema: "main".into(),
-                result: Ok(Vec::new()),
-            }));
+            assert!(matches!(last_sent(&harness.app), Command::ListTree { .. }));
+            crate::testing::answer_tree(&mut harness.app, vec!["main".into()], Vec::new());
             let used = harness.app.workspace(tab).unwrap().used;
             harness.app.close_idle(used + 30 * MINUTE);
             assert!(matches!(status(&harness, tab), SessionStatus::Idle));
@@ -19561,7 +19841,7 @@ masked = ["orders.email"]
             // starts again, as after any reconnect.
             let new = &harness.app.backend.sent[before..];
             assert!(
-                new.iter().any(|c| matches!(c, Command::ListSchemas { .. })),
+                new.iter().any(|c| matches!(c, Command::ListTree { .. })),
                 "{new:?}"
             );
         }
@@ -19963,23 +20243,8 @@ masked = ["orders.email"]
                 encrypted: false,
                 access: crate::testing::asked_access(&harness.app),
             }));
-            let Command::ListSchemas { request, .. } = *last_sent(&harness.app) else {
-                panic!("expected ListSchemas");
-            };
-            harness.app.apply(Action::Backend(Event::Schemas {
-                session,
-                request,
-                result: Ok(vec!["main".into()]),
-            }));
-            let Command::ListObjects { request, .. } = *last_sent(&harness.app) else {
-                panic!("expected ListObjects");
-            };
-            harness.app.apply(Action::Backend(Event::Objects {
-                session,
-                request,
-                schema: "main".into(),
-                result: Ok(Vec::new()),
-            }));
+            assert!(matches!(last_sent(&harness.app), Command::ListTree { .. }));
+            crate::testing::answer_tree(&mut harness.app, vec!["main".into()], Vec::new());
             assert_ne!(first, second);
             assert_eq!(harness.app.workspace(second).unwrap().conn_id, conn);
             for tab in [first, second] {

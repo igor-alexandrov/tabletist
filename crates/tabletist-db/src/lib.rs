@@ -445,6 +445,25 @@ impl Connection {
         }
     }
 
+    /// The schemas and `schema`'s tables and views, in one round trip where
+    /// the adapter can: the same results as [`Connection::list_schemas`]
+    /// and then [`Connection::list_objects`], each its own. Where the
+    /// database answers them apart, one failing still leaves the other to
+    /// show; on MySQL, whose one message stops at a refused statement,
+    /// schemas refused leave the tables unasked, and both carry that
+    /// error. It is what the sidebar needs once connected: the schemas,
+    /// and the tables of the one it unfolds, without waiting on the first
+    /// to ask for the second.
+    pub async fn list_tree(&self, schema: &str) -> (Result<Vec<String>>, Result<Vec<ObjectInfo>>) {
+        match &self.inner {
+            Inner::Sqlite(conn) => conn.list_tree(schema).await,
+            Inner::Postgres(conn) => conn.list_tree(schema).await,
+            Inner::MySql(conn) => conn.list_tree(schema).await,
+            Inner::BigQuery(conn) => conn.list_tree(schema).await,
+            Inner::Redis(conn) => conn.list_tree(schema).await,
+        }
+    }
+
     pub async fn describe(&self, object: &ObjectRef) -> Result<Structure> {
         match &self.inner {
             Inner::Sqlite(conn) => conn.describe(object).await,

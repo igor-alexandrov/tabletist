@@ -1,7 +1,7 @@
 ---
 title: Download
 description: Download Tabletist for macOS, Windows or Linux, with the install steps for each.
-nav_order: 1
+nav_order: 2
 ---
 
 The newest stable version is on the

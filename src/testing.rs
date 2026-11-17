@@ -625,6 +625,42 @@ pub fn last_sent(app: &App) -> &Command {
     app.backend.sent.last().expect("a command was sent")
 }
 
+/// The newest `ListTree` `app` sent: its session, the schemas' request,
+/// the objects' request, and the schema it guessed.
+pub fn tree_asked(app: &App) -> (SessionId, RequestId, RequestId, String) {
+    app.backend
+        .sent
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::ListTree {
+                session,
+                schemas,
+                objects,
+                schema,
+            } => Some((*session, *schemas, *objects, schema.clone())),
+            _ => None,
+        })
+        .expect("a ListTree was sent")
+}
+
+/// Answers the newest `ListTree` `app` sent: `schemas`, and then the
+/// guessed schema's `objects`.
+pub fn answer_tree(app: &mut App, schemas: Vec<String>, objects: Vec<ObjectInfo>) {
+    let (session, listed, tables, schema) = tree_asked(app);
+    app.apply(Action::Backend(Event::Schemas {
+        session,
+        request: listed,
+        result: Ok(schemas),
+    }));
+    app.apply(Action::Backend(Event::Objects {
+        session,
+        request: tables,
+        schema,
+        result: Ok(objects),
+    }));
+}
+
 impl Harness {
     /// Puts an empty SQL editor at the end of `tab`'s strip without showing
     /// it, numbered like the ones the app opens.
@@ -689,23 +725,13 @@ impl Harness {
             encrypted: false,
             access: crate::testing::asked_access(&self.app),
         }));
-        let Command::ListSchemas { request, .. } = *last_sent(&self.app) else {
-            panic!("expected ListSchemas");
+        // The schemas and the guessed default schema's objects, asked
+        // together.
+        let Command::ListTree { schema, .. } = last_sent(&self.app) else {
+            panic!("expected ListTree");
         };
-        self.app.apply(Action::Backend(Event::Schemas {
-            session,
-            request,
-            result: Ok(vec!["main".into()]),
-        }));
-        let Command::ListObjects { request, .. } = *last_sent(&self.app) else {
-            panic!("expected ListObjects for the default schema");
-        };
-        self.app.apply(Action::Backend(Event::Objects {
-            session,
-            request,
-            schema: "main".into(),
-            result: Ok(objects),
-        }));
+        assert_eq!(schema, "main");
+        answer_tree(&mut self.app, vec!["main".into()], objects);
         tab
     }
 }

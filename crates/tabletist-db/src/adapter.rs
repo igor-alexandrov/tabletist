@@ -9,11 +9,12 @@ use crate::{
 /// An open session with one kind of database. [`crate::Connection`] holds
 /// one and forwards to it, and says there what each of these does.
 ///
-/// No method has a default but `open`. An adapter answers every other one,
-/// if only to say that it has nothing to list: a default would answer for a
-/// new database without anyone choosing it. `open`'s default is the two
-/// reads it stands for, one after the other, which is right for every
-/// database and only slower than one that sends them together.
+/// No method has a default but `list_tree` and `open`. An adapter answers
+/// every other one, if only to say that it has nothing to list: a default
+/// would answer for a new database without anyone choosing it. The
+/// defaults of those two are the reads each stands for, one after the
+/// other, which is right for every database and only slower than one that
+/// sends them together.
 pub(crate) trait Adapter {
     fn is_encrypted(&self) -> bool;
 
@@ -28,6 +29,16 @@ pub(crate) trait Adapter {
     async fn list_schemas(&self) -> Result<Vec<String>>;
 
     async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>>;
+
+    /// See [`crate::Connection::list_tree`]. The schemas are listed first
+    /// and `schema`'s objects after them, apart: the objects are listed
+    /// even when the schemas failed. An adapter that sends both in one
+    /// message where a refusal stops the rest (MySQL's) says so.
+    async fn list_tree(&self, schema: &str) -> (Result<Vec<String>>, Result<Vec<ObjectInfo>>) {
+        let schemas = self.list_schemas().await;
+        let objects = self.list_objects(schema).await;
+        (schemas, objects)
+    }
 
     async fn describe(&self, object: &ObjectRef) -> Result<Structure>;
 

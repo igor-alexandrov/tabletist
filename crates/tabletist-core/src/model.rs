@@ -1540,6 +1540,22 @@ pub fn first_schema(schemas: &[String], database: &str) -> Option<String> {
         .cloned()
 }
 
+/// The schema [`first_schema`] will most likely pick, guessed before the
+/// schemas are listed, so that its tables can be asked for with them: the
+/// database on MySQL (its databases are its schemas), `public` on
+/// PostgreSQL, `main` on SQLite. None where there is no good guess: a
+/// MySQL connection named no database, and BigQuery, whose datasets go by
+/// no default name, and Redis, which has keys and no schemas.
+pub fn guessed_schema(driver: Driver, database: &str) -> Option<String> {
+    match driver {
+        Driver::MySql if database.is_empty() => None,
+        Driver::MySql => Some(database.to_owned()),
+        Driver::Postgres => Some("public".to_owned()),
+        Driver::Sqlite => Some("main".to_owned()),
+        Driver::BigQuery | Driver::Redis => None,
+    }
+}
+
 /// Which tables agents may read, as the editor's Tables control has it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TablesMode {
@@ -4051,6 +4067,9 @@ impl<T> Fetch<T> {
 #[derive(Debug, Default)]
 pub struct Tree {
     pub schemas: Fetch<Vec<String>>,
+    /// The schema whose objects were asked for with the schemas the tree
+    /// waits for (see `App::load_tree`): none when they were asked alone.
+    pub listed_with: Option<String>,
     pub nodes: HashMap<String, SchemaNode>,
     /// Typed into the sidebar's filter field.
     pub filter: String,
@@ -6844,6 +6863,22 @@ impl std::fmt::Debug for PasswordPrompt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_schema_guessed_before_the_listing_is_the_one_first_schema_most_often_picks() {
+        assert_eq!(
+            guessed_schema(Driver::MySql, "bookshop").as_deref(),
+            Some("bookshop")
+        );
+        assert_eq!(
+            guessed_schema(Driver::Postgres, "bookshop").as_deref(),
+            Some("public")
+        );
+        assert_eq!(guessed_schema(Driver::Sqlite, "").as_deref(), Some("main"));
+        // Nothing to go by: the schemas are listed alone, as before.
+        assert_eq!(guessed_schema(Driver::MySql, ""), None);
+        assert_eq!(guessed_schema(Driver::BigQuery, "project"), None);
+    }
 
     /// Where the tests' runs go.
     fn here() -> tabletist_db::ConnectSpec {

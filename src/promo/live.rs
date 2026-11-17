@@ -72,8 +72,9 @@ impl Live {
             let run = &self.runtime;
             let history = &mut self.history;
             let server = &self.server;
-            // An `Open`'s rows, which answer before its structure.
-            let mut rows_first = None;
+            // An `Open`'s rows, which answer before its structure, or a
+            // `ListTree`'s schemas, which answer before its objects.
+            let mut first = None;
             let event = match command {
                 Command::Connect {
                     session,
@@ -102,6 +103,27 @@ impl Live {
                     schema: schema.clone(),
                     result: run.block_on(connection.list_objects(schema)),
                 }),
+                // Answered as the backend answers it: the schemas, then
+                // the objects.
+                Command::ListTree {
+                    session,
+                    schemas,
+                    objects,
+                    schema,
+                } => {
+                    let (listed, tables) = run.block_on(connection.list_tree(schema));
+                    first = Some(Event::Schemas {
+                        session: *session,
+                        request: *schemas,
+                        result: listed,
+                    });
+                    Some(Event::Objects {
+                        session: *session,
+                        request: *objects,
+                        schema: schema.clone(),
+                        result: tables,
+                    })
+                }
                 Command::Describe {
                     session,
                     request,
@@ -131,7 +153,7 @@ impl Live {
                 } => {
                     let (described, page) =
                         run.block_on(connection.open(object, query, &StopFlag::new()));
-                    rows_first = Some(Event::Rows {
+                    first = Some(Event::Rows {
                         session: *session,
                         request: *rows,
                         result: page,
@@ -269,7 +291,7 @@ impl Live {
                     | HistoryCommand::Held { .. },
                 ) => None,
             };
-            for event in rows_first.into_iter().chain(event) {
+            for event in first.into_iter().chain(event) {
                 harness.app.apply(Action::Backend(event));
             }
         }

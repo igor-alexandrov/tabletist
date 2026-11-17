@@ -105,6 +105,7 @@ fn a_redis_connection_probes_and_scans_and_asks_for_no_schema() {
         !sent.iter().any(|command| matches!(
             command,
             Command::ListSchemas { .. }
+                | Command::ListTree { .. }
                 | Command::ServerVersion { .. }
                 | Command::ListDatabases { .. }
         )),

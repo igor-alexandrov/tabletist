@@ -99,6 +99,23 @@ pub enum Command {
         request: RequestId,
         schema: String,
     },
+    /// List the schemas and `schema`'s tables (see
+    /// `Connection::list_tree`), answered as a `ListSchemas` of `schemas`
+    /// and then a `ListObjects` of `objects` would be. One command, so
+    /// that PostgreSQL and MySQL list both in one round trip. Cancels and
+    /// skips work as an `Open`'s: a Cancel of either request stops the
+    /// run, and the part it did not name still answers with its own
+    /// result, listed again alone where the cancel stopped it too (on
+    /// MySQL a cancel of the schemas stops the objects as well). A part
+    /// listed again answers after the other, whichever it is.
+    ListTree {
+        session: SessionId,
+        /// The request the schemas answer.
+        schemas: RequestId,
+        /// The request `schema`'s objects answer.
+        objects: RequestId,
+        schema: String,
+    },
     Describe {
         session: SessionId,
         request: RequestId,
@@ -962,6 +979,14 @@ impl Backend {
         lock(watched.get(&session).expect("the session is up")).opens = Some(fake);
     }
 
+    /// Has the next `ListTree` of `session` whose schemas are
+    /// `fake.schemas` run as `fake` says.
+    #[cfg(test)]
+    fn fake_tree(&self, session: SessionId, fake: FakeTree) {
+        let watched = lock(&self.watched);
+        lock(watched.get(&session).expect("the session is up")).trees = Some(fake);
+    }
+
     /// Runs `change` on the state of `session`.
     #[cfg(test)]
     fn with_running(&self, session: SessionId, change: impl FnOnce(&mut Running)) {
@@ -1003,13 +1028,16 @@ struct SessionHandle {
 /// session task (which runs one command at a time).
 #[derive(Default)]
 struct Running {
-    /// The request running now: for an `Open`, its page's.
+    /// The request running now: for an `Open`, its page's; for a
+    /// `ListTree`, its schemas'.
     request: Option<RequestId>,
-    /// The other request of a running `Open`: its structure's.
+    /// The other request of a running `Open` (its structure's) or
+    /// `ListTree` (its objects').
     also: Option<RequestId>,
-    /// The running requests a Cancel named. An `Open` answers two: the
-    /// part whose request no Cancel named is read again alone when the
-    /// cancel of the other stopped it too (see `run_open`).
+    /// The running requests a Cancel named. An `Open` and a `ListTree`
+    /// answer two: the part whose request no Cancel named is read again
+    /// alone when the cancel of the other stopped it too (see `run_open`
+    /// and `run_tree`).
     cancelled: Vec<RequestId>,
     /// Queued requests to skip when their turn comes.
     skip: HashSet<RequestId>,
@@ -1055,6 +1083,9 @@ struct Running {
     /// What a test has an `Open` come back with in place of its read.
     #[cfg(test)]
     opens: Option<FakeOpen>,
+    /// What a test has a `ListTree` come back with in place of its read.
+    #[cfg(test)]
+    trees: Option<FakeTree>,
 }
 
 /// How a test has an `Open` whose page is `rows` run: held until `gate`
@@ -1067,10 +1098,38 @@ struct FakeOpen {
     answer: Option<(Result<Structure, Error>, Result<RowPage, Error>)>,
 }
 
+/// How a test has a `ListTree` whose schemas are `schemas` run: held until
+/// `gate` opens, and a Cancel finds it running meanwhile. Then it comes
+/// back with `answer`, or, with none, lists as it would have.
+#[cfg(test)]
+struct FakeTree {
+    schemas: RequestId,
+    gate: tokio::sync::oneshot::Receiver<()>,
+    answer: Option<Listed>,
+}
+
+/// What a `ListTree` comes back with: the schemas, and the schema's
+/// objects.
+type Listed = (Result<Vec<String>, Error>, Result<Vec<ObjectInfo>, Error>);
+
 impl Running {
-    /// Whether `request` is running now: for an `Open`, either of its two.
+    /// Whether `request` is running now: for an `Open` or a `ListTree`,
+    /// either of its two.
     fn runs(&self, request: RequestId) -> bool {
         self.request == Some(request) || self.also == Some(request)
+    }
+
+    /// Whether a cancel sent for the running `ListTree` is still on its
+    /// way. A cancel of the tab names both its requests at once, and the
+    /// one cancel the first sends stops the run they share: the second
+    /// sends none while it has not landed. One that landed and did not
+    /// stop the run leaves the next Cancel to send another. Never so for an
+    /// `Open` (the one with a page stop), whose cancels wait out the
+    /// grace instead (see `read`).
+    fn tree_cancel_in_flight(&self) -> bool {
+        self.also.is_some()
+            && self.page_stop.is_none()
+            && self.cancels.iter().any(|task| !task.is_finished())
     }
 
     /// Readies the session for its next command: nothing runs.
@@ -2459,6 +2518,7 @@ fn session_of(command: &Command) -> SessionId {
         | Command::Cancel { session, .. }
         | Command::ListSchemas { session, .. }
         | Command::ListObjects { session, .. }
+        | Command::ListTree { session, .. }
         | Command::Describe { session, .. }
         | Command::ReadDdl { session, .. }
         | Command::FetchRows { session, .. }
@@ -2514,13 +2574,16 @@ fn list_folder(folder: &Path, start: &str) -> Vec<crate::export_sheet::Listed> {
     crate::export_sheet::completions(names, start)
 }
 
-/// The requests a queued command answers: one, or none, or an `Open`'s
-/// two, its page's first.
+/// The requests a queued command answers: one, or none, or the two of an
+/// `Open` (its page's first) or a `ListTree` (its schemas' first).
 fn requests_of(command: &Command) -> Vec<RequestId> {
     match command {
         Command::Open {
             structure, rows, ..
         } => vec![*rows, *structure],
+        Command::ListTree {
+            schemas, objects, ..
+        } => vec![*schemas, *objects],
         Command::ListSchemas { request, .. }
         | Command::ListObjects { request, .. }
         | Command::Describe { request, .. }
@@ -2579,6 +2642,24 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
             schema,
             result: Err(error),
         },
+        Command::ListTree {
+            session,
+            schemas,
+            objects,
+            schema,
+        } => {
+            outbox.emit(Event::Schemas {
+                session,
+                request: schemas,
+                result: Err(error.clone()),
+            });
+            Event::Objects {
+                session,
+                request: objects,
+                schema,
+                result: Err(error),
+            }
+        }
         Command::Describe {
             session, request, ..
         } => Event::Structure {
@@ -2699,8 +2780,9 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
 }
 
 /// The part of `command` that answers `request`, and what is left of it:
-/// an `Open` is a `FetchRows` and a `Describe`, and the one `request` does
-/// not name stays a command of its own. Any other command is all one part.
+/// an `Open` is a `FetchRows` and a `Describe`, a `ListTree` a
+/// `ListSchemas` and a `ListObjects`, and the one `request` does not name
+/// stays a command of its own. Any other command is all one part.
 fn take_part(command: Command, request: RequestId) -> (Command, Option<Command>) {
     match command {
         Command::Open {
@@ -2724,6 +2806,27 @@ fn take_part(command: Command, request: RequestId) -> (Command, Option<Command>)
                 (described, Some(page))
             } else {
                 (page, Some(described))
+            }
+        }
+        Command::ListTree {
+            session,
+            schemas,
+            objects,
+            schema,
+        } => {
+            let listed = Command::ListSchemas {
+                session,
+                request: schemas,
+            };
+            let tables = Command::ListObjects {
+                session,
+                request: objects,
+                schema,
+            };
+            if request == objects {
+                (tables, Some(listed))
+            } else {
+                (listed, Some(tables))
             }
         }
         command => (command, None),
@@ -2778,8 +2881,8 @@ async fn run_session(
     // Dropped when this task ends, however it ends: a PgBouncer probe still
     // running then is stopped (see `list_databases`).
     let (_ending, ended) = tokio::sync::watch::channel(());
-    // What is left of an `Open` one of whose parts was skipped: it runs
-    // next, before anything queued after it.
+    // What is left of an `Open` or a `ListTree` one of whose parts was
+    // skipped: it runs next, before anything queued after it.
     let mut left = None;
     loop {
         let command = match left.take() {
@@ -2820,18 +2923,14 @@ async fn run_session(
                 .filter(|request| running.skip.remove(request))
                 .collect();
             // Requests run in the order they were made, so an id at or
-            // before this one's will never come again. An `Open`'s two
-            // were made together, one after the other.
+            // before this one's will never come again. An `Open`'s two,
+            // or a `ListTree`'s, were made together, one after the other.
             if let Some(last) = requests.iter().map(|request| request.0).max() {
                 running.skip.retain(|id| id.0 > last);
             }
             if skipped.is_empty() {
-                (running.request, running.also) = match command {
-                    Command::Open {
-                        structure, rows, ..
-                    } => (Some(*rows), Some(*structure)),
-                    _ => (requests.first().copied(), None),
-                };
+                (running.request, running.also) =
+                    (requests.first().copied(), requests.get(1).copied());
                 // In the same critical section, so a Cancel that arrives
                 // right after the run starts always finds the flag.
                 running.stop = matches!(command, Command::RunSql { .. }).then(|| run_stop.clone());
@@ -2850,8 +2949,8 @@ async fn run_session(
             skipped
         };
         if !skipped.is_empty() {
-            // Each skipped part answers as skipped; of an `Open` with one
-            // part skipped, the other runs next, alone.
+            // Each skipped part answers as skipped; of an `Open` or a
+            // `ListTree` with one part skipped, the other runs next, alone.
             let mut rest = end.command.take();
             for request in skipped {
                 if let Some(command) = rest.take() {
@@ -2896,6 +2995,20 @@ async fn run_session(
                     result,
                 });
                 lost
+            }
+            Command::ListTree {
+                session,
+                schemas,
+                objects,
+                schema,
+            } => {
+                let listing = Listing {
+                    session: *session,
+                    schemas_request: *schemas,
+                    objects_request: *objects,
+                    schema,
+                };
+                run_tree(&connection, &running, &outbox, listing).await
             }
             Command::Describe {
                 session,
@@ -3168,7 +3281,7 @@ async fn run_open(
     };
     if page_again {
         outbox.emit(structure_event(structure));
-        let page = if ready_again(running, rows_request).await {
+        let page = if ready_again(running, rows_request, true).await {
             connection.fetch_rows(query).await
         } else {
             Err(Error::Cancelled)
@@ -3179,7 +3292,7 @@ async fn run_open(
     }
     outbox.emit(rows_event(page));
     if structure_again {
-        let structure = if ready_again(running, structure_request).await {
+        let structure = if ready_again(running, structure_request, true).await {
             connection.describe(object).await
         } else {
             Err(Error::Cancelled)
@@ -3223,23 +3336,129 @@ async fn read_open(
     connection.open(object, query, page_stop).await
 }
 
+/// A `ListTree` as `run_tree` runs it.
+struct Listing<'a> {
+    session: SessionId,
+    schemas_request: RequestId,
+    objects_request: RequestId,
+    schema: &'a str,
+}
+
+/// Runs a `ListTree`: the schemas and `schema`'s objects in one go,
+/// answered schemas first. Cancels work as `run_open`'s: a part stopped
+/// by the Cancel of the other only (on MySQL a cancel of the schemas
+/// stops the objects too) is listed again alone, and answers once it is,
+/// after the other. Either part lost loses the session: on MySQL the
+/// connection can go between the two, the schemas already in.
+async fn run_tree(
+    connection: &Connection,
+    running: &Mutex<Running>,
+    outbox: &Outbox,
+    listing: Listing<'_>,
+) -> Option<Error> {
+    let Listing {
+        session,
+        schemas_request,
+        objects_request,
+        schema,
+    } = listing;
+    let (schemas, objects) = read_tree(connection, running, schemas_request, schema).await;
+    let lost = lost_error(&schemas).or_else(|| lost_error(&objects));
+    let (schemas_again, objects_again) = {
+        let running = lock(running);
+        let again = |stopped, own, other| {
+            lost.is_none() && runs_again(stopped, own, other, &running.cancelled)
+        };
+        (
+            again(is_cancelled(&schemas), schemas_request, objects_request),
+            again(is_cancelled(&objects), objects_request, schemas_request),
+        )
+    };
+    let schemas_event = |result| Event::Schemas {
+        session,
+        request: schemas_request,
+        result,
+    };
+    let objects_event = |result| Event::Objects {
+        session,
+        request: objects_request,
+        schema: schema.to_owned(),
+        result,
+    };
+    if schemas_again {
+        outbox.emit(objects_event(objects));
+        let schemas = if ready_again(running, schemas_request, false).await {
+            connection.list_schemas().await
+        } else {
+            Err(Error::Cancelled)
+        };
+        let lost = lost_error(&schemas);
+        outbox.emit(schemas_event(schemas));
+        return lost;
+    }
+    outbox.emit(schemas_event(schemas));
+    if objects_again {
+        let objects = if ready_again(running, objects_request, false).await {
+            connection.list_objects(schema).await
+        } else {
+            Err(Error::Cancelled)
+        };
+        let lost = lost_error(&objects);
+        outbox.emit(objects_event(objects));
+        return lost;
+    }
+    outbox.emit(objects_event(objects));
+    lost
+}
+
+/// The schemas and the objects a `ListTree` lists, or what a test has it
+/// come back with (see `FakeTree`).
+async fn read_tree(
+    connection: &Connection,
+    running: &Mutex<Running>,
+    schemas_request: RequestId,
+    schema: &str,
+) -> Listed {
+    #[cfg(test)]
+    {
+        let fake = {
+            let mut running = lock(running);
+            match &running.trees {
+                Some(fake) if fake.schemas == schemas_request => running.trees.take(),
+                _ => None,
+            }
+        };
+        if let Some(fake) = fake {
+            let _ = fake.gate.await;
+            if let Some(answer) = fake.answer {
+                return answer;
+            }
+        }
+    }
+    #[cfg(not(test))]
+    let _ = (running, schemas_request);
+    connection.list_tree(schema).await
+}
+
 fn is_cancelled<T>(result: &Result<T, Error>) -> bool {
     matches!(result, Err(Error::Cancelled))
 }
 
-/// Whether the part of an `Open` that answers `own` runs again alone: it
-/// was `stopped` by a cancel, and the Cancel named only `other`, the other
-/// part, whose run it shared.
+/// Whether the part of an `Open` or a `ListTree` that answers `own` runs
+/// again alone: it was `stopped` by a cancel, and the Cancel named only
+/// `other`, the other part, whose run it shared.
 fn runs_again(stopped: bool, own: RequestId, other: RequestId, cancelled: &[RequestId]) -> bool {
     stopped && !cancelled.contains(&own) && cancelled.contains(&other)
 }
 
-/// Readies the session to run `request` alone after the `Open` it was part
-/// of, as the session readies its next command: the cancels sent for the
-/// `Open` land first, so none can stop this run. False when it must not
-/// run: the session closed, or a Cancel named `request`, while the `Open`
-/// still ran (after it was told the part runs again) or since.
-async fn ready_again(running: &Mutex<Running>, request: RequestId) -> bool {
+/// Readies the session to run `request` alone after the `Open` or the
+/// `ListTree` it was part of, as the session readies its next command: the
+/// cancels sent for that command land first, so none can stop this run.
+/// False when it must not run: the session closed, or a Cancel named
+/// `request`, while the command still ran (after it was told the part runs
+/// again) or since. `read` is whether the part is a cheap read (see
+/// `Running::read`): an `Open`'s are, a `ListTree`'s are not.
+async fn ready_again(running: &Mutex<Running>, request: RequestId, read: bool) -> bool {
     let (cancelled, cancels) = {
         let mut running = lock(running);
         let cancelled = running.cancelled.contains(&request);
@@ -3256,7 +3475,7 @@ async fn ready_again(running: &Mutex<Running>, request: RequestId) -> bool {
         return false;
     }
     running.request = Some(request);
-    running.read = true;
+    running.read = read;
     true
 }
 
@@ -3385,7 +3604,8 @@ fn cancel_request<C>(
         state.skip.insert(request);
         return;
     }
-    // Which of a running `Open`'s two parts the user stopped.
+    // Which of a running `Open`'s or `ListTree`'s two parts the user
+    // stopped.
     if !state.cancelled.contains(&request) {
         state.cancelled.push(request);
     }
@@ -3413,6 +3633,9 @@ fn cancel_request<C>(
             let grace = state.grace;
             tokio::spawn(cancel_after(grace, send, Arc::clone(running), request));
         }
+    } else if state.tree_cancel_in_flight() {
+        // The other request of the same `ListTree` sent one: it stops
+        // this one too.
     } else if state.stop.is_none() || state.script_takes_a_cancel() {
         // Anything but a script takes one cancel while it runs. So does a
         // script whose cancels already go out, at once: the next of those
@@ -5970,8 +6193,8 @@ mod tests {
         events
     }
 
-    /// What each of an Open's answers says: which part, its request, and
-    /// how it ended.
+    /// What each of an Open's or a ListTree's answers says: which part, its
+    /// request, and how it ended.
     fn said(events: &[Event]) -> Vec<(&'static str, u64, &'static str)> {
         fn ended<T>(result: &Result<T, Error>) -> &'static str {
             match result {
@@ -5993,7 +6216,15 @@ mod tests {
                 Event::Count {
                     request, result, ..
                 } => ("count", request.0, ended(result)),
-                other => panic!("expected an open's or a count's answer, got {other:?}"),
+                Event::Schemas {
+                    request, result, ..
+                } => ("schemas", request.0, ended(result)),
+                Event::Objects {
+                    request, result, ..
+                } => ("objects", request.0, ended(result)),
+                other => {
+                    panic!("expected an open's, a listing's or a count's answer, got {other:?}")
+                }
             })
             .collect()
     }
@@ -6183,7 +6414,7 @@ mod tests {
             // Its Cancel came once the `Open` was over, while it still
             // counted as running.
             lock(&running).cancelled.push(RequestId(2));
-            assert!(!ready_again(&running, RequestId(2)).await);
+            assert!(!ready_again(&running, RequestId(2), true).await);
             assert_eq!(lock(&running).request, None);
         });
     }
@@ -6204,7 +6435,7 @@ mod tests {
                 }
             });
             assert_eq!(lock(&running).cancels.len(), 1);
-            let ready = ready_again(&running, RequestId(2));
+            let ready = ready_again(&running, RequestId(2), true);
             tokio::pin!(ready);
             assert!(
                 tokio::time::timeout(Duration::from_secs(60), &mut ready)
@@ -6378,6 +6609,384 @@ mod tests {
             assert!(matches!(next_event(&received), Event::Connected { .. }));
             assert!(received.recv_timeout(Duration::from_millis(300)).is_err());
         });
+    }
+
+    /// A `ListTree` of the schemas, answering `schemas`, and `main`'s
+    /// objects, answering `objects`.
+    fn list_tree(session: SessionId, schemas: u64, objects: u64) -> Command {
+        Command::ListTree {
+            session,
+            schemas: RequestId(schemas),
+            objects: RequestId(objects),
+            schema: "main".into(),
+        }
+    }
+
+    /// Has the `ListTree` of `session` whose schemas are request 2 wait
+    /// until the sender returned opens its gate, and then come back with
+    /// `answer`, or list as it would have.
+    fn hold_tree(
+        backend: &Backend,
+        session: SessionId,
+        answer: Option<Listed>,
+    ) -> tokio::sync::oneshot::Sender<()> {
+        let (release, gate) = tokio::sync::oneshot::channel();
+        let fake = FakeTree {
+            schemas: RequestId(2),
+            gate,
+            answer,
+        };
+        backend.fake_tree(session, fake);
+        release
+    }
+
+    /// Cancels `request` of the `ListTree` `session` runs, and waits until
+    /// the session has noted it.
+    fn cancel_while_listing(backend: &mut Backend, session: SessionId, request: RequestId) {
+        wait_until_running(backend, session, RequestId(2), false);
+        backend.send(Command::Cancel { session, request });
+        let deadline = std::time::Instant::now() + WAIT;
+        while !backend.cancelled(session).contains(&request) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the session must note the cancel"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn a_tree_listing_answers_its_schemas_and_then_its_objects() {
+        let (_dir, mut backend, session) = connected_sqlite();
+        backend.send(list_tree(session, 2, 3));
+        match backend.wait(WAIT) {
+            Some(Event::Schemas {
+                request: RequestId(2),
+                result: Ok(schemas),
+                ..
+            }) => assert_eq!(schemas, ["main"]),
+            other => panic!("expected the schemas, got {other:?}"),
+        }
+        match backend.wait(WAIT) {
+            Some(Event::Objects {
+                request: RequestId(3),
+                schema,
+                result: Ok(objects),
+                ..
+            }) => {
+                assert_eq!(schema, "main");
+                assert!(objects.iter().any(|object| object.name == "users"));
+            }
+            other => panic!("expected the objects, got {other:?}"),
+        }
+        assert_quiet(&mut backend);
+    }
+
+    #[test]
+    fn a_tree_listing_for_an_unknown_session_fails_both_its_parts_as_lost() {
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        backend.send(list_tree(SessionId(99), 1, 2));
+        let events: Vec<Event> = (0..2).filter_map(|_| backend.wait(WAIT)).collect();
+        assert_eq!(
+            said(&events),
+            [("schemas", 1, "lost"), ("objects", 2, "lost")]
+        );
+    }
+
+    #[test]
+    fn a_tree_listing_whose_objects_were_lost_loses_the_session() {
+        let (_dir, mut backend, session) = connected_sqlite();
+        // As on MySQL when the connection goes between the two: the
+        // schemas are in.
+        let release = hold_tree(
+            &backend,
+            session,
+            Some((
+                Ok(vec!["main".into()]),
+                Err(Error::ConnectionLost("gone".into())),
+            )),
+        );
+        backend.send(list_tree(session, 2, 3));
+        release.send(()).unwrap();
+        let events: Vec<Event> = (0..2).filter_map(|_| backend.wait(WAIT)).collect();
+        assert_eq!(
+            said(&events),
+            [("schemas", 2, "ok"), ("objects", 3, "lost")]
+        );
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::Disconnected { .. })
+        ));
+    }
+
+    #[test]
+    fn a_cancel_of_a_tree_listings_schemas_that_stops_its_objects_lists_them_again() {
+        let (_dir, mut backend, session) = connected_sqlite();
+        // As on MySQL, whose one message stops at the cancelled schemas.
+        let release = hold_tree(
+            &backend,
+            session,
+            Some((Err(Error::Cancelled), Err(Error::Cancelled))),
+        );
+        backend.send(list_tree(session, 2, 3));
+        cancel_while_listing(&mut backend, session, RequestId(2));
+        release.send(()).unwrap();
+        let events: Vec<Event> = (0..2).filter_map(|_| backend.wait(WAIT)).collect();
+        assert_eq!(
+            said(&events),
+            [("schemas", 2, "cancelled"), ("objects", 3, "ok")]
+        );
+        match &events[1] {
+            Event::Objects {
+                result: Ok(objects),
+                ..
+            } => assert!(objects.iter().any(|object| object.name == "users")),
+            other => panic!("expected the objects, got {other:?}"),
+        }
+        assert_quiet(&mut backend);
+    }
+
+    #[test]
+    fn a_cancel_of_a_tree_listings_objects_that_stops_its_schemas_lists_them_again() {
+        let (_dir, mut backend, session) = connected_sqlite();
+        let release = hold_tree(
+            &backend,
+            session,
+            Some((Err(Error::Cancelled), Err(Error::Cancelled))),
+        );
+        backend.send(list_tree(session, 2, 3));
+        cancel_while_listing(&mut backend, session, RequestId(3));
+        release.send(()).unwrap();
+        let events: Vec<Event> = (0..2).filter_map(|_| backend.wait(WAIT)).collect();
+        // The schemas, stopped by a cancel nobody sent for them, are
+        // listed again alone, and answer after the objects.
+        assert_eq!(
+            said(&events),
+            [("objects", 3, "cancelled"), ("schemas", 2, "ok")]
+        );
+        assert_quiet(&mut backend);
+    }
+
+    #[test]
+    fn a_cancel_of_both_requests_of_a_tree_listing_lists_nothing_again() {
+        let (_dir, mut backend, session) = connected_sqlite();
+        let release = hold_tree(
+            &backend,
+            session,
+            Some((Err(Error::Cancelled), Err(Error::Cancelled))),
+        );
+        backend.send(list_tree(session, 2, 3));
+        // As a cancel of the tab sends them.
+        cancel_while_listing(&mut backend, session, RequestId(2));
+        cancel_while_listing(&mut backend, session, RequestId(3));
+        release.send(()).unwrap();
+        let events: Vec<Event> = (0..2).filter_map(|_| backend.wait(WAIT)).collect();
+        assert_eq!(
+            said(&events),
+            [("schemas", 2, "cancelled"), ("objects", 3, "cancelled")]
+        );
+        assert_quiet(&mut backend);
+    }
+
+    #[test]
+    fn a_cancel_of_both_requests_of_a_tree_listing_takes_one_cancel() {
+        paused().block_on(async {
+            let running = Arc::new(Mutex::new(running_tree()));
+            let sent = Arc::new(Mutex::new(Vec::new()));
+            let start = tokio::time::Instant::now();
+            // As a cancel of the tab sends them, one right after the other.
+            cancel_request(&running, RequestId(2), noting(&sent));
+            cancel_request(&running, RequestId(3), noting(&sent));
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            assert_eq!(sent_at(&sent, start), [0]);
+            assert_eq!(lock(&running).cancelled, [RequestId(2), RequestId(3)]);
+        });
+    }
+
+    /// A session running a `ListTree` of schemas 2 and objects 3. Not a
+    /// read: its cancels go at once, as a `ListSchemas`'s and a
+    /// `ListObjects`'s do.
+    fn running_tree() -> Running {
+        Running {
+            request: Some(RequestId(2)),
+            also: Some(RequestId(3)),
+            grace: Duration::from_millis(800),
+            ..Running::default()
+        }
+    }
+
+    #[test]
+    fn a_cancel_of_a_tree_listing_is_sent_at_once() {
+        for request in [2, 3] {
+            paused().block_on(async {
+                let running = Arc::new(Mutex::new(running_tree()));
+                let sent = Arc::new(Mutex::new(Vec::new()));
+                let start = tokio::time::Instant::now();
+                cancel_request(&running, RequestId(request), noting(&sent));
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                assert_eq!(sent_at(&sent, start), [0], "request {request}");
+            });
+        }
+    }
+
+    #[test]
+    fn a_cancel_of_a_tree_listing_after_one_that_landed_is_sent_again() {
+        paused().block_on(async {
+            let running = Arc::new(Mutex::new(running_tree()));
+            let sent = Arc::new(Mutex::new(Vec::new()));
+            let start = tokio::time::Instant::now();
+            cancel_request(&running, RequestId(2), noting(&sent));
+            cancel_request(&running, RequestId(3), noting(&sent));
+            // It landed, and the listing runs on: the tab's next cancel
+            // sends another.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            assert!(lock(&running).cancels.iter().all(|task| task.is_finished()));
+            cancel_request(&running, RequestId(2), noting(&sent));
+            cancel_request(&running, RequestId(3), noting(&sent));
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            assert_eq!(sent_at(&sent, start), [0, 1000]);
+        });
+    }
+
+    #[test]
+    fn a_cancel_of_a_tree_listings_objects_leaves_its_schemas() {
+        let (_dir, mut backend, session) = connected_sqlite();
+        let release = hold_tree(
+            &backend,
+            session,
+            Some((Ok(vec!["main".into()]), Err(Error::Cancelled))),
+        );
+        backend.send(list_tree(session, 2, 3));
+        cancel_while_listing(&mut backend, session, RequestId(3));
+        release.send(()).unwrap();
+        let events: Vec<Event> = (0..2).filter_map(|_| backend.wait(WAIT)).collect();
+        assert_eq!(
+            said(&events),
+            [("schemas", 2, "ok"), ("objects", 3, "cancelled")]
+        );
+        assert_quiet(&mut backend);
+    }
+
+    #[test]
+    fn a_queued_tree_listing_with_one_request_cancelled_lists_only_the_other_part() {
+        for (cancelled, expected) in [
+            (3, [("schemas", 3, "cancelled"), ("objects", 4, "ok")]),
+            (4, [("objects", 4, "cancelled"), ("schemas", 3, "ok")]),
+        ] {
+            let (_dir, mut backend, session) = connected_sqlite();
+            backend.send(Command::CountRows {
+                session,
+                request: RequestId(2),
+                query: slow_count(100_000),
+            });
+            backend.send(list_tree(session, 3, 4));
+            backend.send(Command::ListSchemas {
+                session,
+                request: RequestId(5),
+            });
+            backend.send(Command::Cancel {
+                session,
+                request: RequestId(cancelled),
+            });
+            let mut events = answers_while_cancelling(&mut backend, session, RequestId(2), 3);
+            let mut all = vec![("count", 2, "cancelled")];
+            all.extend(expected);
+            assert_eq!(said(&events), all, "cancelled {cancelled}");
+            // The part left runs before what was queued after it.
+            events.extend(backend.wait(WAIT));
+            assert_eq!(
+                said(&events[3..]),
+                [("schemas", 5, "ok")],
+                "cancelled {cancelled}"
+            );
+            assert_quiet(&mut backend);
+        }
+    }
+
+    #[test]
+    fn a_queued_tree_listing_with_both_requests_cancelled_never_runs() {
+        let (_dir, mut backend, session) = connected_sqlite();
+        backend.send(Command::CountRows {
+            session,
+            request: RequestId(2),
+            query: slow_count(100_000),
+        });
+        backend.send(list_tree(session, 3, 4));
+        for request in [3, 4] {
+            backend.send(Command::Cancel {
+                session,
+                request: RequestId(request),
+            });
+        }
+        let events = answers_while_cancelling(&mut backend, session, RequestId(2), 3);
+        assert_eq!(
+            said(&events),
+            [
+                ("count", 2, "cancelled"),
+                ("schemas", 3, "cancelled"),
+                ("objects", 4, "cancelled"),
+            ]
+        );
+        assert_quiet(&mut backend);
+    }
+
+    #[test]
+    fn a_cancel_of_both_requests_of_a_tree_listing_that_waits_for_the_session_takes_it_away() {
+        let (outbox, received) = quiet_outbox();
+        let (_dir, spec) = fixture();
+        let session = SessionId(1);
+        let queued = vec![
+            list_tree(session, 2, 3),
+            Command::Cancel {
+                session,
+                request: RequestId(2),
+            },
+            Command::Cancel {
+                session,
+                request: RequestId(3),
+            },
+        ];
+        runtime().block_on(async {
+            let (mut worker, done) = connecting_with(outbox, session, spec, queued).await;
+            let events = [next_event(&received), next_event(&received)];
+            assert_eq!(
+                said(&events),
+                [("schemas", 2, "cancelled"), ("objects", 3, "cancelled")]
+            );
+            worker.adopt(done);
+            assert!(matches!(next_event(&received), Event::Connected { .. }));
+            assert!(received.recv_timeout(Duration::from_millis(300)).is_err());
+        });
+    }
+
+    #[test]
+    fn a_cancel_of_one_request_of_a_tree_listing_that_waits_for_the_session_leaves_the_other() {
+        for (cancelled, kept) in [(2, ("objects", 3, "ok")), (3, ("schemas", 2, "ok"))] {
+            let (outbox, received) = quiet_outbox();
+            let (_dir, spec) = fixture();
+            let session = SessionId(1);
+            let queued = vec![
+                list_tree(session, 2, 3),
+                Command::Cancel {
+                    session,
+                    request: RequestId(cancelled),
+                },
+            ];
+            runtime().block_on(async {
+                let (mut worker, done) = connecting_with(outbox, session, spec, queued).await;
+                // Skipped at once, as a session skips what it was told
+                // to cancel.
+                let skipped = if cancelled == 2 { "schemas" } else { "objects" };
+                assert_eq!(
+                    said(&[next_event(&received)]),
+                    [(skipped, cancelled, "cancelled")]
+                );
+                worker.adopt(done);
+                assert!(matches!(next_event(&received), Event::Connected { .. }));
+                assert_eq!(said(&[next_event(&received)]), [kept]);
+                assert!(received.recv_timeout(Duration::from_millis(300)).is_err());
+            });
+        }
     }
 
     fn named(name: &str) -> StateFile {

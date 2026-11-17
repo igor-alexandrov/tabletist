@@ -1,7 +1,7 @@
 ---
 title: Browsing Data
 description: The sidebar, the data grid, sorting, filters, the row panel, and the Structure and DDL views.
-nav_order: 3
+nav_order: 4
 ---
 
 ## The sidebar

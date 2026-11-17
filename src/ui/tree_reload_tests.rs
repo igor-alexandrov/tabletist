@@ -10,11 +10,17 @@ use crate::testing::Harness;
 use crate::theme::Look;
 use crate::ui::tests::{focused_name, type_key};
 
-/// How many times the tree has been asked for again.
+/// How many times the tree has been asked for again: with the default
+/// schema's tables, or the schemas alone where there is no default to ask.
 fn tree_loads(harness: &Harness) -> usize {
     let sent = harness.app.backend.sent.iter();
-    sent.filter(|command| matches!(command, Command::ListSchemas { .. }))
-        .count()
+    sent.filter(|command| {
+        matches!(
+            command,
+            Command::ListTree { .. } | Command::ListSchemas { .. }
+        )
+    })
+    .count()
 }
 
 /// Presses the look's Reload: Omarchy's is `R`.

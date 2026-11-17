@@ -198,6 +198,13 @@ Unless the mode checks the certificate, someone on the network between
 you and a remote server can read the password. To prevent that, use
 `verify-full` or an SSH tunnel. The dialog warns you when this applies.
 
+A MySQL server can ask for the password in plain text
+(`mysql_clear_password`), as AWS RDS IAM authentication does: type the
+token from `aws rds generate-db-auth-token` as the password. Tabletist
+sends it only over an encrypted connection. Choose `require` or
+`verify-full`; with `disable`, or when `prefer` finds no TLS, the
+connection fails instead.
+
 ## SSH tunnels
 
 Tick **Connect through SSH tunnel** and Tabletist reaches the database

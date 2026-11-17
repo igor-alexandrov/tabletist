@@ -57,6 +57,8 @@ pub(crate) struct Conn {
     /// page, in the same flight as the page, and a page built from a shape
     /// that has changed since is read again (see `Adapter::fetch_rows`).
     shapes: std::sync::Mutex<std::collections::HashMap<ObjectRef, Shape>>,
+    /// The server's version, read with the session's settings at connect.
+    version: String,
 }
 
 /// What a statement over a table needs to know of it: its primary key's
@@ -90,20 +92,103 @@ const SHAPE_SQL: &str = "SELECT a.attname::text, k.ord IS NOT NULL, a.atttypid =
        AND (k.ord IS NOT NULL OR a.atttypid = 'bytea'::regtype) \
      ORDER BY k.ord, a.attnum";
 
+/// The schemas [`Adapter::list_schemas`] lists, by name.
+fn schemas_sql() -> String {
+    format!("SELECT nspname::text FROM pg_namespace ORDER BY nspname LIMIT {MAX_LISTED}")
+}
+
+/// The names in the rows [`schemas_sql`] answers.
+fn schema_names(rows: &[tokio_postgres::Row]) -> Result<Vec<String>> {
+    rows.iter().map(|row| column(row, 0)).collect()
+}
+
+/// The tables and views [`Adapter::list_objects`] lists, with their schema
+/// as `$1`, in its order and number: the end of a query over them, as
+/// `pg_class c`. The listing and the shapes read with it both end so, and
+/// so name the same tables.
+fn listed_relations() -> String {
+    format!(
+        "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+         WHERE n.nspname = $1 AND c.relkind IN ('r', 'p', 'f', 'v', 'm') \
+         ORDER BY c.relname LIMIT {MAX_LISTED}"
+    )
+}
+
+/// The tables and views [`Adapter::list_objects`] lists, with their schema
+/// as `$1`, and their names in order.
+fn listing_sql() -> String {
+    format!(
+        "SELECT c.relname::text, c.relkind::text, c.reltuples::float8 {}",
+        listed_relations()
+    )
+}
+
+/// The shapes of the tables and views [`listing_sql`] lists, with their
+/// schema as `$1`: for each, after its name, the rows [`SHAPE_SQL`] reads
+/// of it alone, in the same order. One with no key and no `bytea` column
+/// has none. Each primary key's columns are read once for its table, not
+/// for each of the table's columns.
+fn listed_shapes_sql() -> String {
+    format!(
+        "WITH listed AS (SELECT c.oid, c.relname {}), \
+         keys AS ( \
+             SELECT i.indrelid, k.attnum, k.ord FROM listed l \
+             JOIN pg_index i ON i.indrelid = l.oid AND i.indisprimary \
+             CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord) \
+             WHERE k.ord <= COALESCE((to_jsonb(i) ->> 'indnkeyatts')::int, i.indnatts)) \
+         SELECT l.relname::text, a.attname::text, k.ord IS NOT NULL, \
+             a.atttypid = 'bytea'::regtype \
+         FROM listed l \
+         JOIN pg_attribute a \
+           ON a.attrelid = l.oid AND a.attnum > 0 AND NOT a.attisdropped \
+         LEFT JOIN keys k ON k.indrelid = l.oid AND k.attnum = a.attnum \
+         WHERE k.ord IS NOT NULL OR a.atttypid = 'bytea'::regtype \
+         ORDER BY l.relname, k.ord, a.attnum",
+        listed_relations()
+    )
+}
+
 impl Shape {
     /// The shape in [`SHAPE_SQL`]'s rows.
     fn from_rows(rows: &[tokio_postgres::Row]) -> Result<Self> {
         let mut shape = Self::default();
         for row in rows {
-            let name: String = column(row, 0)?;
-            if column(row, 2)? {
-                shape.bytea.push(name.clone());
-            }
-            if column(row, 1)? {
-                shape.key.push(name);
-            }
+            shape.add(row, 0)?;
         }
         Ok(shape)
+    }
+
+    /// The column a row of [`SHAPE_SQL`]'s names, whose columns start `at`
+    /// the row's: to the key, to the `bytea` columns, or to both.
+    fn add(&mut self, row: &tokio_postgres::Row, at: usize) -> Result<()> {
+        let name: String = column(row, at)?;
+        if column(row, at + 2)? {
+            self.bytea.push(name.clone());
+        }
+        if column(row, at + 1)? {
+            self.key.push(name);
+        }
+        Ok(())
+    }
+
+    /// The shape of each table the `listed` rows of [`listing_sql`] name,
+    /// from the `rows` of [`listed_shapes_sql`]: an empty one for a table
+    /// no row names.
+    fn of_listed(
+        listed: &[tokio_postgres::Row],
+        rows: &[tokio_postgres::Row],
+    ) -> Result<std::collections::HashMap<String, Self>> {
+        let mut shapes = listed
+            .iter()
+            .map(|row| Ok((column(row, 0)?, Self::default())))
+            .collect::<Result<std::collections::HashMap<String, Self>>>()?;
+        for row in rows {
+            let name: String = column(row, 0)?;
+            if let Some(shape) = shapes.get_mut(&name) {
+                shape.add(row, 1)?;
+            }
+        }
+        Ok(shapes)
     }
 
     /// The key, and the `bytea` columns a filter of `query` compares as
@@ -507,10 +592,10 @@ impl Conn {
                 log::info!("PostgreSQL connection ended: {error}");
             }
         });
-        client
-            .batch_execute(&session_setup(access))
-            .await
-            .map_err(query_error)?;
+        // The server's version with the settings: one round trip for both.
+        let setup = format!("{}; SHOW server_version", session_setup(access));
+        let messages = client.simple_query(&setup).await.map_err(query_error)?;
+        let version = version_named(&first_text(&messages).unwrap_or_default());
         let cancel = Cancel {
             token: client.cancel_token(),
             tls: tls.clone(),
@@ -524,6 +609,7 @@ impl Conn {
             requested_database: database.to_owned(),
             encrypted: handshake.load(Ordering::Relaxed),
             shapes: Default::default(),
+            version,
         })
     }
 
@@ -728,6 +814,120 @@ impl Conn {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         shapes.insert(object.clone(), shape.clone());
+    }
+
+    /// The shapes of `schema`'s tables, by name, as the session's last read
+    /// of each.
+    fn remember_all(&self, schema: &str, read: std::collections::HashMap<String, Shape>) {
+        let mut shapes = self
+            .shapes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for (name, shape) in read {
+            shapes.insert(ObjectRef::new(schema, &name), shape);
+        }
+    }
+
+    /// `schema`'s tables and views, as [`listing_sql`] lists them, and in
+    /// the same flight the shapes `shapes_sql` reads of them, as
+    /// [`listed_shapes_sql`] does, which the session remembers (see
+    /// [`Conn::listed_from`]).
+    async fn listed_with(&self, schema: &str, shapes_sql: &str) -> Result<Vec<ObjectInfo>> {
+        let listing = listing_sql();
+        let params: &[(&(dyn ToSql + Sync), Type)] = &[(&schema, Type::TEXT)];
+        let (rows, shapes) = {
+            let client = self.client.lock().await;
+            tokio::join!(
+                biased;
+                client.query_typed(&listing, params),
+                client.query_typed(shapes_sql, params),
+            )
+        };
+        self.listed_from(schema, rows, shapes)
+    }
+
+    /// The schemas the query given as `schemas_sql` lists (the function
+    /// [`schemas_sql`]'s outside tests), and `schema`'s tables and views
+    /// with their shapes, as
+    /// [`Conn::listed_with`] reads them, all in one flight: the schemas'
+    /// query goes out first.
+    ///
+    /// Each query is a statement of its own, outside a transaction, and
+    /// answers on its own: the schemas' query failing, refused by the
+    /// server or stopped by a cancel that lands on it, fails nothing else,
+    /// and the listing failing fails nothing of the schemas. So they are
+    /// joined, not tried: one's error stops none of the others' answers
+    /// being read.
+    async fn tree_with(
+        &self,
+        schemas_sql: &str,
+        schema: &str,
+        shapes_sql: &str,
+    ) -> (Result<Vec<String>>, Result<Vec<ObjectInfo>>) {
+        let listing = listing_sql();
+        let params: &[(&(dyn ToSql + Sync), Type)] = &[(&schema, Type::TEXT)];
+        let (schemas, rows, shapes) = {
+            let client = self.client.lock().await;
+            tokio::join!(
+                biased;
+                client.query_typed(schemas_sql, &[]),
+                client.query_typed(&listing, params),
+                client.query_typed(shapes_sql, params),
+            )
+        };
+        let schemas = schemas
+            .map_err(query_error)
+            .and_then(|rows| schema_names(&rows));
+        (schemas, self.listed_from(schema, rows, shapes))
+    }
+
+    /// `schema`'s tables and views from the listing's `rows`, and the
+    /// shapes read with them, which the session remembers.
+    ///
+    /// The two are statements of their own, outside a transaction, and so
+    /// read the catalog at two moments: a shape can have changed between
+    /// the listing and its own read, or since. That costs the page read
+    /// with it one round trip more, never a wrong page (see `open`).
+    ///
+    /// The listing goes out first, and the shapes failing fail nothing:
+    /// a server's error, or a cancel that lands on them, leaves the
+    /// listing as it was read, and nothing is remembered. A session that
+    /// is lost fails the listing, which says so.
+    fn listed_from(
+        &self,
+        schema: &str,
+        rows: std::result::Result<Vec<tokio_postgres::Row>, tokio_postgres::Error>,
+        shapes: std::result::Result<Vec<tokio_postgres::Row>, tokio_postgres::Error>,
+    ) -> Result<Vec<ObjectInfo>> {
+        let rows = rows.map_err(query_error)?;
+        match shapes
+            .map_err(query_error)
+            .and_then(|shapes| Shape::of_listed(&rows, &shapes))
+        {
+            Ok(shapes) => self.remember_all(schema, shapes),
+            // The session is gone: the listing that came before says
+            // nothing of it.
+            Err(error) if error.is_connection_lost() => return Err(error),
+            // Neither the schema, which an agent may have sent, nor the
+            // server's words, which can quote what it holds, go in the log.
+            Err(_) => log::info!("the listing read no shapes"),
+        }
+        rows.iter()
+            .map(|row| {
+                let kind: String = column(row, 1)?;
+                let tuples: f64 = column(row, 2)?;
+                Ok(ObjectInfo {
+                    name: column(row, 0)?,
+                    kind: match kind.as_str() {
+                        "v" => ObjectKind::View,
+                        "m" => ObjectKind::MaterializedView,
+                        _ => ObjectKind::Table,
+                    },
+                    // -1 means never analyzed (PostgreSQL 14+).
+                    estimated_rows: (tuples >= 0.0).then_some(tuples as u64),
+                })
+            })
+            .collect()
     }
 
     /// The [`Structure`] in what [`structure_reads`] read of `object`, but
@@ -1218,17 +1418,10 @@ impl Adapter for Conn {
         Ok(None)
     }
 
-    /// See [`crate::Connection::server_version`].
+    /// See [`crate::Connection::server_version`]. Read at connect, with the
+    /// session's settings.
     async fn server_version(&self) -> Result<String> {
-        let client = self.client.lock().await;
-        let messages = client
-            .simple_query("SHOW server_version")
-            .await
-            .map_err(query_error)?;
-        let version = first_text(&messages).unwrap_or_default();
-        // "17.2 (Debian 17.2-1.pgdg120+1)" reads as "17.2".
-        let version = version.split_whitespace().next().unwrap_or_default();
-        Ok(format!("PostgreSQL {version}"))
+        Ok(self.version.clone())
     }
 
     async fn list_databases(&self) -> Result<Vec<String>> {
@@ -1239,45 +1432,21 @@ impl Adapter for Conn {
     }
 
     async fn list_schemas(&self) -> Result<Vec<String>> {
-        let rows = self
-            .catalog(
-                &format!(
-                    "SELECT nspname::text FROM pg_namespace ORDER BY nspname LIMIT {MAX_LISTED}"
-                ),
-                &[],
-            )
-            .await?;
-        rows.iter().map(|row| column(row, 0)).collect()
+        schema_names(&self.catalog(&schemas_sql(), &[]).await?)
     }
 
+    /// With the listing, in its flight, the [`Shape`] of each table and
+    /// view it lists, which the session remembers: the first open of one
+    /// is then one round trip too (see `open`). See [`Conn::listed_with`].
     async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>> {
-        let rows = self
-            .catalog(
-                &format!(
-                    "SELECT c.relname::text, c.relkind::text, c.reltuples::float8 \
-                     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
-                     WHERE n.nspname = $1 AND c.relkind IN ('r', 'p', 'f', 'v', 'm') \
-                     ORDER BY c.relname LIMIT {MAX_LISTED}"
-                ),
-                &[(&schema, Type::TEXT)],
-            )
-            .await?;
-        rows.iter()
-            .map(|row| {
-                let kind: String = column(row, 1)?;
-                let tuples: f64 = column(row, 2)?;
-                Ok(ObjectInfo {
-                    name: column(row, 0)?,
-                    kind: match kind.as_str() {
-                        "v" => ObjectKind::View,
-                        "m" => ObjectKind::MaterializedView,
-                        _ => ObjectKind::Table,
-                    },
-                    // -1 means never analyzed (PostgreSQL 14+).
-                    estimated_rows: (tuples >= 0.0).then_some(tuples as u64),
-                })
-            })
-            .collect()
+        self.listed_with(schema, &listed_shapes_sql()).await
+    }
+
+    /// The schemas and `schema`'s tables in one round trip: the schemas'
+    /// query goes in the listing's flight. See [`Conn::tree_with`].
+    async fn list_tree(&self, schema: &str) -> (Result<Vec<String>>, Result<Vec<ObjectInfo>>) {
+        self.tree_with(&schemas_sql(), schema, &listed_shapes_sql())
+            .await
     }
 
     async fn ddl(&self, object: &ObjectRef) -> Result<Ddl> {
@@ -1505,6 +1674,12 @@ impl Adapter for Conn {
     async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
         self.save(changes, stop).await
     }
+}
+
+/// "17.2 (Debian 17.2-1.pgdg120+1)" reads as "PostgreSQL 17.2".
+fn version_named(shown: &str) -> String {
+    let version = shown.split_whitespace().next().unwrap_or_default();
+    format!("PostgreSQL {version}")
 }
 
 /// The first row's first value.
@@ -2389,6 +2564,356 @@ mod tests {
         assert_eq!(page.rows.len(), 2);
         assert!(page.ordered_by_key);
         assert_eq!(asked, 1);
+    }
+
+    /// The server's version is read with the settings the connect sends
+    /// after sign-in: asking it later asks the server nothing.
+    #[tokio::test]
+    async fn the_server_version_is_known_from_the_connect() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let (conn, trips) = trip_counted(&url).await;
+        assert_eq!(trips.count(), 1, "the settings and the version go together");
+        let (version, asked) = counted(&trips, conn.server_version()).await;
+        let version = version.unwrap();
+        assert!(version.starts_with("PostgreSQL "), "{version}");
+        assert!(!version.contains('('), "{version}");
+        assert_eq!(asked, 0);
+    }
+
+    #[test]
+    fn a_version_reads_without_its_packaging() {
+        assert_eq!(
+            version_named("17.2 (Debian 17.2-1.pgdg120+1)"),
+            "PostgreSQL 17.2"
+        );
+        assert_eq!(version_named(""), "PostgreSQL ");
+    }
+
+    /// A client of the test server's own, for the tests to set up and
+    /// change tables with.
+    async fn admin(url: &str) -> tokio_postgres::Client {
+        let mut config: tokio_postgres::Config = url.parse().unwrap();
+        config.ssl_mode(tokio_postgres::config::SslMode::Disable);
+        let (client, connection) = config.connect(tokio_postgres::NoTls).await.unwrap();
+        tokio::spawn(connection);
+        client
+    }
+
+    /// The first open of a table the listing named asks the server once:
+    /// the listing read the shape of each table it names, and is still one
+    /// round trip.
+    #[tokio::test]
+    async fn the_first_open_asks_the_server_once() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = round_trips_table(&url).await;
+        let (conn, trips) = trip_counted(&url).await;
+        let (listed, asked) = counted(&trips, conn.list_objects(&object.schema)).await;
+        assert!(
+            listed
+                .unwrap()
+                .iter()
+                .any(|listed| listed.name == object.name)
+        );
+        assert_eq!(asked, 1);
+        let query = RowQuery::new(object.clone(), 10);
+        let ((structure, page), asked) =
+            counted(&trips, conn.open(&object, &query, &StopFlag::new())).await;
+        assert_eq!(structure.unwrap().primary_key, ["shelf", "id"]);
+        let page = page.unwrap();
+        let ids: Vec<_> = page.rows.iter().map(|row| row[0].clone()).collect();
+        assert_eq!(ids, [Value::Int(1), Value::Int(2)]);
+        assert!(page.ordered_by_key);
+        assert_eq!(asked, 1);
+        assert!(outside_a_transaction(&conn).await);
+    }
+
+    /// The schema of [`the_listing_remembers_the_shape_each_object_has`].
+    const LISTED_SHAPES: &str = "listed_shapes";
+
+    /// The shape the listing remembers of each table and view is the one
+    /// [`table_shape`] reads of it alone: keys of two columns out of the
+    /// table's order, one with a column its index includes; no key; `bytea`
+    /// columns, one of them in a key, one dropped; names to quote, and
+    /// names whose order changes with case; a partitioned table and its
+    /// partition; views. Every listed object has a shape, an empty one
+    /// where it has no key and no `bytea` column.
+    #[tokio::test]
+    async fn the_listing_remembers_the_shape_each_object_has() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let admin = admin(&url).await;
+        admin
+            .batch_execute(&format!(
+                "DROP SCHEMA IF EXISTS {LISTED_SHAPES} CASCADE; \
+                 CREATE SCHEMA {LISTED_SHAPES}; SET search_path = {LISTED_SHAPES}; \
+                 CREATE TABLE composite (a int, b int, c bytea, d text, \
+                     PRIMARY KEY (b, a) INCLUDE (d)); \
+                 CREATE TABLE no_key (x int, y bytea, z bytea); \
+                 CREATE TABLE plain (x int); \
+                 CREATE TABLE \"Odd \"\"Name\"\"\" (\"col x\" int PRIMARY KEY, \"B\" bytea); \
+                 CREATE TABLE dropped (id int PRIMARY KEY, gone bytea, kept bytea); \
+                 ALTER TABLE dropped DROP COLUMN gone; \
+                 CREATE TABLE byte_key (v int, k bytea PRIMARY KEY); \
+                 CREATE TABLE \"Upper\" (\"Id\" int PRIMARY KEY); \
+                 CREATE TABLE _under (z int, y int, x int, PRIMARY KEY (x, z)); \
+                 CREATE TABLE parted (id int, at int, body bytea, \
+                     PRIMARY KEY (at, id)) PARTITION BY RANGE (at); \
+                 CREATE TABLE parted_low PARTITION OF parted FOR VALUES FROM (0) TO (10); \
+                 CREATE VIEW a_view AS SELECT a, c FROM composite; \
+                 CREATE MATERIALIZED VIEW a_matview AS SELECT y FROM no_key"
+            ))
+            .await
+            .unwrap();
+        let conn = session(&url).await;
+        let listed = conn.list_objects(LISTED_SHAPES).await.unwrap();
+        assert_eq!(listed.len(), 12);
+        let apart = session(&url).await;
+        for listed in &listed {
+            let object = ObjectRef::new(LISTED_SHAPES, &listed.name);
+            let alone = table_shape(&*apart.client.lock().await, &object)
+                .await
+                .unwrap();
+            assert_eq!(conn.known_shape(&object), Some(alone), "{object:?}");
+        }
+        let shape = |name: &str| conn.known_shape(&ObjectRef::new(LISTED_SHAPES, name));
+        let shape_of = |key: &[&str], bytea: &[&str]| {
+            Some(Shape {
+                key: key.iter().map(|name| name.to_string()).collect(),
+                bytea: bytea.iter().map(|name| name.to_string()).collect(),
+            })
+        };
+        assert_eq!(shape("composite"), shape_of(&["b", "a"], &["c"]));
+        assert_eq!(shape("no_key"), shape_of(&[], &["y", "z"]));
+        assert_eq!(shape("plain"), shape_of(&[], &[]));
+        assert_eq!(shape("Odd \"Name\""), shape_of(&["col x"], &["B"]));
+        assert_eq!(shape("dropped"), shape_of(&["id"], &["kept"]));
+        assert_eq!(shape("byte_key"), shape_of(&["k"], &["k"]));
+        assert_eq!(shape("_under"), shape_of(&["x", "z"], &[]));
+        assert_eq!(shape("parted_low"), shape_of(&["at", "id"], &["body"]));
+        assert_eq!(shape("a_view"), shape_of(&[], &["c"]));
+        admin
+            .batch_execute(&format!("DROP SCHEMA {LISTED_SHAPES} CASCADE"))
+            .await
+            .unwrap();
+    }
+
+    /// The shapes failing on the server leaves the listing as it is, and
+    /// the session remembers no shape: the open reads it first, as it did
+    /// before the listing read shapes.
+    #[tokio::test]
+    async fn a_failed_shape_read_leaves_the_listing() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = round_trips_table(&url).await;
+        let (conn, trips) = trip_counted(&url).await;
+        let failing = "SELECT $1::text, ''::text, true, (1 / 0) = 1";
+        let (listed, asked) = counted(&trips, conn.listed_with(&object.schema, failing)).await;
+        assert_eq!(asked, 1);
+        let listed = listed.unwrap();
+        assert!(listed.iter().any(|listed| listed.name == object.name));
+        for listed in &listed {
+            let listed = ObjectRef::new(&object.schema, &listed.name);
+            assert_eq!(conn.known_shape(&listed), None, "{listed:?}");
+        }
+        assert!(outside_a_transaction(&conn).await);
+        let query = RowQuery::new(object.clone(), 10);
+        let ((structure, page), asked) =
+            counted(&trips, conn.open(&object, &query, &StopFlag::new())).await;
+        assert_eq!(structure.unwrap().primary_key, ["shelf", "id"]);
+        assert!(page.unwrap().ordered_by_key);
+        assert_eq!(asked, 2);
+    }
+
+    /// A cancel that lands on the shapes keeps the listing, read before
+    /// them, and the session remembers no shape. It reads on after, outside
+    /// any transaction.
+    #[tokio::test]
+    async fn a_cancel_on_the_listings_shapes_keeps_the_listing() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = round_trips_table(&url).await;
+        let conn = session(&url).await;
+        let sleeping = "SELECT $1::text, ''::text, true, true FROM pg_sleep(5)";
+        let cancel = conn.cancel.clone();
+        let cancelling = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            cancel.cancel().await.unwrap();
+        });
+        let started = Instant::now();
+        let listed = conn.listed_with(&object.schema, sleeping).await.unwrap();
+        cancelling.await.unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(listed.iter().any(|listed| listed.name == object.name));
+        for listed in &listed {
+            let listed = ObjectRef::new(&object.schema, &listed.name);
+            assert_eq!(conn.known_shape(&listed), None, "{listed:?}");
+        }
+        assert!(outside_a_transaction(&conn).await);
+        conn.list_objects(&object.schema).await.unwrap();
+        assert_eq!(
+            conn.known_shape(&object).map(|shape| shape.key),
+            Some(vec!["shelf".to_owned(), "id".to_owned()])
+        );
+    }
+
+    /// A key that changed after the listing read the table's shape is the
+    /// key the open shows, and the order of its page, which is read again
+    /// from the shape read with it: one round trip more.
+    #[tokio::test]
+    async fn an_open_after_the_listing_shows_a_key_changed_since() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let admin = admin(&url).await;
+        admin
+            .batch_execute(
+                "DROP TABLE IF EXISTS key_changes_after_listing; \
+                 CREATE TABLE key_changes_after_listing (a int PRIMARY KEY, b int NOT NULL); \
+                 INSERT INTO key_changes_after_listing VALUES (1, 3), (2, 2), (3, 1)",
+            )
+            .await
+            .unwrap();
+        let object = ObjectRef::new("public", "key_changes_after_listing");
+        let (conn, trips) = trip_counted(&url).await;
+        conn.list_objects(&object.schema).await.unwrap();
+        assert_eq!(conn.known_shape(&object).unwrap().key, ["a"]);
+        admin
+            .batch_execute(
+                "ALTER TABLE key_changes_after_listing \
+                 DROP CONSTRAINT key_changes_after_listing_pkey, ADD PRIMARY KEY (b)",
+            )
+            .await
+            .unwrap();
+        let query = RowQuery::new(object.clone(), 10);
+        let ((structure, page), asked) =
+            counted(&trips, conn.open(&object, &query, &StopFlag::new())).await;
+        assert_eq!(structure.unwrap().primary_key, ["b"]);
+        let page = page.unwrap();
+        let firsts: Vec<_> = page.rows.iter().map(|row| row[0].clone()).collect();
+        assert_eq!(firsts, [Value::Int(3), Value::Int(2), Value::Int(1)]);
+        assert!(page.ordered_by_key);
+        assert_eq!(asked, 2);
+        assert!(outside_a_transaction(&conn).await);
+        admin
+            .batch_execute("DROP TABLE key_changes_after_listing")
+            .await
+            .unwrap();
+    }
+
+    /// The schemas and a schema's tables are one round trip on a fresh
+    /// session, and the listing in it reads the shape of each table it
+    /// names: the first open of one is one round trip too.
+    #[tokio::test]
+    async fn listing_the_tree_asks_the_server_once() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = round_trips_table(&url).await;
+        let (conn, trips) = trip_counted(&url).await;
+        let ((schemas, objects), asked) = counted(&trips, conn.list_tree(&object.schema)).await;
+        assert_eq!(asked, 1);
+        let schemas = schemas.unwrap();
+        assert!(schemas.contains(&object.schema), "{schemas:?}");
+        let objects = objects.unwrap();
+        assert!(objects.iter().any(|listed| listed.name == object.name));
+        for listed in &objects {
+            let listed = ObjectRef::new(&object.schema, &listed.name);
+            assert!(conn.known_shape(&listed).is_some(), "{listed:?}");
+        }
+        assert!(outside_a_transaction(&conn).await);
+        let query = RowQuery::new(object.clone(), 10);
+        let ((structure, page), asked) =
+            counted(&trips, conn.open(&object, &query, &StopFlag::new())).await;
+        assert_eq!(structure.unwrap().primary_key, ["shelf", "id"]);
+        assert!(page.unwrap().ordered_by_key);
+        assert_eq!(asked, 1);
+    }
+
+    /// Each part of the tree fails on its own, in its one round trip: the
+    /// schemas failing leave the listing and the shapes it read; the
+    /// shapes failing leave the schemas and the listing, and no shape is
+    /// remembered.
+    #[tokio::test]
+    async fn a_failed_part_of_the_tree_leaves_the_rest() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let object = round_trips_table(&url).await;
+        let failing_schemas = "SELECT (1 / 0)::text";
+        let failing_shapes = "SELECT $1::text, ''::text, true, (1 / 0) = 1";
+        let (conn, trips) = trip_counted(&url).await;
+        let ((schemas, objects), asked) = counted(
+            &trips,
+            conn.tree_with(failing_schemas, &object.schema, &listed_shapes_sql()),
+        )
+        .await;
+        assert_eq!(asked, 1);
+        assert!(matches!(schemas, Err(Error::Query { .. })), "{schemas:?}");
+        assert!(
+            objects
+                .unwrap()
+                .iter()
+                .any(|listed| listed.name == object.name)
+        );
+        assert!(conn.known_shape(&object).is_some());
+        let (conn, trips) = trip_counted(&url).await;
+        let ((schemas, objects), asked) = counted(
+            &trips,
+            conn.tree_with(&schemas_sql(), &object.schema, failing_shapes),
+        )
+        .await;
+        assert_eq!(asked, 1);
+        assert!(schemas.unwrap().contains(&object.schema));
+        let objects = objects.unwrap();
+        assert!(objects.iter().any(|listed| listed.name == object.name));
+        for listed in &objects {
+            let listed = ObjectRef::new(&object.schema, &listed.name);
+            assert_eq!(conn.known_shape(&listed), None, "{listed:?}");
+        }
+        assert!(outside_a_transaction(&conn).await);
+    }
+
+    /// The tree is what listing the schemas and then the schema's tables
+    /// answers, on a schema that is not there too. Other tests make and
+    /// drop tables and schemas meanwhile: the two are asked again, a few
+    /// times, until they read the same moment.
+    #[tokio::test]
+    async fn the_tree_is_the_schemas_then_the_schemas_tables() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        round_trips_table(&url).await;
+        let conn = session(&url).await;
+        let apart = session(&url).await;
+        for schema in ["public", "no_such_schema"] {
+            let mut tries = 0;
+            let (read, alone) = loop {
+                let (schemas, objects) = conn.list_tree(schema).await;
+                let read = (schemas.unwrap(), objects.unwrap());
+                let alone = (
+                    apart.list_schemas().await.unwrap(),
+                    apart.list_objects(schema).await.unwrap(),
+                );
+                tries += 1;
+                if read == alone || tries == 10 {
+                    break (read, alone);
+                }
+            };
+            assert_eq!(read, alone, "{schema}");
+            assert!(read.0.iter().any(|listed| listed == "public"), "{schema}");
+            assert_eq!(read.1.is_empty(), schema == "no_such_schema", "{schema}");
+        }
     }
 
     /// The backend runs an open on a task it spawns: its future must be

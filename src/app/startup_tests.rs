@@ -646,45 +646,20 @@ fn the_trees_estimates_reach_the_reopened_tables() {
     let tab = open_window(&mut app, &conn);
     connected(&mut app);
     app.apply_actions();
-    let (session, request) = app
-        .backend
-        .sent
-        .iter()
-        .rev()
-        .find_map(|command| match command {
-            Command::ListSchemas { session, request } => Some((*session, *request)),
-            _ => None,
-        })
-        .expect("the schemas were asked for");
-    app.apply(Action::Backend(crate::backend::Event::Schemas {
-        session,
-        request,
-        result: Ok(vec!["main".into()]),
-    }));
-    let request = app
-        .backend
-        .sent
-        .iter()
-        .rev()
-        .find_map(|command| match command {
-            Command::ListObjects { request, .. } => Some(*request),
-            _ => None,
-        })
-        .expect("the objects were asked for");
     let listed = |name: &str, estimate| tabletist_db::ObjectInfo {
         name: name.into(),
         kind: ObjectKind::Table,
         estimated_rows: estimate,
     };
-    app.apply(Action::Backend(crate::backend::Event::Objects {
-        session,
-        request,
-        schema: "main".into(),
-        result: Ok(vec![
+    // Asked with the schemas, `main` guessed as the default.
+    crate::testing::answer_tree(
+        &mut app,
+        vec!["main".into()],
+        vec![
             listed("authors", Some(1_200)),
             listed("books", Some(48_000)),
-        ]),
-    }));
+        ],
+    );
     // The one in front was read with the connect, before the tree was
     // listed; the other has not been read at all.
     let estimates: Vec<Option<u64>> = app
