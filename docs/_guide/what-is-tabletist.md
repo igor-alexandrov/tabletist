@@ -6,21 +6,28 @@ nav_order: 0
 
 ## Why Tabletist
 
-**A fast, native database client.** Tabletist connects to PostgreSQL, MySQL,
-SQLite and BigQuery. It is written in Rust and draws its own window, so there is no
-browser inside. It runs on Linux (Omarchy and Hyprland first), macOS and
-Windows.
+**A fast, native database client.** Tabletist connects to PostgreSQL, MySQL
+(and MariaDB), SQLite and BigQuery. It is written in Rust and draws its own
+window, so there is no browser inside. It runs on Linux (Omarchy and
+Hyprland first), macOS and Windows.
 
 {% include shot.html file="macos-table" alt="Tabletist with a table's data grid, the sidebar of tables on the left and the row panel on the right" %}
 
 ## What it does
 
+- **Stays quick on a far-away server.** Opening a table, loading a page,
+  counting rows and running a read-only `SELECT` each wait on the server
+  once, and the window keeps answering while the database works.
+  [Read about speed and security]({% link _guide/speed-and-security.md %}).
 - **Keeps your connections.** Saved connections sit in a picker, each tagged
   with its environment (local, dev, staging, production) and when it was
   last used. Open more than one and each is a chip in the window's header.
-- **Connects the way your servers need.** Direct connections, TLS, and SSH
-  tunnels with a password, a key file or your agent. Passwords live in the
-  system keyring, or are asked for when you connect. BigQuery signs in
+- **Connects the way your servers need.** Direct connections, TLS that
+  checks the certificate, and SSH tunnels with a password, a key file or
+  your agent, through the `ProxyJump` and `ProxyCommand` hosts of your
+  `~/.ssh/config`. Passwords live in the system keyring, or are asked for
+  when you connect, and a MySQL password asked for in plain text goes
+  only over TLS. BigQuery signs in
   with a service-account key file or Google Cloud's default credentials.
   [Read about connections]({% link _reference/connections.md %}).
 - **Browses tables.** A sidebar of one schema's tables and views, quick
@@ -50,8 +57,9 @@ Windows.
   in the tables you hide and the values of the columns you mask. You can
   read a log of their calls.
   [Connect an agent]({% link _guide/agents.md %}).
-- **Is careful with production.** A production connection opens read-only
-  unless you turn that off, and a save to production asks first, with the
+- **Is careful with production.** PostgreSQL, MySQL and SQLite keep
+  read-only themselves, not a guess from the SQL. A production connection opens read-only unless
+  you turn that off, and a save to production asks first, with the
   statements on screen.
 - **Looks at home.** A macOS look in IBM Plex, and on Linux the Omarchy
   look: square, keyboard first, with vim keys. **Settings › Keyboard**
@@ -60,7 +68,8 @@ Windows.
   [Tabletist on macOS]({% link _guide/macos.md %}).
 - **Keeps itself up to date.** It checks GitHub for a new version. On
   macOS from Applications, and on Linux from the AppImage or the unpacked
-  archive, it installs the new version when you restart; on Windows it
+  archive, it installs the new version when you restart, once the
+  release's signature and the file's checksum check out; on Windows it
   links to the release.
   [See the download page]({% link _guide/download.md %}).
 

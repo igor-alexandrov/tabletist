@@ -1,7 +1,7 @@
 ---
 title: Editing Data
 description: Edit values in the grid, add, duplicate and delete rows, review the SQL before it runs, and what happens when someone else changed the same row.
-nav_order: 4
+nav_order: 5
 ---
 
 Editing needs a writable connection. A connection with **Open read-only**

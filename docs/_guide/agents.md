@@ -1,7 +1,7 @@
 ---
 title: Agents
 description: Let coding agents such as Claude Code and Cursor read the databases you choose through Tabletist, over MCP, and see and stop what they do.
-nav_order: 6
+nav_order: 7
 ---
 
 Tabletist can let coding agents, such as Claude Code and Cursor, read the
