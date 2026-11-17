@@ -297,7 +297,7 @@ pub(super) fn body(
                 // What agents may do on it, where they can reach the app.
                 if crate::endpoint::AVAILABLE {
                     ui.add_space(18.0);
-                    super::agents::sheet(ui, form, skin);
+                    super::agents::sheet(ui, form, skin, actions);
                 }
             }
         });

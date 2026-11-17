@@ -392,7 +392,7 @@ pub(super) fn terminal_body(
             });
             // What agents may do on it, where they can reach the app.
             if crate::endpoint::AVAILABLE {
-                super::agents::terminal(ui, form, skin);
+                super::agents::terminal(ui, form, skin, actions);
             }
         });
 }

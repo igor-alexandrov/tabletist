@@ -1331,6 +1331,9 @@ pub enum Action {
     SetDriver(Driver),
     /// The connection dialog's environment choice.
     SetEnvironment(crate::env::Environment),
+    /// The connection dialog's agents access switch: the person's own
+    /// choice, which a type's or an environment's default no longer moves.
+    SetFormAgentAccess(crate::connections::AgentAccess),
     /// Drop the connection dialog's saved database password: saved with
     /// nothing typed, the connection then needs no password.
     ForgetSavedPassword,

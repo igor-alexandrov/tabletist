@@ -3150,6 +3150,12 @@ impl App {
                     form.follow_agents_default();
                 }
             }
+            Action::SetFormAgentAccess(level) => {
+                if let Some(Dialog::Connection(form)) = &mut self.dialog {
+                    form.agents.access = level;
+                    form.agents_chosen = true;
+                }
+            }
             Action::SetDriver(driver) => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
                     // A port left at the old driver's default follows the driver.

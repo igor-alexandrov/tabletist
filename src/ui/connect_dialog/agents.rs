@@ -14,7 +14,7 @@ use super::{Skin, input};
 use tabletist_db::Driver;
 
 use crate::connections::AgentAccess;
-use crate::model::{ConnectionForm, TableFocus, TablesMode};
+use crate::model::{Action, ConnectionForm, TableFocus, TablesMode};
 use crate::typography::{Text, TextRole};
 use crate::ui::widgets::{self, ButtonSpec};
 
@@ -85,8 +85,17 @@ fn note(form: &ConnectionForm) -> &'static str {
     }
 }
 
-/// The access switch, as a group of choices headed `heading`.
-fn access(ui: &mut Ui, form: &mut ConnectionForm, heading: &str, group: Group, skin: &Skin) {
+/// The access switch, as a group of choices headed `heading`. A level
+/// clicked is the person's choice, which `App::apply` keeps from a type's
+/// default.
+fn access(
+    ui: &mut Ui,
+    form: &ConnectionForm,
+    heading: &str,
+    group: Group,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
     let labels = LEVELS.map(|(_, word)| skin.say(word));
     let options: Vec<(AgentAccess, Choice<'_>)> = LEVELS
         .iter()
@@ -103,9 +112,7 @@ fn access(ui: &mut Ui, form: &mut ConnectionForm, heading: &str, group: Group, s
         group,
         skin,
     ) {
-        form.agents.access = level;
-        // The person's choice: a type's default no longer moves it.
-        form.agents_chosen = true;
+        actions.push(Action::SetFormAgentAccess(level));
     }
 }
 
@@ -895,7 +902,12 @@ fn shown(ui: &Ui, form: &mut ConnectionForm, top: f32) {
 }
 
 /// macOS: the "Agents" fieldset after Safety.
-pub(super) fn sheet(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
+pub(super) fn sheet(
+    ui: &mut Ui,
+    form: &mut ConnectionForm,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
     let Skin { look, palette, .. } = *skin;
     let top = ui.cursor().top();
     super::sheet::fieldset(ui, &skin.say("Agents"), skin, |ui| {
@@ -903,7 +915,7 @@ pub(super) fn sheet(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
         let heading = skin.say("Access through Tabletist (MCP)");
         widgets::label(ui, small, &heading, palette.secondary, look);
         ui.add_space(5.0);
-        access(ui, form, &heading, Group::Track(28.0), skin);
+        access(ui, form, &heading, Group::Track(28.0), skin, actions);
         if let Some(said) = runs_as(skin) {
             ui.add_space(6.0);
             sentence(ui, small, &said, skin);
@@ -965,14 +977,19 @@ pub(super) fn sheet(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
 }
 
 /// The terminal look: an "agents" section after Safety.
-pub(super) fn terminal(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
+pub(super) fn terminal(
+    ui: &mut Ui,
+    form: &mut ConnectionForm,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
     let look = skin.look;
     let top = ui.cursor().top();
     super::terminal::terminal_section(ui, &skin.say("Agents"), skin);
     let line = TextRole::OBody.row_height(ui.ctx(), look.faces);
     let heading = skin.say("Access");
     super::terminal::terminal_row_of(ui, &heading, line, skin, |ui, _| {
-        access(ui, form, &heading, Group::Words, skin);
+        access(ui, form, &heading, Group::Words, skin, actions);
     });
     if guards_tables(form) {
         terminal_guards(ui, form, line, skin);
