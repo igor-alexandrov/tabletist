@@ -892,3 +892,32 @@ fn the_list_says_what_a_files_connection_opens() {
     assert!(harness.has("SQLite · 12.4 MB"));
     assert!(harness.has("development.sqlite3"));
 }
+
+/// Omarchy: every type is a Tab stop and Enter or Space picks it; the
+/// arrows and h/l choose nothing.
+#[test]
+fn the_omarchy_type_grid_takes_tab_and_enter_or_space() {
+    let look = Look::omarchy();
+    let mut harness = Harness::new();
+    harness.set_look(look);
+    harness.app.apply(Action::NewConnection);
+    form_mut(&mut harness).driver = Driver::Postgres;
+    harness.settle();
+    // A new connection gives the name the keyboard. Back from it: the last
+    // type, then the one before it.
+    harness.press(Key::Tab, Modifiers::SHIFT);
+    assert_eq!(focused_label(&mut harness), Some(look.label("Files")));
+    harness.press(Key::Tab, Modifiers::SHIFT);
+    assert_eq!(focused_label(&mut harness), Some(look.label("BigQuery")));
+    harness.press(Key::H, Modifiers::NONE);
+    assert_eq!(form(&harness).driver, Driver::Postgres);
+    harness.press(Key::Space, Modifiers::NONE);
+    assert_eq!(form(&harness).driver, Driver::BigQuery);
+    harness.press(Key::Tab, Modifiers::NONE);
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert_eq!(form(&harness).driver, Driver::Files);
+    // The arrows choose nothing either (egui may move the focus).
+    harness.press(Key::ArrowLeft, Modifiers::NONE);
+    harness.press(Key::ArrowUp, Modifiers::NONE);
+    assert_eq!(form(&harness).driver, Driver::Files);
+}

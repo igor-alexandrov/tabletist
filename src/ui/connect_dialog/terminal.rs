@@ -12,7 +12,7 @@ use crate::typography::{Text, TextRole};
 use crate::ui::terminal_dialog::{self, Key};
 use crate::ui::widgets::{self, ButtonSpec};
 
-use super::choice::{Choice, Group, choose, driver_choice, environment_choice};
+use super::choice::{Choice, Group, choose, driver_choice, driver_height, environment_choice};
 use super::{
     Skin, StatusAt, TLS_MODES, ca_field, connection_line, field_with_button, file_field,
     forget_saved_password, hint, input, intercept_warning, keeps, named, note, paint_status,
@@ -318,9 +318,11 @@ pub(super) fn terminal_body(
                     }
                 });
             }
-            // The type first: it changes every row after the name.
+            // The type first: it changes every row after the name. Its
+            // grid is as tall as its rows, in the value column's width.
             let heading = skin.say("Type");
-            terminal_row_of(ui, &heading, Group::Words.height(), skin, |ui, _| {
+            let grid = driver_height(ui.available_width() - 164.0, skin);
+            terminal_row_of(ui, &heading, grid, skin, |ui, _| {
                 driver_choice(ui, form, &heading, skin, actions);
             });
             terminal_row(ui, &skin.say("Name"), skin, |ui, label| {
