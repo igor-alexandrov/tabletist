@@ -193,10 +193,16 @@ fn the_mac_type_grid_is_one_tab_stop_and_the_arrows_choose() {
     // Nothing under Files: down stays.
     harness.press(Key::ArrowDown, Modifiers::NONE);
     assert_eq!(form(&harness).driver, Driver::Files);
+    assert_eq!(focused_label(&mut harness).as_deref(), Some("Files"));
     harness.press(Key::ArrowUp, Modifiers::NONE);
     assert_eq!(form(&harness).driver, Driver::Sqlite);
+    assert_eq!(focused_label(&mut harness).as_deref(), Some("SQLite"));
     // One Tab leaves the grid: the arrows no longer choose.
     harness.press(Key::Tab, Modifiers::NONE);
+    // It lands on the Name field, which has no label of its own, not on a
+    // type.
+    assert!(harness.ctx.memory(|memory| memory.focused()).is_some());
+    assert_eq!(focused_label(&mut harness), None);
     harness.press(Key::ArrowRight, Modifiers::NONE);
     assert_eq!(form(&harness).driver, Driver::Sqlite);
 }

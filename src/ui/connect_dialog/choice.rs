@@ -1,5 +1,6 @@
 //! The connection dialog's choices of one among several: the driver, the
-//! environment, and the segments and words either layout draws them as.
+//! environment, and the segments, words and radio grid either layout draws
+//! them as.
 
 use egui::{
     Color32, CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, WidgetInfo, WidgetType, pos2, vec2,
@@ -22,7 +23,7 @@ const DRIVERS: [Driver; 5] = [
     Driver::Files,
 ];
 
-/// One choice of a [`radio_group`], as it is drawn.
+/// One choice of a [`radio_group`] or a [`radio_grid`], as it is drawn.
 #[derive(Clone, Copy)]
 pub(super) struct Choice<'a> {
     label: &'a str,
@@ -30,7 +31,7 @@ pub(super) struct Choice<'a> {
     tint: Option<EnvColors>,
     /// Why the choice cannot be made, where it cannot: it is still a Tab
     /// stop, which says why to the pointer, the keyboard and a screen
-    /// reader.
+    /// reader. A [`radio_grid`] has none.
     off: Option<&'a str>,
 }
 
@@ -52,7 +53,7 @@ impl<'a> Choice<'a> {
     }
 }
 
-/// How a [`radio_group`] draws.
+/// How [`choose`] draws: a [`radio_group`], or a [`radio_grid`] for `Grid`.
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Group {
     /// macOS: a sunken track, the chosen segment raised off it. Segments
@@ -70,8 +71,9 @@ pub(super) enum Group {
 }
 
 impl Group {
-    /// How tall the choices are. A grid's height depends on how many
-    /// choices there are and the width: [`GridShape::height`].
+    /// How tall the choices are. Not for a grid: its height depends on how
+    /// many choices there are and the width, [`GridShape::height`] through
+    /// [`driver_height`].
     pub(super) fn height(self) -> f32 {
         match self {
             Self::Track(height) => height,
@@ -79,7 +81,9 @@ impl Group {
             // A line of the look's text (17), 2 above and below it, and
             // the 1 pt box round the chosen word.
             Self::Words => 23.0,
-            Self::Grid => 28.0,
+            Self::Grid => {
+                unreachable!("a grid's height is GridShape::height, through driver_height")
+            }
         }
     }
 }
@@ -144,7 +148,8 @@ pub(super) fn driver_height(width: f32, skin: &Skin) -> f32 {
     GridShape::of(skin).height(DRIVERS.len(), width)
 }
 
-/// One of several values chosen by a [`radio_group`]: the value clicked.
+/// One of several values chosen by a [`radio_group`] or a [`radio_grid`]: the
+/// value clicked.
 /// `name` is the heading the choices stand under; with it, screen readers
 /// hear them as one group of that name.
 pub(super) fn choose<T: Copy + PartialEq>(
@@ -368,6 +373,10 @@ fn radio_grid(
     chosen: usize,
     skin: &Skin,
 ) -> Option<usize> {
+    debug_assert!(
+        choices.iter().all(|choice| choice.off.is_none()),
+        "a grid has no disabled choices: radio_grid does not explain them"
+    );
     let Skin { look, palette, .. } = *skin;
     let shape = GridShape::of(skin);
     let width = ui.available_width();
@@ -409,8 +418,8 @@ fn radio_grid(
         if can && response.clicked() {
             clicked = Some(index);
         }
-        if can {
-            clicked = arrow.or(clicked);
+        if let Some(next) = arrow.filter(|next| enabled && choices[*next].off.is_none()) {
+            clicked = Some(next);
         }
         let center = cell.center().y;
         if look.terminal {
