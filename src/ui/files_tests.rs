@@ -160,6 +160,47 @@ fn the_type_is_a_radio_group_of_four_on_a_row_of_its_own() {
     assert!(harness.has("Changes the fields below"));
 }
 
+/// The label of what has the keyboard.
+fn focused_label(harness: &mut Harness) -> Option<String> {
+    let id = harness.ctx.memory(|memory| memory.focused())?;
+    let tree = harness.settle();
+    tree.nodes
+        .iter()
+        .find(|(node, _)| *node == id.accesskit_id())
+        .and_then(|(_, node)| node.label().map(str::to_owned))
+}
+
+/// macOS: the types are four to a row, one Tab stop: the chosen one. The
+/// arrows choose across a row and down a column, and Tab leaves the grid.
+#[test]
+fn the_mac_type_grid_is_one_tab_stop_and_the_arrows_choose() {
+    let mut harness = Harness::new();
+    harness.set_look(Look::macos());
+    // A new connection gives the name the keyboard on its first frame.
+    harness.app.apply(Action::NewConnection);
+    form_mut(&mut harness).driver = Driver::Postgres;
+    harness.settle();
+    // Back from the name is the chosen type.
+    harness.press(Key::Tab, Modifiers::SHIFT);
+    assert_eq!(focused_label(&mut harness).as_deref(), Some("PostgreSQL"));
+    harness.press(Key::ArrowLeft, Modifiers::NONE);
+    assert_eq!(form(&harness).driver, Driver::Sqlite);
+    assert_eq!(focused_label(&mut harness).as_deref(), Some("SQLite"));
+    // SQLite, PostgreSQL, MySQL, BigQuery on the first row; Files under SQLite.
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    assert_eq!(form(&harness).driver, Driver::Files);
+    assert_eq!(focused_label(&mut harness).as_deref(), Some("Files"));
+    // Nothing under Files: down stays.
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    assert_eq!(form(&harness).driver, Driver::Files);
+    harness.press(Key::ArrowUp, Modifiers::NONE);
+    assert_eq!(form(&harness).driver, Driver::Sqlite);
+    // One Tab leaves the grid: the arrows no longer choose.
+    harness.press(Key::Tab, Modifiers::NONE);
+    harness.press(Key::ArrowRight, Modifiers::NONE);
+    assert_eq!(form(&harness).driver, Driver::Sqlite);
+}
+
 #[test]
 fn changing_the_type_keeps_the_name_and_every_field_typed() {
     let mut harness = new_files(Look::macos());
