@@ -25,7 +25,7 @@ Measured with the app's fonts and `radio_group`'s spacing (the options page: htt
 
 Today every type is also its own Tab stop on macOS, and the Files hint (325 wide) already wraps under the five-type track.
 
-## Departures from the canvas: each needs Igor's yes before Task 1
+## Departures from the canvas: all six agreed by Igor on 2026-11-17
 
 The canvas (`https://claude.ai/artifact/4FtP3GnsXevWfpBsotjVb6`) draws Type as a segmented track (macOS) and boxed words (Omarchy) on every connection artboard: `MacConnectionEdit`, `MacConnectionEditNext`, `MacConnectionSqlite`, `MacConnectionFiles`, `MacConnectionRedis` and their Omarchy boards. The grid departs from them here:
 
@@ -36,7 +36,7 @@ The canvas (`https://claude.ai/artifact/4FtP3GnsXevWfpBsotjVb6`) draws Type as a
 5. **The Omarchy "type" label is centred on the grid's height,** as every Omarchy row centres its label. With six types it sits between the two rows.
 6. **Fewer columns in a narrow window.** A column is never narrower than 150 (macOS) or 170 (Omarchy), so a dialog squeezed by a window under 748 (macOS) or 828 (Omarchy) wide drops to three or two columns.
 
-Once these are agreed, a follow-up updates the canvas boards to match; the plan does not touch the canvas.
+Igor said yes to all six on 2026-11-17. A follow-up updates the canvas boards to match; the plan does not touch the canvas.
 
 ## Files
 
@@ -655,4 +655,4 @@ Run the app on the Bookshop demo database in both looks and check, without scree
 
 - [ ] **Step 3: Pull request**
 
-Once #247 is merged: rebase onto main, push, and open the PR. Its body lists the six departures with Igor's answers.
+Once #247 is merged: rebase onto main, push, and open the PR. Its body lists the six departures and that Igor agreed to all six on 2026-11-17.
