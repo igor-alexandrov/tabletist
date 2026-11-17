@@ -1,7 +1,7 @@
 ---
 title: The Omarchy Look
 description: How Tabletist looks and works on Linux, the keys of the Omarchy look, how it follows the Omarchy theme, and how to use your own colors.
-nav_order: 7
+nav_order: 8
 ---
 
 On Linux, Tabletist takes the Omarchy look: square corners, the keyboard

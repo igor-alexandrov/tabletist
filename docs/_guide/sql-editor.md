@@ -1,7 +1,7 @@
 ---
 title: SQL Editor
 description: Run statements, choose between read-only and read-write runs, and read the results and messages.
-nav_order: 5
+nav_order: 6
 ---
 
 Press Cmd/Ctrl+T for a new SQL editor. Each one is a tab named

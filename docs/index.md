@@ -1,12 +1,12 @@
 ---
 layout: home
 title: Tabletist
-description: A fast, native database client for PostgreSQL, MySQL, SQLite and BigQuery.
+description: A fast, native database client for PostgreSQL, MySQL, MariaDB, SQLite and BigQuery.
 permalink: /
 hero:
   name: Tabletist
   text: Your databases, native and fast
-  tagline: A database client for PostgreSQL, MySQL, SQLite and BigQuery. Written in Rust, for Linux, macOS and Windows.
+  tagline: A database client for PostgreSQL, MySQL, MariaDB, SQLite and BigQuery. Written in Rust, for Linux, macOS and Windows.
   actions:
     - theme: brand
       text: Download
@@ -26,19 +26,21 @@ hero:
 
 features:
   - icon: ⚡
-    title: Native
-    details: Written in Rust, with no browser inside. One small program for Linux, macOS and Windows.
+    title: Fast, even far away
+    details: Written in Rust, with no browser inside. On PostgreSQL, MySQL and MariaDB, opening a table, loading a page and running a read-only SELECT usually wait on the server once, so a remote database feels close.
+    link: /speed-and-security/
+    link_text: Why it is fast
   - icon: 🗄️
     title: Four databases
-    details: PostgreSQL, MySQL, SQLite and BigQuery, with the same grid, row panel and SQL editor for each.
+    details: PostgreSQL, MySQL (MariaDB too), SQLite and BigQuery, with the same grid, row panel and SQL editor for each.
   - icon: 🔐
-    title: Connections that fit your setup
-    details: TLS, SSH tunnels with a password, a key file or your agent, and passwords kept in the system keyring.
+    title: Secure connections
+    details: TLS that checks the certificate when you choose verify-full, SSH tunnels (through ProxyJump and ProxyCommand too) that check the SSH server's key, and passwords kept in the system keyring, never in a file.
     link: /connections/
     link_text: How connections work
   - icon: 🛡️
     title: Careful with production
-    details: A production connection opens read-only unless you say otherwise, and a save to production asks first, with its SQL on screen.
+    details: PostgreSQL, MySQL and SQLite keep read-only themselves, not a guess from the SQL. A production connection opens read-only unless you say otherwise, and a save to production asks first, with its SQL on screen.
   - icon: ✏️
     title: Edit in the grid
     details: Change values, add, duplicate and delete rows, pick dates from a calendar, and search the table a one-column foreign key points at. A save is one transaction, and stops to ask when someone else changed the row.
@@ -60,10 +62,10 @@ features:
     link: /agents/
     link_text: Connect an agent
   - icon: 🔓
-    title: Open source
-    details: Free to use, study and improve, under the MIT license.
-    link: https://github.com/igor-alexandrov/tabletist
-    link_text: Read the source
+    title: Open and signed
+    details: Free under the MIT license. Each release's checksums are signed, the macOS app is signed and notarized, an update installs only once it verifies, and the dependencies are audited every day.
+    link: /speed-and-security/#releases-and-updates
+    link_text: How releases are checked
 ---
 
 ## Two looks, one app
@@ -99,6 +101,20 @@ Read about [the Omarchy look]({% link _guide/omarchy.md %}) and
     <figcaption>Keep every connection, tagged with its environment.</figcaption>
   </figure>
 </div>
+
+## Quick far away, careful up close
+
+Most of the wait on a remote database is the network. Tabletist sends
+what each step needs together, so on PostgreSQL, MySQL and MariaDB
+opening a table, loading a page, counting rows and running a read-only
+`SELECT` usually take one round trip (a MySQL table with a `FLOAT`
+column takes more). Through a network that adds 200 ms to
+each round trip, a table opens in about 0.2 seconds.
+
+It is careful with what you trust it with: passwords stay in the system
+keyring, PostgreSQL, MySQL and SQLite keep read-only themselves, and an update installs
+only once its signature checks out.
+[Read about speed and security]({% link _guide/speed-and-security.md %}).
 
 ## Try it without a database
 

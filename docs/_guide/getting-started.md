@@ -1,7 +1,7 @@
 ---
 title: Getting Started
 description: Look around with the sample database, then save a connection to your own.
-nav_order: 2
+nav_order: 3
 ---
 
 ## Look around first
