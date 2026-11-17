@@ -126,12 +126,12 @@ fn a_new_files_connection_is_local_read_only_and_lets_agents_read() {
 }
 
 #[test]
-fn the_type_is_a_radio_group_of_four_on_a_row_of_its_own() {
+fn the_type_is_a_radio_group_above_the_name() {
     for look in looks() {
         let mut harness = new_files(look);
         let tree = harness.settle();
         assert!(node(&tree, &look.label("Type"), Role::RadioGroup).is_some());
-        for name in ["SQLite", "PostgreSQL", "MySQL", "Files"] {
+        for name in ["SQLite", "PostgreSQL", "MySQL", "BigQuery", "Files"] {
             assert!(
                 node(&tree, &look.label(name), Role::RadioButton).is_some(),
                 "{}: {name}",
