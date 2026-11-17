@@ -15,15 +15,16 @@ Hyprland first), macOS and Windows.
 
 ## What it does
 
-- **Stays quick on a far-away server.** Opening a table, loading a page,
-  counting rows and running a read-only `SELECT` each wait on the server
-  once, and the window keeps answering while the database works.
+- **Stays quick on a far-away server.** On PostgreSQL, MySQL and
+  MariaDB, opening a table, loading a page, counting rows and running a
+  read-only `SELECT` usually wait on the server once. On every database
+  the window keeps answering while the database works.
   [Read about speed and security]({% link _guide/speed-and-security.md %}).
 - **Keeps your connections.** Saved connections sit in a picker, each tagged
   with its environment (local, dev, staging, production) and when it was
   last used. Open more than one and each is a chip in the window's header.
-- **Connects the way your servers need.** Direct connections, TLS that
-  checks the certificate, and SSH tunnels with a password, a key file or
+- **Connects the way your servers need.** Direct connections, TLS
+  (`verify-full` checks the certificate), and SSH tunnels with a password, a key file or
   your agent, through the `ProxyJump` and `ProxyCommand` hosts of your
   `~/.ssh/config`. Passwords live in the system keyring, or are asked for
   when you connect, and a MySQL password asked for in plain text goes

@@ -44,8 +44,10 @@ about 0.2 seconds. From pressing Connect to seeing the tables takes about
 with TLS, whose handshake has round trips of its own.
 
 A few steps take more: a run that writes, a table whose key changed
-since the sidebar listed it, and on MySQL and MariaDB a table with a
-`FLOAT` column. A SQLite database is a file on your computer, with no
+since the sidebar listed it, a table whose structure the sidebar's
+listing did not read (opening it waits once for the structure and again
+for the first page), and on MySQL and MariaDB a table with a `FLOAT`
+column. A SQLite database is a file on your computer, with no
 network in between.
 
 ## Secure
@@ -105,8 +107,10 @@ SQL editor, a run that would change every row of a table (an `UPDATE` or
 
 ### Agents
 
-Agents read only the connections you allow, in a read-only transaction
-that is rolled back, within the rows and the time you set. They never get
+Agents read only the connections you allow, within the rows and the
+time you set: on PostgreSQL, MySQL and SQLite in a read-only transaction
+that is rolled back, and on BigQuery only the statements Tabletist can
+tell are reads. They never get
 a connection's password. Tables you hide and the values of columns you
 mask are kept from them, and so are views that would read what they may
 not. Every call goes into a log you can read, which keeps what was asked
@@ -118,7 +122,8 @@ policy file that an agent running as you cannot change.
 ### Releases and updates
 
 - Each release lists its files in a `checksums.txt` signed with the
-  Tabletist release key. The macOS app is signed and notarized by Apple.
+  Tabletist release key. The macOS app is signed by its developer and
+  notarized by Apple.
   [See the download page]({% link _guide/download.md %}).
 - Before an update is installed, Tabletist checks the signature of the
   release's checksums, the file's checksum, and that the new version

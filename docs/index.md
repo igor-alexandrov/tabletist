@@ -27,7 +27,7 @@ hero:
 features:
   - icon: ⚡
     title: Fast, even far away
-    details: Written in Rust, with no browser inside. Opening a table, loading a page and running a read-only SELECT each wait on the server once, so a remote database feels close.
+    details: Written in Rust, with no browser inside. On PostgreSQL, MySQL and MariaDB, opening a table, loading a page and running a read-only SELECT usually wait on the server once, so a remote database feels close.
     link: /speed-and-security/
     link_text: Why it is fast
   - icon: 🗄️
@@ -35,7 +35,7 @@ features:
     details: PostgreSQL, MySQL (MariaDB too), SQLite and BigQuery, with the same grid, row panel and SQL editor for each.
   - icon: 🔐
     title: Secure connections
-    details: TLS that checks the certificate, SSH tunnels through your ProxyJump and ProxyCommand hosts with their keys checked, and passwords kept in the system keyring, never in a file.
+    details: TLS that checks the certificate when you choose verify-full, SSH tunnels (through ProxyJump and ProxyCommand too) that check the SSH server's key, and passwords kept in the system keyring, never in a file.
     link: /connections/
     link_text: How connections work
   - icon: 🛡️
@@ -63,7 +63,7 @@ features:
     link_text: Connect an agent
   - icon: 🔓
     title: Open and signed
-    details: Free under the MIT license. Releases and updates are signed and checked before they install, and the dependencies are audited every day.
+    details: Free under the MIT license. Each release's checksums are signed, the macOS app is signed and notarized, an update installs only once it verifies, and the dependencies are audited every day.
     link: /speed-and-security/#releases-and-updates
     link_text: How releases are checked
 ---
@@ -105,9 +105,10 @@ Read about [the Omarchy look]({% link _guide/omarchy.md %}) and
 ## Quick far away, careful up close
 
 Most of the wait on a remote database is the network. Tabletist sends
-what each step needs together, so opening a table, loading a page,
-counting rows and running a read-only `SELECT` each take one round trip
-to PostgreSQL, MySQL or MariaDB. Through a network that adds 200 ms to
+what each step needs together, so on PostgreSQL, MySQL and MariaDB
+opening a table, loading a page, counting rows and running a read-only
+`SELECT` usually take one round trip (a MySQL table with a `FLOAT`
+column takes more). Through a network that adds 200 ms to
 each round trip, a table opens in about 0.2 seconds.
 
 It is careful with what you trust it with: passwords stay in the system
