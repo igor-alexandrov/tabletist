@@ -55,6 +55,7 @@ jobs:
           brew install gettext
           echo "$(brew --prefix gettext)/bin" >> "$GITHUB_PATH"
       - run: assets/i18n/update.sh --check
+      - run: assets/i18n/update_test.sh
 
   test:
     name: test (${{ matrix.os }})
