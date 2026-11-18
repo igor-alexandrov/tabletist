@@ -301,17 +301,21 @@ fn make(
         let mut empty = vec![literal("")];
         empty.extend(values.iter().map(|value| literal(value)));
         let sniffed = format!("{plain}, nullstr = [{}]", empty.join(", "));
-        let kind = described(connection, &call(&sniffed))?
-            .into_iter()
-            .find(|(name, _)| name == column)
-            .map_or_else(|| "VARCHAR".to_owned(), |(_, kind)| kind);
+        // The column at its place in the file: a value read as empty that
+        // is the header's own word makes DuckDB name the column anew.
+        let at = found.iter().position(|(name, _)| name == column);
+        let sniffed_columns = described(connection, &call(&sniffed))?;
+        let kind = match (at, sniffed_columns.len() == found.len()) {
+            (Some(at), true) => sniffed_columns[at].1.clone(),
+            _ => "VARCHAR".to_owned(),
+        };
         let quoted = Dialect::DuckDb.ident(column).into_owned();
         let value = values.iter().fold(quoted.clone(), |inner, value| {
             format!("NULLIF({inner}, {})", literal(value))
         });
         let back = match kind.as_str() {
             "VARCHAR" => value,
-            "DATE" | "TIMESTAMP" => match written(connection, &path, &sniffed, &kind) {
+            "DATE" | "TIMESTAMP" => match written(connection, &path, &sniffed, &kind)? {
                 // Written as the sniffer found it, `31/01/2026`, which a
                 // cast does not read.
                 Some(format) => format!("CAST(strptime({value}, {}) AS {kind})", literal(&format)),
@@ -335,28 +339,28 @@ fn make(
 
 /// The format the sniffer found a CSV's dates (`DATE`) or timestamps
 /// (`TIMESTAMP`) written in, read with `options`: `%d/%m/%Y`. None where
-/// they are written as a cast reads them (ISO, year first), or it cannot
-/// say.
+/// they are written as a cast reads them (ISO, year first). A sniff that
+/// fails is the file's error: a view cast without the format would fail
+/// only once its rows are read.
 fn written(
     connection: &duckdb::Connection,
     path: &str,
     options: &str,
     kind: &str,
-) -> Option<String> {
+) -> Result<Option<String>> {
     let field = match kind {
         "DATE" => "DateFormat",
         _ => "TimestampFormat",
     };
-    connection
+    let format = connection
         .query_row(
             &format!("SELECT {field} FROM sniff_csv({path}, {options})"),
             [],
             |row| row.get::<_, Option<String>>(0),
         )
-        .ok()
-        .flatten()
-        // ISO dates, `2026-01-31` and on, a cast reads as it is.
-        .filter(|format| !format.is_empty() && !format.starts_with("%Y-%m-%d"))
+        .map_err(map_error)?;
+    // ISO dates, `2026-01-31` and on, a cast reads as it is.
+    Ok(format.filter(|format| !format.is_empty() && !format.starts_with("%Y-%m-%d")))
 }
 
 /// The columns a reader's call gives, by name, with DuckDB's type of each.
@@ -382,7 +386,9 @@ fn estimate(file: &Found, header: Header) -> Option<u64> {
     use std::io::Read as _;
     let header = match (file.format, header) {
         (Format::Csv | Format::Tsv, Header::No) => 0,
-        (Format::Csv | Format::Tsv, Header::Detect | Header::Yes) => 1,
+        (Format::Csv | Format::Tsv, Header::Yes) => 1,
+        // Not known: every line is counted rather than one lost.
+        (Format::Csv | Format::Tsv, Header::Detect) => 0,
         (Format::Ndjson, _) => 0,
         (Format::Parquet | Format::Json | Format::Excel | Format::DuckDb, _) => return None,
     };
@@ -408,6 +414,29 @@ fn estimate(file: &Found, header: Header) -> Option<u64> {
         }
     };
     Some(rows.saturating_sub(header))
+}
+
+/// Whether a CSV's first row names its columns, as its view reads it:
+/// where DuckDB is left to detect it, its columns say. With no header row
+/// it names them `column0`, `column1` and on.
+fn header_of(connection: &duckdb::Connection, file: &Found, header: Header) -> Header {
+    match (file.format, header) {
+        (Format::Csv | Format::Tsv, Header::Detect) => {
+            let name = Dialect::DuckDb.ident(&file.name);
+            match described(connection, &name) {
+                Ok(columns) => {
+                    let numbered = columns.iter().all(|(column, _)| {
+                        column.strip_prefix("column").is_some_and(|rest| {
+                            !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
+                        })
+                    });
+                    if numbered { Header::No } else { Header::Yes }
+                }
+                Err(_) => Header::Detect,
+            }
+        }
+        (_, header) => header,
+    }
 }
 
 /// Opens a session over `files`, read as `reading` says, a file it skips
@@ -465,7 +494,7 @@ fn opened(files: &[Found], reading: &Reading) -> Result<(duckdb::Connection, Vec
             | Format::Json
             | Format::Ndjson
             | Format::Excel
-            | Format::DuckDb => estimate(file, reading.header),
+            | Format::DuckDb => estimate(file, header_of(&connection, file, reading.header)),
         };
         opened.push(Opened {
             found: (*file).clone(),
@@ -1127,6 +1156,17 @@ impl Conn {
     pub(crate) async fn open(source: &Source, reading: &Reading) -> Result<Self> {
         let (source, reading) = (source.clone(), reading.clone());
         let (connection, files, version) = tokio::task::spawn_blocking(move || {
+            // A listed file that is skipped is not looked at: one that is
+            // gone, or that cannot be looked at, is no matter.
+            let source = match source {
+                Source::Files(files) => Source::Files(
+                    files
+                        .into_iter()
+                        .filter(|file| !reading.skips(file))
+                        .collect(),
+                ),
+                folder @ Source::Folder(_) => folder,
+            };
             let scan = crate::files::scan(&source)?;
             // A skipped file that is gone is no matter.
             if let Some(gone) = scan.missing.iter().find(|gone| !reading.skips(gone)) {

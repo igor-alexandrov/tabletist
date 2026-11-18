@@ -427,7 +427,7 @@ fn two_presses_of_r_in_one_frame_take_off_one_override() {
 }
 
 /// A click on a section's toggle counts though a held key repeats in the
-/// same frame.
+/// same frame, where the repeat alone does nothing.
 #[test]
 fn a_click_counts_while_a_key_repeats_in_the_same_frame() {
     for look in looks() {
@@ -436,10 +436,20 @@ fn a_click_counts_while_a_key_repeats_in_the_same_frame() {
         tab_to(&mut harness, &closed);
         let tree = harness.settle();
         let target = crate::testing::node(&tree, &closed, Role::Button).unwrap();
-        // Space held from before (a repeat), and a screen reader's click.
-        harness.frame(vec![crate::testing::key(Key::Space, Modifiers::NONE)]);
+        let space = crate::testing::key(Key::Space, Modifiers::NONE);
+        // Space opens it.
+        harness.frame(vec![space.clone()]);
+        assert!(form(&harness).csv_open, "{}: Space opens", look.name);
+        // Held, it comes again: nothing changes.
+        harness.frame(vec![space.clone()]);
+        assert!(
+            form(&harness).csv_open,
+            "{}: a repeat changes nothing",
+            look.name
+        );
+        // Held, with a screen reader's click: the click closes it.
         harness.frame(vec![
-            crate::testing::key(Key::Space, Modifiers::NONE),
+            space,
             egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
                 target_tree: egui::accesskit::TreeId::ROOT,
                 target_node: target,
@@ -447,9 +457,58 @@ fn a_click_counts_while_a_key_repeats_in_the_same_frame() {
                 data: None,
             }),
         ]);
+        assert!(
+            !form(&harness).csv_open,
+            "{}: the click closes it",
+            look.name
+        );
         harness.frame(vec![crate::testing::release(Key::Space, Modifiers::NONE)]);
+    }
+}
+
+/// A fresh Space while Enter is held toggles the section: the repeat of one
+/// key does not hide the press of the other.
+#[test]
+fn a_fresh_press_counts_while_the_other_key_repeats() {
+    for look in looks() {
+        let mut harness = new_files(look);
+        let closed = closed(look);
+        tab_to(&mut harness, &closed);
+        harness.frame(vec![crate::testing::key(Key::Enter, Modifiers::NONE)]);
+        assert!(form(&harness).csv_open, "{}: Enter opens", look.name);
+        harness.frame(vec![
+            crate::testing::key(Key::Enter, Modifiers::NONE),
+            crate::testing::key(Key::Space, Modifiers::NONE),
+        ]);
+        assert!(!form(&harness).csv_open, "{}: Space closes", look.name);
+        harness.frame(vec![
+            crate::testing::release(Key::Enter, Modifiers::NONE),
+            crate::testing::release(Key::Space, Modifiers::NONE),
+        ]);
+    }
+}
+
+/// Enter on an override's row and `R` in one frame take off one override;
+/// a held `R` takes off one, however long it is held.
+#[test]
+fn enter_and_r_together_or_a_held_r_take_off_one_override() {
+    let r = || crate::testing::key(Key::R, Modifiers::SHIFT);
+    for frames in [
+        vec![vec![crate::testing::key(Key::Enter, Modifiers::NONE), r()]],
+        vec![vec![r()], vec![r()], vec![r()]],
+    ] {
+        let mut harness = new_files(Look::omarchy());
+        form_mut(&mut harness).files_csv.overrides = vec![returns_as_text(), skip_archive()];
+        form_mut(&mut harness).csv_open = true;
+        tab_to(&mut harness, "reset returns.csv, returned_at as text");
+        for events in frames {
+            harness.frame(events);
+        }
+        harness.frame(vec![
+            crate::testing::release(Key::R, Modifiers::SHIFT),
+            crate::testing::release(Key::Enter, Modifiers::NONE),
+        ]);
         harness.settle();
-        // The first Space opened it; the click closed it again.
-        assert!(!form(&harness).csv_open, "{}", look.name);
+        assert_eq!(form(&harness).files_csv.overrides, [skip_archive()]);
     }
 }

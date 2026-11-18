@@ -465,6 +465,7 @@ pub fn show(
                         key,
                         pressed: true,
                         modifiers,
+                        repeat,
                         ..
                     } = event
                     else {
@@ -493,7 +494,9 @@ pub fn show(
                             // Once a frame: a second press in it would
                             // take off the override that moved up into
                             // this one's place.
-                            if let Some(at) = reset.take() {
+                            // Once a press: a held `R` would take off the
+                            // override that moves up into its place, and on.
+                            if let Some(at) = reset.take().filter(|_| !*repeat) {
                                 actions.push(Action::SetCsv(crate::model::CsvChange::Reset(at)));
                             }
                             false
@@ -528,6 +531,14 @@ pub fn show(
             show_url(ctx, form, !form.url_mode);
         }
     }
+    // One Reset a frame: Enter on an override's row and `R` in the same
+    // frame both ask for it, and a second would take off the override
+    // that moves up into its place.
+    let mut reset = false;
+    actions.retain(|action| match action {
+        Action::SetCsv(crate::model::CsvChange::Reset(_)) => !std::mem::replace(&mut reset, true),
+        _ => true,
+    });
     // A save goes last: what the same frame changed in the form (a key's
     // Reset, a choice) is saved with it, not dropped with the dialog.
     actions.sort_by_key(|action| matches!(action, Action::SaveConnection { .. }));

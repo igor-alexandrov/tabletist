@@ -107,20 +107,22 @@ fn pressed(ui: &Ui, response: &Response) -> bool {
         || ui.input(|input| {
             input.has_accesskit_action_request(response.id, egui::accesskit::Action::Click)
         });
-    let held = response.has_focus()
-        && ui.input(|input| {
-            input.events.iter().any(|event| {
-                matches!(
-                    event,
-                    egui::Event::Key {
-                        key: egui::Key::Enter | egui::Key::Space,
-                        pressed: true,
-                        repeat: true,
-                        ..
-                    }
-                )
+    // Enter or Space down in this frame: afresh, or again while held.
+    let (fresh, again) = ui.input(|input| {
+        input
+            .events
+            .iter()
+            .fold((false, false), |(fresh, again), event| match event {
+                egui::Event::Key {
+                    key: egui::Key::Enter | egui::Key::Space,
+                    pressed: true,
+                    repeat,
+                    ..
+                } => (fresh || !repeat, again || *repeat),
+                _ => (fresh, again),
             })
-        });
+    });
+    let held = response.has_focus() && again && !fresh;
     response.clicked() && (clicked || !held)
 }
 

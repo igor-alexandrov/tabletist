@@ -469,9 +469,8 @@ async fn a_column_read_as_empty_is_typed_by_its_own_values_and_dates_keep_their_
 async fn an_override_by_path_is_of_that_file_alone_and_a_skipped_file_may_be_gone() {
     let current = tempfile::tempdir().unwrap();
     let archive = tempfile::tempdir().unwrap();
-    for dir in [&current, &archive] {
-        std::fs::write(dir.path().join("orders.csv"), "id\n1\n").unwrap();
-    }
+    std::fs::write(current.path().join("orders.csv"), "id\n1\n").unwrap();
+    std::fs::write(archive.path().join("orders.csv"), "id\n2\n").unwrap();
     let kept = current.path().join("orders.csv");
     let gone = archive.path().join("orders.csv");
     let list = Source::Files(vec![kept.clone(), gone.clone()]);
@@ -488,6 +487,9 @@ async fn an_override_by_path_is_of_that_file_alone_and_a_skipped_file_may_be_gon
     .await
     .unwrap();
     assert_eq!(text_of(&tables[0][0]), "1");
+    // The one left is the current file, not the archive's.
+    let ids = read(&connection, "SELECT id FROM orders").await.unwrap();
+    assert_eq!(text_of(&ids[0][0]), "1");
     // The skipped file is gone: the connection still opens.
     std::fs::remove_file(&gone).unwrap();
     Connection::connect(&spec, &Secrets::default())
@@ -506,4 +508,60 @@ async fn an_override_by_path_is_of_that_file_alone_and_a_skipped_file_may_be_gon
     .await
     .unwrap();
     assert_eq!(text_of(&tables[0][0]), "0");
+}
+
+#[tokio::test]
+async fn a_value_read_as_empty_that_is_the_header_s_word_keeps_the_column_s_type() {
+    // `amount` heads the column and is read as empty in it: DuckDB names
+    // the column anew while it looks for its type, which is found by its
+    // place, not its name.
+    for (value, kind) in [("amount", "BIGINT"), ("-", "BIGINT")] {
+        let dir = returns_of("amount\namount\n42\n43\n-\n");
+        let reading = Reading {
+            header: Header::Yes,
+            overrides: vec![change(
+                "returns.csv",
+                Change::Empty {
+                    column: "amount".into(),
+                    values: vec![value.to_owned(), "-".into(), "amount".into()],
+                },
+            )],
+            ..Reading::default()
+        };
+        let connection = open(dir.path(), reading).await.unwrap();
+        let rows = read(&connection, "SELECT DISTINCT typeof(amount) FROM returns")
+            .await
+            .unwrap();
+        assert_eq!(text_of(&rows[0][0]), kind, "{value}");
+    }
+}
+
+#[tokio::test]
+async fn a_file_with_no_header_row_counts_every_row() {
+    let dir = returns_of("10,20\n30,40\n");
+    let connection = open(dir.path(), Reading::default()).await.unwrap();
+    let objects = connection.list_objects("main").await.unwrap();
+    assert_eq!(objects[0].estimated_rows, Some(2));
+}
+
+/// A listed file that is skipped is not looked at: one the system cannot
+/// look at (a link to itself) does not stop the others opening.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_skipped_file_that_cannot_be_looked_at_is_no_matter() {
+    let dir = tempfile::tempdir().unwrap();
+    let kept = dir.path().join("orders.csv");
+    std::fs::write(&kept, "id\n1\n").unwrap();
+    let looped = dir.path().join("returns.csv");
+    std::os::unix::fs::symlink(&looped, &looped).unwrap();
+    let mut spec = ConnectSpec::files(Source::Files(vec![kept, looped.clone()]));
+    assert!(
+        Connection::connect(&spec, &Secrets::default())
+            .await
+            .is_err()
+    );
+    spec.csv.overrides = vec![change("returns.csv", Change::Skip)];
+    Connection::connect(&spec, &Secrets::default())
+        .await
+        .unwrap();
 }

@@ -105,7 +105,7 @@ numbered; once you type, it lists what matches. Its commands stay on `:`.
 | Ctrl+O | A Files connection: pick its folder, or add files to its list, in the file chooser |
 | `a` | A Files connection's list: add files |
 | `x` | A Files connection's list: take the file under the cursor off the list. The file stays on disk |
-| `R` | A Files connection's reading csv: take the override the cursor is on off. Its file is read as the section's choices say again |
+| `R` | A Files connection's reading csv: take the override the cursor is on off. Other overrides still apply |
 | Esc | Cancel |
 
 {% include shot.html file="omarchy-connection-edit" alt="The connection form in the Omarchy look, for a production database behind an SSH tunnel" width="2200" height="2032" %}
