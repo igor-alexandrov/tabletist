@@ -21,7 +21,7 @@ msgstr ""
 #: crates/tabletist-core/src/export_sheet.rs
 #, rust-format
 msgid "! {path} exists · :w! to replace, or another name"
-msgstr "! {path} уже существует · :w! — заменить, или другое имя"
+msgstr "! {path} уже существует · :w!: заменить, или другое имя"
 
 #: crates/tabletist-core/src/export_sheet.rs
 #, rust-format
@@ -132,19 +132,19 @@ msgstr "✗ не удаётся записать {path}: доступ запре
 msgid ""
 "✗ connection lost after {rows} · partial file removed · :export to retry"
 msgstr ""
-"✗ соединение прервалось после {rows} · неполный файл удалён · :export — "
+"✗ соединение прервалось после {rows} · неполный файл удалён · :export: "
 "повторить"
 
 #: crates/tabletist-core/src/export_sheet.rs
 #, rust-format
 msgid "✗ couldn't export {table}: {why} · :export to retry"
-msgstr "✗ не удалось экспортировать {table}: {why} · :export — повторить"
+msgstr "✗ не удалось экспортировать {table}: {why} · :export: повторить"
 
 #: crates/tabletist-core/src/export_sheet.rs
 #, rust-format
 msgid "✗ disk full after {written} · partial file removed · :export to retry"
 msgstr ""
-"✗ диск заполнен после {written} · неполный файл удалён · :export — повторить"
+"✗ диск заполнен после {written} · неполный файл удалён · :export: повторить"
 
 #: crates/tabletist-core/src/export_sheet.rs
 #, rust-format
@@ -152,16 +152,16 @@ msgid ""
 "✗ server stopped the query after {time} (statement_timeout) · :export review "
 "sql"
 msgstr ""
-"✗ сервер остановил запрос через {time} (statement_timeout) · :export — "
+"✗ сервер остановил запрос через {time} (statement_timeout) · :export: "
 "показать SQL"
 
 #: crates/tabletist-core/src/export_sheet.rs
 msgid "✗ that's more than 10,000 rows · :export to a file"
-msgstr "✗ это больше 10 000 строк · :export — в файл"
+msgstr "✗ это больше 10 000 строк · :export: в файл"
 
 #: crates/tabletist-core/src/export_sheet.rs
 msgid "✗ that's over 20 mb · :export to a file"
-msgstr "✗ это больше 20 мб · :export — в файл"
+msgstr "✗ это больше 20 мб · :export: в файл"
 
 #: crates/tabletist-core/src/format.rs
 msgid ""
@@ -738,12 +738,12 @@ msgstr "{agent} в {connection}"
 #: src/ui/agents.rs
 #, rust-format
 msgid "{key} shows"
-msgstr "{key} — показать"
+msgstr "{key}: показать"
 
 #: src/ui/agents.rs
 #, rust-format
 msgid "{key} shows this tab"
-msgstr "{key} — показать эту вкладку"
+msgstr "{key}: показать эту вкладку"
 
 #: src/ui/agents.rs
 #, rust-format
@@ -1109,12 +1109,12 @@ msgstr "{expression} из DEFAULT"
 #: src/ui/data_view.rs
 #, rust-format
 msgid "{key} edits the filter"
-msgstr "{key} — изменить фильтр"
+msgstr "{key}: изменить фильтр"
 
 #: src/ui/data_view.rs
 #, rust-format
 msgid "{key} reverts"
-msgstr "{key} — отменить"
+msgstr "{key}: отменить"
 
 #: src/ui/data_view.rs
 #, rust-format
@@ -1390,7 +1390,7 @@ msgstr ""
 #, rust-format
 msgid "Space includes or leaves out · {up} {down} move · drag ⋮⋮ to reorder"
 msgstr ""
-"Space — включить или исключить · {up} {down} — переместить · перетащите ⋮⋮, "
+"Space: включить или исключить · {up} {down}: переместить · перетащите ⋮⋮, "
 "чтобы изменить порядок"
 
 #: src/ui/export.rs
@@ -1831,7 +1831,7 @@ msgstr "Сменить столбец подписи"
 
 #: src/ui/key_picker.rs
 msgid "Esc cancels"
-msgstr "Esc — отмена"
+msgstr "Esc: отмена"
 
 #: src/ui/key_picker.rs
 #, rust-format
@@ -2482,7 +2482,7 @@ msgstr "строка"
 #: src/ui/row_panel.rs
 #, rust-format
 msgid "{enter} next field · {esc} leaves the row pending"
-msgstr "{enter} — следующее поле · {esc} — оставить строку несохранённой"
+msgstr "{enter}: следующее поле · {esc}: оставить строку несохранённой"
 
 #: src/ui/row_panel.rs
 #, rust-format
@@ -3323,7 +3323,7 @@ msgstr[2] "Выбрано {n} строк"
 #, rust-format
 msgid "✓ exported {rows} rows → {path} · {size} · {time} · {key} open folder"
 msgstr ""
-"✓ экспортировано строк: {rows} → {path} · {size} · {time} · {key} — открыть "
+"✓ экспортировано строк: {rows} → {path} · {size} · {time} · {key}: открыть "
 "папку"
 
 #: src/ui/write_prompts.rs
