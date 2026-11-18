@@ -73,16 +73,30 @@ pub(super) fn summary(reading: &Reading, locale: Locale, terminal: bool) -> Stri
 /// What an override's row says after the file's name: "returned_at read
 /// as text" (macOS), "returned_at as text" (Omarchy). The words are in
 /// either look's case already: the column and the values are the file's,
-/// never lowercased.
-pub(super) fn override_words(change: &Change, terminal: bool) -> String {
-    let read = if terminal { "" } else { " read" };
+/// never lowercased. Each is translated in `locale` as a whole, the column
+/// and the values put in, so a translation may order its words its own way.
+pub(super) fn override_words(change: &Change, locale: Locale, terminal: bool) -> String {
     match change {
-        Change::Text { column } => format!("{column}{read} as text"),
+        Change::Text { column } => {
+            let words = match terminal {
+                true => "{column} as text",
+                false => "{column} read as text",
+            };
+            gettext(locale, words).replace("{column}", column)
+        }
         Change::Empty { column, values } => {
             let values: Vec<String> = values.iter().map(|value| format!("'{value}'")).collect();
-            format!("{}{read} as empty in {column}", values.join(", "))
+            let words = match terminal {
+                true => "{values} as empty in {column}",
+                false => "{values} read as empty in {column}",
+            };
+            // One pass: a value that reads "{column}" stays as it is.
+            let words = gettext(locale, words);
+            let (before, after) = words.split_once("{values}").unwrap_or((&words, ""));
+            let put = |part: &str| part.replace("{column}", column);
+            format!("{}{}{}", put(before), values.join(", "), put(after))
         }
-        Change::Skip => "skipped".to_owned(),
+        Change::Skip => gettext(locale, "skipped").into_owned(),
     }
 }
 
@@ -277,7 +291,7 @@ fn sheet_rows(ui: &mut Ui, form: &ConnectionForm, skin: &Skin, actions: &mut Vec
 /// changes, and Reset at its end.
 fn sheet_override(ui: &mut Ui, at: usize, each: &Override, skin: &Skin, actions: &mut Vec<Action>) {
     let Skin { look, palette, .. } = *skin;
-    let words = format!("· {}", override_words(&each.change, false));
+    let words = format!("· {}", override_words(&each.change, skin.locale, false));
     egui::Frame::new()
         .fill(palette.panel)
         .corner_radius(CornerRadius::same(8))
@@ -299,7 +313,7 @@ fn sheet_override(ui: &mut Ui, at: usize, each: &Override, skin: &Skin, actions:
                         "{} {}, {}",
                         gettext(skin.locale, "Reset"),
                         each.file,
-                        override_words(&each.change, false)
+                        override_words(&each.change, skin.locale, false)
                     );
                     let reset = reset_link(ui, at, &skin.say("Reset"), &name, skin);
                     // Once a press: a held Enter would take off the next
@@ -378,7 +392,7 @@ fn terminal_rows(ui: &mut Ui, form: &ConnectionForm, skin: &Skin, actions: &mut 
         let said = format!(
             "{} · {} · {} {}",
             each.file,
-            override_words(&each.change, true),
+            override_words(&each.change, skin.locale, true),
             reset.as_str(),
             skin.say("reset")
         );
@@ -392,7 +406,7 @@ fn terminal_rows(ui: &mut Ui, form: &ConnectionForm, skin: &Skin, actions: &mut 
                 "{} {}, {}",
                 skin.say("Reset"),
                 each.file,
-                override_words(&each.change, true)
+                override_words(&each.change, skin.locale, true)
             );
             response
                 .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
@@ -457,16 +471,35 @@ mod tests {
             column: "returned_at".into(),
             values: vec!["N/A".into(), "-".into()],
         };
-        assert_eq!(override_words(&text, false), "returned_at read as text");
-        assert_eq!(override_words(&text, true), "returned_at as text");
         assert_eq!(
-            override_words(&empty, false),
+            override_words(&text, Locale::English, false),
+            "returned_at read as text"
+        );
+        assert_eq!(
+            override_words(&text, Locale::English, true),
+            "returned_at as text"
+        );
+        assert_eq!(
+            override_words(&empty, Locale::English, false),
             "'N/A', '-' read as empty in returned_at"
         );
         assert_eq!(
-            override_words(&empty, true),
+            override_words(&empty, Locale::English, true),
             "'N/A', '-' as empty in returned_at"
         );
-        assert_eq!(override_words(&Change::Skip, false), "skipped");
+        assert_eq!(
+            override_words(&Change::Skip, Locale::English, false),
+            "skipped"
+        );
+        // The file's words are put in as they are: a value or a column
+        // that reads like a placeholder is not filled in again.
+        let odd = Change::Empty {
+            column: "{values}".into(),
+            values: vec!["{column}".into()],
+        };
+        assert_eq!(
+            override_words(&odd, Locale::English, false),
+            "'{column}' read as empty in {values}"
+        );
     }
 }
