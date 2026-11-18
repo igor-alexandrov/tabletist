@@ -515,33 +515,48 @@ async fn a_value_read_as_empty_that_is_the_header_s_word_keeps_the_column_s_type
     // `amount` heads the column and is read as empty in it: DuckDB names
     // the column anew while it looks for its type, which is found by its
     // place, not its name.
-    for (value, kind) in [("amount", "BIGINT"), ("-", "BIGINT")] {
-        let dir = returns_of("amount\namount\n42\n43\n-\n");
+    // A marker that is the header's word, and one that is not.
+    for (text, value) in [
+        ("amount\namount\n42\n43\n", "amount"),
+        ("amount\n42\nvalue\n43\n", "value"),
+    ] {
+        let dir = returns_of(text);
         let reading = Reading {
             header: Header::Yes,
             overrides: vec![change(
                 "returns.csv",
                 Change::Empty {
                     column: "amount".into(),
-                    values: vec![value.to_owned(), "-".into(), "amount".into()],
+                    values: vec![value.to_owned()],
                 },
             )],
             ..Reading::default()
         };
         let connection = open(dir.path(), reading).await.unwrap();
-        let rows = read(&connection, "SELECT DISTINCT typeof(amount) FROM returns")
-            .await
-            .unwrap();
-        assert_eq!(text_of(&rows[0][0]), kind, "{value}");
+        let rows = read(
+            &connection,
+            "SELECT typeof(amount), count(*), count(amount) FROM returns GROUP BY 1",
+        )
+        .await
+        .unwrap();
+        let said: Vec<String> = rows[0].iter().map(text_of).collect();
+        assert_eq!(said, ["BIGINT", "3", "2"], "{value}");
     }
 }
 
 #[tokio::test]
 async fn a_file_with_no_header_row_counts_every_row() {
-    let dir = returns_of("10,20\n30,40\n");
-    let connection = open(dir.path(), Reading::default()).await.unwrap();
-    let objects = connection.list_objects("main").await.unwrap();
-    assert_eq!(objects[0].estimated_rows, Some(2));
+    // No header: both rows. A header that names its columns `column0` and
+    // `column1`: the rows under it.
+    for (text, rows) in [
+        ("10,20\n30,40\n", 2),
+        ("column0,column1\n10,20\n30,40\n", 2),
+    ] {
+        let dir = returns_of(text);
+        let connection = open(dir.path(), Reading::default()).await.unwrap();
+        let objects = connection.list_objects("main").await.unwrap();
+        assert_eq!(objects[0].estimated_rows, Some(rows), "{text}");
+    }
 }
 
 /// A listed file that is skipped is not looked at: one the system cannot
@@ -555,6 +570,17 @@ async fn a_skipped_file_that_cannot_be_looked_at_is_no_matter() {
     let looped = dir.path().join("returns.csv");
     std::os::unix::fs::symlink(&looped, &looped).unwrap();
     let mut spec = ConnectSpec::files(Source::Files(vec![kept, looped.clone()]));
+    assert!(
+        Connection::connect(&spec, &Secrets::default())
+            .await
+            .is_err()
+    );
+    spec.csv.overrides = vec![change("returns.csv", Change::Skip)];
+    Connection::connect(&spec, &Secrets::default())
+        .await
+        .unwrap();
+    // In a folder too.
+    let mut spec = ConnectSpec::files(Source::Folder(dir.path().to_owned()));
     assert!(
         Connection::connect(&spec, &Secrets::default())
             .await

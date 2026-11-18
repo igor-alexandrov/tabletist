@@ -512,3 +512,60 @@ fn enter_and_r_together_or_a_held_r_take_off_one_override() {
         assert_eq!(form(&harness).files_csv.overrides, [skip_archive()]);
     }
 }
+
+/// A held Enter on an override's row takes off that one, not the one that
+/// moves up into its place; a screen reader's clicks on two rows in one
+/// frame take off both.
+#[test]
+fn a_held_enter_resets_one_override_and_two_clicks_reset_two() {
+    let enter = || crate::testing::key(Key::Enter, Modifiers::NONE);
+    let mut harness = new_files(Look::omarchy());
+    form_mut(&mut harness).files_csv.overrides = vec![returns_as_text(), skip_archive()];
+    form_mut(&mut harness).csv_open = true;
+    tab_to(&mut harness, "reset returns.csv, returned_at as text");
+    for _ in 0..3 {
+        harness.frame(vec![enter()]);
+    }
+    harness.frame(vec![crate::testing::release(Key::Enter, Modifiers::NONE)]);
+    harness.settle();
+    assert_eq!(form(&harness).files_csv.overrides, [skip_archive()]);
+    let mut harness = new_files(Look::omarchy());
+    form_mut(&mut harness).files_csv.overrides = vec![returns_as_text(), skip_archive()];
+    form_mut(&mut harness).csv_open = true;
+    let tree = harness.settle();
+    let click = |name: &str| {
+        egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
+            target_tree: egui::accesskit::TreeId::ROOT,
+            target_node: crate::testing::node(&tree, name, Role::Button).unwrap(),
+            action: egui::accesskit::Action::Click,
+            data: None,
+        })
+    };
+    harness.frame(vec![
+        click("reset returns.csv, returned_at as text"),
+        click("reset archive.csv, skipped"),
+    ]);
+    harness.settle();
+    assert!(form(&harness).files_csv.overrides.is_empty());
+}
+
+/// `R` held, let go and pressed again in one frame takes off an override
+/// for the fresh press.
+#[test]
+fn a_fresh_r_after_a_repeat_in_one_frame_counts() {
+    let mut harness = new_files(Look::omarchy());
+    form_mut(&mut harness).files_csv.overrides = vec![returns_as_text(), skip_archive()];
+    form_mut(&mut harness).csv_open = true;
+    tab_to(&mut harness, "reset returns.csv, returned_at as text");
+    let r = || crate::testing::key(Key::R, Modifiers::SHIFT);
+    harness.frame(vec![r()]);
+    assert_eq!(form(&harness).files_csv.overrides, [skip_archive()]);
+    harness.frame(vec![
+        r(),
+        crate::testing::release(Key::R, Modifiers::SHIFT),
+        r(),
+    ]);
+    harness.frame(vec![crate::testing::release(Key::R, Modifiers::SHIFT)]);
+    harness.settle();
+    assert!(form(&harness).files_csv.overrides.is_empty());
+}

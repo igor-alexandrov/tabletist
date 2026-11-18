@@ -491,12 +491,9 @@ pub fn show(
                             false
                         }
                         Some(Command::FormResetOverride) if files => {
-                            // Once a frame: a second press in it would
-                            // take off the override that moved up into
-                            // this one's place.
                             // Once a press: a held `R` would take off the
                             // override that moves up into its place, and on.
-                            if let Some(at) = reset.take().filter(|_| !*repeat) {
+                            if !*repeat && let Some(at) = reset.take() {
                                 actions.push(Action::SetCsv(crate::model::CsvChange::Reset(at)));
                             }
                             false
@@ -531,14 +528,23 @@ pub fn show(
             show_url(ctx, form, !form.url_mode);
         }
     }
-    // One Reset a frame: Enter on an override's row and `R` in the same
-    // frame both ask for it, and a second would take off the override
-    // that moves up into its place.
-    let mut reset = false;
-    actions.retain(|action| match action {
-        Action::SetCsv(crate::model::CsvChange::Reset(_)) => !std::mem::replace(&mut reset, true),
-        _ => true,
-    });
+    // Each override is taken off once a frame (Enter on its row and `R`
+    // both ask), the last first: taking one off moves up those after it.
+    let mut resets: Vec<usize> = actions
+        .iter()
+        .filter_map(|action| match action {
+            Action::SetCsv(crate::model::CsvChange::Reset(at)) => Some(*at),
+            _ => None,
+        })
+        .collect();
+    resets.sort_unstable_by(|a, b| b.cmp(a));
+    resets.dedup();
+    actions.retain(|action| !matches!(action, Action::SetCsv(crate::model::CsvChange::Reset(_))));
+    actions.extend(
+        resets
+            .into_iter()
+            .map(|at| Action::SetCsv(crate::model::CsvChange::Reset(at))),
+    );
     // A save goes last: what the same frame changed in the form (a key's
     // Reset, a choice) is saved with it, not dropped with the dialog.
     actions.sort_by_key(|action| matches!(action, Action::SaveConnection { .. }));

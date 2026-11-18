@@ -102,7 +102,7 @@ pub fn show(
 /// toggle, which would open and close it on each repeat: once per press.
 /// A click by the pointer or a screen reader counts whatever key repeats
 /// in the same frame.
-fn pressed(ui: &Ui, response: &Response) -> bool {
+pub(crate) fn pressed(ui: &Ui, response: &Response) -> bool {
     let clicked = response.clicked_by(egui::PointerButton::Primary)
         || ui.input(|input| {
             input.has_accesskit_action_request(response.id, egui::accesskit::Action::Click)
@@ -122,7 +122,9 @@ fn pressed(ui: &Ui, response: &Response) -> bool {
                 _ => (fresh, again),
             })
     });
-    let held = response.has_focus() && again && !fresh;
+    // Whatever has the keyboard now: a click outside may have taken it
+    // from the toggle in the same frame as the repeat.
+    let held = again && !fresh;
     response.clicked() && (clicked || !held)
 }
 

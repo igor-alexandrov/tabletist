@@ -324,6 +324,13 @@ impl Scan {
 /// list's in its order. A folder that cannot be read is an error naming
 /// it; a file of a list that is gone is [`Scan::missing`].
 pub fn scan(source: &Source) -> Result<Scan> {
+    scan_past(source, |_| false)
+}
+
+/// [`scan`], with the files `skipped` says left out before anything is
+/// asked of them: one that is gone, or that cannot be looked at, is no
+/// matter.
+pub fn scan_past(source: &Source, skipped: impl Fn(&Path) -> bool) -> Result<Scan> {
     let mut entries: Vec<(PathBuf, Format, u64)> = Vec::new();
     let mut missing = Vec::new();
     match source {
@@ -339,6 +346,9 @@ pub fn scan(source: &Source) -> Result<Scan> {
                 let Some(format) = Format::of(&path).filter(|_| !hidden) else {
                     continue;
                 };
+                if skipped(&path) {
+                    continue;
+                }
                 // A link to a file counts as the file; a folder never, nor
                 // a broken link. A file that cannot be looked at is said.
                 match std::fs::metadata(&path) {
@@ -355,7 +365,7 @@ pub fn scan(source: &Source) -> Result<Scan> {
             });
         }
         Source::Files(files) => {
-            for path in files {
+            for path in files.iter().filter(|path| !skipped(path)) {
                 let Some(format) = Format::of(path) else {
                     return Err(Error::InvalidSpec(format!(
                         "{} is not a CSV, TSV, Parquet, JSON, NDJSON, Excel or .duckdb file",

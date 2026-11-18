@@ -303,12 +303,16 @@ fn make(
         let sniffed = format!("{plain}, nullstr = [{}]", empty.join(", "));
         // The column at its place in the file: a value read as empty that
         // is the header's own word makes DuckDB name the column anew.
+        // By its name, or where the name is gone, its place.
         let at = found.iter().position(|(name, _)| name == column);
         let sniffed_columns = described(connection, &call(&sniffed))?;
-        let kind = match (at, sniffed_columns.len() == found.len()) {
-            (Some(at), true) => sniffed_columns[at].1.clone(),
-            _ => "VARCHAR".to_owned(),
-        };
+        let by_name = sniffed_columns.iter().find(|(name, _)| name == column);
+        let by_place = at
+            .filter(|_| sniffed_columns.len() == found.len())
+            .map(|at| &sniffed_columns[at]);
+        let kind = by_name
+            .or(by_place)
+            .map_or_else(|| "VARCHAR".to_owned(), |(_, kind)| kind.clone());
         let quoted = Dialect::DuckDb.ident(column).into_owned();
         let value = values.iter().fold(quoted.clone(), |inner, value| {
             format!("NULLIF({inner}, {})", literal(value))
@@ -416,23 +420,31 @@ fn estimate(file: &Found, header: Header) -> Option<u64> {
     Some(rows.saturating_sub(header))
 }
 
-/// Whether a CSV's first row names its columns, as its view reads it:
-/// where DuckDB is left to detect it, its columns say. With no header row
-/// it names them `column0`, `column1` and on.
-fn header_of(connection: &duckdb::Connection, file: &Found, header: Header) -> Header {
+/// Whether a CSV's first row names its columns, as its view reads it
+/// (`options`): where DuckDB is left to detect it, its sniffer says.
+fn header_of(
+    connection: &duckdb::Connection,
+    file: &Found,
+    header: Header,
+    options: &str,
+) -> Header {
     match (file.format, header) {
         (Format::Csv | Format::Tsv, Header::Detect) => {
-            let name = Dialect::DuckDb.ident(&file.name);
-            match described(connection, &name) {
-                Ok(columns) => {
-                    let numbered = columns.iter().all(|(column, _)| {
-                        column.strip_prefix("column").is_some_and(|rest| {
-                            !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
-                        })
-                    });
-                    if numbered { Header::No } else { Header::Yes }
-                }
-                Err(_) => Header::Detect,
+            let Ok(path) = reader_path(&file.path) else {
+                return Header::Detect;
+            };
+            let call = match options {
+                "" => literal(&path),
+                options => format!("{}, {options}", literal(&path)),
+            };
+            match connection.query_row(
+                &format!("SELECT HasHeader FROM sniff_csv({call})"),
+                [],
+                |row| row.get::<_, Option<bool>>(0),
+            ) {
+                Ok(Some(true)) => Header::Yes,
+                Ok(Some(false)) => Header::No,
+                Ok(None) | Err(_) => Header::Detect,
             }
         }
         (_, header) => header,
@@ -494,7 +506,9 @@ fn opened(files: &[Found], reading: &Reading) -> Result<(duckdb::Connection, Vec
             | Format::Json
             | Format::Ndjson
             | Format::Excel
-            | Format::DuckDb => estimate(file, header_of(&connection, file, reading.header)),
+            | Format::DuckDb => {
+                estimate(file, header_of(&connection, file, reading.header, &options))
+            }
         };
         opened.push(Opened {
             found: (*file).clone(),
@@ -1156,18 +1170,9 @@ impl Conn {
     pub(crate) async fn open(source: &Source, reading: &Reading) -> Result<Self> {
         let (source, reading) = (source.clone(), reading.clone());
         let (connection, files, version) = tokio::task::spawn_blocking(move || {
-            // A listed file that is skipped is not looked at: one that is
-            // gone, or that cannot be looked at, is no matter.
-            let source = match source {
-                Source::Files(files) => Source::Files(
-                    files
-                        .into_iter()
-                        .filter(|file| !reading.skips(file))
-                        .collect(),
-                ),
-                folder @ Source::Folder(_) => folder,
-            };
-            let scan = crate::files::scan(&source)?;
+            // A skipped file is not looked at: one that is gone, or that
+            // cannot be looked at, is no matter.
+            let scan = crate::files::scan_past(&source, |file| reading.skips(file))?;
             // A skipped file that is gone is no matter.
             if let Some(gone) = scan.missing.iter().find(|gone| !reading.skips(gone)) {
                 return Err(Error::Connect(format!(

@@ -391,8 +391,9 @@ fn terminal_rows(ui: &mut Ui, form: &ConnectionForm, skin: &Skin, actions: &mut 
                 .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
             // The row is its Reset, as the sheet's link is: a press of it,
             // by the pointer, Enter or a screen reader, takes the override
-            // off, as `R` does while it has the keyboard.
-            if response.clicked() {
+            // off, as `R` does while it has the keyboard. Once a press: a
+            // held Enter would take off the next override too.
+            if crate::ui::disclosure::pressed(ui, &response) {
                 actions.push(Action::SetCsv(CsvChange::Reset(at)));
             }
             if focus::shown(&response) {
