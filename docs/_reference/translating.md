@@ -28,9 +28,9 @@ msgstr "Помочь с переводом"
 The `#:` line says which file uses the message: read the code around it
 when a short message could mean more than one thing.
 
-To try a change, build Tabletist ([Build from Source](../build-from-source/))
+To try a change, build Tabletist ([Build from Source]({% link _reference/build-from-source.md %}))
 and choose the language in Settings › General, or set it in
-[settings.toml](../settings-and-files/#the-settings-file):
+[settings.toml]({% link _reference/settings-and-files.md %}#the-settings-file):
 
 ```toml
 [interface]
@@ -67,6 +67,10 @@ msginit --no-translator --locale=pt_BR.UTF-8 \
 
 The Omarchy look writes every label in lower case, so write ordinary
 sentence case.
+
+Use no em dashes. Where English puts a key before what it does
+(`Esc: cancel`), keep the colon: «Esc: отмена». Elsewhere, use a full stop,
+a comma, a colon or parentheses.
 
 ## Plurals
 
