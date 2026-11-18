@@ -17,6 +17,7 @@ mod agents_tests;
 mod agent_settings_tests;
 #[cfg(test)]
 mod appearance_settings_tests;
+pub mod banner;
 pub mod calendar;
 #[cfg(test)]
 mod calendar_tests;
