@@ -8,7 +8,7 @@ use egui::{
 };
 
 use crate::format;
-use crate::i18n::{Locale, gettext};
+use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::{Command, Keymap, Scope, Written};
 use crate::model::{Action, ConnTabId, NoWrites, RunMode, SqlTab, TabId, Workspace};
 use crate::settings::Settings;
@@ -252,8 +252,12 @@ pub(crate) fn time_words(secs: u32, terminal: bool, locale: Locale) -> String {
         (true, _, 0) => format!("{minutes}m"),
         (true, _, _) => format!("{minutes}m {rest}s"),
         (false, 0, _) => format!("{secs} s"),
-        (false, _, 0) => format!("{minutes} {}", gettext(locale, "min")),
-        (false, _, _) => format!("{minutes} {} {rest} s", gettext(locale, "min")),
+        (false, _, 0) => {
+            ngettext(locale, "{n} min", "{n} min", minutes).replace("{n}", &minutes.to_string())
+        }
+        (false, _, _) => gettext(locale, "{minutes} min {seconds} s")
+            .replace("{minutes}", &minutes.to_string())
+            .replace("{seconds}", &rest.to_string()),
     }
 }
 
@@ -361,7 +365,9 @@ fn toolbar(
         return Vec::new();
     };
     let (mode, writes) = (workspace.run_mode(sql), workspace.sql_writes());
-    let title = look.label(&format!("{} {}", gettext(locale, "Query"), sql.number));
+    let title = look
+        .label(&gettext(locale, "Query {n}"))
+        .replace("{n}", &sql.number.to_string());
     let limit = sql.limit;
     let secs = sql
         .timeout
@@ -1252,11 +1258,9 @@ fn footer(
         return;
     };
     let (line, column) = sql.line_col();
-    let cursor = format!(
-        "{} {line}, {} {column}",
-        gettext(locale, "Ln"),
-        gettext(locale, "Col")
-    );
+    let cursor = gettext(locale, "Ln {line}, Col {column}")
+        .replace("{line}", &line.to_string())
+        .replace("{column}", &column.to_string());
     let summary = run_summary(sql, locale);
     let note = end_note(sql, locale);
     let version = workspace.server_version.value.clone();
@@ -1348,7 +1352,11 @@ pub fn vim_mode(
 pub fn status_summary(workspace: &Workspace, locale: Locale) -> Option<String> {
     let sql = workspace.active_sql_tab()?;
     let (line, column) = sql.line_col();
-    let mut parts = vec![format!("{} {line}:{column}", gettext(locale, "ln"))];
+    let mut parts = vec![
+        gettext(locale, "ln {line}:{column}")
+            .replace("{line}", &line.to_string())
+            .replace("{column}", &column.to_string()),
+    ];
     parts.extend(run_summary(sql, locale));
     if let Some(run) = sql.last_run().filter(|_| ran(sql)) {
         parts.push(gettext(locale, end_words(run)).into_owned());

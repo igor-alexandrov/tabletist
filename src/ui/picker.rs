@@ -1466,7 +1466,7 @@ fn mac_row(
         Text::one(
             look,
             small,
-            &format!("{} {when}", gettext(locale, "Last used")),
+            &gettext(locale, "Last used {when}").replace("{when}", &when),
             palette.dim,
         ),
     );
@@ -1517,11 +1517,8 @@ fn mac_row(
     if response.clicked() {
         actions.push(Action::EditConnection(connection.id.clone()));
     }
-    let more_label = format!(
-        "{} {}",
-        gettext(locale, "More actions for"),
-        connection.name
-    );
+    let more_label =
+        gettext(locale, "More actions for {connection}").replace("{connection}", &connection.name);
     let more = ButtonSpec::new("")
         .icon(Icon::Ellipsis)
         .gap(0.0)
@@ -1656,9 +1653,9 @@ fn terminal_row(
     let (agents, agents_color) = match opening.agents {
         Some(access) => (
             format!(
-                " · {} {}",
-                gettext(locale, "agents"),
-                agents_level(access, locale).to_lowercase()
+                " · {}",
+                gettext(locale, "agents {level}")
+                    .replace("{level}", &agents_level(access, locale).to_lowercase())
             ),
             match access {
                 crate::connections::AgentAccess::Off => palette.dim,

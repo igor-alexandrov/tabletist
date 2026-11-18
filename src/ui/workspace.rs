@@ -6,7 +6,7 @@ use tabletist_db::{Access, TlsMode};
 
 use crate::app::App;
 use crate::format::display_safe;
-use crate::i18n::gettext;
+use crate::i18n::{gettext, pgettext};
 use crate::keymap::Command;
 use crate::model::{Action, ConnTabId, ObjectView, SessionStatus, TabId};
 use crate::style::Icon;
@@ -1199,12 +1199,12 @@ fn link_color(link: Link, env: &crate::env::EnvColors, palette: &Palette) -> egu
 
 /// What a click on another connection's chip is announced as.
 fn switch_label(chip: &Chip, look: &Look, locale: crate::i18n::Locale) -> String {
-    format!(
-        "{} {} · {}",
-        gettext(locale, "Switch to"),
-        chip.name,
-        chip.env.label(crate::env::Platform::of(look))
-    )
+    gettext(locale, "Switch to {connection} · {environment}")
+        .replace(
+            "{environment}",
+            chip.env.label(crate::env::Platform::of(look)),
+        )
+        .replace("{connection}", &chip.name)
 }
 
 /// Announces the bar's own chip: the database switcher.
@@ -1491,7 +1491,7 @@ fn mac_bar(
     if let Some(host) = &info.ssh_host {
         pills.push((
             None,
-            format!("{} {host}", gettext(locale, "via SSH")),
+            gettext(locale, "via SSH {host}").replace("{host}", host),
             palette.secondary,
         ));
     }
@@ -1761,7 +1761,7 @@ fn terminal_bar(
     }
     if let Some(host) = &info.ssh_host {
         tags.push((
-            format!("{} {host}", gettext(locale, "via SSH")),
+            gettext(locale, "via SSH {host}").replace("{host}", host),
             palette.dim,
         ));
     }
@@ -3259,7 +3259,7 @@ fn status_line(
                 gettext(locale, "this connection"),
                 gettext(locale, "filter"),
                 gettext(locale, "details"),
-                gettext(locale, "open"),
+                pgettext(locale, "key hint", "open"),
                 gettext(locale, "export"),
             ];
             match agents_log {

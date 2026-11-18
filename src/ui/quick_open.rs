@@ -1135,19 +1135,23 @@ fn no_match(
         widgets::announce(ui, rect, &said);
         return;
     }
-    let place = if everywhere {
-        gettext(locale, "open connections").into_owned()
-    } else if look.terminal {
-        skin.windows
-            .get(&skin.here)
-            .map(|window| display_safe(&window.database).into_owned())
-            .unwrap_or_default()
+    let said = if everywhere {
+        gettext(locale, "No objects match “{query}” in open connections")
+            .replace("{query}", &display_safe(query))
     } else {
-        skin.window_name(skin.here)
+        let place = if look.terminal {
+            skin.windows
+                .get(&skin.here)
+                .map(|window| display_safe(&window.database).into_owned())
+                .unwrap_or_default()
+        } else {
+            skin.window_name(skin.here)
+        };
+        crate::i18n::fill(
+            &gettext(locale, "No objects match “{query}” in {place}"),
+            &[("{query}", &display_safe(query)), ("{place}", &place)],
+        )
     };
-    let said = gettext(locale, "No objects match “{query}” in {place}")
-        .replace("{query}", &display_safe(query))
-        .replace("{place}", &place);
     let said = look.label(&said);
     let link = gettext(locale, "Search all open connections");
     // Export a table… picks one of this connection's: no other to search.

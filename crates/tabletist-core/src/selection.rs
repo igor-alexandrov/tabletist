@@ -437,14 +437,16 @@ pub fn size_words(
 /// What a screen reader is told of a range: "4 rows by 2 columns
 /// selected", or "3 rows selected" for whole rows.
 pub fn said(locale: crate::i18n::Locale, (rows, cols): (usize, usize), whole_rows: bool) -> String {
-    let rows = crate::i18n::counted(locale, rows, "row", "rows");
-    let selected = crate::i18n::gettext(locale, "selected");
     if whole_rows {
-        return format!("{rows} {selected}");
+        let plural = u32::try_from(rows).unwrap_or(u32::MAX);
+        return crate::i18n::ngettext(locale, "{n} row selected", "{n} rows selected", plural)
+            .replace("{n}", &rows.to_string());
     }
+    let rows = crate::i18n::counted(locale, rows, "row", "rows");
     let cols = crate::i18n::counted(locale, cols, "column", "columns");
-    let by = crate::i18n::gettext(locale, "by");
-    format!("{rows} {by} {cols} {selected}")
+    crate::i18n::gettext(locale, "{rows} by {cols} selected")
+        .replace("{rows}", &rows)
+        .replace("{cols}", &cols)
 }
 
 #[cfg(test)]

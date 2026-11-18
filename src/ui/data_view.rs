@@ -71,12 +71,14 @@ fn selection_note(
     let cells = object.range.as_ref().is_some_and(|range| !range.rows());
     if let Some(size) = object.selection_size().filter(|_| cells) {
         let size = crate::selection::size_words(locale, size, false);
-        return Some(format!("{size} {}", gettext(locale, "selected")));
+        return Some(gettext(locale, "{size} selected").replace("{size}", &size));
     }
     // Several rows: how many, whatever kind each is.
     let rows = object.selected_rows().len();
     if rows > 1 {
-        return Some(format!("{rows} {}", gettext(locale, "rows selected")));
+        let plural = u32::try_from(rows).unwrap_or(u32::MAX);
+        let said = ngettext(locale, "{n} row selected", "{n} rows selected", plural);
+        return Some(said.replace("{n}", &rows.to_string()));
     }
     let Some(id) = crate::edit::new_id(cell.row) else {
         return Some(gettext(locale, "1 row selected").into_owned());
@@ -88,8 +90,11 @@ fn selection_note(
         return Some(new.into_owned());
     }
     let plural = u32::try_from(missing).unwrap_or(u32::MAX);
-    let fields = ngettext(locale, "required field", "required fields", plural);
-    Some(format!("{new} · {missing} {fields}"))
+    let fields = ngettext(locale, "{n} required field", "{n} required fields", plural);
+    Some(format!(
+        "{new} · {}",
+        fields.replace("{n}", &missing.to_string())
+    ))
 }
 
 /// The parts of "13 rows · 1 to delete · 6 columns · public", as far as
@@ -115,7 +120,10 @@ fn subtitle(object: &ObjectTab, look: &Look, locale: crate::i18n::Locale) -> Vec
     });
     // The rows to add, beside the table's own: "13 rows + 1 new".
     let added = object.edits.added.len();
-    let new = (added > 0).then(|| format!("{added} {}", gettext(locale, "new")));
+    let new = (added > 0).then(|| {
+        let plural = u32::try_from(added).unwrap_or(u32::MAX);
+        ngettext(locale, "{n} new", "{n} new", plural).replace("{n}", &added.to_string())
+    });
     match (rows, new) {
         (Some(rows), Some(new)) => parts.push(format!("{rows} + {new}")),
         (Some(one), None) | (None, Some(one)) => parts.push(one),
@@ -124,7 +132,9 @@ fn subtitle(object: &ObjectTab, look: &Look, locale: crate::i18n::Locale) -> Vec
     // The rows to delete, beside them: "13 rows · 1 to delete".
     let deleted = object.edits.deleted.len();
     if deleted > 0 {
-        parts.push(format!("{deleted} {}", gettext(locale, "to delete")));
+        let plural = u32::try_from(deleted).unwrap_or(u32::MAX);
+        let to_delete = ngettext(locale, "{n} to delete", "{n} to delete", plural);
+        parts.push(to_delete.replace("{n}", &deleted.to_string()));
     }
     if let Some(page) = page {
         let count = page.columns.len();
@@ -659,7 +669,7 @@ fn sort_chip(
     let measure = |text: &str, role: TextRole| role.width(ui.ctx(), look.faces, text);
     if look.terminal {
         // One bordered line: "sort created_at ↑", 8 at its sides.
-        let text = format!("{} {column}", gettext(locale, "sort"));
+        let text = gettext(locale, "sort {column}").replace("{column}", &column);
         let role = TextRole::OBody;
         let height = line(ui, role, look) + 2.0 + 2.0;
         let width = measure(&text, role) + 16.0 + 2.0;
@@ -1211,11 +1221,7 @@ pub fn footer(
         .map(|saved| super::pending_bar::written_text(saved, locale));
     let timing = written.or_else(|| {
         page.map(|page| {
-            format!(
-                "{} {}",
-                gettext(locale, "Query"),
-                format::elapsed(page.elapsed)
-            )
+            gettext(locale, "Query {elapsed}").replace("{elapsed}", &format::elapsed(page.elapsed))
         })
     });
     let unordered = page.is_some_and(|page| !page.ordered_by_key) && object.query.sort.is_empty();
@@ -1655,17 +1661,22 @@ pub fn show(
     // The last row that was marked for deletion or restored, or what the
     // last save deleted: said to a screen reader.
     let told = match (&object.edits.told, &object.edits.saved) {
-        (Some(Told::Marked { row, deleted }), _) => Some(format!(
-            "{} {row} {} {deleted} {}",
-            gettext(locale, "Row"),
-            gettext(locale, "marked for deletion."),
-            gettext(locale, "to delete.")
-        )),
-        (Some(Told::Restored { row }), _) => Some(format!(
-            "{} {row} {}",
-            gettext(locale, "Row"),
-            gettext(locale, "restored.")
-        )),
+        (Some(Told::Marked { row, deleted }), _) => {
+            let plural = u32::try_from(*deleted).unwrap_or(u32::MAX);
+            let said = ngettext(
+                locale,
+                "Row {row} marked for deletion. {n} to delete.",
+                "Row {row} marked for deletion. {n} to delete.",
+                plural,
+            );
+            Some(
+                said.replace("{n}", &deleted.to_string())
+                    .replace("{row}", row),
+            )
+        }
+        (Some(Told::Restored { row }), _) => {
+            Some(gettext(locale, "Row {row} restored.").replace("{row}", row))
+        }
         (
             Some(Told::MarkedRows {
                 marked,
@@ -1678,7 +1689,9 @@ pub fn show(
             let mut parts = Vec::new();
             if *marked > 0 {
                 parts.push(super::pending_bar::marked_text(*marked, *skipped, locale));
-                parts.push(format!("{deleted} {}", gettext(locale, "to delete.")));
+                let plural = u32::try_from(*deleted).unwrap_or(u32::MAX);
+                let to_delete = ngettext(locale, "{n} to delete.", "{n} to delete.", plural);
+                parts.push(to_delete.replace("{n}", &deleted.to_string()));
             }
             if *dropped > 0 {
                 let rows = super::pending_bar::counted(
@@ -1707,7 +1720,7 @@ pub fn show(
         let whole_rows = mode == crate::selection::Visual::Rows;
         let size = object.selection_size().unwrap_or((1, 1));
         let held = crate::selection::said(locale, size, whole_rows);
-        format!("{} {held}.", gettext(locale, "Visual."))
+        gettext(locale, "Visual. {selection}.").replace("{selection}", &held)
     });
     // The tab itself from here on: the field on a cell edits the text its
     // editor holds, beside the page the grid reads. Nothing else of it is
@@ -2539,7 +2552,7 @@ impl<'a> Changes<'a> {
                 Some(loaded) => {
                     cell.mark = if saving { Mark::Saving } else { Mark::Pending };
                     let was = format::cell_text(loaded);
-                    let was = format!("{} {was}", gettext(locale, "was"));
+                    let was = gettext(locale, "was {value}").replace("{value}", &was);
                     // A pending DEFAULT says what it will come to.
                     cell.hint = Some(match default_hint(&pending.new, locale) {
                         Some(default) => format!("{was}\n{default}"),
@@ -2563,10 +2576,9 @@ impl<'a> Changes<'a> {
                     message
                 } else {
                     format!(
-                        "{message}\n{} · {} {}",
+                        "{message}\n{} · {}",
                         gettext(locale, "Checked before saving"),
-                        self.undo_key,
-                        gettext(locale, "reverts")
+                        gettext(locale, "{key} reverts").replace("{key}", &self.undo_key)
                     )
                 });
             }
@@ -2673,11 +2685,10 @@ fn default_hint(new: &NewValue, locale: crate::i18n::Locale) -> Option<String> {
     else {
         return None;
     };
-    Some(format!(
-        "{} {}",
-        format::capped(expression),
-        gettext(locale, "from DEFAULT")
-    ))
+    Some(
+        gettext(locale, "{expression} from DEFAULT")
+            .replace("{expression}", &format::capped(expression)),
+    )
 }
 
 /// What the database said of a statement that failed, with its code: a

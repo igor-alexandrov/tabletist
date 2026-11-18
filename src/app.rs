@@ -5247,7 +5247,8 @@ impl App {
                 // takes the statements over.
                 let ran = sql.in_flight.as_ref().map(|run| {
                     let base = crate::history::Entry {
-                        detail: format!("{} {}", gettext(locale, "Query"), sql.number),
+                        detail: gettext(locale, "Query {n}")
+                            .replace("{n}", &sql.number.to_string()),
                         read_only: run.mode == tabletist_db::ScriptMode::ReadOnly,
                         at_ms: base.at_ms.saturating_sub(
                             i64::try_from(run.started.elapsed().as_millis()).unwrap_or_default(),
@@ -9556,18 +9557,16 @@ pub fn copy_said(locale: crate::i18n::Locale, copying: &Copying, how: How) -> St
         Copied::Text { statements, .. } => {
             let size = (copying.rows, copying.cols);
             let what = crate::selection::size_words(locale, size, copying.whole_rows);
-            let copied = gettext(locale, "Copied");
             match how {
                 How::ColumnNames => {
                     let names = counted(locale, copying.cols, "column name", "column names");
-                    format!("{copied} {names}")
+                    gettext(locale, "Copied {what}").replace("{what}", &names)
                 }
-                How::Plain => format!("{copied} {what} {} TSV", gettext(locale, "as")),
+                How::Plain => gettext(locale, "Copied {what} as TSV").replace("{what}", &what),
                 How::As(format) => {
-                    let said = format!(
-                        "{copied} {what} {} {}",
-                        gettext(locale, "as"),
-                        format.name()
+                    let said = crate::i18n::fill(
+                        &gettext(locale, "Copied {what} as {format}"),
+                        &[("{what}", &what), ("{format}", format.name())],
                     );
                     if format == crate::export::Format::SqlInsert {
                         let made = counted(locale, *statements, "statement", "statements");
