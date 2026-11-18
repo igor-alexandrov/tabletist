@@ -23,19 +23,20 @@ use std::borrow::Cow;
 
 use crate::app::App;
 use crate::connections::SavedConnection;
-use crate::i18n::{Locale, gettext, ngettext};
+use crate::i18n::{LanguageTag, Locale, gettext, ngettext};
 use crate::keymap::{Command, Keymap, Layout, Scope, Spelled, Stroke};
 use crate::model::{Action, AgentsView, Dialog, SettingsDialog, SettingsPane, SettingsRow};
 use crate::settings::{
-    Autocomplete, Commas, EditorKeys, EnvBar, Idle, KeywordCase, Launch, LineNumbers, LookChoice,
-    Mode, NewTab, OptionId, OptionValue, RowHeight, RunScope, Settings, TableList, Theme,
-    ThemeChoice, Timestamps, UpdateCheck, Zone,
+    Autocomplete, Commas, EditorKeys, EnvBar, Idle, KeywordCase, Language, Launch, LineNumbers,
+    LookChoice, Mode, NewTab, OptionId, OptionValue, RowHeight, RunScope, Settings, TableList,
+    Theme, ThemeChoice, Timestamps, UpdateCheck, Zone,
 };
 
 /// The label of an option's row. English: the caller translates, and the
 /// terminal look lower-cases. Quick open lists the rows by it.
 pub(crate) fn label(option: OptionId) -> &'static str {
     match option {
+        OptionId::Language => "Language",
         OptionId::OnLaunch => "On launch",
         OptionId::RestoreTabs => "Restore tabs and filters",
         OptionId::PageSize => "Rows per page",
@@ -148,6 +149,7 @@ pub(super) fn terminal_label(option: OptionId) -> &'static str {
         | OptionId::Wrap
         | OptionId::Keywords
         | OptionId::Commas
+        | OptionId::Language
         | OptionId::UpdatesCheck => label(option),
     }
 }
@@ -158,6 +160,7 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
         // As the board writes it, though hiding columns is not built: what
         // the option will cover once it is.
         OptionId::RestoreTabs => Some("Per connection, including sort and hidden columns"),
+        OptionId::Language => Some(LANGUAGE_PRINT),
         // The board's hint: beside the menu it has no room in the sheet.
         OptionId::OnLaunch => Some("Or: show Connections · open a chosen connection"),
         OptionId::PageSize => Some("Table view; the SQL editor has its own limit"),
@@ -231,6 +234,79 @@ pub fn pin_missing(catalog: &crate::theme::Catalog) -> &'static str {
         "Theme “{name}” not found: following Omarchy"
     } else {
         "Theme “{name}” not found: following the system"
+    }
+}
+
+/// The contributor guide, which "Help translate" opens.
+pub(super) const TRANSLATING: &str = "https://igor.works/tabletist/translating/";
+
+/// The Language row's small print. English, as [`small_print`]'s.
+const LANGUAGE_PRINT: &str = "Menus, labels and messages; data and SQL stay as they are";
+
+/// The words of the Language row, translated: its label, the section's
+/// heading, and the link to the contributor guide. Said here in full so
+/// the template has them: [`label`] hands its words to `gettext` in a
+/// variable, which no extractor reads.
+pub(super) fn language_words(locale: Locale) -> [String; 3] {
+    [
+        gettext(locale, "Language").into_owned(),
+        gettext(
+            locale,
+            "Menus, labels and messages; data and SQL stay as they are",
+        )
+        .into_owned(),
+        gettext(locale, "Help translate").into_owned(),
+    ]
+}
+
+/// The English word beside the Language row's label in any other
+/// language: the way back for someone who chose one they cannot read.
+/// Never translated.
+pub(super) fn language_aside_label(locale: Locale) -> Option<&'static str> {
+    (locale != Locale::English).then_some("Language")
+}
+
+/// A language as the menu and the row write it: in its own name, and
+/// System with the language it is drawn in (`System (Русский)`). Where
+/// the system's first language (`system`) has no catalog, System is
+/// written as English, the language it stands for.
+pub(super) fn language_text(
+    locale: Locale,
+    language: Language,
+    system: Option<&LanguageTag>,
+) -> String {
+    match language.shown(system) {
+        Language::System => gettext(locale, "System ({language})")
+            .replace("{language}", language.resolve(system).native_name()),
+        Language::Fixed(fixed) => fixed.native_name().to_owned(),
+    }
+}
+
+/// A language's name in the window's language, which the menu writes
+/// beside its own: none for the window's own language.
+pub(super) fn language_aside(locale: Locale, of: Locale) -> Option<String> {
+    let name = match of {
+        Locale::English => gettext(locale, "English"),
+        Locale::Russian => gettext(locale, "Russian"),
+    };
+    (of != locale).then(|| name.into_owned())
+}
+
+/// What the Language row says under its label: that the system's first
+/// language is not translated yet, where System stands for it in English,
+/// and else its small print. A language with no name in the list is
+/// named by its tag.
+pub(super) fn language_print(
+    locale: Locale,
+    language: Language,
+    system: Option<&LanguageTag>,
+) -> String {
+    match system {
+        Some(tag) if language == Language::System && Locale::from_tag(tag).is_none() => {
+            let name = crate::i18n::endonym(tag).unwrap_or(&tag.language);
+            gettext(locale, "{language} is not translated yet").replace("{language}", name)
+        }
+        _ => language_words(locale)[1].clone(),
     }
 }
 
@@ -415,6 +491,7 @@ fn sheet_skin<'a>(app: &'a App, dialog: &SettingsDialog) -> sheet::Skin<'a> {
         palette: &app.palette,
         locale: app.locale,
         system: app.system_zone.iana_name(),
+        language: app.system_language.as_ref(),
         zones: app.zones.as_deref().map_or(&[], crate::zones::Zones::names),
         connections: &app.connections.connections,
         fonts: sheet::DataFonts {
@@ -460,6 +537,7 @@ fn terminal_skin<'a>(
         window: app.agents_window().is_some(),
         system: app.system_zone.iana_name(),
         named: app.named_zone.as_deref(),
+        language: app.system_language.as_ref(),
         connections: &app.connections.connections,
         launches,
         desktop: desktop_shown(app),
@@ -553,11 +631,15 @@ impl Said {
 pub(super) fn choices(
     option: OptionId,
     settings: &Settings,
-    named: Option<&str>,
+    (named, language): (Option<&str>, Option<&LanguageTag>),
     launches: &[Launch],
 ) -> Vec<(Said, OptionValue)> {
     use Said::{Key, Sample, Word};
     match option {
+        OptionId::Language => vec![
+            (Word("fewer"), settings.stepped_language(language, false)),
+            (Word("more"), settings.stepped_language(language, true)),
+        ],
         OptionId::OnLaunch => vec![
             (Word("fewer"), settings.stepped_launch(launches, false)),
             (Word("more"), settings.stepped_launch(launches, true)),
@@ -1071,6 +1153,9 @@ fn keys(
                     }
                     let value = match asked {
                         Asked::Reset => Some(option.default_value()),
+                        Asked::Step { forward } if option == OptionId::Language => {
+                            Some(settings.stepped_language(app.system_language.as_ref(), forward))
+                        }
                         Asked::Step { forward } if option == OptionId::Tz => {
                             Some(settings.stepped_zone(app.named_zone.as_deref(), forward))
                         }

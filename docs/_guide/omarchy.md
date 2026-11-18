@@ -390,7 +390,7 @@ stopped a run, `t` runs it again without one. Times read "45s", "1m" and
 | Keys | Do |
 | --- | --- |
 | `j` `k` | Move |
-| `h` `l` | Change the option |
+| `h` `l` | Change the option. On the language row: System, English, then Русский |
 | Space | Toggle the option |
 | Ctrl+H, Ctrl+L | The pane before or after: General, Appearance, Editor, Keyboard, Agents, Updates |
 | Enter | On the Agents pane: show the Agents tab, Connections or the log, from the status, access or log row. On the Editor pane's keep row: show the History tab |

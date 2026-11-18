@@ -59,6 +59,8 @@ pub(super) struct Skin<'a> {
     pub(super) system: Option<&'a str>,
     /// The last named zone the session had, which the zone's steps reach.
     pub(super) named: Option<&'a str>,
+    /// The system's first language, which the System language follows.
+    pub(super) language: Option<&'a crate::i18n::LanguageTag>,
     /// The saved connections, and what On launch steps through.
     pub(super) connections: &'a [crate::connections::SavedConnection],
     pub(super) launches: &'a [crate::settings::Launch],
@@ -570,7 +572,8 @@ fn rows(ui: &mut Ui, settings: &Settings, cursor: usize, skin: &Skin, actions: &
     );
     let mut index = 0;
     for (heading_text, top, options) in [
-        ("Startup", 8.0, &OptionId::STARTUP[..]),
+        ("Language", 8.0, &OptionId::LANGUAGE[..]),
+        ("Startup", 12.0, &OptionId::STARTUP[..]),
         ("Data", 12.0, &OptionId::DATA[..]),
         ("Safety", 12.0, &OptionId::SAFETY[..]),
     ] {
@@ -1154,7 +1157,14 @@ pub(super) fn widths(
         .fold(0.0, f32::max);
     let hints = options
         .iter()
-        .flat_map(|option| choices(*option, settings, skin.named, skin.launches))
+        .flat_map(|option| {
+            choices(
+                *option,
+                settings,
+                (skin.named, skin.language),
+                skin.launches,
+            )
+        })
         .map(|(_, value)| {
             let mut changed = settings.clone();
             value.set(&mut changed);
@@ -1218,6 +1228,7 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
         | OptionId::Tz
         | OptionId::IdleDisconnect
         | OptionId::OnLaunch
+        | OptionId::Language
         | OptionId::FontSize
         | OptionId::RowLimit
         | OptionId::Timeout
@@ -1246,7 +1257,7 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
         | OptionId::LineNumbers
         | OptionId::Keywords
         | OptionId::Commas => {
-            let words = choices(option, settings, skin.named, skin.launches);
+            let words = choices(option, settings, (skin.named, skin.language), skin.launches);
             let between = width(" ") * words.len().saturating_sub(1) as f32;
             let segments = words.into_iter().map(|(word, _)| segment(ui, word, skin));
             segments.sum::<f32>() + between
@@ -1279,6 +1290,12 @@ fn stepped_text(option: OptionId, settings: &Settings, skin: &Skin) -> String {
             Idle::Never => skin.say("Never"),
             choice => choice.name().to_owned(),
         },
+        // As the artboard writes it: `system (русский)`, `english`.
+        OptionId::Language => skin.look.label(&super::language_text(
+            skin.locale,
+            settings.language,
+            skin.language,
+        )),
         // As the artboard writes it: `system (america/new_york)`.
         OptionId::Tz => skin.look.label(&match (&settings.tz, skin.system) {
             (crate::settings::Zone::System, Some(name)) => {
@@ -1473,6 +1490,7 @@ pub(super) fn option_row(
                 | OptionId::Tz
                 | OptionId::IdleDisconnect
                 | OptionId::OnLaunch
+                | OptionId::Language
                 | OptionId::FontSize
                 | OptionId::RowLimit
                 | OptionId::Timeout
@@ -1506,6 +1524,7 @@ pub(super) fn option_row(
         | OptionId::Tz
         | OptionId::IdleDisconnect
         | OptionId::OnLaunch
+        | OptionId::Language
         | OptionId::FontSize
         | OptionId::RowLimit
         | OptionId::Timeout
@@ -1600,9 +1619,12 @@ fn stepper(
     let y = cell.row.center().y;
     let value = stepped_text(option, settings, skin);
     let current = settings.value(option);
-    let Ok([fewer, more]) =
-        <[_; 2]>::try_from(choices(option, settings, skin.named, skin.launches))
-    else {
+    let Ok([fewer, more]) = <[_; 2]>::try_from(choices(
+        option,
+        settings,
+        (skin.named, skin.language),
+        skin.launches,
+    )) else {
         return;
     };
     let text = if cell.on_cursor {
@@ -1682,7 +1704,7 @@ fn check(
     );
     // One mark stands for both values, and a click on it flips it: the
     // value it is not set to is the button on top.
-    let mut values = choices(option, settings, skin.named, skin.launches);
+    let mut values = choices(option, settings, (skin.named, skin.language), skin.launches);
     values.sort_by_key(|(_, value)| *value != current);
     let mut group = radio_group(ui, cell, option, skin);
     for (word, value) in values {
@@ -1700,6 +1722,26 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
     let role = TextRole::OBody;
     let dim = |text: &str| Text::one(look, role, text, palette.dim);
     match option {
+        OptionId::Language => {
+            // Where the system's first language is not translated, said
+            // first: `français is not translated yet · help translate: …`.
+            let missing = skin
+                .language
+                .filter(|tag| {
+                    settings.language == crate::settings::Language::System
+                        && Locale::from_tag(tag).is_none()
+                })
+                .map(|_| super::language_print(skin.locale, settings.language, skin.language));
+            // The variable's name keeps its case.
+            let from =
+                missing.unwrap_or_else(|| gettext(skin.locale, "from {variable}").into_owned());
+            let help = gettext(skin.locale, "help translate: {folder}");
+            let said = look
+                .label(&format!("{from} · {help}"))
+                .replace("{variable}", "$LANG")
+                .replace("{folder}", "assets/i18n");
+            dim(&said)
+        }
         OptionId::PageSize => dim(&skin.say("table view")),
         OptionId::Tz => dim(&skin.say("sent with offset")),
         OptionId::Timestamps => dim(sample_timestamp(settings.timestamps)),
@@ -2203,7 +2245,7 @@ fn segments(
     let gap = role.width(ui.ctx(), look.faces, " ");
     let mut group = radio_group(ui, cell, option, skin);
     let mut left = cell.left;
-    for (word, value) in choices(option, settings, skin.named, skin.launches) {
+    for (word, value) in choices(option, settings, (skin.named, skin.language), skin.launches) {
         let text = skin.written(ui.ctx(), word);
         let width = segment(ui, word, skin);
         let place = Rect::from_min_size(

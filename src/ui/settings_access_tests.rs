@@ -282,6 +282,10 @@ fn the_terminal_generals_rows_are_described_by_their_hints() {
         SettingsPane::General,
         &[
             (
+                OptionId::Language,
+                Some("from $LANG · help translate: assets/i18n"),
+            ),
+            (
                 OptionId::OnLaunch,
                 Some("or connections · a chosen connection"),
             ),
