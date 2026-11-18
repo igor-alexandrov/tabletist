@@ -39,10 +39,13 @@ scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 
 # Every Rust file but the ignored ones, a new one not yet added among them
-# and one deleted but not yet staged left out.
-git ls-files --cached --others --exclude-standard 'src/*.rs' 'crates/*.rs' \
-    | LC_ALL=C sort -u \
-    | while IFS= read -r file; do [[ -e $file ]] && printf '%s\n' "$file"; done \
+# and one deleted but not yet staged left out. Names are read NUL-separated,
+# so git leaves a non-ASCII one unquoted.
+git ls-files -z --cached --others --exclude-standard 'src/*.rs' 'crates/*.rs' \
+    | LC_ALL=C sort -zu \
+    | while IFS= read -r -d '' file; do
+        if [[ -e $file ]]; then printf '%s\n' "$file"; fi
+    done \
     > "$scratch/files"
 # `counted(locale, n, "row", "rows")` (crate::i18n) is a plural too.
 xgettext --language=Rust --from-code=UTF-8 \
