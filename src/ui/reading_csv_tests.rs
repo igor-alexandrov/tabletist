@@ -239,6 +239,13 @@ fn an_override_shows_under_the_options_and_reset_takes_it_off() {
             look.name
         );
     }
+    // The terminal row is its Reset too: a press of one row takes that
+    // override off and keeps the other.
+    let mut harness = new_files(Look::omarchy());
+    form_mut(&mut harness).files_csv.overrides = vec![returns_as_text(), skip_archive()];
+    form_mut(&mut harness).csv_open = true;
+    harness.click("override archive.csv, skipped");
+    assert_eq!(form(&harness).files_csv.overrides, [returns_as_text()]);
     // The file's own words keep their case in the terminal look.
     let mut harness = new_files(Look::omarchy());
     form_mut(&mut harness).files_csv.overrides = vec![Override {
@@ -383,4 +390,23 @@ fn a_closed_omarchy_heading_writes_its_key_from_the_keymap() {
         .find(|text| text.starts_with("▸ agents"))
         .expect("the closed agents heading");
     assert!(agents.ends_with(&format!("· {key} opens")), "{agents:?}");
+}
+
+/// A held Enter on a section's toggle opens it once, however long it is
+/// held, in both looks.
+#[test]
+fn a_held_enter_opens_a_section_once() {
+    for look in looks() {
+        let mut harness = new_files(look);
+        let closed = closed(look);
+        tab_to(&mut harness, &closed);
+        // Down, then the same key down again with no release: a repeat,
+        // which would close it again.
+        for _ in 0..2 {
+            harness.frame(vec![crate::testing::key(Key::Enter, Modifiers::NONE)]);
+        }
+        harness.frame(vec![crate::testing::release(Key::Enter, Modifiers::NONE)]);
+        harness.settle();
+        assert!(form(&harness).csv_open, "{}", look.name);
+    }
 }

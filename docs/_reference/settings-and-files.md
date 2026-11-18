@@ -569,7 +569,9 @@ read_as = "text"
 | `types` | `sample` (from the first 20,000 rows), `all` (from every row), `text` (every column as text) | `sample` |
 
 An override names its `file`, by its name with the extension, as the
-folder has it, and has one of `read_as = "text"` with the `column` it
+folder has it, which is every file of that name, or by its path
+(`~/Data/archive/orders.csv`), which is that file alone: in a list of
+files from two folders, two files can share a name. It has one of `read_as = "text"` with the `column` it
 reads as text, `null_values = ["N/A"]` (one value or more) with the
 `column` whose values these are read as empty, or `skip = true`, which
 leaves the file out. A column matches the file's in any case. An

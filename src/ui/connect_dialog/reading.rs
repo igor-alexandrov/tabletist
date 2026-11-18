@@ -237,7 +237,9 @@ fn sheet_rows(ui: &mut Ui, form: &ConnectionForm, skin: &Skin, actions: &mut Vec
             .find(|(types, _)| *types == reading.types)
             .map(|(_, word)| word.as_str())
             .unwrap_or_default();
-        let picked = super::sheet::select(ui, "csv-types", shown, 280.0, skin).show(
+        // As wide as the boards draw it, or the room the row has left.
+        let width = ui.available_width().min(280.0);
+        let picked = super::sheet::select(ui, "csv-types", shown, width, skin).show(
             ui,
             skin.look,
             skin.palette,
@@ -386,6 +388,12 @@ fn terminal_rows(ui: &mut Ui, form: &ConnectionForm, skin: &Skin, actions: &mut 
             );
             response
                 .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
+            // The row is its Reset, as the sheet's link is: a press of it,
+            // by the pointer, Enter or a screen reader, takes the override
+            // off, as `R` does while it has the keyboard.
+            if response.clicked() {
+                actions.push(Action::SetCsv(CsvChange::Reset(at)));
+            }
             if focus::shown(&response) {
                 ui.painter()
                     .rect_filled(rect, CornerRadius::ZERO, palette.selection);

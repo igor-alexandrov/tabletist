@@ -74,18 +74,17 @@ impl Reading {
         *self == Self::default()
     }
 
-    /// The overrides of the file named `file` (its name with the
-    /// extension, as `connections.toml` says it).
-    pub fn overrides_of<'a>(&'a self, file: &'a str) -> impl Iterator<Item = &'a Change> + 'a {
+    /// The overrides of the file at `path` (see [`Override::is_of`]).
+    pub fn overrides_of<'a>(&'a self, path: &'a Path) -> impl Iterator<Item = &'a Change> + 'a {
         self.overrides
             .iter()
-            .filter(move |each| each.file == file)
+            .filter(move |each| each.is_of(path))
             .map(|each| &each.change)
     }
 
-    /// Whether the file named `file` is left out of the connection.
-    pub fn skips(&self, file: &str) -> bool {
-        self.overrides_of(file)
+    /// Whether the file at `path` is left out of the connection.
+    pub fn skips(&self, path: &Path) -> bool {
+        self.overrides_of(path)
             .any(|change| matches!(change, Change::Skip))
     }
 }
@@ -168,9 +167,24 @@ pub const SAMPLE_ROWS: u32 = 20_000;
 /// A change to how one file is read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Override {
-    /// The file's name with its extension: `returns.csv`.
+    /// The file's name with its extension, `returns.csv`, or its path,
+    /// `~/Data/returns.csv`, which tells apart two files of one name in a
+    /// list of files.
     pub file: String,
     pub change: Change,
+}
+
+impl Override {
+    /// Whether it changes the file at `path`: a name is of every file of
+    /// that name, a path (one with a separator, `~` for the home folder)
+    /// of that file alone.
+    pub fn is_of(&self, path: &Path) -> bool {
+        let separated = self.file.contains('/') || self.file.contains(std::path::MAIN_SEPARATOR);
+        match separated {
+            true => expanded(Path::new(&self.file)) == path,
+            false => self.file == file_name(path),
+        }
+    }
 }
 
 /// What an override changes.

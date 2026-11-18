@@ -15,6 +15,9 @@ use crate::ui::{file_list, widgets};
 const FOLDER_HINT: &str = "Every CSV, Parquet, JSON, NDJSON, Excel and .duckdb file in the \
                            folder becomes a table. Files added later show up on the next open.";
 
+/// What the hint adds while an override skips a file.
+const SKIPPED_HINT: &str = "Skipped files are left out.";
+
 /// What the field says of a folder that is gone.
 const GONE: &str = "This folder isn't there any more. Choose it again, or pick another.";
 
@@ -169,8 +172,7 @@ fn read(form: &ConnectionForm) -> FilesFound {
     let mut found = form.files_found.clone();
     if let FilesFound::Read(scan) = &mut found {
         let reading = &form.files_csv;
-        scan.files
-            .retain(|file| !reading.skips(&tabletist_db::files::file_name(&file.path)));
+        scan.files.retain(|file| !reading.skips(&file.path));
     }
     found
 }
@@ -248,7 +250,18 @@ pub(super) fn sheet(
             match form.files_kind {
                 FilesKind::Folder => {
                     ui.add_space(6.0);
-                    super::note(ui, &skin.say(FOLDER_HINT), palette.dim, skin);
+                    // The boards' words, and that a skipped file is no
+                    // table while one is.
+                    let skips = form
+                        .files_csv
+                        .overrides
+                        .iter()
+                        .any(|each| matches!(each.change, tabletist_db::files::Change::Skip));
+                    let hint = match skips {
+                        true => format!("{} {}", skin.say(FOLDER_HINT), skin.say(SKIPPED_HINT)),
+                        false => skin.say(FOLDER_HINT),
+                    };
+                    super::note(ui, &hint, palette.dim, skin);
                 }
                 FilesKind::Files => {}
             }

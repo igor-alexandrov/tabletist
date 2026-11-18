@@ -79,7 +79,7 @@ pub fn show(
 ) -> Response {
     if look.terminal {
         let response = terminal_heading(ui, section, *open, look, palette);
-        if response.clicked() {
+        if pressed(ui, &response) {
             *open = !*open;
         }
         if *open {
@@ -89,12 +89,33 @@ pub fn show(
     }
     if !*open {
         let response = row(ui, section, look, palette, rule);
-        if response.clicked() {
+        if pressed(ui, &response) {
             *open = true;
         }
         return response;
     }
     open_box(ui, section, open, look, palette, fill, rule, add)
+}
+
+/// Whether the toggle was pressed: by the pointer, a screen reader, or a
+/// fresh Enter or Space. A held key comes again as a press of the same
+/// toggle, which would open and close it on each repeat: once per press.
+fn pressed(ui: &Ui, response: &Response) -> bool {
+    let held = response.has_focus()
+        && ui.input(|input| {
+            input.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key {
+                        key: egui::Key::Enter | egui::Key::Space,
+                        pressed: true,
+                        repeat: true,
+                        ..
+                    }
+                )
+            })
+        });
+    response.clicked() && !held
 }
 
 /// Says the toggle is a button named `name`, open or closed.
@@ -224,7 +245,7 @@ fn open_box(
     Icon::ChevronDown.image(tint, CHEVRON).paint_at(ui, chevron);
     legend.paint(painter, pos2(chevron.right() + 6.0, gap.top()));
     focus::hint(ui, &response, gap, Ring::Outer { radius: 3 });
-    if response.clicked() {
+    if pressed(ui, &response) {
         *open = false;
     }
     response

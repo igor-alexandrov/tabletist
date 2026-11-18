@@ -46,8 +46,10 @@ async fn made(connection: &Connection, table: &str, dir: &Path) -> String {
         .ddl(&ObjectRef::new("main", table))
         .await
         .unwrap();
+    // The folder and the separator after it, which is `\\` on Windows.
     ddl.text()
         .replace(&dir.display().to_string(), "<dir>")
+        .replace("<dir>\\", "<dir>/")
         .trim_end_matches(';')
         .to_owned()
 }
@@ -382,4 +384,126 @@ async fn values_read_as_empty_keep_the_column_its_type_wherever_they_are() {
         "CREATE VIEW returns AS SELECT * FROM read_csv('<dir>/returns.csv', auto_detect = true, \
          sample_size = 20000)"
     );
+}
+
+/// A folder holding only `returns.csv`, its text in full.
+fn returns_of(text: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("returns.csv"), text).unwrap();
+    dir
+}
+
+#[tokio::test]
+async fn a_column_read_as_empty_is_typed_by_its_own_values_and_dates_keep_their_format() {
+    let empty = |column: &str, value: &str| {
+        change(
+            "returns.csv",
+            Change::Empty {
+                column: column.into(),
+                values: vec![value.to_owned()],
+            },
+        )
+    };
+    let all = |rows: Vec<Vec<Value>>| -> Vec<Vec<String>> {
+        rows.iter()
+            .map(|row| row.iter().map(text_of).collect())
+            .collect()
+    };
+    // Day-first dates: still dates, read in the format the sniffer found.
+    let dir = returns_of("order_id,returned_at\n1,31/01/2026\n2,N/A\n3,15/02/2026\n");
+    let reading = Reading {
+        overrides: vec![empty("returned_at", "N/A")],
+        ..Reading::default()
+    };
+    let connection = open(dir.path(), reading).await.unwrap();
+    assert_eq!(
+        all(read(
+            &connection,
+            "SELECT typeof(returned_at), CAST(returned_at AS VARCHAR) FROM returns ORDER BY order_id"
+        )
+        .await
+        .unwrap()),
+        [
+            ["DATE", "2026-01-31"],
+            ["DATE", "Null"],
+            ["DATE", "2026-02-15"],
+        ]
+    );
+    // One column's empty values do not type another: `b` keeps its `N/A`,
+    // so it stays text, while `a` is a number.
+    let dir = returns_of("order_id,a,b\n1,N/A,N/A\n2,42,42\n3,43,-\n");
+    let reading = Reading {
+        overrides: vec![empty("a", "N/A"), empty("b", "-")],
+        ..Reading::default()
+    };
+    let connection = open(dir.path(), reading).await.unwrap();
+    assert_eq!(
+        all(read(
+            &connection,
+            "SELECT typeof(a), typeof(b), count(a), count(b) FROM returns GROUP BY 1, 2"
+        )
+        .await
+        .unwrap()),
+        [["BIGINT", "VARCHAR", "2", "2"]]
+    );
+    // An override of a column the file does not have changes nothing:
+    // `N/A` in returned_at keeps it text.
+    let dir = returns_of("order_id,returned_at\n1,2026-01-31\n2,N/A\n3,-\n");
+    let reading = Reading {
+        overrides: vec![empty("shipped_at", "N/A"), empty("returned_at", "-")],
+        ..Reading::default()
+    };
+    let connection = open(dir.path(), reading).await.unwrap();
+    assert_eq!(
+        all(read(
+            &connection,
+            "SELECT typeof(returned_at), count(*), count(returned_at) FROM returns GROUP BY 1"
+        )
+        .await
+        .unwrap()),
+        [["VARCHAR", "3", "2"]]
+    );
+}
+
+#[tokio::test]
+async fn an_override_by_path_is_of_that_file_alone_and_a_skipped_file_may_be_gone() {
+    let current = tempfile::tempdir().unwrap();
+    let archive = tempfile::tempdir().unwrap();
+    for dir in [&current, &archive] {
+        std::fs::write(dir.path().join("orders.csv"), "id\n1\n").unwrap();
+    }
+    let kept = current.path().join("orders.csv");
+    let gone = archive.path().join("orders.csv");
+    let list = Source::Files(vec![kept.clone(), gone.clone()]);
+    // A path skips that file alone.
+    let mut spec = ConnectSpec::files(list.clone());
+    spec.csv.overrides = vec![change(&gone.display().to_string(), Change::Skip)];
+    let connection = Connection::connect(&spec, &Secrets::default())
+        .await
+        .unwrap();
+    let tables = read(
+        &connection,
+        "SELECT count(*) FROM duckdb_views() WHERE NOT internal",
+    )
+    .await
+    .unwrap();
+    assert_eq!(text_of(&tables[0][0]), "1");
+    // The skipped file is gone: the connection still opens.
+    std::fs::remove_file(&gone).unwrap();
+    Connection::connect(&spec, &Secrets::default())
+        .await
+        .unwrap();
+    // A name is of both files.
+    let mut spec = ConnectSpec::files(Source::Files(vec![kept.clone()]));
+    spec.csv.overrides = vec![change("orders.csv", Change::Skip)];
+    let connection = Connection::connect(&spec, &Secrets::default())
+        .await
+        .unwrap();
+    let tables = read(
+        &connection,
+        "SELECT count(*) FROM duckdb_views() WHERE NOT internal",
+    )
+    .await
+    .unwrap();
+    assert_eq!(text_of(&tables[0][0]), "0");
 }

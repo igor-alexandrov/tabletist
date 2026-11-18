@@ -525,6 +525,9 @@ pub fn show(
             show_url(ctx, form, !form.url_mode);
         }
     }
+    // A save goes last: what the same frame changed in the form (a key's
+    // Reset, a choice) is saved with it, not dropped with the dialog.
+    actions.sort_by_key(|action| matches!(action, Action::SaveConnection { .. }));
     actions
 }
 

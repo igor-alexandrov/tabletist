@@ -142,14 +142,16 @@ struct CsvTable {
 impl CsvTable {
     /// The reading it says, with no override yet.
     fn reading(self, connection: &str) -> Result<Reading, String> {
-        let wrong = |key: &str, value: &str, takes: &str| {
-            format!("connection {connection:?}: its csv `{key}` is {value:?}; it takes {takes}")
+        // The value itself is left out: the problem is shown and logged,
+        // and a value pasted into the wrong key could be anything.
+        let wrong = |key: &str, takes: &str| {
+            format!("connection {connection:?}: its csv `{key}` takes {takes}, and no other value")
         };
         let header = match self.header.as_deref() {
             None | Some("detect") => Header::Detect,
             Some("yes") => Header::Yes,
             Some("no") => Header::No,
-            Some(other) => return Err(wrong("header", other, "detect, yes or no")),
+            Some(_) => return Err(wrong("header", "detect, yes or no")),
         };
         let delimiter = match self.delimiter.as_deref() {
             None | Some("detect") => Delimiter::Detect,
@@ -158,11 +160,7 @@ impl CsvTable {
                 match (chars.next().and_then(Delimiter::of), chars.next()) {
                     (Some(delimiter), None) => delimiter,
                     _ => {
-                        return Err(wrong(
-                            "delimiter",
-                            other,
-                            "detect, \",\", \";\", \"\\t\" or \"|\"",
-                        ));
+                        return Err(wrong("delimiter", "detect, \",\", \";\", \"\\t\" or \"|\""));
                     }
                 }
             }
@@ -171,7 +169,7 @@ impl CsvTable {
             None | Some("sample") => Types::Sample,
             Some("all") => Types::All,
             Some("text") => Types::Text,
-            Some(other) => return Err(wrong("types", other, "sample, all or text")),
+            Some(_) => return Err(wrong("types", "sample, all or text")),
         };
         Ok(Reading {
             header,
@@ -208,10 +206,10 @@ impl OverrideTable {
         let change = match (self.column, self.read_as, self.null_values, self.skip) {
             (Some(column), Some(read_as), None, None | Some(false)) => match read_as.as_str() {
                 "text" => Change::Text { column },
-                other => {
-                    return Err(says(&format!(
-                        "reads its column as {other:?}; `read_as` takes \"text\""
-                    )));
+                _ => {
+                    return Err(says(
+                        "has a `read_as` it cannot take; `read_as` takes \"text\"",
+                    ));
                 }
             },
             (Some(_), None, Some(values), None | Some(false)) if values.is_empty() => {
@@ -1738,15 +1736,15 @@ masked       = ["orders.email", "\"odd.schema\".orders.phone"]
         for (text, says) in [
             (
                 files("[connections.csv]\nheader = \"maybe\"\n"),
-                "csv `header` is \"maybe\"; it takes detect, yes or no",
+                "csv `header` takes detect, yes or no, and no other value",
             ),
             (
                 files("[connections.csv]\ndelimiter = \",;\"\n"),
-                "csv `delimiter` is \",;\"",
+                "csv `delimiter` takes detect,",
             ),
             (
                 files("[connections.csv]\ntypes = \"some\"\n"),
-                "csv `types` is \"some\"; it takes sample, all or text",
+                "csv `types` takes sample, all or text, and no other value",
             ),
             (
                 files("[connections.csv]\nquote = \"'\"\n"),
@@ -1761,7 +1759,7 @@ masked       = ["orders.email", "\"odd.schema\".orders.phone"]
                     "[[connections.override]]\nfile = \"returns.csv\"\ncolumn = \"reason\"\n\
                      read_as = \"date\"\n",
                 ),
-                "reads its column as \"date\"",
+                "has a `read_as` it cannot take; `read_as` takes \"text\"",
             ),
             (
                 files(
@@ -1805,6 +1803,11 @@ masked       = ["orders.email", "\"odd.schema\".orders.phone"]
         ] {
             let problem = read(&text).unwrap_err();
             assert!(problem.what.contains(says), "{text}\n{problem}");
+            // The rejected value is not repeated: the problem is shown
+            // and logged.
+            for value in ["maybe", ",;", "some", "date"] {
+                assert!(!problem.what.contains(value), "{text}\n{problem}");
+            }
         }
     }
 

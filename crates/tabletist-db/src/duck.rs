@@ -224,12 +224,11 @@ fn make(
         "" => format!("{}({path})", reader(format)),
         options => format!("{}({path}, {options})", reader(format)),
     };
-    let file_name = crate::files::file_name(&file.path);
     // The file's changes of a column. Values read as empty that are none
     // change nothing.
     let changes: Vec<&Change> = match format {
         Format::Csv | Format::Tsv => reading
-            .overrides_of(&file_name)
+            .overrides_of(&file.path)
             .filter(|change| match change {
                 Change::Text { .. } => true,
                 Change::Empty { values, .. } => !values.is_empty(),
@@ -245,20 +244,9 @@ fn make(
         let statement = format!("CREATE VIEW {name} AS SELECT * FROM {}", call(&plain));
         return Ok((statement, plain));
     }
-    // The file's columns, each with the type found for it while the values
-    // read as empty are taken as empty (beside DuckDB's own empty string):
-    // the type a column read as empty is cast back to.
-    let mut empty = vec![literal("")];
-    for change in &changes {
-        if let Change::Empty { values, .. } = change {
-            empty.extend(values.iter().map(|value| literal(value)));
-        }
-    }
-    let sniffed = match empty.len() {
-        1 => plain.clone(),
-        _ => format!("{plain}, nullstr = [{}]", empty.join(", ")),
-    };
-    let found = described(connection, &call(&sniffed))?;
+    // The file's columns, as the call without the overrides finds them.
+    // An override of a column the file does not have changes nothing.
+    let found = described(connection, &call(&plain))?;
     // A column as the file names it, matched in any case, as DuckDB
     // matches names.
     let column_of = |column: &str| {
@@ -284,7 +272,7 @@ fn make(
         let Change::Empty { column, .. } = change else {
             continue;
         };
-        let Some((column, kind)) = column_of(column) else {
+        let Some((column, _)) = column_of(column) else {
             continue;
         };
         let read_as_text = changes
@@ -295,18 +283,43 @@ fn make(
         }
         cast.push(column);
         // Every override of the column, its values in one cast.
-        let values = changes.iter().flat_map(|other| match other {
-            Change::Empty {
-                column: other,
-                values,
-            } if same(other, column) => values.as_slice(),
-            Change::Text { .. } | Change::Empty { .. } | Change::Skip => &[],
-        });
+        let values: Vec<&String> = changes
+            .iter()
+            .flat_map(|other| match other {
+                Change::Empty {
+                    column: other,
+                    values,
+                } if same(other, column) => values.as_slice(),
+                Change::Text { .. } | Change::Empty { .. } | Change::Skip => &[],
+            })
+            .collect();
+        // The type the column is found to have, and the format its dates
+        // are written in, while these values (and DuckDB's own empty
+        // string) are taken as empty: the column's own values alone, as
+        // DuckDB's `nullstr` is the whole file's and only this column's
+        // type is taken from it.
+        let mut empty = vec![literal("")];
+        empty.extend(values.iter().map(|value| literal(value)));
+        let sniffed = format!("{plain}, nullstr = [{}]", empty.join(", "));
+        let kind = described(connection, &call(&sniffed))?
+            .into_iter()
+            .find(|(name, _)| name == column)
+            .map_or_else(|| "VARCHAR".to_owned(), |(_, kind)| kind);
         let quoted = Dialect::DuckDb.ident(column).into_owned();
-        let value = values.fold(quoted.clone(), |inner, value| {
+        let value = values.iter().fold(quoted.clone(), |inner, value| {
             format!("NULLIF({inner}, {})", literal(value))
         });
-        replaced.push(format!("CAST({value} AS {kind}) AS {quoted}"));
+        let back = match kind.as_str() {
+            "VARCHAR" => value,
+            "DATE" | "TIMESTAMP" => match written(connection, &path, &sniffed, &kind) {
+                // Written as the sniffer found it, `31/01/2026`, which a
+                // cast does not read.
+                Some(format) => format!("CAST(strptime({value}, {}) AS {kind})", literal(&format)),
+                None => format!("CAST({value} AS {kind})"),
+            },
+            _ => format!("CAST({value} AS {kind})"),
+        };
+        replaced.push(format!("{back} AS {quoted}"));
     }
     let options = reader_options(format, reading, &text);
     let columns = match replaced.is_empty() {
@@ -318,6 +331,32 @@ fn make(
         call(&options)
     );
     Ok((statement, options))
+}
+
+/// The format the sniffer found a CSV's dates (`DATE`) or timestamps
+/// (`TIMESTAMP`) written in, read with `options`: `%d/%m/%Y`. None where
+/// they are written as a cast reads them (ISO, year first), or it cannot
+/// say.
+fn written(
+    connection: &duckdb::Connection,
+    path: &str,
+    options: &str,
+    kind: &str,
+) -> Option<String> {
+    let field = match kind {
+        "DATE" => "DateFormat",
+        _ => "TimestampFormat",
+    };
+    connection
+        .query_row(
+            &format!("SELECT {field} FROM sniff_csv({path}, {options})"),
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten()
+        // ISO dates, `2026-01-31` and on, a cast reads as it is.
+        .filter(|format| !format.is_empty() && !format.starts_with("%Y-%m-%d"))
 }
 
 /// The columns a reader's call gives, by name, with DuckDB's type of each.
@@ -376,7 +415,7 @@ fn estimate(file: &Found, header: Header) -> Option<u64> {
 fn opened(files: &[Found], reading: &Reading) -> Result<(duckdb::Connection, Vec<Opened>, String)> {
     let files: Vec<&Found> = files
         .iter()
-        .filter(|file| !reading.skips(&crate::files::file_name(&file.path)))
+        .filter(|file| !reading.skips(&file.path))
         .collect();
     let config = duckdb::Config::default()
         .enable_autoload_extension(false)
@@ -1089,7 +1128,8 @@ impl Conn {
         let (source, reading) = (source.clone(), reading.clone());
         let (connection, files, version) = tokio::task::spawn_blocking(move || {
             let scan = crate::files::scan(&source)?;
-            if let Some(gone) = scan.missing.first() {
+            // A skipped file that is gone is no matter.
+            if let Some(gone) = scan.missing.iter().find(|gone| !reading.skips(gone)) {
                 return Err(Error::Connect(format!(
                     "Can't open {}: no such file",
                     crate::files::shown(gone)

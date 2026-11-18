@@ -9207,14 +9207,17 @@ mod tests {
                 bytes: 10,
             })
         };
-        form.files_tested = tested();
-        form.change_csv(CsvChange::Delimiter(Delimiter::Semicolon));
-        form.change_csv(CsvChange::Types(Types::Text));
-        form.change_csv(CsvChange::Header(Header::Yes));
-        assert_eq!(form.files_tested, None);
-        form.files_tested = tested();
-        form.change_csv(CsvChange::Reset(0));
-        assert_eq!(form.files_tested, None);
+        // Each change forgets the Test on its own.
+        for change in [
+            CsvChange::Delimiter(Delimiter::Semicolon),
+            CsvChange::Types(Types::Text),
+            CsvChange::Header(Header::Yes),
+            CsvChange::Reset(0),
+        ] {
+            form.files_tested = tested();
+            form.change_csv(change);
+            assert_eq!(form.files_tested, None, "{change:?}");
+        }
         // What did not change keeps the Test.
         form.files_tested = tested();
         form.change_csv(CsvChange::Header(Header::Yes));
