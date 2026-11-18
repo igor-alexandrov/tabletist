@@ -452,12 +452,6 @@ const RESERVED: [&str; 6] = [
     "temp",
 ];
 
-/// Each file's name, in order: its stem's [`table_name`], and where two
-/// files would share one, each of them that name with `_` and its
-/// extension (`orders_csv`, `orders_parquet`). A `.duckdb` file named as
-/// one of DuckDB's own databases takes `_duckdb`. Should a name still be
-/// taken (the same file name in two folders, or a file named as another's
-/// suffixed name), a number follows, until it is one no other file has.
 /// `files` named again as tables among themselves: what a scan names once
 /// some of its files are left out, as a connection names those it opens.
 pub fn renamed(files: Vec<Found>) -> Vec<Found> {
@@ -469,6 +463,12 @@ pub fn renamed(files: Vec<Found>) -> Vec<Found> {
         .collect()
 }
 
+/// Each file's name, in order: its stem's [`table_name`], and where two
+/// files would share one, each of them that name with `_` and its
+/// extension (`orders_csv`, `orders_parquet`). A `.duckdb` file named as
+/// one of DuckDB's own databases takes `_duckdb`. Should a name still be
+/// taken (the same file name in two folders, or a file named as another's
+/// suffixed name), a number follows, until it is one no other file has.
 fn names<'a>(files: impl Iterator<Item = (&'a Path, Format)>) -> Vec<String> {
     let files: Vec<(String, String, Format)> = files
         .map(|(path, format)| {
