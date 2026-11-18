@@ -3766,6 +3766,10 @@ impl App {
         };
         let text = renamed.write_into(&self.settings_file.text, &[crate::settings::Key::OnLaunch]);
         self.settings.on_launch = renamed.on_launch;
+        let Some(text) = text else {
+            self.settings_too_long();
+            return;
+        };
         if text != self.settings_file.text {
             let loaded = Settings::from_toml_over(&text, &self.settings);
             let live = self.settings_file.live;
@@ -5951,11 +5955,31 @@ impl App {
         if keys.is_empty() && !shortcuts {
             return;
         }
-        let mut text = changed.write_into(&self.settings_file.text, &keys);
+        let Some(mut text) = changed.write_into(&self.settings_file.text, &keys) else {
+            self.settings_too_long();
+            return;
+        };
         if shortcuts {
             text = changed.write_keys_into(&text);
         }
+        if !Settings::fits(&text) {
+            self.settings_too_long();
+            return;
+        }
         self.take_written(text, changed);
+    }
+
+    /// A change that would make the settings file longer than it is read
+    /// to: saved, the next start would ignore the file whole, every other
+    /// setting in it with it. The file stays as it is, the settings too,
+    /// and the notice says the change could not be saved.
+    fn settings_too_long(&mut self) {
+        let (lines, bytes) = Settings::LIMITS;
+        self.notice = Some(format!(
+            "Could not save {}: it would be over {lines} lines or {} KB, and would not be read.",
+            self.dirs.settings_file().display(),
+            bytes / 1024,
+        ));
     }
 
     /// Every table of the keys taken out of the file, and nothing else of
@@ -15753,6 +15777,33 @@ masked = ["orders.email"]
                 "{outcome:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_change_that_would_make_the_settings_file_too_long_is_not_saved() {
+        let mut harness = Harness::new();
+        // 998 lines, with no `[sidebar]` table: the table would make 1,001.
+        let text = format!("[data]\n{}", "# note\n".repeat(997));
+        harness.app.settings_file.text = text.clone();
+        let sent = harness.app.backend.sent.len();
+        harness
+            .app
+            .change_settings(|settings| settings.show_system_schemas = true);
+        assert_eq!(harness.app.backend.sent.len(), sent, "nothing saved");
+        assert_eq!(harness.app.settings_file.text, text);
+        assert!(!harness.app.settings.show_system_schemas);
+        let notice = harness.app.notice.take().unwrap_or_default();
+        assert!(notice.starts_with("Could not save "), "{notice}");
+        // One line more, in the table the file has, fits and is saved.
+        harness
+            .app
+            .change_settings(|settings| settings.page_size = 500);
+        assert!(matches!(
+            last_sent(&harness.app),
+            Command::Save { file: StateFile::Settings(text), .. }
+                if Settings::from_toml(text).settings.page_size == 500
+        ));
+        assert_eq!(harness.app.notice, None);
     }
 
     #[test]

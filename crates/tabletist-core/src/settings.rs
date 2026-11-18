@@ -1589,6 +1589,12 @@ const HEADER: &str = "# written by tabletist, safe to edit by hand\n";
 const MAX_LINES: usize = 1_000;
 const MAX_BYTES: usize = 64 * 1024;
 
+/// Whether `text` is longer than a settings file is read to (`MAX_LINES`,
+/// `MAX_BYTES`): the reader ignores all of it.
+fn too_long(text: &str) -> bool {
+    text.len() > MAX_BYTES || text.lines().count() > MAX_LINES
+}
+
 /// Where a start's settings came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
@@ -2688,8 +2694,22 @@ impl Settings {
     /// header line, and a table for the keys that are not at their
     /// default, in the order of [`Key::ALL`], each with its note.
     pub fn to_toml(&self) -> String {
-        keys::write(&self.write_into("", &Key::ALL), &self.keys)
+        // An empty text is always edited in place: it is never written whole.
+        let text = self
+            .edited("", &Key::ALL)
+            .unwrap_or_else(|| HEADER.to_owned());
+        keys::write(&text, &self.keys)
     }
+
+    /// Whether `text` is short enough to be read as a settings file: one
+    /// longer is ignored whole when the app starts, every setting in it.
+    pub fn fits(text: &str) -> bool {
+        !too_long(text)
+    }
+
+    /// The most lines, and bytes, a settings file is read to: what a
+    /// change that would not fit says it is over.
+    pub const LIMITS: (usize, usize) = (MAX_LINES, MAX_BYTES);
 
     /// `text` with its keys' tables saying what [`Settings::keys`] says,
     /// and nothing else of it changed (`keys::write`): the person's
@@ -2719,17 +2739,29 @@ impl Settings {
     /// with dotted keys can have a value replaced in place and nothing
     /// more: a key to add or take out there gets the file written as
     /// [`Settings::to_toml`] has it. So does a text too long to be read.
-    pub fn write_into(&self, text: &str, keys: &[Key]) -> String {
-        self.write_kept(text, keys)
-            .unwrap_or_else(|| self.to_toml())
+    ///
+    /// `None` where the text written would be too long to be read
+    /// (`MAX_LINES`, `MAX_BYTES`): saved, it would cost every setting in it
+    /// at the next start. The file is to be left as it is.
+    pub fn write_into(&self, text: &str, keys: &[Key]) -> Option<String> {
+        let written = self.edited(text, keys).unwrap_or_else(|| self.to_toml());
+        Self::fits(&written).then_some(written)
     }
 
     /// [`Self::write_into`] where it keeps the rest of `text` as it was,
-    /// and `None` where it would write the file whole instead: what a
-    /// change nobody asked for (a start moving an older key) writes, or
-    /// leaves the file alone.
+    /// and `None` where it would write the file whole instead, or the text
+    /// written would be too long to be read: what a change nobody asked
+    /// for (a start moving an older key) writes, or leaves the file alone.
     pub fn write_kept(&self, text: &str, keys: &[Key]) -> Option<String> {
-        if text.len() > MAX_BYTES || text.lines().count() > MAX_LINES {
+        self.edited(text, keys)
+            .filter(|written| Self::fits(written))
+    }
+
+    /// `text` with `keys` written into it, the rest kept as it was, and
+    /// `None` where the file is to be written whole instead. The text
+    /// written is not measured: it can be too long to be read.
+    fn edited(&self, text: &str, keys: &[Key]) -> Option<String> {
+        if too_long(text) {
             return None;
         }
         let text = if text.trim_matches([' ', '\t', '\r', '\n']).is_empty() {
@@ -3066,7 +3098,7 @@ impl Settings {
     }
 
     fn read(text: &str, last: &Settings) -> Loaded {
-        if text.len() > MAX_BYTES || text.lines().count() > MAX_LINES {
+        if too_long(text) {
             let invalid = text
                 .lines()
                 .enumerate()
@@ -3799,7 +3831,9 @@ skip = \"0.4.0\"  # a version to stop offering
         let before = Settings::from_toml(text).settings;
         let mut after = before.clone();
         change(&mut after);
-        after.write_into(text, &before.changed_keys(&after))
+        after
+            .write_into(text, &before.changed_keys(&after))
+            .expect("fits")
     }
 
     #[test]
@@ -4565,6 +4599,38 @@ skip = \"0.4.0\"  # a version to stop offering
     }
 
     #[test]
+    fn a_change_that_would_make_the_file_too_long_to_read_is_not_written() {
+        // 998 lines, with no `[sidebar]` table.
+        let text = format!("[data]\n{}", "# note\n".repeat(MAX_LINES - 3));
+        assert_eq!(text.lines().count(), MAX_LINES - 2);
+        let before = Settings::from_toml(&text).settings;
+        // A key of a table the file lacks: a blank line, the header and
+        // the key would make 1,001 lines, and the reader would ignore the
+        // file whole.
+        let mut after = before.clone();
+        after.show_system_schemas = !before.show_system_schemas;
+        let keys = before.changed_keys(&after);
+        assert!(!Settings::fits(&after.edited(&text, &keys).unwrap()));
+        assert_eq!(after.write_into(&text, &keys), None);
+        assert_eq!(after.write_kept(&text, &keys), None);
+        // A key of a table it has is one line more, and fits.
+        let mut after = before.clone();
+        after.page_size = 500;
+        let written = after
+            .write_into(&text, &before.changed_keys(&after))
+            .unwrap();
+        assert_eq!(written.lines().count(), MAX_LINES - 1);
+        assert!(written.starts_with("[data]\npage_size = 500"));
+        assert_eq!(Settings::from_toml(&written).settings, after);
+        // Few lines, but a table more would be more bytes than are read.
+        let wide = format!("# {}\n", "x".repeat(MAX_BYTES - 10));
+        let before = Settings::from_toml(&wide).settings;
+        let mut after = before.clone();
+        after.page_size = 500;
+        assert_eq!(after.write_into(&wide, &before.changed_keys(&after)), None);
+    }
+
+    #[test]
     fn what_the_app_holds_of_the_file_comes_from_what_was_loaded() {
         let text = "[data]\npage_size = 100\ngroup_digits = \"yes\"\n";
         let (settings, file) = Settings::from_toml(text).into_parts();
@@ -5235,7 +5301,7 @@ skip = \"0.4.0\"  # a version to stop offering
             let text = settings.to_toml();
             assert!(text.contains(line), "{look:?}: {text}");
             // Written into a file too, as the window writes a change.
-            let written = settings.write_into("", &[Key::FontSize]);
+            let written = settings.write_into("", &[Key::FontSize]).unwrap();
             assert!(written.contains(line), "{look:?}: {written}");
         }
     }
@@ -5591,7 +5657,10 @@ skip = \"0.4.0\"  # a version to stop offering
             assert_eq!(loaded.settings.ui_scale, UiScale::of(scale).unwrap());
             // Read from the old key alone: the scale is to be written.
             assert_eq!(loaded.migrated(), [Key::UiScale], "{size}");
-            let written = loaded.settings.write_into(&text, &loaded.migrated());
+            let written = loaded
+                .settings
+                .write_into(&text, &loaded.migrated())
+                .unwrap();
             assert!(!written.contains("interface_size"), "{written}");
             let again = Settings::from_toml(&written);
             assert_eq!(again.settings.ui_scale, loaded.settings.ui_scale);
@@ -5601,7 +5670,10 @@ skip = \"0.4.0\"  # a version to stop offering
         let written = |size: &str| {
             let text = format!("[appearance]\ninterface_size = \"{size}\"\n");
             let loaded = Settings::from_toml(&text);
-            loaded.settings.write_into(&text, &loaded.migrated())
+            loaded
+                .settings
+                .write_into(&text, &loaded.migrated())
+                .unwrap()
         };
         assert_eq!(
             written("large"),
