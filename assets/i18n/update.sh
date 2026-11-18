@@ -4,8 +4,10 @@
 # catalog with msgfmt.
 #
 # Run from anywhere in the repository after changing a user-facing string.
-# Needs GNU gettext 0.24 or later, which reads Rust (Homebrew's gettext,
-# Arch's, Fedora 42's). Ordinary Cargo builds need no gettext tools.
+# Needs GNU gettext 1.0 or later (Homebrew's gettext, Arch's): 0.24 was
+# the first to read Rust, but the catalogs are checked with 1.0, which
+# also reads a call by its path (`crate::i18n::gettext`). Ordinary Cargo
+# builds need no gettext tools.
 #
 #   assets/i18n/update.sh           update the template and the catalogs
 #   assets/i18n/update.sh --check   change nothing; fail if either is stale
@@ -28,18 +30,20 @@ template=$dir/tabletist.pot
 
 version=$(xgettext --version | sed -n '1s/.* //p')
 major=${version%%.*}
-minor=${version#*.}; minor=${minor%%.*}
-if (( major == 0 && minor < 24 )); then
-    echo "xgettext $version cannot read Rust; gettext 0.24 or later is needed" >&2
+if (( major < 1 )); then
+    echo "xgettext $version is too old; gettext 1.0 or later is needed" >&2
     exit 2
 fi
 
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 
-# Every Rust file but the ignored ones, a new one not yet added among them.
+# Every Rust file but the ignored ones, a new one not yet added among them
+# and one deleted but not yet staged left out.
 git ls-files --cached --others --exclude-standard 'src/*.rs' 'crates/*.rs' \
-    | LC_ALL=C sort -u > "$scratch/files"
+    | LC_ALL=C sort -u \
+    | while IFS= read -r file; do [[ -e $file ]] && printf '%s\n' "$file"; done \
+    > "$scratch/files"
 # `counted(locale, n, "row", "rows")` (crate::i18n) is a plural too.
 xgettext --language=Rust --from-code=UTF-8 \
     --keyword= --keyword=gettext:2 --keyword=ngettext:2,3 --keyword=pgettext:2c,3 \

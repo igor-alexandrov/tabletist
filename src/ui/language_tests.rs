@@ -34,6 +34,24 @@ fn general(look: Look, system: Option<&str>) -> Harness {
     harness
 }
 
+/// Opens the Language row's menu, `name` its label: the section's heading
+/// has the same words, so the menu is found by what it is.
+fn open_the_menu(harness: &mut Harness, name: &str) {
+    use egui::accesskit;
+    let tree = harness.settle();
+    let menu = crate::testing::node(&tree, name, accesskit::Role::ComboBox)
+        .unwrap_or_else(|| panic!("no menu labelled {name:?}"));
+    harness.frame(vec![egui::Event::AccessKitActionRequest(
+        accesskit::ActionRequest {
+            target_tree: accesskit::TreeId::ROOT,
+            target_node: menu,
+            action: accesskit::Action::Click,
+            data: None,
+        },
+    )]);
+    harness.settle();
+}
+
 fn painted(harness: &Harness, text: &str) -> bool {
     harness.painted_color(text).is_some()
 }
@@ -84,12 +102,9 @@ fn a_system_language_with_no_catalog_reads_english_and_says_so() {
 #[test]
 fn choosing_russian_redraws_the_window_and_writes_the_file() {
     let mut harness = general(Look::macos(), Some("en-US"));
-    harness
-        .app
-        .apply(Action::SetOption(OptionValue::Language(Language::Fixed(
-            Locale::Russian,
-        ))));
-    harness.settle();
+    // Through the row's menu, as a click chooses.
+    open_the_menu(&mut harness, "Language");
+    harness.click("Language Русский");
     assert_eq!(harness.app.locale, Locale::Russian);
     // The sheet's title, from the catalog. (The panes' names are handed to
     // `gettext` in a variable, which no extractor reads yet.)
@@ -97,20 +112,25 @@ fn choosing_russian_redraws_the_window_and_writes_the_file() {
     // The English word stays beside the label: the way back.
     assert!(painted(&harness, "Язык · Language"));
     assert!(painted(&harness, "Русский"));
-    assert!(
-        harness
-            .app
-            .settings_file
-            .text
-            .contains("[interface]\nlanguage = \"ru\"")
-    );
-    // And back to English.
-    harness
+    // Sent to be saved, not only kept in memory.
+    let saved = harness
         .app
-        .apply(Action::SetOption(OptionValue::Language(Language::Fixed(
-            Locale::English,
-        ))));
-    harness.settle();
+        .backend
+        .sent
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            crate::backend::Command::Save {
+                file: crate::backend::StateFile::Settings(text),
+                ..
+            } => Some(text.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    assert!(saved.contains("[interface]\nlanguage = \"ru\""), "{saved}");
+    // And back to English, through the menu its label now names.
+    open_the_menu(&mut harness, "Язык");
+    harness.click("Язык English");
     assert_eq!(harness.app.locale, Locale::English);
     assert!(painted(&harness, "Settings"));
 }
@@ -156,6 +176,12 @@ fn the_omarchy_row_steps_through_the_languages_and_r_puts_back_system() {
         harness.app.settings.language,
         Language::Fixed(Locale::English)
     );
+    // A language chosen here does not come from $LANG.
+    assert!(painted(&harness, "help translate: assets/i18n"));
+    assert!(!painted(
+        &harness,
+        "from $LANG · help translate: assets/i18n"
+    ));
     harness.press(Key::L, Modifiers::NONE);
     assert_eq!(
         harness.app.settings.language,

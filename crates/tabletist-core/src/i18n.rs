@@ -1,7 +1,9 @@
 //! Bundled gettext catalogs. English is the source language; every other
 //! language the app ships has a catalog in `assets/i18n` (`ru.po`), which
-//! the build compiles. Every user-facing string goes through `gettext`, and
-//! a string a catalog lacks shows in English.
+//! the build compiles. A string a catalog lacks shows in English. Not every
+//! user-facing string goes through `gettext` yet: one passed in a variable
+//! (a key's description, a settings pane's name) and a few written straight
+//! into the code (the window's title) stay English until they do.
 
 pub use fastframe_i18n::{LanguageTag, gettext, ngettext, pgettext};
 
@@ -29,7 +31,10 @@ pub fn fill(text: &str, values: &[(&str, &str)]) -> String {
     while let Some(start) = rest.find('{') {
         out.push_str(&rest[..start]);
         let at = &rest[start..];
-        match values.iter().find(|(name, _)| at.starts_with(name)) {
+        match values
+            .iter()
+            .find(|(name, _)| !name.is_empty() && at.starts_with(name))
+        {
             Some((name, value)) => {
                 out.push_str(value);
                 rest = &at[name.len()..];
@@ -294,6 +299,8 @@ mod tests {
         );
         assert_eq!(filled, "also clears a in {columns} rows");
         assert_eq!(fill("{n} of {total} {", &[("{n}", "2")]), "2 of {total} {");
+        // An empty name matches nothing, so the pass still ends.
+        assert_eq!(fill("{n} rows", &[("", "x"), ("{n}", "3")]), "3 rows");
     }
 
     #[test]

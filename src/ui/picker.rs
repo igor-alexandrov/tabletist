@@ -963,7 +963,7 @@ fn row_response(
     rect: Rect,
     connection: &SavedConnection,
     opening: Opening,
-    (look, palette): (&Look, &Palette),
+    (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
     actions: &mut Vec<Action>,
 ) -> egui::Response {
     let tab = opening.tab;
@@ -994,7 +994,6 @@ fn row_response(
     }
     let id = connection.id.clone();
     menu::context(&response, look, palette, |ui| {
-        let locale = crate::i18n::Locale::default();
         let item = |ui: &mut egui::Ui, text: &'static str| {
             menu::Item::action(&gettext(locale, text))
                 .show(ui, look, palette)
@@ -1256,7 +1255,14 @@ fn mac_row(
         pos2(card.left(), rect.top()),
         pos2(card.right(), rect.bottom()),
     );
-    let response = row_response(ui, rect, connection, opening, (look, palette), actions);
+    let response = row_response(
+        ui,
+        rect,
+        connection,
+        opening,
+        (look, palette, locale),
+        actions,
+    );
     let is_selected = selected == Some(&connection.id);
     let rows = (card.height() / height).round() as usize;
     // The card's inner corners: its 10 less its border.
@@ -1578,7 +1584,14 @@ fn terminal_row(
     } = skin;
     let (rect, _) =
         ui.allocate_exact_size(vec2(ui.available_width(), row_height(look)), Sense::hover());
-    let response = row_response(ui, rect, connection, opening, (look, palette), actions);
+    let response = row_response(
+        ui,
+        rect,
+        connection,
+        opening,
+        (look, palette, locale),
+        actions,
+    );
     let is_selected = selected == Some(&connection.id);
     let center = rect.center().y;
     if is_selected {

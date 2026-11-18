@@ -1732,12 +1732,18 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
                         && Locale::from_tag(tag).is_none()
                 })
                 .map(|_| super::language_print(skin.locale, settings.language, skin.language));
-            // The variable's name keeps its case.
-            let from =
-                missing.unwrap_or_else(|| gettext(skin.locale, "from {variable}").into_owned());
+            // Only System comes from the variable, whose name keeps its
+            // case; a language chosen here comes from nowhere else.
+            let from = missing.or_else(|| {
+                (settings.language == crate::settings::Language::System)
+                    .then(|| gettext(skin.locale, "from {variable}").into_owned())
+            });
             let help = gettext(skin.locale, "help translate: {folder}");
-            let said = look
-                .label(&format!("{from} · {help}"))
+            let said = match from {
+                Some(from) => look.label(&format!("{from} · {help}")),
+                None => look.label(&help),
+            };
+            let said = said
                 .replace("{variable}", "$LANG")
                 .replace("{folder}", "assets/i18n");
             dim(&said)

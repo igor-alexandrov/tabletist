@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-18 00:41-0500\n"
+"POT-Creation-Date: 2026-11-18 07:57-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -114,7 +114,7 @@ msgstr[1] "{n} байта"
 msgstr[2] "{n} байт"
 
 #: crates/tabletist-core/src/export_sheet.rs crates/tabletist-core/src/i18n.rs
-#: src/ui/history.rs src/ui/workspace.rs
+#: src/ui/data_view.rs src/ui/history.rs src/ui/workspace.rs
 #, rust-format
 msgid "{n} row"
 msgid_plural "{n} rows"
@@ -1115,6 +1115,22 @@ msgstr "{key}: изменить фильтр"
 #, rust-format
 msgid "{key} reverts"
 msgstr "{key}: отменить"
+
+#: src/ui/data_view.rs
+#, rust-format
+msgid "{n} col"
+msgid_plural "{n} cols"
+msgstr[0] "{n} столбец"
+msgstr[1] "{n} столбца"
+msgstr[2] "{n} столбцов"
+
+#: src/ui/data_view.rs
+#, rust-format
+msgid "{n} column"
+msgid_plural "{n} columns"
+msgstr[0] "{n} столбец"
+msgstr[1] "{n} столбца"
+msgstr[2] "{n} столбцов"
 
 #: src/ui/data_view.rs
 #, rust-format
@@ -2351,9 +2367,9 @@ msgstr[2] "также удаляет {n} строк в {table}"
 #, rust-format
 msgid "blocked: {columns} is required"
 msgid_plural "blocked: {columns} are required"
-msgstr[0] "заблокировано: столбец {columns} обязателен"
-msgstr[1] "заблокировано: столбцы {columns} обязательны"
-msgstr[2] "заблокировано: столбцы {columns} обязательны"
+msgstr[0] "заблокировано: заполните {columns}"
+msgstr[1] "заблокировано: заполните {columns}"
+msgstr[2] "заблокировано: заполните {columns}"
 
 #: src/ui/row_form.rs
 msgid "Editing in the grid…"
@@ -2946,6 +2962,11 @@ msgstr[0] "{n} мин"
 msgstr[1] "{n} мин"
 msgstr[2] "{n} мин"
 
+#: src/ui/sql_editor.rs
+#, rust-format
+msgid "{seconds} s"
+msgstr "{seconds} с"
+
 #: src/ui/sql_results.rs
 msgid "Copy as"
 msgstr "Копировать как"
@@ -3452,7 +3473,7 @@ msgstr "Сохранить {changes} перед сменой базы данны
 #: src/ui/write_prompts.rs
 #, rust-format
 msgid "Save {changes} to production?"
-msgstr "Сохранить {changes} в production?"
+msgstr "Сохранить в production: {changes}?"
 
 #: src/ui/write_prompts.rs
 msgid "Stay"

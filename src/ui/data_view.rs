@@ -110,13 +110,13 @@ fn subtitle(object: &ObjectTab, look: &Look, locale: crate::i18n::Locale) -> Vec
     // The table's estimate is marked as one, as the footer marks it.
     let estimate = object.estimated_rows.filter(|_| !filtered);
     let rows = exact.or(estimate).map(|rows| {
-        let noun = if rows == 1 { "row" } else { "rows" };
-        format!(
-            "{}{} {}",
+        let plural = u32::try_from(rows).unwrap_or(u32::MAX);
+        let count = format!(
+            "{}{}",
             if exact.is_some() { "" } else { "~" },
-            format::group_digits(rows),
-            gettext(locale, noun)
-        )
+            format::group_digits(rows)
+        );
+        ngettext(locale, "{n} row", "{n} rows", plural).replace("{n}", &count)
     });
     // The rows to add, beside the table's own: "13 rows + 1 new".
     let added = object.edits.added.len();
@@ -138,13 +138,12 @@ fn subtitle(object: &ObjectTab, look: &Look, locale: crate::i18n::Locale) -> Vec
     }
     if let Some(page) = page {
         let count = page.columns.len();
-        let noun = match (count == 1, look.terminal) {
-            (true, true) => "col",
-            (false, true) => "cols",
-            (true, false) => "column",
-            (false, false) => "columns",
+        let plural = u32::try_from(count).unwrap_or(u32::MAX);
+        let said = match look.terminal {
+            true => ngettext(locale, "{n} col", "{n} cols", plural),
+            false => ngettext(locale, "{n} column", "{n} columns", plural),
         };
-        parts.push(format!("{count} {}", gettext(locale, noun)));
+        parts.push(said.replace("{n}", &count.to_string()));
     }
     if !look.terminal {
         parts.push(format::display_safe(&object.object.schema).into_owned());
