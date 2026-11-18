@@ -229,6 +229,7 @@ fn structure() -> Structure {
         }],
         referenced_by: Vec::new(),
         comment: Some("The pictures of a book: its cover and the pages of its preview".into()),
+        file: None,
     }
 }
 
@@ -2184,6 +2185,7 @@ pub(crate) mod mock {
             foreign_keys: Vec::new(),
             referenced_by: Vec::new(),
             comment: None,
+            file: None,
         }
     }
 
@@ -2220,6 +2222,7 @@ pub(crate) mod mock {
             }],
             referenced_by: Vec::new(),
             comment: None,
+            file: None,
         }
     }
 

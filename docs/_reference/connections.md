@@ -36,7 +36,7 @@ what was last open on it.
 | Field | Notes |
 | --- | --- |
 | **Name** | Left empty, it becomes `user@host:port/database`, the file's name or the BigQuery project |
-| **Type** | SQLite, PostgreSQL, MySQL, BigQuery or Files, on a line of its own above the name. MySQL is also for [MariaDB](#mariadb). Changing it keeps the name, the environment and whatever was typed for the other types until the dialog closes. Saving a connection you have used under another type asks first |
+| **Type** | SQLite, PostgreSQL, MySQL, BigQuery or Files, as radio buttons in rows above the name. In the Omarchy look each type is a Tab stop and Enter or Space picks it; in the other looks the type is one Tab stop and the arrow keys choose. MySQL is also for [MariaDB](#mariadb). Changing it keeps the name, the environment and whatever was typed for the other types until the dialog closes. Saving a connection you have used under another type asks first |
 | **Environment** | local, dev, staging, production or none. Sets the connection's color |
 | **File** | SQLite only |
 | **Project**, **Key file** | BigQuery only. See [BigQuery](#bigquery) |

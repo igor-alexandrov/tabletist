@@ -288,6 +288,19 @@ pub fn segment(
     (index, count): (usize, usize),
     chosen: bool,
 ) -> (Response, Option<usize>) {
+    grid_segment(ui, rect, id, group, (index, count, count), chosen)
+}
+
+/// [`segment`] for choices `columns` to a row: ↑ and ↓ also choose the one
+/// above and below. Where there is none, the choice stays.
+pub fn grid_segment(
+    ui: &Ui,
+    rect: Rect,
+    id: Id,
+    group: Id,
+    (index, count, columns): (usize, usize, usize),
+    chosen: bool,
+) -> (Response, Option<usize>) {
     let sense = if chosen { Sense::click() } else { Sense::CLICK };
     let response = ui.interact(rect, id, sense);
     let now = ui.ctx().cumulative_frame_nr();
@@ -305,20 +318,27 @@ pub fn segment(
     }
     let mut picked = None;
     if response.has_focus() {
+        // A single row leaves ↑ and ↓ to whatever holds it.
+        let rows = columns < count;
         let arrows = EventFilter {
             horizontal_arrows: true,
+            vertical_arrows: rows,
             ..Default::default()
         };
         ui.memory_mut(|memory| memory.set_focus_lock_filter(response.id, arrows));
-        let (right, left) = ui.input_mut(|input| {
+        let (right, left, down, up) = ui.input_mut(|input| {
             (
                 input.consume_key(Modifiers::NONE, Key::ArrowRight),
                 input.consume_key(Modifiers::NONE, Key::ArrowLeft),
+                rows && input.consume_key(Modifiers::NONE, Key::ArrowDown),
+                rows && input.consume_key(Modifiers::NONE, Key::ArrowUp),
             )
         });
-        let next = match (right, left) {
-            (true, false) => (index + 1).min(count.saturating_sub(1)),
-            (false, true) => index.saturating_sub(1),
+        let next = match (right, left, down, up) {
+            (true, false, _, _) => (index + 1).min(count.saturating_sub(1)),
+            (false, true, _, _) => index.saturating_sub(1),
+            (_, _, true, false) if index + columns < count => index + columns,
+            (_, _, false, true) => index.checked_sub(columns).unwrap_or(index),
             _ => index,
         };
         if next != index {
