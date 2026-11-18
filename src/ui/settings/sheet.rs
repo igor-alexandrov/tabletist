@@ -93,6 +93,8 @@ pub(super) struct Skin<'a> {
     pub(super) locale: Locale,
     /// The computer's zone's name, which the System zone writes beside it.
     pub(super) system: Option<&'a str>,
+    /// The system's first language, which the System language follows.
+    pub(super) language: Option<&'a crate::i18n::LanguageTag>,
     /// The zone database's names, which the zone menu lists: none until
     /// the backend has read it.
     pub(super) zones: &'a [String],
@@ -779,12 +781,13 @@ fn look_beside(
 /// from the labels, and the small print wraps.
 pub(super) fn label_column(ui: &Ui, options: &[OptionId], skin: &Skin) -> f32 {
     let role = TextRole::Secondary;
-    // Keep query history's small print, the longest, wraps under its
-    // label: the column it would make leaves the other rows' hints no room.
+    // Keep query history's and the language's small print, the longest,
+    // wrap under their labels: the column either would make leaves the
+    // other rows' hints no room.
     let widest = options
         .iter()
         .copied()
-        .filter(|option| *option != OptionId::HistoryKeep)
+        .filter(|option| !matches!(option, OptionId::HistoryKeep | OptionId::Language))
         .filter_map(small_print)
         .map(|print| role.width(ui.ctx(), skin.look.faces, &skin.say(print)))
         .fold(LABEL, f32::max);
@@ -859,7 +862,14 @@ fn row_of(
         TextRole::UiBody,
         &said(ui.ctx(), look, skin.locale, label(option)),
         palette.text,
-    )
+    );
+    // «Язык · Language»: the English word, dim, in any other language.
+    let name = match super::language_aside_label(skin.locale) {
+        Some(english) if option == OptionId::Language => {
+            name.add(TextRole::UiBody, &format!(" · {english}"), palette.dim)
+        }
+        _ => name,
+    }
     .wrap(column)
     .layout(ui.ctx());
     // A data font that is not installed is said in place of the small
@@ -873,6 +883,12 @@ fn row_of(
         }
         None => match &shown {
             Some(shown) => Some((shown.text.to_owned(), palette.dim)),
+            // That the system's language is not translated yet, where it
+            // is: else the row's small print.
+            None if option == OptionId::Language => Some((
+                super::language_print(skin.locale, settings.language, skin.language),
+                palette.dim,
+            )),
             None => small_print(option).map(|print| (skin.say(print), palette.dim)),
         },
     };
@@ -1039,7 +1055,9 @@ fn keyboard_came_to(ui: &Ui, place: Rect) -> bool {
 /// How tall `option`'s control is: its row is at least as tall.
 fn control_height(option: OptionId, look: &Look) -> f32 {
     match option {
-        OptionId::PageSize | OptionId::Tz | OptionId::OnLaunch => look.control_height,
+        OptionId::PageSize | OptionId::Tz | OptionId::OnLaunch | OptionId::Language => {
+            look.control_height
+        }
         // The track has 2 over its segments and under them.
         OptionId::Timestamps | OptionId::GroupDigits => SEGMENT + 4.0,
         OptionId::Look | OptionId::RowHeight | OptionId::TableList | OptionId::EnvBar => {
@@ -1284,6 +1302,10 @@ fn control(
         }
         OptionId::Tz => zone_menu(ui, (&name, description), settings, skin, actions),
         OptionId::OnLaunch => launch_menu(ui, (&name, description), settings, skin, actions),
+        OptionId::Language => {
+            language_menu(ui, (&name, description), settings, skin, actions);
+            help_translate(ui, skin);
+        }
         OptionId::Timestamps => {
             let words = [skin.say("To the second"), skin.say("Full precision")];
             let selected = usize::from(settings.timestamps == Timestamps::Full);
@@ -1689,6 +1711,76 @@ fn launch_menu(
     });
 }
 
+/// The language's menu: System where the system's first language has a
+/// catalog, then each language in its own name, with its name in the
+/// window's language beside it.
+fn language_menu(
+    ui: &mut Ui,
+    (name, description): (&str, Option<&str>),
+    settings: &Settings,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
+    let Skin { look, palette, .. } = *skin;
+    let system = skin.language;
+    let shown = super::language_text(skin.locale, settings.language, system);
+    let current = settings.language.shown(system);
+    let dropdown = menu::Dropdown::new("language", &shown, ZONE_MENU).description(description);
+    let menu = dropdown.show(ui, look, palette, |ui| {
+        for language in crate::settings::Language::choices(system) {
+            let text = super::language_text(skin.locale, language, system);
+            let aside = match language {
+                crate::settings::Language::System => None,
+                crate::settings::Language::Fixed(locale) => {
+                    super::language_aside(skin.locale, locale)
+                }
+            };
+            let entry_name = format!("{name} {text}");
+            let mut entry = menu::Item::choice(&text, language == current).name(&entry_name);
+            if let Some(aside) = &aside {
+                entry = entry.detail(aside);
+            }
+            if entry.show(ui, look, palette).clicked() {
+                actions.push(Action::SetOption(OptionValue::Language(language)));
+                ui.close();
+            }
+            // System stands apart from the languages.
+            if language == crate::settings::Language::System {
+                menu::separator(ui, palette);
+            }
+        }
+    });
+    menu.response.widget_info(|| {
+        let mut info = WidgetInfo::labeled(WidgetType::ComboBox, true, name);
+        info.current_text_value = Some(shown.clone());
+        info
+    });
+}
+
+/// "Help translate" after the language's menu: the contributor guide, in
+/// the browser.
+fn help_translate(ui: &mut Ui, skin: &Skin) {
+    let Skin { palette, look, .. } = *skin;
+    let text = super::language_words(skin.locale)[2].clone();
+    ui.add_space(HINT_GAP);
+    let role = TextRole::Secondary;
+    let width = role.width(ui.ctx(), look.faces, &text).ceil();
+    let (place, _) = ui.allocate_exact_size(vec2(width, LINK), Sense::hover());
+    let link = link(
+        ui,
+        ui.id().with("help-translate"),
+        place.left_center(),
+        width,
+        &text,
+        palette.accent,
+        skin,
+    );
+    if pressed(ui, &link) {
+        ui.ctx()
+            .open_url(egui::OpenUrl::new_tab(super::TRANSLATING));
+    }
+}
+
 /// The zone's menu: the computer's zone and UTC, then every zone of the
 /// database, which a search field over them narrows. What was typed there
 /// is the field's own, kept in egui's memory while the menu is open.
@@ -1755,7 +1847,7 @@ fn zone_menu(
 fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settings, skin: &Skin) {
     let Skin { look, palette, .. } = *skin;
     let text = match option {
-        OptionId::PageSize | OptionId::Tz => return,
+        OptionId::PageSize | OptionId::Tz | OptionId::Language => return,
         OptionId::Timestamps => Text::one(
             look,
             TextRole::MonoSecondary,

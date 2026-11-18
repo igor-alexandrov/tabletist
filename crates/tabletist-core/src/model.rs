@@ -3826,6 +3826,7 @@ impl SettingsPane {
         use crate::settings::OptionId;
         match self {
             Self::General => &[
+                ("Language", &OptionId::LANGUAGE),
                 ("Startup", &OptionId::STARTUP),
                 ("Data", &OptionId::DATA),
                 ("Safety", &OptionId::SAFETY),
@@ -3880,13 +3881,18 @@ impl SettingsPane {
 
     /// What Reset to defaults puts back: the pane's options but the
     /// server's switch, which turned off would end every agent's session
-    /// for a question about defaults, and but the look (Appearance's first),
-    /// which would change the whole window under the person. The Editor pane's are all of its
+    /// for a question about defaults, and but the language (General's
+    /// first) and the look (Appearance's first), each of which would change
+    /// the whole window under the person. The Editor pane's are all of its
     /// keys, the ones it has no row for yet among them.
     pub fn reset_options(self) -> &'static [crate::settings::OptionId] {
         use crate::settings::OptionId;
         match self {
-            Self::General => &OptionId::GENERAL,
+            // But the language (General's first), which would change the
+            // whole window's words under the person, as the look would.
+            Self::General => OptionId::GENERAL
+                .split_first()
+                .map_or(&[], |(_, rest)| rest),
             // But the look: a question about defaults would change the
             // whole window under the person.
             Self::Appearance => OptionId::APPEARANCE
@@ -3905,6 +3911,7 @@ impl SettingsPane {
         use crate::settings::OptionId;
         match self {
             Self::General => &[
+                SettingsRow::Option(OptionId::Language),
                 SettingsRow::Option(OptionId::OnLaunch),
                 SettingsRow::Option(OptionId::RestoreTabs),
                 SettingsRow::Option(OptionId::PageSize),

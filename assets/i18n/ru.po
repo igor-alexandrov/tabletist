@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-18 01:00-0500\n"
+"POT-Creation-Date: 2026-11-18 00:41-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -2539,12 +2539,32 @@ msgid "Connection not found"
 msgstr "Подключение не найдено"
 
 #: src/ui/settings/mod.rs
+msgid "English"
+msgstr "Английский"
+
+#: src/ui/settings/mod.rs
+msgid "Help translate"
+msgstr "Помочь с переводом"
+
+#: src/ui/settings/mod.rs
+msgid "Language"
+msgstr "Язык"
+
+#: src/ui/settings/mod.rs
+msgid "Menus, labels and messages; data and SQL stay as they are"
+msgstr "Меню, подписи и сообщения; данные и SQL остаются как есть"
+
+#: src/ui/settings/mod.rs
 msgid "Never"
 msgstr "Никогда"
 
 #: src/ui/settings/mod.rs
 msgid "Restore last session"
 msgstr "Восстановить прошлый сеанс"
+
+#: src/ui/settings/mod.rs
+msgid "Russian"
+msgstr "Русский"
 
 #: src/ui/settings/mod.rs
 msgid "Show Connections"
@@ -2556,8 +2576,18 @@ msgstr "Системный"
 
 #: src/ui/settings/mod.rs
 #, rust-format
+msgid "System ({language})"
+msgstr "Системный ({language})"
+
+#: src/ui/settings/mod.rs
+#, rust-format
 msgid "System · {zone}"
 msgstr "Системный · {zone}"
+
+#: src/ui/settings/mod.rs
+#, rust-format
+msgid "{language} is not translated yet"
+msgstr "{language}: перевода пока нет"
 
 #: src/ui/settings/mod.rs
 #, rust-format
@@ -2600,6 +2630,16 @@ msgstr "Системный ({zone})"
 #: src/ui/settings/terminal.rs
 msgid "Update available"
 msgstr "Доступно обновление"
+
+#: src/ui/settings/terminal.rs
+#, rust-format
+msgid "from {variable}"
+msgstr "из {variable}"
+
+#: src/ui/settings/terminal.rs
+#, rust-format
+msgid "help translate: {folder}"
+msgstr "помочь с переводом: {folder}"
 
 #: src/ui/settings/terminal.rs
 #, rust-format

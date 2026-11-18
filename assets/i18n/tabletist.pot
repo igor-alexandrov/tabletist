@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-18 06:50-0500\n"
+"POT-Creation-Date: 2026-11-18 00:41-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -2421,6 +2421,36 @@ msgid "or"
 msgstr ""
 
 #: src/ui/settings/mod.rs
+msgid "Language"
+msgstr ""
+
+#: src/ui/settings/mod.rs
+msgid "Menus, labels and messages; data and SQL stay as they are"
+msgstr ""
+
+#: src/ui/settings/mod.rs
+msgid "Help translate"
+msgstr ""
+
+#: src/ui/settings/mod.rs
+#, rust-format
+msgid "System ({language})"
+msgstr ""
+
+#: src/ui/settings/mod.rs
+msgid "English"
+msgstr ""
+
+#: src/ui/settings/mod.rs
+msgid "Russian"
+msgstr ""
+
+#: src/ui/settings/mod.rs
+#, rust-format
+msgid "{language} is not translated yet"
+msgstr ""
+
+#: src/ui/settings/mod.rs
 #, rust-format
 msgid "System · {zone}"
 msgstr ""
@@ -2488,6 +2518,16 @@ msgstr[1] ""
 #: src/ui/settings/terminal.rs
 #, rust-format
 msgid "System ({zone})"
+msgstr ""
+
+#: src/ui/settings/terminal.rs
+#, rust-format
+msgid "from {variable}"
+msgstr ""
+
+#: src/ui/settings/terminal.rs
+#, rust-format
+msgid "help translate: {folder}"
 msgstr ""
 
 #: src/ui/settings/updates.rs

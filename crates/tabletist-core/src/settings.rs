@@ -1157,6 +1157,8 @@ fn theme_note(terminal: bool) -> &'static str {
 /// An option the Settings window shows: one row of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OptionId {
+    /// The interface's language: `interface.language`.
+    Language,
     /// What a launch opens: `startup.on_launch`.
     OnLaunch,
     /// Whether a connection reopens its tables: `startup.restore_tabs`.
@@ -1228,7 +1230,8 @@ pub enum OptionId {
 impl OptionId {
     /// Every option, the General pane's, the Appearance pane's, the Editor
     /// pane's, the Agents pane's and then the Updates pane's.
-    pub const ALL: [OptionId; 40] = [
+    pub const ALL: [OptionId; 41] = [
+        Self::Language,
         Self::OnLaunch,
         Self::RestoreTabs,
         Self::PageSize,
@@ -1271,7 +1274,8 @@ impl OptionId {
         Self::UpdatesCheck,
     ];
     /// The General pane's, in the order it has them.
-    pub const GENERAL: [OptionId; 11] = [
+    pub const GENERAL: [OptionId; 12] = [
+        Self::Language,
         Self::OnLaunch,
         Self::RestoreTabs,
         Self::PageSize,
@@ -1284,7 +1288,9 @@ impl OptionId {
         Self::ConfirmCloseEdits,
         Self::IdleDisconnect,
     ];
-    /// The General pane's sections, in order: Startup, Data and Safety.
+    /// The General pane's sections, in order: Language, Startup, Data and
+    /// Safety.
+    pub const LANGUAGE: [OptionId; 1] = [Self::Language];
     pub const STARTUP: [OptionId; 2] = [Self::OnLaunch, Self::RestoreTabs];
     pub const DATA: [OptionId; 6] = [
         Self::PageSize,
@@ -1391,6 +1397,7 @@ impl OptionId {
     /// The key of the file the option is stored under.
     pub fn key(self) -> Key {
         match self {
+            Self::Language => Key::Language,
             Self::OnLaunch => Key::OnLaunch,
             Self::RestoreTabs => Key::RestoreTabs,
             Self::PageSize => Key::PageSize,
@@ -1443,6 +1450,7 @@ impl OptionId {
 /// An option with a value: what a key, a click or a reset sets.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OptionValue {
+    Language(Language),
     OnLaunch(Launch),
     RestoreTabs(bool),
     PageSize(u32),
@@ -1530,6 +1538,7 @@ impl OptionValue {
 
     pub fn option(&self) -> OptionId {
         match self {
+            Self::Language(_) => OptionId::Language,
             Self::OnLaunch(_) => OptionId::OnLaunch,
             Self::RestoreTabs(_) => OptionId::RestoreTabs,
             Self::PageSize(_) => OptionId::PageSize,
@@ -1576,6 +1585,7 @@ impl OptionValue {
     /// Puts the value in `settings`.
     pub fn set(&self, settings: &mut Settings) {
         match self.clone() {
+            Self::Language(language) => settings.language = language,
             Self::OnLaunch(launch) => settings.on_launch = launch,
             Self::RestoreTabs(on) => settings.restore_tabs = on,
             Self::PageSize(size) => settings.page_size = size,
@@ -2275,6 +2285,7 @@ impl Settings {
     /// What `option` is set to.
     pub fn value(&self, option: OptionId) -> OptionValue {
         match option {
+            OptionId::Language => OptionValue::Language(self.language),
             OptionId::OnLaunch => OptionValue::OnLaunch(self.on_launch.clone()),
             OptionId::RestoreTabs => OptionValue::RestoreTabs(self.restore_tabs),
             OptionId::PageSize => OptionValue::PageSize(self.page_size),
@@ -2362,6 +2373,9 @@ impl Settings {
             // System, UTC, and the zone the file names, where it names
             // one: any other is set in the file.
             OptionId::Tz => self.stepped_zone(None, forward),
+            // Without the system's language System is no entry: English
+            // and the languages after it.
+            OptionId::Language => self.stepped_language(None, forward),
             OptionId::Timestamps => OptionValue::Timestamps(if forward {
                 Timestamps::Full
             } else {
@@ -2526,6 +2540,26 @@ impl Settings {
         }
     }
 
+    /// The language one step from this one among the menu's entries
+    /// ([`Language::choices`]), where `system` is the system's first
+    /// language. It stops at either end.
+    pub fn stepped_language(&self, system: Option<&LanguageTag>, forward: bool) -> OptionValue {
+        let choices = Language::choices(system);
+        let shown = self.language.shown(system);
+        let at = choices
+            .iter()
+            .position(|choice| *choice == shown)
+            .unwrap_or(0);
+        let to = if forward {
+            (at + 1).min(choices.len() - 1)
+        } else {
+            at.saturating_sub(1)
+        };
+        // A step that stays leaves System as it is, not English in its place.
+        let language = if to == at { self.language } else { choices[to] };
+        OptionValue::Language(language)
+    }
+
     /// The zone one step from this one: System, UTC, then a named zone,
     /// the one set or else `named` (the last the session had), so that a
     /// step off it can come back. Any other zone is set in the file.
@@ -2619,9 +2653,11 @@ impl Settings {
     /// The other value of an option that has two; `None` for one with more.
     pub fn flipped(&self, option: OptionId) -> Option<OptionValue> {
         match option {
-            OptionId::PageSize | OptionId::Tz | OptionId::IdleDisconnect | OptionId::OnLaunch => {
-                None
-            }
+            OptionId::PageSize
+            | OptionId::Tz
+            | OptionId::IdleDisconnect
+            | OptionId::OnLaunch
+            | OptionId::Language => None,
             OptionId::Timestamps => Some(OptionValue::Timestamps(match self.timestamps {
                 Timestamps::Second => Timestamps::Full,
                 Timestamps::Full => Timestamps::Second,
@@ -3576,6 +3612,55 @@ mod tests {
         assert_eq!(Language::System.shown(Some(&tag("fr-FR"))), english);
         assert_eq!(Language::System.shown(Some(&tag("ru"))), Language::System);
         assert_eq!(russian.shown(Some(&tag("fr-FR"))), russian);
+    }
+
+    #[test]
+    fn a_step_moves_through_the_menu_and_stops_at_its_ends() {
+        let at = |language| Settings {
+            language,
+            ..Settings::default()
+        };
+        let english = Language::Fixed(Locale::English);
+        let russian = Language::Fixed(Locale::Russian);
+        let step = |language, system: Option<&LanguageTag>, forward| {
+            at(language).stepped_language(system, forward)
+        };
+        let ru = tag("ru-RU");
+        assert_eq!(
+            step(Language::System, Some(&ru), true),
+            OptionValue::Language(english)
+        );
+        assert_eq!(
+            step(english, Some(&ru), true),
+            OptionValue::Language(russian)
+        );
+        assert_eq!(
+            step(russian, Some(&ru), true),
+            OptionValue::Language(russian)
+        );
+        assert_eq!(
+            step(english, Some(&ru), false),
+            OptionValue::Language(Language::System)
+        );
+        assert_eq!(
+            step(Language::System, Some(&ru), false),
+            OptionValue::Language(Language::System)
+        );
+        // Shown as English, System steps on to Russian, and back stays
+        // System rather than writing English in its place.
+        let fr = tag("fr-FR");
+        assert_eq!(
+            step(Language::System, Some(&fr), true),
+            OptionValue::Language(russian)
+        );
+        assert_eq!(
+            step(Language::System, Some(&fr), false),
+            OptionValue::Language(Language::System)
+        );
+        assert_eq!(
+            step(russian, Some(&fr), false),
+            OptionValue::Language(english)
+        );
     }
 
     fn chosen(id: &str, name: &str) -> Launch {
@@ -5149,6 +5234,7 @@ skip = \"0.4.0\"  # a version to stop offering
         assert_eq!(
             keys,
             vec![
+                Key::Language,
                 Key::OnLaunch,
                 Key::RestoreTabs,
                 Key::PageSize,
@@ -5203,6 +5289,7 @@ skip = \"0.4.0\"  # a version to stop offering
         // The sections of the General and Appearance panes hold their
         // options, in order.
         let sections = [
+            &OptionId::LANGUAGE[..],
             &OptionId::STARTUP[..],
             &OptionId::DATA[..],
             &OptionId::SAFETY[..],
