@@ -8,7 +8,7 @@ use tabletist_db::files::{Change, Delimiter, Header, Override, Reading, Types};
 
 use super::Skin;
 use super::choice::{Choice, Group, choose};
-use crate::i18n::gettext;
+use crate::i18n::{Locale, counted, gettext};
 use crate::model::{Action, ConnectionForm, CsvChange};
 use crate::typography::{Text, TextRole};
 use crate::ui::disclosure::{self, Section};
@@ -35,8 +35,9 @@ pub(super) fn focused_override(ctx: &egui::Context, form: &ConnectionForm) -> Op
 }
 
 /// The closed row's summary: each choice as a few words, then how many
-/// overrides there are. `terminal` says the types as its choices do.
-pub(super) fn summary(reading: &Reading, terminal: bool) -> String {
+/// overrides there are, in `locale`. `terminal` says the types as its
+/// choices do.
+pub(super) fn summary(reading: &Reading, locale: Locale, terminal: bool) -> String {
     let header = match reading.header {
         Header::Detect => "Header detect",
         Header::Yes => "Header yes",
@@ -56,11 +57,15 @@ pub(super) fn summary(reading: &Reading, terminal: bool) -> String {
         (Types::All, true) => "types all rows",
         (Types::Text, _) => "everything as text",
     };
-    let mut said = format!("{header} · {delimiter} · {types}");
+    let mut said = [header, delimiter, types]
+        .map(|words| gettext(locale, words))
+        .join(" · ");
     match reading.overrides.len() {
         0 => {}
-        1 => said.push_str(" · 1 override"),
-        many => said.push_str(&format!(" · {many} overrides")),
+        count => {
+            said.push_str(" · ");
+            said.push_str(&counted(locale, count, "override", "overrides"));
+        }
     }
     said
 }
@@ -152,7 +157,7 @@ pub(super) fn section(
 ) {
     let Skin { look, palette, .. } = *skin;
     let title = skin.say("Reading CSV");
-    let summary = look.label(&summary(&form.files_csv, look.terminal));
+    let summary = look.label(&summary(&form.files_csv, skin.locale, look.terminal));
     let hint = skin.say(match look.terminal {
         true => TERMINAL_HINT,
         false => HINT,
@@ -416,11 +421,11 @@ mod tests {
     fn the_summary_says_each_choice_and_the_overrides() {
         let mut reading = Reading::default();
         assert_eq!(
-            summary(&reading, false),
+            summary(&reading, Locale::English, false),
             "Header detect · delimiter detect · types from the first 20,000 rows"
         );
         assert_eq!(
-            summary(&reading, true),
+            summary(&reading, Locale::English, true),
             "Header detect · delimiter detect · types first 20,000 rows"
         );
         reading.header = Header::Yes;
@@ -431,14 +436,14 @@ mod tests {
             change: Change::Skip,
         });
         assert_eq!(
-            summary(&reading, false),
+            summary(&reading, Locale::English, false),
             "Header yes · delimiter tab · everything as text · 1 override"
         );
         reading.types = Types::All;
         reading.delimiter = Delimiter::Pipe;
         reading.overrides.push(reading.overrides[0].clone());
         assert_eq!(
-            summary(&reading, false),
+            summary(&reading, Locale::English, false),
             "Header yes · delimiter | · types from all rows · 2 overrides"
         );
     }
