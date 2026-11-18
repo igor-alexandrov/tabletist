@@ -365,3 +365,22 @@ fn agents_on_files_is_a_closed_row_that_says_the_access() {
     harness.click("PostgreSQL");
     assert!(harness.has("Rows per answer"));
 }
+
+/// Omarchy: a closed section's heading ends with the key that opens it,
+/// written from the keymap's Choose (Enter on the focused heading, which
+/// egui answers itself), not spelled by hand.
+#[test]
+fn a_closed_omarchy_heading_writes_its_key_from_the_keymap() {
+    use crate::keymap::Command;
+    let look = Look::omarchy();
+    let mut harness = new_files(look);
+    harness.settle();
+    let key = crate::ui::keys::written(&harness.ctx, &look, Command::FormChoose);
+    let agents = harness
+        .painted
+        .iter()
+        .map(|(text, _)| text)
+        .find(|text| text.starts_with("▸ agents"))
+        .expect("the closed agents heading");
+    assert!(agents.ends_with(&format!("· {key} opens")), "{agents:?}");
+}

@@ -157,11 +157,13 @@ pub(super) fn section(
         true => TERMINAL_HINT,
         false => HINT,
     });
+    let opens = skin.opens(ui.ctx());
     let section = Section {
         salt: "reading-csv",
         title: &title,
         summary: &summary,
         hint: &hint,
+        opens: &opens,
     };
     let mut open = form.csv_open;
     disclosure::show(

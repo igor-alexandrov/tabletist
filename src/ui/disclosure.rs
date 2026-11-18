@@ -8,7 +8,7 @@
 //! title, the hint the first line inside it.
 //!
 //! The terminal look: a heading over a rule, `▸ title  summary · enter
-//! opens` closed and `▾ title  hint` open, with the bar at its left while
+//! opens` closed (the key as the keymap has it) and `▾ title  hint` open, with the bar at its left while
 //! it has the keyboard.
 //!
 //! Either is a button whose expanded state is the section's, named with
@@ -44,6 +44,10 @@ pub struct Section<'a> {
     pub summary: &'a str,
     /// What the open heading says after the title; may be empty.
     pub hint: &'a str,
+    /// The terminal look's closed heading's last words: the key that opens
+    /// it, from the keymap, and the word for what it does, as `enter
+    /// opens`. The macOS row does not show it.
+    pub opens: &'a str,
 }
 
 impl Section<'_> {
@@ -62,7 +66,7 @@ impl Section<'_> {
 /// Space while it has the keyboard, opens or closes it. `fill` is what the
 /// open box sits on, which its legend breaks the edge with, and `rule` the
 /// colour of its edges. Returns the row's or the heading's response.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // the section, its state, `add`, and the look it is drawn in
 pub fn show(
     ui: &mut Ui,
     section: &Section<'_>,
@@ -151,7 +155,7 @@ fn row(
 }
 
 /// macOS: the open box, its legend the toggle that closes it.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // `show`'s own, passed on
 fn open_box(
     ui: &mut Ui,
     section: &Section<'_>,
@@ -236,8 +240,14 @@ fn terminal_heading(
 ) -> Response {
     let (mark, after) = match open {
         true => ("▾ ", section.hint.to_owned()),
-        false if section.summary.is_empty() => ("▸ ", "enter opens".to_owned()),
-        false => ("▸ ", format!("{} · enter opens", section.summary)),
+        false => (
+            "▸ ",
+            [section.summary, section.opens]
+                .into_iter()
+                .filter(|words| !words.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · "),
+        ),
     };
     let role = TextRole::OBody;
     let mut text = Text::new(look)

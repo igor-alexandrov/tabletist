@@ -146,6 +146,13 @@ impl<'a> Skin<'a> {
         self.look.label(&gettext(self.locale, text))
     }
 
+    /// What a closed section's terminal heading ends with: the key that
+    /// chooses, as the keymap has it, and "opens".
+    fn opens(&self, ctx: &egui::Context) -> String {
+        let key = crate::ui::keys::written(ctx, self.look, crate::keymap::Command::FormChoose);
+        format!("{key} {}", self.say("opens"))
+    }
+
     /// `environment`'s colours in this look and palette.
     fn colors(&self, environment: Environment) -> EnvColors {
         env_colors(environment, Platform::of(self.look), self.palette)

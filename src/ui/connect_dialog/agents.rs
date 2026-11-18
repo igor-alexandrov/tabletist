@@ -924,11 +924,13 @@ pub(super) fn sheet(
             form.agents_open = true;
         }
         let summary = look.label(&gettext(skin.locale, closed_summary(form)));
+        let opens = skin.opens(ui.ctx());
         let section = Section {
             salt: "agents",
             title: &title,
             summary: &summary,
             hint: "",
+            opens: &opens,
         };
         let mut open = form.agents_open;
         disclosure::show(
@@ -1041,11 +1043,13 @@ pub(super) fn terminal(
             form.agents_open = true;
         }
         let summary = look.label(&gettext(skin.locale, closed_summary(form)));
+        let opens = skin.opens(ui.ctx());
         let section = Section {
             salt: "agents",
             title: &title,
             summary: &summary,
             hint: "",
+            opens: &opens,
         };
         let mut open = form.agents_open;
         disclosure::show(
