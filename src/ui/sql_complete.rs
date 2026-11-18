@@ -12,7 +12,7 @@ use egui::{
 };
 
 use crate::completion::{Candidate, Kind};
-use crate::i18n::{Locale, gettext};
+use crate::i18n::{Locale, gettext, pgettext};
 use crate::model::Completion;
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
@@ -178,7 +178,7 @@ fn kind_name(kind: Kind, locale: Locale) -> Cow<'static, str> {
         Kind::Table => gettext(locale, "table"),
         Kind::View => gettext(locale, "view"),
         Kind::MaterializedView => gettext(locale, "materialized view"),
-        Kind::Column => gettext(locale, "column"),
+        Kind::Column => pgettext(locale, "label", "column"),
     }
 }
 

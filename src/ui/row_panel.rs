@@ -655,7 +655,10 @@ fn draw(
                 let role = TextRole::OBody;
                 let mut x = header.left() + side;
                 let (word, ink) = match fresh {
-                    Some(_) => (format!("+ {}", gettext(locale, "new row")), green.bar),
+                    Some(_) => (
+                        format!("+ {}", pgettext(locale, "label", "new row")),
+                        green.bar,
+                    ),
                     None => (
                         pgettext(locale, "row panel title", "row").into_owned(),
                         palette.text,

@@ -8,7 +8,7 @@
 use egui::{Frame, Id, Rect, pos2, vec2};
 
 use crate::history::{Entry, Outcome, Source};
-use crate::i18n::{Locale, gettext, ngettext};
+use crate::i18n::{Locale, gettext, ngettext, pgettext};
 use crate::keymap::Keymap;
 use crate::model::{Action, ConnTabId, HistoryFilterSet, HistoryRow, HistoryTab, Workspace};
 use crate::style::Icon;
@@ -481,7 +481,7 @@ impl View<'_> {
                     .id(search_id(self.tab)),
             );
             ui.ctx().accesskit_node_builder(field.id, |node| {
-                node.set_label(look.label(&gettext(locale, "filter")).as_str());
+                node.set_label(look.label(&pgettext(locale, "label", "filter")).as_str());
             });
             let seen_id = Id::new(("history-line-seen", self.tab.0));
             let seen: Option<u64> = ui.data(|data| data.get_temp(seen_id));
