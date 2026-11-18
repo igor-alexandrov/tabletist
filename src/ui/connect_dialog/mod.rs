@@ -1047,9 +1047,10 @@ fn ssh_host_note(hints: &SshHints, skin: &Skin) -> Option<(String, Color32)> {
         _ => "",
     };
     let name = hints.host_name.as_deref().unwrap_or("");
-    let text = gettext(locale, sentence)
-        .replace("{hops}", hops)
-        .replace("{name}", name);
+    let text = crate::i18n::fill(
+        &gettext(locale, sentence),
+        &[("{hops}", hops), ("{name}", name)],
+    );
     Some((text, skin.palette.dim))
 }
 
@@ -1365,4 +1366,27 @@ fn paint_check(painter: &egui::Painter, place: Rect, color: Color32) {
         vec![at(5.0, 12.0), at(10.0, 17.0), at(19.0, 7.0)],
         Stroke::new(2.6 * unit, color),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A ProxyJump from ~/.ssh/config that holds the host's placeholder is
+    /// written as it is, before the host's name.
+    #[test]
+    fn a_braced_proxy_jump_is_written_as_it_is() {
+        let (look, palette) = (Look::macos(), Palette::light());
+        let skin = Skin::new(&look, &palette, Locale::English, Environment::None);
+        let hints = SshHints {
+            host_name: Some("db.internal".into()),
+            proxy: Some(Proxy::Jump("{name}".into())),
+            ..SshHints::default()
+        };
+        let (text, _) = ssh_host_note(&hints, &skin).unwrap();
+        assert_eq!(
+            text,
+            "db.internal through ProxyJump {name} from ~/.ssh/config"
+        );
+    }
 }

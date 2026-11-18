@@ -837,3 +837,29 @@ fn the_export_key_opens_the_sheet_while_one_runs() {
         "nothing is cancelled"
     );
 }
+
+/// A table whose name holds the key's placeholder is named as it is in the
+/// note of what is not exported.
+#[test]
+fn a_braced_table_name_is_written_as_it_is_in_the_unsaved_note() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    harness.app.apply(Action::AddRow {
+        tab,
+        id,
+        place: crate::edit::Place::Top,
+    });
+    harness.press(Key::Escape, Modifiers::NONE);
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    workspace.object_tab_mut(id).unwrap().object.name = "{key}".into();
+    export_chord(&mut harness);
+    let note = harness
+        .painted
+        .iter()
+        .find(|(text, _)| text.contains("isn't exported"))
+        .map(|(text, _)| text.clone());
+    let note = note.expect("the note shows with a change pending");
+    assert!(
+        note.starts_with("1 unsaved change in {key} isn't"),
+        "{note}"
+    );
+}

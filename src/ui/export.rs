@@ -868,9 +868,15 @@ fn notes(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>) {
         let pending =
             crate::i18n::counted(locale, facts.pending, "unsaved change", "unsaved changes");
         let one = facts.pending == 1;
-        let note = match (look.terminal, one) {
-            (true, true) => gettext(locale, "! {pending} in {table} isn't exported · :w first to include it"),
-            (true, false) => gettext(locale, "! {pending} in {table} aren't exported · :w first to include them"),
+        let words = match (look.terminal, one) {
+            (true, true) => gettext(
+                locale,
+                "! {pending} in {table} isn't exported · :w first to include it",
+            ),
+            (true, false) => gettext(
+                locale,
+                "! {pending} in {table} aren't exported · :w first to include them",
+            ),
             (false, true) => gettext(
                 locale,
                 "{pending} in {table} isn't exported. Export reads what is saved in the database. Save first {key}",
@@ -879,10 +885,15 @@ fn notes(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>) {
                 locale,
                 "{pending} in {table} aren't exported. Export reads what is saved in the database. Save first {key}",
             ),
-        }
-        .replace("{pending}", &pending)
-        .replace("{table}", &facts.table)
-        .replace("{key}", save.as_str());
+        };
+        let note = crate::i18n::fill(
+            &words,
+            &[
+                ("{pending}", &pending),
+                ("{table}", &facts.table),
+                ("{key}", save.as_str()),
+            ],
+        );
         Text::one(look, widgets::secondary(look), &note, palette.warning)
             .wrap(ui.available_width())
             .layout(ui.ctx())

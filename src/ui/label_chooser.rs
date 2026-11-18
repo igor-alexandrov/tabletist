@@ -107,9 +107,13 @@ fn foot_text(open: &Open, look: &Look, locale: Locale) -> String {
         "For {table} in {connection}, on this computer. Nothing is written to the database."
     };
     // The app's own words are the look's; the names are as they are.
-    look.label(&gettext(locale, words))
-        .replace("{table}", &display_safe(&open.table))
-        .replace("{connection}", &connection_name(&open.connection, look))
+    crate::i18n::fill(
+        &look.label(&gettext(locale, words)),
+        &[
+            ("{table}", &display_safe(&open.table)),
+            ("{connection}", &connection_name(&open.connection, look)),
+        ],
+    )
 }
 
 /// The keys that move in the chooser, choose and close, as the keymap has
