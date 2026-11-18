@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use tabletist_db::agent::{ColumnName, TableName, Tables};
-use tabletist_db::files::Source;
+use tabletist_db::files::{Change, Delimiter, Header, Override, Reading, Source, Types};
 use tabletist_db::{ConnectSpec, Driver, SshAuth, SshSpec, TlsMode};
 
 use super::{
@@ -24,13 +24,17 @@ use crate::util::toml_string;
 
 /// The file's format. 3 is the first that is TOML: 1 and 2 were
 /// `connections.json`. 4 has a connection's settings for agents, 5 the
-/// tables they may not read, 6 the columns they get masked, and 7 Files
-/// connections, with their `source`. A file is
+/// tables they may not read, 6 the columns they get masked, 7 Files
+/// connections, with their `source`, and 8 how a Files connection reads
+/// its CSV files (`[connections.csv]`, `[[connections.override]]`). A file is
 /// written as the oldest that holds what it has: a Tabletist that does not
 /// know a key refuses only a file it would lose it from, and one that
 /// would read agents' tables as all of them, or a masked column's values
 /// as they are, never reads the file.
-pub(super) const VERSION: u32 = 7;
+pub(super) const VERSION: u32 = 8;
+
+/// The version that has Files connections and not how they read CSV.
+const FILES_VERSION: u32 = 7;
 
 /// The version that has masked columns and no Files connection.
 const MASKED_VERSION: u32 = 6;
@@ -120,6 +124,122 @@ struct Entry {
     ssh: Option<Tunnel>,
     agents: Option<AgentsTable>,
     source: Option<SourceTable>,
+    csv: Option<CsvTable>,
+    #[serde(default, rename = "override")]
+    overrides: Vec<OverrideTable>,
+}
+
+/// How a Files connection reads its CSV files, as the file has it: each
+/// key left out reads as a new connection does.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CsvTable {
+    header: Option<String>,
+    delimiter: Option<String>,
+    types: Option<String>,
+}
+
+impl CsvTable {
+    /// The reading it says, with no override yet.
+    fn reading(self, connection: &str) -> Result<Reading, String> {
+        let wrong = |key: &str, value: &str, takes: &str| {
+            format!("connection {connection:?}: its csv `{key}` is {value:?}; it takes {takes}")
+        };
+        let header = match self.header.as_deref() {
+            None | Some("detect") => Header::Detect,
+            Some("yes") => Header::Yes,
+            Some("no") => Header::No,
+            Some(other) => return Err(wrong("header", other, "detect, yes or no")),
+        };
+        let delimiter = match self.delimiter.as_deref() {
+            None | Some("detect") => Delimiter::Detect,
+            Some(other) => {
+                let mut chars = other.chars();
+                match (chars.next().and_then(Delimiter::of), chars.next()) {
+                    (Some(delimiter), None) => delimiter,
+                    _ => {
+                        return Err(wrong(
+                            "delimiter",
+                            other,
+                            "detect, \",\", \";\", \"\\t\" or \"|\"",
+                        ));
+                    }
+                }
+            }
+        };
+        let types = match self.types.as_deref() {
+            None | Some("sample") => Types::Sample,
+            Some("all") => Types::All,
+            Some("text") => Types::Text,
+            Some(other) => return Err(wrong("types", other, "sample, all or text")),
+        };
+        Ok(Reading {
+            header,
+            delimiter,
+            types,
+            overrides: Vec::new(),
+        })
+    }
+}
+
+/// A change to how one file of a Files connection is read, as the file
+/// has it: a column read as text, a column's values read as empty, or the
+/// file skipped.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OverrideTable {
+    file: String,
+    column: Option<String>,
+    read_as: Option<String>,
+    null_values: Option<Vec<String>>,
+    skip: Option<bool>,
+}
+
+impl OverrideTable {
+    fn change(self, connection: &str) -> Result<Override, String> {
+        let file = self.file;
+        let says =
+            |what: &str| format!("connection {connection:?}: the override of {file:?} {what}");
+        if file.trim().is_empty() {
+            return Err(format!(
+                "connection {connection:?}: an override names no file"
+            ));
+        }
+        let change = match (self.column, self.read_as, self.null_values, self.skip) {
+            (Some(column), Some(read_as), None, None | Some(false)) => match read_as.as_str() {
+                "text" => Change::Text { column },
+                other => {
+                    return Err(says(&format!(
+                        "reads its column as {other:?}; `read_as` takes \"text\""
+                    )));
+                }
+            },
+            (Some(_), None, Some(values), None | Some(false)) if values.is_empty() => {
+                return Err(says("has no `null_values`"));
+            }
+            (Some(column), None, Some(values), None | Some(false)) => {
+                Change::Empty { column, values }
+            }
+            (None, None, None, Some(true)) => Change::Skip,
+            (Some(_), None, None, Some(true)) => {
+                return Err(says("skips the file, so it names no column"));
+            }
+            (_, None, None, None | Some(false)) => {
+                return Err(says(
+                    "needs a `read_as = \"text\"`, `null_values` or `skip = true`",
+                ));
+            }
+            (None, Some(_) | None, Some(_) | None, None | Some(false)) => {
+                return Err(says("needs the `column` it changes"));
+            }
+            _ => {
+                return Err(says(
+                    "has a `read_as`, `null_values` or `skip = true`, one of them",
+                ));
+            }
+        };
+        Ok(Override { file, change })
+    }
 }
 
 /// What a Files connection opens, as the file has it: a folder or a list
@@ -298,6 +418,28 @@ impl Entry {
             }
             (Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery, None) => None,
         };
+        let reads_csv = self.csv.is_some() || !self.overrides.is_empty();
+        let csv = match self.driver {
+            Driver::Files => {
+                let mut reading = match self.csv {
+                    Some(table) => table.reading(&self.name)?,
+                    None => Reading::default(),
+                };
+                for table in self.overrides {
+                    reading.overrides.push(table.change(&self.name)?);
+                }
+                reading
+            }
+            Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery if reads_csv => {
+                return Err(format!(
+                    "connection {:?}: only a Files connection reads CSV files",
+                    self.name
+                ));
+            }
+            Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => {
+                Reading::default()
+            }
+        };
         Ok(SavedConnection {
             id,
             name: self.name,
@@ -317,7 +459,7 @@ impl Entry {
                 ca_file: self.ca_file,
                 ssh,
                 files,
-                csv: tabletist_db::files::Reading::default(),
+                csv,
             },
             agents,
         })
@@ -440,6 +582,77 @@ impl Lines {
     }
 }
 
+/// A Files connection's `[connections.csv]`, where it reads CSV other than
+/// as a new one does, and an `[[connections.override]]` for each override.
+fn csv_tables(reading: &Reading, out: &mut String) {
+    if !options_are_default(reading) {
+        let mut lines = Lines::default();
+        lines.text(
+            "header",
+            match reading.header {
+                Header::Detect => "detect",
+                Header::Yes => "yes",
+                Header::No => "no",
+            },
+        );
+        match reading.delimiter.char() {
+            None => lines.text("delimiter", "detect"),
+            Some(char) => lines.text("delimiter", &char.to_string()),
+        }
+        lines.text(
+            "types",
+            match reading.types {
+                Types::Sample => "sample",
+                Types::All => "all",
+                Types::Text => "text",
+            },
+        );
+        out.push_str("\n[connections.csv]\n");
+        lines.write(out);
+    }
+    for each in written(reading) {
+        let mut lines = Lines::default();
+        lines.text("file", &each.file);
+        match &each.change {
+            Change::Text { column } => {
+                lines.text("column", column);
+                lines.text("read_as", "text");
+            }
+            Change::Empty { column, values } => {
+                lines.text("column", column);
+                let values: Vec<String> = values.iter().map(|value| toml_string(value)).collect();
+                lines.bare("null_values", format!("[{}]", values.join(", ")));
+            }
+            Change::Skip => lines.bare("skip", true),
+        }
+        out.push_str("\n[[connections.override]]\n");
+        lines.write(out);
+    }
+}
+
+/// Whether `reading`'s header, delimiter and types are a new connection's.
+fn options_are_default(reading: &Reading) -> bool {
+    Reading {
+        overrides: Vec::new(),
+        ..reading.clone()
+    }
+    .is_default()
+}
+
+/// The overrides the file holds: values read as empty that are none change
+/// nothing, and the file could not read them back.
+fn written(reading: &Reading) -> impl Iterator<Item = &Override> {
+    reading
+        .overrides
+        .iter()
+        .filter(|each| !matches!(&each.change, Change::Empty { values, .. } if values.is_empty()))
+}
+
+/// Whether `reading` is written: its `[connections.csv]` or an override.
+fn reads_csv_its_own_way(reading: &Reading) -> bool {
+    !options_are_default(reading) || written(reading).next().is_some()
+}
+
 fn password(mode: PasswordMode) -> &'static str {
     match mode {
         PasswordMode::None => "none",
@@ -481,12 +694,16 @@ pub(super) fn write(connections: &[SavedConnection]) -> std::io::Result<String> 
         .any(|saved| saved.agents.tables.hides_anything());
     let agents = connections.iter().any(|saved| !saved.agents.is_default());
     let files = connections.iter().any(|saved| saved.spec.files.is_some());
-    let version = match (files, masks, hides, agents) {
-        (true, _, _, _) => VERSION,
-        (false, true, _, _) => MASKED_VERSION,
-        (false, false, true, _) => TABLES_VERSION,
-        (false, false, false, true) => AGENTS_VERSION,
-        (false, false, false, false) => FIRST_VERSION,
+    let csv = connections
+        .iter()
+        .any(|saved| saved.spec.files.is_some() && reads_csv_its_own_way(&saved.spec.csv));
+    let version = match (csv, files, masks, hides, agents) {
+        (true, _, _, _, _) => VERSION,
+        (false, true, _, _, _) => FILES_VERSION,
+        (false, false, true, _, _) => MASKED_VERSION,
+        (false, false, false, true, _) => TABLES_VERSION,
+        (false, false, false, false, true) => AGENTS_VERSION,
+        (false, false, false, false, false) => FIRST_VERSION,
     };
     let mut out = format!("{HEADER}version = {version}\n");
     for connection in connections {
@@ -559,6 +776,7 @@ pub(super) fn write(connections: &[SavedConnection]) -> std::io::Result<String> 
             }
             out.push_str("\n[connections.source]\n");
             lines.write(&mut out);
+            csv_tables(&spec.csv, &mut out);
         }
         if !connection.agents.is_default() {
             let mut lines = Lines::default();
@@ -1035,8 +1253,8 @@ auth = "key-file"
         let said = |text: &str| read(text).unwrap_err().to_string();
         assert!(said("").contains("missing field `version`"), "{}", said(""));
         assert_eq!(
-            said("version = 8\n"),
-            "it is version 8 of the file, written by a newer Tabletist; this one reads version 7"
+            said("version = 9\n"),
+            "it is version 9 of the file, written by a newer Tabletist; this one reads version 8"
         );
         assert_eq!(
             said("version = 2\n"),
@@ -1402,6 +1620,192 @@ masked       = ["orders.email", "\"odd.schema\".orders.phone"]
         // Without one, the file is as it was.
         let others = write(&bookshop()).unwrap();
         assert!(!others.contains("version = 7"), "{others}");
+    }
+
+    /// How a Files connection reads CSV, as the file writes it: version 8,
+    /// the defaults' table only where they are not the defaults, and an
+    /// override table each.
+    #[test]
+    fn how_a_files_connection_reads_csv_is_written_in_version_eight() {
+        use tabletist_db::files::{Change, Delimiter, Header, Override, Reading, Types};
+        let mut spec = ConnectSpec::files(Source::Folder(PathBuf::from("/srv/exports")));
+        spec.csv = Reading {
+            header: Header::Yes,
+            delimiter: Delimiter::Tab,
+            types: Types::All,
+            overrides: vec![
+                Override {
+                    file: "returns.csv".into(),
+                    change: Change::Text {
+                        column: "returned_at".into(),
+                    },
+                },
+                Override {
+                    file: "returns.csv".into(),
+                    change: Change::Empty {
+                        column: "reason".into(),
+                        values: vec!["N/A".into(), "-".into()],
+                    },
+                },
+                Override {
+                    file: "archive.csv".into(),
+                    change: Change::Skip,
+                },
+            ],
+        };
+        let exports = saved("exports", "Bookshop exports", spec.clone());
+        let text = write(std::slice::from_ref(&exports)).unwrap();
+        assert!(text.contains("\nversion = 8\n"), "{text}");
+        assert!(
+            text.ends_with(
+                "\n[connections.source]\n\
+                 folder = \"/srv/exports\"\n\
+                 \n[connections.csv]\n\
+                 header    = \"yes\"\n\
+                 delimiter = \"\\t\"\n\
+                 types     = \"all\"\n\
+                 \n[[connections.override]]\n\
+                 file    = \"returns.csv\"\n\
+                 column  = \"returned_at\"\n\
+                 read_as = \"text\"\n\
+                 \n[[connections.override]]\n\
+                 file        = \"returns.csv\"\n\
+                 column      = \"reason\"\n\
+                 null_values = [\"N/A\", \"-\"]\n\
+                 \n[[connections.override]]\n\
+                 file = \"archive.csv\"\n\
+                 skip = true\n"
+            ),
+            "{text}"
+        );
+        assert_eq!(read(&text).unwrap().connections, [exports]);
+        // Overrides alone: no [connections.csv], still version 8.
+        let mut overridden = spec.clone();
+        overridden.csv = Reading {
+            overrides: spec.csv.overrides[2..].to_vec(),
+            ..Reading::default()
+        };
+        let overridden = saved("exports", "Bookshop exports", overridden);
+        let text = write(std::slice::from_ref(&overridden)).unwrap();
+        assert!(text.contains("\nversion = 8\n"), "{text}");
+        assert!(!text.contains("[connections.csv]"), "{text}");
+        assert_eq!(read(&text).unwrap().connections, [overridden]);
+        // Values read as empty that are none are not written: they change
+        // nothing, and the file could not read them back.
+        let mut nothing = spec.clone();
+        nothing.csv = Reading {
+            overrides: vec![Override {
+                file: "returns.csv".into(),
+                change: Change::Empty {
+                    column: "reason".into(),
+                    values: Vec::new(),
+                },
+            }],
+            ..Reading::default()
+        };
+        let text = write(&[saved("exports", "Bookshop exports", nothing)]).unwrap();
+        assert!(!text.contains("[[connections.override]]"), "{text}");
+        assert!(text.contains("\nversion = 7\n"), "{text}");
+        assert!(read(&text).is_ok(), "{text}");
+        // Every delimiter reads back as itself.
+        for delimiter in Delimiter::ALL {
+            let mut each = spec.clone();
+            each.csv.delimiter = delimiter;
+            let each = saved("exports", "Bookshop exports", each);
+            let text = write(std::slice::from_ref(&each)).unwrap();
+            assert_eq!(read(&text).unwrap().connections, [each], "{text}");
+        }
+        // The defaults: version 7, as before.
+        let plain = saved(
+            "exports",
+            "Bookshop exports",
+            ConnectSpec::files(Source::Folder(PathBuf::from("/srv/exports"))),
+        );
+        let text = write(&[plain]).unwrap();
+        assert!(text.contains("\nversion = 7\n"), "{text}");
+        assert!(!text.contains("csv"), "{text}");
+    }
+
+    #[test]
+    fn a_csv_table_and_its_overrides_say_what_they_take() {
+        let entry = |driver: &str, rest: &str| {
+            format!(
+                "version = 8\n[[connections]]\nid = \"a\"\nname = \"A\"\n\
+                 driver = \"{driver}\"\n[connections.source]\nfolder = \"/a\"\n{rest}"
+            )
+        };
+        let files = |rest: &str| entry("files", rest);
+        for (text, says) in [
+            (
+                files("[connections.csv]\nheader = \"maybe\"\n"),
+                "csv `header` is \"maybe\"; it takes detect, yes or no",
+            ),
+            (
+                files("[connections.csv]\ndelimiter = \",;\"\n"),
+                "csv `delimiter` is \",;\"",
+            ),
+            (
+                files("[connections.csv]\ntypes = \"some\"\n"),
+                "csv `types` is \"some\"; it takes sample, all or text",
+            ),
+            (
+                files("[connections.csv]\nquote = \"'\"\n"),
+                "unknown field `quote`",
+            ),
+            (
+                files("[[connections.override]]\nfile = \"returns.csv\"\nread_as = \"text\"\n"),
+                "the override of \"returns.csv\" needs the `column` it changes",
+            ),
+            (
+                files(
+                    "[[connections.override]]\nfile = \"returns.csv\"\ncolumn = \"reason\"\n\
+                     read_as = \"date\"\n",
+                ),
+                "reads its column as \"date\"",
+            ),
+            (
+                files(
+                    "[[connections.override]]\nfile = \"returns.csv\"\ncolumn = \"reason\"\n\
+                     null_values = []\n",
+                ),
+                "has no `null_values`",
+            ),
+            (
+                files(
+                    "[[connections.override]]\nfile = \"returns.csv\"\ncolumn = \"reason\"\n\
+                     skip = true\n",
+                ),
+                "skips the file, so it names no column",
+            ),
+            (
+                files(
+                    "[[connections.override]]\nfile = \"returns.csv\"\ncolumn = \"reason\"\n\
+                     read_as = \"text\"\nnull_values = [\"N/A\"]\n",
+                ),
+                "has a `read_as`, `null_values` or `skip = true`, one of them",
+            ),
+            (
+                files("[[connections.override]]\nfile = \"returns.csv\"\n"),
+                "needs a `read_as = \"text\"`, `null_values` or `skip = true`",
+            ),
+            (
+                files("[[connections.override]]\nfile = \"returns.csv\"\ncolumn = \"reason\"\n"),
+                "needs a `read_as = \"text\"`, `null_values` or `skip = true`",
+            ),
+            (
+                files("[[connections.override]]\nfile = \" \"\nskip = true\n"),
+                "an override names no file",
+            ),
+            (
+                "version = 8\n[[connections]]\nid = \"a\"\nname = \"A\"\n\
+                     driver = \"sqlite\"\n[connections.csv]\nheader = \"yes\"\n"
+                    .to_owned(),
+                "only a Files connection reads CSV files",
+            ),
+        ] {
+            let problem = read(&text).unwrap_err();
+            assert!(problem.what.contains(says), "{text}\n{problem}");
+        }
     }
 
     #[test]
