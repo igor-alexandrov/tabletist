@@ -1144,6 +1144,14 @@ fn a_rename_that_would_make_the_settings_file_too_long_is_not_taken() {
             ..
         }
     )));
+    assert!(app.backend.sent[sent..].iter().any(|command| matches!(
+        command,
+        Command::Save {
+            file: StateFile::Connections(_),
+            ..
+        }
+    )));
+    assert_eq!(app.connections.get(&conn).unwrap().name, "Bookshop staging");
     assert_eq!(app.settings_file.text, text);
     assert_eq!(app.settings.on_launch, chosen);
     let notice = app.notice.clone().unwrap_or_default();

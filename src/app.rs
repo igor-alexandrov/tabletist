@@ -2670,17 +2670,20 @@ impl App {
                 limit,
             } => {
                 let limit = Settings::valid_sql_limit(limit);
-                if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
+                // A change refused leaves the tab as it was too.
+                if self.change_settings(|settings| settings.sql_limit = limit)
+                    && let Some(sql) = self.sql_tab_mut(tab, sql_tab)
+                {
                     sql.limit = limit;
                 }
-                self.change_settings(|settings| settings.sql_limit = limit);
             }
             Action::SetSqlTimeout { tab, sql_tab, secs } => {
                 let secs = Settings::valid_sql_timeout(secs);
-                if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
+                if self.change_settings(|settings| settings.sql_timeout_secs = secs)
+                    && let Some(sql) = self.sql_tab_mut(tab, sql_tab)
+                {
                     sql.timeout = Settings::timeout_of(secs);
                 }
-                self.change_settings(|settings| settings.sql_timeout_secs = secs);
             }
             Action::SetSqlMode { tab, sql_tab, mode } => {
                 self.set_sql_mode(tab, sql_tab, Some(mode))
@@ -5940,8 +5943,9 @@ impl App {
     /// written into the file's text, where it changes the keys that changed
     /// and nothing else (`Settings::write_into`). The lines the reader had
     /// ignored stay, and are still ignored. A change that changes nothing
-    /// writes nothing.
-    pub fn change_settings(&mut self, change: impl FnOnce(&mut Settings)) {
+    /// writes nothing. False where the change is refused, the file being
+    /// too long with it to be read: nothing of it is taken.
+    pub fn change_settings(&mut self, change: impl FnOnce(&mut Settings)) -> bool {
         let mut changed = self.settings.clone();
         change(&mut changed);
         // What the look has anyway, set here, is not set: it is not
@@ -5955,20 +5959,14 @@ impl App {
         // The keymap's lines, which the keys' tables hold.
         let shortcuts = self.settings.keys != changed.keys;
         if keys.is_empty() && !shortcuts {
-            return;
+            return true;
         }
-        let Some(mut text) = changed.write_into(&self.settings_file.text, &keys) else {
+        let Some(text) = changed.write_change(&self.settings_file.text, &keys, shortcuts) else {
             self.settings_too_long();
-            return;
+            return false;
         };
-        if shortcuts {
-            text = changed.write_keys_into(&text);
-        }
-        if !Settings::fits(&text) {
-            self.settings_too_long();
-            return;
-        }
         self.take_written(text, changed);
+        true
     }
 
     /// A change that would make the settings file longer than it is read
@@ -15806,6 +15804,20 @@ masked = ["orders.email"]
                 if Settings::from_toml(text).settings.page_size == 500
         ));
         assert_eq!(harness.app.notice, None);
+        // The toolbar's limit, refused, leaves its tab as it was too.
+        let (tab, id) = new_sql(&mut harness);
+        let limit = harness.app.sql_tab_mut(tab, id).unwrap().limit;
+        let text = harness.app.settings_file.text.clone();
+        let sent = harness.app.backend.sent.len();
+        harness.app.apply(Action::SetSqlLimit {
+            tab,
+            sql_tab: id,
+            limit: limit + 100,
+        });
+        assert_eq!(harness.app.backend.sent.len(), sent, "nothing saved");
+        assert_eq!(harness.app.settings_file.text, text);
+        assert_eq!(harness.app.sql_tab_mut(tab, id).unwrap().limit, limit);
+        assert!(harness.app.notice.is_some());
     }
 
     #[test]

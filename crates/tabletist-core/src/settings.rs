@@ -2744,7 +2744,20 @@ impl Settings {
     /// (`MAX_LINES`, `MAX_BYTES`): saved, it would cost every setting in it
     /// at the next start. The file is to be left as it is.
     pub fn write_into(&self, text: &str, keys: &[Key]) -> Option<String> {
-        let written = self.edited(text, keys).unwrap_or_else(|| self.to_toml());
+        self.write_change(text, keys, false)
+    }
+
+    /// [`Self::write_into`], and with `shortcuts` the keys' tables written
+    /// too ([`Self::write_keys_into`]): one change of both, measured once
+    /// it is whole. Only the text to be saved has to fit; one on the way
+    /// to it can be longer.
+    pub fn write_change(&self, text: &str, keys: &[Key], shortcuts: bool) -> Option<String> {
+        let mut written = self.edited(text, keys).unwrap_or_else(|| self.to_toml());
+        if shortcuts {
+            // From a text that fit, or one written whole: what it can be
+            // on the way is not measured, only what it comes to.
+            written = keys::write_unmeasured(&written, &self.keys);
+        }
         Self::fits(&written).then_some(written)
     }
 
@@ -4628,6 +4641,28 @@ skip = \"0.4.0\"  # a version to stop offering
         let mut after = before.clone();
         after.page_size = 500;
         assert_eq!(after.write_into(&wide, &before.changed_keys(&after)), None);
+    }
+
+    #[test]
+    fn a_change_is_measured_once_its_keys_tables_are_written() {
+        // 998 lines: a table of a key, and comments.
+        let text = format!(
+            "[keys.unbind]\ngrid = [\"gd\"]\n{}",
+            "# note\n".repeat(MAX_LINES - 4)
+        );
+        assert_eq!(text.lines().count(), MAX_LINES - 2);
+        let before = Settings::from_toml(&text).settings;
+        assert_ne!(before.keys, crate::keymap::Overrides::default(), "{text}");
+        // A table more, and the keys' table taken out: three lines in, two
+        // out, which fits once it is whole.
+        let mut after = before.clone();
+        after.show_system_schemas = !before.show_system_schemas;
+        after.keys = crate::keymap::Overrides::default();
+        let keys = before.changed_keys(&after);
+        assert_eq!(after.write_into(&text, &keys), None);
+        let written = after.write_change(&text, &keys, true).unwrap();
+        assert!(Settings::fits(&written));
+        assert_eq!(Settings::from_toml(&written).settings, after);
     }
 
     #[test]
