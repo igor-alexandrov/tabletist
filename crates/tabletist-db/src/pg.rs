@@ -1046,6 +1046,7 @@ impl Conn {
             foreign_keys,
             referenced_by,
             comment,
+            file: None,
         })
     }
 
@@ -2007,16 +2008,27 @@ mod tests {
             tokio::spawn(async move {
                 while let Some((kind, message)) = message(&mut from_server, true).await {
                     let due = tokio::time::Instant::now() + HELD;
-                    if held.send((due, kind == Some(b'Z'), message)).is_err() {
+                    if held.send((due, kind, message)).is_err() {
                         return;
                     }
                 }
             });
             tokio::spawn(async move {
-                while let Some((due, ready, message)) = released.recv().await {
+                while let Some((due, kind, message)) = released.recv().await {
                     tokio::time::sleep_until(due).await;
-                    if ready {
-                        answered.lock().unwrap().pop_front();
+                    match kind {
+                        Some(b'Z') => {
+                            answered.lock().unwrap().pop_front();
+                        }
+                        // An error is the answer a client takes: what it
+                        // sends after one is a trip of its own, though the
+                        // ReadyForQuery behind it is not through yet.
+                        Some(b'E') => {
+                            if let Some(waits) = answered.lock().unwrap().front_mut() {
+                                *waits = false;
+                            }
+                        }
+                        _ => {}
                     }
                     if to_client.write_all(&message).await.is_err() {
                         return;

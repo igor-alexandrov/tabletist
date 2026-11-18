@@ -451,6 +451,7 @@ An administrator's policy, `managed.toml`, is in a third place of its own:
 | `export_options.json` | State | The options last chosen for each format of an export and of Copy as, by format, written when an export starts: CSV, TSV, JSON, JSON Lines, SQL INSERT and Markdown. An option this version does not know is kept and written back |
 | `keys.default.toml` | State | Every key in force, commented, as `:keys default` writes it for you to copy lines from. Written again each time, and never read |
 | `tabletist.log`, `tabletist.previous.log`, `panic.log` | State | Logs. `tabletist.log` is the latest start's, and `tabletist.previous.log` the start's before it, which goes on writing there while that copy is still open. `panic.log` has one line for each crash |
+| `duckdb-extensions/` | State | The readers DuckDB installs for Files connections the first time one needs them: Excel's |
 | `agents.sqlite3` | State | Every call agents made: the tool, the statement and its values, and how it ended. Never a row |
 | `history.sqlite3` | State | The query history, by saved connection: each statement run from the SQL editor, a grid's save (its whole transaction, with the values you typed written in), a filter or sort you set, and the `SELECT` an export ran, with when, how long, its rows and how it ended, and a filter's table, filter and sort. An agent's run is kept as its call's place in `agents.sqlite3`, its tool, rows, time and result, never what it sent, its name included: the History tab reads that from `agents.sqlite3`. Never a result's rows. Kept to `editor.history.keep` per connection, and written on its own: a statement never waits for it |
 | `agents_shown.json` | State | What agents may do as Tabletist last showed it: whether the server is on, and each connection's access, hidden tables and masked columns |
@@ -509,6 +510,27 @@ driver      = "sqlite"
 sqlite_path = "/home/ada/bookshop.db"
 ```
 
+A Files connection names its folder, or its files, in a
+`[connections.source]` table of its own, a path under your home folder
+written with `~`:
+
+```toml
+[[connections]]
+id          = "c2f1a9d4-1b7e-4f31-8e0a-5d4e2b9c7a10"
+name        = "Bookshop exports"
+environment = "local"
+read_only   = true
+driver      = "files"
+
+[connections.source]
+folder = "~/Data/bookshop-exports"
+```
+
+`files = ["~/Data/bookshop-exports/orders.csv", "…"]` takes the place of
+`folder` for a list of files. A source has one of the two, and only a
+Files connection has one. A file that holds a Files connection says
+`version = 7`.
+
 | Key | Values | Without it |
 | --- | --- | --- |
 | `id` | Any text that no other connection has | Tabletist gives the connection one at the next start |
@@ -517,7 +539,7 @@ sqlite_path = "/home/ada/bookshop.db"
 | `read_only` | `true`, `false` | As the environment has it: read-only on production |
 | `password` | `none`, `keyring`, `ask` | `none` |
 | `ssh_secret` | `none`, `keyring`, `ask` | `none` |
-| `driver` | `postgres`, `mysql`, `sqlite` | Required |
+| `driver` | `postgres`, `mysql`, `sqlite`, `files` | Required |
 | `host`, `user`, `database` | Text | Empty |
 | `port` | A number up to 65535 | 5432 for PostgreSQL, 3306 for MySQL |
 | `tls` | `disable`, `prefer`, `require`, `verify-ca`, `verify-full` | `prefer` |
@@ -701,9 +723,18 @@ access_max = "off"
 A rule matches a connection by what it reaches. Each key in `match` must
 match, and `*` in it stands for any run of characters. `host` is compared
 without regard to case, and through an SSH tunnel it is the database's
-host. `path` is a SQLite file's, with `~` read as your home folder. A key
+host. `path` is a SQLite file's. On a Files connection it matches any
+path the connection reads: its folder, or a file the pattern names
+directly in it, such as `/srv/exports/*.csv`; for a list of files, any
+one of them, or the folder it is in. In `path`, `~` is your home folder.
+A connection's path is compared after its `.` and `..` are taken out,
+so `/home/ada/../../srv/exports` counts as `/srv/exports`; a link is not
+followed. `driver` is `postgres`, `mysql`, `sqlite` or `files`. A key
 the connection has no use for, such as `path` on PostgreSQL, does not
-match. Every rule that matches a connection applies.
+match. Every rule that
+matches a connection applies. A Files connection can hide no table and
+mask no column: while a rule that matches one has `hidden`,
+`visible_only` or `masked`, agents may not use it at all.
 
 A rule's tables and columns apply beside your own. A table is visible
 to agents only if your Tables setting and every matching rule let it be

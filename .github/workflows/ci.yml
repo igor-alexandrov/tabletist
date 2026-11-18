@@ -16,10 +16,15 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# A cold cache compiles DuckDB's C++ from source (libduckdb-sys, bundled):
+# over 20 minutes on a runner before a test starts, so the limits below
+# leave room for it. The cache is saved only by a job that passes. The
+# database jobs build twice, for tabletist-db's tests and then for
+# tabletist-core's.
 jobs:
   quality:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -42,8 +47,8 @@ jobs:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     # Windows builds the app a second time, without debug assertions, for
-    # the relay's step.
-    timeout-minutes: 60
+    # the relay's step, so a cold cache compiles DuckDB twice.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -72,7 +77,7 @@ jobs:
       # optimization (Cargo.toml).
       - name: The relay from the GUI build (Windows)
         if: runner.os == 'Windows'
-        timeout-minutes: 30
+        timeout-minutes: 60
         run: cargo test --locked --profile release-check --test cli -- "mcp::" a_release_build_on_windows_is_a_gui_program
       - name: Native keyring round trip
         if: runner.os == 'Windows' || runner.os == 'macOS'
@@ -97,7 +102,7 @@ jobs:
   postgres:
     name: postgres integration
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -126,7 +131,7 @@ jobs:
   mysql:
     name: mysql integration
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -151,7 +156,7 @@ jobs:
   mariadb:
     name: mariadb ${{ matrix.version }} integration
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -181,7 +186,7 @@ jobs:
   ssh:
     name: ssh integration
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
