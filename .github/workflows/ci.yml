@@ -44,8 +44,8 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   # The translation template and every catalog are in step with the code.
-  # Ubuntu's gettext is older than 0.24, the first to read Rust; Homebrew's
-  # is newer.
+  # The script needs gettext 1.0 or later. Ubuntu's is too old to read
+  # Rust; Homebrew's is new enough.
   translations:
     runs-on: macos-latest
     timeout-minutes: 10

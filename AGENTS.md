@@ -99,7 +99,7 @@ command with `TABLETIST_TEST_MYSQL_URL=mysql://tabletist:tabletist@localhost:533
 The native keyring test is `#[ignore]`d; run it by hand on a desktop session.
 
 A change that adds, changes or takes out a user-facing string runs
-`assets/i18n/update.sh` (GNU gettext 0.24 or later), which writes the
+`assets/i18n/update.sh` (GNU gettext 1.0 or later), which writes the
 template and merges it into every catalog; CI's `translations` job runs it
 with `--check`. Each message is a whole phrase with named placeholders
 (`{n}`, `{table}`), and a count goes through `ngettext`: never a sentence

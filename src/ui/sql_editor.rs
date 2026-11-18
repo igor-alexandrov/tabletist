@@ -251,7 +251,7 @@ pub(crate) fn time_words(secs: u32, terminal: bool, locale: Locale) -> String {
         (true, 0, _) => format!("{secs}s"),
         (true, _, 0) => format!("{minutes}m"),
         (true, _, _) => format!("{minutes}m {rest}s"),
-        (false, 0, _) => format!("{secs} s"),
+        (false, 0, _) => gettext(locale, "{seconds} s").replace("{seconds}", &secs.to_string()),
         (false, _, 0) => {
             ngettext(locale, "{n} min", "{n} min", minutes).replace("{n}", &minutes.to_string())
         }

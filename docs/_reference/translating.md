@@ -7,9 +7,12 @@ nav_order: 4
 Tabletist's interface is in English and Русский. Each language is one plain
 text file, a gettext catalog, in
 [`assets/i18n`](https://github.com/igor-alexandrov/tabletist/tree/main/assets/i18n):
-`ru.po` for Russian. Every string the interface draws is looked up there,
-and one the catalog lacks shows in English, so a catalog can be finished a
-part at a time.
+`ru.po` for Russian. The interface looks its strings up there, and one the
+catalog lacks shows in English, so a catalog can be finished a part at a
+time. A few strings are not in the catalog yet, such as the window's title
+and some menu items, and stay English whatever it says: they need a change
+to the code, not to the catalog, so tell us in an
+[issue](https://github.com/igor-alexandrov/tabletist/issues).
 
 Only the app is translated. This website and its guide stay in English.
 
@@ -91,7 +94,7 @@ msgstr[2] "{n} строк"
 When a change adds, changes or takes out a message, run
 `assets/i18n/update.sh` from the repository. It writes the template,
 `assets/i18n/tabletist.pot`, adds the new messages to every catalog
-untranslated, and checks each catalog. It needs GNU gettext 0.24 or
-later, which reads Rust: `brew install gettext` on macOS, or your
-distribution's `gettext` where it is that new. CI runs it with `--check`
+untranslated, and checks each catalog. It needs GNU gettext 1.0 or
+later: `brew install gettext` on macOS, or your distribution's `gettext`
+where it is that new. CI runs it with `--check`
 and fails when the template or a catalog is out of date.

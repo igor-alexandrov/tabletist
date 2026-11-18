@@ -171,6 +171,11 @@ impl View<'_> {
         self.look.label(&gettext(self.locale, text))
     }
 
+    /// The filter field's label, open or closed.
+    fn filter_label(&self) -> String {
+        self.look.label(&pgettext(self.locale, "label", "filter"))
+    }
+
     fn draw(&self, ui: &mut egui::Ui, rect: Rect, asks: &mut Vec<Ask>) {
         let mut top = rect.top();
         if self.look.terminal {
@@ -533,7 +538,7 @@ impl View<'_> {
         if self.history.line.trim().is_empty() {
             // "/ filter · source:agent source:save result:error  plain words search the sql".
             let hint = Text::new(look)
-                .add(body, &self.say("filter"), palette.secondary)
+                .add(body, &self.filter_label(), palette.secondary)
                 .add(body, " · ", palette.secondary)
                 .add(body, "source:agent source:save result:error", palette.text)
                 .space(body, "  ")
@@ -557,7 +562,7 @@ impl View<'_> {
         widgets::announce(
             ui,
             Rect::from_min_max(pos2(at, bar.top()), pos2(at + room, bar.bottom())),
-            &format!("{} {}", self.say("filter"), self.history.line),
+            &format!("{} {}", self.filter_label(), self.history.line),
         );
         bar.bottom()
     }

@@ -1762,9 +1762,14 @@ fn language_menu(
 fn help_translate(ui: &mut Ui, skin: &Skin) {
     let Skin { palette, look, .. } = *skin;
     let text = super::language_words(skin.locale)[2].clone();
-    ui.add_space(HINT_GAP);
     let role = TextRole::Secondary;
     let width = role.width(ui.ctx(), look.faces, &text).ceil();
+    // A sheet too narrow for it leaves it out rather than past the row's
+    // end, where it would be cut and could not be clicked.
+    if ui.available_width() < HINT_GAP + width {
+        return;
+    }
+    ui.add_space(HINT_GAP);
     let (place, _) = ui.allocate_exact_size(vec2(width, LINK), Sense::hover());
     let link = link(
         ui,

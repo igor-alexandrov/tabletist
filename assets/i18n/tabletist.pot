@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-18 00:41-0500\n"
+"POT-Creation-Date: 2026-11-18 07:57-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -46,7 +46,7 @@ msgid "{done} of {total} rows"
 msgstr ""
 
 #: crates/tabletist-core/src/export_sheet.rs crates/tabletist-core/src/i18n.rs
-#: src/ui/history.rs src/ui/workspace.rs
+#: src/ui/data_view.rs src/ui/history.rs src/ui/workspace.rs
 #, rust-format
 msgid "{n} row"
 msgid_plural "{n} rows"
@@ -924,6 +924,20 @@ msgstr[1] ""
 #, rust-format
 msgid "{n} to delete"
 msgid_plural "{n} to delete"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/data_view.rs
+#, rust-format
+msgid "{n} col"
+msgid_plural "{n} cols"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/data_view.rs
+#, rust-format
+msgid "{n} column"
+msgid_plural "{n} columns"
 msgstr[0] ""
 msgstr[1] ""
 
@@ -2776,6 +2790,11 @@ msgstr ""
 
 #: src/ui/sql_editor.rs
 msgid "Limit"
+msgstr ""
+
+#: src/ui/sql_editor.rs
+#, rust-format
+msgid "{seconds} s"
 msgstr ""
 
 #: src/ui/sql_editor.rs
