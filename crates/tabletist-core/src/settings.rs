@@ -4,6 +4,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
+use crate::i18n::{LanguageTag, Locale};
 use crate::keymap::Layout;
 use crate::paths::AppDirs;
 use crate::util::toml_string;
@@ -38,6 +39,77 @@ impl Timestamps {
         [Self::Second, Self::Full]
             .into_iter()
             .find(|choice| choice.name() == name)
+    }
+}
+
+/// The language the interface is drawn in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Language {
+    /// The system's first language where the app has a catalog for it,
+    /// else English.
+    #[default]
+    System,
+    /// One the person chose.
+    Fixed(Locale),
+}
+
+impl Language {
+    /// As the file says it: `system`, `en`, `ru`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Fixed(locale) => locale.tag(),
+        }
+    }
+
+    /// The language the file names, where the app ships it: `system` in
+    /// any case, or a tag whose language has a catalog (`ru`, `RU`,
+    /// `ru-RU`). Anything else is no value: the line is shown as wrong and
+    /// left.
+    pub fn from_name(name: &str) -> Option<Self> {
+        if name.eq_ignore_ascii_case("system") {
+            return Some(Self::System);
+        }
+        LanguageTag::parse(name)
+            .as_ref()
+            .and_then(Locale::from_tag)
+            .map(Self::Fixed)
+    }
+
+    /// The language the window is drawn in, where `system` is the system's
+    /// first language: only that one counts, and with no catalog for it
+    /// the window is English.
+    pub fn resolve(self, system: Option<&LanguageTag>) -> Locale {
+        match self {
+            Self::Fixed(locale) => locale,
+            Self::System => system.and_then(Locale::from_tag).unwrap_or_default(),
+        }
+    }
+
+    /// Whether the system's first language has a catalog, so that System
+    /// is an entry of its own.
+    pub fn system_listed(system: Option<&LanguageTag>) -> bool {
+        system.and_then(Locale::from_tag).is_some()
+    }
+
+    /// The language menu's entries, in order: System where the system's
+    /// first language has a catalog, then each language the app ships.
+    pub fn choices(system: Option<&LanguageTag>) -> Vec<Self> {
+        let system = Self::system_listed(system).then_some(Self::System);
+        system
+            .into_iter()
+            .chain(Locale::ALL.into_iter().map(Self::Fixed))
+            .collect()
+    }
+
+    /// The entry the menu marks: this one, but System as English where
+    /// System is no entry (the system's language has no catalog). The
+    /// file keeps `system`, so the app follows a catalog that ships later.
+    pub fn shown(self, system: Option<&LanguageTag>) -> Self {
+        match self {
+            Self::System if !Self::system_listed(system) => Self::Fixed(Locale::English),
+            other => other,
+        }
     }
 }
 
@@ -703,6 +775,10 @@ impl Launch {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// The language the interface is drawn in. Not in an older version's
+    /// `settings.json`, which had none.
+    #[serde(skip)]
+    pub language: Language,
     /// What a launch opens: the windows open at the last quit, the
     /// saved connections, or one of them. Not in an older version's
     /// `settings.json`, which had none.
@@ -849,6 +925,7 @@ pub struct Settings {
 /// A key of the settings file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
+    Language,
     OnLaunch,
     RestoreTabs,
     PageSize,
@@ -906,7 +983,8 @@ impl Key {
     /// In the order the file has them: a table's keys together.
     /// An old key comes before the one that took its place: the new one
     /// is read over it.
-    pub const ALL: [Key; 45] = [
+    pub const ALL: [Key; 46] = [
+        Self::Language,
         Self::OnLaunch,
         Self::RestoreTabs,
         Self::PageSize,
@@ -957,6 +1035,7 @@ impl Key {
     /// The key's table and its name there.
     pub fn path(self) -> (&'static str, &'static str) {
         match self {
+            Self::Language => ("interface", "language"),
             Self::OnLaunch => ("startup", "on_launch"),
             Self::RestoreTabs => ("startup", "restore_tabs"),
             Self::PageSize => ("data", "page_size"),
@@ -1020,6 +1099,7 @@ impl Key {
     /// value: see [`Settings::note`].
     fn note(self) -> Option<&'static str> {
         match self {
+            Self::Language => Some("system | \"en\" | \"ru\""),
             Self::OnLaunch => Some("restore | connections | \"conn:<id>\""),
             Self::Timestamps => Some("second | full"),
             Self::Tz => Some("system | utc | \"Area/City\""),
@@ -2625,6 +2705,7 @@ impl Settings {
     /// out: a theme that is not set, and stripes left to the look.
     fn written(&self, key: Key) -> Option<String> {
         Some(match key {
+            Key::Language => toml_string(self.language.name()),
             Key::OnLaunch => toml_string(&self.on_launch.name()),
             Key::RestoreTabs => self.restore_tabs.to_string(),
             Key::PageSize => self.page_size.to_string(),
@@ -2984,6 +3065,9 @@ impl Settings {
             float.parse::<f64>().ok()
         });
         match key {
+            Key::Language => text
+                .and_then(Language::from_name)
+                .map(|language| self.language = language),
             Key::OnLaunch => text
                 .and_then(Launch::from_name)
                 .map(|launch| self.on_launch = launch),
@@ -3214,6 +3298,7 @@ impl Settings {
     /// Takes `key`'s value from `other`.
     fn keep(&mut self, key: Key, other: &Settings) {
         match key {
+            Key::Language => self.language = other.language,
             Key::OnLaunch => self.on_launch = other.on_launch.clone(),
             Key::RestoreTabs => self.restore_tabs = other.restore_tabs,
             Key::PageSize => self.page_size = other.page_size,
@@ -3303,6 +3388,7 @@ impl Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            language: Language::System,
             on_launch: Launch::Restore,
             restore_tabs: true,
             page_size: Self::DEFAULT_PAGE_SIZE,
@@ -3409,6 +3495,87 @@ mod tests {
         assert_eq!(loaded.invalid, [2]);
         assert_eq!(loaded.settings.idle_disconnect, Idle::Hour1);
         assert!(!loaded.settings.confirm_close_edits);
+    }
+
+    fn tag(text: &str) -> LanguageTag {
+        LanguageTag::parse(text).expect("a tag")
+    }
+
+    #[test]
+    fn the_language_is_read_by_its_tag_and_anything_else_is_a_wrong_line() {
+        let read = |value: &str| {
+            let text = format!("[interface]\nlanguage = \"{value}\"\n");
+            Settings::from_toml(&text)
+        };
+        assert_eq!(read("system").settings.language, Language::System);
+        assert_eq!(read("SYSTEM").settings.language, Language::System);
+        assert_eq!(
+            read("en").settings.language,
+            Language::Fixed(Locale::English)
+        );
+        assert_eq!(
+            read("ru").settings.language,
+            Language::Fixed(Locale::Russian)
+        );
+        assert_eq!(
+            read("RU").settings.language,
+            Language::Fixed(Locale::Russian)
+        );
+        assert_eq!(
+            read("ru-RU").settings.language,
+            Language::Fixed(Locale::Russian)
+        );
+        // A language the app has no catalog for is no value, and the last
+        // good one stays.
+        let last = Settings {
+            language: Language::Fixed(Locale::Russian),
+            ..Settings::default()
+        };
+        for wrong in ["fr", "xx", ""] {
+            let text = format!("[interface]\nlanguage = \"{wrong}\"\n");
+            let loaded = Settings::from_toml_over(&text, &last);
+            assert_eq!(loaded.invalid, [2], "{wrong:?}");
+            assert_eq!(loaded.settings.language, Language::Fixed(Locale::Russian));
+        }
+        // Written as its tag, and the default not at all.
+        let russian = Settings {
+            language: Language::Fixed(Locale::Russian),
+            ..Settings::default()
+        };
+        assert!(russian.to_toml().contains("[interface]\nlanguage = \"ru\""));
+        assert!(!Settings::default().to_toml().contains("language"));
+    }
+
+    #[test]
+    fn system_follows_the_first_language_only_and_else_english() {
+        let system = Language::System;
+        assert_eq!(system.resolve(Some(&tag("ru-RU"))), Locale::Russian);
+        assert_eq!(system.resolve(Some(&tag("en_GB.UTF-8"))), Locale::English);
+        assert_eq!(system.resolve(Some(&tag("fr-FR"))), Locale::English);
+        assert_eq!(system.resolve(None), Locale::English);
+        let fixed = Language::Fixed(Locale::Russian);
+        assert_eq!(fixed.resolve(Some(&tag("fr-FR"))), Locale::Russian);
+        assert_eq!(fixed.resolve(None), Locale::Russian);
+    }
+
+    #[test]
+    fn the_menu_lists_system_only_where_its_language_has_a_catalog() {
+        let english = Language::Fixed(Locale::English);
+        let russian = Language::Fixed(Locale::Russian);
+        assert_eq!(
+            Language::choices(Some(&tag("ru-RU"))),
+            [Language::System, english, russian]
+        );
+        assert_eq!(
+            Language::choices(Some(&tag("en-US"))),
+            [Language::System, english, russian]
+        );
+        assert_eq!(Language::choices(Some(&tag("fr-FR"))), [english, russian]);
+        assert_eq!(Language::choices(None), [english, russian]);
+        // Where System is no entry, it is shown as English.
+        assert_eq!(Language::System.shown(Some(&tag("fr-FR"))), english);
+        assert_eq!(Language::System.shown(Some(&tag("ru"))), Language::System);
+        assert_eq!(russian.shown(Some(&tag("fr-FR"))), russian);
     }
 
     fn chosen(id: &str, name: &str) -> Launch {
@@ -3600,6 +3767,7 @@ mod tests {
     /// Every key away from its default.
     fn all_set() -> Settings {
         Settings {
+            language: Language::Fixed(Locale::Russian),
             on_launch: Launch::Connection {
                 id: crate::connections::ConnectionId("6a0c1f0e-5a52-4b7b-9c56-3f0c8f2f7a11".into()),
                 name: "Bookshop".into(),
@@ -3665,6 +3833,9 @@ mod tests {
             format!(
                 "\
 # written by tabletist, safe to edit by hand
+[interface]
+language = \"ru\"  # system | \"en\" | \"ru\"
+
 [startup]
 on_launch = \"conn:6a0c1f0e-5a52-4b7b-9c56-3f0c8f2f7a11\"  # Bookshop
 restore_tabs = false
@@ -3793,48 +3964,49 @@ skip = \"0.4.0\"  # a version to stop offering
         assert_eq!(
             loaded.lines,
             vec![
-                (Key::OnLaunch, 3),
-                (Key::RestoreTabs, 4),
-                (Key::PageSize, 7),
-                (Key::Timestamps, 8),
-                (Key::Tz, 9),
-                (Key::GroupDigits, 10),
-                (Key::ValueTags, 11),
-                (Key::DatePicker, 12),
-                (Key::ProductionReadOnly, 15),
-                (Key::ConfirmCloseEdits, 16),
-                (Key::IdleDisconnect, 17),
-                (Key::ShowSystemSchemas, 20),
-                (Key::NewTab, 23),
-                (Key::SqlLimit, 24),
-                (Key::SqlTimeoutSecs, 25),
-                (Key::RunScope, 26),
-                (Key::ConfirmUnsafeWrites, 27),
-                (Key::EditorKeys, 30),
-                (Key::Indent, 31),
-                (Key::Autocomplete, 32),
-                (Key::ClosePairs, 33),
-                (Key::LineNumbers, 34),
-                (Key::HighlightLine, 35),
-                (Key::Wrap, 36),
-                (Key::Keywords, 39),
-                (Key::Commas, 40),
-                (Key::HistoryKeep, 43),
-                (Key::McpEnabled, 46),
-                (Key::McpLogDays, 47),
-                (Key::McpNotify, 48),
-                (Key::Look, 51),
-                (Key::Theme, 52),
-                (Key::UiScale, 53),
-                (Key::Font, 54),
-                (Key::FontSize, 55),
-                (Key::RowHeight, 58),
-                (Key::Zebra, 59),
-                (Key::ColumnTypes, 60),
-                (Key::TableList, 61),
-                (Key::EnvBar, 64),
-                (Key::UpdatesCheck, 67),
-                (Key::UpdatesSkip, 68),
+                (Key::Language, 3),
+                (Key::OnLaunch, 6),
+                (Key::RestoreTabs, 7),
+                (Key::PageSize, 10),
+                (Key::Timestamps, 11),
+                (Key::Tz, 12),
+                (Key::GroupDigits, 13),
+                (Key::ValueTags, 14),
+                (Key::DatePicker, 15),
+                (Key::ProductionReadOnly, 18),
+                (Key::ConfirmCloseEdits, 19),
+                (Key::IdleDisconnect, 20),
+                (Key::ShowSystemSchemas, 23),
+                (Key::NewTab, 26),
+                (Key::SqlLimit, 27),
+                (Key::SqlTimeoutSecs, 28),
+                (Key::RunScope, 29),
+                (Key::ConfirmUnsafeWrites, 30),
+                (Key::EditorKeys, 33),
+                (Key::Indent, 34),
+                (Key::Autocomplete, 35),
+                (Key::ClosePairs, 36),
+                (Key::LineNumbers, 37),
+                (Key::HighlightLine, 38),
+                (Key::Wrap, 39),
+                (Key::Keywords, 42),
+                (Key::Commas, 43),
+                (Key::HistoryKeep, 46),
+                (Key::McpEnabled, 49),
+                (Key::McpLogDays, 50),
+                (Key::McpNotify, 51),
+                (Key::Look, 54),
+                (Key::Theme, 55),
+                (Key::UiScale, 56),
+                (Key::Font, 57),
+                (Key::FontSize, 58),
+                (Key::RowHeight, 61),
+                (Key::Zebra, 62),
+                (Key::ColumnTypes, 63),
+                (Key::TableList, 64),
+                (Key::EnvBar, 67),
+                (Key::UpdatesCheck, 70),
+                (Key::UpdatesSkip, 71),
             ]
         );
     }
