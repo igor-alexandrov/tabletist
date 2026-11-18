@@ -869,8 +869,14 @@ impl Backend {
         });
     }
 
-    /// Reads what a Files connection's Source holds, off the UI thread.
-    pub fn read_source(&mut self, request: RequestId, source: tabletist_db::files::Source) {
+    /// Reads what a Files connection's Source holds, off the UI thread,
+    /// past the files `reading` skips, as the connection reads it.
+    pub fn read_source(
+        &mut self,
+        request: RequestId,
+        source: tabletist_db::files::Source,
+        reading: tabletist_db::files::Reading,
+    ) {
         #[cfg(any(test, feature = "testing"))]
         self.sources_read.push(source.clone());
         let Some(runtime) = &self.runtime else {
@@ -878,7 +884,8 @@ impl Backend {
         };
         let outbox = self.outbox.clone();
         runtime.spawn_blocking(move || {
-            let result = tabletist_db::files::scan(&source).map_err(|error| match error {
+            let result = tabletist_db::files::scan_past(&source, |file| reading.skips(file));
+            let result = result.map_err(|error| match error {
                 Error::Connect(message) | Error::InvalidSpec(message) => message,
                 other => other.to_string(),
             });
@@ -4103,6 +4110,50 @@ mod tests {
                 result: Err(error), ..
             }) => assert!(error.is_connection_lost()),
             other => panic!("expected a lost-connection error, got {other:?}"),
+        }
+    }
+
+    /// The dialog's found line is read past the files the connection
+    /// skips: a skipped file the system cannot look at (a link to itself)
+    /// does not stop the folder being read.
+    #[cfg(unix)]
+    #[test]
+    fn a_source_is_read_past_the_files_it_skips() {
+        use tabletist_db::files::{Change, Override, Reading, Source};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("orders.csv"), "id\n1\n").unwrap();
+        let looped = dir.path().join("returns.csv");
+        std::os::unix::fs::symlink(&looped, &looped).unwrap();
+        let source = Source::Folder(dir.path().to_owned());
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        backend.read_source(RequestId(1), source.clone(), Reading::default());
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::SourceRead {
+                request: RequestId(1),
+                result: Err(_)
+            })
+        ));
+        let reading = Reading {
+            overrides: vec![Override {
+                file: "returns.csv".into(),
+                change: Change::Skip,
+            }],
+            ..Reading::default()
+        };
+        backend.read_source(RequestId(2), source, reading);
+        match backend.wait(WAIT) {
+            Some(Event::SourceRead {
+                request: RequestId(2),
+                result: Ok(scan),
+            }) => assert_eq!(
+                scan.files
+                    .iter()
+                    .map(|file| file.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["orders"]
+            ),
+            other => panic!("expected the folder read, got {other:?}"),
         }
     }
 

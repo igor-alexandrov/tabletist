@@ -592,6 +592,31 @@ async fn a_skipped_file_that_cannot_be_looked_at_is_no_matter() {
         .unwrap();
 }
 
+/// A header DuckDB is left to detect is found once, from the sample, and
+/// the view reads the file so: with types from every row, the whole file
+/// would say otherwise here (its last rows are text, its first row a
+/// number's), and the estimate would count a row the view takes for the
+/// header.
+#[tokio::test]
+async fn a_detected_header_is_the_one_the_view_reads() {
+    let mut text = String::from("10,20\n");
+    text.push_str(&"30,40\n".repeat(100_000));
+    text.push_str(&"x,y\n".repeat(1_000));
+    let dir = returns_of(&text);
+    let reading = Reading {
+        types: Types::All,
+        ..Reading::default()
+    };
+    let connection = open(dir.path(), reading).await.unwrap();
+    let rows = read(&connection, "SELECT count(*), count(column0) FROM returns")
+        .await
+        .unwrap();
+    assert_eq!(
+        rows[0].iter().map(text_of).collect::<Vec<_>>(),
+        ["101001", "101001"]
+    );
+}
+
 /// A marker that is another column's header word: DuckDB would name that
 /// column like this one, and its type would be taken for this one's.
 #[tokio::test]

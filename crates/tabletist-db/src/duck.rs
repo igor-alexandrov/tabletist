@@ -420,8 +420,9 @@ fn estimate(file: &Found, header: Header) -> Option<u64> {
     Some(rows.saturating_sub(header))
 }
 
-/// Whether a CSV's first row names its columns, as its view reads it
-/// (`options`): where DuckDB is left to detect it, its sniffer says.
+/// Whether a CSV's first row names its columns, read with `options`:
+/// where DuckDB is left to detect it, its sniffer says from a sample, and
+/// the file is then read so (`Detect` where the sniffer cannot say).
 fn header_of(
     connection: &duckdb::Connection,
     file: &Found,
@@ -433,9 +434,9 @@ fn header_of(
             let Ok(path) = reader_path(&file.path) else {
                 return Header::Detect;
             };
-            // From the rows a sample holds, as the header is found: with
-            // types from every row, the view's own sniff reads the whole
-            // file, and a second would read it again.
+            // From the rows a sample holds: with types from every row, the
+            // view's own sniff reads the whole file, and a second would
+            // read it again. The view takes the header found here.
             let options =
                 options.replace("sample_size = -1", &format!("sample_size = {SAMPLE_ROWS}"));
             let call = match options.as_str() {
@@ -489,6 +490,28 @@ fn opened(files: &[Found], reading: &Reading) -> Result<(duckdb::Connection, Vec
         let failed = |error: &Error| {
             Error::Connect(format!("Can't read {}: {}", file_label(file), plain(error)))
         };
+        // A CSV whose header DuckDB is left to detect: its sniffer says,
+        // from a sample. With types from every row the view's own sniff
+        // reads the whole file and may find otherwise, so there the view,
+        // its columns' own reads and the estimate are told the header
+        // found; elsewhere they read the same rows and find the same.
+        let header = header_of(
+            &connection,
+            file,
+            reading.header,
+            &reader_options(file.format, reading, &[]),
+        );
+        let pinned;
+        let reading = match reading.types {
+            Types::All => {
+                pinned = Reading {
+                    header,
+                    ..reading.clone()
+                };
+                &pinned
+            }
+            Types::Sample | Types::Text => reading,
+        };
         // A `.duckdb` file is attached read-only, as every session is.
         let (statement, options) =
             make(&connection, file, reading).map_err(|error| failed(&error))?;
@@ -511,9 +534,7 @@ fn opened(files: &[Found], reading: &Reading) -> Result<(duckdb::Connection, Vec
             | Format::Json
             | Format::Ndjson
             | Format::Excel
-            | Format::DuckDb => {
-                estimate(file, header_of(&connection, file, reading.header, &options))
-            }
+            | Format::DuckDb => estimate(file, header),
         };
         opened.push(Opened {
             found: (*file).clone(),

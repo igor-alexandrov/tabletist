@@ -3464,7 +3464,21 @@ impl App {
             }
             Action::SetCsv(change) => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
+                    let skipped = |form: &ConnectionForm| -> Vec<String> {
+                        form.files_csv
+                            .overrides
+                            .iter()
+                            .filter(|each| matches!(each.change, tabletist_db::files::Change::Skip))
+                            .map(|each| each.file.clone())
+                            .collect()
+                    };
+                    let before = skipped(form);
                     form.change_csv(change);
+                    // The found line is read past the files it skips, as
+                    // the connection is: a skip that changes reads it again.
+                    if skipped(form) != before {
+                        self.read_form_source();
+                    }
                 }
             }
             Action::ReadSource => self.read_form_source(),
@@ -5344,7 +5358,8 @@ impl App {
         match source {
             Some(source) => {
                 form.files_found = crate::model::FilesFound::Reading(request);
-                self.backend.read_source(request, source);
+                self.backend
+                    .read_source(request, source, form.files_csv.clone());
             }
             None => form.files_found = crate::model::FilesFound::Unread,
         }

@@ -318,6 +318,32 @@ fn a_skipped_file_is_left_out_of_the_found_line() {
     assert!(!harness.has("orders_csv"));
 }
 
+/// The found line is read past the files the connection skips, so a
+/// skip that is reset reads the folder again; another reset does not.
+#[test]
+fn resetting_a_skip_reads_the_folder_again() {
+    let mut harness = new_files(Look::macos());
+    form_mut(&mut harness).files_folder = "/data/bookshop-exports".into();
+    form_mut(&mut harness).files_csv.overrides = vec![
+        returns_as_text(),
+        Override {
+            file: "returns.csv".into(),
+            change: Change::Skip,
+        },
+    ];
+    let reads = |harness: &Harness| harness.app.backend.sources_read.len();
+    let before = reads(&harness);
+    harness
+        .app
+        .apply(Action::SetCsv(crate::model::CsvChange::Reset(0)));
+    assert_eq!(reads(&harness), before);
+    harness
+        .app
+        .apply(Action::SetCsv(crate::model::CsvChange::Reset(0)));
+    assert_eq!(reads(&harness), before + 1);
+    assert!(form(&harness).files_csv.overrides.is_empty());
+}
+
 #[test]
 fn cancel_keeps_how_the_saved_connection_reads_csv() {
     let mut harness = Harness::new();
@@ -343,6 +369,60 @@ fn cancel_keeps_how_the_saved_connection_reads_csv() {
     assert!(form(&harness).files_csv.overrides.is_empty());
     harness.app.apply(Action::CloseDialog);
     harness.settle();
+    assert_eq!(
+        harness.app.connections.get(&id).unwrap().spec.csv.overrides,
+        [returns_as_text()]
+    );
+}
+
+/// Reset and Delete in one frame (a screen reader's two clicks): the reset
+/// is made before the form is set aside for the question, so Keep opens it
+/// again without the override, and the saved connection still has it.
+#[test]
+fn a_reset_before_delete_in_one_frame_is_kept_by_keep() {
+    let mut harness = Harness::new();
+    let mut spec = ConnectSpec::files(Source::Folder("/data/bookshop-exports".into()));
+    spec.csv.overrides = vec![returns_as_text()];
+    let saved = SavedConnection {
+        id: ConnectionId::new(),
+        name: "Bookshop exports".into(),
+        environment: Environment::Local,
+        read_only: Some(true),
+        password: PasswordMode::None,
+        ssh_secret: PasswordMode::None,
+        spec,
+        agents: Default::default(),
+    };
+    let id = saved.id.clone();
+    harness.app.connections.upsert(saved);
+    harness.app.apply(Action::EditConnection(id.clone()));
+    form_mut(&mut harness).csv_open = true;
+    let tree = harness.settle();
+    let click = |name: &str| {
+        egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
+            target_tree: egui::accesskit::TreeId::ROOT,
+            target_node: tree
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some(name))
+                .map(|(id, _)| *id)
+                .unwrap_or_else(|| panic!("no {name:?}: {:?}", crate::testing::labels(&tree))),
+            action: egui::accesskit::Action::Click,
+            data: None,
+        })
+    };
+    harness.frame(vec![
+        click("Reset returns.csv, returned_at read as text"),
+        click("Delete Bookshop exports"),
+    ]);
+    harness.settle();
+    assert!(harness.app.dialog.is_none(), "the question is asked");
+    let tab = harness.app.active_tab_id();
+    harness
+        .app
+        .apply(Action::AnswerDeleteConnection { tab, delete: false });
+    harness.settle();
+    assert!(form(&harness).files_csv.overrides.is_empty());
     assert_eq!(
         harness.app.connections.get(&id).unwrap().spec.csv.overrides,
         [returns_as_text()]
