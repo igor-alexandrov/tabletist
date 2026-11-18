@@ -114,6 +114,8 @@ pub enum Action {
     RemoveFile(usize),
     /// Read a Files connection's folder or files from a list instead.
     SetFilesKind(FilesKind),
+    /// A change in a Files connection's Reading CSV section.
+    SetCsv(CsvChange),
     /// Read what a Files connection's Source holds again, for the found
     /// line: after its folder is typed.
     ReadSource,
@@ -2158,6 +2160,14 @@ pub struct ConnectionForm {
     pub files_found: FilesFound,
     /// Files: what the last Test that passed read.
     pub files_tested: Option<tabletist_db::FilesRead>,
+    /// Files: how its CSV and TSV files are read, overrides included.
+    pub files_csv: tabletist_db::files::Reading,
+    /// Files: whether the Reading CSV section is open. Closed each time
+    /// the dialog opens.
+    pub csv_open: bool,
+    /// Files: whether the Agents section is open, which a Files form
+    /// keeps closed until it is opened or `show_agents` asks.
+    pub agents_open: bool,
     /// Saving a used connection under another type was asked once: the
     /// next Save changes it.
     pub retype_asked: bool,
@@ -2183,6 +2193,16 @@ pub enum PickTarget {
     Folder,
     /// Files added to a Files connection's list.
     Files,
+}
+
+/// A change in a Files connection's Reading CSV section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsvChange {
+    Header(tabletist_db::files::Header),
+    Delimiter(tabletist_db::files::Delimiter),
+    Types(tabletist_db::files::Types),
+    /// Take off the override at this place.
+    Reset(usize),
 }
 
 /// Where a Files connection's files come from, as the Source choice says
@@ -2317,6 +2337,9 @@ impl Default for ConnectionForm {
             files_cursor: None,
             files_found: FilesFound::Unread,
             files_tested: None,
+            files_csv: tabletist_db::files::Reading::default(),
+            csv_open: false,
+            agents_open: false,
             retype_asked: false,
             agents_chosen: false,
             test_spec: None,
@@ -2349,6 +2372,26 @@ impl ConnectionForm {
         }
         self.pick_request = None;
         self.ssh_hosts_request = None;
+    }
+
+    /// Applies a change made in the Reading CSV section. A Test read with
+    /// the old reading says nothing of the new one.
+    pub fn change_csv(&mut self, change: CsvChange) {
+        let reading = &mut self.files_csv;
+        let before = reading.clone();
+        match change {
+            CsvChange::Header(header) => reading.header = header,
+            CsvChange::Delimiter(delimiter) => reading.delimiter = delimiter,
+            CsvChange::Types(types) => reading.types = types,
+            CsvChange::Reset(at) => {
+                if at < reading.overrides.len() {
+                    reading.overrides.remove(at);
+                }
+            }
+        }
+        if self.files_csv != before {
+            self.forget_test();
+        }
     }
 
     /// Drops the Test, whether done or running, and what it read: neither
@@ -2589,6 +2632,7 @@ impl ConnectionForm {
                     .collect(),
                 Some(Source::Folder(_)) | None => Vec::new(),
             },
+            files_csv: spec.csv.clone(),
             // A saved connection's agents are what the file says.
             agents_chosen: true,
             ..Self::default()
@@ -2685,7 +2729,10 @@ impl ConnectionForm {
                 Ok(ConnectSpec::sqlite(path))
             }
             Driver::Files => match self.files_source() {
-                Some(source) => Ok(ConnectSpec::files(source)),
+                Some(source) => Ok(ConnectSpec {
+                    csv: self.files_csv.clone(),
+                    ..ConnectSpec::files(source)
+                }),
                 None => Err(match self.files_kind {
                     FilesKind::Folder => "Choose a folder.".into(),
                     FilesKind::Files => "Add a file.".into(),
@@ -9114,5 +9161,73 @@ mod tests {
         assert!(before.is_on(&completion_site(""), print("users")));
         // But not with the cursor moved back before the letter.
         assert!(!before.is_on(&completion_site(""), print("susers")));
+    }
+
+    /// How a Files connection reads CSV goes from the saved connection to
+    /// the form and back, and each change drops a Test that read the old
+    /// way.
+    #[test]
+    fn the_form_keeps_how_a_files_connection_reads_csv() {
+        use tabletist_db::files::{Change, Delimiter, Header, Override, Reading, Source, Types};
+        let mut spec = ConnectSpec::files(Source::Folder("/srv/exports".into()));
+        spec.csv = Reading {
+            header: Header::No,
+            overrides: vec![
+                Override {
+                    file: "returns.csv".into(),
+                    change: Change::Skip,
+                },
+                Override {
+                    file: "orders.csv".into(),
+                    change: Change::Text {
+                        column: "note".into(),
+                    },
+                },
+            ],
+            ..Reading::default()
+        };
+        let saved = SavedConnection {
+            id: ConnectionId("exports".into()),
+            name: "Bookshop exports".into(),
+            environment: crate::env::Environment::Local,
+            read_only: Some(true),
+            password: crate::connections::PasswordMode::None,
+            ssh_secret: crate::connections::PasswordMode::None,
+            spec: spec.clone(),
+            agents: crate::connections::Agents::default(),
+        };
+        let mut form = ConnectionForm::from_saved(&saved);
+        assert_eq!(form.files_csv, spec.csv);
+        assert!(!form.csv_open && !form.agents_open);
+        assert_eq!(form.to_spec().unwrap().csv, spec.csv);
+
+        let tested = || {
+            Some(tabletist_db::FilesRead {
+                files: 4,
+                bytes: 10,
+            })
+        };
+        form.files_tested = tested();
+        form.change_csv(CsvChange::Delimiter(Delimiter::Semicolon));
+        form.change_csv(CsvChange::Types(Types::Text));
+        form.change_csv(CsvChange::Header(Header::Yes));
+        assert_eq!(form.files_tested, None);
+        form.files_tested = tested();
+        form.change_csv(CsvChange::Reset(0));
+        assert_eq!(form.files_tested, None);
+        // What did not change keeps the Test.
+        form.files_tested = tested();
+        form.change_csv(CsvChange::Header(Header::Yes));
+        form.change_csv(CsvChange::Reset(7));
+        assert_eq!(form.files_tested, tested());
+        assert_eq!(
+            form.to_spec().unwrap().csv,
+            Reading {
+                header: Header::Yes,
+                delimiter: Delimiter::Semicolon,
+                types: Types::Text,
+                overrides: spec.csv.overrides[1..].to_vec(),
+            }
+        );
     }
 }

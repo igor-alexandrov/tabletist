@@ -3462,6 +3462,11 @@ impl App {
                     self.read_form_source();
                 }
             }
+            Action::SetCsv(change) => {
+                if let Some(Dialog::Connection(form)) = &mut self.dialog {
+                    form.change_csv(change);
+                }
+            }
             Action::ReadSource => self.read_form_source(),
             Action::PickSshHost(alias) => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
