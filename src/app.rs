@@ -2883,8 +2883,12 @@ impl App {
                 // person says to delete it.
                 let forgets = matches!(value, crate::settings::OptionValue::HistoryKeep(0))
                     && self.settings.history_keep > 0;
-                self.change_settings(|settings| value.set(settings));
-                if forgets && let Some(Dialog::Settings(dialog)) = &mut self.dialog {
+                // A change refused keeps what is kept: nothing to delete.
+                let taken = self.change_settings(|settings| value.set(settings));
+                if forgets
+                    && taken
+                    && let Some(Dialog::Settings(dialog)) = &mut self.dialog
+                {
                     dialog.history_question = Some(crate::model::HistoryQuestion::Forget);
                 }
             }
@@ -8697,10 +8701,13 @@ impl App {
         let reset = self
             .keymap
             .key(self.layout(), crate::keymap::Command::DefaultTextSize);
+        // A change refused is said in the notice: no size to tell.
         if self.look.terminal {
-            self.change_settings(|settings| {
+            if !self.change_settings(|settings| {
                 settings.font_size = larger.map(|larger| settings.stepped_font_size(true, larger));
-            });
+            }) {
+                return;
+            }
             let size = self.settings.font_size_in(true).text();
             // A key that resets it is named; a `[keys]` line can leave none.
             let words = if reset.as_str().is_empty() {
@@ -8714,11 +8721,13 @@ impl App {
                     .replace("{key}", reset.as_str()),
             );
         } else {
-            self.change_settings(|settings| {
+            if !self.change_settings(|settings| {
                 settings.ui_scale = larger.map_or(crate::settings::UiScale::DEFAULT, |larger| {
                     settings.ui_scale.stepped(larger)
                 });
-            });
+            }) {
+                return;
+            }
             let scale = self.settings.ui_scale;
             let words = if reset.as_str().is_empty() {
                 "Interface {percent}% · {px} px text"
