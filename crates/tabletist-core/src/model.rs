@@ -116,6 +116,9 @@ pub enum Action {
     SetFilesKind(FilesKind),
     /// A change in a Files connection's Reading CSV section.
     SetCsv(CsvChange),
+    /// One of the partial Test's fixes for the first file it could not
+    /// read: saved as an override in the form, and the Test run again.
+    FixFile(FileFix),
     /// Read what a Files connection's Source holds again, for the found
     /// line: after its folder is typed.
     ReadSource,
@@ -2158,8 +2161,12 @@ pub struct ConnectionForm {
     /// Files: what the Source holds, as the backend last read it, for the
     /// found line and the list's rows.
     pub files_found: FilesFound,
-    /// Files: what the last Test that passed read.
+    /// Files: what the last Test that passed read, the files it could not
+    /// read among it, those its check in full found since included.
     pub files_tested: Option<tabletist_db::FilesRead>,
+    /// Files: the check in full that follows a Test, while it runs: the
+    /// Test it follows, and how many files are left to check.
+    pub files_check: Option<(RequestId, usize)>,
     /// Files: how its CSV and TSV files are read, overrides included.
     pub files_csv: tabletist_db::files::Reading,
     /// Files: whether the Reading CSV section is open. Closed each time
@@ -2193,6 +2200,17 @@ pub enum PickTarget {
     Folder,
     /// Files added to a Files connection's list.
     Files,
+}
+
+/// A fix the partial Test offers for a file it could not read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileFix {
+    /// Read the value's column as text.
+    Text,
+    /// Read the value as empty in its column.
+    Empty,
+    /// Leave the file out of the connection.
+    Skip,
 }
 
 /// A change in a Files connection's Reading CSV section.
@@ -2337,6 +2355,7 @@ impl Default for ConnectionForm {
             files_cursor: None,
             files_found: FilesFound::Unread,
             files_tested: None,
+            files_check: None,
             files_csv: tabletist_db::files::Reading::default(),
             csv_open: false,
             agents_open: false,
@@ -2404,6 +2423,61 @@ impl ConnectionForm {
         self.test_secrets = tabletist_db::Secrets::default();
         self.test_waiting = 0;
         self.files_tested = None;
+        self.files_check = None;
+    }
+
+    /// The first file the last Test could not read, which the partial
+    /// banner says and its fixes mend.
+    pub fn first_failure(&self) -> Option<&tabletist_db::files::Failure> {
+        match self.test {
+            TestState::Passed => self.files_tested.as_ref()?.failed.first(),
+            TestState::Idle
+            | TestState::Running(_)
+            | TestState::Failed(_)
+            | TestState::Untrusted { .. } => None,
+        }
+    }
+
+    /// Mends the first file the last Test could not read as `fix` says: an
+    /// override under Reading CSV, which forgets the Test. False when there
+    /// is no such file, or `fix` changes a column and the failure is not of
+    /// a column's value. The override names the file by its name, or by
+    /// its path where the list holds another file of that name.
+    pub fn fix_file(&mut self, fix: FileFix) -> bool {
+        use tabletist_db::files::{Change, Override, Why};
+        let Some(failure) = self.first_failure().cloned() else {
+            return false;
+        };
+        let change = match (fix, &failure.why) {
+            (FileFix::Skip, _) => Change::Skip,
+            (FileFix::Text, Why::Value { column, .. }) if failure.takes_column_fixes() => {
+                Change::Text {
+                    column: column.clone(),
+                }
+            }
+            (FileFix::Empty, Why::Value { column, value, .. }) if failure.takes_column_fixes() => {
+                Change::Empty {
+                    column: column.clone(),
+                    values: vec![value.clone()],
+                }
+            }
+            (FileFix::Text | FileFix::Empty, _) => return false,
+        };
+        let name = tabletist_db::files::file_name(&failure.path);
+        let shared = self.files_kind == FilesKind::Files
+            && self
+                .files_list
+                .iter()
+                .map(|listed| tabletist_db::files::expanded(std::path::Path::new(listed)))
+                .filter(|listed| *listed != failure.path)
+                .any(|listed| tabletist_db::files::file_name(&listed) == name);
+        let file = match shared {
+            true => tabletist_db::files::shown(&failure.path),
+            false => name,
+        };
+        self.files_csv.overrides.push(Override { file, change });
+        self.forget_test();
+        true
     }
 
     /// The config's Host whose alias is the typed SSH host, compared as
@@ -9161,6 +9235,98 @@ mod tests {
         assert!(before.is_on(&completion_site(""), print("users")));
         // But not with the cursor moved back before the letter.
         assert!(!before.is_on(&completion_site(""), print("susers")));
+    }
+
+    /// A fix adds the override for the first file the Test could not read
+    /// and forgets the Test, so it runs again.
+    #[test]
+    fn a_fix_mends_the_first_file_the_test_could_not_read() {
+        use tabletist_db::files::{Change, Failure, Format, Override, Why};
+        let failure = |path: &str, why: Why| Failure {
+            file: "returns.csv".into(),
+            path: path.into(),
+            format: Format::Csv,
+            why,
+        };
+        let value = Why::Value {
+            row: 48_112,
+            column: "returned_at".into(),
+            value: "N/A".into(),
+            kind: "DATE".into(),
+        };
+        let mut form = ConnectionForm {
+            driver: Driver::Files,
+            ..ConnectionForm::default()
+        };
+        // No Test, no failure: nothing to mend.
+        assert!(!form.fix_file(FileFix::Skip));
+        let tested = |failed: Vec<Failure>| {
+            Some(tabletist_db::FilesRead {
+                files: 4,
+                bytes: 10,
+                failed,
+                checks: Vec::new(),
+            })
+        };
+        for (fix, change) in [
+            (
+                FileFix::Text,
+                Change::Text {
+                    column: "returned_at".into(),
+                },
+            ),
+            (
+                FileFix::Empty,
+                Change::Empty {
+                    column: "returned_at".into(),
+                    values: vec!["N/A".into()],
+                },
+            ),
+            (FileFix::Skip, Change::Skip),
+        ] {
+            form.files_csv.overrides.clear();
+            form.test = TestState::Passed;
+            form.files_tested = tested(vec![failure("/srv/exports/returns.csv", value.clone())]);
+            assert_eq!(
+                form.first_failure().map(|failure| &failure.file),
+                Some(&"returns.csv".to_owned())
+            );
+            assert!(form.fix_file(fix));
+            assert_eq!(
+                form.files_csv.overrides,
+                [Override {
+                    file: "returns.csv".into(),
+                    change,
+                }]
+            );
+            // The Test is forgotten: it ran with the old reading.
+            assert_eq!(form.test, TestState::Idle);
+            assert!(form.files_tested.is_none());
+        }
+        // A failure that is not a value takes Skip alone.
+        form.files_csv.overrides.clear();
+        form.test = TestState::Passed;
+        let wide = Why::Columns {
+            row: 2,
+            expected: 3,
+            found: 4,
+        };
+        form.files_tested = tested(vec![failure("/srv/exports/returns.csv", wide)]);
+        assert!(!form.fix_file(FileFix::Text));
+        assert!(!form.fix_file(FileFix::Empty));
+        assert!(form.files_csv.overrides.is_empty());
+        assert!(form.fix_file(FileFix::Skip));
+        // Two files of one name in a list: the path names the one.
+        form.files_csv.overrides.clear();
+        form.files_kind = FilesKind::Files;
+        form.files_list = vec![
+            "/srv/current/returns.csv".into(),
+            "/srv/archive/returns.csv".into(),
+        ];
+        form.test = TestState::Passed;
+        form.files_tested = tested(vec![failure("/srv/archive/returns.csv", value)]);
+        assert!(form.fix_file(FileFix::Skip));
+        assert_eq!(form.files_csv.overrides[0].file, "/srv/archive/returns.csv");
     }
 
     /// How a Files connection reads CSV goes from the saved connection to

@@ -114,6 +114,8 @@ pub mod pane_hints;
 mod pane_hints_tests;
 #[cfg(test)]
 mod pane_keys_tests;
+#[cfg(test)]
+mod partial_test_tests;
 pub mod password_prompt;
 pub mod pending_bar;
 pub mod picker;
