@@ -290,6 +290,32 @@ fn a_skipped_file_is_left_out_of_the_found_line() {
     }];
     assert!(harness.has("1 file · 1.0 KB · CSV"));
     assert!(!harness.has("returns"));
+    // Two files of one stem: skipped, the other is named as the
+    // connection names it, without its extension.
+    let found = |name: &str, format| tabletist_db::files::Found {
+        path: format!("/data/bookshop-exports/{name}").into(),
+        format,
+        size: 1024,
+        name: name.replace('.', "_"),
+    };
+    form_mut(&mut harness).files_found =
+        crate::model::FilesFound::Read(tabletist_db::files::Scan {
+            files: vec![
+                found("orders.csv", tabletist_db::files::Format::Csv),
+                found("orders.tsv", tabletist_db::files::Format::Tsv),
+            ],
+            missing: Vec::new(),
+        });
+    form_mut(&mut harness).files_csv.overrides = vec![Override {
+        file: "orders.tsv".into(),
+        change: Change::Skip,
+    }];
+    assert!(
+        harness.has("orders"),
+        "{:?}",
+        crate::testing::labels(&harness.settle())
+    );
+    assert!(!harness.has("orders_csv"));
 }
 
 #[test]

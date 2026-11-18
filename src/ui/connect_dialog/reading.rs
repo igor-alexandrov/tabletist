@@ -297,7 +297,9 @@ fn sheet_override(ui: &mut Ui, at: usize, each: &Override, skin: &Skin, actions:
                         override_words(&each.change, false)
                     );
                     let reset = reset_link(ui, at, &skin.say("Reset"), &name, skin);
-                    if reset.clicked() {
+                    // Once a press: a held Enter would take off the next
+                    // override too.
+                    if crate::ui::disclosure::pressed(ui, &reset) {
                         actions.push(Action::SetCsv(CsvChange::Reset(at)));
                     }
                 });

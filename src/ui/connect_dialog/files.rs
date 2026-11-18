@@ -167,12 +167,15 @@ fn folder_box(ui: &mut Ui, form: &ConnectionForm, skin: &Skin) -> egui::Response
 }
 
 /// What the Source holds as the found line says it: a file the Reading
-/// CSV section skips is left out.
+/// CSV section skips is left out, and the others named as the connection
+/// names them without it (`orders`, not `orders_csv`, once `orders.tsv`
+/// is skipped).
 fn read(form: &ConnectionForm) -> FilesFound {
     let mut found = form.files_found.clone();
     if let FilesFound::Read(scan) = &mut found {
         let reading = &form.files_csv;
         scan.files.retain(|file| !reading.skips(&file.path));
+        scan.files = tabletist_db::files::renamed(std::mem::take(&mut scan.files));
     }
     found
 }

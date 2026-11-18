@@ -458,6 +458,17 @@ const RESERVED: [&str; 6] = [
 /// one of DuckDB's own databases takes `_duckdb`. Should a name still be
 /// taken (the same file name in two folders, or a file named as another's
 /// suffixed name), a number follows, until it is one no other file has.
+/// `files` named again as tables among themselves: what a scan names once
+/// some of its files are left out, as a connection names those it opens.
+pub fn renamed(files: Vec<Found>) -> Vec<Found> {
+    let names = names(files.iter().map(|file| (file.path.as_path(), file.format)));
+    files
+        .into_iter()
+        .zip(names)
+        .map(|(file, name)| Found { name, ..file })
+        .collect()
+}
+
 fn names<'a>(files: impl Iterator<Item = (&'a Path, Format)>) -> Vec<String> {
     let files: Vec<(String, String, Format)> = files
         .map(|(path, format)| {

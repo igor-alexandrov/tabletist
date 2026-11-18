@@ -528,23 +528,7 @@ pub fn show(
             show_url(ctx, form, !form.url_mode);
         }
     }
-    // Each override is taken off once a frame (Enter on its row and `R`
-    // both ask), the last first: taking one off moves up those after it.
-    let mut resets: Vec<usize> = actions
-        .iter()
-        .filter_map(|action| match action {
-            Action::SetCsv(crate::model::CsvChange::Reset(at)) => Some(*at),
-            _ => None,
-        })
-        .collect();
-    resets.sort_unstable_by(|a, b| b.cmp(a));
-    resets.dedup();
-    actions.retain(|action| !matches!(action, Action::SetCsv(crate::model::CsvChange::Reset(_))));
-    actions.extend(
-        resets
-            .into_iter()
-            .map(|at| Action::SetCsv(crate::model::CsvChange::Reset(at))),
-    );
+    resets_once(&mut actions);
     // A save goes last: what the same frame changed in the form (a key's
     // Reset, a choice) is saved with it, not dropped with the dialog.
     actions.sort_by_key(|action| matches!(action, Action::SaveConnection { .. }));
@@ -1124,6 +1108,30 @@ fn url_field(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) -> Response {
     field
 }
 
+/// Each override is taken off once a frame (Enter on its row and `R` both
+/// ask), the last first, as taking one off moves up those after it; the
+/// Resets stay where the first was among the frame's actions, so a Test or
+/// a Delete asked after them still comes after.
+fn resets_once(actions: &mut Vec<Action>) {
+    let reset = |action: &Action| match action {
+        Action::SetCsv(crate::model::CsvChange::Reset(at)) => Some(*at),
+        _ => None,
+    };
+    let Some(first) = actions.iter().position(|action| reset(action).is_some()) else {
+        return;
+    };
+    let mut resets: Vec<usize> = actions.iter().filter_map(reset).collect();
+    resets.sort_unstable_by(|a, b| b.cmp(a));
+    resets.dedup();
+    actions.retain(|action| reset(action).is_none());
+    actions.splice(
+        first..first,
+        resets
+            .into_iter()
+            .map(|at| Action::SetCsv(crate::model::CsvChange::Reset(at))),
+    );
+}
+
 /// What went wrong: a field that does not describe a connection, a failed
 /// Test, or an SSH host key to trust first. It sits between the fields and
 /// the footer, outside what scrolls, so it is on screen wherever the
@@ -1400,4 +1408,35 @@ fn paint_check(painter: &egui::Painter, place: Rect, color: Color32) {
         vec![at(5.0, 12.0), at(10.0, 17.0), at(19.0, 7.0)],
         Stroke::new(2.6 * unit, color),
     );
+}
+
+#[cfg(test)]
+mod resets_tests {
+    use super::*;
+    use crate::model::CsvChange;
+
+    /// Resets stay before what the frame asked after them, each override
+    /// once, the last first.
+    #[test]
+    fn resets_keep_their_place_and_go_last_first() {
+        let reset = |at| Action::SetCsv(CsvChange::Reset(at));
+        let mut actions = vec![
+            reset(0),
+            Action::TestConnection,
+            reset(1),
+            reset(0),
+            Action::SaveConnection { connect: false },
+        ];
+        resets_once(&mut actions);
+        let said = |actions: &[Action]| format!("{actions:?}");
+        assert_eq!(
+            said(&actions),
+            said(&[
+                reset(1),
+                reset(0),
+                Action::TestConnection,
+                Action::SaveConnection { connect: false },
+            ])
+        );
+    }
 }

@@ -591,3 +591,30 @@ async fn a_skipped_file_that_cannot_be_looked_at_is_no_matter() {
         .await
         .unwrap();
 }
+
+/// A marker that is another column's header word: DuckDB would name that
+/// column like this one, and its type would be taken for this one's.
+#[tokio::test]
+async fn a_marker_that_is_another_header_s_word_takes_no_other_column_s_type() {
+    let dir = returns_of("x,column0\nabc,x\nabc,42\nabc,43\n");
+    let reading = Reading {
+        header: Header::Yes,
+        overrides: vec![change(
+            "returns.csv",
+            Change::Empty {
+                column: "column0".into(),
+                values: vec!["x".into()],
+            },
+        )],
+        ..Reading::default()
+    };
+    let connection = open(dir.path(), reading).await.unwrap();
+    let rows = read(
+        &connection,
+        "SELECT typeof(column0), count(*), count(column0) FROM returns GROUP BY 1",
+    )
+    .await
+    .unwrap();
+    let said: Vec<String> = rows[0].iter().map(text_of).collect();
+    assert_eq!(said, ["BIGINT", "3", "2"]);
+}

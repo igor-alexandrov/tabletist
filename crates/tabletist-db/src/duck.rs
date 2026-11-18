@@ -300,19 +300,19 @@ fn make(
         // type is taken from it.
         let mut empty = vec![literal("")];
         empty.extend(values.iter().map(|value| literal(value)));
-        let sniffed = format!("{plain}, nullstr = [{}]", empty.join(", "));
-        // The column at its place in the file: a value read as empty that
-        // is the header's own word makes DuckDB name the column anew.
-        // By its name, or where the name is gone, its place.
-        let at = found.iter().position(|(name, _)| name == column);
-        let sniffed_columns = described(connection, &call(&sniffed))?;
-        let by_name = sniffed_columns.iter().find(|(name, _)| name == column);
-        let by_place = at
-            .filter(|_| sniffed_columns.len() == found.len())
-            .map(|at| &sniffed_columns[at]);
-        let kind = by_name
-            .or(by_place)
-            .map_or_else(|| "VARCHAR".to_owned(), |(_, kind)| kind.clone());
+        // The columns named as the call without the overrides names them:
+        // a value read as empty that is a header's word would have DuckDB
+        // name its column anew, and one name could then be another's.
+        let names: Vec<String> = found.iter().map(|(name, _)| literal(name)).collect();
+        let sniffed = format!(
+            "{plain}, nullstr = [{}], names = [{}]",
+            empty.join(", "),
+            names.join(", ")
+        );
+        let kind = described(connection, &call(&sniffed))?
+            .into_iter()
+            .find(|(name, _)| name == column)
+            .map_or_else(|| "VARCHAR".to_owned(), |(_, kind)| kind);
         let quoted = Dialect::DuckDb.ident(column).into_owned();
         let value = values.iter().fold(quoted.clone(), |inner, value| {
             format!("NULLIF({inner}, {})", literal(value))
@@ -433,7 +433,12 @@ fn header_of(
             let Ok(path) = reader_path(&file.path) else {
                 return Header::Detect;
             };
-            let call = match options {
+            // From the rows a sample holds, as the header is found: with
+            // types from every row, the view's own sniff reads the whole
+            // file, and a second would read it again.
+            let options =
+                options.replace("sample_size = -1", &format!("sample_size = {SAMPLE_ROWS}"));
+            let call = match options.as_str() {
                 "" => literal(&path),
                 options => format!("{}, {options}", literal(&path)),
             };
