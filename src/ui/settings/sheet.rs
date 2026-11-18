@@ -1955,11 +1955,13 @@ fn ignored_lines(ui: &Ui, ignored: &[usize], width: f32, skin: &Skin) -> Option<
     let lines = u32::try_from(count).unwrap_or(u32::MAX);
     let said = ngettext(
         skin.locale,
-        "line in the file could not be read and was ignored",
-        "lines in the file could not be read and were ignored",
+        "{n} line in the file could not be read and was ignored: {lines}",
+        "{n} lines in the file could not be read and were ignored: {lines}",
         lines,
     );
-    let said = format!("{count} {said}: {}", line_numbers(skin.locale, ignored));
+    let said = said
+        .replace("{n}", &count.to_string())
+        .replace("{lines}", &line_numbers(skin.locale, ignored));
     let text = Text::one(skin.look, TextRole::Secondary, &said, skin.palette.warning);
     Some(text.wrap(width).layout(ui.ctx()))
 }

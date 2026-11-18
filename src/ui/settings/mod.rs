@@ -241,7 +241,7 @@ pub fn pin_missing(catalog: &crate::theme::Catalog) -> &'static str {
 pub(super) fn zone_text(locale: Locale, zone: &Zone, system: Option<&str>) -> String {
     match zone {
         Zone::System => match system {
-            Some(name) => format!("{} · {name}", gettext(locale, "System")),
+            Some(name) => gettext(locale, "System · {zone}").replace("{zone}", name),
             None => gettext(locale, "System").into_owned(),
         },
         Zone::Utc => "UTC".to_owned(),

@@ -66,7 +66,7 @@ pub fn show(
             }
             model::Tab::Sql(sql) => (
                 sql.id,
-                format!("{} {}", gettext(locale, "Query"), sql.number),
+                gettext(locale, "Query {n}").replace("{n}", &sql.number.to_string()),
                 true,
                 Kind::Sql,
                 false,
@@ -165,12 +165,11 @@ pub fn show(
                                     focus::claim(ui, focus::Region::Tabs, &response);
                                 }
                                 let label = if *unsaved {
-                                    let (tab, unsaved) =
-                                        (gettext(locale, "tab"), gettext(locale, "unsaved"));
-                                    format!("{name} {tab}, {unsaved}")
+                                    gettext(locale, "{name} tab, unsaved")
                                 } else {
-                                    format!("{name} {}", gettext(locale, "tab"))
+                                    gettext(locale, "{name} tab")
                                 };
+                                let label = label.replace("{name}", name);
                                 response.widget_info(|| {
                                     WidgetInfo::selected(
                                         WidgetType::Button,

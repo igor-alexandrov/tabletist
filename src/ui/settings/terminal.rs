@@ -1282,7 +1282,7 @@ fn stepped_text(option: OptionId, settings: &Settings, skin: &Skin) -> String {
         // As the artboard writes it: `system (america/new_york)`.
         OptionId::Tz => skin.look.label(&match (&settings.tz, skin.system) {
             (crate::settings::Zone::System, Some(name)) => {
-                format!("{} ({name})", gettext(skin.locale, "System"))
+                gettext(skin.locale, "System ({zone})").replace("{zone}", name)
             }
             (zone, system) => super::zone_text(skin.locale, zone, system),
         }),
