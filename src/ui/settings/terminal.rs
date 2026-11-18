@@ -834,7 +834,7 @@ fn font_hint(skin: &Skin) -> Text {
         (Some(name), family) => {
             let drawn = family.unwrap_or_else(|| skin.say("jetbrains mono, bundled"));
             let said = skin.say("“{name}” not found · now: {family}");
-            let said = said.replace("{name}", name).replace("{family}", &drawn);
+            let said = crate::i18n::fill(&said, &[("{name}", name), ("{family}", &drawn)]);
             Text::one(look, role, &said, palette.warning)
         }
     }

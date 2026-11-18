@@ -531,9 +531,13 @@ pub fn agents_held_said(
     let changes = match parts.as_slice() {
         [one] => one.clone(),
         // A catalog may join them otherwise, and in another order.
-        [rest @ .., last] => crate::i18n::gettext(locale, "{rest}, and {last}")
-            .replace("{rest}", &rest.join(&crate::i18n::gettext(locale, ", ")))
-            .replace("{last}", last),
+        [rest @ .., last] => crate::i18n::fill(
+            &crate::i18n::gettext(locale, "{rest}, and {last}"),
+            &[
+                ("{rest}", &rest.join(&crate::i18n::gettext(locale, ", "))),
+                ("{last}", last),
+            ],
+        ),
         [] => return None,
     };
     Some(

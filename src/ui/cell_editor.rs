@@ -95,9 +95,13 @@ impl Target {
         match &self.search {
             // A placeholder each: a translation puts the names where they
             // read.
-            Some(search) => gettext(locale, "Search {table} for {column}")
-                .replace("{table}", &display_safe(&search.table))
-                .replace("{column}", &display_safe(&self.name)),
+            Some(search) => crate::i18n::fill(
+                &gettext(locale, "Search {table} for {column}"),
+                &[
+                    ("{table}", &display_safe(&search.table)),
+                    ("{column}", &display_safe(&self.name)),
+                ],
+            ),
             None => format!("{} {}", gettext(locale, "Edit"), display_safe(&self.name)),
         }
     }

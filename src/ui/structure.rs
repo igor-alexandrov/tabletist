@@ -97,15 +97,16 @@ pub fn label_words(
 pub fn refused_text(name: &str, why: Refused, table: &str, look: &Look, locale: Locale) -> String {
     let name = display_safe(name);
     match why {
-        Refused::NoColumn => look
-            .label(&gettext(locale, "No column {column} in {table}"))
-            .replace("{column}", &name)
-            .replace("{table}", &display_safe(table)),
+        Refused::NoColumn => crate::i18n::fill(
+            &look.label(&gettext(locale, "No column {column} in {table}")),
+            &[("{column}", &name), ("{table}", &display_safe(table))],
+        ),
         Refused::Excluded(excluded) => {
             let reason = label_chooser::reason(excluded, look, locale);
-            look.label(&gettext(locale, "{column} cannot be the label ({reason})"))
-                .replace("{column}", &name)
-                .replace("{reason}", &reason)
+            crate::i18n::fill(
+                &look.label(&gettext(locale, "{column} cannot be the label ({reason})")),
+                &[("{column}", &name), ("{reason}", &reason)],
+            )
         }
     }
 }
@@ -902,6 +903,22 @@ fn heading(ui: &mut egui::Ui, text: &str, look: &Look, palette: &Palette) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A column or a table whose name holds the placeholder after it is
+    /// named as it is.
+    #[test]
+    fn a_refusal_writes_braced_names_as_they_are() {
+        let (look, locale) = (Look::macos(), Locale::English);
+        assert_eq!(
+            refused_text("{table}", Refused::NoColumn, "books", &look, locale),
+            "No column {table} in books"
+        );
+        let key = Refused::Excluded(crate::labels::Excluded::Key);
+        assert_eq!(
+            refused_text("{reason}", key, "books", &look, locale),
+            "{reason} cannot be the label (the key)"
+        );
+    }
 
     /// Eight points per character, "…" included.
     fn width(text: &str) -> f32 {

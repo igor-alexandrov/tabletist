@@ -3679,3 +3679,54 @@ fn the_panels_words_go_while_its_field_is_edited() {
         "the list"
     );
 }
+
+/// A key's table whose name holds the placeholders after it is named as it
+/// is: in the field's name and in the head line of what is listed.
+#[test]
+fn a_braced_table_name_is_written_as_it_is() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    let object = workspace.object_tab_mut(id).unwrap();
+    let structure = object.structure.value.as_mut().unwrap();
+    structure.foreign_keys[0].ref_table = "{column}{text}".into();
+    harness.settle();
+    select(&mut harness, tab, id, 0);
+    type_on_cell(&mut harness, "harb");
+    let tree = harness.settle();
+    assert!(
+        crate::testing::node(
+            &tree,
+            "Search {column}{text} for publisher_id",
+            Role::TextInput
+        )
+        .is_some(),
+        "{:?}",
+        crate::testing::labels(&tree)
+    );
+    assert!(harness.has("{column}{text} matching \"harb\" · ↑↓ choose · ↩ set"));
+}
+
+/// What a pick and a missing key say write braced names as they are.
+#[test]
+fn a_pick_and_a_doubt_write_braced_names_as_they_are() {
+    let locale = crate::i18n::Locale::English;
+    let picked = crate::edit::Picked {
+        at: (0, PUBLISHER),
+        key: "{label}".into(),
+        label: Some("Harbor Press".into()),
+    };
+    assert_eq!(
+        crate::ui::key_picker::picked_text("{key}", &picked, locale),
+        "{key} set to {label}, Harbor Press"
+    );
+    let found = crate::key_picker::Unmatched {
+        at: (0, PUBLISHER),
+        table: "{key}".into(),
+        key: "{value}".into(),
+        value: "9100000000000000099".into(),
+    };
+    assert_eq!(
+        crate::ui::key_picker::doubt_text(&found, &Look::macos(), locale),
+        "No {key} with {value} 9100000000000000099"
+    );
+}
