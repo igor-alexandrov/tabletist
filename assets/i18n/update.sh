@@ -40,13 +40,17 @@ trap 'rm -rf "$scratch"' EXIT
 
 # Every Rust file but the ignored ones, a new one not yet added among them
 # and one deleted but not yet staged left out. Names are read NUL-separated,
-# so git leaves a non-ASCII one unquoted.
-git ls-files -z --cached --others --exclude-standard 'src/*.rs' 'crates/*.rs' \
-    | LC_ALL=C sort -zu \
-    | while IFS= read -r -d '' file; do
-        if [[ -e $file ]]; then printf '%s\n' "$file"; fi
-    done \
-    > "$scratch/files"
+# so git leaves a non-ASCII one unquoted, and go to xgettext as arguments,
+# so no name is split. (A loop, not mapfile: macOS's bash is 3.2.)
+files=()
+while IFS= read -r -d '' file; do
+    if [[ -e $file ]]; then files+=("$file"); fi
+done < <(git ls-files -z --cached --others --exclude-standard 'src/*.rs' 'crates/*.rs' \
+    | LC_ALL=C sort -zu)
+if (( ${#files[@]} == 0 )); then
+    echo "no Rust files to extract messages from" >&2
+    exit 1
+fi
 # `counted(locale, n, "row", "rows")` (crate::i18n) is a plural too.
 xgettext --language=Rust --from-code=UTF-8 \
     --keyword= --keyword=gettext:2 --keyword=ngettext:2,3 --keyword=pgettext:2c,3 \
@@ -55,7 +59,7 @@ xgettext --language=Rust --from-code=UTF-8 \
     --flag=ngettext:2:rust-format --flag=ngettext:3:rust-format \
     --package-name=Tabletist --copyright-holder="Tabletist contributors" \
     --msgid-bugs-address="https://github.com/igor-alexandrov/tabletist/issues" \
-    --files-from="$scratch/files" --output="$scratch/tabletist.pot" 2> "$scratch/warnings" \
+    --output="$scratch/tabletist.pot" -- "${files[@]}" 2> "$scratch/warnings" \
     || { cat "$scratch/warnings" >&2; exit 1; }
 # A message used both alone and as a plural, among others, is a warning
 # xgettext does not fail on: here it fails.
