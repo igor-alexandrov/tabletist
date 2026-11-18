@@ -448,7 +448,7 @@ pub fn show(
         let typing = ctx.text_edit_focused();
         // The override whose row has the keyboard, which `R` resets (the
         // terminal look's key).
-        let reset = reading::focused_override(ctx, form);
+        let mut reset = reading::focused_override(ctx, form);
         let toggle_url = ctx.input_mut(|input| {
             // The form's cancel closes the dialog, unless it is closing an
             // open list first.
@@ -490,7 +490,10 @@ pub fn show(
                             false
                         }
                         Some(Command::FormResetOverride) if files => {
-                            if let Some(at) = reset {
+                            // Once a frame: a second press in it would
+                            // take off the override that moved up into
+                            // this one's place.
+                            if let Some(at) = reset.take() {
                                 actions.push(Action::SetCsv(crate::model::CsvChange::Reset(at)));
                             }
                             false

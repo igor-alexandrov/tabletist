@@ -100,7 +100,13 @@ pub fn show(
 /// Whether the toggle was pressed: by the pointer, a screen reader, or a
 /// fresh Enter or Space. A held key comes again as a press of the same
 /// toggle, which would open and close it on each repeat: once per press.
+/// A click by the pointer or a screen reader counts whatever key repeats
+/// in the same frame.
 fn pressed(ui: &Ui, response: &Response) -> bool {
+    let clicked = response.clicked_by(egui::PointerButton::Primary)
+        || ui.input(|input| {
+            input.has_accesskit_action_request(response.id, egui::accesskit::Action::Click)
+        });
     let held = response.has_focus()
         && ui.input(|input| {
             input.events.iter().any(|event| {
@@ -115,7 +121,7 @@ fn pressed(ui: &Ui, response: &Response) -> bool {
                 )
             })
         });
-    response.clicked() && !held
+    response.clicked() && (clicked || !held)
 }
 
 /// Says the toggle is a button named `name`, open or closed.

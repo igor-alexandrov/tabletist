@@ -380,9 +380,10 @@ fn terminal_rows(ui: &mut Ui, form: &ConnectionForm, skin: &Skin, actions: &mut 
             let (rect, _) =
                 ui.allocate_exact_size(vec2(ui.available_width(), line), Sense::hover());
             let response = ui.interact(rect, override_id(at), Sense::click());
+            // Named for what a press of it does, as the sheet's link is.
             let name = format!(
                 "{} {}, {}",
-                skin.say("Override"),
+                skin.say("Reset"),
                 each.file,
                 override_words(&each.change, true)
             );

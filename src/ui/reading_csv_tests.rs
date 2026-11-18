@@ -226,7 +226,7 @@ fn an_override_shows_under_the_options_and_reset_takes_it_off() {
                 harness.click("Reset returns.csv, returned_at read as text");
             }
             true => {
-                let row = "override returns.csv, returned_at as text";
+                let row = "reset returns.csv, returned_at as text";
                 assert!(node(&harness.settle(), row, Role::Button).is_some());
                 tab_to(&mut harness, row);
                 harness.press(Key::R, Modifiers::SHIFT);
@@ -244,7 +244,7 @@ fn an_override_shows_under_the_options_and_reset_takes_it_off() {
     let mut harness = new_files(Look::omarchy());
     form_mut(&mut harness).files_csv.overrides = vec![returns_as_text(), skip_archive()];
     form_mut(&mut harness).csv_open = true;
-    harness.click("override archive.csv, skipped");
+    harness.click("reset archive.csv, skipped");
     assert_eq!(form(&harness).files_csv.overrides, [returns_as_text()]);
     // The file's own words keep their case in the terminal look.
     let mut harness = new_files(Look::omarchy());
@@ -256,7 +256,7 @@ fn an_override_shows_under_the_options_and_reset_takes_it_off() {
         },
     }];
     form_mut(&mut harness).csv_open = true;
-    let row = "override Returns.CSV, 'N/A' as empty in Reason";
+    let row = "reset Returns.CSV, 'N/A' as empty in Reason";
     assert!(node(&harness.settle(), row, Role::Button).is_some());
     // `R` with nothing of the section's under the keyboard resets nothing.
     let mut harness = new_files(Look::omarchy());
@@ -408,5 +408,48 @@ fn a_held_enter_opens_a_section_once() {
         harness.frame(vec![crate::testing::release(Key::Enter, Modifiers::NONE)]);
         harness.settle();
         assert!(form(&harness).csv_open, "{}", look.name);
+    }
+}
+
+/// Two presses of `R` in one frame take off one override, the one with
+/// the keyboard, not the one that moves up into its place.
+#[test]
+fn two_presses_of_r_in_one_frame_take_off_one_override() {
+    let mut harness = new_files(Look::omarchy());
+    form_mut(&mut harness).files_csv.overrides = vec![returns_as_text(), skip_archive()];
+    form_mut(&mut harness).csv_open = true;
+    tab_to(&mut harness, "reset returns.csv, returned_at as text");
+    let r = crate::testing::key(Key::R, Modifiers::SHIFT);
+    harness.frame(vec![r.clone(), r]);
+    harness.frame(vec![crate::testing::release(Key::R, Modifiers::SHIFT)]);
+    harness.settle();
+    assert_eq!(form(&harness).files_csv.overrides, [skip_archive()]);
+}
+
+/// A click on a section's toggle counts though a held key repeats in the
+/// same frame.
+#[test]
+fn a_click_counts_while_a_key_repeats_in_the_same_frame() {
+    for look in looks() {
+        let mut harness = new_files(look);
+        let closed = closed(look);
+        tab_to(&mut harness, &closed);
+        let tree = harness.settle();
+        let target = crate::testing::node(&tree, &closed, Role::Button).unwrap();
+        // Space held from before (a repeat), and a screen reader's click.
+        harness.frame(vec![crate::testing::key(Key::Space, Modifiers::NONE)]);
+        harness.frame(vec![
+            crate::testing::key(Key::Space, Modifiers::NONE),
+            egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
+                target_tree: egui::accesskit::TreeId::ROOT,
+                target_node: target,
+                action: egui::accesskit::Action::Click,
+                data: None,
+            }),
+        ]);
+        harness.frame(vec![crate::testing::release(Key::Space, Modifiers::NONE)]);
+        harness.settle();
+        // The first Space opened it; the click closed it again.
+        assert!(!form(&harness).csv_open, "{}", look.name);
     }
 }
