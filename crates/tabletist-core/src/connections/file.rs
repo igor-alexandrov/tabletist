@@ -317,6 +317,7 @@ impl Entry {
                 ca_file: self.ca_file,
                 ssh,
                 files,
+                csv: tabletist_db::files::Reading::default(),
             },
             agents,
         })

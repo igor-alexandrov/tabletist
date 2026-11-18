@@ -2752,6 +2752,7 @@ impl ConnectionForm {
                     ca_file: (!ca_file.is_empty()).then(|| ca_file.into()),
                     ssh,
                     files: None,
+                    csv: tabletist_db::files::Reading::default(),
                 })
             }
         }

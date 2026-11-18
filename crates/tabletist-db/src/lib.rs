@@ -134,7 +134,9 @@ impl Inner {
                     .files
                     .as_ref()
                     .ok_or_else(|| Error::InvalidSpec("choose a folder or files".into()))?;
-                Ok(Self::Files(Box::new(duck::Conn::open(source).await?)))
+                Ok(Self::Files(Box::new(
+                    duck::Conn::open(source, &spec.csv).await?,
+                )))
             }
         }
     }

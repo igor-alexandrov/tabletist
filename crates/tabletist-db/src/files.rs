@@ -56,6 +56,148 @@ impl Source {
     }
 }
 
+/// How a Files connection reads its CSV and TSV files: the defaults the
+/// dialog's Reading CSV section sets, and the overrides for one file.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Reading {
+    pub header: Header,
+    /// For `.csv` files: a `.tsv` is read with a tab whatever this says.
+    pub delimiter: Delimiter,
+    pub types: Types,
+    pub overrides: Vec<Override>,
+}
+
+impl Reading {
+    /// Whether it reads as a new connection does, with no override.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The overrides of the file named `file` (its name with the
+    /// extension, as `connections.toml` says it).
+    pub fn overrides_of<'a>(&'a self, file: &'a str) -> impl Iterator<Item = &'a Change> + 'a {
+        self.overrides
+            .iter()
+            .filter(move |each| each.file == file)
+            .map(|each| &each.change)
+    }
+
+    /// Whether the file named `file` is left out of the connection.
+    pub fn skips(&self, file: &str) -> bool {
+        self.overrides_of(file)
+            .any(|change| matches!(change, Change::Skip))
+    }
+}
+
+/// Whether a CSV's first row names its columns.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Header {
+    /// As DuckDB's sniffer finds it.
+    #[default]
+    Detect,
+    Yes,
+    No,
+}
+
+impl Header {
+    pub const ALL: [Self; 3] = [Self::Detect, Self::Yes, Self::No];
+}
+
+/// What a CSV's values are parted by.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Delimiter {
+    /// As DuckDB's sniffer finds it.
+    #[default]
+    Detect,
+    Comma,
+    Semicolon,
+    Tab,
+    Pipe,
+}
+
+impl Delimiter {
+    pub const ALL: [Self; 5] = [
+        Self::Detect,
+        Self::Comma,
+        Self::Semicolon,
+        Self::Tab,
+        Self::Pipe,
+    ];
+
+    /// The character, where one is chosen.
+    pub fn char(self) -> Option<char> {
+        match self {
+            Self::Detect => None,
+            Self::Comma => Some(','),
+            Self::Semicolon => Some(';'),
+            Self::Tab => Some('\t'),
+            Self::Pipe => Some('|'),
+        }
+    }
+
+    /// The delimiter whose character is `char`.
+    pub fn of(char: char) -> Option<Self> {
+        Self::ALL.into_iter().find(|each| each.char() == Some(char))
+    }
+}
+
+/// How a CSV's column types are found.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Types {
+    /// From the first rows read ([`SAMPLE_ROWS`]).
+    #[default]
+    Sample,
+    /// From every row: slower, and nothing past the sample surprises it.
+    All,
+    /// None: every column is text.
+    Text,
+}
+
+impl Types {
+    pub const ALL: [Self; 3] = [Self::Sample, Self::All, Self::Text];
+}
+
+/// How many rows of a CSV DuckDB samples for its columns' types, and how
+/// many rows of each file a Test reads.
+pub const SAMPLE_ROWS: u32 = 20_000;
+
+/// A change to how one file is read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Override {
+    /// The file's name with its extension: `returns.csv`.
+    pub file: String,
+    pub change: Change,
+}
+
+/// What an override changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Change {
+    /// The column is read as text.
+    Text { column: String },
+    /// These values of the column are read as empty (NULL); the column
+    /// keeps the type found for it with them taken as empty. Several of
+    /// one column are one; with no values it changes nothing.
+    Empty { column: String, values: Vec<String> },
+    /// The file is left out of the connection.
+    Skip,
+}
+
+impl Change {
+    /// The column it is about, which matches the file's in any case;
+    /// `None` for a skip.
+    pub fn column(&self) -> Option<&str> {
+        match self {
+            Self::Text { column } | Self::Empty { column, .. } => Some(column),
+            Self::Skip => None,
+        }
+    }
+}
+
 /// How a file is read, from its extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Format {
@@ -348,8 +490,9 @@ fn names<'a>(files: impl Iterator<Item = (&'a Path, Format)>) -> Vec<String> {
         .collect()
 }
 
-/// A file's name, for a list of them.
-fn file_name(path: &Path) -> String {
+/// A file's name with its extension: for a list of them, and as an
+/// override names it.
+pub fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string())
