@@ -19,7 +19,7 @@ use duckdb::arrow::util::display::{ArrayFormatter, FormatOptions};
 
 use crate::adapter::Adapter;
 use crate::agent::{Catalog, ColumnName, Limits, Param, Read, Refusal, Sources};
-use crate::files::{Format, Found, Source};
+use crate::files::{Change, Format, Found, Header, Reading, SAMPLE_ROWS, Source, Types};
 use crate::{
     CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, Ddl, Dialect, Error,
     Lookup, LookupPage, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery,
@@ -32,10 +32,6 @@ pub(crate) const MAIN: &str = "main";
 
 /// DuckDB's name for the in-memory database the views are in.
 const MEMORY: &str = "memory";
-
-/// How many rows Test reads of each file, and how many rows of a CSV the
-/// reader samples for its columns' types.
-pub(crate) const SAMPLE_ROWS: u32 = 20_000;
 
 /// Where DuckDB keeps the extensions it installs: the app's own folder,
 /// set once at start. Unset (in tests), DuckDB's own default.
@@ -62,8 +58,9 @@ pub struct FileFacts {
     pub path: std::path::PathBuf,
     pub size: u64,
     pub format: Format,
-    /// How the reader is told to read it, as the view's call says it:
-    /// `header = true, auto_detect = true, sample_size = 20000`.
+    /// How the reader is told to read it, as the view's call says it, the
+    /// connection's Reading CSV and the file's overrides included:
+    /// `auto_detect = true, sample_size = 20000`.
     pub options: String,
 }
 
@@ -87,6 +84,9 @@ struct Opened {
     /// The statement that made its view, which the DDL view shows: DuckDB
     /// keeps it rewritten, each option in parentheses.
     made: String,
+    /// The reader's options in that statement, as the Structure view says
+    /// them.
+    options: String,
     /// Rows, where the file says (Parquet's metadata) or a sample of it
     /// lets them be estimated.
     rows: Option<u64>,
@@ -145,15 +145,46 @@ fn reader_path(path: &Path) -> Result<String> {
 }
 
 /// The reader's options for a file of `format`, as its call writes them
-/// after the path.
-fn reader_options(format: Format) -> &'static str {
+/// after the path: a CSV's and a TSV's from the connection's `reading`,
+/// with `text` the columns read as text; the other formats' fixed.
+fn reader_options(format: Format, reading: &Reading, text: &[&str]) -> String {
     match format {
-        Format::Csv => "header = true, auto_detect = true, sample_size = 20000",
-        Format::Tsv => "header = true, auto_detect = true, sample_size = 20000, delim = '\\t'",
-        Format::Json => "format = 'array'",
-        Format::Ndjson => "format = 'newline_delimited'",
-        Format::Excel => "header = true",
-        Format::Parquet | Format::DuckDb => "",
+        Format::Csv | Format::Tsv => {
+            let mut options = Vec::new();
+            match reading.header {
+                Header::Detect => {}
+                Header::Yes => options.push("header = true".to_owned()),
+                Header::No => options.push("header = false".to_owned()),
+            }
+            options.push("auto_detect = true".to_owned());
+            options.push(match reading.types {
+                Types::Sample => format!("sample_size = {SAMPLE_ROWS}"),
+                Types::All => "sample_size = -1".to_owned(),
+                Types::Text => "all_varchar = true".to_owned(),
+            });
+            // A TSV is tab-separated by its name.
+            let delimiter = match format {
+                Format::Tsv => Some('\t'),
+                _ => reading.delimiter.char(),
+            };
+            match delimiter {
+                None => {}
+                Some('\t') => options.push("delim = '\\t'".to_owned()),
+                Some(char) => options.push(format!("delim = {}", literal(&char.to_string()))),
+            }
+            if !text.is_empty() {
+                let types: Vec<String> = text
+                    .iter()
+                    .map(|column| format!("{}: 'VARCHAR'", literal(column)))
+                    .collect();
+                options.push(format!("types = {{{}}}", types.join(", ")));
+            }
+            options.join(", ")
+        }
+        Format::Json => "format = 'array'".to_owned(),
+        Format::Ndjson => "format = 'newline_delimited'".to_owned(),
+        Format::Excel => "header = true".to_owned(),
+        Format::Parquet | Format::DuckDb => String::new(),
     }
 }
 
@@ -170,35 +201,200 @@ fn reader(format: Format) -> &'static str {
 }
 
 /// The statement that makes `file` a table or a schema of the session,
-/// its name bare where that is safe: the DDL view shows it as it is.
-fn make(file: &Found) -> Result<String> {
+/// its name bare where that is safe (the DDL view shows it as it is), and
+/// the reader's options in it. A CSV's or TSV's overrides of a column
+/// are kept only where the file has that column, which a `DESCRIBE` of
+/// the call without them says, with the type found for each.
+fn make(
+    connection: &duckdb::Connection,
+    file: &Found,
+    reading: &Reading,
+) -> Result<(String, String)> {
     let name = Dialect::DuckDb.ident(&file.name);
-    Ok(match file.format {
-        Format::DuckDb => format!(
+    let format = file.format;
+    if format == Format::DuckDb {
+        let statement = format!(
             "ATTACH {} AS {name} (READ_ONLY)",
             literal(&path_text(&file.path)?)
-        ),
-        format => {
-            let path = literal(&reader_path(&file.path)?);
-            let options = reader_options(format);
-            let call = match options {
-                "" => format!("{}({path})", reader(format)),
-                options => format!("{}({path}, {options})", reader(format)),
-            };
-            format!("CREATE VIEW {name} AS SELECT * FROM {call}")
+        );
+        return Ok((statement, String::new()));
+    }
+    let path = literal(&reader_path(&file.path)?);
+    let call = |options: &str| match options {
+        "" => format!("{}({path})", reader(format)),
+        options => format!("{}({path}, {options})", reader(format)),
+    };
+    // The file's changes of a column. Values read as empty that are none
+    // change nothing.
+    let changes: Vec<&Change> = match format {
+        Format::Csv | Format::Tsv => reading
+            .overrides_of(&file.path)
+            .filter(|change| match change {
+                Change::Text { .. } => true,
+                Change::Empty { values, .. } => !values.is_empty(),
+                Change::Skip => false,
+            })
+            .collect(),
+        Format::Parquet | Format::Json | Format::Ndjson | Format::Excel | Format::DuckDb => {
+            Vec::new()
         }
-    })
+    };
+    let plain = reader_options(format, reading, &[]);
+    if changes.is_empty() {
+        let statement = format!("CREATE VIEW {name} AS SELECT * FROM {}", call(&plain));
+        return Ok((statement, plain));
+    }
+    // The file's columns, as the call without the overrides finds them.
+    // An override of a column the file does not have changes nothing.
+    let found = described(connection, &call(&plain))?;
+    // A column as the file names it, matched in any case, as DuckDB
+    // matches names.
+    let column_of = |column: &str| {
+        found
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(column))
+    };
+    let same = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
+    // Read as text: the text overrides' columns and the columns whose
+    // values are read as empty, which are cast back below unless they are
+    // read as text too.
+    let mut text: Vec<&str> = Vec::new();
+    for change in &changes {
+        if let Some((column, _)) = change.column().and_then(column_of)
+            && !text.contains(&column.as_str())
+        {
+            text.push(column);
+        }
+    }
+    let mut replaced = Vec::new();
+    let mut cast: Vec<&str> = Vec::new();
+    for change in &changes {
+        let Change::Empty { column, .. } = change else {
+            continue;
+        };
+        let Some((column, _)) = column_of(column) else {
+            continue;
+        };
+        let read_as_text = changes
+            .iter()
+            .any(|other| matches!(other, Change::Text { column: other } if same(other, column)));
+        if read_as_text || cast.contains(&column.as_str()) {
+            continue;
+        }
+        cast.push(column);
+        // Every override of the column, its values in one cast.
+        let values: Vec<&String> = changes
+            .iter()
+            .flat_map(|other| match other {
+                Change::Empty {
+                    column: other,
+                    values,
+                } if same(other, column) => values.as_slice(),
+                Change::Text { .. } | Change::Empty { .. } | Change::Skip => &[],
+            })
+            .collect();
+        // The type the column is found to have, and the format its dates
+        // are written in, while these values (and DuckDB's own empty
+        // string) are taken as empty: the column's own values alone, as
+        // DuckDB's `nullstr` is the whole file's and only this column's
+        // type is taken from it.
+        let mut empty = vec![literal("")];
+        empty.extend(values.iter().map(|value| literal(value)));
+        // The columns named as the call without the overrides names them:
+        // a value read as empty that is a header's word would have DuckDB
+        // name its column anew, and one name could then be another's.
+        let names: Vec<String> = found.iter().map(|(name, _)| literal(name)).collect();
+        let sniffed = format!(
+            "{plain}, nullstr = [{}], names = [{}]",
+            empty.join(", "),
+            names.join(", ")
+        );
+        let kind = described(connection, &call(&sniffed))?
+            .into_iter()
+            .find(|(name, _)| name == column)
+            .map_or_else(|| "VARCHAR".to_owned(), |(_, kind)| kind);
+        let quoted = Dialect::DuckDb.ident(column).into_owned();
+        let value = values.iter().fold(quoted.clone(), |inner, value| {
+            format!("NULLIF({inner}, {})", literal(value))
+        });
+        let back = match kind.as_str() {
+            "VARCHAR" => value,
+            "DATE" | "TIMESTAMP" => match written(connection, &path, &sniffed, &kind)? {
+                // Written as the sniffer found it, `31/01/2026`, which a
+                // cast does not read.
+                Some(format) => format!("CAST(strptime({value}, {}) AS {kind})", literal(&format)),
+                None => format!("CAST({value} AS {kind})"),
+            },
+            _ => format!("CAST({value} AS {kind})"),
+        };
+        replaced.push(format!("{back} AS {quoted}"));
+    }
+    let options = reader_options(format, reading, &text);
+    let columns = match replaced.is_empty() {
+        true => "*".to_owned(),
+        false => format!("* REPLACE ({})", replaced.join(", ")),
+    };
+    let statement = format!(
+        "CREATE VIEW {name} AS SELECT {columns} FROM {}",
+        call(&options)
+    );
+    Ok((statement, options))
+}
+
+/// The format the sniffer found a CSV's dates (`DATE`) or timestamps
+/// (`TIMESTAMP`) written in, read with `options`: `%d/%m/%Y`. None where
+/// they are written as a cast reads them (ISO, year first). A sniff that
+/// fails is the file's error: a view cast without the format would fail
+/// only once its rows are read.
+fn written(
+    connection: &duckdb::Connection,
+    path: &str,
+    options: &str,
+    kind: &str,
+) -> Result<Option<String>> {
+    let field = match kind {
+        "DATE" => "DateFormat",
+        _ => "TimestampFormat",
+    };
+    let format = connection
+        .query_row(
+            &format!("SELECT {field} FROM sniff_csv({path}, {options})"),
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .map_err(map_error)?;
+    // ISO dates, `2026-01-31` and on, a cast reads as it is.
+    Ok(format.filter(|format| !format.is_empty() && !format.starts_with("%Y-%m-%d")))
+}
+
+/// The columns a reader's call gives, by name, with DuckDB's type of each.
+fn described(connection: &duckdb::Connection, call: &str) -> Result<Vec<(String, String)>> {
+    let mut statement = connection
+        .prepare(&format!("DESCRIBE SELECT * FROM {call}"))
+        .map_err(map_error)?;
+    let columns = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(map_error)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(map_error)?;
+    Ok(columns)
 }
 
 /// Rows of a text file by a sample of its start: its lines in the first
-/// 256 KiB, scaled to its size, without a CSV's header. `None` for a
-/// format that is not a line a row, or a file that cannot be read.
-fn estimate(file: &Found) -> Option<u64> {
+/// 256 KiB, scaled to its size, without a CSV's header unless it is read
+/// as having none. `None` for a format that is not a line a row, or a file
+/// that cannot be read.
+fn estimate(file: &Found, header: Header) -> Option<u64> {
     use std::io::Read as _;
-    let header = match file.format {
-        Format::Csv | Format::Tsv => 1,
-        Format::Ndjson => 0,
-        Format::Parquet | Format::Json | Format::Excel | Format::DuckDb => return None,
+    let header = match (file.format, header) {
+        (Format::Csv | Format::Tsv, Header::No) => 0,
+        (Format::Csv | Format::Tsv, Header::Yes) => 1,
+        // Not known: every line is counted rather than one lost.
+        (Format::Csv | Format::Tsv, Header::Detect) => 0,
+        (Format::Ndjson, _) => 0,
+        (Format::Parquet | Format::Json | Format::Excel | Format::DuckDb, _) => return None,
     };
     let mut start = Vec::with_capacity(256 * 1024);
     std::fs::File::open(&file.path)
@@ -224,8 +420,50 @@ fn estimate(file: &Found) -> Option<u64> {
     Some(rows.saturating_sub(header))
 }
 
-/// Opens a session over `files`: views and attaches, then the fence.
-fn opened(files: &[Found]) -> Result<(duckdb::Connection, Vec<Opened>, String)> {
+/// Whether a CSV's first row names its columns, read with `options`:
+/// where DuckDB is left to detect it, its sniffer says from a sample, and
+/// the file is then read so (`Detect` where the sniffer cannot say).
+fn header_of(
+    connection: &duckdb::Connection,
+    file: &Found,
+    header: Header,
+    options: &str,
+) -> Header {
+    match (file.format, header) {
+        (Format::Csv | Format::Tsv, Header::Detect) => {
+            let Ok(path) = reader_path(&file.path) else {
+                return Header::Detect;
+            };
+            // From the rows a sample holds: with types from every row, the
+            // view's own sniff reads the whole file, and a second would
+            // read it again. The view takes the header found here.
+            let options =
+                options.replace("sample_size = -1", &format!("sample_size = {SAMPLE_ROWS}"));
+            let call = match options.as_str() {
+                "" => literal(&path),
+                options => format!("{}, {options}", literal(&path)),
+            };
+            match connection.query_row(
+                &format!("SELECT HasHeader FROM sniff_csv({call})"),
+                [],
+                |row| row.get::<_, Option<bool>>(0),
+            ) {
+                Ok(Some(true)) => Header::Yes,
+                Ok(Some(false)) => Header::No,
+                Ok(None) | Err(_) => Header::Detect,
+            }
+        }
+        (_, header) => header,
+    }
+}
+
+/// Opens a session over `files`, read as `reading` says, a file it skips
+/// left out: views and attaches, then the fence.
+fn opened(files: &[Found], reading: &Reading) -> Result<(duckdb::Connection, Vec<Opened>, String)> {
+    let files: Vec<&Found> = files
+        .iter()
+        .filter(|file| !reading.skips(&file.path))
+        .collect();
     let config = duckdb::Config::default()
         .enable_autoload_extension(false)
         .map_err(map_error)?;
@@ -248,16 +486,36 @@ fn opened(files: &[Found]) -> Result<(duckdb::Connection, Vec<Opened>, String)> 
         })?;
     }
     let mut opened = Vec::with_capacity(files.len());
-    for file in files {
+    for file in &files {
+        let failed = |error: &Error| {
+            Error::Connect(format!("Can't read {}: {}", file_label(file), plain(error)))
+        };
+        // A CSV whose header DuckDB is left to detect: its sniffer says,
+        // from a sample. With types from every row the view's own sniff
+        // reads the whole file and may find otherwise, so there the view,
+        // its columns' own reads and the estimate are told the header
+        // found; elsewhere they read the same rows and find the same.
+        let header = header_of(
+            &connection,
+            file,
+            reading.header,
+            &reader_options(file.format, reading, &[]),
+        );
+        let pinned;
+        let reading = match reading.types {
+            Types::All => {
+                pinned = Reading {
+                    header,
+                    ..reading.clone()
+                };
+                &pinned
+            }
+            Types::Sample | Types::Text => reading,
+        };
         // A `.duckdb` file is attached read-only, as every session is.
-        let statement = make(file)?;
-        run(&statement).map_err(|error| {
-            Error::Connect(format!(
-                "Can't read {}: {}",
-                file_label(file),
-                plain(&error)
-            ))
-        })?;
+        let (statement, options) =
+            make(&connection, file, reading).map_err(|error| failed(&error))?;
+        run(&statement).map_err(|error| failed(&error))?;
         let rows = match file.format {
             Format::Parquet => connection
                 .query_row(
@@ -276,18 +534,19 @@ fn opened(files: &[Found]) -> Result<(duckdb::Connection, Vec<Opened>, String)> 
             | Format::Json
             | Format::Ndjson
             | Format::Excel
-            | Format::DuckDb => estimate(file),
+            | Format::DuckDb => estimate(file, header),
         };
         opened.push(Opened {
-            found: file.clone(),
+            found: (*file).clone(),
             made: statement,
+            options,
             rows,
         });
     }
     // The fence: these files and no other, then no setting changed again.
     // A reader asks by its own spelling of a file, which names only it.
     let mut allowed = Vec::with_capacity(files.len());
-    for file in files {
+    for file in &files {
         let (path, read) = (path_text(&file.path)?, reader_path(&file.path)?);
         if read != path {
             allowed.push(literal(&read));
@@ -934,17 +1193,20 @@ fn send_chunks(
 impl Conn {
     /// Opens `source`'s files, read-only: every one is read far enough to
     /// know its columns, and an error names the first that cannot be.
-    pub(crate) async fn open(source: &Source) -> Result<Self> {
-        let source = source.clone();
+    pub(crate) async fn open(source: &Source, reading: &Reading) -> Result<Self> {
+        let (source, reading) = (source.clone(), reading.clone());
         let (connection, files, version) = tokio::task::spawn_blocking(move || {
-            let scan = crate::files::scan(&source)?;
-            if let Some(gone) = scan.missing.first() {
+            // A skipped file is not looked at: one that is gone, or that
+            // cannot be looked at, is no matter.
+            let scan = crate::files::scan_past(&source, |file| reading.skips(file))?;
+            // A skipped file that is gone is no matter.
+            if let Some(gone) = scan.missing.iter().find(|gone| !reading.skips(gone)) {
                 return Err(Error::Connect(format!(
                     "Can't open {}: no such file",
                     crate::files::shown(gone)
                 )));
             }
-            opened(&scan.files)
+            opened(&scan.files, &reading)
         })
         .await
         .map_err(|error| Error::Io(error.to_string()))??;
@@ -1159,7 +1421,7 @@ impl Adapter for Conn {
             path: file.found.path.clone(),
             size: file.found.size,
             format: file.found.format,
-            options: reader_options(file.found.format).to_owned(),
+            options: file.options.clone(),
         });
         let object = object.clone();
         self.run(move |connection| {

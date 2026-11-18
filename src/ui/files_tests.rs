@@ -120,6 +120,8 @@ fn a_new_files_connection_is_local_read_only_and_lets_agents_read() {
     harness.click("Local");
     assert_eq!(form(&harness).agents.access, AgentAccess::Read);
     // A choice of the person's own stays.
+    form_mut(&mut harness).agents_open = true;
+    harness.settle();
     harness.click("Off");
     harness.click("Dev");
     assert_eq!(form(&harness).agents.access, AgentAccess::Off);
@@ -518,6 +520,8 @@ fn agents_have_no_tables_or_masked_columns_on_files() {
         if !crate::endpoint::AVAILABLE {
             return;
         }
+        form_mut(&mut harness).agents_open = true;
+        harness.settle();
         assert!(
             says(
                 &mut harness,
