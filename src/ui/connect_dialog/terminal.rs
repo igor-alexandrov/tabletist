@@ -346,7 +346,10 @@ pub(super) fn terminal_body(
                     terminal_section(ui, &skin.say("BigQuery"), skin);
                     terminal_bigquery(ui, form, skin);
                 }
-                Driver::Files => super::files::terminal(ui, form, skin, actions),
+                Driver::Files => {
+                    super::files::terminal(ui, form, skin, actions);
+                    super::reading::section(ui, form, skin, actions);
+                }
                 Driver::Postgres | Driver::MySql => {
                     terminal_section(ui, &skin.say("Server"), skin);
                     terminal_server(ui, form, skin, actions);

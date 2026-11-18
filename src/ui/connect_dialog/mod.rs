@@ -6,6 +6,7 @@
 mod agents;
 mod choice;
 mod files;
+mod reading;
 mod sheet;
 mod terminal;
 
@@ -438,6 +439,9 @@ pub fn show(
     }
     if modal.is_top_modal && !modal.any_popup_open {
         let typing = ctx.text_edit_focused();
+        // The override whose row has the keyboard, which `R` resets (the
+        // terminal look's key).
+        let reset = reading::focused_override(ctx, form);
         let toggle_url = ctx.input_mut(|input| {
             // The form's cancel closes the dialog, unless it is closing an
             // open list first.
@@ -476,6 +480,12 @@ pub fn show(
                         }
                         Some(Command::FormAddFiles) if listed => {
                             actions.push(Action::PickDataFiles);
+                            false
+                        }
+                        Some(Command::FormResetOverride) if files => {
+                            if let Some(at) = reset {
+                                actions.push(Action::SetCsv(crate::model::CsvChange::Reset(at)));
+                            }
                             false
                         }
                         Some(Command::FormRemoveFile) if listed => {

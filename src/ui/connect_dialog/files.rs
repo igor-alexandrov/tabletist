@@ -163,6 +163,18 @@ fn folder_box(ui: &mut Ui, form: &ConnectionForm, skin: &Skin) -> egui::Response
     response
 }
 
+/// What the Source holds as the found line says it: a file the Reading
+/// CSV section skips is left out.
+fn read(form: &ConnectionForm) -> FilesFound {
+    let mut found = form.files_found.clone();
+    if let FilesFound::Read(scan) = &mut found {
+        let reading = &form.files_csv;
+        scan.files
+            .retain(|file| !reading.skips(&tabletist_db::files::file_name(&file.path)));
+    }
+    found
+}
+
 /// macOS: the "Source" fieldset's inside.
 pub(super) fn sheet(
     ui: &mut Ui,
@@ -223,9 +235,10 @@ pub(super) fn sheet(
             super::note(ui, &why, palette.danger, skin);
         }
         None => {
-            if let Some(line) = found_line(&form.files_found, false) {
+            let found = read(form);
+            if let Some(line) = found_line(&found, false) {
                 widgets::label(ui, small, &line, palette.secondary, look);
-                if let FilesFound::Read(scan) = &form.files_found
+                if let FilesFound::Read(scan) = &found
                     && !scan.files.is_empty()
                 {
                     ui.add_space(6.0);
@@ -333,7 +346,7 @@ pub(super) fn terminal(
     }
     let (text, color) = match trouble(&form.files_found, skin) {
         Some(why) => (Some(why), palette.danger),
-        None => (found_line(&form.files_found, true), palette.dim),
+        None => (found_line(&read(form), true), palette.dim),
     };
     if let Some(text) = text {
         super::terminal::terminal_row_of(ui, "", line, skin, |ui, _| {

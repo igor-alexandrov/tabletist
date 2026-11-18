@@ -190,7 +190,7 @@ fn keyring_box(
 /// macOS: a dropdown `width` wide that reads `text`, as tall as the
 /// dialog's fields and filled as they are. It relies on
 /// [`super::style_controls`] having set that fill on `ui`.
-fn select<'a>(
+pub(super) fn select<'a>(
     ui: &Ui,
     salt: &'static str,
     text: &'a str,
@@ -281,6 +281,8 @@ pub(super) fn body(
                         fieldset(ui, &skin.say("Source"), skin, |ui| {
                             super::files::sheet(ui, form, skin, actions);
                         });
+                        ui.add_space(12.0);
+                        super::reading::section(ui, form, skin, actions);
                     }
                     Driver::Postgres | Driver::MySql => {
                         fieldset(ui, &skin.say("Server"), skin, |ui| {
