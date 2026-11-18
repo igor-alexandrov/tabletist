@@ -939,6 +939,35 @@ mod tests {
     }
 
     #[test]
+    fn a_connection_form_choice_keeps_the_keys_its_button_answers() {
+        // egui's focused button chooses on Enter and Space, and the footer
+        // names the row's keys: another key would be shown and do nothing.
+        let choose = Row {
+            command: Command::FormChoose,
+            scope: Scope::Prompt,
+            when: When::ConnectionForm,
+        };
+        for layout in [Layout::Mac, Layout::Omarchy] {
+            let line = Bind {
+                table: Scope::Prompt.table(layout),
+                ..bind(Scope::Prompt, "c", Command::FormChoose)
+            };
+            let (keymap, refused) = Keymap::with(layout, &binds(vec![line]));
+            let whys: Vec<Why> = refused.into_iter().map(|refused| refused.why).collect();
+            assert_eq!(whys, [Why::NoRow], "{layout:?}");
+            assert_eq!(
+                keys(&keymap, layout, choose),
+                Keymap::default().keys_of(layout, choose),
+                "{layout:?}"
+            );
+        }
+        assert_eq!(
+            Keymap::default().keys_of(Layout::Omarchy, choose),
+            ["enter", "space"]
+        );
+    }
+
+    #[test]
     fn an_unbind_takes_a_default_off_its_scope() {
         let lines = Overrides {
             binds: Vec::new(),

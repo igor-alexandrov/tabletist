@@ -557,6 +557,7 @@ impl Described {
                 .into_iter()
                 .next()
                 .filter(|comment| !comment.is_empty()),
+            file: None,
         }
     }
 }

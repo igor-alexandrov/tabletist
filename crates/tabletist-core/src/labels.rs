@@ -363,7 +363,7 @@ pub fn database_key(driver: Driver, database: &str) -> String {
         // A project too: a tab's tables are of one.
         Driver::Postgres | Driver::BigQuery => database.to_owned(),
         // Redis has no tables to label.
-        Driver::MySql | Driver::Sqlite | Driver::Redis => String::new(),
+        Driver::MySql | Driver::Sqlite | Driver::Files | Driver::Redis => String::new(),
     }
 }
 

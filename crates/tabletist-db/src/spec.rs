@@ -20,6 +20,8 @@ pub enum Driver {
     /// A standalone Redis server (or one that speaks its protocol:
     /// Valkey, KeyDB, Dragonfly). Keys and values, no SQL.
     Redis,
+    /// Data files read as tables, through DuckDB in the app's process.
+    Files,
 }
 
 impl Driver {
@@ -28,7 +30,7 @@ impl Driver {
             Self::Postgres => 5432,
             Self::MySql => 3306,
             Self::Redis => 6379,
-            Self::Sqlite | Self::BigQuery => 0,
+            Self::Sqlite | Self::BigQuery | Self::Files => 0,
         }
     }
 
@@ -39,6 +41,7 @@ impl Driver {
             Self::Sqlite => "SQLite",
             Self::BigQuery => "BigQuery",
             Self::Redis => "Redis",
+            Self::Files => "Files",
         }
     }
 
@@ -50,6 +53,7 @@ impl Driver {
             Self::MySql => Some(crate::Dialect::MySql),
             Self::Sqlite => Some(crate::Dialect::Sqlite),
             Self::BigQuery => Some(crate::Dialect::BigQuery),
+            Self::Files => Some(crate::Dialect::DuckDb),
             Self::Redis => None,
         }
     }
@@ -191,6 +195,8 @@ pub struct ConnectSpec {
     /// Redis's own settings; `None` for every other driver.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub redis: Option<RedisSpec>,
+    /// The files a Files connection opens; `None` for every other driver.
+    pub files: Option<crate::files::Source>,
 }
 
 impl Default for ConnectSpec {
@@ -207,6 +213,7 @@ impl Default for ConnectSpec {
             ca_file: None,
             ssh: None,
             redis: None,
+            files: None,
         }
     }
 }
@@ -467,7 +474,11 @@ fn parse_redis_cli(line: &str) -> Result<ParsedUrl> {
                 let from = ParsedUrl::parse(&url)?;
                 match from.spec.driver {
                     Driver::Redis => parsed = from,
-                    Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => {
+                    Driver::Postgres
+                    | Driver::MySql
+                    | Driver::Sqlite
+                    | Driver::BigQuery
+                    | Driver::Files => {
                         return Err(Error::InvalidSpec("-u takes a redis:// URL".into()));
                     }
                 }
@@ -607,6 +618,17 @@ impl ConnectSpec {
         }
     }
 
+    /// A Files connection that opens `source`.
+    pub fn files(source: crate::files::Source) -> Self {
+        Self {
+            driver: Driver::Files,
+            host: String::new(),
+            port: 0,
+            files: Some(source),
+            ..Self::default()
+        }
+    }
+
     /// Parses `postgres://`, `postgresql://`, `mysql://`, `mariadb://` and
     /// `sqlite:` URLs. The password, if any, comes back in `Secrets`.
     pub fn from_url(url: &str) -> Result<(Self, Secrets)> {
@@ -629,12 +651,20 @@ impl ConnectSpec {
                 }
             }
             (Driver::Postgres, TlsMode::Require, Some(_)) => TlsMode::VerifyCa,
-            (Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery, tls, _) => tls,
+            (
+                Driver::Postgres
+                | Driver::MySql
+                | Driver::Sqlite
+                | Driver::BigQuery
+                | Driver::Files,
+                tls,
+                _,
+            ) => tls,
         }
     }
 
-    /// A one-line description without secrets: `user@host:port/db`, or the
-    /// file name for SQLite.
+    /// A one-line description without secrets: `user@host:port/db`, the
+    /// file name for SQLite, or a Files connection's folder or files.
     pub fn summary(&self) -> String {
         match self.driver {
             Driver::Sqlite => {
@@ -647,6 +677,13 @@ impl ConnectSpec {
             }
             // The project alone: there is no host, port or user.
             Driver::BigQuery => return self.database.clone(),
+            Driver::Files => {
+                return self
+                    .files
+                    .as_ref()
+                    .map(crate::files::Source::summary)
+                    .unwrap_or_default();
+            }
             Driver::Postgres | Driver::MySql | Driver::Redis => {}
         }
         let mut text = String::new();
@@ -657,7 +694,11 @@ impl ConnectSpec {
         text.push_str(&format!("{}:{}", self.host, self.port));
         match self.driver {
             Driver::Redis => text.push_str(&format!("/{}", self.redis_spec().database)),
-            Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => {
+            Driver::Postgres
+            | Driver::MySql
+            | Driver::Sqlite
+            | Driver::BigQuery
+            | Driver::Files => {
                 if !self.database.is_empty() {
                     text.push('/');
                     text.push_str(&self.database);
@@ -685,7 +726,17 @@ mod tests {
         assert_eq!(Driver::Postgres.dialect(), Some(crate::Dialect::Postgres));
         assert_eq!(Driver::MySql.dialect(), Some(crate::Dialect::MySql));
         assert_eq!(Driver::Sqlite.dialect(), Some(crate::Dialect::Sqlite));
+        assert_eq!(Driver::Files.dialect(), Some(crate::Dialect::DuckDb));
         assert_eq!(Driver::Redis.dialect(), None);
+    }
+
+    #[test]
+    fn a_files_spec_says_its_source() {
+        let spec = ConnectSpec::files(crate::files::Source::Folder("/data/bookshop".into()));
+        assert_eq!(spec.driver, Driver::Files);
+        assert_eq!(spec.summary(), "/data/bookshop");
+        assert_eq!(spec.driver.label(), "Files");
+        assert_eq!(spec.driver.default_port(), 0);
     }
 
     #[test]

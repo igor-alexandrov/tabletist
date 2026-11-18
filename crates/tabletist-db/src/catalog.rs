@@ -157,6 +157,9 @@ pub struct Structure {
     /// The comment on the table or view itself, where its author wrote
     /// one. SQLite keeps none.
     pub comment: Option<String>,
+    /// The file a Files connection's table is read from; `None` for every
+    /// other table.
+    pub file: Option<crate::FileFacts>,
 }
 
 impl Structure {

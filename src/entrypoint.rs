@@ -122,6 +122,11 @@ pub fn main(cli: Cli, launch: fastframe_update::Launch) -> anyhow::Result<()> {
         Some(root) => AppDirs::at(root.path()),
         None => AppDirs::discover(),
     };
+    // Files connections: the readers DuckDB installs (Excel's) are kept in
+    // the app's own folder, and a path under the home folder is shown with
+    // `~`, found once here and never in a frame.
+    tabletist_db::set_extension_directory(dirs.duckdb_extensions_dir());
+    tabletist_db::files::set_home(dirs.home.clone());
     let mut logging = fastframe_log::Logging::new("tabletist", env!("CARGO_PKG_VERSION"))
         .filter(log_filter(cli.verbose))
         .redact(without_agents_words);

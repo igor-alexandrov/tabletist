@@ -76,7 +76,8 @@ pub fn agentable(saved: &[SavedConnection]) -> Vec<Agentable> {
             tabletist_db::Driver::Postgres
             | tabletist_db::Driver::MySql
             | tabletist_db::Driver::Sqlite
-            | tabletist_db::Driver::BigQuery => true,
+            | tabletist_db::Driver::BigQuery
+            | tabletist_db::Driver::Files => true,
         })
         .map(|(saved, name)| Agentable {
             id: saved.id.clone(),
