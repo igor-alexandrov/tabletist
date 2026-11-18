@@ -126,12 +126,12 @@ fn a_new_files_connection_is_local_read_only_and_lets_agents_read() {
 }
 
 #[test]
-fn the_type_is_a_radio_group_of_four_on_a_row_of_its_own() {
+fn the_type_is_a_radio_group_above_the_name() {
     for look in looks() {
         let mut harness = new_files(look);
         let tree = harness.settle();
         assert!(node(&tree, &look.label("Type"), Role::RadioGroup).is_some());
-        for name in ["SQLite", "PostgreSQL", "MySQL", "Files"] {
+        for name in ["SQLite", "PostgreSQL", "MySQL", "BigQuery", "Files"] {
             assert!(
                 node(&tree, &look.label(name), Role::RadioButton).is_some(),
                 "{}: {name}",
@@ -158,6 +158,59 @@ fn the_type_is_a_radio_group_of_four_on_a_row_of_its_own() {
     assert!(harness.has("One database file on this computer"));
     harness.click("PostgreSQL");
     assert!(harness.has("Changes the fields below"));
+}
+
+/// The label of what has the keyboard.
+fn focused_label(harness: &mut Harness) -> Option<String> {
+    let id = harness.ctx.memory(|memory| memory.focused())?;
+    let tree = harness.settle();
+    tree.nodes
+        .iter()
+        .find(|(node, _)| *node == id.accesskit_id())
+        .and_then(|(_, node)| node.label().map(str::to_owned))
+}
+
+/// macOS: the types are four to a row, one Tab stop: the chosen one. The
+/// arrows choose across a row and down a column, and Tab leaves the grid.
+#[test]
+fn the_mac_type_grid_is_one_tab_stop_and_the_arrows_choose() {
+    let mut harness = Harness::new();
+    harness.set_look(Look::macos());
+    // A new connection gives the name the keyboard on its first frame.
+    harness.app.apply(Action::NewConnection);
+    form_mut(&mut harness).driver = Driver::Postgres;
+    harness.settle();
+    // Back from the name is the chosen type.
+    harness.press(Key::Tab, Modifiers::SHIFT);
+    assert_eq!(focused_label(&mut harness).as_deref(), Some("PostgreSQL"));
+    harness.press(Key::ArrowLeft, Modifiers::NONE);
+    assert_eq!(form(&harness).driver, Driver::Sqlite);
+    assert_eq!(focused_label(&mut harness).as_deref(), Some("SQLite"));
+    // SQLite, PostgreSQL, MySQL, BigQuery on the first row; Files under
+    // SQLite, and Redis beside it.
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    assert_eq!(form(&harness).driver, Driver::Files);
+    assert_eq!(focused_label(&mut harness).as_deref(), Some("Files"));
+    harness.press(Key::ArrowRight, Modifiers::NONE);
+    assert_eq!(form(&harness).driver, Driver::Redis);
+    assert_eq!(focused_label(&mut harness).as_deref(), Some("Redis"));
+    harness.press(Key::ArrowLeft, Modifiers::NONE);
+    assert_eq!(form(&harness).driver, Driver::Files);
+    // Nothing under Files: down stays.
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    assert_eq!(form(&harness).driver, Driver::Files);
+    assert_eq!(focused_label(&mut harness).as_deref(), Some("Files"));
+    harness.press(Key::ArrowUp, Modifiers::NONE);
+    assert_eq!(form(&harness).driver, Driver::Sqlite);
+    assert_eq!(focused_label(&mut harness).as_deref(), Some("SQLite"));
+    // One Tab leaves the grid: the arrows no longer choose.
+    harness.press(Key::Tab, Modifiers::NONE);
+    // It lands on the Name field, which has no label of its own, not on a
+    // type.
+    assert!(harness.ctx.memory(|memory| memory.focused()).is_some());
+    assert_eq!(focused_label(&mut harness), None);
+    harness.press(Key::ArrowRight, Modifiers::NONE);
+    assert_eq!(form(&harness).driver, Driver::Sqlite);
 }
 
 #[test]
@@ -850,4 +903,35 @@ fn the_list_says_what_a_files_connection_opens() {
     assert!(harness.has("/data/bookshop-exports"));
     assert!(harness.has("SQLite · 12.4 MB"));
     assert!(harness.has("development.sqlite3"));
+}
+
+/// Omarchy: every type is a Tab stop and Enter or Space picks it; the
+/// arrows and h/l choose nothing.
+#[test]
+fn the_omarchy_type_grid_takes_tab_and_enter_or_space() {
+    let look = Look::omarchy();
+    let mut harness = Harness::new();
+    harness.set_look(look);
+    harness.app.apply(Action::NewConnection);
+    form_mut(&mut harness).driver = Driver::Postgres;
+    harness.settle();
+    // A new connection gives the name the keyboard. Back from it: the last
+    // type, then the one before it.
+    harness.press(Key::Tab, Modifiers::SHIFT);
+    assert_eq!(focused_label(&mut harness), Some(look.label("Redis")));
+    harness.press(Key::Tab, Modifiers::SHIFT);
+    assert_eq!(focused_label(&mut harness), Some(look.label("Files")));
+    harness.press(Key::Tab, Modifiers::SHIFT);
+    assert_eq!(focused_label(&mut harness), Some(look.label("BigQuery")));
+    harness.press(Key::H, Modifiers::NONE);
+    assert_eq!(form(&harness).driver, Driver::Postgres);
+    harness.press(Key::Space, Modifiers::NONE);
+    assert_eq!(form(&harness).driver, Driver::BigQuery);
+    harness.press(Key::Tab, Modifiers::NONE);
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert_eq!(form(&harness).driver, Driver::Files);
+    // The arrows choose nothing either (egui may move the focus).
+    harness.press(Key::ArrowLeft, Modifiers::NONE);
+    harness.press(Key::ArrowUp, Modifiers::NONE);
+    assert_eq!(form(&harness).driver, Driver::Files);
 }

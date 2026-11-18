@@ -329,8 +329,8 @@ pub(super) fn body(
         });
 }
 
-/// The kind of database on a line of its own (four do not fit beside the
-/// name), with what it changes; then the name, then the environment.
+/// The kind of database as a grid of radio buttons on rows of their own,
+/// with what it changes under them; then the name, then the environment.
 fn identity(
     ui: &mut Ui,
     form: &mut ConnectionForm,
@@ -342,17 +342,15 @@ fn identity(
     let heading = skin.say("Type");
     widgets::label(ui, TextRole::FormLabel, &heading, palette.secondary, look);
     ui.add_space(5.0);
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 12.0;
-        driver_choice(ui, form, &heading, skin, actions);
-        widgets::label(
-            ui,
-            TextRole::Secondary,
-            &skin.say(super::type_hint(form.driver)),
-            palette.dim,
-            look,
-        );
-    });
+    driver_choice(ui, form, &heading, skin, actions);
+    ui.add_space(6.0);
+    widgets::label(
+        ui,
+        TextRole::Secondary,
+        &skin.say(super::type_hint(form.driver)),
+        palette.dim,
+        look,
+    );
     ui.add_space(18.0);
     let name = labelled(ui, &skin.say("Name"), TextRole::FormLabel, skin, |ui| {
         ui.add(input(ui, &mut form.name, TextRole::UiBody, 34.0, skin))
