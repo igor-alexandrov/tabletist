@@ -13,6 +13,14 @@ use crate::settings::{Language, OptionId, OptionValue};
 use crate::testing::Harness;
 use crate::theme::Look;
 
+/// The Omarchy Language row's hint under System: where the system's
+/// language is read from on this platform, and where its catalogs are.
+pub(super) const SYSTEM_HINT: &str = if cfg!(any(target_os = "macos", target_os = "windows")) {
+    "from the system · help translate: assets/i18n"
+} else {
+    "from $LANG · help translate: assets/i18n"
+};
+
 fn tag(text: &str) -> LanguageTag {
     LanguageTag::parse(text).expect("a tag")
 }
@@ -167,21 +175,15 @@ fn the_omarchy_row_steps_through_the_languages_and_r_puts_back_system() {
     let mut harness = omarchy(Some("en-US"));
     // On the cursor's row, between its chevrons.
     assert!(painted(&harness, "‹ system (english) ›"));
-    assert!(painted(
-        &harness,
-        "from $LANG · help translate: assets/i18n"
-    ));
+    assert!(painted(&harness, SYSTEM_HINT));
     harness.press(Key::L, Modifiers::NONE);
     assert_eq!(
         harness.app.settings.language,
         Language::Fixed(Locale::English)
     );
-    // A language chosen here does not come from $LANG.
+    // A language chosen here does not come from the system.
     assert!(painted(&harness, "help translate: assets/i18n"));
-    assert!(!painted(
-        &harness,
-        "from $LANG · help translate: assets/i18n"
-    ));
+    assert!(!painted(&harness, SYSTEM_HINT));
     harness.press(Key::L, Modifiers::NONE);
     assert_eq!(
         harness.app.settings.language,

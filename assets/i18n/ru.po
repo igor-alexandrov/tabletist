@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-18 07:57-0500\n"
+"POT-Creation-Date: 2026-11-18 15:23-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -2646,6 +2646,10 @@ msgstr "Системный ({zone})"
 #: src/ui/settings/terminal.rs
 msgid "Update available"
 msgstr "Доступно обновление"
+
+#: src/ui/settings/terminal.rs
+msgid "from the system"
+msgstr "из системы"
 
 #: src/ui/settings/terminal.rs
 #, rust-format
