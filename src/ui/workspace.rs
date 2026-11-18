@@ -3075,7 +3075,7 @@ fn status_line(
                 table_hints.push((&edit_key, &*edit, true));
             }
             // A new row is opened, where the table takes one.
-            let new_row = gettext(locale, "new row");
+            let new_row = pgettext(locale, "label", "new row");
             if editing.can_add {
                 table_hints.push((&add_key, &*new_row, true));
             }
@@ -3257,7 +3257,7 @@ fn status_line(
                 gettext(locale, "calls"),
                 gettext(locale, "all connections"),
                 gettext(locale, "this connection"),
-                gettext(locale, "filter"),
+                pgettext(locale, "label", "filter"),
                 gettext(locale, "details"),
                 pgettext(locale, "key hint", "open"),
                 gettext(locale, "export"),

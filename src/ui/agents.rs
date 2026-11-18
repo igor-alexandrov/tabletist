@@ -7,7 +7,7 @@
 use egui::{Frame, Id, Margin, Rect, pos2, vec2};
 
 use crate::connections::{SavedConnection, SavedConnections};
-use crate::i18n::{gettext, ngettext};
+use crate::i18n::{gettext, ngettext, pgettext};
 use crate::keymap::Keymap;
 use crate::model::{Action, AgentsHere, AgentsView, ConnTabId, Workspace};
 use crate::style::Icon;
@@ -1145,7 +1145,7 @@ fn log_view(
             .add(body, keys.filter.as_str(), palette.accent)
             .add(
                 body,
-                &format!(" {}", look.label(&gettext(locale, "filter"))),
+                &format!(" {}", look.label(&pgettext(locale, "label", "filter"))),
                 palette.secondary,
             );
         if log.total > 0 {
