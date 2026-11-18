@@ -3765,11 +3765,13 @@ impl App {
             name: saved.name.clone(),
         };
         let text = renamed.write_into(&self.settings_file.text, &[crate::settings::Key::OnLaunch]);
-        self.settings.on_launch = renamed.on_launch;
+        // A name that would not fit is not taken: the settings stay as the
+        // file has them, and the next save of the connection tries again.
         let Some(text) = text else {
             self.settings_too_long();
             return;
         };
+        self.settings.on_launch = renamed.on_launch;
         if text != self.settings_file.text {
             let loaded = Settings::from_toml_over(&text, &self.settings);
             let live = self.settings_file.live;
