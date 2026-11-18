@@ -9205,6 +9205,8 @@ mod tests {
             Some(tabletist_db::FilesRead {
                 files: 4,
                 bytes: 10,
+                failed: Vec::new(),
+                checks: Vec::new(),
             })
         };
         // Each change forgets the Test on its own.

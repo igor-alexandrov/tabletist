@@ -160,6 +160,47 @@ impl Types {
     pub const ALL: [Self; 3] = [Self::Sample, Self::All, Self::Text];
 }
 
+/// A file a Test could not read, or its check in full found a row of that
+/// it cannot, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Failure {
+    /// The file's name with its extension: `returns.csv`.
+    pub file: String,
+    pub path: PathBuf,
+    pub format: Format,
+    pub why: Why,
+}
+
+impl Failure {
+    /// Whether the fixes that change a column (read it as text, read a
+    /// value as empty) can mend it: a CSV's or TSV's value its column's
+    /// type cannot take. Any failure can be mended by skipping the file.
+    pub fn takes_column_fixes(&self) -> bool {
+        matches!(self.why, Why::Value { .. }) && matches!(self.format, Format::Csv | Format::Tsv)
+    }
+}
+
+/// Why a file could not be read, as DuckDB said it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Why {
+    /// A CSV's value that its column's type cannot take: the data row it
+    /// is on (1 for the first after a header row), the column, the value,
+    /// and the type DuckDB found for the column (`DATE`).
+    Value {
+        row: u64,
+        column: String,
+        value: String,
+        kind: String,
+    },
+    /// A CSV's row with more or fewer values than the file's others.
+    Columns { row: u64, expected: u64, found: u64 },
+    /// An NDJSON file's line that is not JSON (`malformed`), or whose
+    /// value is not of the type the lines before it gave its key.
+    Json { line: u64, malformed: bool },
+    /// Anything else: DuckDB's first line.
+    Other(String),
+}
+
 /// How many rows of a CSV DuckDB samples for its columns' types, and how
 /// many rows of each file a Test reads.
 pub const SAMPLE_ROWS: u32 = 20_000;

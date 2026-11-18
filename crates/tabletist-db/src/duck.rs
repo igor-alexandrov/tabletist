@@ -46,10 +46,16 @@ pub fn set_extension_directory(folder: std::path::PathBuf) {
 /// What a Test of a Files connection read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FilesRead {
-    /// The files read, `.duckdb` ones included.
+    /// The connection's files, `.duckdb` ones included, those that failed
+    /// too.
     pub files: usize,
     /// Their size on disk, in bytes.
     pub bytes: u64,
+    /// The files it could not read, in the connection's order.
+    pub failed: Vec<crate::files::Failure>,
+    /// The files read whose whole is checked next, in the background: the
+    /// CSV, TSV and NDJSON files, by their tables' names.
+    pub checks: Vec<String>,
 }
 
 /// What the Structure view says of the file a table is read from.
@@ -74,6 +80,12 @@ pub(crate) struct Conn {
     /// The number the next call takes.
     calls: std::sync::atomic::AtomicU64,
     files: Arc<Vec<Opened>>,
+    /// The files a Test's session could not open, left out of it. A
+    /// session that browses has none: it does not open with one.
+    failed: Vec<crate::files::Failure>,
+    /// Every file of the connection's, in its order: those it could not
+    /// open among them.
+    order: Vec<std::path::PathBuf>,
     version: String,
 }
 
@@ -457,9 +469,20 @@ fn header_of(
     }
 }
 
+/// What [`opened`] made: the session, its files, those it could not open
+/// (where it was told to go on past them) and DuckDB's version.
+type Made = (
+    duckdb::Connection,
+    Vec<Opened>,
+    Vec<crate::files::Failure>,
+    String,
+);
+
 /// Opens a session over `files`, read as `reading` says, a file it skips
-/// left out: views and attaches, then the fence.
-fn opened(files: &[Found], reading: &Reading) -> Result<(duckdb::Connection, Vec<Opened>, String)> {
+/// left out: views and attaches, then the fence. A file that cannot be
+/// opened stops it, unless `past` says to go on without it (a Test, which
+/// says which failed).
+fn opened(files: &[Found], reading: &Reading, past: bool) -> Result<Made> {
     let files: Vec<&Found> = files
         .iter()
         .filter(|file| !reading.skips(&file.path))
@@ -486,6 +509,7 @@ fn opened(files: &[Found], reading: &Reading) -> Result<(duckdb::Connection, Vec
         })?;
     }
     let mut opened = Vec::with_capacity(files.len());
+    let mut failures = Vec::new();
     for file in &files {
         let failed = |error: &Error| {
             Error::Connect(format!("Can't read {}: {}", file_label(file), plain(error)))
@@ -513,9 +537,18 @@ fn opened(files: &[Found], reading: &Reading) -> Result<(duckdb::Connection, Vec
             Types::Sample | Types::Text => reading,
         };
         // A `.duckdb` file is attached read-only, as every session is.
-        let (statement, options) =
-            make(&connection, file, reading).map_err(|error| failed(&error))?;
-        run(&statement).map_err(|error| failed(&error))?;
+        let made = make(&connection, file, reading).and_then(|(statement, options)| {
+            run(&statement)?;
+            Ok((statement, options))
+        });
+        let (statement, options) = match made {
+            Ok(made) => made,
+            Err(error) if past => {
+                failures.push(failure(file, &error));
+                continue;
+            }
+            Err(error) => return Err(failed(&error)),
+        };
         let rows = match file.format {
             Format::Parquet => connection
                 .query_row(
@@ -562,8 +595,106 @@ fn opened(files: &[Found], reading: &Reading) -> Result<(duckdb::Connection, Vec
     Ok((
         connection,
         opened,
+        failures,
         format!("DuckDB {}", version.trim_start_matches('v')),
     ))
+}
+
+/// Why `file` could not be read, from DuckDB's words.
+fn failure(file: &Found, error: &Error) -> crate::files::Failure {
+    crate::files::Failure {
+        file: file_label(file),
+        path: file.path.clone(),
+        format: file.format,
+        why: why(error),
+    }
+}
+
+/// Reads DuckDB's message for what its reader could not take. Its CSV
+/// errors say the file's line (the header row is line 1 where the file
+/// has one) and its settings, `header = true`, after.
+fn why(error: &Error) -> crate::files::Why {
+    use crate::files::Why;
+    let message = match error {
+        Error::Query { message, .. } => message.as_str(),
+        _ => return Why::Other(plain(error)),
+    };
+    // The number that follows `before` in the message.
+    let number = |before: &str| -> Option<u64> {
+        let at = message.find(before)? + before.len();
+        let digits: String = message[at..]
+            .trim_start()
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        digits.parse().ok()
+    };
+    // DuckDB's line naming the column and the value, on its own: the
+    // message also quotes the file's row, which may hold any words. The
+    // pieces end at the last of their closing words, so a quote in a
+    // column's name or a value stays in it.
+    let converting = message
+        .lines()
+        .find(|line| line.starts_with("Error when converting column \""));
+    let value = converting.and_then(|line| {
+        let rest = line.strip_prefix("Error when converting column \"")?;
+        let split = rest.rfind("\". Could not convert string \"")?;
+        let column = &rest[..split];
+        let rest = &rest[split + "\". Could not convert string \"".len()..];
+        let to = rest.rfind("\" to '")?;
+        let kind = &rest[to + "\" to '".len()..];
+        // The value as the file writes it, a quote in it doubled: the
+        // text the column holds, which a fix compares, has it once.
+        Some((
+            column.to_owned(),
+            rest[..to].replace("\"\"", "\""),
+            kind[..kind.find('\'')?].to_owned(),
+        ))
+    });
+    if let Some(line) = number("CSV Error on Line:") {
+        let header = message
+            .lines()
+            .any(|line| line.trim_start().starts_with("header = true"));
+        let row = line.saturating_sub(u64::from(header));
+        if let Some((column, value, kind)) = value {
+            return Why::Value {
+                row,
+                column,
+                value,
+                kind,
+            };
+        }
+        let counts = message.lines().find_map(|line| {
+            let rest = line.strip_prefix("Expected Number of Columns:")?;
+            let (expected, found) = rest.split_once("Found:")?;
+            Some((expected.trim().parse().ok()?, found.trim().parse().ok()?))
+        });
+        if let Some((expected, found)) = counts {
+            return Why::Columns {
+                row,
+                expected,
+                found,
+            };
+        }
+    }
+    // DuckDB says the line after a malformed one.
+    if message.contains("Malformed JSON")
+        && let Some(line) = number(" in line ")
+    {
+        return Why::Json {
+            line: line.saturating_sub(1).max(1),
+            malformed: true,
+        };
+    }
+    if message.contains("JSON transform error")
+        && let Some(line) = number(" in line ")
+    {
+        return Why::Json {
+            line,
+            malformed: false,
+        };
+    }
+    Why::Other(plain(error))
 }
 
 /// Stops call `call`'s work when dropped, unless disarmed first: a dropped
@@ -1193,9 +1324,9 @@ fn send_chunks(
 impl Conn {
     /// Opens `source`'s files, read-only: every one is read far enough to
     /// know its columns, and an error names the first that cannot be.
-    pub(crate) async fn open(source: &Source, reading: &Reading) -> Result<Self> {
+    pub(crate) async fn open(source: &Source, reading: &Reading, past: bool) -> Result<Self> {
         let (source, reading) = (source.clone(), reading.clone());
-        let (connection, files, version) = tokio::task::spawn_blocking(move || {
+        let (connection, files, failed, version, order) = tokio::task::spawn_blocking(move || {
             // A skipped file is not looked at: one that is gone, or that
             // cannot be looked at, is no matter.
             let scan = crate::files::scan_past(&source, |file| reading.skips(file))?;
@@ -1206,7 +1337,10 @@ impl Conn {
                     crate::files::shown(gone)
                 )));
             }
-            opened(&scan.files, &reading)
+            let order = scan.files.iter().map(|file| file.path.clone()).collect();
+            opened(&scan.files, &reading, past).map(|(connection, files, failed, version)| {
+                (connection, files, failed, version, order)
+            })
         })
         .await
         .map_err(|error| Error::Io(error.to_string()))??;
@@ -1217,6 +1351,8 @@ impl Conn {
             running: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             calls: std::sync::atomic::AtomicU64::new(0),
             files: Arc::new(files),
+            failed,
+            order,
             version,
         })
     }
@@ -1265,31 +1401,89 @@ impl Conn {
     }
 
     /// Reads the first rows of every file, as a Test does: never a whole
-    /// file.
+    /// file. A file it cannot read is a failure, with those the session
+    /// could not open; the others are read. Which files to check in full
+    /// next come with it.
     pub(crate) async fn read_files(&self) -> Result<FilesRead> {
         let files = Arc::clone(&self.files);
+        let mut failed = self.failed.clone();
+        let order = self.order.clone();
+        // The files it could not open count, and their size on disk.
+        let unopened = (
+            self.failed.len(),
+            self.failed
+                .iter()
+                .map(|failure| std::fs::metadata(&failure.path).map_or(0, |meta| meta.len()))
+                .sum::<u64>(),
+        );
         self.run(move |connection| {
+            let mut read = Vec::new();
             read_only(connection, |connection| {
                 for file in files.iter().filter(|file| !file.found.format.is_database()) {
                     let sql = format!(
                         "SELECT * FROM {} LIMIT {SAMPLE_ROWS}",
                         Dialect::DuckDb.quote_ident(&file.found.name)
                     );
-                    rows_of(connection, &sql, Vec::new(), SAMPLE_ROWS as usize).map_err(
-                        |error| {
-                            Error::Connect(format!(
-                                "Can't read {}: {}",
-                                file_label(&file.found),
-                                plain(&error)
-                            ))
-                        },
-                    )?;
+                    match rows_of(connection, &sql, Vec::new(), SAMPLE_ROWS as usize) {
+                        Ok(_) => read.push(file),
+                        Err(Error::Cancelled) => return Err(Error::Cancelled),
+                        Err(error) => failed.push(failure(&file.found, &error)),
+                    }
                 }
                 Ok(())
             })?;
+            // In the connection's order, those it could not open among them.
+            failed.sort_by_key(|failure| {
+                order
+                    .iter()
+                    .position(|path| *path == failure.path)
+                    .unwrap_or(usize::MAX)
+            });
+            let checks = read
+                .iter()
+                .filter(|file| {
+                    matches!(
+                        file.found.format,
+                        Format::Csv | Format::Tsv | Format::Ndjson
+                    )
+                })
+                .map(|file| file.found.name.clone())
+                .collect();
             Ok(FilesRead {
-                files: files.len(),
-                bytes: files.iter().map(|file| file.found.size).sum(),
+                files: files.len() + unopened.0,
+                bytes: files.iter().map(|file| file.found.size).sum::<u64>() + unopened.1,
+                failed,
+                checks,
+            })
+        })
+        .await
+    }
+
+    /// Reads the whole of the file whose table is `name`, every column of
+    /// every row, as a Test's check in the background does: `None` when it
+    /// reads to the end, or why it stops.
+    pub(crate) async fn check(&self, name: &str) -> Result<Option<crate::files::Failure>> {
+        let Some(file) = self
+            .files
+            .iter()
+            .find(|file| file.found.name == name)
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        self.run(move |connection| {
+            // Each column counted: a column read is a column converted,
+            // where `count(*)` would read none.
+            let sql = format!(
+                "SELECT count(COLUMNS(*)) FROM {}",
+                Dialect::DuckDb.quote_ident(&file.found.name)
+            );
+            read_only(connection, |connection| {
+                match rows_of(connection, &sql, Vec::new(), 1) {
+                    Ok(_) => Ok(None),
+                    Err(Error::Cancelled) => Err(Error::Cancelled),
+                    Err(error) => Ok(Some(failure(&file.found, &error))),
+                }
             })
         })
         .await
