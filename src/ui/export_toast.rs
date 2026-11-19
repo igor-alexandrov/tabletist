@@ -52,18 +52,21 @@ pub fn done_words(exporting: &Exporting, locale: crate::i18n::Locale) -> Option<
     else {
         return None;
     };
-    Some(
-        crate::i18n::ngettext(
-            locale,
-            "Exported {n} row to {file} · {size} · {time}",
-            "Exported {n} rows to {file} · {size} · {time}",
-            u32::try_from(rows).unwrap_or(u32::MAX),
-        )
-        .replace("{n}", &crate::format::group_digits(rows))
-        .replace("{file}", &exporting.file)
-        .replace("{size}", &size_words(bytes, locale))
-        .replace("{time}", &took_words(took)),
-    )
+    let words = crate::i18n::ngettext(
+        locale,
+        "Exported {n} row to {file} · {size} · {time}",
+        "Exported {n} rows to {file} · {size} · {time}",
+        u32::try_from(rows).unwrap_or(u32::MAX),
+    );
+    Some(crate::i18n::fill(
+        &words,
+        &[
+            ("{n}", &crate::format::group_digits(rows)),
+            ("{file}", &exporting.file),
+            ("{size}", &size_words(bytes, locale)),
+            ("{time}", &took_words(took)),
+        ],
+    ))
 }
 
 pub const CANCELLED: &str = "Export cancelled. Nothing was saved: the partial file was removed.";
@@ -80,9 +83,13 @@ fn spoken(ctx: &egui::Context, exporting: &Exporting, locale: crate::i18n::Local
         return text.clone();
     }
     let text = match exporting.share() {
-        Some(share) => gettext(locale, "Exporting {table}, {n} percent")
-            .replace("{table}", exporting.name())
-            .replace("{n}", &((share * 100.0).round() as u32).to_string()),
+        Some(share) => crate::i18n::fill(
+            &gettext(locale, "Exporting {table}, {n} percent"),
+            &[
+                ("{table}", exporting.name()),
+                ("{n}", &((share * 100.0).round() as u32).to_string()),
+            ],
+        ),
         None => gettext(locale, "Exporting {table}").replace("{table}", exporting.name()),
     };
     ctx.data_mut(|data| data.insert_temp(id, (now, text.clone())));

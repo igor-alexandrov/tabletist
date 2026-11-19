@@ -2117,3 +2117,22 @@ fn the_terminal_look_says_why_a_named_column_is_refused() {
     harness.press(Key::ArrowDown, Modifiers::NONE);
     assert!(!harness.has("id cannot be the label (the key)"));
 }
+
+/// A key's table whose name holds the connection's placeholder is named as
+/// it is in the chooser's foot.
+#[test]
+fn the_chooser_names_a_braced_table_as_it_is() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    let object = workspace.object_tab_mut(id).unwrap();
+    let structure = object.structure.value.as_mut().unwrap();
+    structure.foreign_keys[0].ref_table = "{connection}".into();
+    harness.settle();
+    select(&mut harness, tab, id, 0);
+    type_on_cell(&mut harness, "harb");
+    ask(&mut harness, Look::macos());
+    assert!(chooser(&harness, tab, id).is_some(), "the chooser is open");
+    assert!(harness.has(
+        "For {connection} in Fixture · dev, on this computer. Nothing is written to the database."
+    ));
+}

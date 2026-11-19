@@ -1113,6 +1113,52 @@ fn renaming_the_chosen_connection_renames_its_comment() {
 }
 
 #[test]
+fn a_rename_that_would_make_the_settings_file_too_long_is_not_taken() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = bookshop(&mut app, "Bookshop");
+    let chosen = crate::settings::Launch::Connection {
+        id: conn.clone(),
+        name: "Bookshop".into(),
+    };
+    app.apply(Action::SetOption(crate::settings::OptionValue::OnLaunch(
+        chosen.clone(),
+    )));
+    // A comment that leaves four bytes of room: the longer name needs eight.
+    let room = Settings::LIMITS.1 - 4 - app.settings_file.text.len();
+    let text = format!("{}#{}\n", app.settings_file.text, "x".repeat(room - 2));
+    assert_eq!(text.len(), Settings::LIMITS.1 - 4);
+    app.settings_file.text = text.clone();
+    let sent = app.backend.sent.len();
+    app.apply(Action::EditConnection(conn.clone()));
+    match app.dialog.as_mut() {
+        Some(crate::model::Dialog::Connection(form)) => form.name = "Bookshop staging".into(),
+        other => panic!("{other:?}"),
+    }
+    app.apply(Action::SaveConnection { connect: false });
+    // The connection is saved; the settings are not, and stay as they were.
+    assert!(app.backend.sent[sent..].iter().all(|command| !matches!(
+        command,
+        Command::Save {
+            file: StateFile::Settings(_),
+            ..
+        }
+    )));
+    assert!(app.backend.sent[sent..].iter().any(|command| matches!(
+        command,
+        Command::Save {
+            file: StateFile::Connections(_),
+            ..
+        }
+    )));
+    assert_eq!(app.connections.get(&conn).unwrap().name, "Bookshop staging");
+    assert_eq!(app.settings_file.text, text);
+    assert_eq!(app.settings.on_launch, chosen);
+    let notice = app.notice.clone().unwrap_or_default();
+    assert!(notice.starts_with("Could not save "), "{notice}");
+}
+
+#[test]
 fn a_launch_restores_the_picker_after_a_window_and_in_front() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app_in(dir.path());

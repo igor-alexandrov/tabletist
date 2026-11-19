@@ -161,8 +161,11 @@ pub fn place(
     let table = format::display_safe(&object.object.name);
     let mut place = format!("{} · {table}", workspace.name);
     if of > 1 {
-        let word = look.label(&gettext(locale, "of"));
-        place.push_str(&format!(" · {} {word} {of}", at + 1));
+        let which = look
+            .label(&gettext(locale, "{at} of {count}"))
+            .replace("{at}", &(at + 1).to_string())
+            .replace("{count}", &of.to_string());
+        place.push_str(&format!(" · {which}"));
     }
     place
 }

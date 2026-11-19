@@ -2589,3 +2589,40 @@ fn the_agents_column_and_hint_step_back_where_the_window_has_no_room() {
         .fold(0.0_f32, f32::max);
     assert!(hints < note.left(), "{hints} {note:?}");
 }
+
+/// A connection whose name holds the join's placeholder is named as it is
+/// in the held bar, before the last change it lists.
+#[cfg(any(unix, windows))]
+#[test]
+fn the_held_bar_writes_a_braced_connection_name_as_it_is() {
+    use crate::agents_shown::Raised;
+    use crate::connections::ConnectionId;
+    let (mut harness, tab) = connected(Look::macos());
+    let first = harness.app.workspace(tab).unwrap().conn_id.clone();
+    let mut braced = harness.app.connections.get(&first).unwrap().clone();
+    braced.id = ConnectionId("braced".into());
+    braced.name = "{last}".into();
+    harness.app.connections.upsert(braced);
+    harness.app.agents_held = vec![
+        Raised::Access {
+            id: ConnectionId("braced".into()),
+            to: AgentAccess::Read,
+        },
+        Raised::Access {
+            id: first,
+            to: AgentAccess::Read,
+        },
+    ];
+    let said = crate::ui::agents_held_said(
+        harness.app.locale,
+        &harness.app.agents_held,
+        &harness.app.connections.connections,
+    )
+    .unwrap();
+    assert!(
+        said.contains("agents may read {last} · dev, and agents may read Fixture · dev"),
+        "{said}"
+    );
+    harness.settle();
+    assert!(harness.has(&said));
+}

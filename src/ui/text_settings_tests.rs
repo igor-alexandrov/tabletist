@@ -892,3 +892,24 @@ fn a_read_for_a_name_since_changed_does_not_replace_the_face_drawn() {
     answer(&mut harness, 5, installed_read("Fira Code", true));
     assert_eq!(harness.app.look.faces.data, DataFace::Installed);
 }
+
+/// A font asked for by a name that holds a placeholder's name is said as
+/// it was asked for.
+#[test]
+fn a_braced_font_name_not_found_is_said_as_it_is() {
+    let mut harness = terminal();
+    harness.app.change_settings(|settings| {
+        settings.font = Some("{family}".into());
+    });
+    harness.app.desktop_font = Read {
+        asked: Some("{family}".into()),
+        faces: None,
+        family: Some("JetBrainsMono Nerd Font".into()),
+        missing: true,
+    };
+    on_the_pane(&mut harness);
+    assert!(shows(
+        &mut harness,
+        "“{family}” not found · now: jetbrainsmono nerd font"
+    ));
+}

@@ -616,10 +616,10 @@ fn key_row(
     };
     let caps = ui.interact(keys_place, ui.id().with(("keyboard-caps", row)), sense);
     let named = match fixed {
-        Some(_) => skin
-            .say("shortcut for {name}: {keys}. it cannot be changed.")
-            .replace("{name}", &name)
-            .replace("{keys}", &spoken),
+        Some(_) => crate::i18n::fill(
+            &skin.say("shortcut for {name}: {keys}. it cannot be changed."),
+            &[("{name}", &name), ("{keys}", &spoken)],
+        ),
         None => {
             // The screen's key that records, as the keymap writes it.
             let record = crate::ui::keys::published(ui.ctx()).key_in(
@@ -627,10 +627,14 @@ fn key_row(
                 Command::SettingsOpenRow,
                 Scope::Prompt,
             );
-            skin.say("shortcut for {name}: {keys}. press {record} to record.")
-                .replace("{name}", &name)
-                .replace("{keys}", &spoken)
-                .replace("{record}", record.as_str())
+            crate::i18n::fill(
+                &skin.say("shortcut for {name}: {keys}. press {record} to record."),
+                &[
+                    ("{name}", &name),
+                    ("{keys}", &spoken),
+                    ("{record}", record.as_str()),
+                ],
+            )
         }
     };
     caps.widget_info(|| WidgetInfo::labeled(WidgetType::Button, fixed.is_none(), &named));

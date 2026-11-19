@@ -639,3 +639,110 @@ fn a_failures_float_is_its_own_sheet() {
     assert_eq!(sheet.path, path.display().to_string());
     assert!(harness.app.exports.is_empty(), "the failure is put away");
 }
+
+/// Exports started to the files `names`, in a folder of the test's own:
+/// their ids, in the order they started.
+fn running_to(
+    harness: &mut Harness,
+    tab: ConnTabId,
+    names: &[&str],
+) -> (tempfile::TempDir, Vec<ExportId>) {
+    let dir = tempfile::tempdir().unwrap();
+    for name in names {
+        harness.app.apply(Action::ExportTo {
+            tab,
+            path: dir.path().join(name).display().to_string(),
+            replace: false,
+        });
+    }
+    harness.settle();
+    let ids = harness.app.exports.iter().map(|one| one.job.id).collect();
+    (dir, ids)
+}
+
+/// A file whose name holds another placeholder's name is written as it is
+/// in the terminal look's line for several, for one, and for its end.
+#[test]
+fn a_braced_file_name_is_written_as_it_is_in_the_terminal_line() {
+    let (mut harness, tab, _id) = covers_in(Look::omarchy());
+    let (_dir, ids) = running_to(&mut harness, tab, &["{cancel}.csv", "{n}.jsonl"]);
+    harness.app.exports[0].total = Some(crate::export_sheet::Count {
+        rows: 4,
+        exact: true,
+    });
+    harness.app.exports[1].total = None;
+    tell(
+        &mut harness,
+        ids[0],
+        ExportState::Progress { rows: 2, bytes: 10 },
+    );
+    tell(
+        &mut harness,
+        ids[1],
+        ExportState::Progress {
+            rows: 4000,
+            bytes: 10,
+        },
+    );
+    assert_eq!(
+        line(&harness).as_deref(),
+        Some("2 exports · {cancel}.csv 50% · {n}.jsonl 4,000 rows · :export cancel")
+    );
+
+    let (mut harness, tab, _id) = covers_in(Look::omarchy());
+    let (_dir, ids) = running_to(&mut harness, tab, &["{share}{size}.csv"]);
+    harness.app.exports[0].total = Some(crate::export_sheet::Count {
+        rows: 4,
+        exact: true,
+    });
+    tell(
+        &mut harness,
+        ids[0],
+        ExportState::Progress { rows: 2, bytes: 10 },
+    );
+    let shown = line(&harness).unwrap();
+    assert!(
+        shown.starts_with("export {share}{size}.csv [██████░░░░░░] 50% · 2/"),
+        "{shown}"
+    );
+    tell(&mut harness, ids[0], done());
+    let shown = line(&harness).unwrap();
+    assert!(
+        shown.contains("{share}{size}.csv · 900 bytes · 2 s · "),
+        "{shown}"
+    );
+}
+
+/// The macOS look's toasts write a braced file name as it is: while it
+/// runs, as a screen reader hears it, and once it is done.
+#[test]
+fn a_braced_file_name_is_written_as_it_is_in_the_toasts() {
+    let (mut harness, tab, _id) = covers_in(Look::macos());
+    let (_dir, ids) = running_to(&mut harness, tab, &["{n}{size}.csv"]);
+    harness.app.exports[0].total = Some(crate::export_sheet::Count {
+        rows: 4,
+        exact: true,
+    });
+    tell(
+        &mut harness,
+        ids[0],
+        ExportState::Progress { rows: 2, bytes: 10 },
+    );
+    assert!(painted(&harness, "Exporting {n}{size}.csv"));
+    // What a screen reader was told before the total was known is kept
+    // for 2 s: forgotten, it is told again with the share.
+    let told = egui::Id::new(("export-spoken", ids[0].0));
+    harness
+        .ctx
+        .data_mut(|data| data.remove_temp::<(f64, String)>(told));
+    assert!(harness.has("Exporting {n}{size}.csv, 50 percent"));
+    tell(&mut harness, ids[0], done());
+    assert!(
+        painted(
+            &harness,
+            "Exported 4 rows to {n}{size}.csv · 900 bytes · 2 s"
+        ),
+        "{:?}",
+        harness.painted
+    );
+}

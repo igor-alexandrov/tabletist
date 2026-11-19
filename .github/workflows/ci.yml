@@ -43,12 +43,27 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  # The translation template and every catalog are in step with the code.
+  # The script needs gettext 1.0 or later. Ubuntu's is too old to read
+  # Rust; Homebrew's is new enough.
+  translations:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          brew install gettext
+          echo "$(brew --prefix gettext)/bin" >> "$GITHUB_PATH"
+      - run: assets/i18n/update.sh --check
+      - run: assets/i18n/update_test.sh
+
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     # Windows builds the app a second time, without debug assertions, for
-    # the relay's step, so a cold cache compiles DuckDB twice.
-    timeout-minutes: 120
+    # the relay's step, so a cold cache compiles DuckDB twice: the tests
+    # alone have taken 79 minutes, and the relay's build was cut at 120.
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
