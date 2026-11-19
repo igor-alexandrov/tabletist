@@ -1342,8 +1342,12 @@ fn control(
             }
         }
         OptionId::GroupDigits => {
-            // A number as each value writes it: no language has others.
-            let words = ["1,240.50".to_owned(), "1240.50".to_owned()];
+            // A number as each value writes it, grouped in the language's
+            // marks.
+            let words = [
+                crate::i18n::numbers::group_number(skin.locale, "1240.50").into_owned(),
+                "1240.50".to_owned(),
+            ];
             let selected = usize::from(!settings.group_digits.unwrap_or_default());
             if let Some(picked) = segments(ui, (&name, description), &words, selected, skin) {
                 actions.push(Action::SetOption(OptionValue::GroupDigits(Some(

@@ -173,6 +173,37 @@ pub fn millis(locale: Locale, ms: impl Count) -> String {
     )
 }
 
+/// A file's size as the Files pages read it, in steps of a thousand:
+/// `512 B`, `12.4 MB`, `312 KB`, «12,4 МБ». A tenth is kept under a
+/// hundred of a unit.
+pub fn files_size(locale: Locale, bytes: u64) -> String {
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1000.0 && unit < 4 {
+        value /= 1000.0;
+        unit += 1;
+    }
+    // What would be written as 1000 of a unit is 1.0 of the next.
+    if unit > 0 && value >= 999.5 && unit < 4 {
+        value /= 1000.0;
+        unit += 1;
+    }
+    let shown = match unit {
+        0 => number(locale, bytes),
+        _ if value >= 100.0 => format!("{value:.0}"),
+        _ => tenths(locale, value, false),
+    };
+    let unit = match unit {
+        0 => pgettext(locale, "file size", "{n} B"),
+        1 => pgettext(locale, "file size", "{n} KB"),
+        2 => pgettext(locale, "file size", "{n} MB"),
+        3 => pgettext(locale, "file size", "{n} GB"),
+        // Translators: a size in terabytes.
+        _ => pgettext(locale, "file size", "{n} TB"),
+    };
+    fill(&unit, &[("{n}", &shown)])
+}
+
 /// Seconds, to a tenth where `tenth`: "18 s", "1.2 s", «1,2 с».
 pub fn seconds(locale: Locale, seconds: f64, tenth: bool) -> String {
     let value = match tenth {
@@ -571,5 +602,16 @@ mod tests {
             );
         }
         assert_eq!(group_number(Russian, "0.5"), "0,5");
+    }
+
+    #[test]
+    fn files_sizes_step_by_thousands_in_the_language() {
+        assert_eq!(files_size(English, 512), "512 B");
+        assert_eq!(files_size(English, 12_400_000), "12.4 MB");
+        assert_eq!(files_size(English, 312_400), "312 KB");
+        assert_eq!(files_size(English, 999_600), "1.0 MB");
+        assert_eq!(files_size(English, 2_480_000_000_000), "2.5 TB");
+        assert_eq!(files_size(Russian, 12_400_000), "12,4 МБ");
+        assert_eq!(files_size(Russian, 512), "512 Б");
     }
 }

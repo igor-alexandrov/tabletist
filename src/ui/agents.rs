@@ -1416,7 +1416,11 @@ fn log_view(
                         start.split_whitespace().collect::<Vec<_>>().join(" ")
                     })
                     .unwrap_or_default();
-                let number = |value: Option<i64>| value.map(|n| n.to_string()).unwrap_or_default();
+                let number = |value: Option<i64>| {
+                    value
+                        .map(|n| crate::i18n::number(locale, n))
+                        .unwrap_or_default()
+                };
                 let (word, color) = log_result(&entry.result, palette, locale);
                 let mut texts = vec![
                     (
@@ -2305,9 +2309,12 @@ fn ended(
                 said
             }
             (_, Some(rows)) => format!(
-                "{} · {} ms",
+                "{} · {}",
                 count(ngettext(locale, "{n} row", "{n} rows", rows), rows),
-                call.took.as_millis()
+                crate::i18n::numbers::millis(
+                    locale,
+                    u64::try_from(call.took.as_millis()).unwrap_or(u64::MAX)
+                )
             ),
             (_, None) => gettext(locale, "ok").into_owned(),
         };

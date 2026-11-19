@@ -162,13 +162,15 @@ struct View<'a> {
 impl View<'_> {
     /// What an entry was of: its tab or its table, or an agent's name as
     /// the Agents Log says it.
-    /// A query's label is said in the window's language.
+    ///
+    /// A query's label is said in the window's language. A grid save's
+    /// and a filter's detail is always a table's name, kept as it is even
+    /// where it reads "Query 1".
     fn detail_of<'e>(&'e self, entry: &'e Entry) -> Cow<'e, str> {
         match entry.source {
             Source::Agent => Cow::Borrowed(self.history.agent_of(entry).unwrap_or_default()),
-            Source::Sql | Source::Save | Source::Filter | Source::Export => {
-                detail_words(&entry.detail, self.locale)
-            }
+            Source::Sql | Source::Export => detail_words(&entry.detail, self.locale),
+            Source::Save | Source::Filter => Cow::Borrowed(&entry.detail),
         }
     }
 
@@ -1341,9 +1343,6 @@ fn source_icon(source: Source) -> Icon {
     }
 }
 
-/// An entry's source, in a word, and what it was of: "SQL editor" and
-/// "Query 1"; an agent's `detail` is its name as the Agents Log says it,
-/// where it says one.
 /// An entry's detail as the window says it: a query's own label
 /// ("Query 7"), recorded in any language the app ships, in `locale`; any
 /// other detail (a table's name, a file's) as it was recorded.
@@ -1364,6 +1363,9 @@ pub fn detail_words(detail: &str, locale: Locale) -> Cow<'_, str> {
     }
 }
 
+/// An entry's source, in a word, and what it was of: "SQL editor" and
+/// "Query 1"; an agent's `detail` is its name as the Agents Log says it,
+/// where it says one.
 fn source_words(entry: &Entry, detail: &str, locale: Locale, look: &Look) -> (String, String) {
     let word = match (entry.source, look.terminal) {
         (Source::Sql, false) => gettext(locale, "SQL editor"),

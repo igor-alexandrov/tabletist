@@ -1270,7 +1270,10 @@ fn tree_row(
     let right = rect.right() - tree_inset(look) - 8.0;
     // What sits at the right: a group's count or an object's kind.
     let (trailing, trailing_color) = match &row.node {
-        TreeNode::Group(..) => (row.count.map(|count| count.to_string()), palette.dim),
+        TreeNode::Group(..) => (
+            row.count.map(|count| crate::i18n::number(locale, count)),
+            palette.dim,
+        ),
         TreeNode::Object(_, kind) => (
             kind_tag(locale, *kind),
             if look.terminal {

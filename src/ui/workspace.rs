@@ -2017,8 +2017,13 @@ pub fn lock_line(
     locale: crate::i18n::Locale,
 ) -> String {
     let text = super::cell_editor::lock_text(lock, table, locale);
-    match text.strip_prefix(table) {
-        Some(rest) if !table.is_empty() => format!("{table}{}", look.label(rest)),
+    // The table's name keeps its case wherever the language puts it.
+    match text.find(table) {
+        Some(at) if !table.is_empty() => format!(
+            "{}{table}{}",
+            look.label(&text[..at]),
+            look.label(&text[at + table.len()..])
+        ),
         _ => look.label(&text),
     }
 }

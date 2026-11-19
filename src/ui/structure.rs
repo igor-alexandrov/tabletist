@@ -441,7 +441,10 @@ fn file_part(
     let mono = crate::ui::grid::data_role(look);
     let rows = [
         (msgid("Path"), tabletist_db::files::shown(&file.path)),
-        (msgid("Size"), tabletist_db::files::size_text(file.size)),
+        (
+            msgid("Size"),
+            crate::i18n::numbers::files_size(locale, file.size),
+        ),
         (msgid("Format"), file.format.label().to_owned()),
         (msgid("Read with"), file.options.clone()),
     ];

@@ -724,9 +724,9 @@ fn run_state(ui: &mut Ui, spot: &Spot, running: Duration, env: &Env<'_>) -> bool
     } = *spot;
     let time = env.said(|words| {
         format!(
-            "{} · {:.1} s",
+            "{} · {}",
             words.say(msgid("Running")),
-            running.as_secs_f64()
+            crate::i18n::numbers::seconds(words.locale, running.as_secs_f64(), true)
         )
     });
     let label = gettext(locale, "Cancel query");

@@ -3274,11 +3274,6 @@ fn attachment_card(
                 y,
                 Text::one(look, name_role, &file.filename, palette.text),
             ) + 8.0;
-        let details: Vec<&str> = file
-            .details
-            .split(" · ")
-            .filter(|part| part.contains('×') || part.ends_with('B'))
-            .collect();
         widgets::paint_text(
             ui,
             x,
@@ -3286,7 +3281,7 @@ fn attachment_card(
             Text::one(
                 look,
                 TextRole::OSecondary,
-                &details.join(" · ").replace(" × ", "×"),
+                &file.measures.replace(" × ", "×"),
                 palette.dim,
             ),
         );

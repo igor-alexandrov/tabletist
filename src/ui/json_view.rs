@@ -236,6 +236,9 @@ pub struct Attachment {
     pub filename: String,
     /// `image/jpeg · 103 × 102 · 5.9 KB · store`.
     pub details: String,
+    /// Its dimensions and size alone, `103 × 102 · 5.9 KB`: what the
+    /// terminal look's card shows, whatever words the size is said in.
+    pub measures: String,
     pub image: bool,
 }
 
@@ -262,25 +265,26 @@ pub fn attachment(doc: &Doc, locale: crate::i18n::Locale) -> Option<Attachment> 
     };
     let filename = text(get(metadata, "filename"))?;
     let mime = text(get(metadata, "mime_type").or_else(|| get(metadata, "content_type")));
-    let mut details = Vec::new();
-    if let Some(mime) = &mime {
-        details.push(mime.clone());
-    }
+    let mut measures = Vec::new();
     if let (Some(width), Some(height)) =
         (text(get(metadata, "width")), text(get(metadata, "height")))
     {
-        details.push(format!("{width} × {height}"));
+        measures.push(format!("{width} × {height}"));
     }
     if let Some(size) = text(get(metadata, "size")).and_then(|size| size.parse::<usize>().ok()) {
-        details.push(crate::i18n::numbers::file_size(locale, size));
+        measures.push(crate::i18n::numbers::file_size(locale, size));
     }
-    if let Some(storage) = text(get(entries, "storage")) {
-        details.push(storage);
-    }
+    let details: Vec<String> = mime
+        .iter()
+        .cloned()
+        .chain(measures.iter().cloned())
+        .chain(text(get(entries, "storage")))
+        .collect();
     Some(Attachment {
         image: mime.is_some_and(|mime| mime.starts_with("image/")),
         filename,
         details: details.join(" · "),
+        measures: measures.join(" · "),
     })
 }
 
@@ -692,9 +696,13 @@ mod tests {
             Some(Attachment {
                 filename: "gold.jpg".into(),
                 details: "image/jpeg · 103 × 102 · 5.9 KB · store".into(),
+                measures: "103 × 102 · 5.9 KB".into(),
                 image: true,
             })
         );
+        // In Russian the size's unit is not a B, and the card still has it.
+        let russian = attachment(&doc, crate::i18n::Locale::Russian).unwrap();
+        assert_eq!(russian.measures, "103 × 102 · 5,9 КБ");
         assert_eq!(summary(&doc), (3, vec!["a/b.jpg".into(), "store".into()]));
         assert_eq!(
             attachment(

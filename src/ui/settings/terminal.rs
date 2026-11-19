@@ -147,6 +147,9 @@ impl Skin<'_> {
         match choice {
             Said::Word(word) => self.say(word),
             Said::Sample(sample) => sample.to_owned(),
+            Said::Grouped(number) => {
+                crate::i18n::numbers::group_number(self.locale, number).into_owned()
+            }
             Said::Key(command) => crate::ui::keys::written(ctx, self.look, command)
                 .as_str()
                 .to_owned(),

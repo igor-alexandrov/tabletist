@@ -1474,8 +1474,15 @@ fn an_agents_name_is_read_from_the_agents_log_and_not_kept() {
 /// a day of another year heads its entries in the language's order.
 #[test]
 fn history_says_a_query_and_its_day_in_the_window_s_language() {
-    // 2025-10-13 12:00 UTC: a day of another year.
-    const LAST_YEAR: i64 = 1_760_356_800_000;
+    // Noon on 2025-10-13 where the tests run, a day of another year: History
+    // says days in the system's zone, so a fixed instant would be the 14th
+    // east of UTC+12.
+    let last_year = jiff::civil::date(2025, 10, 13)
+        .at(12, 0, 0, 0)
+        .to_zoned(jiff::tz::TimeZone::system())
+        .expect("noon is in every zone")
+        .timestamp()
+        .as_millisecond();
     for look in looks() {
         let (mut harness, tab, _) = covers(look);
         super::language_tests::in_russian(&mut harness);
@@ -1484,7 +1491,7 @@ fn history_says_a_query_and_its_day_in_the_window_s_language() {
         assert_eq!(last_written(&harness).detail, "Query 1", "{}", look.name);
         let mut old = entry(&harness, tab, Source::Sql, Some(READ));
         old.detail = "Запрос 2".into();
-        old.at_ms = LAST_YEAR;
+        old.at_ms = last_year;
         let entries = vec![entry(&harness, tab, Source::Sql, Some(READ)), old.clone()];
         shown_with(&mut harness, tab, entries.clone());
         select(&mut harness, tab, 1);
@@ -1531,5 +1538,42 @@ fn history_says_a_query_and_its_day_in_the_window_s_language() {
             false => "OCT 13, 2025",
         };
         assert!(said(&english, day), "{}: {:?}", look.name, english.painted);
+    }
+}
+
+#[test]
+fn a_table_named_like_a_query_keeps_its_name_in_any_language() {
+    for look in looks() {
+        let (mut harness, tab, _) = covers(look);
+        super::language_tests::in_russian(&mut harness);
+        let mut save = entry(&harness, tab, Source::Save, Some(READ));
+        save.detail = "Query 7".into();
+        let entries = vec![entry(&harness, tab, Source::Sql, Some(READ)), save];
+        shown_with(&mut harness, tab, entries);
+        let said = |harness: &Harness, text: &str| {
+            let text = harness.app.look.label(text);
+            harness
+                .painted
+                .iter()
+                .any(|(painted, _)| painted.contains(&text))
+        };
+        // A query's label is said in Russian; a grid save's table is not.
+        select(&mut harness, tab, 0);
+        harness.settle();
+        assert!(
+            said(&harness, "Запрос 1"),
+            "{}: {:?}",
+            look.name,
+            harness.painted
+        );
+        select(&mut harness, tab, 1);
+        harness.settle();
+        assert!(
+            said(&harness, "Query 7"),
+            "{}: {:?}",
+            look.name,
+            harness.painted
+        );
+        assert!(!said(&harness, "Запрос 7"), "{}", look.name);
     }
 }

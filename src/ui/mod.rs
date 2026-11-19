@@ -17471,6 +17471,17 @@ value_tags   = true
             line(crate::edit::Lock::ReadOnly),
             "this connection opens read-only"
         );
+        // Where a language puts words before the name, it keeps its case.
+        let russian = crate::ui::workspace::lock_line(
+            crate::edit::Lock::NoKey,
+            "OrderItems",
+            &look,
+            crate::i18n::Locale::Russian,
+        );
+        assert!(
+            russian.starts_with("у OrderItems нет первичного ключа"),
+            "{russian}"
+        );
     }
 
     #[test]
