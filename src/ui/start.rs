@@ -391,7 +391,7 @@ fn line_words(shown: &Shown, skin: Skin<'_>) -> String {
                 count,
             )
         };
-        parts.push(words.replace("{n}", &count.to_string()));
+        parts.push(words.replace("{n}", &crate::i18n::number(skin.locale, count)));
     }
     skin.look.label(&parts.join(" · "))
 }
@@ -560,7 +560,12 @@ fn lists(
             .iter()
             .enumerate()
             .map(|(index, recent)| {
-                let when = look.label(&crate::recents::when(recent.opened(), skin.now, &zone));
+                let when = look.label(&crate::recents::when(
+                    skin.locale,
+                    recent.opened(),
+                    skin.now,
+                    &zone,
+                ));
                 let action = Action::OpenRecent {
                     tab: skin.tab,
                     index,
@@ -710,10 +715,13 @@ fn estimate_text(rows: u64, skin: Skin<'_>) -> String {
 /// (`grouped`: in threes): quick open's too.
 pub(crate) fn estimate_words(rows: u64, look: &Look, grouped: bool, locale: Locale) -> String {
     if look.terminal {
-        look.label(&format!("≈ {}", crate::format::compact_count(rows)))
+        look.label(&format!(
+            "≈ {}",
+            crate::i18n::numbers::compact_count(locale, rows)
+        ))
     } else {
         let count = if grouped {
-            crate::format::group_digits(rows)
+            crate::i18n::number(locale, rows)
         } else {
             rows.to_string()
         };

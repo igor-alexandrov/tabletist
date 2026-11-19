@@ -1479,7 +1479,7 @@ fn mac_row(
         let place = Rect::from_min_max(pos2(agents_x, rect.top()), pos2(used_x, rect.bottom()));
         widgets::announce(ui, place, &format!("{word} {level}"));
     }
-    let when = crate::connections::when(store.last_used(&connection.id), now);
+    let when = crate::connections::when(locale, store.last_used(&connection.id), now);
     widgets::paint_label(
         ui,
         used_x,
@@ -1705,7 +1705,8 @@ fn terminal_row(
             .add(small, &format!("· {ssh}"), palette.dim),
     };
     widgets::paint_label(ui, text_x, bottom, said.add(small, &agents, agents_color));
-    let when = crate::connections::when(store.last_used(&connection.id), now).to_lowercase();
+    let when =
+        crate::connections::when(locale, store.last_used(&connection.id), now).to_lowercase();
     widgets::paint_text_right(
         ui,
         rect.right() - side,

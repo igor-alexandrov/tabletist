@@ -132,7 +132,7 @@ fn question(prompt: &EveryRowPrompt, skin: Skin<'_>) -> String {
             );
             skin.look
                 .label(&words)
-                .replace("{n}", &many.len().to_string())
+                .replace("{n}", &crate::i18n::number(skin.locale, many.len()))
         }
     }
 }
@@ -144,7 +144,7 @@ fn rows(wide: &WideStatement, skin: Skin<'_>) -> Option<String> {
     Some(
         skin.look
             .label(&words)
-            .replace("{n}", &format::group_digits(rows)),
+            .replace("{n}", &crate::i18n::number(skin.locale, rows)),
     )
 }
 
@@ -174,7 +174,7 @@ fn details(prompt: &EveryRowPrompt, skin: Skin<'_>) -> Vec<String> {
                 let by = skin
                     .look
                     .label(&by)
-                    .replace("{n}", &format::group_digits(rows));
+                    .replace("{n}", &crate::i18n::number(skin.locale, rows));
                 text.push_str(&format!(" {by}"));
             }
             vec![text]

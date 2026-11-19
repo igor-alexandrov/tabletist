@@ -359,7 +359,7 @@ fn head(sql: &SqlTab, state: &State<'_>, env: &Env<'_>) -> Head {
                         msgid("Statement at line {line}"),
                         &[("{line}", &statement.first_line.to_string())],
                     ),
-                    format::elapsed(result.elapsed)
+                    format::elapsed(words.locale, result.elapsed)
                 )
             })
         }),
@@ -609,7 +609,7 @@ fn pane_tabs(
     .map(|(pane, name, count, count_color)| {
         let name = name.say(locale).into_owned();
         let text = look.label(&name);
-        let count = count.map(|count| format::group_digits(count as u64));
+        let count = count.map(|count| crate::i18n::number(locale, count as u64));
         let counted = count
             .as_deref()
             .map_or(0.0, |count| space + width(plain, count));
@@ -964,13 +964,13 @@ fn cancel_text(cancel: Option<CancelReason>, words: Words) -> String {
 /// "5 rows", "1 row".
 fn rows_text(count: u64, words: Words) -> String {
     let phrase = ngettext(words.locale, "{n} row", "{n} rows", count);
-    words.counted(phrase, &format::group_digits(count))
+    words.counted(phrase, &crate::i18n::number(words.locale, count))
 }
 
 /// "12 rows affected", "1 row affected".
 fn affected_text(count: u64, words: Words) -> String {
     let phrase = ngettext(words.locale, "{n} row affected", "{n} rows affected", count);
-    words.counted(phrase, &format::group_digits(count))
+    words.counted(phrase, &crate::i18n::number(words.locale, count))
 }
 
 /// The statement that reads as cancelled though it has no result: the
@@ -1080,7 +1080,7 @@ fn after(run: &SqlRun, index: usize, driver: Driver, words: Words) -> String {
         let phrase = ngettext(words.locale, "{n} warning", "{n} warnings", *warnings);
         text.push_str(&format!(
             " · {}",
-            words.counted(phrase, &warnings.to_string())
+            words.counted(phrase, &crate::i18n::number(words.locale, warnings))
         ));
     }
     if undone(run, index, driver) {
@@ -1106,7 +1106,7 @@ fn statement_message(run: &SqlRun, index: usize, driver: Driver, words: Words) -
             Message::new(at, words.say(msgid("Not run")), Tone::Muted)
         };
     };
-    let time = format::elapsed(result.elapsed);
+    let time = format::elapsed(words.locale, result.elapsed);
     let after = after(run, index, driver, words);
     match &result.outcome {
         StatementOutcome::Rows {
@@ -1313,13 +1313,13 @@ fn end_message(run: &SqlRun, driver: Driver, words: Words) -> Message {
             let count = outcome.results.len();
             let statements = words.counted(
                 ngettext(words.locale, "{n} statement", "{n} statements", count),
-                &count.to_string(),
+                &crate::i18n::number(words.locale, count),
             );
             let time: Duration = outcome.results.iter().map(|result| result.elapsed).sum();
             let text = format!(
                 "{} · {statements} · {}",
                 words.say(msgid("Committed")),
-                format::elapsed(time)
+                format::elapsed(words.locale, time)
             );
             (text, Tone::Plain)
         }
@@ -2217,6 +2217,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
                     full_precision: fit.full_precision,
                     // A result has no key to leave alone.
                     grouped: fit.grouped,
+                    locale,
                     zone,
                 },
             )

@@ -61,10 +61,10 @@ pub fn done_words(exporting: &Exporting, locale: crate::i18n::Locale) -> Option<
     Some(crate::i18n::fill(
         &words,
         &[
-            ("{n}", &crate::format::group_digits(rows)),
+            ("{n}", &crate::i18n::number(locale, rows)),
             ("{file}", &exporting.file),
             ("{size}", &size_words(bytes, locale)),
-            ("{time}", &took_words(took)),
+            ("{time}", &took_words(took, locale)),
         ],
     ))
 }

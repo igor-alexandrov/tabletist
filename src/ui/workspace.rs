@@ -1035,9 +1035,9 @@ fn card_rows(
                 0 => say(msgid("no tabs open")),
                 count => look
                     .label(&ngettext(locale, "{n} tab open", "{n} tabs open", count))
-                    .replace("{n}", &count.to_string()),
+                    .replace("{n}", &crate::i18n::number(locale, count)),
             };
-            let since = crate::connections::when(workspace.connected_at, now);
+            let since = crate::connections::when(locale, workspace.connected_at, now);
             (say(msgid("Connected")), format!("{since} · {tabs}"))
         }
         SessionStatus::Connecting { .. } => (say(msgid("Status")), say(msgid("Connecting…"))),
@@ -2178,7 +2178,7 @@ fn editing_status(
     let counts = edits.counts();
     let pending = (counts.changes > 0).then(|| {
         let changes = ngettext(locale, "{n} pending", "{n} pending", counts.changes)
-            .replace("{n}", &counts.changes.to_string());
+            .replace("{n}", &crate::i18n::number(locale, counts.changes));
         format!(
             "{changes} · {}",
             counted(locale, counts.rows, "row", "rows")
@@ -2186,11 +2186,11 @@ fn editing_status(
     });
     let added = (counts.added > 0).then(|| {
         ngettext(locale, "+{n} new", "+{n} new", counts.added)
-            .replace("{n}", &counts.added.to_string())
+            .replace("{n}", &crate::i18n::number(locale, counts.added))
     });
     let deleted = (counts.deleted > 0).then(|| {
         ngettext(locale, "-{n} to delete", "-{n} to delete", counts.deleted)
-            .replace("{n}", &counts.deleted.to_string())
+            .replace("{n}", &crate::i18n::number(locale, counts.deleted))
     });
     let can_delete = data
         && object.selection.is_some_and(|cell| {
@@ -2223,7 +2223,7 @@ fn editing_status(
                     "{n} values required",
                     more.len(),
                 ))
-                .replace("{n}", &more.len().to_string()),
+                .replace("{n}", &crate::i18n::number(locale, more.len())),
             ),
         }
     };
@@ -2614,7 +2614,7 @@ pub fn export_line(app: &App) -> Option<(String, egui::Color32)> {
             let text = crate::i18n::fill(
                 &words,
                 &[
-                    ("{n}", &several.len().to_string()),
+                    ("{n}", &crate::i18n::number(locale, several.len())),
                     ("{each}", &each.join(" · ")),
                     ("{cancel}", cancel.as_str()),
                 ],
@@ -2641,7 +2641,7 @@ pub fn export_brief(
             &crate::i18n::ngettext(locale, "{name} {n} row", "{name} {n} rows", rows),
             &[
                 ("{name}", exporting.name()),
-                ("{n}", &crate::format::group_digits(rows)),
+                ("{n}", &crate::i18n::number(locale, rows)),
             ],
         ),
     }
@@ -2664,7 +2664,7 @@ fn one_export_line(
                 _ => 0,
             };
             let cancel = key(crate::keymap::Command::CancelExport);
-            let done = crate::format::group_digits(rows);
+            let done = crate::i18n::number(locale, rows);
             let text = match (exporting.share(), exporting.total) {
                 (Some(share), Some(total)) => {
                     let filled = ((share * 12.0).round() as usize).min(12);
@@ -2679,7 +2679,7 @@ fn one_export_line(
                             ("{bar}", &bar),
                             ("{share}", &((share * 100.0).round() as u32).to_string()),
                             ("{done}", &done),
-                            ("{total}", &count_words(total)),
+                            ("{total}", &count_words(total, locale)),
                             ("{cancel}", cancel.as_str()),
                         ],
                     )
@@ -2699,7 +2699,7 @@ fn one_export_line(
             rows, bytes, took, ..
         } => {
             let open = key(crate::keymap::Command::OpenExportFolder);
-            let rows = crate::format::group_digits(*rows);
+            let rows = crate::i18n::number(locale, *rows);
             let text = crate::i18n::fill(
                 &gettext(
                     locale,
@@ -2709,7 +2709,7 @@ fn one_export_line(
                     ("{rows}", &rows),
                     ("{path}", &exporting.shown_path),
                     ("{size}", &size_words(*bytes, locale).to_lowercase()),
-                    ("{time}", &took_words(*took)),
+                    ("{time}", &took_words(*took, locale)),
                     ("{key}", open.as_str()),
                 ],
             );
@@ -2822,7 +2822,7 @@ fn tree_summary(
         .and_then(|info| info.estimated_rows)
         .map(|rows| {
             crate::i18n::ngettext(locale, "{n} row", "{n} rows", rows)
-                .replace("{n}", &rows.to_string())
+                .replace("{n}", &crate::i18n::number(locale, rows))
         });
     Some(match rows {
         Some(rows) => format!("{name} · {kind} · {rows}"),
@@ -3002,7 +3002,7 @@ fn status_line(
                     "{n} lines selected",
                     selected.len(),
                 )
-                .replace("{n}", &selected.len().to_string());
+                .replace("{n}", &crate::i18n::number(locale, selected.len()));
                 format!("{said} · {at}")
             }
             None => at,
@@ -3019,12 +3019,14 @@ fn status_line(
             let total = object
                 .count
                 .value
-                .map(|count| count.to_string())
-                .or_else(|| (!page.has_more).then(|| last.to_string()))
+                .map(|count| crate::i18n::number(locale, count))
+                .or_else(|| (!page.has_more).then(|| crate::i18n::number(locale, last)))
                 .unwrap_or_else(|| "?".into());
             let rows = format!(
-                "{first}–{last}/{total} · {}",
-                crate::format::elapsed(page.elapsed)
+                "{}–{}/{total} · {}",
+                crate::i18n::number(locale, first),
+                crate::i18n::number(locale, last),
+                crate::format::elapsed(locale, page.elapsed)
             );
             // The columns in view first, while some are out of it.
             let columns = (object.view == ObjectView::Data)
@@ -3417,7 +3419,7 @@ fn status_line(
                 // Else how many it shows: ":history · 184 statements".
                 let count =
                     crate::i18n::ngettext(locale, "{n} statement", "{n} statements", *shown)
-                        .replace("{n}", &shown.to_string());
+                        .replace("{n}", &crate::i18n::number(locale, shown));
                 let said = said
                     .as_ref()
                     .map(|said| (look.label(said), palette.warning))

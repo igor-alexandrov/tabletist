@@ -5,6 +5,8 @@
 //! editor, a filter is set again, and an agent's entry links to its call in
 //! the Agents Log, which alone keeps what the agent sent.
 
+use std::borrow::Cow;
+
 use egui::{Frame, Id, Rect, pos2, vec2};
 
 use crate::history::{Entry, Outcome, Source};
@@ -160,10 +162,13 @@ struct View<'a> {
 impl View<'_> {
     /// What an entry was of: its tab or its table, or an agent's name as
     /// the Agents Log says it.
-    fn detail_of<'e>(&'e self, entry: &'e Entry) -> &'e str {
+    /// A query's label is said in the window's language.
+    fn detail_of<'e>(&'e self, entry: &'e Entry) -> Cow<'e, str> {
         match entry.source {
-            Source::Agent => self.history.agent_of(entry).unwrap_or_default(),
-            Source::Sql | Source::Save | Source::Filter | Source::Export => &entry.detail,
+            Source::Agent => Cow::Borrowed(self.history.agent_of(entry).unwrap_or_default()),
+            Source::Sql | Source::Save | Source::Filter | Source::Export => {
+                detail_words(&entry.detail, self.locale)
+            }
         }
     }
 
@@ -301,9 +306,11 @@ impl View<'_> {
                 shown,
             ),
         }
-        .replace("{n}", &crate::format::group_digits(shown as u64));
-        let keeps = gettext(self.locale, "keeps the last {n}")
-            .replace("{n}", &crate::format::group_digits(u64::from(self.keep)));
+        .replace("{n}", &crate::i18n::number(self.locale, shown as u64));
+        let keeps = gettext(self.locale, "keeps the last {n}").replace(
+            "{n}",
+            &crate::i18n::number(self.locale, u64::from(self.keep)),
+        );
         self.look.label(&format!(
             "{statements} · {keeps} · {}",
             gettext(self.locale, "on this computer")
@@ -464,9 +471,11 @@ impl View<'_> {
                 "{} · {} · {}",
                 look.label(
                     &ngettext(locale, "{n} kept", "{n} kept", shown)
-                        .replace("{n}", &shown.to_string())
+                        .replace("{n}", &crate::i18n::number(locale, shown))
                 ),
-                look.label(&gettext(locale, "last {n}").replace("{n}", &keep.to_string())),
+                look.label(
+                    &gettext(locale, "last {n}").replace("{n}", &crate::i18n::number(locale, keep))
+                ),
                 self.database,
             ),
         };
@@ -811,7 +820,7 @@ impl View<'_> {
         x += widths[0];
         // The source: its icon and word, and what it was of.
         let agent = entry.source == Source::Agent;
-        let (word, detail) = source_words(entry, self.detail_of(entry), locale, look);
+        let (word, detail) = source_words(entry, &self.detail_of(entry), locale, look);
         let ink = if agent { palette.accent } else { palette.text };
         let source = joined(&word, &detail);
         if look.terminal {
@@ -870,11 +879,11 @@ impl View<'_> {
         x += widths[2];
         let rows = entry
             .rows
-            .map(crate::format::group_digits)
+            .map(|n| crate::i18n::number(self.locale, n))
             .unwrap_or_default();
         let took = entry
             .took_ms
-            .map(crate::format::group_digits)
+            .map(|n| crate::i18n::number(self.locale, n))
             .unwrap_or_default();
         for (number, width) in [(&rows, widths[3]), (&took, widths[4])] {
             widgets::paint_text_right(
@@ -975,7 +984,7 @@ impl View<'_> {
         let body = widgets::body(look);
         let small = widgets::secondary(look);
         let strong = TextRole::pick(look, TextRole::UiBodyStrong, TextRole::OGroup);
-        let (word, detail) = source_words(entry, self.detail_of(entry), locale, look);
+        let (word, detail) = source_words(entry, &self.detail_of(entry), locale, look);
         let agent = entry.source == Source::Agent;
         let detail = match detail.is_empty() {
             true => String::new(),
@@ -1188,7 +1197,7 @@ impl View<'_> {
         let said = match (entry.source, entry.outcome) {
             (_, Outcome::Cancelled) => match entry.took_ms {
                 Some(took) => gettext(locale, "Cancelled after {time}")
-                    .replace("{time}", &duration_words(took)),
+                    .replace("{time}", &duration_words(took, locale)),
                 None => result,
             },
             (_, Outcome::Error) => result,
@@ -1207,11 +1216,11 @@ impl View<'_> {
                 if let Some(rows) = entry.rows {
                     said.push(
                         ngettext(locale, "{n} row", "{n} rows", rows)
-                            .replace("{n}", &crate::format::group_digits(rows)),
+                            .replace("{n}", &crate::i18n::number(locale, rows)),
                     );
                 }
                 if let Some(took) = entry.took_ms {
-                    said.push(format!("{} ms", crate::format::group_digits(took)));
+                    said.push(crate::i18n::numbers::millis(locale, took));
                 }
                 said.push(result);
                 said.join(" · ")
@@ -1226,7 +1235,7 @@ impl View<'_> {
         let say = |text: Msgid| self.say(text);
         let mut facts = Vec::new();
         let rows = |rows: Option<u64>| match rows {
-            Some(rows) => crate::format::group_digits(rows),
+            Some(rows) => crate::i18n::number(locale, rows),
             None => say(msgid("none")),
         };
         match entry.source {
@@ -1239,7 +1248,7 @@ impl View<'_> {
         if let Some(took) = entry.took_ms {
             facts.push((
                 say(msgid("Took")),
-                format!("{} ms", crate::format::group_digits(took)),
+                crate::i18n::numbers::millis(locale, took),
             ));
         }
         if entry.source == Source::Sql || entry.outcome != Outcome::Ok {
@@ -1335,6 +1344,26 @@ fn source_icon(source: Source) -> Icon {
 /// An entry's source, in a word, and what it was of: "SQL editor" and
 /// "Query 1"; an agent's `detail` is its name as the Agents Log says it,
 /// where it says one.
+/// An entry's detail as the window says it: a query's own label
+/// ("Query 7"), recorded in any language the app ships, in `locale`; any
+/// other detail (a table's name, a file's) as it was recorded.
+pub fn detail_words(detail: &str, locale: Locale) -> Cow<'_, str> {
+    let number = Locale::ALL.into_iter().find_map(|recorded| {
+        let label = gettext(recorded, "Query {n}");
+        let (before, after) = crate::i18n::around(&label, "{n}");
+        let digits = detail.strip_prefix(before)?.strip_suffix(after)?;
+        let whole = !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit());
+        whole.then(|| digits.to_owned())
+    });
+    match number {
+        Some(n) => Cow::Owned(crate::i18n::fill(
+            &gettext(locale, "Query {n}"),
+            &[("{n}", &n)],
+        )),
+        None => Cow::Borrowed(detail),
+    }
+}
+
 fn source_words(entry: &Entry, detail: &str, locale: Locale, look: &Look) -> (String, String) {
     let word = match (entry.source, look.terminal) {
         (Source::Sql, false) => gettext(locale, "SQL editor"),
@@ -1460,7 +1489,10 @@ fn statement_line(entry: &Entry, gone: bool, locale: Locale, look: &Look) -> Str
                 0 | 1 => first,
                 n => format!(
                     "{} · {first}",
-                    look.label(&gettext(locale, "{n} statements").replace("{n}", &n.to_string()))
+                    look.label(
+                        &gettext(locale, "{n} statements")
+                            .replace("{n}", &crate::i18n::number(locale, n))
+                    )
                 ),
             }
         }
@@ -1475,7 +1507,7 @@ fn day_word(day: &crate::clock::Day, locale: Locale, look: &Look) -> String {
     let word = match day {
         crate::clock::Day::Today => gettext(locale, "Today").into_owned(),
         crate::clock::Day::Yesterday => gettext(locale, "Yesterday").into_owned(),
-        crate::clock::Day::On(date) => date.clone(),
+        day @ (crate::clock::Day::On { .. } | crate::clock::Day::Never) => day.words(locale),
     };
     match look.terminal {
         true => word.to_lowercase(),
@@ -1489,20 +1521,19 @@ fn moment_words(at_ms: i64, locale: Locale, look: &Look) -> String {
     let day = match crate::clock::day_of(at, std::time::SystemTime::now()) {
         crate::clock::Day::Today => gettext(locale, "Today").into_owned(),
         crate::clock::Day::Yesterday => gettext(locale, "Yesterday").into_owned(),
-        crate::clock::Day::On(date) => date,
+        day @ (crate::clock::Day::On { .. } | crate::clock::Day::Never) => day.words(locale),
     };
-    look.label(&format!("{day} {}", crate::clock::time(at)))
+    let time = crate::clock::time(at);
+    look.label(&crate::i18n::numbers::day_and_time(locale, &day, &time))
 }
 
-/// "30 s", "1 min 5 s", "450 ms".
-fn duration_words(took_ms: u64) -> String {
+/// "30 s", "1 min 5 s", "450 ms", in `locale`.
+fn duration_words(took_ms: u64, locale: Locale) -> String {
+    use crate::i18n::numbers;
     match took_ms {
-        ms if ms < 1_000 => format!("{ms} ms"),
-        ms if ms < 60_000 => format!("{} s", ms / 1_000),
-        ms => match (ms / 1_000) % 60 {
-            0 => format!("{} min", ms / 60_000),
-            s => format!("{} min {s} s", ms / 60_000),
-        },
+        ms if ms < 1_000 => numbers::millis(locale, ms),
+        ms if ms < 60_000 => numbers::seconds(locale, (ms / 1_000) as f64, false),
+        ms => numbers::minutes(locale, ms / 1_000),
     }
 }
 
@@ -1540,9 +1571,13 @@ fn filter_words(kept: &crate::session::KeptTab) -> String {
 mod tests {
     #[test]
     fn a_duration_is_said_in_its_unit() {
-        assert_eq!(super::duration_words(450), "450 ms");
-        assert_eq!(super::duration_words(30_000), "30 s");
-        assert_eq!(super::duration_words(65_000), "1 min 5 s");
-        assert_eq!(super::duration_words(120_000), "2 min");
+        let english = |ms| super::duration_words(ms, crate::i18n::Locale::English);
+        assert_eq!(english(450), "450 ms");
+        assert_eq!(english(30_000), "30 s");
+        assert_eq!(english(65_000), "1 min 5 s");
+        assert_eq!(english(120_000), "2 min");
+        let russian = |ms| super::duration_words(ms, crate::i18n::Locale::Russian);
+        assert_eq!(russian(65_000), "1 мин 5 с");
+        assert_eq!(russian(1_500), "1 с");
     }
 }

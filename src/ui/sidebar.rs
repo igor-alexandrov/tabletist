@@ -1182,7 +1182,7 @@ fn tree_row(
         TreeNode::Group(..) => {
             let count = row.count.unwrap_or_default();
             ngettext(locale, "{name}, {n} table", "{name}, {n} tables", count)
-                .replace("{n}", &count.to_string())
+                .replace("{n}", &crate::i18n::number(locale, count))
                 .replace("{name}", &label)
         }
         TreeNode::Object(_, kind) => format!("{full_name}, {}", kind_name(locale, *kind)),

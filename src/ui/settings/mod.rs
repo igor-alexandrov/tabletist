@@ -394,7 +394,7 @@ pub(super) fn idle_text(locale: Locale, choice: Idle) -> String {
         Idle::Hour1 => hours(1),
         Idle::Hours4 => hours(4),
     };
-    phrase.replace("{n}", &count.to_string())
+    phrase.replace("{n}", &crate::i18n::number(locale, count))
 }
 
 /// How often a check for updates runs, as the window writes it.
@@ -409,7 +409,7 @@ pub(super) fn check_text(locale: Locale, choice: UpdateCheck) -> String {
 
 /// The days the log keeps a call, as the window writes them.
 pub(super) fn days(locale: Locale, days: u32) -> String {
-    ngettext(locale, "{n} day", "{n} days", days).replace("{n}", &days.to_string())
+    ngettext(locale, "{n} day", "{n} days", days).replace("{n}", &crate::i18n::number(locale, days))
 }
 
 /// Whether an option of on and off is on.

@@ -257,16 +257,18 @@ pub fn first_comment(script: &str) -> Option<String> {
 
 /// When something was opened, as the start screen says it: `Just now`,
 /// `5 min ago`, `2 h ago`, `Yesterday`, the weekday (`Mon`) within the
-/// week, else the date (`Oct 14`, and with its year in another year).
-/// `then` and `now` are seconds since the Unix epoch; the days are
-/// `zone`'s. Nothing for a time no calendar has.
-pub fn when(then: u64, now: u64, zone: &TimeZone) -> String {
+/// week, else the date (`Oct 14`, and with its year in another year), in
+/// `locale`. `then` and `now` are seconds since the Unix epoch; the days
+/// are `zone`'s. Nothing for a time no calendar has.
+pub fn when(locale: crate::i18n::Locale, then: u64, now: u64, zone: &TimeZone) -> String {
+    use crate::i18n::{fill, gettext, numbers};
     let ago = now.saturating_sub(then);
+    let count = |words: &str, n: u64| fill(words, &[("{n}", &numbers::number(locale, n))]);
     if ago < 60 {
-        return "Just now".into();
+        return gettext(locale, "Just now").into_owned();
     }
     if ago < 3_600 {
-        return format!("{} min ago", ago / 60);
+        return count(&gettext(locale, "{n} min ago"), ago / 60);
     }
     let date = |secs: u64| {
         let at = Timestamp::from_second(i64::try_from(secs).ok()?).ok()?;
@@ -277,11 +279,16 @@ pub fn when(then: u64, now: u64, zone: &TimeZone) -> String {
     };
     let days = now_date.since(then_date).map_or(0, |span| span.get_days());
     match days {
-        i32::MIN..=0 => format!("{} h ago", ago / 3_600),
-        1 => "Yesterday".into(),
-        2..=6 => then_date.strftime("%a").to_string(),
-        _ if then_date.year() == now_date.year() => then_date.strftime("%b %-d").to_string(),
-        _ => then_date.strftime("%b %-d, %Y").to_string(),
+        i32::MIN..=0 => count(&gettext(locale, "{n} h ago"), ago / 3_600),
+        1 => gettext(locale, "Yesterday").into_owned(),
+        2..=6 => {
+            let weekday = then_date.weekday().to_monday_zero_offset();
+            numbers::weekday(locale, usize::try_from(weekday).unwrap_or_default()).into_owned()
+        }
+        _ if then_date.year() == now_date.year() => {
+            numbers::short_day(locale, then_date.month(), then_date.day())
+        }
+        _ => numbers::dated_day(locale, then_date.year(), then_date.month(), then_date.day()),
     }
 }
 
@@ -511,7 +518,7 @@ mod tests {
         // 2026-10-19 10:00:00 UTC, a Monday.
         let now = 1_792_404_000;
         let berlin = TimeZone::fixed(jiff::tz::offset(2));
-        let say = |then: u64| when(then, now, &berlin);
+        let say = |then: u64| when(crate::i18n::Locale::English, then, now, &berlin);
         assert_eq!(say(now - 30), "Just now");
         assert_eq!(say(now - 5 * 60), "5 min ago");
         assert_eq!(say(now - 2 * 3_600), "2 h ago");
@@ -525,6 +532,15 @@ mod tests {
         // The day is the zone's: ahead of UTC it is already the 20th, and
         // eleven hours ago was the day before.
         let east = TimeZone::fixed(jiff::tz::offset(14));
-        assert_eq!(when(now - 11 * 3_600 - 60, now, &east), "Yesterday");
+        let english = crate::i18n::Locale::English;
+        assert_eq!(
+            when(english, now - 11 * 3_600 - 60, now, &east),
+            "Yesterday"
+        );
+        let russian = |then: u64| when(crate::i18n::Locale::Russian, then, now, &berlin);
+        assert_eq!(russian(now - 30), "Только что");
+        assert_eq!(russian(now - 5 * 60), "5 мин назад");
+        assert_eq!(russian(now - 3 * 86_400), "пт");
+        assert_eq!(russian(now - 7 * 86_400), "12 окт.");
     }
 }

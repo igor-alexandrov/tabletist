@@ -9,7 +9,7 @@ use egui::{Id, Rect, Sense, Ui, pos2, vec2};
 use jiff::civil::{Date, Time, Weekday};
 
 use crate::dates::{Column, Kind, Moment, Range, Reading, Refusal, Stored};
-use crate::i18n::{Locale, Msgid, msgid, ngettext};
+use crate::i18n::{Locale, Msgid, msgid, ngettext, numbers, pgettext};
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::{sql_complete, widgets};
@@ -74,42 +74,13 @@ fn sent_words(literal: &str, look: &Look, locale: Locale) -> String {
     )
 }
 
-const WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
-const FULL_MONTHS: [&str; 12] = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-];
-
 fn weekday_name(day: Weekday, locale: Locale) -> String {
     let at = usize::try_from(day.to_monday_zero_offset()).unwrap_or_default();
-    // English until the dates follow the language (run 2c of #344).
-    tr(locale, Msgid::as_is(WEEKDAYS[at % 7]))
+    numbers::weekday(locale, at).into_owned()
 }
 
 fn month_name(month: i8, locale: Locale) -> String {
-    let at = usize::try_from(month - 1).unwrap_or_default();
-    // English until the dates follow the language (run 2c of #344).
-    tr(locale, Msgid::as_is(MONTHS[at % 12]))
-}
-
-/// "January".
-pub(super) fn full_month_name(month: i8, locale: Locale) -> String {
-    let at = usize::try_from(month - 1).unwrap_or_default();
-    // English until the dates follow the language (run 2c of #344).
-    tr(locale, Msgid::as_is(FULL_MONTHS[at % 12]))
+    numbers::short_month(locale, month).into_owned()
 }
 
 /// The year as a person reads it: `2026`, and `44 BC` before 1 AD.
@@ -121,20 +92,43 @@ pub(super) fn year_words(year: i16, locale: Locale) -> String {
     }
 }
 
-/// "Thu 15 Jan 2026".
+/// "Thu 15 Jan 2026", «чт 15 янв. 2026».
 pub fn day_words(date: Date, locale: Locale) -> String {
-    format!(
-        "{} {} {} {}",
-        weekday_name(date.weekday(), locale),
-        date.day(),
-        month_name(date.month(), locale),
-        year_words(date.year(), locale)
+    crate::i18n::fill(
+        // Translators: a date as the date line says it: "Thu 15 Jan 2026".
+        &pgettext(locale, "date line", "{weekday} {day} {month} {year}"),
+        &[
+            ("{weekday}", &weekday_name(date.weekday(), locale)),
+            ("{day}", &date.day().to_string()),
+            ("{month}", &month_name(date.month(), locale)),
+            ("{year}", &year_words(date.year(), locale)),
+        ],
     )
 }
 
-/// "15 Jan" or "8 Mar": a day of the year the line is about.
+/// "15 Jan" or "8 Mar", «15 янв.»: a day of the year the line is about.
 fn short_day(date: Date, locale: Locale) -> String {
-    format!("{} {}", date.day(), month_name(date.month(), locale))
+    crate::i18n::fill(
+        // Translators: a day of the year the date line is about: "15 Jan".
+        &pgettext(locale, "date line", "{day} {month}"),
+        &[
+            ("{day}", &date.day().to_string()),
+            ("{month}", &month_name(date.month(), locale)),
+        ],
+    )
+}
+
+/// "15 Jan 2025", «15 янв. 2025»: a day of another year.
+fn dated_day(date: Date, locale: Locale) -> String {
+    crate::i18n::fill(
+        // Translators: a day of another year, as the date line says it.
+        &pgettext(locale, "date line", "{day} {month} {year}"),
+        &[
+            ("{day}", &date.day().to_string()),
+            ("{month}", &month_name(date.month(), locale)),
+            ("{year}", &year_words(date.year(), locale)),
+        ],
+    )
 }
 
 /// "09:30", with its seconds where they are not nothing (always for a
@@ -160,9 +154,9 @@ fn days_words(days: i64, locale: Locale) -> String {
         1 => tr(locale, msgid("tomorrow")),
         -1 => tr(locale, msgid("yesterday")),
         days if days > 0 => ngettext(locale, "in {count} day", "in {count} days", days)
-            .replace("{count}", &days.to_string()),
+            .replace("{count}", &crate::i18n::number(locale, days)),
         days => ngettext(locale, "{count} day ago", "{count} days ago", days.abs())
-            .replace("{count}", &days.abs().to_string()),
+            .replace("{count}", &crate::i18n::number(locale, days.abs())),
     }
 }
 
@@ -193,7 +187,7 @@ pub fn refusal_text(refusal: &Refusal, type_name: &str, locale: Locale) -> Strin
         }
         Refusal::NoDay { day, month } => say(msgid("There is no {day} {month}."))
             .replace("{day}", &day.to_string())
-            .replace("{month}", &full_month_name(*month, locale)),
+            .replace("{month}", &numbers::month_of_a_date(locale, *month)),
         Refusal::NoTime(typed) => {
             say(msgid("{time} is not a time of day.")).replace("{time}", typed)
         }
@@ -368,11 +362,7 @@ pub fn line(
                 let said = if same_year {
                     short_day(was, locale)
                 } else {
-                    format!(
-                        "{} {}",
-                        short_day(was, locale),
-                        year_words(was.year(), locale)
-                    )
+                    dated_day(was, locale)
                 };
                 words.push_str(&format!(
                     " · {}",
@@ -739,6 +729,29 @@ mod tests {
     use jiff::civil::date;
     use jiff::tz::TimeZone;
     use tabletist_db::Dialect;
+
+    #[test]
+    fn a_date_is_said_in_the_window_s_language() {
+        let day = date(2026, 1, 15);
+        assert_eq!(day_words(day, Locale::English), "Thu 15 Jan 2026");
+        assert_eq!(day_words(day, Locale::Russian), "чт 15 янв. 2026");
+        assert_eq!(short_day(date(2026, 5, 1), Locale::Russian), "1 мая");
+        assert_eq!(dated_day(day, Locale::English), "15 Jan 2026");
+        let calendar = |locale| {
+            (
+                crate::ui::calendar::month_words(day, locale),
+                crate::ui::calendar::day_name(day, locale),
+            )
+        };
+        assert_eq!(
+            calendar(Locale::English),
+            ("January 2026".into(), "Thursday 15 January 2026".into())
+        );
+        assert_eq!(
+            calendar(Locale::Russian),
+            ("Январь 2026".into(), "четверг, 15 января 2026".into())
+        );
+    }
 
     fn new_york() -> TimeZone {
         TimeZone::get("America/New_York").unwrap()

@@ -174,20 +174,25 @@ fn facts(
     match value {
         // Sixteen bytes read as a UUID: there is nothing more to say.
         Value::Bytes(bytes) if format::uuid(bytes).is_some() => Vec::new(),
-        Value::Bytes(bytes) if look.terminal => std::iter::once(format::terse_size(bytes.len()))
-            .chain(format::sniff(bytes).map(str::to_lowercase))
-            .collect(),
-        Value::Bytes(bytes) => std::iter::once(format::human_size(bytes.len()))
-            .chain(
-                format::sniff(bytes)
-                    .map(|kind| say(msgid("looks like {kind}")).replace("{kind}", kind)),
-            )
-            .collect(),
+        Value::Bytes(bytes) if look.terminal => {
+            std::iter::once(crate::i18n::numbers::terse_size(locale, bytes.len()))
+                .chain(format::sniff(bytes).map(str::to_lowercase))
+                .collect()
+        }
+        Value::Bytes(bytes) => {
+            std::iter::once(crate::i18n::numbers::file_size(locale, bytes.len()))
+                .chain(
+                    format::sniff(bytes)
+                        .map(|kind| say(msgid("looks like {kind}")).replace("{kind}", kind)),
+                )
+                .collect()
+        }
         Value::Text(text) if listed(text, column) => format::array_items(text)
             .map(|array| {
                 let count = array.items.len();
                 let words = ngettext(locale, "{n} element", "{n} elements", count);
-                look.label(&words).replace("{n}", &count.to_string())
+                look.label(&words)
+                    .replace("{n}", &crate::i18n::number(locale, count))
             })
             .into_iter()
             .collect(),
@@ -201,7 +206,7 @@ fn facts(
                     ngettext(locale, "{n} character", "{n} characters", count)
                 };
                 look.label(&words)
-                    .replace("{n}", &format::group_digits(count as u64))
+                    .replace("{n}", &crate::i18n::number(locale, count as u64))
             })
             .into_iter()
             .collect(),
@@ -836,7 +841,7 @@ fn draw(
                     _ => {
                         let said =
                             ngettext(locale, "{n} unsaved change", "{n} unsaved changes", changed)
-                                .replace("{n}", &changed.to_string());
+                                .replace("{n}", &crate::i18n::number(locale, changed));
                         (said, palette.warning)
                     }
                 };
@@ -2510,7 +2515,7 @@ fn copy_line(made: &crate::edit::Copied, look: &Look, locale: crate::i18n::Local
                 "{first}, {second} and {count} more",
                 rest.len(),
             )
-            .replace("{count}", &rest.len().to_string());
+            .replace("{count}", &crate::i18n::number(locale, rest.len()));
             Some(crate::i18n::fill(
                 &look.label(&more),
                 &[("{first}", first), ("{second}", second)],
@@ -2722,7 +2727,7 @@ fn value_of(
                 Id::new(("row-panel-json", tab, tab_id, request, row, col)),
             );
         }
-        if let Some(file) = json_view::attachment(&doc) {
+        if let Some(file) = json_view::attachment(&doc, locale) {
             attachment_card(ui, &file, look, palette);
             ui.add_space(if look.terminal { 10.0 } else { 6.0 });
         }
@@ -3039,7 +3044,7 @@ fn elements(
                     "… {n} more elements",
                     more,
                 ))
-                .replace("{n}", &format::group_digits(more as u64));
+                .replace("{n}", &crate::i18n::number(locale, more as u64));
             Text::one(look, role, &rest, palette.faint)
                 .layout(ui.ctx())
                 .label(ui);
@@ -3073,7 +3078,7 @@ fn binary(
     let role = TextRole::pick(look, TextRole::Json, TextRole::OSecondary);
     let more = bytes.len().saturating_sub(format::HEX_PREVIEW);
     let rest = (more > 0).then(|| {
-        let count = format::group_digits(more as u64);
+        let count = crate::i18n::number(locale, more as u64);
         let words = if look.terminal {
             ngettext(locale, "… {n} more", "… {n} more", more)
         } else {

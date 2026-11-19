@@ -154,7 +154,8 @@ fn state_line(
     }
     // The list goes on past the rows drawn: the arrows reach the rest.
     (hidden > 0).then(|| {
-        let text = gettext(locale, "{count} more").replace("{count}", &hidden.to_string());
+        let text = gettext(locale, "{count} more")
+            .replace("{count}", &crate::i18n::number(locale, hidden));
         (text, false)
     })
 }
@@ -178,7 +179,7 @@ fn count_line(picker: &Picker, table: &str, locale: Locale) -> Option<String> {
             "{count} matches in {table}",
             count,
         )
-        .replace("{count}", &count.to_string())
+        .replace("{count}", &crate::i18n::number(locale, count))
         .replace("{table}", &table)
     })
 }
@@ -298,7 +299,7 @@ fn matches_text(picker: &Picker, terse: bool, locale: Locale) -> String {
     }
     let count = picker.options.len();
     ngettext(locale, "{count} match", "{count} matches", count)
-        .replace("{count}", &count.to_string())
+        .replace("{count}", &crate::i18n::number(locale, count))
 }
 
 /// What a screen reader is told once the list is searched again by the

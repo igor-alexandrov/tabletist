@@ -440,7 +440,7 @@ pub fn size_words(
 pub fn said(locale: crate::i18n::Locale, (rows, cols): (usize, usize), whole_rows: bool) -> String {
     if whole_rows {
         return crate::i18n::ngettext(locale, "{n} row selected", "{n} rows selected", rows)
-            .replace("{n}", &rows.to_string());
+            .replace("{n}", &crate::i18n::number(locale, rows));
     }
     let rows = crate::i18n::counted(locale, rows, "row", "rows");
     let cols = crate::i18n::counted(locale, cols, "column", "columns");

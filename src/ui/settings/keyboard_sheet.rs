@@ -250,9 +250,9 @@ fn search_row(
         (
             // A count on a label, so one form for every number.
             skin.say(msgid("Changed · {n}"))
-                .replace("{n}", &changed.to_string()),
+                .replace("{n}", &crate::i18n::number(skin.locale, changed)),
             skin.say(msgid("Changed, {n}"))
-                .replace("{n}", &changed.to_string()),
+                .replace("{n}", &crate::i18n::number(skin.locale, changed)),
         )
     };
     let shown = skin.say(msgid("Shortcuts shown"));

@@ -77,7 +77,7 @@ fn selection_note(
     let rows = object.selected_rows().len();
     if rows > 1 {
         let said = ngettext(locale, "{n} row selected", "{n} rows selected", rows);
-        return Some(said.replace("{n}", &rows.to_string()));
+        return Some(said.replace("{n}", &crate::i18n::number(locale, rows)));
     }
     let Some(id) = crate::edit::new_id(cell.row) else {
         return Some(gettext(locale, "1 row selected").into_owned());
@@ -91,7 +91,7 @@ fn selection_note(
     let fields = ngettext(locale, "{n} required field", "{n} required fields", missing);
     Some(format!(
         "{new} · {}",
-        fields.replace("{n}", &missing.to_string())
+        fields.replace("{n}", &crate::i18n::number(locale, missing))
     ))
 }
 
@@ -111,14 +111,16 @@ fn subtitle(object: &ObjectTab, look: &Look, locale: crate::i18n::Locale) -> Vec
         let count = format!(
             "{}{}",
             if exact.is_some() { "" } else { "~" },
-            format::group_digits(rows)
+            crate::i18n::number(locale, rows)
         );
         ngettext(locale, "{n} row", "{n} rows", rows).replace("{n}", &count)
     });
     // The rows to add, beside the table's own: "13 rows + 1 new".
     let added = object.edits.added.len();
-    let new = (added > 0)
-        .then(|| ngettext(locale, "{n} new", "{n} new", added).replace("{n}", &added.to_string()));
+    let new = (added > 0).then(|| {
+        ngettext(locale, "{n} new", "{n} new", added)
+            .replace("{n}", &crate::i18n::number(locale, added))
+    });
     match (rows, new) {
         (Some(rows), Some(new)) => parts.push(format!("{rows} + {new}")),
         (Some(one), None) | (None, Some(one)) => parts.push(one),
@@ -128,7 +130,7 @@ fn subtitle(object: &ObjectTab, look: &Look, locale: crate::i18n::Locale) -> Vec
     let deleted = object.edits.deleted.len();
     if deleted > 0 {
         let to_delete = ngettext(locale, "{n} to delete", "{n} to delete", deleted);
-        parts.push(to_delete.replace("{n}", &deleted.to_string()));
+        parts.push(to_delete.replace("{n}", &crate::i18n::number(locale, deleted)));
     }
     if let Some(page) = page {
         let count = page.columns.len();
@@ -136,7 +138,7 @@ fn subtitle(object: &ObjectTab, look: &Look, locale: crate::i18n::Locale) -> Vec
             true => ngettext(locale, "{n} col", "{n} cols", count),
             false => ngettext(locale, "{n} column", "{n} columns", count),
         };
-        parts.push(said.replace("{n}", &count.to_string()));
+        parts.push(said.replace("{n}", &crate::i18n::number(locale, count)));
     }
     if !look.terminal {
         parts.push(format::display_safe(&object.object.schema).into_owned());
@@ -1152,7 +1154,7 @@ pub fn columns_note(
         &[
             ("{first}", &(shown.first + 1).to_string()),
             ("{last}", &(shown.last + 1).to_string()),
-            ("{total}", &shown.total.to_string()),
+            ("{total}", &crate::i18n::number(locale, shown.total)),
         ],
     );
     let first = object.page().and_then(|page| page.columns.first());
@@ -1198,7 +1200,8 @@ pub fn footer(
     let page = object.page();
     let filtered = !object.query.filters.is_empty() || object.query.raw_where.is_some();
     let range = page.and_then(|page| {
-        format::range_label(
+        crate::i18n::numbers::range_label(
+            locale,
             object.query.offset,
             page.rows.len(),
             page.has_more,
@@ -1219,7 +1222,8 @@ pub fn footer(
         .map(|saved| super::pending_bar::written_text(saved, locale));
     let timing = written.or_else(|| {
         page.map(|page| {
-            gettext(locale, "Query {elapsed}").replace("{elapsed}", &format::elapsed(page.elapsed))
+            gettext(locale, "Query {elapsed}")
+                .replace("{elapsed}", &format::elapsed(locale, page.elapsed))
         })
     });
     let unordered = page.is_some_and(|page| !page.ordered_by_key) && object.query.sort.is_empty();
@@ -1666,7 +1670,7 @@ pub fn show(
                 *deleted,
             );
             Some(
-                said.replace("{n}", &deleted.to_string())
+                said.replace("{n}", &crate::i18n::number(locale, deleted))
                     .replace("{row}", row),
             )
         }
@@ -1686,7 +1690,7 @@ pub fn show(
             if *marked > 0 {
                 parts.push(super::pending_bar::marked_text(*marked, *skipped, locale));
                 let to_delete = ngettext(locale, "{n} to delete.", "{n} to delete.", *deleted);
-                parts.push(to_delete.replace("{n}", &deleted.to_string()));
+                parts.push(to_delete.replace("{n}", &crate::i18n::number(locale, deleted)));
             }
             if *dropped > 0 {
                 let rows = super::pending_bar::counted(
@@ -1787,6 +1791,7 @@ pub fn show(
             .map(|column| Shown {
                 full_precision: fit.full_precision,
                 grouped: fit.grouped && !is_key(&column.name, structure),
+                locale,
                 zone: zone.as_ref(),
             })
             .collect();
@@ -2774,7 +2779,7 @@ fn empty_rows(
                 "No rows match {n} filters",
                 filters.len(),
             )
-            .replace("{n}", &filters.len().to_string()),
+            .replace("{n}", &crate::i18n::number(locale, filters.len())),
         )
     };
     // Translators: what joins the filters a page matches none of:
@@ -2796,7 +2801,10 @@ fn empty_rows(
             );
             let about = crate::i18n::fill(
                 &look.label(&about),
-                &[("{table}", &name), ("{n}", &format::group_digits(rows))],
+                &[
+                    ("{table}", &name),
+                    ("{n}", &crate::i18n::number(locale, rows)),
+                ],
             );
             format!("{about} {none}")
         }
@@ -2838,6 +2846,8 @@ pub struct Shown<'z> {
     pub full_precision: bool,
     /// A number's integer digits in threes.
     pub grouped: bool,
+    /// The language whose marks a grouped number takes: «1 240,50».
+    pub locale: crate::i18n::Locale,
     /// The zone a value with an offset is shown in. None shows it as the
     /// server sent it.
     pub zone: Option<&'z jiff::tz::TimeZone>,
@@ -2946,7 +2956,8 @@ pub fn plain_cell<'a>(
             }
             // A number is grouped before it is cut to a cell's length: one
             // cut first ends in an ellipsis, which is no number to group.
-            let line = match grouped.then(|| format::group_number(text)) {
+            let line = match grouped.then(|| crate::i18n::numbers::group_number(shown.locale, text))
+            {
                 Some(std::borrow::Cow::Owned(number)) => {
                     format::cell_line(&number, marks).into_owned().into()
                 }
@@ -2964,7 +2975,7 @@ pub fn plain_cell<'a>(
         }
         other => {
             let text = format::cell_text(other);
-            match grouped.then(|| format::group_number(&text)) {
+            match grouped.then(|| crate::i18n::numbers::group_number(shown.locale, &text)) {
                 Some(std::borrow::Cow::Owned(number)) => number.into(),
                 _ => text,
             }
@@ -3400,6 +3411,13 @@ mod tests {
             "1,234,567"
         );
         assert_eq!(text(&amount, ValueKind::Numeric, grouped), "1,240.50");
+        // In Russian, its marks: drawn only, so a copy is the value.
+        let russian = Shown {
+            locale: crate::i18n::Locale::Russian,
+            ..grouped
+        };
+        assert_eq!(text(&amount, ValueKind::Numeric, russian), "1\u{a0}240,50");
+        assert_eq!(format::full_text(&amount), "1240.50");
         assert_eq!(
             text(&Value::Int(1_234_567), ValueKind::Numeric, Shown::default()),
             "1234567"

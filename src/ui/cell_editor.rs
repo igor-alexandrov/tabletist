@@ -1298,7 +1298,7 @@ fn band(
             palette.danger,
         ),
         None => {
-            let grouped = |count: usize| crate::format::group_digits(count as u64);
+            let grouped = |count: usize| crate::i18n::number(locale, count as u64);
             let chars = editor.text.chars().count();
             let lines = editor.text.matches('\n').count() + 1;
             let chars =
@@ -1405,7 +1405,7 @@ pub fn problem_text(
     let of_type = |text: Msgid| fill(&text.say(locale), &[("{type}", type_name)]);
     // A message whose `{n}` is a count: "At most 3 digits before the point".
     let counted = |text: std::borrow::Cow<'static, str>, count: u32| {
-        fill(&text, &[("{n}", &count.to_string())])
+        fill(&text, &[("{n}", &crate::i18n::number(locale, count))])
     };
     // As the check read it: without the spaces a database overlooks.
     let typed = typed.map(str::trim_ascii).filter(|typed| !typed.is_empty());

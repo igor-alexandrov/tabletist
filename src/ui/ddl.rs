@@ -98,7 +98,7 @@ pub fn copy(ctx: &egui::Context, paint: Paint, tab: ConnTabId, object: &ObjectTa
         Some(part) => {
             let lines = part.lines().count().max(1);
             crate::i18n::ngettext(locale, "Copied {n} line", "Copied {n} lines", lines)
-                .replace("{n}", &lines.to_string())
+                .replace("{n}", &crate::i18n::number(locale, lines))
         }
         None => gettext(locale, "Copied DDL").into_owned(),
     };
@@ -265,7 +265,7 @@ pub fn read_ago(waited: Duration, locale: Locale) -> String {
             (hours, said)
         }
     };
-    said.replace("{n}", &count.to_string())
+    said.replace("{n}", &crate::i18n::number(locale, count))
 }
 
 /// The terminal header's summary in the DDL view: "ddl · read-only ·
@@ -947,7 +947,7 @@ pub fn footer(ui: &mut egui::Ui, paint: Paint, tab: ConnTabId, object: &ObjectTa
             let center = rect.center().y;
             let role = widgets::secondary(&look);
             let count = crate::i18n::ngettext(locale, "{n} line", "{n} lines", lines)
-                .replace("{n}", &lines.to_string());
+                .replace("{n}", &crate::i18n::number(locale, lines));
             let count = format!("{count} · {}", engine(driver));
             let mut x = rect.left() + 24.0;
             x += widgets::paint_label(ui, x, center, Text::one(&look, role, &count, palette.dim));

@@ -295,7 +295,9 @@ fn leave_sheet(
                 "Discard {changes} in {n} tabs?",
                 tabs,
             );
-            title.replace("{n}", &tabs.to_string()).into()
+            title
+                .replace("{n}", &crate::i18n::number(locale, tabs))
+                .into()
         }
     };
     let title = title.replace("{changes}", &changes);
@@ -409,7 +411,10 @@ fn leave_box(
         let words = ngettext(locale, "{what} in {n} tab", "{what} in {n} tabs", tabs);
         line = crate::i18n::fill(
             &look.label(&words),
-            &[("{what}", &line), ("{n}", &tabs.to_string())],
+            &[
+                ("{what}", &line),
+                ("{n}", &crate::i18n::number(locale, tabs)),
+            ],
         );
     }
     // Under a save there is no telling what is written: the box says
@@ -424,7 +429,7 @@ fn leave_box(
             prompt.changes,
         );
         look.label(&words)
-            .replace("{n}", &prompt.changes.to_string())
+            .replace("{n}", &crate::i18n::number(locale, prompt.changes))
     };
     let (frame, radius) = skin.frame();
     let modal = widgets::modal(Id::new("leave-prompt"), look, palette)
@@ -613,7 +618,7 @@ pub fn confirm_write(
                 "{n} rows in {table}",
                 prompt.rows,
             )
-            .replace("{n}", &prompt.rows.to_string())
+            .replace("{n}", &crate::i18n::number(locale, prompt.rows))
             .replace("{table}", &table)
         },
         columns,

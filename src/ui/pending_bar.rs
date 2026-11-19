@@ -57,7 +57,10 @@ pub fn marked_text(marked: usize, skipped: usize, locale: Locale) -> String {
         "{n} can't be deleted.",
         skipped,
     );
-    format!("{rows}. {}", left.replace("{n}", &skipped.to_string()))
+    format!(
+        "{rows}. {}",
+        left.replace("{n}", &crate::i18n::number(locale, skipped))
+    )
 }
 
 /// How many foreign keys name no row: "1 value names no row". What a save
@@ -85,13 +88,13 @@ fn counts_text(counts: crate::edit::Counts, doubts: usize, short: bool, locale: 
                 "{changes} in {n} rows",
                 counts.rows,
             )
-            .replace("{n}", &counts.rows.to_string())
+            .replace("{n}", &crate::i18n::number(locale, counts.rows))
             .replace("{changes}", &changes)
         });
     }
     if counts.deleted > 0 {
         let to_delete = ngettext(locale, "{n} to delete", "{n} to delete", counts.deleted);
-        parts.push(to_delete.replace("{n}", &counts.deleted.to_string()));
+        parts.push(to_delete.replace("{n}", &crate::i18n::number(locale, counts.deleted)));
     }
     if doubts > 0 && !short {
         parts.push(doubts_text(doubts, locale));
@@ -167,7 +170,7 @@ pub(crate) fn holder_said(
     // The words are the app's own, and the placeholders are lower case
     // already: `own` leaves them for the count and the table's own name.
     own(&said)
-        .replace("{n}", &holder.rows.to_string())
+        .replace("{n}", &crate::i18n::number(locale, holder.rows))
         .replace("{table}", &format::display_safe(&holder.table.name))
 }
 
@@ -195,7 +198,7 @@ fn note_said(
                 let more = ngettext(locale, "{n} more row too.", "{n} more rows too.", *others);
                 text.push_str(&format!(
                     " {}",
-                    own(&more).replace("{n}", &others.to_string())
+                    own(&more).replace("{n}", &crate::i18n::number(locale, others))
                 ));
             }
             text
@@ -251,9 +254,9 @@ fn note_said(
                 crate::i18n::fill(
                     &own(&words),
                     &[
-                        ("{n}", &rows.len().to_string()),
+                        ("{n}", &crate::i18n::number(locale, rows.len())),
                         ("{names}", &names),
-                        ("{more}", &more.to_string()),
+                        ("{more}", &crate::i18n::number(locale, more)),
                     ],
                 )
             }
@@ -290,7 +293,7 @@ pub fn written_text(saved: &Saved, locale: Locale) -> String {
             "rows deleted",
         ));
     }
-    parts.push(format::elapsed(saved.elapsed));
+    parts.push(format::elapsed(locale, saved.elapsed));
     gettext(locale, "written {what}").replace("{what}", &parts.join(" · "))
 }
 
@@ -305,7 +308,7 @@ pub(crate) fn block_text(block: SaveBlock, to_fix: usize, locale: Locale) -> Str
             "Fix {n} values to save",
             to_fix,
         )
-        .replace("{n}", &to_fix.to_string()),
+        .replace("{n}", &crate::i18n::number(locale, to_fix)),
         SaveBlock::Required => gettext(locale, "Fill required fields to save").into_owned(),
         SaveBlock::Disconnected => gettext(locale, "Not connected").into_owned(),
         SaveBlock::ReadOnly => gettext(locale, "This connection opens read-only").into_owned(),
@@ -401,7 +404,7 @@ pub fn show(
                 "{n} values are required",
                 more.len(),
             );
-            Some(said.replace("{n}", &more.len().to_string()))
+            Some(said.replace("{n}", &crate::i18n::number(locale, more.len())))
         }
     };
     let mut actions = Vec::new();
@@ -446,7 +449,7 @@ pub fn show(
             // and what a new row still needs.
             let fix = (counts.to_fix > 0).then(|| {
                 ngettext(locale, "{n} to fix", "{n} to fix", counts.to_fix)
-                    .replace("{n}", &counts.to_fix.to_string())
+                    .replace("{n}", &crate::i18n::number(locale, counts.to_fix))
             });
             // Nothing is to fix, and a new row needs a value: no mistake
             // to mark. A dot and the words, as the design has it.

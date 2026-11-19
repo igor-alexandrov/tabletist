@@ -1278,7 +1278,7 @@ impl App {
                 let suggested = self.dirs.downloads.join(file_name(&stem, sheet.format));
                 let rows = facts
                     .rows
-                    .map(crate::export_sheet::count_words)
+                    .map(|rows| crate::export_sheet::count_words(rows, self.locale))
                     .map_or_else(String::new, |rows| format!(" {rows}"));
                 let title = gettext(self.locale, "Export{rows} rows").replace("{rows}", &rows);
                 self.backend
@@ -1737,7 +1737,7 @@ impl App {
             "Exported {n} rows to {file}",
             rows,
         )
-        .replace("{n}", &crate::format::group_digits(rows))
+        .replace("{n}", &crate::i18n::number(self.locale, rows))
         .replace("{file}", &exporting.file);
         if cfg!(any(target_os = "macos", windows)) {
             self.window_asks
@@ -1803,7 +1803,7 @@ impl App {
                 "Copied {n} rows as {format}",
                 rows,
             )
-            .replace("{n}", &crate::format::group_digits(rows))
+            .replace("{n}", &crate::i18n::number(self.locale, rows))
             .replace("{format}", format.name());
             self.said = Some(self.look.label(&said));
             self.to_clipboard = Some(text);

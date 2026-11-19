@@ -240,8 +240,8 @@ pub struct Attachment {
 }
 
 /// The file `doc` describes, when it names one: a `filename` at its top
-/// level or in its `metadata`.
-pub fn attachment(doc: &Doc) -> Option<Attachment> {
+/// level or in its `metadata`. Its size is said in `locale`.
+pub fn attachment(doc: &Doc, locale: crate::i18n::Locale) -> Option<Attachment> {
     let Json::Object(entries) = &doc.root else {
         return None;
     };
@@ -272,7 +272,7 @@ pub fn attachment(doc: &Doc) -> Option<Attachment> {
         details.push(format!("{width} × {height}"));
     }
     if let Some(size) = text(get(metadata, "size")).and_then(|size| size.parse::<usize>().ok()) {
-        details.push(crate::format::human_size(size));
+        details.push(crate::i18n::numbers::file_size(locale, size));
     }
     if let Some(storage) = text(get(entries, "storage")) {
         details.push(storage);
@@ -546,7 +546,7 @@ impl View<'_> {
 
     /// `phrase` with its `{n}` put in: "3 items".
     fn with_count(&self, phrase: std::borrow::Cow<'static, str>, count: usize) -> String {
-        phrase.replace("{n}", &count.to_string())
+        phrase.replace("{n}", &crate::i18n::number(self.locale, count))
     }
 
     /// The next line's text, empty.
@@ -688,7 +688,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            attachment(&doc),
+            attachment(&doc, crate::i18n::Locale::English),
             Some(Attachment {
                 filename: "gold.jpg".into(),
                 details: "image/jpeg · 103 × 102 · 5.9 KB · store".into(),
@@ -696,7 +696,13 @@ mod tests {
             })
         );
         assert_eq!(summary(&doc), (3, vec!["a/b.jpg".into(), "store".into()]));
-        assert_eq!(attachment(&parse(r#"{"plan": "pro"}"#).unwrap()), None);
+        assert_eq!(
+            attachment(
+                &parse(r#"{"plan": "pro"}"#).unwrap(),
+                crate::i18n::Locale::English
+            ),
+            None
+        );
     }
 
     #[test]

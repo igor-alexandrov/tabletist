@@ -58,12 +58,12 @@ pub fn primary_words(
         (DestinationChoice::File, None) if again => gettext(locale, "Run and export…").into_owned(),
         (DestinationChoice::Clipboard, Some(rows)) => {
             ngettext(locale, "Copy {rows} row", "Copy {rows} rows", rows.rows)
-                .replace("{rows}", &count_words(rows))
+                .replace("{rows}", &count_words(rows, locale))
         }
         (DestinationChoice::Clipboard, None) => gettext(locale, "Copy rows").into_owned(),
         (DestinationChoice::File, Some(rows)) if look.terminal => {
             ngettext(locale, "Export {rows} row", "Export {rows} rows", rows.rows)
-                .replace("{rows}", &count_words(rows))
+                .replace("{rows}", &count_words(rows, locale))
         }
         (DestinationChoice::File, Some(rows)) => ngettext(
             locale,
@@ -71,7 +71,7 @@ pub fn primary_words(
             "Export {rows} rows…",
             rows.rows,
         )
-        .replace("{rows}", &count_words(rows)),
+        .replace("{rows}", &count_words(rows, locale)),
         (DestinationChoice::File, None) if look.terminal => gettext(locale, "Export").into_owned(),
         (DestinationChoice::File, None) => gettext(locale, "Export…").into_owned(),
     };
@@ -390,7 +390,10 @@ fn mac(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec<Actio
                         "{} · {} · {}",
                         self::title(facts, look, locale),
                         sheet.format.name(),
-                        facts.rows.map(count_words).unwrap_or_default()
+                        facts
+                            .rows
+                            .map(|rows| count_words(rows, skin.locale))
+                            .unwrap_or_default()
                     ),
                     false => subtitle(skin, sheet),
                 };
@@ -585,8 +588,8 @@ fn choices(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec<A
             let summary = match sheet.choose {
                 false => crate::i18n::counted(locale, total, "column", "columns"),
                 true => gettext(locale, "{n} of {total}, in this order")
-                    .replace("{n}", &chosen.to_string())
-                    .replace("{total}", &total.to_string()),
+                    .replace("{n}", &crate::i18n::number(locale, chosen))
+                    .replace("{total}", &crate::i18n::number(locale, total)),
             };
             widgets::label(
                 ui,
@@ -940,12 +943,12 @@ fn rows_list(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec
     let page_line = match look.terminal {
         true => format!(
             "{}–{}",
-            crate::format::group_digits(first),
-            crate::format::group_digits(last)
+            crate::i18n::number(locale, first),
+            crate::i18n::number(locale, last)
         ),
         false => gettext(locale, "rows {first} to {last}, as sorted")
-            .replace("{first}", &crate::format::group_digits(first))
-            .replace("{last}", &crate::format::group_digits(last)),
+            .replace("{first}", &crate::i18n::number(locale, first))
+            .replace("{last}", &crate::i18n::number(locale, last)),
     };
     let matching_line = {
         let mut parts: Vec<String> = facts.filter_text.iter().cloned().collect();
@@ -961,7 +964,9 @@ fn rows_list(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec
         true => String::new(),
         false => gettext(locale, "no filter, primary key order").into_owned(),
     };
-    let known = |count: Option<crate::export_sheet::Count>| count.map(count_words);
+    let known = |count: Option<crate::export_sheet::Count>| {
+        count.map(|count| count_words(count, skin.locale))
+    };
     let rows: Vec<(RowsChoice, String, String, Option<String>, bool)> = match &facts.result {
         Some(result) => result_rows(skin, result),
         None => vec![
@@ -969,14 +974,15 @@ fn rows_list(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec
                 RowsChoice::Selected,
                 say(msgid("Selected rows")),
                 String::new(),
-                Some(crate::format::group_digits(facts.selected as u64)),
+                Some(crate::i18n::number(locale, facts.selected as u64)),
                 facts.selected > 0,
             ),
             (
                 RowsChoice::Page,
                 say(msgid("Current page")),
                 page_line,
-                Some(crate::format::group_digits(
+                Some(crate::i18n::number(
+                    locale,
                     last.saturating_sub(first.saturating_sub(1)),
                 )),
                 true,
@@ -1164,14 +1170,14 @@ fn result_rows(
             RowsChoice::Selected,
             say(msgid("Selected rows")),
             String::new(),
-            Some(crate::format::group_digits(facts.selected as u64)),
+            Some(crate::i18n::number(locale, facts.selected as u64)),
             facts.selected > 0,
         ),
         (
             RowsChoice::Loaded,
             say(msgid("Rows already loaded")),
             loaded_line,
-            Some(crate::format::group_digits(result.loaded)),
+            Some(crate::i18n::number(locale, result.loaded)),
             true,
         ),
         (
@@ -1772,7 +1778,10 @@ fn terminal(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec<
             "{} · {} · {}",
             self::title(facts, look, locale),
             sheet.format.key(),
-            facts.rows.map(count_words).unwrap_or_default()
+            facts
+                .rows
+                .map(|rows| count_words(rows, skin.locale))
+                .unwrap_or_default()
         ),
         false => subtitle(skin, sheet),
     };

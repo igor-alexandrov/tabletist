@@ -178,7 +178,7 @@ pub fn place(
         let which = look
             .label(&gettext(locale, "{at} of {count}"))
             .replace("{at}", &(at + 1).to_string())
-            .replace("{count}", &of.to_string());
+            .replace("{count}", &crate::i18n::number(locale, of));
         place.push_str(&format!(" · {which}"));
     }
     place

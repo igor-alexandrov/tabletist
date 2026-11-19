@@ -218,7 +218,7 @@ fn limit_name(limit: u32, locale: Locale) -> String {
     format!(
         "{} {}",
         gettext(locale, "Limit"),
-        format::group_digits(u64::from(limit))
+        crate::i18n::number(locale, u64::from(limit))
     )
 }
 
@@ -228,7 +228,7 @@ pub(crate) fn limit_words(limit: u32, look: &Look, locale: Locale) -> String {
     match limit {
         0 => look.label(&gettext(locale, "No limit")),
         _ if look.terminal => limit.to_string(),
-        _ => format::group_digits(u64::from(limit)),
+        _ => crate::i18n::number(locale, u64::from(limit)),
     }
 }
 
@@ -252,13 +252,14 @@ pub(crate) fn time_words(secs: u32, terminal: bool, locale: Locale) -> String {
         (true, 0, _) => format!("{secs}s"),
         (true, _, 0) => format!("{minutes}m"),
         (true, _, _) => format!("{minutes}m {rest}s"),
-        (false, 0, _) => gettext(locale, "{seconds} s").replace("{seconds}", &secs.to_string()),
-        (false, _, 0) => {
-            ngettext(locale, "{n} min", "{n} min", minutes).replace("{n}", &minutes.to_string())
+        (false, 0, _) => {
+            gettext(locale, "{seconds} s").replace("{seconds}", &crate::i18n::number(locale, secs))
         }
+        (false, _, 0) => ngettext(locale, "{n} min", "{n} min", minutes)
+            .replace("{n}", &crate::i18n::number(locale, minutes)),
         (false, _, _) => gettext(locale, "{minutes} min {seconds} s")
-            .replace("{minutes}", &minutes.to_string())
-            .replace("{seconds}", &rest.to_string()),
+            .replace("{minutes}", &crate::i18n::number(locale, minutes))
+            .replace("{seconds}", &crate::i18n::number(locale, rest)),
     }
 }
 
@@ -1180,8 +1181,8 @@ fn run_summary(sql: &SqlTab, locale: Locale) -> Option<String> {
         crate::i18n::fill(
             &phrase,
             &[
-                ("{n}", &format::group_digits(count)),
-                ("{took}", &format::elapsed(took)),
+                ("{n}", &crate::i18n::number(locale, count)),
+                ("{took}", &format::elapsed(locale, took)),
             ],
         )
     };

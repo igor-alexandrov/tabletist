@@ -323,7 +323,7 @@ fn the_russian_agents_note_stacks_its_wrapped_paragraphs() {
 
 /// `harness`'s window in Russian, as the app draws it at its start when
 /// the system's first language is Russian.
-fn in_russian(harness: &mut Harness) {
+pub(super) fn in_russian(harness: &mut Harness) {
     harness.app.system_language = Some(tag("ru-RU"));
     let settings = harness.app.settings.clone();
     harness.app.apply_settings(settings);
@@ -391,5 +391,82 @@ fn the_cell_editor_says_a_type_s_limits_in_russian() {
             .unwrap_or_else(|| panic!("{}: {limits:?}", look.name));
         assert!(from.parse::<i128>().is_ok(), "{}: {limits:?}", look.name);
         assert!(to.parse::<i128>().is_ok(), "{}: {limits:?}", look.name);
+    }
+}
+
+/// `book_covers` open on a page whose `publisher_id` holds an amount, in
+/// `look` with grouping on, the window's language `locale`, counted to
+/// 12,480 rows.
+fn grouped_covers(look: Look, locale: Locale) -> Harness {
+    let mut harness = Harness::with_size(egui::vec2(1400.0, 1200.0));
+    harness.set_look(look);
+    harness.app.settings.group_digits = Some(true);
+    if locale == Locale::Russian {
+        in_russian(&mut harness);
+    }
+    let tab = harness.connect_fake_as(false);
+    harness.app.apply(Action::OpenObject {
+        tab,
+        object: tabletist_db::ObjectRef::new("main", "book_covers"),
+        kind: tabletist_db::ObjectKind::Table,
+        pin: true,
+    });
+    harness.answer_structure(crate::testing::book_covers_structure());
+    let mut page = crate::testing::book_covers_page(3);
+    page.rows[0][1] = tabletist_db::Value::Text("1240.50".into());
+    harness.answer_rows(page);
+    let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    let object = harness
+        .app
+        .workspace_mut(tab)
+        .unwrap()
+        .object_tab_mut(id)
+        .unwrap();
+    object.count.value = Some(12_480);
+    harness.settle();
+    harness
+}
+
+/// In Russian a grouped grid number and the page's count take Russian's
+/// marks, a no-break space between the thousands and a decimal comma, and
+/// the grid's dates stay ISO. English is as it was.
+#[test]
+fn russian_numbers_take_its_marks_and_grid_dates_stay_iso() {
+    for look in Look::ALL {
+        let harness = grouped_covers(look, Locale::Russian);
+        let shown = |text: &str| painted(&harness, text);
+        assert!(
+            shown("1\u{a0}240,50"),
+            "{}: {:?}",
+            look.name,
+            harness.painted
+        );
+        assert!(
+            shown("9\u{a0}100\u{a0}000\u{a0}000\u{a0}000\u{a0}000\u{a0}002"),
+            "{}: {:?}",
+            look.name,
+            harness.painted
+        );
+        assert!(
+            shown("2026-01-12 09:14:03"),
+            "{}: grid dates stay ISO",
+            look.name
+        );
+        let range = match look.terminal {
+            true => "1–3/12\u{a0}480",
+            false => "1–3 из 12\u{a0}480",
+        };
+        let counted = harness.painted.iter().any(|(text, _)| text.contains(range));
+        assert!(counted, "{}: {:?}", look.name, harness.painted);
+        let english = grouped_covers(look, Locale::English);
+        let shown = |text: &str| painted(&english, text);
+        assert!(shown("1,240.50"), "{}: {:?}", look.name, english.painted);
+        assert!(shown("9,100,000,000,000,000,002"), "{}", look.name);
+        let range = match look.terminal {
+            true => "1–3/12,480",
+            false => "1–3 of 12,480",
+        };
+        let counted = english.painted.iter().any(|(text, _)| text.contains(range));
+        assert!(counted, "{}: {:?}", look.name, english.painted);
     }
 }

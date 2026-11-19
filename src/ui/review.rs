@@ -116,7 +116,7 @@ pub fn comment(line: &Line, locale: Locale) -> Option<String> {
         Line::Delete(row) => said(msgid("delete row {row}"), &[("{row}", row)]),
         Line::DeleteRun(rows) => fill(
             &ngettext(locale, "delete {n} row", "delete {n} rows", *rows),
-            &[("{n}", &rows.to_string())],
+            &[("{n}", &crate::i18n::number(locale, rows))],
         ),
         Line::DeleteRefused { row, reason } => said(
             msgid("delete row {row} · cannot be sent: {reason}"),
@@ -131,7 +131,7 @@ pub fn comment(line: &Line, locale: Locale) -> Option<String> {
                     "also deletes {n} rows in {table}",
                     *rows,
                 )
-                .replace("{n}", &rows.to_string()),
+                .replace("{n}", &crate::i18n::number(locale, rows)),
                 None => gettext(locale, "also deletes rows in {table}").into_owned(),
             };
             format!("{} (ON DELETE CASCADE)", what.replace("{table}", table))
@@ -148,7 +148,7 @@ pub fn comment(line: &Line, locale: Locale) -> Option<String> {
                     "also clears {columns} in {n} {table} rows",
                     *rows,
                 )
-                .replace("{n}", &rows.to_string()),
+                .replace("{n}", &crate::i18n::number(locale, rows)),
                 None => gettext(locale, "also clears {columns} in {table} rows").into_owned(),
             };
             let what = fill(
@@ -558,7 +558,7 @@ fn terminal_head(
     if deleted > 0 {
         counts.push(
             look.label(&ngettext(locale, "{n} to delete", "{n} to delete", deleted))
-                .replace("{n}", &deleted.to_string()),
+                .replace("{n}", &crate::i18n::number(locale, deleted)),
         );
     }
     let counts = counts.join(" · ");

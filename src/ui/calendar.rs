@@ -10,11 +10,11 @@ use egui::{CornerRadius, Id, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use jiff::civil::{Date, Time, Weekday};
 
 use crate::dates::{Column, Kind, Moment, Refusal};
-use crate::i18n::{Locale, Msgid, msgid};
+use crate::i18n::{Locale, Msgid, msgid, numbers, pgettext};
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::cell_editor::Calendar;
-use crate::ui::date_line::{full_month_name, tr, year_words};
+use crate::ui::date_line::{tr, year_words};
 use crate::ui::widgets;
 
 /// What the calendar shows of the editor's text, made each frame.
@@ -347,17 +347,6 @@ fn moved(month: Date, by: i64) -> Option<Date> {
     month.checked_add(jiff::Span::new().months(by)).ok()
 }
 
-const INITIALS: [&str; 7] = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
-const WEEKDAY_NAMES: [&str; 7] = [
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-    "Sunday",
-];
-
 /// The weekdays in the order the weeks run, from `first`.
 fn weekdays(first: Weekday) -> [Weekday; 7] {
     std::array::from_fn(|at| first.wrapping_add(at as i64))
@@ -365,29 +354,34 @@ fn weekdays(first: Weekday) -> [Weekday; 7] {
 
 fn initial(day: Weekday, locale: Locale) -> String {
     let at = usize::try_from(day.to_monday_zero_offset()).unwrap_or_default();
-    // English until the dates follow the language (run 2c of #344).
-    tr(locale, Msgid::as_is(INITIALS[at % 7]))
+    numbers::weekday_initial(locale, at).into_owned()
 }
 
-/// "January 2026", "March 44 BC".
+/// "January 2026", "March 44 BC", «Январь 2026».
 pub fn month_words(month: Date, locale: Locale) -> String {
-    format!(
-        "{} {}",
-        full_month_name(month.month(), locale),
-        year_words(month.year(), locale)
+    crate::i18n::fill(
+        // Translators: the calendar's heading: "January 2026".
+        &pgettext(locale, "calendar", "{month} {year}"),
+        &[
+            ("{month}", &numbers::month_name(locale, month.month())),
+            ("{year}", &year_words(month.year(), locale)),
+        ],
     )
 }
 
-/// "Thursday 15 January 2026": a day as a screen reader says it.
+/// "Thursday 15 January 2026", «четверг, 15 января 2026»: a day as a
+/// screen reader says it.
 pub fn day_name(date: Date, locale: Locale) -> String {
     let at = usize::try_from(date.weekday().to_monday_zero_offset()).unwrap_or_default();
-    format!(
-        "{} {} {} {}",
-        // English until the dates follow the language (run 2c of #344).
-        tr(locale, Msgid::as_is(WEEKDAY_NAMES[at % 7])),
-        date.day(),
-        full_month_name(date.month(), locale),
-        year_words(date.year(), locale)
+    crate::i18n::fill(
+        // Translators: a calendar's day as a screen reader says it.
+        &pgettext(locale, "calendar", "{weekday} {day} {month} {year}"),
+        &[
+            ("{weekday}", &numbers::weekday_name(locale, at)),
+            ("{day}", &date.day().to_string()),
+            ("{month}", &numbers::month_of_a_date(locale, date.month())),
+            ("{year}", &year_words(date.year(), locale)),
+        ],
     )
 }
 

@@ -1345,12 +1345,12 @@ fn status(form: &ConnectionForm, skin: &Skin) -> Option<Status> {
                     "Read {n} files · {size}",
                     read.files,
                 )
-                .replace("{n}", &read.files.to_string())
+                .replace("{n}", &crate::i18n::number(skin.locale, read.files))
                 .replace("{size}", &tabletist_db::files::size_text(read.bytes)),
                 None => format!("{} · {}", gettext(skin.locale, "Connected"), driver.label()),
             };
             if let Some(took) = form.test_took {
-                text = format!("{text} · {}", crate::format::elapsed(took));
+                text = format!("{text} · {}", crate::format::elapsed(skin.locale, took));
             }
             Some(Status::Passed(skin.look.label(&text)))
         }

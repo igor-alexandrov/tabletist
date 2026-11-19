@@ -446,13 +446,15 @@ fn field(
         } else {
             let words = ngettext(skin.locale, "{count} match", "{count} matches", count);
             skin.look
-                .label(&words.replace("{count}", &count.to_string()))
+                .label(&words.replace("{count}", &crate::i18n::number(skin.locale, count)))
         };
         if hidden > 0 {
             let words = ngettext(skin.locale, "{n} hidden", "{n} hidden", hidden);
             said = format!(
                 "{said} · {}",
-                skin.look.label(&words).replace("{n}", &hidden.to_string())
+                skin.look
+                    .label(&words)
+                    .replace("{n}", &crate::i18n::number(skin.locale, hidden))
             );
         }
         let text = Text::one(look, TextRole::OBody, &said, palette.dim);
@@ -699,7 +701,8 @@ fn shown(item: &QuickItem, skin: &Skin<'_>) -> Shown {
                     kind,
                     opened,
                 }) => {
-                    let when = look.label(&crate::recents::when(*opened, skin.now, &zone));
+                    let when =
+                        look.label(&crate::recents::when(skin.locale, *opened, skin.now, &zone));
                     object_shown(object, *kind, Vec::new(), when, skin)
                 }
                 StartRow::Recent(StartRecent::Sql {
@@ -708,7 +711,8 @@ fn shown(item: &QuickItem, skin: &Skin<'_>) -> Shown {
                     opened,
                     ..
                 }) => {
-                    let when = look.label(&crate::recents::when(*opened, skin.now, &zone));
+                    let when =
+                        look.label(&crate::recents::when(skin.locale, *opened, skin.now, &zone));
                     let name = format!("{} {number}", skin.say(msgid("Query")));
                     let editor = skin.say(msgid("SQL editor"));
                     let detail = if look.terminal {
@@ -809,7 +813,10 @@ fn shown(item: &QuickItem, skin: &Skin<'_>) -> Shown {
             };
             let name = crate::i18n::fill(
                 &skin.look.label(&words),
-                &[("{n}", &hidden.to_string()), ("{window}", &window)],
+                &[
+                    ("{n}", &crate::i18n::number(locale, hidden)),
+                    ("{window}", &window),
+                ],
             );
             Shown {
                 icon: Icon::Ellipsis,
