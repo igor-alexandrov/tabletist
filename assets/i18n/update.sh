@@ -51,10 +51,12 @@ if (( ${#files[@]} == 0 )); then
     echo "no Rust files to extract messages from" >&2
     exit 1
 fi
-# `counted(locale, n, "row", "rows")` (crate::i18n) is a plural too.
+# `counted(locale, n, "row", "rows")` (crate::i18n) is a plural too, and
+# `msgid("…")` / `pmsgid("context", "…")` mark a message drawn later, where
+# it is written.
 xgettext --language=Rust --from-code=UTF-8 \
     --keyword= --keyword=gettext:2 --keyword=ngettext:2,3 --keyword=pgettext:2c,3 \
-    --keyword=counted:3,4 \
+    --keyword=counted:3,4 --keyword=msgid:1 --keyword=pmsgid:1c,2 \
     --add-comments=Translators: --add-location=file --sort-by-file \
     --flag=ngettext:2:rust-format --flag=ngettext:3:rust-format \
     --package-name=Tabletist --copyright-holder="Tabletist contributors" \

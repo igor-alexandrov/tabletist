@@ -1386,14 +1386,13 @@ fn status(form: &ConnectionForm, skin: &Skin) -> Option<Status> {
             };
             // What a Files connection's check in full still has to read:
             // "checking 2 files…".
-            let plural = |count: usize| u32::try_from(count).unwrap_or(u32::MAX);
             let checking = form.files_check.map(|(_, left)| {
                 fill(
                     &ngettext(
                         skin.locale,
                         "checking {n} file…",
                         "checking {n} files…",
-                        plural(left),
+                        left,
                     ),
                     &[("{n}", &left.to_string())],
                 )
@@ -1413,7 +1412,7 @@ fn status(form: &ConnectionForm, skin: &Skin) -> Option<Status> {
                             skin.locale,
                             "{n} failed",
                             "{n} failed",
-                            plural(many.len()),
+                            many.len(),
                         )),
                         &[("{n}", &many.len().to_string())],
                     ),
@@ -1423,7 +1422,7 @@ fn status(form: &ConnectionForm, skin: &Skin) -> Option<Status> {
                         skin.locale,
                         "Read {read} of {n} file",
                         "Read {read} of {n} files",
-                        plural(read.files),
+                        read.files,
                     ),
                     &[
                         ("{read}", &(read.files - read.failed.len()).to_string()),
@@ -1443,7 +1442,7 @@ fn status(form: &ConnectionForm, skin: &Skin) -> Option<Status> {
                     skin.locale,
                     "Read {n} file · {size}",
                     "Read {n} files · {size}",
-                    plural(read.files),
+                    read.files,
                 )
                 .replace("{n}", &read.files.to_string())
                 .replace("{size}", &tabletist_db::files::size_text(read.bytes)),

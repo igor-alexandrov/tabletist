@@ -1299,7 +1299,7 @@ fn band(
         ),
         None => {
             let count = |count: usize, one: &'static str, many: &'static str| {
-                let noun = ngettext(locale, one, many, u32::try_from(count).unwrap_or(u32::MAX));
+                let noun = ngettext(locale, one, many, count);
                 let count = crate::format::group_digits(count as u64);
                 format!("{count} {noun}")
             };

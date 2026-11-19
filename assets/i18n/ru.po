@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-19 07:41-0500\n"
+"POT-Creation-Date: 2026-11-19 13:41-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -45,8 +45,10 @@ msgstr ""
 msgid "Couldn't export {table}: {why}."
 msgstr "Не удалось экспортировать {table}: {why}."
 
-#: crates/tabletist-core/src/export_sheet.rs src/ui/agents.rs
-#: src/ui/data_view.rs src/ui/export.rs src/ui/sql_results.rs src/ui/toast.rs
+#: crates/tabletist-core/src/export_sheet.rs
+#: crates/tabletist-core/src/keymap.rs src/menu.rs src/ui/agents.rs
+#: src/ui/data_view.rs src/ui/export.rs src/ui/export_tests.rs
+#: src/ui/settings/sheet.rs src/ui/sql_results.rs src/ui/toast.rs
 msgid "Export…"
 msgstr "Экспорт…"
 
@@ -77,15 +79,18 @@ msgstr ""
 "Сервер остановил запрос через {time} (statement_timeout на {connection})."
 
 #: crates/tabletist-core/src/export_sheet.rs src/ui/ddl.rs
+#: src/ui/settings/updates.rs
 msgid "Try again"
 msgstr "Повторить"
 
 #: crates/tabletist-core/src/export_sheet.rs
+#: crates/tabletist-core/src/update/download.rs
 #, rust-format
 msgid "about {n} min left"
 msgstr "осталось около {n} мин"
 
 #: crates/tabletist-core/src/export_sheet.rs
+#: crates/tabletist-core/src/update/download.rs
 #, rust-format
 msgid "about {n} s left"
 msgstr "осталось около {n} с"
@@ -210,9 +215,1571 @@ msgstr "обязательно"
 msgid "unique"
 msgstr "уникально"
 
-#: crates/tabletist-core/src/i18n.rs src/ui/help.rs
+#: crates/tabletist-core/src/i18n.rs crates/tabletist-core/src/keymap.rs
+#: src/app/commands.rs src/app/quick_open.rs src/ui/help.rs
+#: src/ui/settings/sheet.rs src/ui/settings/terminal.rs
 msgid "Settings"
 msgstr "Настройки"
+
+#: crates/tabletist-core/src/i18n.rs src/ui/agents.rs src/ui/history.rs
+#: src/ui/workspace.rs
+msgctxt "label"
+msgid "filter"
+msgstr "фильтр"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "A page down in a foreign key's list"
+msgstr "На страницу вниз в списке внешнего ключа"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "A page up in a foreign key's list"
+msgstr "На страницу вверх в списке внешнего ключа"
+
+#: crates/tabletist-core/src/keymap.rs src/ui/help.rs
+msgid "AI assistant"
+msgstr "ИИ-помощник"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Accept AI"
+msgstr "Принять предложение ИИ"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Accept AI and run"
+msgstr "Принять предложение ИИ и выполнить"
+
+#: crates/tabletist-core/src/keymap.rs src/app/commands.rs
+msgid "Actual size"
+msgstr "Фактический размер"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Add a column as the label's second part"
+msgstr "Добавить столбец второй частью подписи"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Add files to a Files connection"
+msgstr "Добавить файлы в подключение Files"
+
+#: crates/tabletist-core/src/keymap.rs src/ui/data_view.rs
+msgid "Add row"
+msgstr "Добавить строку"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Add row above"
+msgstr "Добавить строку выше"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Add row after the last"
+msgstr "Добавить строку после последней"
+
+#: crates/tabletist-core/src/keymap.rs crates/tabletist-core/src/model.rs
+#: src/app/commands.rs src/menu.rs src/ui/history.rs src/ui/object_tabs.rs
+#: src/ui/picker.rs src/ui/settings/agents.rs src/ui/sidebar.rs
+msgid "Agents"
+msgstr "Агенты"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Allow agents on this connection…"
+msgstr "Разрешить агентов на этом подключении…"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Allow writes, or run again"
+msgstr "Разрешить запись или выполнить снова"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Apply large editor"
+msgstr "Применить большой редактор"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Ask AI"
+msgstr "Спросить ИИ"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Back to grid from inspector"
+msgstr "Из инспектора обратно в таблицу"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Boolean cycle"
+msgstr "Перебор логических значений"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Bottom of the DDL"
+msgstr "В конец DDL"
+
+#: crates/tabletist-core/src/keymap.rs src/ui/connect_dialog/sheet.rs
+#: src/ui/data_view.rs src/ui/every_row_prompt.rs src/ui/export.rs
+#: src/ui/export_toast.rs src/ui/host_key_prompt.rs src/ui/password_prompt.rs
+#: src/ui/pending_bar.rs src/ui/settings/keyboard_sheet.rs
+#: src/ui/settings/sheet.rs src/ui/settings/terminal.rs
+#: src/ui/settings/updates.rs src/ui/sql_results.rs src/ui/structure.rs
+#: src/ui/write_prompts.rs
+msgid "Cancel"
+msgstr "Отменить"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Cancel a run that changes every row"
+msgstr "Отменить запуск, меняющий все строки"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Cancel cell edit"
+msgstr "Отменить правку ячейки"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Cancel connecting"
+msgstr "Отменить подключение"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Cancel large editor"
+msgstr "Отменить большой редактор"
+
+#: crates/tabletist-core/src/keymap.rs src/app/commands.rs
+msgid "Cancel running query"
+msgstr "Отменить выполняемый запрос"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Cancel the export"
+msgstr "Отменить экспорт"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Cancel the export of that number"
+msgstr "Отменить экспорт с этим номером"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Cancel the highlighted export"
+msgstr "Отменить выделенный экспорт"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Cancel the production write"
+msgstr "Отменить запись в production"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Cancel the update's download, in the settings"
+msgstr "Отменить загрузку обновления (в настройках)"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Cell"
+msgstr "Ячейка"
+
+#: crates/tabletist-core/src/keymap.rs src/ui/key_picker.rs src/ui/structure.rs
+msgid "Change label column"
+msgstr "Сменить столбец подписи"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Change the option"
+msgstr "Изменить параметр"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Change what agents may do on the connection"
+msgstr "Изменить, что агентам можно делать на подключении"
+
+#: crates/tabletist-core/src/keymap.rs src/app/commands.rs src/menu.rs
+msgid "Check for Updates…"
+msgstr "Проверить обновления…"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Check for updates now, in the settings"
+msgstr "Проверить обновления сейчас (в настройках)"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Choose the choice under the cursor"
+msgstr "Выбрать вариант под курсором"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Choose the label column"
+msgstr "Выбрать столбец подписи"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Choose the label for foreign keys"
+msgstr "Выбрать подпись для внешних ключей"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Choose what has the keyboard"
+msgstr "Выбрать, куда идёт ввод с клавиатуры"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Clear the history, as asked"
+msgstr "Очистить историю, как спрошено"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Clear the start screen's search"
+msgstr "Очистить поиск на начальном экране"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Clear this connection's history"
+msgstr "Очистить историю этого подключения"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Close Copy as"
+msgstr "Закрыть «Копировать как»"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Close a foreign key's list"
+msgstr "Закрыть список внешнего ключа"
+
+#: crates/tabletist-core/src/keymap.rs src/app/commands.rs
+msgid "Close connection"
+msgstr "Закрыть подключение"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Close quick open"
+msgstr "Закрыть быстрое открытие"
+
+#: crates/tabletist-core/src/keymap.rs src/app/commands.rs
+msgid "Close tab"
+msgstr "Закрыть вкладку"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Close the completion list"
+msgstr "Закрыть список автодополнения"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Close the export"
+msgstr "Закрыть экспорт"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Close the exports to cancel"
+msgstr "Закрыть список экспортов для отмены"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Close the history's filter line, and keep it"
+msgstr "Закрыть строку фильтра истории, сохранив её"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Close the inspector"
+msgstr "Закрыть инспектор"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Close the label chooser"
+msgstr "Закрыть выбор подписи"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Close the log's filters, and keep them, or the call's details"
+msgstr "Закрыть фильтры журнала, сохранив их, или подробности вызова"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Close the names for the path"
+msgstr "Закрыть имена для пути"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Close the pending SQL"
+msgstr "Закрыть ожидающий SQL"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Close the settings"
+msgstr "Закрыть настройки"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Commit"
+msgstr "Зафиксировать"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Commit cell and move down"
+msgstr "Зафиксировать ячейку и перейти вниз"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Commit cell and move to the next"
+msgstr "Зафиксировать ячейку и перейти к следующей"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Commit cell and move to the previous"
+msgstr "Зафиксировать ячейку и перейти к предыдущей"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Compare with previous run"
+msgstr "Сравнить с предыдущим запуском"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Completion"
+msgstr "Автодополнение"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Confirm production write"
+msgstr "Подтвердить запись в production"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Connect / go to window"
+msgstr "Подключиться / перейти к окну"
+
+#: crates/tabletist-core/src/keymap.rs src/app/commands.rs src/menu.rs
+#: src/ui/picker.rs src/ui/workspace.rs
+msgid "Connections"
+msgstr "Подключения"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Copy as CSV"
+msgstr "Копировать как CSV"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Copy as JSON"
+msgstr "Копировать как JSON"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Copy as Markdown"
+msgstr "Копировать как Markdown"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Copy as SQL INSERT"
+msgstr "Копировать как SQL INSERT"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Copy as TSV"
+msgstr "Копировать как TSV"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Copy as…"
+msgstr "Копировать как…"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Copy cell values"
+msgstr "Копировать значения ячеек"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Copy column names"
+msgstr "Копировать имена столбцов"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Copy in the highlighted format"
+msgstr "Копировать в выделенном формате"
+
+#: crates/tabletist-core/src/keymap.rs src/ui/row_panel.rs
+msgid "Copy row"
+msgstr "Копировать строку"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Copy row as…"
+msgstr "Копировать строку как…"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Copy the DDL"
+msgstr "Копировать DDL"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Copy the command that connects an agent"
+msgstr "Копировать команду, которая подключает агента"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Copy the command the settings show: an agent's, or the update's"
+msgstr "Копировать команду из настроек: агента или обновления"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Copy the pending SQL"
+msgstr "Копировать ожидающий SQL"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Copy the selected statement"
+msgstr "Копировать выбранный запрос"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Copy the selection"
+msgstr "Копировать выделенное"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Delete connection"
+msgstr "Удалить подключение"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Delete row"
+msgstr "Удалить строку"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Delete the connection, as asked"
+msgstr "Удалить подключение, как спрошено"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Delete the query history kept, as the settings ask"
+msgstr "Удалить сохранённую историю запросов, как спрашивают настройки"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Delete the selected rows"
+msgstr "Удалить выбранные строки"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Discard AI"
+msgstr "Отклонить предложение ИИ"
+
+#: crates/tabletist-core/src/keymap.rs src/app/commands.rs
+msgid "Discard all pending"
+msgstr "Сбросить все ожидающие"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Discard all pending, asking first"
+msgstr "Сбросить все ожидающие, сначала спросив"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Discard and leave"
+msgstr "Сбросить и выйти"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Discard my changes"
+msgstr "Сбросить мои изменения"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Dismiss what the last save came to"
+msgstr "Скрыть итог последнего сохранения"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid ""
+"Download and install the version offered, or restart into it, in the settings"
+msgstr ""
+"Загрузить и установить предложенную версию или перезапуститься в неё (в "
+"настройках)"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Duplicate connection"
+msgstr "Дублировать подключение"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Duplicate row"
+msgstr "Дублировать строку"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Edit cell"
+msgstr "Изменить ячейку"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Edit cell from nothing"
+msgstr "Изменить ячейку с пустого значения"
+
+#: crates/tabletist-core/src/keymap.rs src/app/commands.rs src/ui/start.rs
+msgid "Edit connection"
+msgstr "Изменить подключение"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Edit dates without the calendar"
+msgstr "Изменять даты без календаря"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Edit the connection that refused"
+msgstr "Изменить подключение, которое отказало"
+
+#: crates/tabletist-core/src/keymap.rs crates/tabletist-core/src/model.rs
+#: src/ui/settings/sheet.rs
+msgid "Editor"
+msgstr "Редактор"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Explain"
+msgstr "Explain"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Explain analyze"
+msgstr "Explain analyze"
+
+#: crates/tabletist-core/src/keymap.rs src/app/commands.rs
+msgid "Export a table…"
+msgstr "Экспортировать таблицу…"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Export in a format"
+msgstr "Экспортировать в формате"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Export the log's calls that pass its filters"
+msgstr "Экспортировать вызовы журнала, прошедшие его фильтры"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Export the picked table"
+msgstr "Экспортировать выбранную таблицу"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Export to a file now"
+msgstr "Экспортировать в файл сейчас"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Export to a file now, replacing it"
+msgstr "Экспортировать в файл сейчас, заменив его"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Export, or copy"
+msgstr "Экспортировать или копировать"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Extend the selection down"
+msgstr "Расширить выделение вниз"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Extend the selection left"
+msgstr "Расширить выделение влево"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Extend the selection right"
+msgstr "Расширить выделение вправо"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Extend the selection up"
+msgstr "Расширить выделение вверх"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Filter bar"
+msgstr "Панель фильтра"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Filter the connections"
+msgstr "Фильтровать подключения"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Filter the history"
+msgstr "Фильтровать историю"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Filter the keyboard rows by name"
+msgstr "Фильтровать строки клавиш по имени"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Filter the log by agent, result or request"
+msgstr "Фильтровать журнал по агенту, результату или запросу"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Filter the sidebar's objects"
+msgstr "Фильтровать объекты боковой панели"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Filter with a WHERE line"
+msgstr "Фильтровать строкой WHERE"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Find any object"
+msgstr "Найти любой объект"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Find the keyboard rows by a key"
+msgstr "Найти строки клавиш по клавише"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Focus results"
+msgstr "Перейти к результатам"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Fold every group"
+msgstr "Свернуть все группы"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Fold or open the group"
+msgstr "Свернуть или раскрыть группу"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Fold the documents"
+msgstr "Свернуть документы"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Forget the saved password"
+msgstr "Забыть сохранённый пароль"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Format SQL or JSON"
+msgstr "Форматировать SQL или JSON"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Give the keyboard back from the toast"
+msgstr "Вернуть клавиатуру из уведомления"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Global"
+msgstr "Общие"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Go to connection window"
+msgstr "Перейти к окну подключения"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Go to line"
+msgstr "Перейти к строке"
+
+#: crates/tabletist-core/src/keymap.rs src/ui/help.rs
+msgid "Grid and editing"
+msgstr "Таблица и правка"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Help, all keys"
+msgstr "Справка, все клавиши"
+
+#: crates/tabletist-core/src/keymap.rs crates/tabletist-core/src/model.rs
+#: src/app/commands.rs src/menu.rs src/ui/object_tabs.rs
+#: src/ui/settings/terminal.rs src/ui/sidebar.rs
+msgid "History"
+msgstr "История"
+
+#: crates/tabletist-core/src/keymap.rs src/menu.rs
+msgid "Import…"
+msgstr "Импорт…"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Include every column"
+msgstr "Включить все столбцы"
+
+#: crates/tabletist-core/src/keymap.rs src/ui/settings/mod.rs
+msgid "Indent"
+msgstr "Увеличить отступ"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Insert the completion"
+msgstr "Вставить вариант автодополнения"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Inspector"
+msgstr "Инспектор"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Install the update and restart, as :update asks"
+msgstr "Установить обновление и перезапустить, как спрашивает :update"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Keep mine and reload"
+msgstr "Оставить моё и обновить"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Keep the connection, as asked"
+msgstr "Оставить подключение, как спрошено"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Keep the history, as asked"
+msgstr "Оставить историю, как спрошено"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Keep the query history, as the settings ask"
+msgstr "Оставить историю запросов, как спрашивают настройки"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Keep this version, as :update asks"
+msgstr "Оставить эту версию, как спрашивает :update"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Label foreign keys automatically"
+msgstr "Подписывать внешние ключи автоматически"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Label foreign keys by a column"
+msgstr "Подписывать внешние ключи по столбцу"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Label foreign keys by their keys alone"
+msgstr "Подписывать внешние ключи только ключами"
+
+#: crates/tabletist-core/src/keymap.rs src/app/commands.rs src/menu.rs
+msgid "Larger"
+msgstr "Крупнее"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Leave every column out"
+msgstr "Исключить все столбцы"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Leave the editor"
+msgstr "Выйти из редактора"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Leave the editor and keep the edit"
+msgstr "Выйти из редактора, сохранив правку"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Leave the filter for the tree"
+msgstr "Выйти из фильтра к дереву"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Leave the large editor and keep the text"
+msgstr "Выйти из большого редактора, сохранив текст"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Leave the selection"
+msgstr "Снять выделение"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Leave the selection of lines"
+msgstr "Снять выделение строк"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "List the commands alone"
+msgstr "Показать только команды"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Move among what agents may do"
+msgstr "Перемещаться по правам агентов"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Move by column"
+msgstr "Перемещаться по столбцам"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Move by column in the Structure view"
+msgstr "Перемещаться по столбцам в «Структуре»"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Move by field"
+msgstr "Перемещаться по полям"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Move by line in the DDL"
+msgstr "Перемещаться по строкам DDL"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Move by page"
+msgstr "Перемещаться по страницам"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Move by row"
+msgstr "Перемещаться по строкам"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid ""
+"Move in Add table…'s or Add column…'s list, or a Files connection's files"
+msgstr ""
+"Перемещаться по списку «Добавить таблицу…» или «Добавить столбец…» или по "
+"файлам подключения Files"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Move in quick open"
+msgstr "Перемещаться в быстром открытии"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Move in the agents' sessions"
+msgstr "Перемещаться по сеансам агентов"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Move in the connections"
+msgstr "Перемещаться по подключениям"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Move in the history"
+msgstr "Перемещаться по истории"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Move in the settings"
+msgstr "Перемещаться по настройкам"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Move in the sidebar"
+msgstr "Перемещаться по боковой панели"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Move in the start screen's search"
+msgstr "Перемещаться по поиску на начальном экране"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Move the column down"
+msgstr "Сдвинуть столбец вниз"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Move the column up"
+msgstr "Сдвинуть столбец вверх"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Move to the toast"
+msgstr "Перейти к уведомлению"
+
+#: crates/tabletist-core/src/keymap.rs src/ui/help.rs
+msgid "Navigation"
+msgstr "Навигация"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "New SQL editor tab"
+msgstr "Новая вкладка редактора SQL"
+
+#: crates/tabletist-core/src/keymap.rs src/app/commands.rs src/ui/picker.rs
+msgid "New connection"
+msgstr "Новое подключение"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Next button of the toast"
+msgstr "Следующая кнопка уведомления"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Next change"
+msgstr "Следующее изменение"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Next choice of the export"
+msgstr "Следующий вариант экспорта"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Next completion"
+msgstr "Следующий вариант автодополнения"
+
+#: crates/tabletist-core/src/keymap.rs src/app/commands.rs
+msgid "Next connection"
+msgstr "Следующее подключение"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Next error"
+msgstr "Следующая ошибка"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Next export to cancel"
+msgstr "Следующий экспорт для отмены"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Next field"
+msgstr "Следующее поле"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Next format of Copy as"
+msgstr "Следующий формат «Копировать как»"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Next line of the label chooser"
+msgstr "Следующая строка выбора подписи"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Next name for the path"
+msgstr "Следующее имя для пути"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Next page"
+msgstr "Следующая страница"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Next part of the window"
+msgstr "Следующая часть окна"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Next plan tip"
+msgstr "Следующая подсказка плана"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Next row in inspector"
+msgstr "Следующая строка в инспекторе"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Next row of a foreign key's list"
+msgstr "Следующая строка списка внешнего ключа"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Next section of the DDL"
+msgstr "Следующий раздел DDL"
+
+#: crates/tabletist-core/src/keymap.rs src/app/commands.rs
+msgid "Next tab"
+msgstr "Следующая вкладка"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Normal mode (vim), as Esc"
+msgstr "Обычный режим (vim), как Esc"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open a recent by its number"
+msgstr "Открыть недавнее по номеру"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open a recent object"
+msgstr "Открыть недавний объект"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open every group"
+msgstr "Раскрыть все группы"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open inspector / focus fields"
+msgstr "Открыть инспектор / перейти к полям"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open referenced row"
+msgstr "Открыть строку по ссылке"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open the DDL in the SQL editor"
+msgstr "Открыть DDL в редакторе SQL"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open the DDL view"
+msgstr "Открыть просмотр DDL"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open the connection again"
+msgstr "Открыть подключение снова"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open the exported file's folder"
+msgstr "Открыть папку экспортированного файла"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open the large editor"
+msgstr "Открыть большой редактор"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open the one selected"
+msgstr "Открыть выбранное"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open the one selected in a SQL editor"
+msgstr "Открыть выбранное в редакторе SQL"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open the selected call's statement in a SQL editor"
+msgstr "Открыть запрос выбранного вызова в редакторе SQL"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open the selected statement in a SQL editor"
+msgstr "Открыть выбранный запрос в редакторе SQL"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open the settings file in $EDITOR"
+msgstr "Открыть файл настроек в $EDITOR"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open the start screen's search match"
+msgstr "Открыть найденное на начальном экране"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open the start screen's search match in a SQL editor"
+msgstr "Открыть найденное на начальном экране в редакторе SQL"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open the table or view"
+msgstr "Открыть таблицу или представление"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open value in $EDITOR"
+msgstr "Открыть значение в $EDITOR"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open what the settings' row shows"
+msgstr "Открыть то, что показывает строка настроек"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Outdent"
+msgstr "Уменьшить отступ"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Overwrite"
+msgstr "Перезаписать"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Pane above"
+msgstr "Панель выше"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Pane below"
+msgstr "Панель ниже"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Pane to the left"
+msgstr "Панель слева"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Pane to the right"
+msgstr "Панель справа"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Paste a URL"
+msgstr "Вставить URL"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Paste as new rows"
+msgstr "Вставить как новые строки"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Paste cell values"
+msgstr "Вставить значения ячеек"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Pick a Files connection's folder or files"
+msgstr "Выбрать папку или файлы подключения Files"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Pick the export's file in the system's dialog"
+msgstr "Выбрать файл экспорта в системном диалоге"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Previous button of the toast"
+msgstr "Предыдущая кнопка уведомления"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Previous completion"
+msgstr "Предыдущий вариант автодополнения"
+
+#: crates/tabletist-core/src/keymap.rs src/app/commands.rs
+msgid "Previous connection"
+msgstr "Предыдущее подключение"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Previous error"
+msgstr "Предыдущая ошибка"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Previous export to cancel"
+msgstr "Предыдущий экспорт для отмены"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Previous format of Copy as"
+msgstr "Предыдущий формат «Копировать как»"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Previous line of the label chooser"
+msgstr "Предыдущая строка выбора подписи"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Previous name for the path"
+msgstr "Предыдущее имя для пути"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Previous page"
+msgstr "Предыдущая страница"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Previous part of the window"
+msgstr "Предыдущая часть окна"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Previous row in inspector"
+msgstr "Предыдущая строка в инспекторе"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Previous row of a foreign key's list"
+msgstr "Предыдущая строка списка внешнего ключа"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Previous section of the DDL"
+msgstr "Предыдущий раздел DDL"
+
+#: crates/tabletist-core/src/keymap.rs src/app/commands.rs
+msgid "Previous tab"
+msgstr "Предыдущая вкладка"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Prompt"
+msgstr "Запрос ввода"
+
+#: crates/tabletist-core/src/keymap.rs src/ui/help.rs
+msgid "Prompts and dialogs"
+msgstr "Запросы и диалоги"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Put a copy of the yanked row above"
+msgstr "Вставить копию скопированной строки выше"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Put a copy of the yanked row below"
+msgstr "Вставить копию скопированной строки ниже"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Put away a failed export's line"
+msgstr "Убрать строку неудавшегося экспорта"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Read the column a Files connection's Test could not read as text"
+msgstr ""
+"Читать как текст столбец, который не прочитала проверка подключения Files"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Read the release notes of the version offered, in the settings"
+msgstr "Прочитать заметки к предложенной версии (в настройках)"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Read the value a Files connection's Test could not read as empty"
+msgstr ""
+"Читать как пустое значение, которое не прочитала проверка подключения Files"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Read-only or read-write runs"
+msgstr "Запуск только для чтения или с записью"
+
+#: crates/tabletist-core/src/keymap.rs src/app/commands.rs
+msgid "Read-only tab"
+msgstr "Вкладка только для чтения"
+
+#: crates/tabletist-core/src/keymap.rs src/app/commands.rs
+msgid "Read-write tab"
+msgstr "Вкладка с записью"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Reapply the selected filter"
+msgstr "Применить выбранный фильтр снова"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Redo (vim's normal mode)"
+msgstr "Повторить (обычный режим vim)"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Redo one cell"
+msgstr "Повторить одну ячейку"
+
+#: crates/tabletist-core/src/keymap.rs src/ui/ddl.rs src/ui/sidebar.rs
+msgid "Reload"
+msgstr "Обновить"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Reopen closed tabs"
+msgstr "Открыть закрытые вкладки снова"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Reset the CSV override under the cursor of a Files connection"
+msgstr "Сбросить переопределение CSV под курсором в подключении Files"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Reset the option"
+msgstr "Сбросить параметр"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Results"
+msgstr "Результаты"
+
+#: crates/tabletist-core/src/keymap.rs src/app/commands.rs
+msgid "Review pending SQL"
+msgstr "Показать ожидающий SQL"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Review the export's SQL"
+msgstr "Показать SQL экспорта"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Rollback"
+msgstr "Откатить"
+
+#: crates/tabletist-core/src/keymap.rs src/app/commands.rs src/ui/sql_editor.rs
+msgid "Run all"
+msgstr "Выполнить все"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Run anyway, when a run changes every row"
+msgstr "Всё равно выполнить, когда запуск меняет все строки"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Run statement"
+msgstr "Выполнить запрос"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Run the selected read again"
+msgstr "Выполнить выбранное чтение снова"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Run without timeout"
+msgstr "Выполнить без тайм-аута"
+
+#: crates/tabletist-core/src/keymap.rs src/ui/help.rs src/ui/history.rs
+#: src/ui/sidebar.rs
+msgid "SQL editor"
+msgstr "Редактор SQL"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Save and connect"
+msgstr "Сохранить и подключиться"
+
+#: crates/tabletist-core/src/keymap.rs src/app/commands.rs
+msgid "Save changes"
+msgstr "Сохранить изменения"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Save the connection"
+msgstr "Сохранить подключение"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Scroll the statements"
+msgstr "Прокрутить запросы"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Search the start screen"
+msgstr "Искать на начальном экране"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Search this connection or every open one"
+msgstr "Искать в этом подключении или во всех открытых"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Select a block of cells"
+msgstr "Выделить блок ячеек"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Select all loaded rows"
+msgstr "Выделить все загруженные строки"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Select cells"
+msgstr "Выделить ячейки"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Select lines of the DDL"
+msgstr "Выделить строки DDL"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Select rows"
+msgstr "Выделить строки"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Select the rows of the selection"
+msgstr "Выделить строки выделения"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Set DEFAULT"
+msgstr "Задать DEFAULT"
+
+#: crates/tabletist-core/src/keymap.rs src/ui/key_picker.rs
+msgid "Set NULL"
+msgstr "Задать NULL"
+
+#: crates/tabletist-core/src/keymap.rs src/ui/settings/mod.rs
+msgid "Show a calendar when editing dates"
+msgstr "Показывать календарь при правке дат"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Show all rows"
+msgstr "Показать все строки"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Show every connection's calls in the log, or this one's"
+msgstr "Показать в журнале вызовы всех подключений или только этого"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Show or hide the inspector"
+msgstr "Показать или скрыть инспектор"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Show saved row in sorted position"
+msgstr "Показать сохранённую строку на её месте в сортировке"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Show the Agents tab"
+msgstr "Показать вкладку «Агенты»"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Show the DDL"
+msgstr "Показать DDL"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Show the agent's call in the Agents Log"
+msgstr "Показать вызов агента в журнале агентов"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Show the agents' settings"
+msgstr "Показать настройки агентов"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Show the connection's Agents tab"
+msgstr "Показать вкладку «Агенты» подключения"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Show the log, or what agents do now"
+msgstr "Показать журнал или что агенты делают сейчас"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Show the next or the previous pane of the settings"
+msgstr "Показать следующий или предыдущий раздел настроек"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Show the rows"
+msgstr "Показать строки"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Show the selected call's details in the log, or close them"
+msgstr "Показать подробности выбранного вызова в журнале или закрыть их"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Show the structure"
+msgstr "Показать структуру"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Show where the selected agent works"
+msgstr "Показать, где работает выбранный агент"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Sidebar"
+msgstr "Боковая панель"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Skip the file a Files connection's Test could not read"
+msgstr "Пропустить файл, который не прочитала проверка подключения Files"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Skip the version offered, in the settings"
+msgstr "Пропустить предложенную версию (в настройках)"
+
+#: crates/tabletist-core/src/keymap.rs src/app/commands.rs src/menu.rs
+msgid "Smaller"
+msgstr "Мельче"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Start screen"
+msgstr "Начальный экран"
+
+#: crates/tabletist-core/src/keymap.rs src/ui/write_prompts.rs
+msgid "Stay"
+msgstr "Остаться"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Step down"
+msgstr "Шаг вниз"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Step up"
+msgstr "Шаг вверх"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Stop the agents here, and turn their access off"
+msgstr "Остановить агентов здесь и отключить их доступ"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Stop the selected agent's session"
+msgstr "Завершить сеанс выбранного агента"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Swap the keys, as the keyboard row asks"
+msgstr "Поменять клавиши местами, как спрашивает строка клавиш"
+
+#: crates/tabletist-core/src/keymap.rs src/app/commands.rs src/ui/start.rs
+msgid "Switch database"
+msgstr "Сменить базу данных"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Switch tab"
+msgstr "Переключить вкладку"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Table"
+msgstr "Таблица"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Take the file under the cursor off a Files connection"
+msgstr "Убрать файл под курсором из подключения Files"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Take the highlighted name"
+msgstr "Взять выделенное имя"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Test the connection"
+msgstr "Проверить подключение"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Toggle sidebar"
+msgstr "Показать или скрыть боковую панель"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Toggle the option"
+msgstr "Переключить параметр"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Top of the DDL"
+msgstr "В начало DDL"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Tree or flat list"
+msgstr "Дерево или плоский список"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Turn the agent server on"
+msgstr "Включить сервер агентов"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Unbind the keyboard row's keys"
+msgstr "Снять клавиши строки"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Undo one cell"
+msgstr "Отменить одну ячейку"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Use the column as the label"
+msgstr "Использовать столбец как подпись"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Use the server's values"
+msgstr "Взять значения сервера"
+
+#: crates/tabletist-core/src/keymap.rs src/ui/help.rs
+msgid "Window and connections"
+msgstr "Окно и подключения"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Write (nothing to write in the editor)"
+msgstr "Записать (в редакторе нечего записывать)"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Write a cheat sheet of the keys"
+msgstr "Записать шпаргалку по клавишам"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Write and leave"
+msgstr "Записать и выйти"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Write the full list of keys"
+msgstr "Записать полный список клавиш"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Yank the row"
+msgstr "Скопировать строку"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "ai"
+msgstr "ИИ"
+
+#: crates/tabletist-core/src/keymap.rs src/ui/pane_hints.rs src/ui/workspace.rs
+msgid "edit"
+msgstr "изменить"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "global"
+msgstr "общие"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "navigate"
+msgstr "навигация"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "prompts"
+msgstr "запросы"
+
+#: crates/tabletist-core/src/keymap.rs src/ui/history.rs src/ui/object_tabs.rs
+msgid "sql"
+msgstr "sql"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "window"
+msgstr "окно"
+
+#: crates/tabletist-core/src/keymap/overrides.rs
+msgid ": opens the prompt and is never bound"
+msgstr ": открывает строку команд и никогда не назначается"
+
+#: crates/tabletist-core/src/keymap/overrides.rs
+msgid "Add Ctrl or Alt"
+msgstr "Добавьте Ctrl или Alt"
+
+#: crates/tabletist-core/src/keymap/overrides.rs
+msgid "Add ⌘, ⌃ or ⌥"
+msgstr "Добавьте ⌘, ⌃ или ⌥"
+
+#: crates/tabletist-core/src/keymap/overrides.rs
+msgid "a digit first is a count"
+msgstr "цифра в начале означает счётчик"
+
+#: crates/tabletist-core/src/keymap/overrides.rs
+msgid "esc cancels and is never bound"
+msgstr "esc отменяет и никогда не назначается"
+
+#: crates/tabletist-core/src/keymap/overrides.rs
+msgid "super is never bound: hyprland owns it"
+msgstr "super никогда не назначается: ею владеет hyprland"
+
+#: crates/tabletist-core/src/keymap/overrides.rs
+#, rust-format
+msgid "{keys} is already “{name}”."
+msgstr "{keys} уже назначено для «{name}»."
+
+#: crates/tabletist-core/src/keymap/overrides.rs
+#, rust-format
+msgid "{keys} is no default key in {scope}"
+msgstr "{keys} не клавиша по умолчанию в «{scope}»"
+
+#: crates/tabletist-core/src/keymap/overrides.rs
+#, rust-format
+msgid "{keys} is used by Tabletist"
+msgstr "{keys} занято в Tabletist"
+
+#: crates/tabletist-core/src/keymap/overrides.rs
+#, rust-format
+msgid "{keys} is used by Windows"
+msgstr "{keys} занято в Windows"
+
+#: crates/tabletist-core/src/keymap/overrides.rs
+#, rust-format
+msgid "{keys} is used by macOS"
+msgstr "{keys} занято в macOS"
+
+#: crates/tabletist-core/src/keymap/overrides.rs
+#, rust-format
+msgid "{keys} is vim's in insert mode"
+msgstr "{keys} принадлежит vim в режиме вставки"
+
+#: crates/tabletist-core/src/keymap/overrides.rs
+#, rust-format
+msgid "{keys} is {name}"
+msgstr "{keys}: {name}"
+
+#: crates/tabletist-core/src/keymap/overrides.rs
+#, rust-format
+msgid "{name} has no keys in {scope}"
+msgstr "У «{name}» нет клавиш в «{scope}»"
+
+#: crates/tabletist-core/src/keymap/overrides.rs
+#, rust-format
+msgid "{name} keeps its keys"
+msgstr "«{name}» сохраняет свои клавиши"
+
+#: crates/tabletist-core/src/keymap/overrides.rs
+#, rust-format
+msgid "{name} takes a : line"
+msgstr "«{name}» принимает строку :"
+
+#: crates/tabletist-core/src/keymap/overrides.rs
+#, rust-format
+msgid "{name} takes a chord"
+msgstr "«{name}» принимает сочетание"
+
+#: crates/tabletist-core/src/keymap/overrides.rs
+#, rust-format
+msgid "{name} takes one letter"
+msgstr "«{name}» принимает одну букву"
+
+#: crates/tabletist-core/src/keymap/overrides.rs
+#, rust-format
+msgid "{name} takes other keys"
+msgstr "«{name}» принимает другие клавиши"
+
+#: crates/tabletist-core/src/keymap/overrides.rs
+#, rust-format
+msgid "{name} takes typed keys"
+msgstr "«{name}» принимает вводимые клавиши"
+
+#: crates/tabletist-core/src/model.rs src/ui/settings/sheet.rs
+msgid "Appearance"
+msgstr "Оформление"
+
+#: crates/tabletist-core/src/model.rs src/ui/settings/terminal.rs
+msgid "Data"
+msgstr "Данные"
+
+#: crates/tabletist-core/src/model.rs
+msgid "Environment color"
+msgstr "Цвет среды"
+
+#: crates/tabletist-core/src/model.rs
+#, rust-format
+msgid "Format · {format}"
+msgstr "Форматирование · {format}"
+
+#: crates/tabletist-core/src/model.rs src/ui/settings/sheet.rs
+msgid "General"
+msgstr "Основные"
+
+#: crates/tabletist-core/src/model.rs src/ui/settings/terminal.rs
+msgid "Grid"
+msgstr "Таблица"
+
+#: crates/tabletist-core/src/model.rs src/ui/settings/keyboard_sheet.rs
+msgid "Keyboard"
+msgstr "Клавиатура"
+
+#: crates/tabletist-core/src/model.rs src/ui/settings/mod.rs
+#: src/ui/settings/terminal.rs
+msgid "Language"
+msgstr "Язык"
+
+#: crates/tabletist-core/src/model.rs src/ui/settings/terminal.rs
+msgid "Running queries"
+msgstr "Выполнение запросов"
+
+#: crates/tabletist-core/src/model.rs src/ui/settings/terminal.rs
+msgid "Safety"
+msgstr "Безопасность"
+
+#: crates/tabletist-core/src/model.rs src/ui/settings/terminal.rs
+msgid "Startup"
+msgstr "Запуск"
+
+#: crates/tabletist-core/src/model.rs src/ui/settings/terminal.rs
+msgid "Text"
+msgstr "Текст"
+
+#: crates/tabletist-core/src/model.rs src/ui/settings/mod.rs
+#: src/ui/settings/terminal.rs
+msgid "Theme"
+msgstr "Тема"
+
+#: crates/tabletist-core/src/model.rs src/ui/settings/terminal.rs
+msgid "Typing"
+msgstr "Ввод"
+
+#: crates/tabletist-core/src/model.rs src/ui/settings/updates.rs
+msgid "Updates"
+msgstr "Обновления"
 
 #: crates/tabletist-core/src/selection.rs src/ui/export.rs
 msgid "column"
@@ -241,6 +1808,114 @@ msgstr[2] "Выбрано {n} строк"
 #, rust-format
 msgid "{rows} by {cols} selected"
 msgstr "Выбрано: {rows} на {cols}"
+
+#: crates/tabletist-core/src/update/check.rs
+#: crates/tabletist-core/src/update/download.rs
+msgid "Couldn't reach github.com. Check the connection to the internet."
+msgstr "Не удалось связаться с github.com. Проверьте подключение к интернету."
+
+#: crates/tabletist-core/src/update/check.rs
+#, rust-format
+msgid "Couldn't reach github.com: the connection timed out after {secs} s."
+msgstr ""
+"Не удалось связаться с github.com: время ожидания истекло через {secs} с."
+
+#: crates/tabletist-core/src/update/check.rs
+#: crates/tabletist-core/src/update/download.rs
+#, rust-format
+msgid "GitHub answered with an error ({status})."
+msgstr "GitHub ответил ошибкой ({status})."
+
+#: crates/tabletist-core/src/update/check.rs
+msgid "GitHub is limiting checks from this network. Try again later."
+msgstr "GitHub ограничивает проверки из этой сети. Попробуйте позже."
+
+#: crates/tabletist-core/src/update/check.rs
+msgid "GitHub's answer wasn't a release."
+msgstr "Ответ GitHub не является релизом."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "Tabletist can't write to the folder it is in."
+msgstr "Tabletist не может записывать в папку, в которой находится."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "Tabletist couldn't quit in time, so the installer stopped waiting."
+msgstr "Tabletist не успел завершиться, и установщик перестал ждать."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The app was signed by another developer."
+msgstr "Приложение подписано другим разработчиком."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The connection was lost and didn't come back."
+msgstr "Соединение прервалось и не восстановилось."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The download isn't a Tabletist app."
+msgstr "Загруженный файл не является приложением Tabletist."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The file doesn't match its checksum in the release."
+msgstr "Файл не совпадает со своей контрольной суммой в релизе."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The file holds another version than the release."
+msgstr "В файле другая версия, чем в релизе."
+
+#: crates/tabletist-core/src/update/download.rs
+#, rust-format
+msgid "The installer didn't start: {error}"
+msgstr "Установщик не запустился: {error}"
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The new version didn't pass its startup check."
+msgstr "Новая версия не прошла проверку при запуске."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The release changed. Check for updates again."
+msgstr "Релиз изменился. Проверьте обновления снова."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The release's checksums couldn't be read."
+msgstr "Не удалось прочитать контрольные суммы релиза."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The signature doesn't match Tabletist's release key."
+msgstr "Подпись не совпадает с ключом релизов Tabletist."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid ""
+"Work was still open when the installer stopped waiting, so Tabletist didn't "
+"restart."
+msgstr ""
+"Когда установщик перестал ждать, работа была ещё открыта, поэтому Tabletist "
+"не перезапустился."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "macOS couldn't check the app's signature."
+msgstr "macOS не удалось проверить подпись приложения."
+
+#: crates/tabletist-core/src/update/installed.rs src/app/updates.rs
+#: src/ui/update_settings_tests.rs
+msgid "Installed with Homebrew, so Homebrew updates it"
+msgstr "Установлено через Homebrew, поэтому обновляет Homebrew"
+
+#: crates/tabletist-core/src/update/installed.rs
+msgid "Installed with cargo, so cargo updates it"
+msgstr "Установлено через cargo, поэтому обновляет cargo"
+
+#: crates/tabletist-core/src/update/installed.rs
+msgid "Move Tabletist to Applications, then open it from there to update it"
+msgstr "Переместите Tabletist в «Программы» и откройте оттуда, чтобы обновлять"
+
+#: crates/tabletist-core/src/update/installed.rs
+#: src/ui/update_settings_tests.rs
+msgid "Tabletist can't replace itself here"
+msgstr "Здесь Tabletist не может заменить себя"
+
+#: crates/tabletist-core/src/update/installed.rs
+msgid "Your package manager updates Tabletist"
+msgstr "Tabletist обновляет ваш менеджер пакетов"
 
 #: src/app.rs
 #, rust-format
@@ -292,6 +1967,52 @@ msgstr[2] "операторов"
 #, rust-format
 msgid "{agent} connected to Tabletist"
 msgstr "{agent} подключён к Tabletist"
+
+#: src/app/commands.rs
+#, rust-format
+msgid "Export result of Query {n}…"
+msgstr "Экспорт результата запроса {n}…"
+
+#: src/app/commands.rs
+#, rust-format
+msgid "Export {table}…"
+msgstr "Экспорт {table}…"
+
+#: src/app/commands.rs
+msgid "Filter rows"
+msgstr "Фильтровать строки"
+
+#: src/app/commands.rs src/menu.rs
+msgid "Format SQL"
+msgstr "Форматировать SQL"
+
+#: src/app/commands.rs
+msgid "Hide row panel"
+msgstr "Скрыть панель строки"
+
+#: src/app/commands.rs
+msgid "Hide sidebar"
+msgstr "Скрыть боковую панель"
+
+#: src/app/commands.rs src/ui/help.rs src/ui/settings/keyboard_sheet.rs
+msgid "Keyboard shortcuts"
+msgstr "Сочетания клавиш"
+
+#: src/app/commands.rs src/ui/start.rs
+msgid "New SQL query"
+msgstr "Новый SQL-запрос"
+
+#: src/app/commands.rs
+msgid "Reload schema"
+msgstr "Обновить схему"
+
+#: src/app/commands.rs
+msgid "Show row panel"
+msgstr "Показать панель строки"
+
+#: src/app/commands.rs
+msgid "Show sidebar"
+msgstr "Показать боковую панель"
 
 #: src/app/export.rs
 #, rust-format
@@ -359,8 +2080,224 @@ msgstr ""
 msgid "writes open with {key}, into a read-only tab"
 msgstr "изменяющие запросы открываются по {key}, во вкладке только для чтения"
 
+#: src/app/updates.rs src/ui/settings/updates_terminal.rs
+#, rust-format
+msgid "{version} available"
+msgstr "Доступна версия {version}"
+
+#: src/app/updates.rs
+#, rust-format
+msgid "{version} available · {key}"
+msgstr "Доступна {version} · {key}"
+
+#: src/menu.rs src/ui/help.rs
+msgid "About Tabletist"
+msgstr "О программе Tabletist"
+
+#: src/menu.rs
+msgid "Actual Size"
+msgstr "Фактический размер"
+
+#: src/menu.rs
+msgid "Bring All to Front"
+msgstr "Все окна на передний план"
+
+#: src/menu.rs
+msgid "Cancel Query"
+msgstr "Отменить запрос"
+
+#: src/menu.rs
+msgid "Close Connection"
+msgstr "Закрыть подключение"
+
+#: src/menu.rs
+msgid "Close Tab"
+msgstr "Закрыть вкладку"
+
+#: src/menu.rs src/ui/agents.rs src/ui/ddl.rs src/ui/row_panel.rs
+#: src/ui/settings/agents.rs src/ui/settings/terminal.rs
+#: src/ui/settings/updates.rs
+msgid "Copy"
+msgstr "Копировать"
+
+#: src/menu.rs
+msgid "Cut"
+msgstr "Вырезать"
+
+#: src/menu.rs
+msgid "Discard All Changes"
+msgstr "Сбросить все изменения"
+
+#: src/menu.rs src/ui/cell_editor.rs src/ui/picker.rs src/ui/row_panel.rs
+msgid "Edit"
+msgstr "Изменить"
+
+#: src/menu.rs
+msgid "Edit Connection"
+msgstr "Изменить подключение"
+
+#: src/menu.rs
+msgid "Exit"
+msgstr "Выход"
+
+#: src/menu.rs
+msgid "Export a Table…"
+msgstr "Экспортировать таблицу…"
+
+#: src/menu.rs src/ui/structure.rs
+msgid "File"
+msgstr "Файл"
+
+#: src/menu.rs
+msgid "Filter Rows"
+msgstr "Фильтровать строки"
+
+#: src/menu.rs
+msgid "Help"
+msgstr "Справка"
+
+#: src/menu.rs
+msgid "Hide Others"
+msgstr "Скрыть остальные"
+
+#: src/menu.rs
+msgid "Hide Row Panel"
+msgstr "Скрыть панель строки"
+
+#: src/menu.rs src/menu/tests.rs
+msgid "Hide Sidebar"
+msgstr "Скрыть боковую панель"
+
+#: src/menu.rs
+msgid "Hide Tabletist"
+msgstr "Скрыть Tabletist"
+
+#: src/menu.rs
+msgid "Keyboard Shortcuts"
+msgstr "Сочетания клавиш"
+
+#: src/menu.rs src/menu/tests.rs
+msgid "Make Tab Read-Only"
+msgstr "Сделать вкладку только для чтения"
+
+#: src/menu.rs src/menu/tests.rs
+msgid "Make Tab Read-Write"
+msgstr "Разрешить запись во вкладке"
+
+#: src/menu.rs
+msgid "Minimize"
+msgstr "Свернуть"
+
+#: src/menu.rs
+msgid "New Connection"
+msgstr "Новое подключение"
+
+#: src/menu.rs
+msgid "New SQL Query"
+msgstr "Новый SQL-запрос"
+
+#: src/menu.rs
+msgid "Next Connection"
+msgstr "Следующее подключение"
+
+#: src/menu.rs
+msgid "Next Tab"
+msgstr "Следующая вкладка"
+
+#: src/menu.rs
+msgid "Paste"
+msgstr "Вставить"
+
+#: src/menu.rs
+msgid "Previous Connection"
+msgstr "Предыдущее подключение"
+
+#: src/menu.rs
+msgid "Previous Tab"
+msgstr "Предыдущая вкладка"
+
+#: src/menu.rs
+msgid "Query"
+msgstr "Запрос"
+
+#: src/menu.rs
+msgid "Quick Open"
+msgstr "Быстрое открытие"
+
+#: src/menu.rs
+msgid "Quit Tabletist"
+msgstr "Завершить Tabletist"
+
+#: src/menu.rs
+msgid "Redo"
+msgstr "Повторить"
+
+#: src/menu.rs
+msgid "Reload Schema"
+msgstr "Обновить схему"
+
+#: src/menu.rs
+msgid "Review Pending SQL"
+msgstr "Показать ожидающий SQL"
+
+#: src/menu.rs
+msgid "Run All"
+msgstr "Выполнить все"
+
+#: src/menu.rs
+msgid "Save Changes"
+msgstr "Сохранить изменения"
+
+#: src/menu.rs
+msgid "Select All"
+msgstr "Выделить все"
+
+#: src/menu.rs
+msgid "Services"
+msgstr "Службы"
+
+#: src/menu.rs src/ui/agents.rs
+msgid "Settings…"
+msgstr "Настройки…"
+
+#: src/menu.rs
+msgid "Show All"
+msgstr "Показать все"
+
+#: src/menu.rs
+msgid "Show Row Panel"
+msgstr "Показать панель строки"
+
+#: src/menu.rs src/menu/tests.rs
+msgid "Show Sidebar"
+msgstr "Показать боковую панель"
+
+#: src/menu.rs
+msgid "Switch Database"
+msgstr "Сменить базу данных"
+
+#: src/menu.rs
+msgid "Tabletist"
+msgstr "Tabletist"
+
+#: src/menu.rs
+msgid "Undo"
+msgstr "Отменить"
+
+#: src/menu.rs src/ui/data_view.rs
+msgid "View"
+msgstr "Вид"
+
+#: src/menu.rs
+msgid "Window"
+msgstr "Окно"
+
+#: src/menu.rs
+msgid "Zoom"
+msgstr "Масштаб"
+
 #: src/ui/about.rs src/ui/connect_dialog/sheet.rs src/ui/help.rs
-#: src/ui/object_tabs.rs
+#: src/ui/object_tabs.rs src/ui/settings/terminal.rs
 msgid "Close"
 msgstr "Закрыть"
 
@@ -388,7 +2325,7 @@ msgstr[0] " и ещё {n}"
 msgstr[1] " и ещё {n}"
 msgstr[2] " и ещё {n}"
 
-#: src/ui/agents.rs
+#: src/ui/agents.rs src/ui/settings/agents.rs src/ui/settings/terminal.rs
 msgid "Access"
 msgstr "Доступ"
 
@@ -452,10 +2389,9 @@ msgstr "Вызовы для"
 msgid "Connection"
 msgstr "Подключение"
 
-#: src/ui/agents.rs src/ui/ddl.rs src/ui/row_panel.rs src/ui/settings/agents.rs
-#: src/ui/settings/terminal.rs src/ui/settings/updates.rs
-msgid "Copy"
-msgstr "Копировать"
+#: src/ui/agents.rs src/ui/settings/updates.rs
+msgid "Copied the command"
+msgstr "Команда скопирована"
 
 #: src/ui/agents.rs
 msgid "Elsewhere"
@@ -465,7 +2401,7 @@ msgstr "На других подключениях"
 msgid "Its connection was deleted."
 msgstr "Его подключение удалено."
 
-#: src/ui/agents.rs
+#: src/ui/agents.rs src/ui/settings/agents.rs src/ui/settings/terminal.rs
 msgid "Log"
 msgstr "Журнал"
 
@@ -498,7 +2434,8 @@ msgstr "На этом подключении пока нет вызовов."
 msgid "No calls to export."
 msgstr "Нет вызовов для экспорта."
 
-#: src/ui/agents.rs src/ui/picker.rs
+#: src/ui/agents.rs src/ui/picker.rs src/ui/settings/agents.rs
+#: src/ui/settings/sheet.rs src/ui/settings/terminal.rs
 msgid "Off"
 msgstr "Выкл."
 
@@ -556,14 +2493,10 @@ msgid "Server: stdio"
 msgstr "Сервер: stdio"
 
 #: src/ui/agents.rs
-msgid "Settings…"
-msgstr "Настройки…"
-
-#: src/ui/agents.rs
 msgid "Show"
 msgstr "Показать"
 
-#: src/ui/agents.rs src/ui/settings/agents.rs
+#: src/ui/agents.rs src/ui/settings/agents.rs src/ui/settings/terminal.rs
 msgid "Show log"
 msgstr "Показать журнал"
 
@@ -654,11 +2587,6 @@ msgstr "подробности"
 msgid "failed"
 msgstr "ошибка"
 
-#: src/ui/agents.rs src/ui/history.rs src/ui/workspace.rs
-msgctxt "label"
-msgid "filter"
-msgstr "фильтр"
-
 #: src/ui/agents.rs
 msgid "filters"
 msgstr "фильтры"
@@ -683,7 +2611,7 @@ msgstr "пока без подключения"
 msgid "ok"
 msgstr "успешно"
 
-#: src/ui/agents.rs src/ui/history.rs
+#: src/ui/agents.rs src/ui/history.rs src/ui/settings/terminal.rs
 msgid "on this computer"
 msgstr "на этом компьютере"
 
@@ -778,7 +2706,8 @@ msgstr "в ответе: {what}"
 msgid "Cancel export"
 msgstr "Отменить экспорт"
 
-#: src/ui/cancel_export.rs src/ui/copy_as.rs src/ui/workspace.rs
+#: src/ui/cancel_export.rs src/ui/copy_as.rs src/ui/help.rs
+#: src/ui/settings/terminal.rs src/ui/workspace.rs
 msgid "close"
 msgstr "закрыть"
 
@@ -790,10 +2719,6 @@ msgstr "выбор одной клавишей"
 #, rust-format
 msgid "{n} running"
 msgstr "выполняется: {n}"
-
-#: src/ui/cell_editor.rs src/ui/picker.rs src/ui/row_panel.rs
-msgid "Edit"
-msgstr "Изменить"
 
 #: src/ui/cell_editor.rs
 #, rust-format
@@ -816,11 +2741,12 @@ msgstr "Корректный JSON"
 msgid "apply"
 msgstr "применить"
 
-#: src/ui/cell_editor.rs
+#: src/ui/cell_editor.rs src/ui/settings/keyboard_terminal.rs
+#: src/ui/settings/terminal.rs src/ui/settings/updates_terminal.rs
 msgid "cancel"
 msgstr "отменить"
 
-#: src/ui/cell_editor.rs
+#: src/ui/cell_editor.rs src/ui/settings/mod.rs src/ui/settings/terminal.rs
 msgid "keep"
 msgstr "оставить"
 
@@ -972,7 +2898,8 @@ msgstr "столбец интервалов"
 msgid "{file} couldn't be read."
 msgstr "Не удалось прочитать {file}."
 
-#: src/ui/connect_dialog/reading.rs
+#: src/ui/connect_dialog/reading.rs src/ui/settings/sheet.rs
+#: src/ui/settings/terminal.rs
 msgid "Reset"
 msgstr "Сбросить"
 
@@ -991,14 +2918,8 @@ msgstr "пропущен"
 msgid "Authentication"
 msgstr "Аутентификация"
 
-#: src/ui/connect_dialog/sheet.rs src/ui/data_view.rs
-#: src/ui/every_row_prompt.rs src/ui/export.rs src/ui/export_toast.rs
-#: src/ui/host_key_prompt.rs src/ui/password_prompt.rs src/ui/pending_bar.rs
-#: src/ui/sql_results.rs src/ui/structure.rs src/ui/write_prompts.rs
-msgid "Cancel"
-msgstr "Отменить"
-
 #: src/ui/connect_dialog/sheet.rs src/ui/picker.rs src/ui/row_panel.rs
+#: src/ui/settings/sheet.rs
 msgid "Delete"
 msgstr "Удалить"
 
@@ -1057,10 +2978,6 @@ msgstr "Выбрана 1 строка"
 msgid "Add filter"
 msgstr "Добавить фильтр"
 
-#: src/ui/data_view.rs
-msgid "Add row"
-msgstr "Добавить строку"
-
 #: src/ui/data_view.rs src/ui/sql_results.rs
 msgid "Cancel query"
 msgstr "Отменить запрос"
@@ -1093,7 +3010,7 @@ msgstr "DDL"
 msgid "Filtered"
 msgstr "Отфильтровано"
 
-#: src/ui/data_view.rs
+#: src/ui/data_view.rs src/ui/settings/sheet.rs
 msgid "Full precision"
 msgstr "Полная точность"
 
@@ -1153,17 +3070,13 @@ msgstr "Время показано полностью"
 msgid "Timestamps shown to the second"
 msgstr "Время показано до секунд"
 
-#: src/ui/data_view.rs
+#: src/ui/data_view.rs src/ui/settings/sheet.rs
 msgid "To the second"
 msgstr "До секунд"
 
 #: src/ui/data_view.rs
 msgid "Unordered"
 msgstr "Без порядка"
-
-#: src/ui/data_view.rs
-msgid "View"
-msgstr "Вид"
 
 #: src/ui/data_view.rs
 #, rust-format
@@ -1194,7 +3107,7 @@ msgid "open rows"
 msgstr "открыть строки"
 
 #: src/ui/data_view.rs src/ui/ddl.rs src/ui/export.rs src/ui/row_panel.rs
-#: src/ui/workspace.rs
+#: src/ui/settings/mod.rs src/ui/workspace.rs
 msgid "read-only"
 msgstr "только чтение"
 
@@ -1331,10 +3244,6 @@ msgstr "Только чтение"
 msgid "Reading the definition…"
 msgstr "Чтение определения…"
 
-#: src/ui/ddl.rs src/ui/sidebar.rs
-msgid "Reload"
-msgstr "Обновить"
-
 #: src/ui/ddl.rs
 msgid "Select text to copy part of it"
 msgstr "Выделите текст, чтобы скопировать его часть"
@@ -1351,7 +3260,7 @@ msgstr "собран по каталогу"
 msgid "ddl"
 msgstr "ddl"
 
-#: src/ui/ddl.rs
+#: src/ui/ddl.rs src/ui/settings/keyboard_terminal.rs
 msgid "keys"
 msgstr "клавиши"
 
@@ -1432,7 +3341,7 @@ msgid "! {pending} in {table} isn't exported · :w first to include it"
 msgstr ""
 "! {pending} в {table} не попадёт в экспорт · сначала :w, чтобы включить"
 
-#: src/ui/export.rs
+#: src/ui/export.rs src/ui/settings/keyboard_sheet.rs
 msgid "All"
 msgstr "Все"
 
@@ -1738,18 +3647,18 @@ msgstr "Убрать условие"
 msgid "Value"
 msgstr "Значение"
 
-#: src/ui/help.rs
-msgid "About Tabletist"
-msgstr "О программе Tabletist"
-
-#: src/ui/help.rs
+#: src/ui/help.rs src/ui/settings/keyboard_sheet.rs
 #, rust-format
 msgid "Commands bound to {keys}"
 msgstr "Команды на {keys}"
 
 #: src/ui/help.rs
-msgid "Keyboard shortcuts"
-msgstr "Сочетания клавиш"
+msgid "Esc clears the filter"
+msgstr "Esc очищает фильтр"
+
+#: src/ui/help.rs
+msgid "Esc clears the search"
+msgstr "Esc очищает поиск"
 
 #: src/ui/help.rs
 #, rust-format
@@ -1761,21 +3670,25 @@ msgstr "На {keys} не назначено ни одной команды"
 msgid "No commands match “{words}”"
 msgstr "Нет команд по запросу «{words}»"
 
-#: src/ui/help.rs
+#: src/ui/help.rs src/ui/settings/keyboard_sheet.rs
 msgid "Search commands or press a shortcut"
 msgstr "Найдите команду или нажмите сочетание клавиш"
 
-#: src/ui/help.rs src/ui/row_panel.rs
+#: src/ui/help.rs src/ui/row_panel.rs src/ui/settings/keyboard_sheet.rs
 msgid "Show all"
 msgstr "Показать все"
+
+#: src/ui/help.rs
+msgid "clear"
+msgstr "очистить"
 
 #: src/ui/help.rs
 msgid "filter commands, or press a key to find it"
 msgstr "фильтр команд, или нажмите клавишу, чтобы найти команду"
 
-#: src/ui/history.rs src/ui/object_tabs.rs src/ui/picker.rs src/ui/sidebar.rs
-msgid "Agents"
-msgstr "Агенты"
+#: src/ui/help.rs
+msgid "type to filter, or press keys to find them"
+msgstr "введите текст для фильтра или нажмите клавиши, чтобы найти их"
 
 #: src/ui/history.rs
 msgid "All sources"
@@ -1842,10 +3755,6 @@ msgstr "Отклонено"
 msgid "Run again"
 msgstr "Выполнить снова"
 
-#: src/ui/history.rs src/ui/sidebar.rs
-msgid "SQL editor"
-msgstr "Редактор SQL"
-
 #: src/ui/history.rs
 msgid "Saved"
 msgstr "Сохранено"
@@ -1899,10 +3808,6 @@ msgstr "чтение и запись"
 #: src/ui/history.rs
 msgid "save"
 msgstr "сохранение"
-
-#: src/ui/history.rs src/ui/object_tabs.rs
-msgid "sql"
-msgstr "sql"
 
 #: src/ui/history.rs
 #, rust-format
@@ -1962,10 +3867,6 @@ msgstr "Свернуть все"
 msgid "Expand all"
 msgstr "Развернуть все"
 
-#: src/ui/key_picker.rs src/ui/structure.rs
-msgid "Change label column"
-msgstr "Сменить столбец подписи"
-
 #: src/ui/key_picker.rs
 msgid "Esc cancels"
 msgstr "Esc: отмена"
@@ -2008,10 +3909,6 @@ msgstr "В {table} нет совпадений с «{text}»"
 #, rust-format
 msgid "Searching {table}…"
 msgstr "Поиск в {table}…"
-
-#: src/ui/key_picker.rs
-msgid "Set NULL"
-msgstr "Задать NULL"
 
 #: src/ui/key_picker.rs
 msgid "current"
@@ -2108,7 +4005,7 @@ msgstr ""
 "Доступ агентов изменён вне Tabletist: {changes}. Пока вы не ответите, агенты "
 "этим не воспользуются. Оставить или вернуть как было?"
 
-#: src/ui/mod.rs
+#: src/ui/mod.rs src/ui/settings/mod.rs src/ui/settings/sheet.rs
 msgid "Keep"
 msgstr "Оставить"
 
@@ -2136,10 +4033,6 @@ msgid "{rest}, and {last}"
 msgstr "{rest} и {last}"
 
 #: src/ui/object_tabs.rs src/ui/sidebar.rs
-msgid "History"
-msgstr "История"
-
-#: src/ui/object_tabs.rs src/ui/sidebar.rs
 msgid "New SQL editor"
 msgstr "Новый редактор SQL"
 
@@ -2161,9 +4054,61 @@ msgstr "Вкладка {name}"
 msgid "{name} tab, unsaved"
 msgstr "Вкладка {name}, не сохранена"
 
+#: src/ui/pane_hints.rs src/ui/workspace.rs
+msgid "copy as"
+msgstr "копировать как"
+
 #: src/ui/pane_hints.rs
+msgid "export table"
+msgstr "экспорт таблицы"
+
+#: src/ui/pane_hints.rs
+msgid "field"
+msgstr "поле"
+
+#: src/ui/pane_hints.rs src/ui/settings/terminal.rs
+msgctxt "key hint"
+msgid "filter"
+msgstr "фильтр"
+
+#: src/ui/pane_hints.rs
+msgid "fold"
+msgstr "свернуть"
+
+#: src/ui/pane_hints.rs
+msgid "grid"
+msgstr "таблица"
+
+#: src/ui/pane_hints.rs src/ui/settings/terminal.rs src/ui/sql_complete.rs
+#: src/ui/workspace.rs
+msgid "move"
+msgstr "перемещение"
+
+#: src/ui/pane_hints.rs src/ui/workspace.rs
+msgctxt "key hint"
+msgid "open"
+msgstr "открыть"
+
+#: src/ui/pane_hints.rs
+msgid "panes"
+msgstr "панели"
+
+#: src/ui/pane_hints.rs src/ui/workspace.rs
+msgid "review"
+msgstr "просмотр"
+
+#: src/ui/pane_hints.rs
+msgctxt "key hint"
+msgid "row"
+msgstr "строка"
+
+#: src/ui/pane_hints.rs src/ui/settings/mod.rs
 msgid "tree"
 msgstr "дерево"
+
+#: src/ui/pane_hints.rs src/ui/workspace.rs
+msgid "write"
+msgstr "записать"
 
 #: src/ui/password_prompt.rs
 msgid "Connect"
@@ -2340,10 +4285,6 @@ msgstr ""
 "Добавьте базу данных PostgreSQL, MySQL или SQLite либо папку с файлами "
 "данных, чтобы начать работу."
 
-#: src/ui/picker.rs src/ui/workspace.rs
-msgid "Connections"
-msgstr "Подключения"
-
 #: src/ui/picker.rs src/ui/row_panel.rs
 msgid "Duplicate"
 msgstr "Дублировать"
@@ -2363,10 +4304,6 @@ msgid "More actions for {connection}"
 msgstr "Другие действия для {connection}"
 
 #: src/ui/picker.rs
-msgid "New connection"
-msgstr "Новое подключение"
-
-#: src/ui/picker.rs
 msgid "No connections match"
 msgstr "Нет подходящих подключений"
 
@@ -2382,7 +4319,7 @@ msgstr "Пароли хранятся в Связке ключей macOS"
 msgid "Passwords are stored in the system keyring"
 msgstr "Пароли хранятся в системной связке ключей"
 
-#: src/ui/picker.rs src/ui/settings/agents.rs
+#: src/ui/picker.rs src/ui/settings/agents.rs src/ui/settings/terminal.rs
 msgid "Show Agents tab"
 msgstr "Показывать вкладку «Агенты»"
 
@@ -2510,10 +4447,6 @@ msgid "Close the row panel"
 msgstr "Закрыть панель строки"
 
 #: src/ui/row_panel.rs
-msgid "Copy row"
-msgstr "Копировать строку"
-
-#: src/ui/row_panel.rs
 msgid "Discard new row"
 msgstr "Сбросить новую строку"
 
@@ -2590,7 +4523,7 @@ msgstr ""
 msgid "Will be deleted on save"
 msgstr "Будет удалена при сохранении"
 
-#: src/ui/row_panel.rs
+#: src/ui/row_panel.rs src/ui/settings/sheet.rs
 msgid "default"
 msgstr "по умолчанию"
 
@@ -2640,16 +4573,109 @@ msgstr[1] "… ещё {n} элемента"
 msgstr[2] "… ещё {n} элементов"
 
 #: src/ui/settings/agents.rs
+msgid ""
+"Add its tabletist entry under mcpServers in ~/.cursor/mcp.json, or "
+"in .cursor/mcp.json in a project:"
+msgstr ""
+"Добавьте запись tabletist в mcpServers в ~/.cursor/mcp.json или в .cursor/"
+"mcp.json проекта:"
+
+#: src/ui/settings/agents.rs
+msgid "Agents can't connect"
+msgstr "Агенты не могут подключиться"
+
+#: src/ui/settings/agents.rs
+msgid "An agent that starts MCP servers over stdio runs this command:"
+msgstr "Агент, запускающий MCP-серверы через stdio, выполняет эту команду:"
+
+#: src/ui/settings/agents.rs src/ui/settings/terminal.rs
 msgid "Connect an agent"
 msgstr "Подключить агента"
+
+#: src/ui/settings/agents.rs
+msgid "Copied the entry for mcp.json"
+msgstr "Запись для mcp.json скопирована"
+
+#: src/ui/settings/agents.rs
+msgid "Each agent gets its own name in the Agents tab."
+msgstr "Каждый агент получает своё имя на вкладке «Агенты»."
+
+#: src/ui/settings/agents.rs
+msgid ""
+"Every connection has an Agents section: Off or Read, with limits on rows and "
+"time. New connections start Off."
+msgstr ""
+"У каждого подключения есть раздел «Агенты»: «Выкл.» или «Чтение», с "
+"ограничениями по строкам и времени. Новые подключения начинают с «Выкл.»."
+
+#: src/ui/settings/agents.rs
+msgid "How it stays safe"
+msgstr "Как обеспечивается безопасность"
+
+#: src/ui/settings/agents.rs
+msgid ""
+"Let coding agents query your databases through Tabletist (MCP). They use "
+"your saved connections; passwords stay in Credential Manager."
+msgstr ""
+"Позвольте агентам для программирования обращаться к вашим базам данных через "
+"Tabletist (MCP). Они используют сохранённые подключения, пароли остаются в "
+"диспетчере учётных данных."
+
+#: src/ui/settings/agents.rs
+msgid ""
+"Let coding agents query your databases through Tabletist (MCP). They use "
+"your saved connections; passwords stay in the Keychain."
+msgstr ""
+"Позвольте агентам для программирования обращаться к вашим базам данных через "
+"Tabletist (MCP). Они используют сохранённые подключения, пароли остаются в "
+"Связке ключей."
+
+#: src/ui/settings/agents.rs
+msgid ""
+"Let coding agents query your databases through Tabletist (MCP). They use "
+"your saved connections; passwords stay in the keyring."
+msgstr ""
+"Позвольте агентам для программирования обращаться к вашим базам данных через "
+"Tabletist (MCP). Они используют сохранённые подключения, пароли остаются в "
+"связке ключей."
 
 #: src/ui/settings/agents.rs
 msgid "No agents connected"
 msgstr "Нет подключённых агентов"
 
-#: src/ui/settings/agents.rs
+#: src/ui/settings/agents.rs src/ui/settings/terminal.rs
 msgid "Open Connections"
 msgstr "Открыть подключения"
+
+#: src/ui/settings/agents.rs
+msgid "Other"
+msgstr "Другой"
+
+#: src/ui/settings/agents.rs
+msgid ""
+"Reads run in a read-only transaction with each connection's limits. No DDL, "
+"no multiple statements, no COPY. Agents see what the connection's database "
+"user can see, and never more."
+msgstr ""
+"Чтение выполняется в транзакции только для чтения с ограничениями каждого "
+"подключения. Без DDL, без нескольких запросов сразу, без COPY. Агенты видят "
+"то, что видит пользователь базы данных этого подключения, и не больше."
+
+#: src/ui/settings/agents.rs
+msgid "Run this once in your project:"
+msgstr "Выполните один раз в своём проекте:"
+
+#: src/ui/settings/agents.rs
+msgid "Running"
+msgstr "Работает"
+
+#: src/ui/settings/agents.rs
+msgid "Set for each connection, in Connections"
+msgstr "Задаётся для каждого подключения в «Подключениях»"
+
+#: src/ui/settings/agents.rs
+msgid "stdio · this computer only"
+msgstr "stdio · только этот компьютер"
 
 #: src/ui/settings/agents.rs
 #, rust-format
@@ -2660,10 +4686,39 @@ msgstr[1] "Подключено {n} агента"
 msgstr[2] "Подключено {n} агентов"
 
 #: src/ui/settings/file_pane.rs
+msgid ""
+"Edits in the file reload live · invalid lines are shown here in {red}red{/"
+"red} and ignored"
+msgstr ""
+"Правки в файле применяются сразу · неверные строки показаны здесь {red}"
+"красным{/red} и пропускаются"
+
+#: src/ui/settings/file_pane.rs
 msgid "Ignored"
 msgstr "Пропущено"
 
+#: src/ui/settings/file_pane.rs
+msgid "live"
+msgstr "действует"
+
+#: src/ui/settings/file_pane.rs
+msgid "only changes from the defaults live here"
+msgstr "здесь хранятся только отличия от значений по умолчанию"
+
+#: src/ui/settings/file_pane.rs
+#, rust-format
+msgid "{list} writes the full list"
+msgstr "{list} записывает полный список"
+
 #: src/ui/settings/keyboard.rs
+msgid "changed"
+msgstr "изменено"
+
+#: src/ui/settings/keyboard.rs src/ui/settings/keyboard_terminal.rs
+msgid "not built yet"
+msgstr "пока не сделано"
+
+#: src/ui/settings/keyboard.rs src/ui/settings/keyboard_terminal.rs
 msgid "not set"
 msgstr "не задано"
 
@@ -2671,43 +4726,450 @@ msgstr "не задано"
 msgid "or"
 msgstr "или"
 
+#: src/ui/settings/keyboard_sheet.rs
+msgid "Changed"
+msgstr "Изменённые"
+
+#: src/ui/settings/keyboard_sheet.rs
+msgid "Changed, none"
+msgstr "Изменённые, нет"
+
+#: src/ui/settings/keyboard_sheet.rs
+msgid ""
+"Click a shortcut to record a new one. The same keys can do different things "
+"in different scopes."
+msgstr ""
+"Нажмите на сочетание, чтобы записать новое. Одни и те же клавиши могут "
+"делать разное в разных областях."
+
+#: src/ui/settings/keyboard_sheet.rs src/ui/workspace.rs
+msgid "Command"
+msgstr "Команда"
+
+#: src/ui/settings/keyboard_sheet.rs
+msgid "No commands match"
+msgstr "Нет подходящих команд"
+
+#: src/ui/settings/keyboard_sheet.rs
+msgid "No shortcuts changed"
+msgstr "Сочетания не изменены"
+
+#: src/ui/settings/keyboard_sheet.rs
+msgid "Not built yet"
+msgstr "Пока не сделано"
+
+#: src/ui/settings/keyboard_sheet.rs
+msgid "Not changed"
+msgstr "Не изменено"
+
+#: src/ui/settings/keyboard_sheet.rs
+msgid "Not set"
+msgstr "Не задано"
+
+#: src/ui/settings/keyboard_sheet.rs
+msgid "Press keys…"
+msgstr "Нажмите клавиши…"
+
+#: src/ui/settings/keyboard_sheet.rs src/ui/settings/keyboard_terminal.rs
+msgid "Recording. Press the new shortcut, Escape to cancel."
+msgstr "Запись. Нажмите новое сочетание, Escape для отмены."
+
+#: src/ui/settings/keyboard_sheet.rs
+msgid "Reset all…"
+msgstr "Сбросить все…"
+
+#: src/ui/settings/keyboard_sheet.rs
+msgid "Reset to default"
+msgstr "Сбросить по умолчанию"
+
+#: src/ui/settings/keyboard_sheet.rs
+#, rust-format
+msgid "Reset to {keys}"
+msgstr "Сбросить на {keys}"
+
+#: src/ui/settings/keyboard_sheet.rs
+#, rust-format
+msgid "Reset {name} to {keys}"
+msgstr "Сбросить «{name}» на {keys}"
+
+#: src/ui/settings/keyboard_sheet.rs
+msgid "Reset: not set"
+msgstr "Сброс: не задано"
+
+#: src/ui/settings/keyboard_sheet.rs
+msgid "Scope"
+msgstr "Область"
+
+#: src/ui/settings/keyboard_sheet.rs
+msgid "Shortcut"
+msgstr "Сочетание"
+
+#: src/ui/settings/keyboard_sheet.rs
+#, rust-format
+msgid "Shortcut for {name}: {keys}. It cannot be changed."
+msgstr "Сочетание для «{name}»: {keys}. Его нельзя изменить."
+
+#: src/ui/settings/keyboard_sheet.rs
+#, rust-format
+msgid "Shortcut for {name}: {keys}. Press Return to record."
+msgstr "Сочетание для «{name}»: {keys}. Нажмите Return, чтобы записать."
+
+#: src/ui/settings/keyboard_sheet.rs
+msgid "Shortcuts shown"
+msgstr "Показанные сочетания"
+
+#: src/ui/settings/keyboard_sheet.rs
+msgid "Swap"
+msgstr "Поменять"
+
+#: src/ui/settings/keyboard_sheet.rs src/ui/settings/terminal.rs
+msgid "Unbind"
+msgstr "Снять"
+
+#: src/ui/settings/keyboard_terminal.rs
+msgid "? press the keys to find"
+msgstr "? нажмите клавиши, чтобы найти"
+
+#: src/ui/settings/keyboard_terminal.rs
+msgid "action"
+msgstr "действие"
+
+#: src/ui/settings/keyboard_terminal.rs
+msgid "filter commands · ? find by key"
+msgstr "фильтр команд · ? поиск по клавише"
+
+#: src/ui/settings/keyboard_terminal.rs
+msgid "keyboard shortcuts"
+msgstr "сочетания клавиш"
+
+#: src/ui/settings/keyboard_terminal.rs
+#, rust-format
+msgid "keys {keys} · {close} shows every command"
+msgstr "клавиши {keys} · {close} показывает все команды"
+
+#: src/ui/settings/keyboard_terminal.rs
+msgid "no commands match"
+msgstr "нет подходящих команд"
+
+#: src/ui/settings/keyboard_terminal.rs
+msgid "no shortcuts changed"
+msgstr "сочетания не изменены"
+
+#: src/ui/settings/keyboard_terminal.rs
+msgid "press keys…"
+msgstr "нажмите клавиши…"
+
+#: src/ui/settings/keyboard_terminal.rs
+msgid "scope"
+msgstr "область"
+
+#: src/ui/settings/keyboard_terminal.rs
+#, rust-format
+msgid "shortcut for {name}: {keys}. it cannot be changed."
+msgstr "сочетание для «{name}»: {keys}. его нельзя изменить."
+
+#: src/ui/settings/keyboard_terminal.rs
+#, rust-format
+msgid "shortcut for {name}: {keys}. press {record} to record."
+msgstr "сочетание для «{name}»: {keys}. нажмите {record}, чтобы записать."
+
+#: src/ui/settings/keyboard_terminal.rs
+msgid "super is never bound: hyprland owns it · insert-mode keys follow vim"
+msgstr ""
+"super никогда не назначается: ею владеет hyprland · клавиши режима вставки "
+"как в vim"
+
+#: src/ui/settings/keyboard_terminal.rs
+msgid "swap"
+msgstr "поменять"
+
+#: src/ui/settings/mod.rs src/ui/settings/sheet.rs
+msgid "A selection always wins"
+msgstr "Выделение всегда в приоритете"
+
+#: src/ui/settings/mod.rs
+#, rust-format
+msgid "After {n} h"
+msgid_plural "After {n} h"
+msgstr[0] "Через {n} ч"
+msgstr[1] "Через {n} ч"
+msgstr[2] "Через {n} ч"
+
+#: src/ui/settings/mod.rs
+#, rust-format
+msgid "After {n} min"
+msgid_plural "After {n} min"
+msgstr[0] "Через {n} мин"
+msgstr[1] "Через {n} мин"
+msgstr[2] "Через {n} мин"
+
+#: src/ui/settings/mod.rs
+msgid "Alternate row shading"
+msgstr "Чередование фона строк"
+
+#: src/ui/settings/mod.rs
+msgid "Alternate rows"
+msgstr "Чередование строк"
+
+#: src/ui/settings/mod.rs
+msgid "Ask before closing with unsaved edits"
+msgstr "Спрашивать перед закрытием с несохранёнными правками"
+
+#: src/ui/settings/mod.rs
+msgid "Autocomplete"
+msgstr "Автодополнение"
+
+#: src/ui/settings/mod.rs
+msgid "Caps results you browse. Show all and exports get every row."
+msgstr ""
+"Ограничивает просматриваемые результаты. «Показать все» и экспорт получают "
+"все строки."
+
+#: src/ui/settings/mod.rs
+msgid "Check for updates"
+msgstr "Проверять обновления"
+
+#: src/ui/settings/mod.rs
+msgid "Close brackets"
+msgstr "Закрывать скобки"
+
+#: src/ui/settings/mod.rs
+msgid "Close brackets and quotes"
+msgstr "Закрывать скобки и кавычки"
+
+#: src/ui/settings/mod.rs
+msgid "Closes server sessions; tabs stay and reconnect on use"
+msgstr ""
+"Закрывает сеансы на сервере, вкладки остаются и переподключаются при "
+"использовании"
+
+#: src/ui/settings/mod.rs
+msgid "Colors for enum, CHECK (…IN…) and boolean columns"
+msgstr "Цвета для столбцов enum, CHECK (…IN…) и boolean"
+
+#: src/ui/settings/mod.rs
+msgid "Column types"
+msgstr "Типы столбцов"
+
+#: src/ui/settings/mod.rs
+msgid "Commas"
+msgstr "Запятые"
+
+#: src/ui/settings/mod.rs
+msgid "Confirm UPDATE or DELETE without WHERE"
+msgstr "Подтверждать UPDATE или DELETE без WHERE"
+
+#: src/ui/settings/mod.rs
+msgid "Confirm write without where"
+msgstr "Подтверждать запись без where"
+
+#: src/ui/settings/mod.rs
+msgid "Connection bar"
+msgstr "Панель подключения"
+
 #: src/ui/settings/mod.rs
 msgid "Connection not found"
 msgstr "Подключение не найдено"
+
+#: src/ui/settings/mod.rs
+msgid "Current line highlight"
+msgstr "Подсветка текущей строки"
+
+#: src/ui/settings/mod.rs
+msgid "Data font"
+msgstr "Шрифт данных"
+
+#: src/ui/settings/mod.rs
+msgid "Data font size"
+msgstr "Размер шрифта данных"
+
+#: src/ui/settings/mod.rs
+msgid "Default for new connections; the sidebar toggle overrides it"
+msgstr ""
+"По умолчанию для новых подключений, переключатель на боковой панели важнее"
+
+#: src/ui/settings/mod.rs
+msgid "Default for the switch in each connection"
+msgstr "По умолчанию для переключателя в каждом подключении"
+
+#: src/ui/settings/mod.rs
+msgid "Disconnect when idle"
+msgstr "Отключаться при простое"
 
 #: src/ui/settings/mod.rs
 msgid "English"
 msgstr "Английский"
 
 #: src/ui/settings/mod.rs
+msgid "Every call and its SQL, never the rows. On this computer only"
+msgstr "Каждый вызов и его SQL, но не строки. Только на этом компьютере"
+
+#: src/ui/settings/mod.rs
+msgid "Every day"
+msgstr "Каждый день"
+
+#: src/ui/settings/mod.rs
+msgid "Every week"
+msgstr "Каждую неделю"
+
+#: src/ui/settings/mod.rs
+msgid "Everything in the window: text, controls, rows and spacing"
+msgstr "Всё в окне: текст, элементы управления, строки и отступы"
+
+#: src/ui/settings/mod.rs
+msgid "Font"
+msgstr "Шрифт"
+
+#: src/ui/settings/mod.rs
+msgid "Grid cells, SQL editor, JSON · scales with the interface"
+msgstr ""
+"Ячейки таблицы, редактор SQL, JSON · масштабируется вместе с интерфейсом"
+
+#: src/ui/settings/mod.rs
 msgid "Help translate"
 msgstr "Помочь с переводом"
 
+#: src/ui/settings/mod.rs src/ui/settings/terminal.rs
+msgid "Interface"
+msgstr "Интерфейс"
+
 #: src/ui/settings/mod.rs
-msgid "Language"
-msgstr "Язык"
+msgid "Interface scale"
+msgstr "Масштаб интерфейса"
+
+#: src/ui/settings/mod.rs
+msgid "Keep query history"
+msgstr "Хранить историю запросов"
+
+#: src/ui/settings/mod.rs
+msgid "Keep the activity log"
+msgstr "Хранить журнал активности"
+
+#: src/ui/settings/mod.rs
+msgid "Keybindings"
+msgstr "Сочетания клавиш"
+
+#: src/ui/settings/mod.rs
+msgid "Keywords"
+msgstr "Ключевые слова"
+
+#: src/ui/settings/mod.rs
+msgid "Let agents use Tabletist"
+msgstr "Разрешить агентам использовать Tabletist"
+
+#: src/ui/settings/mod.rs src/ui/sql_text.rs
+msgid "Line numbers"
+msgstr "Номера строк"
 
 #: src/ui/settings/mod.rs
 msgid "Menus, labels and messages; data and SQL stay as they are"
 msgstr "Меню, подписи и сообщения; данные и SQL остаются как есть"
 
-#: src/ui/settings/mod.rs
+#: src/ui/settings/mod.rs src/ui/settings/terminal.rs
 msgid "Never"
 msgstr "Никогда"
+
+#: src/ui/settings/mod.rs
+msgid "New production connections open read-only"
+msgstr "Новые подключения production открываются только для чтения"
+
+#: src/ui/settings/mod.rs
+msgid "New tabs run in"
+msgstr "Новые вкладки выполняют в режиме"
+
+#: src/ui/settings/mod.rs
+msgid "Notify when an agent connects"
+msgstr "Уведомлять о подключении агента"
+
+#: src/ui/settings/mod.rs
+msgid "Numbers"
+msgstr "Числа"
+
+#: src/ui/settings/mod.rs
+msgid "Omarchy: keyboard-first, square, monospace"
+msgstr "Omarchy: клавиатура прежде всего, прямые углы, моноширинный шрифт"
+
+#: src/ui/settings/mod.rs
+msgid "On every connection that allows writes"
+msgstr "На каждом подключении, где разрешена запись"
+
+#: src/ui/settings/mod.rs
+msgid "On launch"
+msgstr "При запуске"
+
+#: src/ui/settings/mod.rs
+msgid "Only when I ask"
+msgstr "Только по запросу"
+
+#: src/ui/settings/mod.rs
+msgid "Open a connection to see its agents"
+msgstr "Откройте подключение, чтобы увидеть его агентов"
+
+#: src/ui/settings/mod.rs
+msgid "Or: show Connections · open a chosen connection"
+msgstr "Или: показать подключения · открыть выбранное подключение"
+
+#: src/ui/settings/mod.rs
+msgid "Per connection, including sort and hidden columns"
+msgstr "Для каждого подключения, включая сортировку и скрытые столбцы"
+
+#: src/ui/settings/mod.rs
+msgid ""
+"Per connection, on this computer: SQL editor, grid saves, filters and agent "
+"runs. Results are never stored."
+msgstr ""
+"Для каждого подключения, на этом компьютере: редактор SQL, сохранения из "
+"таблицы, фильтры и запуски агентов. Результаты не хранятся."
+
+#: src/ui/settings/mod.rs
+msgid "Production always uses the full tint"
+msgstr "Production всегда с полной заливкой"
 
 #: src/ui/settings/mod.rs
 msgid "Restore last session"
 msgstr "Восстановить прошлый сеанс"
 
 #: src/ui/settings/mod.rs
+msgid "Restore tabs and filters"
+msgstr "Восстанавливать вкладки и фильтры"
+
+#: src/ui/settings/mod.rs
+msgid "Row density"
+msgstr "Плотность строк"
+
+#: src/ui/settings/mod.rs
+msgid "Row height"
+msgstr "Высота строк"
+
+#: src/ui/settings/mod.rs
+msgid "Row limit"
+msgstr "Лимит строк"
+
+#: src/ui/settings/mod.rs
+msgid "Rows per page"
+msgstr "Строк на странице"
+
+#: src/ui/settings/mod.rs
 msgid "Russian"
 msgstr "Русский"
+
+#: src/ui/settings/mod.rs
+msgid "Second line in headers: int8, varchar, jsonb"
+msgstr "Вторая строка в заголовках: int8, varchar, jsonb"
 
 #: src/ui/settings/mod.rs
 msgid "Show Connections"
 msgstr "Показать подключения"
 
 #: src/ui/settings/mod.rs
+msgid "Show column types"
+msgstr "Показывать типы столбцов"
+
+#: src/ui/settings/mod.rs
+msgid "Size"
+msgstr "Размер"
+
+#: src/ui/settings/mod.rs src/ui/settings/sheet.rs
 msgid "System"
 msgstr "Системный"
 
@@ -2722,6 +5184,193 @@ msgid "System · {zone}"
 msgstr "Системный · {zone}"
 
 #: src/ui/settings/mod.rs
+msgid "Table list"
+msgstr "Список таблиц"
+
+#: src/ui/settings/mod.rs
+msgid "Table view; the SQL editor has its own limit"
+msgstr "Просмотр таблицы, у редактора SQL свой лимит"
+
+#: src/ui/settings/mod.rs
+msgid "Tables, views, columns and functions from the schema"
+msgstr "Таблицы, представления, столбцы и функции из схемы"
+
+#: src/ui/settings/mod.rs
+msgid "The badge in each tab can still switch it"
+msgstr "Значок на каждой вкладке всё равно может его переключить"
+
+#: src/ui/settings/mod.rs
+#, rust-format
+msgid "Theme “{name}” not found: following Omarchy"
+msgstr "Тема «{name}» не найдена: как в Omarchy"
+
+#: src/ui/settings/mod.rs
+#, rust-format
+msgid "Theme “{name}” not found: following the system"
+msgstr "Тема «{name}» не найдена: как в системе"
+
+#: src/ui/settings/mod.rs
+msgid "Time zone for timestamptz"
+msgstr "Часовой пояс для timestamptz"
+
+#: src/ui/settings/mod.rs src/ui/sql_editor.rs
+msgid "Timeout"
+msgstr "Тайм-аут"
+
+#: src/ui/settings/mod.rs
+msgid "Timestamps"
+msgstr "Метки времени"
+
+#: src/ui/settings/mod.rs
+msgid "Under date and time fields; typing always works"
+msgstr "Под полями даты и времени, ввод с клавиатуры работает всегда"
+
+#: src/ui/settings/mod.rs
+msgid "Value tags"
+msgstr "Метки значений"
+
+#: src/ui/settings/mod.rs
+msgid "Values are shown in this zone and sent with their offset"
+msgstr "Значения показываются в этом поясе и отправляются со смещением"
+
+#: src/ui/settings/mod.rs
+msgid "Window header"
+msgstr "Заголовок окна"
+
+#: src/ui/settings/mod.rs
+msgid "Wrap"
+msgstr "Перенос строк"
+
+#: src/ui/settings/mod.rs
+msgid "absolute"
+msgstr "абсолютные"
+
+#: src/ui/settings/mod.rs
+msgid "as you type"
+msgstr "при вводе"
+
+#: src/ui/settings/mod.rs
+msgid "calendar for dates"
+msgstr "календарь для дат"
+
+#: src/ui/settings/mod.rs
+msgid "classic"
+msgstr "классический"
+
+#: src/ui/settings/mod.rs
+msgid "compact"
+msgstr "компактно"
+
+#: src/ui/settings/mod.rs
+msgid "confirm close with edits"
+msgstr "подтверждать закрытие с правками"
+
+#: src/ui/settings/mod.rs
+msgid "fewer"
+msgstr "меньше"
+
+#: src/ui/settings/mod.rs
+msgid "flat"
+msgstr "плоский"
+
+#: src/ui/settings/mod.rs
+msgid "follow connection"
+msgstr "как в подключении"
+
+#: src/ui/settings/mod.rs
+msgid "follow omarchy"
+msgstr "как в omarchy"
+
+#: src/ui/settings/mod.rs
+msgid "full"
+msgstr "полностью"
+
+#: src/ui/settings/mod.rs
+msgid "label only"
+msgstr "только метка"
+
+#: src/ui/settings/mod.rs src/ui/settings/sheet.rs
+msgid "larger"
+msgstr "крупнее"
+
+#: src/ui/settings/mod.rs
+msgid "leading"
+msgstr "в начале"
+
+#: src/ui/settings/mod.rs
+msgid "more"
+msgstr "больше"
+
+#: src/ui/settings/mod.rs src/ui/settings/terminal.rs
+msgid "off"
+msgstr "выкл."
+
+#: src/ui/settings/mod.rs
+msgid "omarchy"
+msgstr "omarchy"
+
+#: src/ui/settings/mod.rs
+msgid "on"
+msgstr "вкл."
+
+#: src/ui/settings/mod.rs
+msgid "pin"
+msgstr "закрепить"
+
+#: src/ui/settings/mod.rs
+msgid "production opens read-only"
+msgstr "production открывается только для чтения"
+
+#: src/ui/settings/mod.rs
+msgid "regular"
+msgstr "обычно"
+
+#: src/ui/settings/mod.rs
+msgid "relative"
+msgstr "относительные"
+
+#: src/ui/settings/mod.rs
+msgid "roomy"
+msgstr "просторно"
+
+#: src/ui/settings/mod.rs
+msgid "second"
+msgstr "секунды"
+
+#: src/ui/settings/mod.rs src/ui/settings/sheet.rs
+msgid "smaller"
+msgstr "мельче"
+
+#: src/ui/settings/mod.rs
+msgid "standard"
+msgstr "стандартные"
+
+#: src/ui/settings/mod.rs
+msgctxt "label"
+msgid "statement"
+msgstr "запрос"
+
+#: src/ui/settings/mod.rs
+msgid "timestamptz zone"
+msgstr "пояс timestamptz"
+
+#: src/ui/settings/mod.rs
+msgid "tint + label"
+msgstr "заливка + метка"
+
+#: src/ui/settings/mod.rs
+msgid "trailing"
+msgstr "в конце"
+
+#: src/ui/settings/mod.rs
+msgid "vim"
+msgstr "vim"
+
+#: src/ui/settings/mod.rs
+msgid "whole tab"
+msgstr "вся вкладка"
+
+#: src/ui/settings/mod.rs
 #, rust-format
 msgid "{language} is not translated yet"
 msgstr "{language}: перевода пока нет"
@@ -2734,6 +5383,166 @@ msgstr[0] "{n} день"
 msgstr[1] "{n} дня"
 msgstr[2] "{n} дней"
 
+#: src/ui/settings/mod.rs
+#, rust-format
+msgid "{run} runs"
+msgstr "{run} выполняет"
+
+#: src/ui/settings/mod.rs
+#, rust-format
+msgid "“{name}” is not installed: IBM Plex Mono is used"
+msgstr "«{name}» не установлен: используется IBM Plex Mono"
+
+#: src/ui/settings/sheet.rs src/ui/settings/terminal.rs
+msgid "2 spaces"
+msgstr "2 пробела"
+
+#: src/ui/settings/sheet.rs src/ui/settings/terminal.rs
+msgid "4 spaces"
+msgstr "4 пробела"
+
+#: src/ui/settings/sheet.rs
+msgid "Also in the menu: Tabletist › Check for Updates…"
+msgstr "Также в меню: Tabletist › Проверить обновления…"
+
+#: src/ui/settings/sheet.rs
+msgid "As you type"
+msgstr "При вводе"
+
+#: src/ui/settings/sheet.rs
+msgid "Classic"
+msgstr "Классический"
+
+#: src/ui/settings/sheet.rs
+msgid "Clear history"
+msgstr "Очистить историю"
+
+#: src/ui/settings/sheet.rs
+msgid "Clear history…"
+msgstr "Очистить историю…"
+
+#: src/ui/settings/sheet.rs
+msgid ""
+"Clear the history of every connection? This can't be undone. It holds the "
+"values typed into grid saves."
+msgstr ""
+"Очистить историю всех подключений? Это нельзя отменить. В ней хранятся "
+"значения, введённые при сохранениях из таблицы."
+
+#: src/ui/settings/sheet.rs
+msgid "Compact"
+msgstr "Компактно"
+
+#: src/ui/settings/sheet.rs
+msgid "Dark"
+msgstr "Тёмная"
+
+#: src/ui/settings/sheet.rs src/ui/settings/terminal.rs
+msgid "Don't keep"
+msgstr "Не хранить"
+
+#: src/ui/settings/sheet.rs
+msgid "Editor · Keybindings"
+msgstr "Редактор · Сочетания клавиш"
+
+#: src/ui/settings/sheet.rs
+msgid "Export cheat sheet"
+msgstr "Экспортировать шпаргалку"
+
+#: src/ui/settings/sheet.rs
+msgid "Flat"
+msgstr "Плоский"
+
+#: src/ui/settings/sheet.rs
+msgid "Follow connection"
+msgstr "Как в подключении"
+
+#: src/ui/settings/sheet.rs
+msgid "Grouped by prefix"
+msgstr "По префиксам"
+
+#: src/ui/settings/sheet.rs
+msgid "Grouping is display only; copy gives the raw value"
+msgstr "Группировка только для показа, копирование даёт исходное значение"
+
+#: src/ui/settings/sheet.rs
+msgid "History is off. Delete the statements it kept on this computer?"
+msgstr "История выключена. Удалить запросы, сохранённые на этом компьютере?"
+
+#: src/ui/settings/sheet.rs
+msgid ""
+"How Tabletist starts, shows data and protects your work. Changes apply right "
+"away."
+msgstr ""
+"Как Tabletist запускается, показывает данные и защищает вашу работу. "
+"Изменения применяются сразу."
+
+#: src/ui/settings/sheet.rs
+msgid "Installed"
+msgstr "Установлено"
+
+#: src/ui/settings/sheet.rs
+#, rust-format
+msgid "Last {n} queries"
+msgstr "Последние запросы: {n}"
+
+#: src/ui/settings/sheet.rs
+msgid "Leading"
+msgstr "В начале"
+
+#: src/ui/settings/sheet.rs
+msgid "Light"
+msgstr "Светлая"
+
+#: src/ui/settings/sheet.rs
+msgid "Omarchy"
+msgstr "Omarchy"
+
+#: src/ui/settings/sheet.rs
+#, rust-format
+msgid "On {key}"
+msgstr "По {key}"
+
+#: src/ui/settings/sheet.rs
+msgid "Open a connection to see its history"
+msgstr "Откройте подключение, чтобы увидеть его историю"
+
+#: src/ui/settings/sheet.rs
+msgid "Or: every day · every week"
+msgstr "Или: каждый день · каждую неделю"
+
+#: src/ui/settings/sheet.rs
+msgid "Or: every day · only when I ask"
+msgstr "Или: каждый день · только по запросу"
+
+#: src/ui/settings/sheet.rs
+msgid "Or: every week · only when I ask"
+msgstr "Или: каждую неделю · только по запросу"
+
+#: src/ui/settings/sheet.rs src/ui/settings/terminal.rs
+msgid "Preview"
+msgstr "Предпросмотр"
+
+#: src/ui/settings/sheet.rs
+msgid "Read-only transaction"
+msgstr "Транзакция только для чтения"
+
+#: src/ui/settings/sheet.rs
+msgid "Regular"
+msgstr "Обычно"
+
+#: src/ui/settings/sheet.rs
+msgid "Reset all"
+msgstr "Сбросить все"
+
+#: src/ui/settings/sheet.rs
+msgid "Reset all Editor settings to their defaults?"
+msgstr "Сбросить все настройки редактора по умолчанию?"
+
+#: src/ui/settings/sheet.rs
+msgid "Reset all General settings to their defaults?"
+msgstr "Сбросить все основные настройки по умолчанию?"
+
 #: src/ui/settings/sheet.rs
 #, rust-format
 msgid "Reset all keyboard shortcuts? Your {n} change will be removed."
@@ -2741,6 +5550,115 @@ msgid_plural "Reset all keyboard shortcuts? Your {n} changes will be removed."
 msgstr[0] "Сбросить все сочетания клавиш? Ваше {n} изменение будет удалено."
 msgstr[1] "Сбросить все сочетания клавиш? Ваши {n} изменения будут удалены."
 msgstr[2] "Сбросить все сочетания клавиш? Ваши {n} изменений будут удалены."
+
+#: src/ui/settings/sheet.rs
+msgid "Reset every option on this tab?"
+msgstr "Сбросить все параметры на этой вкладке?"
+
+#: src/ui/settings/sheet.rs
+msgid "Reset to defaults"
+msgstr "Сбросить по умолчанию"
+
+#: src/ui/settings/sheet.rs
+msgid "Reveal in Finder"
+msgstr "Показать в Finder"
+
+#: src/ui/settings/sheet.rs
+msgid "Roomy"
+msgstr "Просторно"
+
+#: src/ui/settings/sheet.rs
+msgid "Search zones"
+msgstr "Поиск пояса"
+
+#: src/ui/settings/sheet.rs src/ui/settings/terminal.rs
+msgid "Show History"
+msgstr "Показать историю"
+
+#: src/ui/settings/sheet.rs
+msgid "Show in Explorer"
+msgstr "Показать в проводнике"
+
+#: src/ui/settings/sheet.rs
+msgid "Show in folder"
+msgstr "Показать в папке"
+
+#: src/ui/settings/sheet.rs
+msgid "Standard"
+msgstr "Стандартные"
+
+#: src/ui/settings/sheet.rs
+msgid "Statement at cursor"
+msgstr "Запрос под курсором"
+
+#: src/ui/settings/sheet.rs
+msgid "Stored in"
+msgstr "Хранится в"
+
+#: src/ui/settings/sheet.rs
+msgid "Stripe only"
+msgstr "Только полоса"
+
+#: src/ui/settings/sheet.rs
+msgid "System follows Windows."
+msgstr "«Системная» следует Windows."
+
+#: src/ui/settings/sheet.rs
+msgid "System follows macOS, including Auto."
+msgstr "«Системная» следует macOS, включая «Авто»."
+
+#: src/ui/settings/sheet.rs
+msgid "System follows the desktop's light or dark."
+msgstr "«Системная» следует светлой или тёмной теме рабочего стола."
+
+#: src/ui/settings/sheet.rs src/ui/settings/terminal.rs
+msgid "Tab"
+msgstr "Табуляция"
+
+#: src/ui/settings/sheet.rs
+msgid ""
+"The SQL editor: how queries run, how typing behaves, and what is remembered."
+msgstr ""
+"Редактор SQL: как выполняются запросы, как работает ввод и что запоминается."
+
+#: src/ui/settings/sheet.rs
+msgid ""
+"Theme, type and how dense the grid is. The preview updates as you change "
+"things."
+msgstr ""
+"Тема, шрифт и плотность таблицы. Предпросмотр обновляется по мере изменений."
+
+#: src/ui/settings/sheet.rs
+msgid "Tint + stripe"
+msgstr "Заливка + полоса"
+
+#: src/ui/settings/sheet.rs
+msgid "Trailing"
+msgstr "В конце"
+
+#: src/ui/settings/sheet.rs
+msgid "UPPERCASE"
+msgstr "ПРОПИСНЫЕ"
+
+#: src/ui/settings/sheet.rs src/ui/settings/terminal.rs
+msgid "Update available"
+msgstr "Доступно обновление"
+
+#: src/ui/settings/sheet.rs
+msgid "Vim"
+msgstr "Vim"
+
+#: src/ui/settings/sheet.rs
+msgid "Vim keys for the SQL editor are set in"
+msgstr "Клавиши vim для редактора SQL задаются в"
+
+#: src/ui/settings/sheet.rs
+msgid "Whole tab"
+msgstr "Вся вкладка"
+
+#: src/ui/settings/sheet.rs
+msgid "back to 100%"
+msgstr "вернуть 100%"
 
 #: src/ui/settings/sheet.rs
 #, rust-format
@@ -2751,6 +5669,10 @@ msgstr[1] "строки {lines}"
 msgstr[2] "строки {lines}"
 
 #: src/ui/settings/sheet.rs
+msgid "lowercase"
+msgstr "строчные"
+
+#: src/ui/settings/sheet.rs
 #, rust-format
 msgid "{n} line in the file could not be read and was ignored: {lines}"
 msgid_plural ""
@@ -2759,14 +5681,161 @@ msgstr[0] "{n} строка файла не прочитана и пропуще
 msgstr[1] "{n} строки файла не прочитаны и пропущены: {lines}"
 msgstr[2] "{n} строк файла не прочитано и пропущено: {lines}"
 
+#: src/ui/settings/sheet.rs
+#, rust-format
+msgid "{percent} percent, {px} pixel text"
+msgstr "{percent} процентов, текст {px} пикселей"
+
+#: src/ui/settings/sheet.rs
+#, rust-format
+msgid "{px} px text"
+msgstr "текст {px} px"
+
+#: src/ui/settings/terminal.rs
+msgid "1 · 1.5 · 2 lines"
+msgstr "1 · 1,5 · 2 строки"
+
+#: src/ui/settings/terminal.rs
+msgid "Changes apply right away"
+msgstr "Изменения применяются сразу"
+
+#: src/ui/settings/terminal.rs
+msgid "Copy the command"
+msgstr "Копировать команду"
+
+#: src/ui/settings/terminal.rs
+msgid "Cursor, others"
+msgstr "Cursor, другие"
+
+#: src/ui/settings/terminal.rs
+msgid "Environment"
+msgstr "Среда"
+
+#: src/ui/settings/terminal.rs
+#, rust-format
+msgid "Format · {format} in normal mode"
+msgstr "Форматирование · {format} в обычном режиме"
+
+#: src/ui/settings/terminal.rs
+msgid "Install and restart"
+msgstr "Установить и перезапустить"
+
+#: src/ui/settings/terminal.rs
+msgid "MCP server"
+msgstr "Сервер MCP"
+
+#: src/ui/settings/terminal.rs
+msgid "Open file in editor"
+msgstr "Открыть файл в редакторе"
+
+#: src/ui/settings/terminal.rs
+msgid "Palette"
+msgstr "Палитра"
+
+#: src/ui/settings/terminal.rs
+msgid "Record"
+msgstr "Записать"
+
+#: src/ui/settings/terminal.rs
+msgid "Reset option"
+msgstr "Сбросить настройку"
+
+#: src/ui/settings/terminal.rs
+msgid "Set for each connection"
+msgstr "Задаётся для каждого подключения"
+
+#: src/ui/settings/terminal.rs
+msgid "Status"
+msgstr "Состояние"
+
 #: src/ui/settings/terminal.rs
 #, rust-format
 msgid "System ({zone})"
 msgstr "Системный ({zone})"
 
 #: src/ui/settings/terminal.rs
-msgid "Update available"
-msgstr "Доступно обновление"
+msgid "Toggle"
+msgstr "Переключить"
+
+#: src/ui/settings/terminal.rs
+msgid "a desktop notification"
+msgstr "уведомление на рабочем столе"
+
+#: src/ui/settings/terminal.rs
+msgid "a selection always wins"
+msgstr "выделение всегда в приоритете"
+
+#: src/ui/settings/terminal.rs
+msgid "a visual selection always wins"
+msgstr "визуальное выделение всегда в приоритете"
+
+#: src/ui/settings/terminal.rs
+msgid "agents can't connect"
+msgstr "агенты не могут подключиться"
+
+#: src/ui/settings/terminal.rs
+msgid "always tinted"
+msgstr "всегда с заливкой"
+
+#: src/ui/settings/terminal.rs
+msgid "anywhere"
+msgstr "везде"
+
+#: src/ui/settings/terminal.rs
+msgid "caps results you browse · show all and exports get every row"
+msgstr ""
+"ограничивает просматриваемые результаты · «показать все» и экспорт получают "
+"все строки"
+
+#: src/ui/settings/terminal.rs
+msgctxt "key hint"
+msgid "change"
+msgstr "изменить"
+
+#: src/ui/settings/terminal.rs src/ui/settings/updates_terminal.rs
+msgid "check now"
+msgstr "проверить сейчас"
+
+#: src/ui/settings/terminal.rs
+msgid "classic is the system's own look"
+msgstr "классический: собственный вид системы"
+
+#: src/ui/settings/terminal.rs
+msgid "clear the history of every connection? this can't be undone"
+msgstr "очистить историю всех подключений? это нельзя отменить"
+
+#: src/ui/settings/terminal.rs
+msgid "connections that allow writes"
+msgstr "подключения, где разрешена запись"
+
+#: src/ui/settings/terminal.rs src/ui/settings/updates_terminal.rs
+#: src/ui/workspace.rs
+msgid "copy"
+msgstr "копировать"
+
+#: src/ui/settings/terminal.rs
+msgid "copy command"
+msgstr "копировать команду"
+
+#: src/ui/settings/terminal.rs
+msgid "default for new connections"
+msgstr "по умолчанию для новых подключений"
+
+#: src/ui/settings/terminal.rs
+msgid "default;"
+msgstr "по умолчанию;"
+
+#: src/ui/settings/terminal.rs src/ui/workspace.rs
+msgid "delete"
+msgstr "удалить"
+
+#: src/ui/settings/terminal.rs
+msgid "end"
+msgstr "конец"
+
+#: src/ui/settings/terminal.rs
+msgid "find by key"
+msgstr "поиск по клавише"
 
 #: src/ui/settings/terminal.rs
 msgid "from the system"
@@ -2778,9 +5847,230 @@ msgid "from {variable}"
 msgstr "из {variable}"
 
 #: src/ui/settings/terminal.rs
+msgid "group"
+msgstr "группировать"
+
+#: src/ui/settings/terminal.rs
+msgid "grouping off"
+msgstr "без группировки"
+
+#: src/ui/settings/terminal.rs
+msgid "grouping on"
+msgstr "с группировкой"
+
+#: src/ui/settings/terminal.rs
 #, rust-format
 msgid "help translate: {folder}"
 msgstr "помочь с переводом: {folder}"
+
+#: src/ui/settings/terminal.rs
+msgid "history is off · delete the statements it kept on this computer?"
+msgstr "история выключена · удалить запросы, сохранённые на этом компьютере?"
+
+#: src/ui/settings/terminal.rs
+msgid "in connections"
+msgstr "в подключениях"
+
+#: src/ui/settings/terminal.rs
+#, rust-format
+msgid "install {version} and restart?"
+msgstr "установить {version} и перезапустить?"
+
+#: src/ui/settings/terminal.rs
+msgid "jetbrains mono, bundled"
+msgstr "jetbrains mono, встроенный"
+
+#: src/ui/settings/terminal.rs src/ui/structure.rs
+msgid "no"
+msgstr "нет"
+
+#: src/ui/settings/terminal.rs
+msgid "no agents"
+msgstr "нет агентов"
+
+#: src/ui/settings/terminal.rs
+msgid "no ddl, no multiple statements, no copy, no secrets sent"
+msgstr ""
+"без ddl, без нескольких запросов сразу, без copy, секреты не отправляются"
+
+#: src/ui/settings/terminal.rs
+msgid "now: dark, from the system"
+msgstr "сейчас: тёмная, от системы"
+
+#: src/ui/settings/terminal.rs
+msgid "now: jetbrains mono, bundled"
+msgstr "сейчас: jetbrains mono, встроенный"
+
+#: src/ui/settings/terminal.rs
+msgid "now: light, from the system"
+msgstr "сейчас: светлая, от системы"
+
+#: src/ui/settings/terminal.rs
+#, rust-format
+msgid "now: {family}, from fontconfig"
+msgstr "сейчас: {family}, из fontconfig"
+
+#: src/ui/settings/terminal.rs
+#, rust-format
+msgid "now: {name} · pinned"
+msgstr "сейчас: {name} · закреплена"
+
+#: src/ui/settings/terminal.rs
+#, rust-format
+msgid "now: {name} · switches with omarchy-theme"
+msgstr "сейчас: {name} · меняется вместе с omarchy-theme"
+
+#: src/ui/settings/terminal.rs
+msgid "on a row"
+msgstr "на строке"
+
+#: src/ui/settings/terminal.rs
+msgid "open connections"
+msgstr "открыть подключения"
+
+#: src/ui/settings/terminal.rs
+#, rust-format
+msgid "open file in {editor}"
+msgstr "открыть файл в {editor}"
+
+#: src/ui/settings/terminal.rs
+msgid "opens this"
+msgstr "открывает это"
+
+#: src/ui/settings/terminal.rs
+msgid "or connections · a chosen connection"
+msgstr "или подключения · выбранное подключение"
+
+#: src/ui/settings/terminal.rs
+msgid "pane"
+msgstr "панель"
+
+#: src/ui/settings/terminal.rs
+msgid "per connection"
+msgstr "для каждого подключения"
+
+#: src/ui/settings/terminal.rs
+msgid "per connection · sql, saves, filters, agents · never results"
+msgstr ""
+"для каждого подключения · sql, сохранения, фильтры, агенты · без результатов"
+
+#: src/ui/settings/terminal.rs
+msgid "per tab"
+msgstr "для каждой вкладки"
+
+#: src/ui/settings/terminal.rs
+msgid "read from the omarchy theme"
+msgstr "из темы omarchy"
+
+#: src/ui/settings/terminal.rs
+#, rust-format
+msgid "read from {name}"
+msgstr "из {name}"
+
+#: src/ui/settings/terminal.rs
+msgid "reads run in a read-only transaction with each connection's limits"
+msgstr ""
+"чтение выполняется в транзакции только для чтения с ограничениями подключения"
+
+#: src/ui/settings/terminal.rs
+msgid "record"
+msgstr "записать"
+
+#: src/ui/settings/terminal.rs
+msgid "reset"
+msgstr "сбросить"
+
+#: src/ui/settings/terminal.rs
+msgid "reset option"
+msgstr "сбросить параметр"
+
+#: src/ui/settings/terminal.rs
+msgid "rows and panes grow with it"
+msgstr "строки и панели растут вместе с ним"
+
+#: src/ui/settings/terminal.rs
+msgid "running"
+msgstr "работает"
+
+#: src/ui/settings/terminal.rs
+msgid "same server, stdio"
+msgstr "тот же сервер, stdio"
+
+#: src/ui/settings/terminal.rs
+msgid "schema objects"
+msgstr "объекты схемы"
+
+#: src/ui/settings/terminal.rs
+msgid "second header line"
+msgstr "вторая строка заголовка"
+
+#: src/ui/settings/terminal.rs
+msgid "sent with offset"
+msgstr "отправляется со смещением"
+
+#: src/ui/settings/terminal.rs
+msgid "show agents tab"
+msgstr "показать вкладку агентов"
+
+#: src/ui/settings/terminal.rs
+msgid "show history"
+msgstr "показать историю"
+
+#: src/ui/settings/terminal.rs
+msgid "show log"
+msgstr "показать журнал"
+
+#: src/ui/settings/terminal.rs
+msgid "shown in the status line"
+msgstr "показывается в строке состояния"
+
+#: src/ui/settings/terminal.rs
+msgid "shows it"
+msgstr "показывает его"
+
+#: src/ui/settings/terminal.rs
+msgid "stdio · this computer"
+msgstr "stdio · этот компьютер"
+
+#: src/ui/settings/terminal.rs
+msgid "system monospace"
+msgstr "системный моноширинный"
+
+#: src/ui/settings/terminal.rs
+msgid "table view"
+msgstr "просмотр таблицы"
+
+#: src/ui/settings/terminal.rs
+msgid "tabletist's own light or dark"
+msgstr "собственная светлая или тёмная tabletist"
+
+#: src/ui/settings/terminal.rs
+msgid "tabs reconnect on use"
+msgstr "вкладки переподключаются при использовании"
+
+#: src/ui/settings/terminal.rs
+msgid "to"
+msgstr "до"
+
+#: src/ui/settings/terminal.rs
+msgid "toggle"
+msgstr "переключить"
+
+#: src/ui/settings/terminal.rs
+msgid "toggles"
+msgstr "переключает"
+
+#: src/ui/settings/terminal.rs
+msgid "unbind"
+msgstr "снять"
+
+#: src/ui/settings/terminal.rs
+msgid "while tabletist is open"
+msgstr "пока tabletist открыт"
+
+#: src/ui/settings/terminal.rs src/ui/structure.rs
+msgid "yes"
+msgstr "да"
 
 #: src/ui/settings/terminal.rs
 #, rust-format
@@ -2790,18 +6080,86 @@ msgstr[0] "{n} агент"
 msgstr[1] "{n} агента"
 msgstr[2] "{n} агентов"
 
+#: src/ui/settings/terminal.rs
+#, rust-format
+msgid "{n} per connection"
+msgstr "{n} для каждого подключения"
+
+#: src/ui/settings/terminal.rs
+#, rust-format
+msgid "“{name}” not found · following omarchy"
+msgstr "«{name}» не найден · как в omarchy"
+
+#: src/ui/settings/terminal.rs
+#, rust-format
+msgid "“{name}” not found · following the system"
+msgstr "«{name}» не найден · как в системе"
+
+#: src/ui/settings/terminal.rs
+#, rust-format
+msgid "“{name}” not found · now: {family}"
+msgstr "«{name}» не найден · сейчас: {family}"
+
+#: src/ui/settings/updates.rs src/ui/settings/updates_terminal.rs
+msgid "Automatic"
+msgstr "Автоматически"
+
+#: src/ui/settings/updates.rs
+msgid "Check now"
+msgstr "Проверить сейчас"
+
 #: src/ui/settings/updates.rs src/ui/settings/updates_terminal.rs
 #, rust-format
 msgid "Checked {when}"
 msgstr "Проверено {when}"
 
 #: src/ui/settings/updates.rs
-msgid "Copied the command"
-msgstr "Команда скопирована"
+msgid "Checking for updates…"
+msgstr "Проверка обновлений…"
+
+#: src/ui/settings/updates.rs
+msgid "Couldn't check for updates"
+msgstr "Не удалось проверить обновления"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "Couldn't download {version}"
+msgstr "Не удалось загрузить {version}"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "Couldn't install {version}"
+msgstr "Не удалось установить {version}"
+
+#: src/ui/settings/updates.rs
+msgid "Don't restart"
+msgstr "Не перезапускать"
+
+#: src/ui/settings/updates.rs
+msgid "Download again"
+msgstr "Загрузить снова"
+
+#: src/ui/settings/updates.rs
+msgid "Download and install"
+msgstr "Загрузить и установить"
 
 #: src/ui/settings/updates.rs
 msgid "Download progress"
 msgstr "Ход загрузки"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "Downloading {version}…"
+msgstr "Загрузка {version}…"
+
+#: src/ui/settings/updates.rs
+msgid "Finish your work first"
+msgstr "Сначала завершите работу"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "Installing {version}…"
+msgstr "Установка {version}…"
 
 #: src/ui/settings/updates.rs
 #, rust-format
@@ -2814,8 +6172,127 @@ msgid "Last successful check: {when}"
 msgstr "Последняя успешная проверка: {when}"
 
 #: src/ui/settings/updates.rs
+msgid "Later"
+msgstr "Позже"
+
+#: src/ui/settings/updates.rs
+msgid ""
+"New versions come from Tabletist's GitHub releases, signed and notarized. "
+"Nothing installs without asking."
+msgstr ""
+"Новые версии берутся из выпусков Tabletist на GitHub, подписанными и "
+"заверенными. Ничего не устанавливается без вопроса."
+
+#: src/ui/settings/updates.rs
+msgid ""
+"New versions come from Tabletist's GitHub releases, signed. Nothing installs "
+"without asking."
+msgstr ""
+"Новые версии берутся из выпусков Tabletist на GitHub, подписанными. Ничего "
+"не устанавливается без вопроса."
+
+#: src/ui/settings/updates.rs
+msgid "No check has worked yet"
+msgstr "Пока ни одна проверка не удалась"
+
+#: src/ui/settings/updates.rs
+msgid "Not checked yet"
+msgstr "Ещё не проверялось"
+
+#: src/ui/settings/updates.rs
+msgid "Nothing was installed. Your copy is unchanged."
+msgstr "Ничего не установлено. Ваша копия не изменилась."
+
+#: src/ui/settings/updates.rs
+msgid "Release notes on GitHub"
+msgstr "Заметки о выпуске на GitHub"
+
+#: src/ui/settings/updates.rs
+msgid "Report on GitHub"
+msgstr "Сообщить на GitHub"
+
+#: src/ui/settings/updates.rs
+msgid "Restart now"
+msgstr "Перезапустить сейчас"
+
+#: src/ui/settings/updates.rs
+msgid "Restart now would interrupt:"
+msgstr "Перезапуск сейчас прервёт:"
+
+#: src/ui/settings/updates.rs
+msgid "Restart when done"
+msgstr "Перезапустить по завершении"
+
+#: src/ui/settings/updates.rs
+msgid "Show them"
+msgstr "Показать их"
+
+#: src/ui/settings/updates.rs
+msgid "Signature checked · quitting Tabletist now installs it"
+msgstr "Подпись проверена · обновление установится при выходе из Tabletist"
+
+#: src/ui/settings/updates.rs
+msgid "Signature checked · restart to finish"
+msgstr "Подпись проверена · перезапустите, чтобы завершить"
+
+#: src/ui/settings/updates.rs
+msgid "Skip this version"
+msgstr "Пропустить эту версию"
+
+#: src/ui/settings/updates.rs
+msgid "Tabletist restarts in a moment"
+msgstr "Tabletist сейчас перезапустится"
+
+#: src/ui/settings/updates.rs
+msgid "Tabletist restarts once this is done:"
+msgstr "Tabletist перезапустится, когда это завершится:"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "Tabletist {version}"
+msgstr "Tabletist {version}"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "Tabletist {version} is available"
+msgstr "Доступен Tabletist {version}"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "Tabletist {version} is up to date"
+msgstr "Tabletist {version}: установлена последняя версия"
+
+#: src/ui/settings/updates.rs
+msgid ""
+"The check asks GitHub for the latest release. It sends this version, Windows "
+"and the processor, nothing else: no ID, no usage data, no database details."
+msgstr ""
+"Проверка запрашивает у GitHub последний выпуск. Она отправляет эту версию, "
+"Windows и процессор, и ничего больше: ни идентификатора, ни данных об "
+"использовании, ни сведений о базах данных."
+
+#: src/ui/settings/updates.rs
+msgid ""
+"The check asks GitHub for the latest release. It sends this version, the "
+"macOS version and the chip, nothing else: no ID, no usage data, no database "
+"details."
+msgstr ""
+"Проверка запрашивает у GitHub последний выпуск. Она отправляет эту версию, "
+"версию macOS и чип, и ничего больше: ни идентификатора, ни данных об "
+"использовании, ни сведений о базах данных."
+
+#: src/ui/settings/updates.rs
 msgid "The file was deleted."
 msgstr "Файл удалён."
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "The {version} download didn't verify"
+msgstr "Загрузка {version} не прошла проверку"
+
+#: src/ui/settings/updates.rs src/ui/settings/updates_terminal.rs
+msgid "Update status"
+msgstr "Состояние обновления"
 
 #: src/ui/settings/updates.rs
 msgid "Verifying…"
@@ -2826,9 +6303,17 @@ msgid "Waiting for the network"
 msgstr "Ожидание сети"
 
 #: src/ui/settings/updates.rs
+msgid "What's new"
+msgstr "Что нового"
+
+#: src/ui/settings/updates.rs
 #, rust-format
 msgid "What's new in {version}"
 msgstr "Что нового в версии {version}"
+
+#: src/ui/settings/updates.rs src/ui/settings/updates_terminal.rs
+msgid "Work in progress"
+msgstr "Незавершённая работа"
 
 #: src/ui/settings/updates.rs src/ui/settings/updates_terminal.rs
 #, rust-format
@@ -2857,13 +6342,41 @@ msgstr "загрузка {table}"
 
 #: src/ui/settings/updates.rs
 #, rust-format
+msgid "on {day} at {time}"
+msgstr "{day} в {time}"
+
+#: src/ui/settings/updates.rs
+#, rust-format
 msgid "query running for {time}"
 msgstr "запрос выполняется уже {time}"
+
+#: src/ui/settings/updates.rs
+msgid "released today"
+msgstr "выпущена сегодня"
+
+#: src/ui/settings/updates.rs
+msgid "released yesterday"
+msgstr "выпущена вчера"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "released {day}"
+msgstr "выпущена {day}"
 
 #: src/ui/settings/updates.rs
 #, rust-format
 msgid "saving {table}"
 msgstr "сохранение {table}"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "today at {time}"
+msgstr "сегодня в {time}"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "yesterday at {time}"
+msgstr "вчера в {time}"
 
 #: src/ui/settings/updates.rs
 #, rust-format
@@ -2898,10 +6411,89 @@ msgstr "{s} с"
 msgid "{version} has no build for this computer yet"
 msgstr "Для версии {version} пока нет сборки под этот компьютер"
 
-#: src/ui/settings/updates_terminal.rs
+#: src/ui/settings/updates.rs
 #, rust-format
-msgid "{version} available"
-msgstr "Доступна версия {version}"
+msgid "{version} is available"
+msgstr "Доступна {version}"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "{version} is ready to install"
+msgstr "{version} готова к установке"
+
+#: src/ui/settings/updates_terminal.rs
+msgid "don't restart"
+msgstr "не перезапускать"
+
+#: src/ui/settings/updates_terminal.rs
+msgid "download again"
+msgstr "загрузить снова"
+
+#: src/ui/settings/updates_terminal.rs
+msgid ""
+"installed with a package manager (pacman, an AUR helper, nix, cargo "
+"install)? then that tool updates tabletist: this pane only checks and shows "
+"the command, for example"
+msgstr ""
+"установлено менеджером пакетов (pacman, помощник AUR, nix, cargo install)? "
+"тогда tabletist обновляет он: этот раздел только проверяет и показывает "
+"команду, например"
+
+#: src/ui/settings/updates_terminal.rs
+msgid "no check has worked yet"
+msgstr "пока ни одна проверка не удалась"
+
+#: src/ui/settings/updates_terminal.rs
+msgid "not checked yet"
+msgstr "ещё не проверялось"
+
+#: src/ui/settings/updates_terminal.rs
+msgid "nothing was installed. your copy is unchanged."
+msgstr "ничего не установлено. ваша копия не изменилась."
+
+#: src/ui/settings/updates_terminal.rs
+msgid "release notes"
+msgstr "заметки о выпуске"
+
+#: src/ui/settings/updates_terminal.rs
+msgid "restart now"
+msgstr "перезапустить сейчас"
+
+#: src/ui/settings/updates_terminal.rs
+msgid "restart now would interrupt:"
+msgstr "перезапуск сейчас прервёт:"
+
+#: src/ui/settings/updates_terminal.rs
+msgid "restart when done"
+msgstr "перезапустить по завершении"
+
+#: src/ui/settings/updates_terminal.rs
+msgid "skip"
+msgstr "пропустить"
+
+#: src/ui/settings/updates_terminal.rs
+msgid "tabletist restarts in a moment"
+msgstr "tabletist сейчас перезапустится"
+
+#: src/ui/settings/updates_terminal.rs
+msgid "tabletist restarts once this is done:"
+msgstr "tabletist перезапустится, когда это завершится:"
+
+#: src/ui/settings/updates_terminal.rs
+msgid ""
+"the check asks github for the latest release and sends this version, os and "
+"cpu, nothing else."
+msgstr ""
+"проверка запрашивает у github последний выпуск и отправляет эту версию, ос и "
+"процессор, и ничего больше."
+
+#: src/ui/settings/updates_terminal.rs
+msgid "try again"
+msgstr "повторить"
+
+#: src/ui/settings/updates_terminal.rs
+msgid "update now"
+msgstr "обновить сейчас"
 
 #: src/ui/sidebar.rs
 msgid "Find any object…"
@@ -3020,10 +6612,6 @@ msgstr "вставить"
 msgid "keyword"
 msgstr "ключевое слово"
 
-#: src/ui/sql_complete.rs src/ui/workspace.rs
-msgid "move"
-msgstr "перемещение"
-
 #: src/ui/sql_complete.rs
 msgid "schema"
 msgstr "схема"
@@ -3062,14 +6650,6 @@ msgid "Run"
 msgstr "Выполнить"
 
 #: src/ui/sql_editor.rs
-msgid "Run all"
-msgstr "Выполнить все"
-
-#: src/ui/sql_editor.rs
-msgid "Timeout"
-msgstr "Тайм-аут"
-
-#: src/ui/sql_editor.rs
 #, rust-format
 msgid "ln {line}:{column}"
 msgstr "стр. {line}:{column}"
@@ -3086,6 +6666,22 @@ msgid_plural "{n} min"
 msgstr[0] "{n} мин"
 msgstr[1] "{n} мин"
 msgstr[2] "{n} мин"
+
+#: src/ui/sql_editor.rs
+#, rust-format
+msgid "{n} row affected · {took}"
+msgid_plural "{n} rows affected · {took}"
+msgstr[0] "{n} строка затронута · {took}"
+msgstr[1] "{n} строки затронуты · {took}"
+msgstr[2] "{n} строк затронуто · {took}"
+
+#: src/ui/sql_editor.rs
+#, rust-format
+msgid "{n} row · {took}"
+msgid_plural "{n} rows · {took}"
+msgstr[0] "{n} строка · {took}"
+msgstr[1] "{n} строки · {took}"
+msgstr[2] "{n} строк · {took}"
 
 #: src/ui/sql_editor.rs
 #, rust-format
@@ -3113,10 +6709,6 @@ msgid "Editor preview"
 msgstr "Предпросмотр редактора"
 
 #: src/ui/sql_text.rs
-msgid "Line numbers"
-msgstr "Номера строк"
-
-#: src/ui/sql_text.rs
 msgid "SQL"
 msgstr "SQL"
 
@@ -3125,20 +6717,12 @@ msgid "-- START --"
 msgstr "-- НАЧАЛО --"
 
 #: src/ui/start.rs
-msgid "Edit connection"
-msgstr "Изменить подключение"
-
-#: src/ui/start.rs
 msgid "Find a table or view"
 msgstr "Найти таблицу или представление"
 
 #: src/ui/start.rs
 msgid "Largest tables"
 msgstr "Самые большие таблицы"
-
-#: src/ui/start.rs
-msgid "New SQL query"
-msgstr "Новый SQL-запрос"
 
 #: src/ui/start.rs
 msgid "No matches"
@@ -3167,10 +6751,6 @@ msgstr "Начало"
 #: src/ui/start.rs
 msgid "Start typing to search"
 msgstr "Начните вводить для поиска"
-
-#: src/ui/start.rs
-msgid "Switch database"
-msgstr "Сменить базу данных"
 
 #: src/ui/start.rs
 msgid "Tables"
@@ -3220,10 +6800,6 @@ msgstr "Изменить…"
 #: src/ui/structure.rs
 msgid "Copy name"
 msgstr "Копировать имя"
-
-#: src/ui/structure.rs
-msgid "File"
-msgstr "Файл"
 
 #: src/ui/structure.rs
 msgid "Foreign keys"
@@ -3284,16 +6860,8 @@ msgid "label"
 msgstr "подпись"
 
 #: src/ui/structure.rs
-msgid "no"
-msgstr "нет"
-
-#: src/ui/structure.rs
 msgid "use the column under the cursor"
 msgstr "взять столбец под курсором"
-
-#: src/ui/structure.rs
-msgid "yes"
-msgstr "да"
 
 #: src/ui/structure.rs
 #, rust-format
@@ -3312,10 +6880,6 @@ msgstr "-- ВСТАВКА --"
 #: src/ui/workspace.rs
 msgid "-- VISUAL LINE --"
 msgstr "-- ВИЗУАЛЬНЫЙ ПО СТРОКАМ --"
-
-#: src/ui/workspace.rs
-msgid "Command"
-msgstr "Команда"
 
 #: src/ui/workspace.rs
 msgid "Database"
@@ -3351,28 +6915,12 @@ msgid "conn"
 msgstr "подкл."
 
 #: src/ui/workspace.rs
-msgid "copy"
-msgstr "копировать"
-
-#: src/ui/workspace.rs
-msgid "copy as"
-msgstr "копировать как"
-
-#: src/ui/workspace.rs
 msgid "copy tsv"
 msgstr "копировать TSV"
 
 #: src/ui/workspace.rs
-msgid "delete"
-msgstr "удалить"
-
-#: src/ui/workspace.rs
 msgid "disconnect"
 msgstr "отключиться"
-
-#: src/ui/workspace.rs
-msgid "edit"
-msgstr "изменить"
 
 #: src/ui/workspace.rs
 msgid "error"
@@ -3404,15 +6952,6 @@ msgid "normal"
 msgstr "обычный режим"
 
 #: src/ui/workspace.rs
-msgctxt "key hint"
-msgid "open"
-msgstr "открыть"
-
-#: src/ui/workspace.rs
-msgid "review"
-msgstr "просмотр"
-
-#: src/ui/workspace.rs
 msgid "sessions"
 msgstr "сеансы"
 
@@ -3436,10 +6975,6 @@ msgstr "включить"
 #, rust-format
 msgid "via SSH {host}"
 msgstr "через SSH {host}"
-
-#: src/ui/workspace.rs
-msgid "write"
-msgstr "записать"
 
 #: src/ui/workspace.rs
 #, rust-format
@@ -3599,10 +7134,6 @@ msgstr "Сохранить {changes} перед сменой базы данны
 #, rust-format
 msgid "Save {changes} to production?"
 msgstr "Сохранить в production: {changes}?"
-
-#: src/ui/write_prompts.rs
-msgid "Stay"
-msgstr "Остаться"
 
 #: src/ui/write_prompts.rs
 msgid "Write"

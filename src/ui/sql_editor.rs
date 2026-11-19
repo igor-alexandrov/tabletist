@@ -1167,19 +1167,22 @@ fn run_summary(sql: &SqlTab, locale: Locale) -> Option<String> {
     if !ran(sql) {
         return None;
     }
-    let counted = |count: u64, one: &'static str, many: &'static str, took| {
-        format!(
-            "{} {} · {}",
-            format::group_digits(count),
-            gettext(locale, if count == 1 { one } else { many }),
-            format::elapsed(took)
+    let counted = |count: u64, phrase: std::borrow::Cow<'static, str>, took| {
+        crate::i18n::fill(
+            &phrase,
+            &[
+                ("{n}", &format::group_digits(count)),
+                ("{took}", &format::elapsed(took)),
+            ],
         )
     };
     if let Some((_, result)) = sql.shown() {
         let StatementOutcome::Rows { rows, .. } = &result.outcome else {
             return None;
         };
-        return Some(counted(rows.len() as u64, "row", "rows", result.elapsed));
+        let count = rows.len() as u64;
+        let phrase = ngettext(locale, "{n} row · {took}", "{n} rows · {took}", count);
+        return Some(counted(count, phrase, result.elapsed));
     }
     let run = sql.last_run()?;
     let last = run.outcome.results.last()?;
@@ -1187,12 +1190,15 @@ fn run_summary(sql: &SqlTab, locale: Locale) -> Option<String> {
         StatementOutcome::Done {
             affected: Some(count),
             ..
-        } if run.mode == tabletist_db::ScriptMode::Write => Some(counted(
-            *count,
-            "row affected",
-            "rows affected",
-            last.elapsed,
-        )),
+        } if run.mode == tabletist_db::ScriptMode::Write => {
+            let phrase = ngettext(
+                locale,
+                "{n} row affected · {took}",
+                "{n} rows affected · {took}",
+                *count,
+            );
+            Some(counted(*count, phrase, last.elapsed))
+        }
         _ => None,
     }
 }

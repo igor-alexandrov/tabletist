@@ -286,18 +286,16 @@ fn leave_sheet(
         (true, _) => before_title(&prompt.held, true, locale),
         (false, 0 | 1) => before_title(&prompt.held, false, locale),
         (false, tabs) => {
-            let plural = u32::try_from(tabs).unwrap_or(u32::MAX);
             let title = ngettext(
                 locale,
                 "Discard {changes} in {n} tab?",
                 "Discard {changes} in {n} tabs?",
-                plural,
+                tabs,
             );
             title.replace("{n}", &tabs.to_string()).into()
         }
     };
     let title = title.replace("{changes}", &changes);
-    let plural = u32::try_from(prompt.changes).unwrap_or(u32::MAX);
     let text = if prompt.saving {
         gettext(locale, SAVING)
     } else {
@@ -305,7 +303,7 @@ fn leave_sheet(
             locale,
             "It has not been written.",
             "They have not been written.",
-            plural,
+            prompt.changes,
         )
     };
     let modal = widgets::modal(Id::new("leave-prompt"), look, palette).show(ctx, |ui| {
@@ -603,10 +601,14 @@ pub fn confirm_write(
         rows: if prompt.rows == 0 && (prompt.added > 0 || prompt.deleted > 0) {
             table.clone()
         } else {
-            let plural = u32::try_from(prompt.rows).unwrap_or(u32::MAX);
-            ngettext(locale, "{n} row in {table}", "{n} rows in {table}", plural)
-                .replace("{n}", &prompt.rows.to_string())
-                .replace("{table}", &table)
+            ngettext(
+                locale,
+                "{n} row in {table}",
+                "{n} rows in {table}",
+                prompt.rows,
+            )
+            .replace("{n}", &prompt.rows.to_string())
+            .replace("{table}", &table)
         },
         columns,
         tag: workspace.environment.label(crate::env::Platform::of(&look)),

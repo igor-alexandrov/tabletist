@@ -7,7 +7,7 @@
 
 use egui::{CornerRadius, Rect, Sense, Ui, WidgetInfo, WidgetType, pos2, vec2};
 
-use crate::i18n::Locale;
+use crate::i18n::{Locale, msgid};
 use crate::keymap::{Command, Group, Keymap, Layout, Row, Scope, Spelled, Stroke, Why, fixed};
 use crate::model::{Action, KeyboardPage, Recorded, Recording, SettingsDialog, SettingsPane};
 use crate::typography::{Text, TextRole};
@@ -290,7 +290,11 @@ pub(super) fn rows(
     let role = TextRole::OSecondary;
     let middle = heads.center().y;
     let (scope_x, keys_x, action_x) = columns(heads);
-    for (x, word) in [(scope_x, "scope"), (keys_x, "keys"), (action_x, "action")] {
+    for (x, word) in [
+        (scope_x, msgid("scope")),
+        (keys_x, msgid("keys")),
+        (action_x, msgid("action")),
+    ] {
         widgets::paint_text(
             ui,
             x,
@@ -303,9 +307,9 @@ pub(super) fn rows(
     let on = cursor(keymap, layout, skin.locale, page);
     if listed.is_empty() {
         let said = if page.changed_only {
-            skin.say("no shortcuts changed")
+            skin.say(msgid("no shortcuts changed"))
         } else {
-            skin.say("no commands match")
+            skin.say(msgid("no commands match"))
         };
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
         widgets::paint_label(
@@ -317,7 +321,7 @@ pub(super) fn rows(
     } else {
         let builder = egui::UiBuilder::new().id_salt("keyboard-table");
         ui.scope_builder(builder, |ui| {
-            let label = skin.say("keyboard shortcuts");
+            let label = skin.say(msgid("keyboard shortcuts"));
             ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
                 node.set_role(egui::accesskit::Role::Table);
                 node.set_label(label.as_str());
@@ -329,7 +333,9 @@ pub(super) fn rows(
     }
     ui.add_space(12.0);
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
-    let note = skin.say("super is never bound: hyprland owns it · insert-mode keys follow vim");
+    let note = skin.say(msgid(
+        "super is never bound: hyprland owns it · insert-mode keys follow vim",
+    ));
     widgets::paint_label(
         ui,
         rect.left() + SIDE,
@@ -365,7 +371,7 @@ fn filter_line(ui: &mut Ui, page: &KeyboardPage, skin: &Skin, actions: &mut Vec<
             Scope::Prompt,
         );
         let said = skin
-            .say("keys {keys} · {close} shows every command")
+            .say(msgid("keys {keys} · {close} shows every command"))
             .replace("{keys}", key.as_str())
             .replace("{close}", close.as_str());
         ui.painter().rect_stroke(
@@ -384,7 +390,7 @@ fn filter_line(ui: &mut Ui, page: &KeyboardPage, skin: &Skin, actions: &mut Vec<
     }
     if let Some(finding) = finding {
         let said = if finding.typed.is_empty() {
-            skin.say("? press the keys to find")
+            skin.say(msgid("? press the keys to find"))
         } else {
             format!("? {}", finding.typed)
         };
@@ -403,7 +409,7 @@ fn filter_line(ui: &mut Ui, page: &KeyboardPage, skin: &Skin, actions: &mut Vec<
         return;
     }
     let mut text = page.search.clone();
-    let hint = skin.say("filter commands · ? find by key");
+    let hint = skin.say(msgid("filter commands · ? find by key"));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(place));
     let style = widgets::FieldStyle {
         fill: None,
@@ -547,7 +553,7 @@ fn key_row(
     );
     match recording {
         Some(recording) => {
-            let press = skin.say("press keys…");
+            let press = skin.say(msgid("press keys…"));
             let width = widgets::measure(ui, Text::one(look, role, &press, palette.window)) + 12.0;
             let chip = Rect::from_min_size(pos2(keys_x, middle - 10.0), vec2(width, 20.0));
             ui.painter()
@@ -574,14 +580,16 @@ fn key_row(
             widgets::announce_polite(
                 ui,
                 keys_place,
-                &skin.say("Recording. Press the new shortcut, Escape to cancel."),
+                &skin.say(msgid(
+                    "Recording. Press the new shortcut, Escape to cancel.",
+                )),
             );
         }
         None => {
             let keys = keymap.row_keys(layout, row);
             let written: Vec<&str> = keys.iter().map(|key| key.as_str()).collect();
             let (text, color) = if written.is_empty() {
-                (skin.say("not set"), palette.faint)
+                (skin.say(msgid("not set")), palette.faint)
             } else {
                 (
                     written.join("  "),
@@ -603,7 +611,7 @@ fn key_row(
     let width = widgets::paint_text(ui, action_x, middle, Text::one(look, role, &name, ink));
     // A command nothing answers yet keeps its keys, and says so.
     if !built {
-        let note = skin.say("not built yet");
+        let note = skin.say(msgid("not built yet"));
         let x = action_x + width + 8.0;
         widgets::paint_text(ui, x, middle, Text::one(look, role, &note, palette.faint));
     }
@@ -617,7 +625,7 @@ fn key_row(
     let caps = ui.interact(keys_place, ui.id().with(("keyboard-caps", row)), sense);
     let named = match fixed {
         Some(_) => crate::i18n::fill(
-            &skin.say("shortcut for {name}: {keys}. it cannot be changed."),
+            &skin.say(msgid("shortcut for {name}: {keys}. it cannot be changed.")),
             &[("{name}", &name), ("{keys}", &spoken)],
         ),
         None => {
@@ -628,7 +636,9 @@ fn key_row(
                 Scope::Prompt,
             );
             crate::i18n::fill(
-                &skin.say("shortcut for {name}: {keys}. press {record} to record."),
+                &skin.say(msgid(
+                    "shortcut for {name}: {keys}. press {record} to record.",
+                )),
                 &[
                     ("{name}", &name),
                     ("{keys}", &spoken),
@@ -688,7 +698,7 @@ fn refusal_line(
             .bracketed()
     };
     let (swap, cancel) = (key(Command::SettingsSwap), key(Command::SettingsClose));
-    let (swap_word, cancel_word) = (skin.say("swap"), skin.say("cancel"));
+    let (swap_word, cancel_word) = (skin.say(msgid("swap")), skin.say(msgid("cancel")));
     let mut hints: Vec<widgets::Hint<'_>> = Vec::new();
     if swaps {
         hints.push((&swap, &swap_word, true));

@@ -6,7 +6,7 @@
 use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 
 use crate::endpoint::Agent;
-use crate::i18n::{gettext, ngettext};
+use crate::i18n::{Msgid, gettext, msgid, ngettext};
 use crate::keymap::Command;
 use crate::model::{Action, AgentsView};
 use crate::settings::{OptionId, Settings};
@@ -31,7 +31,7 @@ const SWITCH: f32 = 30.0;
 const SWITCH_GAP: f32 = 16.0;
 
 /// What the toast says once an agent's setup is on the clipboard.
-const COPIED_ENTRY: &str = "Copied the entry for mcp.json";
+const COPIED_ENTRY: Msgid = msgid("Copied the entry for mcp.json");
 
 /// What the pane says of the server beside the settings: whether it runs,
 /// how many agents are connected to it, and whether a connection window
@@ -64,16 +64,16 @@ pub(super) fn content(
         .auto_shrink([false, true])
         .show(ui, |ui| {
             status(ui, server, skin, actions);
-            heading(ui, "Connect an agent", skin);
+            heading(ui, msgid("Connect an agent"), skin);
             connect(ui, agent, skin, actions);
-            heading(ui, "Access", skin);
+            heading(ui, msgid("Access"), skin);
             access(ui, skin, actions);
             ui.add_space(GROUP_GAP - 4.0);
             safety(ui, skin);
-            heading(ui, "Log", skin);
+            heading(ui, msgid("Log"), skin);
             let column = label_column(ui, &OptionId::AGENTS, skin);
             let show_log = gettext(skin.locale, "Show log");
-            let reason = gettext(skin.locale, super::NO_WINDOW);
+            let reason = super::NO_WINDOW.say(skin.locale);
             let after = After {
                 text: &show_log,
                 disabled: (!server.window).then_some(&*reason),
@@ -96,16 +96,22 @@ fn title(ui: &mut Ui, on: bool, skin: &Skin, actions: &mut Vec<Action>) {
     let name = Text::one(
         look,
         TextRole::DialogTitle,
-        &skin.say("Agents"),
+        &skin.say(msgid("Agents")),
         palette.text,
     )
     .layout(ui.ctx());
     let said = if cfg!(target_os = "macos") {
-        "Let coding agents query your databases through Tabletist (MCP). They use your saved connections; passwords stay in the Keychain."
+        msgid(
+            "Let coding agents query your databases through Tabletist (MCP). They use your saved connections; passwords stay in the Keychain.",
+        )
     } else if cfg!(windows) {
-        "Let coding agents query your databases through Tabletist (MCP). They use your saved connections; passwords stay in Credential Manager."
+        msgid(
+            "Let coding agents query your databases through Tabletist (MCP). They use your saved connections; passwords stay in Credential Manager.",
+        )
     } else {
-        "Let coding agents query your databases through Tabletist (MCP). They use your saved connections; passwords stay in the keyring."
+        msgid(
+            "Let coding agents query your databases through Tabletist (MCP). They use your saved connections; passwords stay in the keyring.",
+        )
     };
     let said = skin.say(said);
     let what = Text::one(look, TextRole::UiBody, &said, palette.dim)
@@ -124,7 +130,7 @@ fn title(ui: &mut Ui, on: bool, skin: &Skin, actions: &mut Vec<Action>) {
     let centred = egui::Layout::right_to_left(egui::Align::Center);
     let builder = egui::UiBuilder::new().id_salt("switch").max_rect(place);
     let mut switch = ui.new_child(builder.layout(centred));
-    let named = gettext(skin.locale, super::label(OptionId::AgentsOn));
+    let named = super::label(OptionId::AgentsOn).say(skin.locale);
     // Described by the words under the title, as a row's switch is by
     // its small print.
     if widgets::toggle(&mut switch, on, &named, Some(&said), palette).clicked() {
@@ -144,7 +150,7 @@ fn paint(ui: &Ui, text: &Laid, at: egui::Pos2) {
 }
 
 /// A group's heading, with the gap over it.
-fn heading(ui: &mut Ui, text: &'static str, skin: &Skin) {
+fn heading(ui: &mut Ui, text: Msgid, skin: &Skin) {
     ui.add_space(GROUP_GAP);
     widgets::section_label(&skin.say(text), skin.look, skin.palette)
         .layout(ui.ctx())
@@ -190,9 +196,9 @@ fn status(ui: &mut Ui, server: Server, skin: &Skin, actions: &mut Vec<Action>) {
     ui.painter().circle_filled(pos2(x + 4.0, y), 4.0, dot);
     x += 8.0 + 10.0;
     let (state, how) = if on {
-        ("Running", "stdio · this computer only")
+        (msgid("Running"), msgid("stdio · this computer only"))
     } else {
-        ("Off", "Agents can't connect")
+        (msgid("Off"), msgid("Agents can't connect"))
     };
     x += widgets::paint_label(
         ui,
@@ -203,7 +209,7 @@ fn status(ui: &mut Ui, server: Server, skin: &Skin, actions: &mut Vec<Action>) {
     let how = Text::one(look, role, &skin.say(how), palette.dim).layout(ui.ctx());
     // At the right: the button, and before it who is connected.
     let label = gettext(locale, "Show Agents tab");
-    let reason = gettext(locale, super::NO_WINDOW);
+    let reason = super::NO_WINDOW.say(locale);
     let mut button = ButtonSpec::new(&label);
     if !server.window {
         button = button.disabled(&reason);
@@ -225,13 +231,8 @@ fn status(ui: &mut Ui, server: Server, skin: &Skin, actions: &mut Vec<Action>) {
                 palette.dim,
             ),
             count => (
-                ngettext(
-                    locale,
-                    "{n} agent connected",
-                    "{n} agents connected",
-                    u32::try_from(count).unwrap_or(u32::MAX),
-                )
-                .replace("{n}", &count.to_string()),
+                ngettext(locale, "{n} agent connected", "{n} agents connected", count)
+                    .replace("{n}", &count.to_string()),
                 palette.success,
             ),
         };
@@ -258,22 +259,23 @@ fn status(ui: &mut Ui, server: Server, skin: &Skin, actions: &mut Vec<Action>) {
 }
 
 /// What the switch's segment for `agent` says.
-fn agent_name(agent: Agent) -> &'static str {
+fn agent_name(agent: Agent) -> Msgid {
     match agent {
-        Agent::ClaudeCode => "Claude Code",
-        Agent::Cursor => "Cursor",
-        Agent::Other => "Other",
+        // Product names stay as they are.
+        Agent::ClaudeCode => Msgid::as_is("Claude Code"),
+        Agent::Cursor => Msgid::as_is("Cursor"),
+        Agent::Other => msgid("Other"),
     }
 }
 
 /// How `agent` takes what is under the switch.
-fn agent_hint(agent: Agent) -> &'static str {
+fn agent_hint(agent: Agent) -> Msgid {
     match agent {
-        Agent::ClaudeCode => "Run this once in your project:",
-        Agent::Cursor => {
-            "Add its tabletist entry under mcpServers in ~/.cursor/mcp.json, or in .cursor/mcp.json in a project:"
-        }
-        Agent::Other => "An agent that starts MCP servers over stdio runs this command:",
+        Agent::ClaudeCode => msgid("Run this once in your project:"),
+        Agent::Cursor => msgid(
+            "Add its tabletist entry under mcpServers in ~/.cursor/mcp.json, or in .cursor/mcp.json in a project:",
+        ),
+        Agent::Other => msgid("An agent that starts MCP servers over stdio runs this command:"),
     }
 }
 
@@ -286,7 +288,7 @@ fn copy_setup(ctx: &egui::Context, agent: Agent, locale: crate::i18n::Locale) {
             Agent::Cursor => COPIED_ENTRY,
             Agent::ClaudeCode | Agent::Other => crate::ui::agents::COPIED_COMMAND,
         };
-        crate::ui::toast::say(ctx, &gettext(locale, said));
+        crate::ui::toast::say(ctx, &said.say(locale));
     }
 }
 
@@ -301,7 +303,7 @@ fn connect(ui: &mut Ui, agent: Agent, skin: &Skin, actions: &mut Vec<Action>) {
     } = *skin;
     // The switch, and what the agent takes beside it, wrapped in what the
     // switch leaves.
-    let words = Agent::ALL.map(|agent| gettext(locale, agent_name(agent)).into_owned());
+    let words = Agent::ALL.map(|agent| agent_name(agent).say(locale).into_owned());
     let role = TextRole::FieldLabel;
     let widest = words
         .iter()
@@ -392,7 +394,7 @@ fn connect(ui: &mut Ui, agent: Agent, skin: &Skin, actions: &mut Vec<Action>) {
     widgets::label(
         ui,
         TextRole::Secondary,
-        &skin.say("Each agent gets its own name in the Agents tab."),
+        &skin.say(msgid("Each agent gets its own name in the Agents tab.")),
         palette.dim,
         look,
     );
@@ -415,7 +417,7 @@ fn access(ui: &mut Ui, skin: &Skin, actions: &mut Vec<Action>) {
     let strong = Text::one(
         look,
         TextRole::UiBodyStrong,
-        &skin.say("Set for each connection, in Connections"),
+        &skin.say(msgid("Set for each connection, in Connections")),
         palette.text,
     )
     .wrap(words)
@@ -423,7 +425,7 @@ fn access(ui: &mut Ui, skin: &Skin, actions: &mut Vec<Action>) {
     let said = Text::one(
         look,
         TextRole::Secondary,
-        &skin.say("Every connection has an Agents section: Off or Read, with limits on rows and time. New connections start Off."),
+        &skin.say(msgid("Every connection has an Agents section: Off or Read, with limits on rows and time. New connections start Off.")),
         palette.dim,
     )
     .wrap(words)
@@ -454,14 +456,14 @@ fn safety(ui: &mut Ui, skin: &Skin) {
     let strong = Text::one(
         look,
         TextRole::UiBodyStrong,
-        &skin.say("How it stays safe"),
+        &skin.say(msgid("How it stays safe")),
         palette.text,
     )
     .layout(ui.ctx());
     let said = Text::one(
         look,
         TextRole::Secondary,
-        &skin.say("Reads run in a read-only transaction with each connection's limits. No DDL, no multiple statements, no COPY. Agents see what the connection's database user can see, and never more."),
+        &skin.say(msgid("Reads run in a read-only transaction with each connection's limits. No DDL, no multiple statements, no COPY. Agents see what the connection's database user can see, and never more.")),
         palette.secondary,
     )
     .wrap(width)

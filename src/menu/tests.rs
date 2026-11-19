@@ -7,6 +7,7 @@ use egui::{Event, Key, Modifiers};
 use tabletist_menubar::{Entry, Via};
 
 use crate::app::{App, RUNNABLE};
+use crate::i18n::msgid;
 use crate::keymap::{Command, EditItem, MenuKey, Mods, Row, Scope, When};
 use crate::model::{Action, ConnTabId, Dialog};
 use crate::testing::Harness;
@@ -49,17 +50,21 @@ fn every_runnable_command_is_in_one_item() {
 fn every_item_has_a_title_and_separators_only_between_items() {
     for platform in [Platform::MacOs, Platform::Windows] {
         for menu in bar(platform) {
-            assert!(!menu.title.is_empty());
+            assert!(!menu.title.english().is_empty());
             let first = menu.items.first();
             let last = menu.items.last();
-            assert_ne!(first, Some(&Item::Separator), "{}", menu.title);
-            assert_ne!(last, Some(&Item::Separator), "{}", menu.title);
+            assert_ne!(first, Some(&Item::Separator), "{}", menu.title.english());
+            assert_ne!(last, Some(&Item::Separator), "{}", menu.title.english());
             for pair in menu.items.windows(2) {
-                assert!(pair != [Item::Separator, Item::Separator], "{}", menu.title);
+                assert!(
+                    pair != [Item::Separator, Item::Separator],
+                    "{}",
+                    menu.title.english()
+                );
             }
             for item in &menu.items {
                 if *item != Item::Separator {
-                    assert!(!super::title(*item, false).is_empty(), "{item:?}");
+                    assert!(!super::title(*item, false).english().is_empty(), "{item:?}");
                 }
             }
         }
@@ -194,14 +199,17 @@ fn a_toggle_says_what_a_click_does() {
     let tab = harness.connect_fake();
     harness.settle();
     let sidebar = Item::Command(Command::ToggleSidebar);
-    assert_eq!(harness.app.menu_state(sidebar).title, "Hide Sidebar");
+    assert_eq!(harness.app.menu_state(sidebar).title, msgid("Hide Sidebar"));
     harness.app.apply(Action::ToggleSidebar(tab));
     harness.settle();
-    assert_eq!(harness.app.menu_state(sidebar).title, "Show Sidebar");
+    assert_eq!(harness.app.menu_state(sidebar).title, msgid("Show Sidebar"));
     // Greyed, a toggle shows its first title.
     let mode = Item::Command(Command::ToggleSqlMode);
     assert!(!harness.app.menu_state(mode).enabled);
-    assert_eq!(harness.app.menu_state(mode).title, "Make Tab Read-Only");
+    assert_eq!(
+        harness.app.menu_state(mode).title,
+        msgid("Make Tab Read-Only")
+    );
 }
 
 #[test]
@@ -255,6 +263,7 @@ fn quick_name(app: &App, tab: ConnTabId, command: Command) -> &'static str {
     let row = runnable.find(|runnable| runnable.command == command);
     row.unwrap_or_else(|| panic!("quick open lists {command:?}"))
         .name
+        .english()
 }
 
 /// `command`'s item, enabled, with the title quick open's row has (its
@@ -265,12 +274,12 @@ fn toggle_title(app: &App, tab: ConnTabId, command: Command) -> &'static str {
     let quick = quick_name(app, tab, command);
     let same = match command {
         Command::ToggleSqlMode => {
-            (state.title == "Make Tab Read-Write") == (quick == "Read-write tab")
+            (state.title == msgid("Make Tab Read-Write")) == (quick == "Read-write tab")
         }
-        _ => state.title.eq_ignore_ascii_case(quick),
+        _ => state.title.english().eq_ignore_ascii_case(quick),
     };
     assert!(same, "{command:?}: {:?} against {quick:?}", state.title);
-    state.title
+    state.title.english()
 }
 
 #[test]
@@ -897,21 +906,26 @@ fn the_bar_described_has_each_item_once_as_built() {
         for (built, menu) in described.menus.iter().zip(&menus) {
             // Windows gives each menu an access key.
             let title = match platform {
-                Platform::MacOs => menu.title.to_owned(),
-                Platform::Windows => format!("&{}", menu.title),
+                Platform::MacOs => menu.title.english().to_owned(),
+                Platform::Windows => format!("&{}", menu.title.english()),
             };
             assert_eq!(built.title, title);
-            assert_eq!(built.entries.len(), menu.items.len(), "{}", menu.title);
+            assert_eq!(
+                built.entries.len(),
+                menu.items.len(),
+                "{}",
+                menu.title.english()
+            );
             for (entry, &item) in built.entries.iter().zip(&menu.items) {
                 match (entry, item) {
                     (Entry::Separator, Item::Separator) => {}
                     (Entry::Native(native, title), Item::Native(of)) => {
                         assert_eq!(*native, of);
-                        assert_eq!(title.as_deref(), Some(super::title(item, false)));
+                        assert_eq!(title.as_deref(), Some(super::title(item, false).english()));
                     }
                     (Entry::Item { id, title, key }, item) => {
                         assert_eq!(described.items.get(id), Some(&item));
-                        assert_eq!(title, super::title(item, false));
+                        assert_eq!(title, super::title(item, false).english());
                         let state = described.shown[id];
                         assert!(state.enabled, "{item:?}");
                         assert_eq!(state.title, super::title(item, false));
@@ -1020,14 +1034,14 @@ fn the_bar_is_told_only_what_changed() {
         "{connected:?}"
     );
     assert!(
-        connected.contains(&Change::Title(sidebar, "Hide Sidebar")),
+        connected.contains(&Change::Title(sidebar, msgid("Hide Sidebar"))),
         "{connected:?}"
     );
     harness.app.apply(Action::ToggleSidebar(tab));
     harness.settle();
     assert_eq!(
         changes(&mut shown, &items, &harness.app),
-        [Change::Title(sidebar, "Show Sidebar")]
+        [Change::Title(sidebar, msgid("Show Sidebar"))]
     );
 }
 
@@ -1302,7 +1316,7 @@ fn no_windows_key_is_a_menu_s_access_key() {
     // title its `&`), so a command there would run with the menu opening.
     let access: Vec<Key> = bar(Platform::Windows)
         .iter()
-        .filter_map(|menu| Key::from_name(&menu.title.get(..1)?.to_uppercase()))
+        .filter_map(|menu| Key::from_name(&menu.title.english().get(..1)?.to_uppercase()))
         .collect();
     assert!(access.contains(&Key::F), "File's access key is F");
     for (command, mods, key) in windows_strokes() {
@@ -1311,5 +1325,61 @@ fn no_windows_key_is_a_menu_s_access_key() {
             !(alt_alone && access.contains(&key)),
             "{command:?}: {key:?} with Alt opens a menu"
         );
+    }
+}
+
+/// In Russian every menu of the bar and every item reads in Russian, on
+/// both platforms: none is left as its English but the app's own name.
+#[test]
+fn the_russian_bar_is_in_russian_throughout() {
+    use crate::i18n::Locale;
+    use crate::settings::Language;
+    let mut harness = Harness::new();
+    harness
+        .app
+        .change_settings(|settings| settings.language = Language::Fixed(Locale::Russian));
+    for platform in [Platform::MacOs, Platform::Windows] {
+        let Described { menus, .. } = describe(platform, &harness.app);
+        let titles: Vec<&str> = menus
+            .iter()
+            .map(|menu| menu.title.trim_start_matches('&'))
+            .collect();
+        let wanted: &[&str] = match platform {
+            Platform::MacOs => &[
+                "Tabletist",
+                "Файл",
+                "Изменить",
+                "Вид",
+                "Запрос",
+                "Окно",
+                "Справка",
+            ],
+            Platform::Windows => &["Файл", "Изменить", "Вид", "Запрос", "Окно", "Справка"],
+        };
+        assert_eq!(titles, wanted, "{platform:?}");
+        for menu in &menus {
+            for entry in &menu.entries {
+                let title = match entry {
+                    Entry::Separator => continue,
+                    Entry::Native(_, title) => title.clone().unwrap_or_default(),
+                    Entry::Item { title, .. } => title.clone(),
+                };
+                assert!(
+                    title.chars().any(|c| matches!(c, 'а'..='я' | 'А'..='Я')),
+                    "{platform:?}: {title:?} is not in Russian"
+                );
+            }
+        }
+        let query = &menus[titles.iter().position(|t| *t == "Запрос").expect("Query")];
+        let items: Vec<String> = query
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Item { title, .. } => Some(title.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(items.contains(&"Обновить схему".to_owned()), "{items:?}");
+        assert!(items.contains(&"Выполнить все".to_owned()), "{items:?}");
     }
 }

@@ -620,13 +620,7 @@ pub fn size_words(bytes: u64, locale: Locale) -> String {
     } else if bytes_f >= KB {
         format!("{:.0} KB", bytes_f / KB)
     } else {
-        ngettext(
-            locale,
-            "{n} byte",
-            "{n} bytes",
-            u32::try_from(bytes).unwrap_or(u32::MAX),
-        )
-        .replace("{n}", &bytes.to_string())
+        ngettext(locale, "{n} byte", "{n} bytes", bytes).replace("{n}", &bytes.to_string())
     }
 }
 
@@ -657,13 +651,7 @@ pub fn of_total(rows: u64, total: Option<Count>, locale: Locale) -> String {
         Some(total) => gettext(locale, "{done} of {total} rows")
             .replace("{done}", &done)
             .replace("{total}", &count_words(total)),
-        None => ngettext(
-            locale,
-            "{n} row",
-            "{n} rows",
-            u32::try_from(rows).unwrap_or(u32::MAX),
-        )
-        .replace("{n}", &done),
+        None => ngettext(locale, "{n} row", "{n} rows", rows).replace("{n}", &done),
     }
 }
 

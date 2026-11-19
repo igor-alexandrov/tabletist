@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tabletist_menubar::{Entry, MenuBar, Shortcut, Via};
 
 use crate::app::{App, ItemState};
-use crate::i18n::{Locale, gettext};
+use crate::i18n::{Locale, Msgid};
 use crate::keymap::{EditItem, Keymap, Layout, MenuKey};
 
 use super::{Handling, Item, Platform, Replay, bar, handling, key_of, title};
@@ -36,7 +36,7 @@ pub(super) struct Described {
 /// The bar on `platform` for muda, with `app`'s keys and words.
 pub(super) fn describe(platform: Platform, app: &App) -> Described {
     let layout = app.layout();
-    let text = |msgid: &'static str| gettext(app.locale, msgid).into_owned();
+    let text = |msgid: Msgid| msgid.say(app.locale).into_owned();
     let mut items = HashMap::new();
     let mut shown = HashMap::new();
     let mut menus = Vec::new();
@@ -132,8 +132,7 @@ pub(super) fn route(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Change {
     Enabled(Id, bool),
-    /// An msgid.
-    Title(Id, &'static str),
+    Title(Id, Msgid),
 }
 
 /// What differs between `shown` and `app` now, for each of `items`;
@@ -357,7 +356,7 @@ impl Bar {
         for change in changes(&mut self.shown, &self.items, app) {
             match change {
                 Change::Enabled(id, enabled) => self.menu.set_enabled(id, enabled),
-                Change::Title(id, msgid) => self.menu.set_title(id, &gettext(app.locale, msgid)),
+                Change::Title(id, msgid) => self.menu.set_title(id, &msgid.say(app.locale)),
             }
         }
     }

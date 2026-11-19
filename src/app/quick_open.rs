@@ -187,10 +187,11 @@ impl QuickList {
 /// window, `Settings › General › Restore tabs and filters`, translated.
 /// `run` is the run key as the window writes it, for `{run} runs`.
 pub fn setting_path(locale: crate::i18n::Locale, run: &str, option: OptionId) -> String {
-    let say = |text| crate::i18n::gettext(locale, text);
+    let say = |text: crate::i18n::Msgid| text.say(locale);
     let pane = SettingsPane::of(option);
     let label = say(crate::ui::settings::label(option)).replace("{run}", run);
-    format!("{} › {} › {label}", say("Settings"), say(pane.name()))
+    let settings = say(crate::i18n::msgid("Settings"));
+    format!("{settings} › {} › {label}", say(pane.name()))
 }
 
 /// A cancel row's name, translated: "Cancel exporting reviews.csv". Any

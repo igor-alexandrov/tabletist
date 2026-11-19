@@ -51,12 +51,11 @@ pub fn marked_text(marked: usize, skipped: usize, locale: Locale) -> String {
     if skipped == 0 {
         return format!("{rows}.");
     }
-    let plural = u32::try_from(skipped).unwrap_or(u32::MAX);
     let left = ngettext(
         locale,
         "{n} can't be deleted.",
         "{n} can't be deleted.",
-        plural,
+        skipped,
     );
     format!("{rows}. {}", left.replace("{n}", &skipped.to_string()))
 }
@@ -80,20 +79,18 @@ fn counts_text(counts: crate::edit::Counts, doubts: usize, short: bool, locale: 
         parts.push(if short {
             changes
         } else {
-            let plural = u32::try_from(counts.rows).unwrap_or(u32::MAX);
             ngettext(
                 locale,
                 "{changes} in {n} row",
                 "{changes} in {n} rows",
-                plural,
+                counts.rows,
             )
             .replace("{n}", &counts.rows.to_string())
             .replace("{changes}", &changes)
         });
     }
     if counts.deleted > 0 {
-        let plural = u32::try_from(counts.deleted).unwrap_or(u32::MAX);
-        let to_delete = ngettext(locale, "{n} to delete", "{n} to delete", plural);
+        let to_delete = ngettext(locale, "{n} to delete", "{n} to delete", counts.deleted);
         parts.push(to_delete.replace("{n}", &counts.deleted.to_string()));
     }
     if doubts > 0 && !short {
@@ -161,12 +158,11 @@ pub(crate) fn holder_said(
     locale: Locale,
     own: impl Fn(&str) -> String,
 ) -> String {
-    let plural = u32::try_from(holder.rows).unwrap_or(u32::MAX);
     let said = ngettext(
         locale,
         "{n} row in {table} still points at this row",
         "{n} rows in {table} still point at this row",
-        plural,
+        holder.rows,
     );
     // The words are the app's own, and the placeholders are lower case
     // already: `own` leaves them for the count and the table's own name.
@@ -196,8 +192,7 @@ fn note_said(
             let what = own(&what).replace("{row}", &row_name(object, *row));
             let mut text = format!("{what} {nothing}");
             if *others > 0 {
-                let plural = u32::try_from(*others).unwrap_or(u32::MAX);
-                let more = ngettext(locale, "{n} more row too.", "{n} more rows too.", plural);
+                let more = ngettext(locale, "{n} more row too.", "{n} more rows too.", *others);
                 text.push_str(&format!(
                     " {}",
                     own(&more).replace("{n}", &others.to_string())
@@ -285,16 +280,13 @@ pub fn written_text(saved: &Saved, locale: Locale) -> String {
 pub(crate) fn block_text(block: SaveBlock, to_fix: usize, locale: Locale) -> String {
     match block {
         SaveBlock::Saving => gettext(locale, "Saving…").into_owned(),
-        SaveBlock::ToFix => {
-            let plural = u32::try_from(to_fix).unwrap_or(u32::MAX);
-            ngettext(
-                locale,
-                "Fix {n} value to save",
-                "Fix {n} values to save",
-                plural,
-            )
-            .replace("{n}", &to_fix.to_string())
-        }
+        SaveBlock::ToFix => ngettext(
+            locale,
+            "Fix {n} value to save",
+            "Fix {n} values to save",
+            to_fix,
+        )
+        .replace("{n}", &to_fix.to_string()),
         SaveBlock::Required => gettext(locale, "Fill required fields to save").into_owned(),
         SaveBlock::Disconnected => gettext(locale, "Not connected").into_owned(),
         SaveBlock::ReadOnly => gettext(locale, "This connection opens read-only").into_owned(),
@@ -384,12 +376,11 @@ pub fn show(
         [] => None,
         [one] => Some(gettext(locale, "{column} is required").replace("{column}", one)),
         more => {
-            let plural = u32::try_from(more.len()).unwrap_or(u32::MAX);
             let said = ngettext(
                 locale,
                 "{n} value is required",
                 "{n} values are required",
-                plural,
+                more.len(),
             );
             Some(said.replace("{n}", &more.len().to_string()))
         }
@@ -435,8 +426,7 @@ pub fn show(
             // What stands against a save, in one place: the values to fix,
             // and what a new row still needs.
             let fix = (counts.to_fix > 0).then(|| {
-                let plural = u32::try_from(counts.to_fix).unwrap_or(u32::MAX);
-                ngettext(locale, "{n} to fix", "{n} to fix", plural)
+                ngettext(locale, "{n} to fix", "{n} to fix", counts.to_fix)
                     .replace("{n}", &counts.to_fix.to_string())
             });
             // Nothing is to fix, and a new row needs a value: no mistake

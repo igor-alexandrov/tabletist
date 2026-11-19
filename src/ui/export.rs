@@ -49,7 +49,6 @@ pub fn primary_words(
     look: &Look,
     locale: crate::i18n::Locale,
 ) -> String {
-    let plural = |count: crate::export_sheet::Count| u32::try_from(count.rows).unwrap_or(u32::MAX);
     let again = sheet.rows == RowsChoice::RunAgain;
     let words = match (sheet.destination, facts.rows) {
         // A result run again: counted as it runs (spec 4).
@@ -58,22 +57,19 @@ pub fn primary_words(
         }
         (DestinationChoice::File, None) if again => gettext(locale, "Run and export…").into_owned(),
         (DestinationChoice::Clipboard, Some(rows)) => {
-            ngettext(locale, "Copy {rows} row", "Copy {rows} rows", plural(rows))
+            ngettext(locale, "Copy {rows} row", "Copy {rows} rows", rows.rows)
                 .replace("{rows}", &count_words(rows))
         }
         (DestinationChoice::Clipboard, None) => gettext(locale, "Copy rows").into_owned(),
-        (DestinationChoice::File, Some(rows)) if look.terminal => ngettext(
-            locale,
-            "Export {rows} row",
-            "Export {rows} rows",
-            plural(rows),
-        )
-        .replace("{rows}", &count_words(rows)),
+        (DestinationChoice::File, Some(rows)) if look.terminal => {
+            ngettext(locale, "Export {rows} row", "Export {rows} rows", rows.rows)
+                .replace("{rows}", &count_words(rows))
+        }
         (DestinationChoice::File, Some(rows)) => ngettext(
             locale,
             "Export {rows} row…",
             "Export {rows} rows…",
-            plural(rows),
+            rows.rows,
         )
         .replace("{rows}", &count_words(rows)),
         (DestinationChoice::File, None) if look.terminal => gettext(locale, "Export").into_owned(),

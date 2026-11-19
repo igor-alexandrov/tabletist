@@ -1,6 +1,7 @@
 //! The check: one GET of the latest release, which says nothing of the
 //! person but this version, the system and the processor.
 
+use crate::i18n::{Msgid, msgid};
 use std::io::Read;
 use std::time::Duration;
 
@@ -41,17 +42,19 @@ pub enum Failed {
 impl Failed {
     /// What the card says of it, under its title. English: the caller
     /// translates, with `{secs}` and `{status}` put in after.
-    pub fn said(&self) -> &'static str {
+    pub fn said(&self) -> Msgid {
         match self {
             Self::TimedOut(_) => {
-                "Couldn't reach github.com: the connection timed out after {secs} s."
+                msgid("Couldn't reach github.com: the connection timed out after {secs} s.")
             }
-            Self::Unreachable => "Couldn't reach github.com. Check the connection to the internet.",
+            Self::Unreachable => {
+                msgid("Couldn't reach github.com. Check the connection to the internet.")
+            }
             Self::Status(403 | 429) => {
-                "GitHub is limiting checks from this network. Try again later."
+                msgid("GitHub is limiting checks from this network. Try again later.")
             }
-            Self::Status(_) => "GitHub answered with an error ({status}).",
-            Self::Unreadable => "GitHub's answer wasn't a release.",
+            Self::Status(_) => msgid("GitHub answered with an error ({status})."),
+            Self::Unreadable => msgid("GitHub's answer wasn't a release."),
         }
     }
 
@@ -320,12 +323,12 @@ pub(crate) mod tests {
     fn what_a_failure_says_has_its_numbers() {
         let failed = Failed::TimedOut(TIMEOUT);
         assert_eq!(
-            failed.with_numbers(failed.said()),
+            failed.with_numbers(failed.said().english()),
             "Couldn't reach github.com: the connection timed out after 10 s."
         );
         let failed = Failed::Status(502);
         assert_eq!(
-            failed.with_numbers(failed.said()),
+            failed.with_numbers(failed.said().english()),
             "GitHub answered with an error (502)."
         );
     }

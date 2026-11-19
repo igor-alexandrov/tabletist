@@ -71,9 +71,9 @@ fn close_button_top(harness: &mut Harness) -> f64 {
 fn painted_heading(look: &Look, group: Group) -> String {
     let name = crate::ui::help::heading(group);
     if look.terminal {
-        name.to_lowercase()
+        name.english().to_lowercase()
     } else {
-        name.to_uppercase()
+        name.english().to_uppercase()
     }
 }
 
@@ -143,7 +143,7 @@ fn shown(harness: &mut Harness, rows: &[(Group, Command)]) -> Vec<(Shown, Rect)>
                 .map(|(group, _)| Shown::Heading(*group));
             let name = rows
                 .iter()
-                .find(|(_, command)| command.info().name == text)
+                .find(|(_, command)| command.info().name.english() == text)
                 .map(|(group, _)| Shown::Row(*group));
             heading.or(name).map(|shown| (shown, *rect))
         })
@@ -421,7 +421,7 @@ fn each_group_has_room_above_its_heading_but_the_first() {
         // Each group is a row group named by its heading.
         let tree = harness.settle();
         for (group, _) in &rows {
-            let said = look.label(crate::ui::help::heading(*group));
+            let said = look.label(crate::ui::help::heading(*group).english());
             assert!(
                 crate::testing::node(&tree, &said, Role::RowGroup).is_some(),
                 "{name}: {said}"
@@ -457,7 +457,9 @@ fn keys_stand_at_the_right_after_their_names() {
         let mut rights = Vec::new();
         for (_, command, keys) in &rows {
             let (Some(what), Some(keys)) = (
-                visible(&harness, command.info().name).first().copied(),
+                visible(&harness, command.info().name.english())
+                    .first()
+                    .copied(),
                 visible(&harness, keys.as_str()).first().copied(),
             ) else {
                 continue;
@@ -526,7 +528,7 @@ fn a_heading_stays_on_top_while_its_group_scrolls() {
         // It scrolled: the list's first row is not under it any more.
         let first_row = rows[0].1.info().name;
         assert!(
-            visible(&harness, first_row)
+            visible(&harness, first_row.english())
                 .iter()
                 .all(|rect| rect.top() < at.bottom()),
             "{name}"

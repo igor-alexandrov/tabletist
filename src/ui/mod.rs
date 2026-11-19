@@ -1600,7 +1600,7 @@ value_tags   = true
             let names = crate::testing::labels(&harness.finish_animations());
             for (_, command, keys) in &rows {
                 assert_eq!(*keys, keymap.label(layout, *command));
-                let name = command.info().name;
+                let name = command.info().name.english();
                 assert!(
                     names.iter().any(|shown| shown == name),
                     "{}: {name} is not in the list",
