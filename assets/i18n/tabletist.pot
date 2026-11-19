@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-19 09:33-0500\n"
+"POT-Creation-Date: 2026-11-19 09:58-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -24,11 +24,13 @@ msgid "{column} moved to position {n}"
 msgstr ""
 
 #: crates/tabletist-core/src/export_sheet.rs
+#: crates/tabletist-core/src/update/download.rs
 #, rust-format
 msgid "about {n} s left"
 msgstr ""
 
 #: crates/tabletist-core/src/export_sheet.rs
+#: crates/tabletist-core/src/update/download.rs
 #, rust-format
 msgid "about {n} min left"
 msgstr ""
@@ -1773,6 +1775,89 @@ msgstr[1] ""
 msgid "{rows} by {cols} selected"
 msgstr ""
 
+#: crates/tabletist-core/src/update/check.rs
+#, rust-format
+msgid "Couldn't reach github.com: the connection timed out after {secs} s."
+msgstr ""
+
+#: crates/tabletist-core/src/update/check.rs
+#: crates/tabletist-core/src/update/download.rs
+msgid "Couldn't reach github.com. Check the connection to the internet."
+msgstr ""
+
+#: crates/tabletist-core/src/update/check.rs
+msgid "GitHub is limiting checks from this network. Try again later."
+msgstr ""
+
+#: crates/tabletist-core/src/update/check.rs
+#: crates/tabletist-core/src/update/download.rs
+#, rust-format
+msgid "GitHub answered with an error ({status})."
+msgstr ""
+
+#: crates/tabletist-core/src/update/check.rs
+msgid "GitHub's answer wasn't a release."
+msgstr ""
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The signature doesn't match Tabletist's release key."
+msgstr ""
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The release's checksums couldn't be read."
+msgstr ""
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The file doesn't match its checksum in the release."
+msgstr ""
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The file holds another version than the release."
+msgstr ""
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The new version didn't pass its startup check."
+msgstr ""
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The download isn't a Tabletist app."
+msgstr ""
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The app was signed by another developer."
+msgstr ""
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "macOS couldn't check the app's signature."
+msgstr ""
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The connection was lost and didn't come back."
+msgstr ""
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "Tabletist can't write to the folder it is in."
+msgstr ""
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The release changed. Check for updates again."
+msgstr ""
+
+#: crates/tabletist-core/src/update/download.rs
+#, rust-format
+msgid "The installer didn't start: {error}"
+msgstr ""
+
+#: crates/tabletist-core/src/update/download.rs
+msgid ""
+"Work was still open when the installer stopped waiting, so Tabletist didn't "
+"restart."
+msgstr ""
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "Tabletist couldn't quit in time, so the installer stopped waiting."
+msgstr ""
+
 #: crates/tabletist-core/src/update/installed.rs
 msgid "Your package manager updates Tabletist"
 msgstr ""
@@ -1947,6 +2032,16 @@ msgstr ""
 #: src/app/history.rs
 #, rust-format
 msgid "writes open with {key}, into a read-only tab"
+msgstr ""
+
+#: src/app/updates.rs
+#, rust-format
+msgid "{version} available · {key}"
+msgstr ""
+
+#: src/app/updates.rs src/ui/settings/updates_terminal.rs
+#, rust-format
+msgid "{version} available"
 msgstr ""
 
 #: src/menu.rs
@@ -2168,12 +2263,16 @@ msgid "License"
 msgstr ""
 
 #: src/ui/about.rs src/ui/connect_dialog/sheet.rs src/ui/help.rs
-#: src/ui/object_tabs.rs
+#: src/ui/object_tabs.rs src/ui/settings/terminal.rs
 msgid "Close"
 msgstr ""
 
 #: src/ui/about.rs
 msgid "Font licenses"
+msgstr ""
+
+#: src/ui/agents.rs src/ui/settings/updates.rs
+msgid "Copied the command"
 msgstr ""
 
 #: src/ui/agents.rs src/ui/picker.rs
@@ -2229,7 +2328,7 @@ msgstr ""
 msgid "Allow agents…"
 msgstr ""
 
-#: src/ui/agents.rs src/ui/settings/agents.rs
+#: src/ui/agents.rs src/ui/settings/agents.rs src/ui/settings/terminal.rs
 msgid "Show log"
 msgstr ""
 
@@ -2645,6 +2744,7 @@ msgid "skipped"
 msgstr ""
 
 #: src/ui/connect_dialog/reading.rs src/ui/settings/sheet.rs
+#: src/ui/settings/terminal.rs
 msgid "Reset"
 msgstr ""
 
@@ -3990,7 +4090,7 @@ msgstr ""
 msgid "Tables, columns and limits…"
 msgstr ""
 
-#: src/ui/picker.rs src/ui/settings/agents.rs
+#: src/ui/picker.rs src/ui/settings/agents.rs src/ui/settings/terminal.rs
 msgid "Show Agents tab"
 msgstr ""
 
@@ -4229,6 +4329,10 @@ msgstr ""
 msgid "Click a value or press {key} to edit"
 msgstr ""
 
+#: src/ui/settings/agents.rs
+msgid "Copied the entry for mcp.json"
+msgstr ""
+
 #: src/ui/settings/agents.rs src/ui/settings/terminal.rs
 msgid "Connect an agent"
 msgstr ""
@@ -4275,6 +4379,10 @@ msgstr[0] ""
 msgstr[1] ""
 
 #: src/ui/settings/agents.rs
+msgid "Other"
+msgstr ""
+
+#: src/ui/settings/agents.rs
 msgid "Run this once in your project:"
 msgstr ""
 
@@ -4292,7 +4400,7 @@ msgstr ""
 msgid "Each agent gets its own name in the Agents tab."
 msgstr ""
 
-#: src/ui/settings/agents.rs
+#: src/ui/settings/agents.rs src/ui/settings/terminal.rs
 msgid "Open Connections"
 msgstr ""
 
@@ -4318,6 +4426,12 @@ msgid ""
 msgstr ""
 
 #: src/ui/settings/file_pane.rs
+msgid ""
+"Edits in the file reload live · invalid lines are shown here in {red}red{/"
+"red} and ignored"
+msgstr ""
+
+#: src/ui/settings/file_pane.rs
 msgid "live"
 msgstr ""
 
@@ -4340,6 +4454,14 @@ msgstr ""
 
 #: src/ui/settings/keyboard.rs src/ui/workspace.rs
 msgid "or"
+msgstr ""
+
+#: src/ui/settings/keyboard.rs
+msgid "changed"
+msgstr ""
+
+#: src/ui/settings/keyboard.rs src/ui/settings/keyboard_terminal.rs
+msgid "not built yet"
 msgstr ""
 
 #: src/ui/settings/keyboard_sheet.rs
@@ -4432,7 +4554,7 @@ msgstr ""
 msgid "Not changed"
 msgstr ""
 
-#: src/ui/settings/keyboard_sheet.rs
+#: src/ui/settings/keyboard_sheet.rs src/ui/settings/terminal.rs
 msgid "Unbind"
 msgstr ""
 
@@ -4479,10 +4601,6 @@ msgstr ""
 
 #: src/ui/settings/keyboard_terminal.rs
 msgid "press keys…"
-msgstr ""
-
-#: src/ui/settings/keyboard_terminal.rs
-msgid "not built yet"
 msgstr ""
 
 #: src/ui/settings/keyboard_terminal.rs
@@ -4844,10 +4962,6 @@ msgstr ""
 msgid "Connection not found"
 msgstr ""
 
-#: src/ui/settings/mod.rs src/ui/settings/terminal.rs
-msgid "Never"
-msgstr ""
-
 #: src/ui/settings/mod.rs
 #, rust-format
 msgid "After {n} min"
@@ -4861,6 +4975,10 @@ msgid "After {n} h"
 msgid_plural "After {n} h"
 msgstr[0] ""
 msgstr[1] ""
+
+#: src/ui/settings/mod.rs src/ui/settings/terminal.rs
+msgid "Never"
+msgstr ""
 
 #: src/ui/settings/mod.rs
 msgid "Every day"
@@ -4994,7 +5112,11 @@ msgstr ""
 msgid "leading"
 msgstr ""
 
-#: src/ui/settings/sheet.rs
+#: src/ui/settings/mod.rs
+msgid "Open a connection to see its agents"
+msgstr ""
+
+#: src/ui/settings/sheet.rs src/ui/settings/terminal.rs
 msgid "Show History"
 msgstr ""
 
@@ -5619,6 +5741,10 @@ msgid "toggle"
 msgstr ""
 
 #: src/ui/settings/terminal.rs
+msgid "Toggle"
+msgstr ""
+
+#: src/ui/settings/terminal.rs
 msgid "show history"
 msgstr ""
 
@@ -5639,7 +5765,19 @@ msgid "copy command"
 msgstr ""
 
 #: src/ui/settings/terminal.rs
+msgid "Copy the command"
+msgstr ""
+
+#: src/ui/settings/terminal.rs
+msgid "Open file in editor"
+msgstr ""
+
+#: src/ui/settings/terminal.rs
 msgid "reset option"
+msgstr ""
+
+#: src/ui/settings/terminal.rs
+msgid "Reset option"
 msgstr ""
 
 #: src/ui/settings/terminal.rs
@@ -5655,6 +5793,10 @@ msgid "record"
 msgstr ""
 
 #: src/ui/settings/terminal.rs
+msgid "Record"
+msgstr ""
+
+#: src/ui/settings/terminal.rs
 msgid "unbind"
 msgstr ""
 
@@ -5664,6 +5806,68 @@ msgstr ""
 
 #: src/ui/settings/terminal.rs
 msgid "find by key"
+msgstr ""
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "Tabletist {version}"
+msgstr ""
+
+#: src/ui/settings/updates.rs
+msgid "Checking for updates…"
+msgstr ""
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "Tabletist {version} is up to date"
+msgstr ""
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "Tabletist {version} is available"
+msgstr ""
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "{version} is available"
+msgstr ""
+
+#: src/ui/settings/updates.rs
+msgid "Couldn't check for updates"
+msgstr ""
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "Downloading {version}…"
+msgstr ""
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "{version} is ready to install"
+msgstr ""
+
+#: src/ui/settings/updates.rs
+msgid "Finish your work first"
+msgstr ""
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "Installing {version}…"
+msgstr ""
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "The {version} download didn't verify"
+msgstr ""
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "Couldn't download {version}"
+msgstr ""
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "Couldn't install {version}"
 msgstr ""
 
 #: src/ui/settings/updates.rs
@@ -5740,6 +5944,34 @@ msgstr ""
 
 #: src/ui/settings/updates.rs
 msgid "Download progress"
+msgstr ""
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "today at {time}"
+msgstr ""
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "yesterday at {time}"
+msgstr ""
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "on {day} at {time}"
+msgstr ""
+
+#: src/ui/settings/updates.rs
+msgid "released today"
+msgstr ""
+
+#: src/ui/settings/updates.rs
+msgid "released yesterday"
+msgstr ""
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "released {day}"
 msgstr ""
 
 #: src/ui/settings/updates.rs
@@ -5886,10 +6118,6 @@ msgstr ""
 msgid "Report on GitHub"
 msgstr ""
 
-#: src/ui/settings/updates.rs
-msgid "Copied the command"
-msgstr ""
-
 #: src/ui/settings/updates_terminal.rs
 msgid ""
 "installed with a package manager (pacman, an AUR helper, nix, cargo "
@@ -5901,11 +6129,6 @@ msgstr ""
 msgid ""
 "the check asks github for the latest release and sends this version, os and "
 "cpu, nothing else."
-msgstr ""
-
-#: src/ui/settings/updates_terminal.rs
-#, rust-format
-msgid "{version} available"
 msgstr ""
 
 #: src/ui/settings/updates_terminal.rs

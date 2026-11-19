@@ -202,7 +202,7 @@ fn block(ui: &mut Ui, status: Status, interrupted: impl FnOnce() -> Vec<Work>, s
                 ),
                 None => say(msgid("no check has worked yet")),
             });
-            let said = failed.with_numbers(&gettext(locale, failed.said()));
+            let said = failed.with_numbers(&failed.said().say(locale));
             lines.push(vec![(look.label(&said), palette.danger)]);
         }
         Card::Downloading(downloading) => {

@@ -119,32 +119,34 @@ impl<'a> Card<'a> {
     pub(super) fn title(self, locale: Locale) -> String {
         let current = crate::update::CURRENT;
         let (words, version) = match self {
-            Self::NotChecked => ("Tabletist {version}", current),
-            Self::Checking => ("Checking for updates…", current),
-            Self::UpToDate { .. } => ("Tabletist {version} is up to date", current),
-            Self::Available(offer) | Self::NoBuild(offer) => {
-                ("Tabletist {version} is available", offer.version.as_str())
-            }
-            Self::Elsewhere(offer, _) => ("{version} is available", offer.version.as_str()),
-            Self::Failed { .. } => ("Couldn't check for updates", current),
-            Self::Downloading(downloading) => {
-                ("Downloading {version}…", downloading.version.as_str())
-            }
-            Self::Ready(version) => ("{version} is ready to install", version),
-            Self::Held { .. } => ("Finish your work first", current),
-            Self::Restarting(version) => ("Installing {version}…", version),
+            Self::NotChecked => (msgid("Tabletist {version}"), current),
+            Self::Checking => (msgid("Checking for updates…"), current),
+            Self::UpToDate { .. } => (msgid("Tabletist {version} is up to date"), current),
+            Self::Available(offer) | Self::NoBuild(offer) => (
+                msgid("Tabletist {version} is available"),
+                offer.version.as_str(),
+            ),
+            Self::Elsewhere(offer, _) => (msgid("{version} is available"), offer.version.as_str()),
+            Self::Failed { .. } => (msgid("Couldn't check for updates"), current),
+            Self::Downloading(downloading) => (
+                msgid("Downloading {version}…"),
+                downloading.version.as_str(),
+            ),
+            Self::Ready(version) => (msgid("{version} is ready to install"), version),
+            Self::Held { .. } => (msgid("Finish your work first"), current),
+            Self::Restarting(version) => (msgid("Installing {version}…"), version),
             Self::NotInstalled { version, failure } => {
                 let words = match failure {
-                    Failure::Unverified(_) => "The {version} download didn't verify",
-                    Failure::Undone(_) => "Couldn't download {version}",
+                    Failure::Unverified(_) => msgid("The {version} download didn't verify"),
+                    Failure::Undone(_) => msgid("Couldn't download {version}"),
                     Failure::NotHanded(_) | Failure::WorkBegan | Failure::TooLate => {
-                        "Couldn't install {version}"
+                        msgid("Couldn't install {version}")
                     }
                 };
                 (words, version)
             }
         };
-        gettext(locale, words).replace("{version}", version)
+        words.say(locale).replace("{version}", version)
     }
 }
 
@@ -208,7 +210,7 @@ pub(super) fn downloading_said(downloading: &Downloading, locale: Locale) -> Str
     match downloading.time_left() {
         Some(left) => {
             let (words, count) = download::left_words(left);
-            let left = gettext(locale, words).replace("{n}", &count.to_string());
+            let left = words.say(locale).replace("{n}", &count.to_string());
             format!("{amount} · {left}")
         }
         None => amount,
@@ -218,7 +220,7 @@ pub(super) fn downloading_said(downloading: &Downloading, locale: Locale) -> Str
 /// What the box of a download that gave nothing says: what failed and,
 /// where the file was refused, that it was deleted.
 pub(super) fn failure_said(failure: &Failure, locale: Locale) -> String {
-    let said = failure.with_parts(&gettext(locale, failure.said()));
+    let said = failure.with_parts(&failure.said().say(locale));
     match failure.unverified() {
         true => format!("{said} {}", gettext(locale, "The file was deleted.")),
         false => said,
@@ -311,11 +313,12 @@ pub(super) fn when(locale: Locale, at: u64, now: u64) -> String {
     let (at, now) = (time_of(at), time_of(now));
     let hour = crate::clock::hour(at);
     let (words, day) = match crate::clock::day_of(at, now) {
-        Day::Today => ("today at {time}", String::new()),
-        Day::Yesterday => ("yesterday at {time}", String::new()),
-        Day::On(day) => ("on {day} at {time}", day),
+        Day::Today => (msgid("today at {time}"), String::new()),
+        Day::Yesterday => (msgid("yesterday at {time}"), String::new()),
+        Day::On(day) => (msgid("on {day} at {time}"), day),
     };
-    gettext(locale, words)
+    words
+        .say(locale)
         .replace("{time}", &hour)
         .replace("{day}", &day)
 }
@@ -323,11 +326,11 @@ pub(super) fn when(locale: Locale, at: u64, now: u64) -> String {
 /// The day a release came out, as the card says it: `released today`.
 pub(super) fn released(locale: Locale, at: u64, now: u64) -> String {
     let (words, day) = match crate::clock::day_of(time_of(at), time_of(now)) {
-        Day::Today => ("released today", String::new()),
-        Day::Yesterday => ("released yesterday", String::new()),
-        Day::On(day) => ("released {day}", day),
+        Day::Today => (msgid("released today"), String::new()),
+        Day::Yesterday => (msgid("released yesterday"), String::new()),
+        Day::On(day) => (msgid("released {day}"), day),
     };
-    gettext(locale, words).replace("{day}", &day)
+    words.say(locale).replace("{day}", &day)
 }
 
 /// `secs` as a time; one past what the system's clock holds is the epoch,
@@ -517,7 +520,7 @@ fn card(
     // command another tool updates with.
     let boxed = match shown {
         Card::Failed { failed, .. } => {
-            let said = failed.with_numbers(&gettext(locale, failed.said()));
+            let said = failed.with_numbers(&failed.said().say(locale));
             Some((said, palette.danger))
         }
         Card::NotInstalled { failure, .. } => Some((failure_said(failure, locale), palette.danger)),
@@ -1120,5 +1123,22 @@ mod tests {
         assert_eq!(running(12), "query running for 12 s");
         assert_eq!(running(72), "query running for 1 min 12 s");
         assert_eq!(running(120), "query running for 2 min");
+    }
+
+    /// The card's words reach the catalog whole: its title, when it last
+    /// checked, a release's day, and a failure under the title.
+    #[test]
+    fn the_card_says_its_words_in_russian() {
+        let ru = Locale::Russian;
+        let failed = crate::update::check::Failed::Unreadable;
+        let card = Card::Failed {
+            failed: &failed,
+            last: None,
+        };
+        assert_eq!(card.title(ru), "Не удалось проверить обновления");
+        let now = 1_763_500_000;
+        assert!(when(ru, now, now).starts_with("сегодня в "));
+        assert_eq!(released(ru, now - 86_400, now), "выпущена вчера");
+        assert_ne!(failed.said().say(ru), failed.said().english());
     }
 }

@@ -1954,7 +1954,7 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
 
 /// The button a hint of the footer stands for: its name, and what a
 /// press does, where it does something.
-type Button<'a> = (&'a str, Option<Vec<Action>>);
+type Button = (Msgid, Option<Vec<Action>>);
 
 /// The screen's keys at the left. A hint whose key does one thing is that
 /// thing's button too. On the Agents pane: Enter, on a row that opens
@@ -1996,7 +1996,7 @@ fn footer(
         .say(msgid("open file in {editor}"))
         .replace("{editor}", "$EDITOR");
     // The key, what it does, the button it stands for, and what that does.
-    let mut keys: Vec<(Command, String, Option<Button<'_>>)> = vec![
+    let mut keys: Vec<(Command, String, Option<Button>)> = vec![
         (Command::SettingsMove, skin.say(msgid("move")), None),
         (
             Command::SettingsChange,
@@ -2006,7 +2006,7 @@ fn footer(
         (
             Command::SettingsToggle,
             skin.say(msgid("toggle")),
-            Some(("Toggle", flip.map(|flip| vec![flip]))),
+            Some((msgid("Toggle"), flip.map(|flip| vec![flip]))),
         ),
     ];
     // The history's row shows the History tab.
@@ -2017,15 +2017,15 @@ fn footer(
         keys.push((
             Command::SettingsOpenRow,
             skin.say(msgid("show history")),
-            Some(("Show History", Some(shows))),
+            Some((msgid("Show History"), Some(shows))),
         ));
     }
     if pane == SettingsPane::Agents {
         if let Some((row, opens)) = opens {
             let (what, name) = match row {
-                SettingsRow::AgentsAccess => (msgid("open connections"), "Open Connections"),
-                SettingsRow::Option(OptionId::LogDays) => (msgid("show log"), "Show log"),
-                _ => (msgid("show agents tab"), "Show Agents tab"),
+                SettingsRow::AgentsAccess => (msgid("open connections"), msgid("Open Connections")),
+                SettingsRow::Option(OptionId::LogDays) => (msgid("show log"), msgid("Show log")),
+                _ => (msgid("show agents tab"), msgid("Show Agents tab")),
             };
             keys.push((
                 Command::SettingsOpenRow,
@@ -2036,24 +2036,24 @@ fn footer(
         keys.push((
             Command::SettingsCopyCommand,
             skin.say(msgid("copy command")),
-            Some(("Copy the command", None)),
+            Some((msgid("Copy the command"), None)),
         ));
     }
     keys.extend([
         (
             Command::SettingsOpenFile,
             in_editor,
-            Some(("Open file in editor", edit.map(|edit| vec![edit]))),
+            Some((msgid("Open file in editor"), edit.map(|edit| vec![edit]))),
         ),
         (
             Command::SettingsReset,
             skin.say(msgid("reset option")),
-            Some(("Reset option", reset.map(|reset| vec![reset]))),
+            Some((msgid("Reset option"), reset.map(|reset| vec![reset]))),
         ),
         (
             Command::SettingsClose,
             skin.say(msgid("close")),
-            Some(("Close", Some(vec![Action::CloseDialog]))),
+            Some((msgid("Close"), Some(vec![Action::CloseDialog]))),
         ),
     ]);
     // The hints give way from the end where the window has no room for
@@ -2085,7 +2085,7 @@ fn footer(
         );
         left += width + 16.0;
         if let Some((name, action)) = button {
-            let name = gettext(locale, name);
+            let name = name.say(locale);
             if ButtonSpec::new(&name).hidden_at(ui, place).clicked() {
                 if command == Command::SettingsCopyCommand {
                     crate::ui::agents::copy_command(ui.ctx(), locale);
@@ -2123,13 +2123,13 @@ fn keyboard_footer(
     let in_editor = skin
         .say(msgid("open file in {editor}"))
         .replace("{editor}", "$EDITOR");
-    let keys: Vec<(Command, String, Option<Button<'_>>)> = if page.recording.is_some() {
+    let keys: Vec<(Command, String, Option<Button>)> = if page.recording.is_some() {
         vec![
             (Command::SettingsOpenRow, skin.say(msgid("end")), None),
             (
                 Command::SettingsClose,
                 skin.say(msgid("cancel")),
-                Some(("Cancel", Some(vec![Action::StopRecording]))),
+                Some((msgid("Cancel"), Some(vec![Action::StopRecording]))),
             ),
         ]
     } else {
@@ -2141,19 +2141,19 @@ fn keyboard_footer(
                 Command::SettingsOpenRow,
                 skin.say(msgid("record")),
                 Some((
-                    "Record",
+                    msgid("Record"),
                     cursor.map(|row| vec![Action::RecordKeys(crate::model::Recorded::Row(row))]),
                 )),
             ),
             (
                 Command::SettingsUnbind,
                 skin.say(msgid("unbind")),
-                Some(("Unbind", row(Action::UnbindRow))),
+                Some((msgid("Unbind"), row(Action::UnbindRow))),
             ),
             (
                 Command::SettingsReset,
                 skin.say(msgid("reset")),
-                Some(("Reset", row(Action::ResetRow))),
+                Some((msgid("Reset"), row(Action::ResetRow))),
             ),
             (
                 Command::SettingsFilter,
@@ -2168,12 +2168,15 @@ fn keyboard_footer(
             (
                 Command::SettingsOpenFile,
                 in_editor,
-                Some(("Open file in editor", Some(vec![Action::EditSettingsFile]))),
+                Some((
+                    msgid("Open file in editor"),
+                    Some(vec![Action::EditSettingsFile]),
+                )),
             ),
             (
                 Command::SettingsClose,
                 skin.say(msgid("close")),
-                Some(("Close", Some(vec![Action::CloseDialog]))),
+                Some((msgid("Close"), Some(vec![Action::CloseDialog]))),
             ),
         ]
     };
@@ -2203,7 +2206,7 @@ fn keyboard_footer(
         );
         left += width + 16.0;
         if let Some((name, action)) = button {
-            let name = gettext(locale, name);
+            let name = name.say(locale);
             if ButtonSpec::new(&name).hidden_at(ui, place).clicked() {
                 actions.extend(action.into_iter().flatten());
             }

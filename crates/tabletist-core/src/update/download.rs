@@ -2,6 +2,7 @@
 //! sorted from fastframe-update's words, how long it has left, and the
 //! issue a failure can be reported with.
 
+use crate::i18n::{Msgid, msgid};
 use std::time::Duration;
 
 /// Why a download gave no update to install.
@@ -122,33 +123,38 @@ impl Failure {
     /// What the card's box says of it, in English, `{status}` and
     /// `{error}` put in by [`Failure::with_parts`]: the caller translates
     /// first. Verification failed's box then says the file was deleted.
-    pub fn said(&self) -> &'static str {
+    pub fn said(&self) -> Msgid {
         match self {
             Self::Unverified(unverified) => match unverified {
-                Unverified::Signature => "The signature doesn't match Tabletist's release key.",
-                Unverified::Checksums => "The release's checksums couldn't be read.",
-                Unverified::Hash => "The file doesn't match its checksum in the release.",
-                Unverified::Version => "The file holds another version than the release.",
-                Unverified::Startup => "The new version didn't pass its startup check.",
-                Unverified::Bundle => "The download isn't a Tabletist app.",
-                Unverified::Publisher => "The app was signed by another developer.",
-                Unverified::Approval => "macOS couldn't check the app's signature.",
+                Unverified::Signature => {
+                    msgid("The signature doesn't match Tabletist's release key.")
+                }
+                Unverified::Checksums => msgid("The release's checksums couldn't be read."),
+                Unverified::Hash => msgid("The file doesn't match its checksum in the release."),
+                Unverified::Version => msgid("The file holds another version than the release."),
+                Unverified::Startup => msgid("The new version didn't pass its startup check."),
+                Unverified::Bundle => msgid("The download isn't a Tabletist app."),
+                Unverified::Publisher => msgid("The app was signed by another developer."),
+                Unverified::Approval => msgid("macOS couldn't check the app's signature."),
             },
             Self::Undone(undone) => match undone {
-                Undone::Lost => "The connection was lost and didn't come back.",
+                Undone::Lost => msgid("The connection was lost and didn't come back."),
                 Undone::Unreachable => {
-                    "Couldn't reach github.com. Check the connection to the internet."
+                    msgid("Couldn't reach github.com. Check the connection to the internet.")
                 }
-                Undone::Status(_) => "GitHub answered with an error ({status}).",
-                Undone::NotWritable => "Tabletist can't write to the folder it is in.",
-                Undone::Changed => "The release changed. Check for updates again.",
-                Undone::Other(_) => "{error}",
+                Undone::Status(_) => msgid("GitHub answered with an error ({status})."),
+                Undone::NotWritable => msgid("Tabletist can't write to the folder it is in."),
+                Undone::Changed => msgid("The release changed. Check for updates again."),
+                // The error alone, as the system wrote it.
+                Undone::Other(_) => Msgid::as_is("{error}"),
             },
-            Self::NotHanded(_) => "The installer didn't start: {error}",
-            Self::WorkBegan => {
-                "Work was still open when the installer stopped waiting, so Tabletist didn't restart."
+            Self::NotHanded(_) => msgid("The installer didn't start: {error}"),
+            Self::WorkBegan => msgid(
+                "Work was still open when the installer stopped waiting, so Tabletist didn't restart.",
+            ),
+            Self::TooLate => {
+                msgid("Tabletist couldn't quit in time, so the installer stopped waiting.")
             }
-            Self::TooLate => "Tabletist couldn't quit in time, so the installer stopped waiting.",
         }
     }
 
@@ -220,12 +226,12 @@ pub fn keep_window(samples: &mut Vec<(Duration, u64)>) {
 /// A time left as the card says it, English with `{n}` for the caller to
 /// translate and fill: under a minute to the next 5 seconds, then to the
 /// next minute.
-pub fn left_words(left: Duration) -> (&'static str, u64) {
+pub fn left_words(left: Duration) -> (Msgid, u64) {
     let secs = left.as_secs() + u64::from(left.subsec_nanos() > 0);
     let fives = secs.div_ceil(5).max(1) * 5;
     match fives {
-        0..60 => ("about {n} s left", fives),
-        _ => ("about {n} min left", secs.div_ceil(60)),
+        0..60 => (msgid("about {n} s left"), fives),
+        _ => (msgid("about {n} min left"), secs.div_ceil(60)),
     }
 }
 
@@ -383,12 +389,12 @@ mod tests {
     fn what_a_failure_says_has_its_parts() {
         let status = Failure::Undone(Undone::Status(502));
         assert_eq!(
-            status.with_parts(status.said()),
+            status.with_parts(status.said().english()),
             "GitHub answered with an error (502)."
         );
         let other = Failure::Undone(Undone::Other("Update redirect is not allowed".into()));
         assert_eq!(
-            other.with_parts(other.said()),
+            other.with_parts(other.said().english()),
             "Update redirect is not allowed"
         );
     }
@@ -433,19 +439,19 @@ mod tests {
     fn the_time_left_is_said_to_five_seconds_then_to_the_minute() {
         assert_eq!(
             left_words(Duration::from_millis(400)),
-            ("about {n} s left", 5)
+            (msgid("about {n} s left"), 5)
         );
-        assert_eq!(left_words(secs(18)), ("about {n} s left", 20));
-        assert_eq!(left_words(secs(20)), ("about {n} s left", 20));
-        assert_eq!(left_words(secs(54)), ("about {n} s left", 55));
-        assert_eq!(left_words(secs(59)), ("about {n} min left", 1));
-        assert_eq!(left_words(secs(61)), ("about {n} min left", 2));
+        assert_eq!(left_words(secs(18)), (msgid("about {n} s left"), 20));
+        assert_eq!(left_words(secs(20)), (msgid("about {n} s left"), 20));
+        assert_eq!(left_words(secs(54)), (msgid("about {n} s left"), 55));
+        assert_eq!(left_words(secs(59)), (msgid("about {n} min left"), 1));
+        assert_eq!(left_words(secs(61)), (msgid("about {n} min left"), 2));
     }
 
     #[test]
     fn the_issue_names_the_versions_the_system_and_the_error() {
         let failure = Failure::Unverified(Unverified::Signature);
-        let url = issue_url("99.0.0", &failure, failure.said());
+        let url = issue_url("99.0.0", &failure, failure.said().english());
         assert!(
             url.starts_with("https://github.com/igor-alexandrov/tabletist/issues/new?title=Update%20to%2099.0.0%20didn%27t%20verify&body="),
             "{url}"

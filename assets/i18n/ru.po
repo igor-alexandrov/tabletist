@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-19 09:33-0500\n"
+"POT-Creation-Date: 2026-11-19 09:58-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -84,11 +84,13 @@ msgid "Try again"
 msgstr "Повторить"
 
 #: crates/tabletist-core/src/export_sheet.rs
+#: crates/tabletist-core/src/update/download.rs
 #, rust-format
 msgid "about {n} min left"
 msgstr "осталось около {n} мин"
 
 #: crates/tabletist-core/src/export_sheet.rs
+#: crates/tabletist-core/src/update/download.rs
 #, rust-format
 msgid "about {n} s left"
 msgstr "осталось около {n} с"
@@ -1793,6 +1795,92 @@ msgstr[2] "Выбрано {n} строк"
 msgid "{rows} by {cols} selected"
 msgstr "Выбрано: {rows} на {cols}"
 
+#: crates/tabletist-core/src/update/check.rs
+#: crates/tabletist-core/src/update/download.rs
+msgid "Couldn't reach github.com. Check the connection to the internet."
+msgstr "Не удалось связаться с github.com. Проверьте подключение к интернету."
+
+#: crates/tabletist-core/src/update/check.rs
+#, rust-format
+msgid "Couldn't reach github.com: the connection timed out after {secs} s."
+msgstr ""
+"Не удалось связаться с github.com: время ожидания истекло через {secs} с."
+
+#: crates/tabletist-core/src/update/check.rs
+#: crates/tabletist-core/src/update/download.rs
+#, rust-format
+msgid "GitHub answered with an error ({status})."
+msgstr "GitHub ответил ошибкой ({status})."
+
+#: crates/tabletist-core/src/update/check.rs
+msgid "GitHub is limiting checks from this network. Try again later."
+msgstr "GitHub ограничивает проверки из этой сети. Попробуйте позже."
+
+#: crates/tabletist-core/src/update/check.rs
+msgid "GitHub's answer wasn't a release."
+msgstr "Ответ GitHub не является релизом."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "Tabletist can't write to the folder it is in."
+msgstr "Tabletist не может записывать в папку, в которой находится."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "Tabletist couldn't quit in time, so the installer stopped waiting."
+msgstr "Tabletist не успел завершиться, и установщик перестал ждать."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The app was signed by another developer."
+msgstr "Приложение подписано другим разработчиком."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The connection was lost and didn't come back."
+msgstr "Соединение прервалось и не восстановилось."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The download isn't a Tabletist app."
+msgstr "Загруженный файл не является приложением Tabletist."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The file doesn't match its checksum in the release."
+msgstr "Файл не совпадает со своей контрольной суммой в релизе."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The file holds another version than the release."
+msgstr "В файле другая версия, чем в релизе."
+
+#: crates/tabletist-core/src/update/download.rs
+#, rust-format
+msgid "The installer didn't start: {error}"
+msgstr "Установщик не запустился: {error}"
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The new version didn't pass its startup check."
+msgstr "Новая версия не прошла проверку при запуске."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The release changed. Check for updates again."
+msgstr "Релиз изменился. Проверьте обновления снова."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The release's checksums couldn't be read."
+msgstr "Не удалось прочитать контрольные суммы релиза."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "The signature doesn't match Tabletist's release key."
+msgstr "Подпись не совпадает с ключом релизов Tabletist."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid ""
+"Work was still open when the installer stopped waiting, so Tabletist didn't "
+"restart."
+msgstr ""
+"Когда установщик перестал ждать, работа была ещё открыта, поэтому Tabletist "
+"не перезапустился."
+
+#: crates/tabletist-core/src/update/download.rs
+msgid "macOS couldn't check the app's signature."
+msgstr "macOS не удалось проверить подпись приложения."
+
 #: crates/tabletist-core/src/update/installed.rs src/app/updates.rs
 #: src/ui/update_settings_tests.rs
 msgid "Installed with Homebrew, so Homebrew updates it"
@@ -1977,6 +2065,16 @@ msgstr ""
 #, rust-format
 msgid "writes open with {key}, into a read-only tab"
 msgstr "изменяющие запросы открываются по {key}, во вкладке только для чтения"
+
+#: src/app/updates.rs src/ui/settings/updates_terminal.rs
+#, rust-format
+msgid "{version} available"
+msgstr "Доступна версия {version}"
+
+#: src/app/updates.rs
+#, rust-format
+msgid "{version} available · {key}"
+msgstr "Доступна {version} · {key}"
 
 #: src/menu.rs src/ui/help.rs
 msgid "About Tabletist"
@@ -2185,7 +2283,7 @@ msgid "Zoom"
 msgstr "Масштаб"
 
 #: src/ui/about.rs src/ui/connect_dialog/sheet.rs src/ui/help.rs
-#: src/ui/object_tabs.rs
+#: src/ui/object_tabs.rs src/ui/settings/terminal.rs
 msgid "Close"
 msgstr "Закрыть"
 
@@ -2276,6 +2374,10 @@ msgstr "Вызовы для"
 #: src/ui/agents.rs
 msgid "Connection"
 msgstr "Подключение"
+
+#: src/ui/agents.rs src/ui/settings/updates.rs
+msgid "Copied the command"
+msgstr "Команда скопирована"
 
 #: src/ui/agents.rs
 msgid "Elsewhere"
@@ -2380,7 +2482,7 @@ msgstr "Сервер: stdio"
 msgid "Show"
 msgstr "Показать"
 
-#: src/ui/agents.rs src/ui/settings/agents.rs
+#: src/ui/agents.rs src/ui/settings/agents.rs src/ui/settings/terminal.rs
 msgid "Show log"
 msgstr "Показать журнал"
 
@@ -2677,6 +2779,7 @@ msgid "from ~/.ssh/config"
 msgstr "из ~/.ssh/config"
 
 #: src/ui/connect_dialog/reading.rs src/ui/settings/sheet.rs
+#: src/ui/settings/terminal.rs
 msgid "Reset"
 msgstr "Сбросить"
 
@@ -4096,7 +4199,7 @@ msgstr "Пароли хранятся в Связке ключей macOS"
 msgid "Passwords are stored in the system keyring"
 msgstr "Пароли хранятся в системной связке ключей"
 
-#: src/ui/picker.rs src/ui/settings/agents.rs
+#: src/ui/picker.rs src/ui/settings/agents.rs src/ui/settings/terminal.rs
 msgid "Show Agents tab"
 msgstr "Показывать вкладку «Агенты»"
 
@@ -4370,6 +4473,10 @@ msgid "Connect an agent"
 msgstr "Подключить агента"
 
 #: src/ui/settings/agents.rs
+msgid "Copied the entry for mcp.json"
+msgstr "Запись для mcp.json скопирована"
+
+#: src/ui/settings/agents.rs
 msgid "Each agent gets its own name in the Agents tab."
 msgstr "Каждый агент получает своё имя на вкладке «Агенты»."
 
@@ -4416,9 +4523,13 @@ msgstr ""
 msgid "No agents connected"
 msgstr "Нет подключённых агентов"
 
-#: src/ui/settings/agents.rs
+#: src/ui/settings/agents.rs src/ui/settings/terminal.rs
 msgid "Open Connections"
 msgstr "Открыть подключения"
+
+#: src/ui/settings/agents.rs
+msgid "Other"
+msgstr "Другой"
 
 #: src/ui/settings/agents.rs
 msgid ""
@@ -4455,6 +4566,14 @@ msgstr[1] "Подключено {n} агента"
 msgstr[2] "Подключено {n} агентов"
 
 #: src/ui/settings/file_pane.rs
+msgid ""
+"Edits in the file reload live · invalid lines are shown here in {red}red{/"
+"red} and ignored"
+msgstr ""
+"Правки в файле применяются сразу · неверные строки показаны здесь {red}"
+"красным{/red} и пропускаются"
+
+#: src/ui/settings/file_pane.rs
 msgid "Ignored"
 msgstr "Пропущено"
 
@@ -4470,6 +4589,14 @@ msgstr "здесь хранятся только отличия от значе�
 #, rust-format
 msgid "{list} writes the full list"
 msgstr "{list} записывает полный список"
+
+#: src/ui/settings/keyboard.rs
+msgid "changed"
+msgstr "изменено"
+
+#: src/ui/settings/keyboard.rs src/ui/settings/keyboard_terminal.rs
+msgid "not built yet"
+msgstr "пока не сделано"
 
 #: src/ui/settings/keyboard.rs src/ui/settings/keyboard_terminal.rs
 msgid "not set"
@@ -4575,7 +4702,7 @@ msgstr "Показанные сочетания"
 msgid "Swap"
 msgstr "Поменять"
 
-#: src/ui/settings/keyboard_sheet.rs
+#: src/ui/settings/keyboard_sheet.rs src/ui/settings/terminal.rs
 msgid "Unbind"
 msgstr "Снять"
 
@@ -4607,10 +4734,6 @@ msgstr "нет подходящих команд"
 #: src/ui/settings/keyboard_terminal.rs
 msgid "no shortcuts changed"
 msgstr "сочетания не изменены"
-
-#: src/ui/settings/keyboard_terminal.rs
-msgid "not built yet"
-msgstr "пока не сделано"
 
 #: src/ui/settings/keyboard_terminal.rs
 msgid "press keys…"
@@ -4857,6 +4980,10 @@ msgstr "При запуске"
 #: src/ui/settings/mod.rs
 msgid "Only when I ask"
 msgstr "Только по запросу"
+
+#: src/ui/settings/mod.rs
+msgid "Open a connection to see its agents"
+msgstr "Откройте подключение, чтобы увидеть его агентов"
 
 #: src/ui/settings/mod.rs
 msgid "Or: show Connections · open a chosen connection"
@@ -5324,7 +5451,7 @@ msgstr "Просторно"
 msgid "Search zones"
 msgstr "Поиск пояса"
 
-#: src/ui/settings/sheet.rs
+#: src/ui/settings/sheet.rs src/ui/settings/terminal.rs
 msgid "Show History"
 msgstr "Показать историю"
 
@@ -5453,6 +5580,10 @@ msgid "Changes apply right away"
 msgstr "Изменения применяются сразу"
 
 #: src/ui/settings/terminal.rs
+msgid "Copy the command"
+msgstr "Копировать команду"
+
+#: src/ui/settings/terminal.rs
 msgid "Cursor, others"
 msgstr "Cursor, другие"
 
@@ -5474,8 +5605,20 @@ msgid "MCP server"
 msgstr "Сервер MCP"
 
 #: src/ui/settings/terminal.rs
+msgid "Open file in editor"
+msgstr "Открыть файл в редакторе"
+
+#: src/ui/settings/terminal.rs
 msgid "Palette"
 msgstr "Палитра"
+
+#: src/ui/settings/terminal.rs
+msgid "Record"
+msgstr "Записать"
+
+#: src/ui/settings/terminal.rs
+msgid "Reset option"
+msgstr "Сбросить настройку"
 
 #: src/ui/settings/terminal.rs
 msgid "Set for each connection"
@@ -5489,6 +5632,10 @@ msgstr "Состояние"
 #, rust-format
 msgid "System ({zone})"
 msgstr "Системный ({zone})"
+
+#: src/ui/settings/terminal.rs
+msgid "Toggle"
+msgstr "Переключить"
 
 #: src/ui/settings/terminal.rs
 msgid "a desktop notification"
@@ -5847,8 +5994,22 @@ msgid "Checked {when}"
 msgstr "Проверено {when}"
 
 #: src/ui/settings/updates.rs
-msgid "Copied the command"
-msgstr "Команда скопирована"
+msgid "Checking for updates…"
+msgstr "Проверка обновлений…"
+
+#: src/ui/settings/updates.rs
+msgid "Couldn't check for updates"
+msgstr "Не удалось проверить обновления"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "Couldn't download {version}"
+msgstr "Не удалось загрузить {version}"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "Couldn't install {version}"
+msgstr "Не удалось установить {version}"
 
 #: src/ui/settings/updates.rs
 msgid "Don't restart"
@@ -5865,6 +6026,20 @@ msgstr "Загрузить и установить"
 #: src/ui/settings/updates.rs
 msgid "Download progress"
 msgstr "Ход загрузки"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "Downloading {version}…"
+msgstr "Загрузка {version}…"
+
+#: src/ui/settings/updates.rs
+msgid "Finish your work first"
+msgstr "Сначала завершите работу"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "Installing {version}…"
+msgstr "Установка {version}…"
 
 #: src/ui/settings/updates.rs
 #, rust-format
@@ -5953,6 +6128,21 @@ msgid "Tabletist restarts once this is done:"
 msgstr "Tabletist перезапустится, когда это завершится:"
 
 #: src/ui/settings/updates.rs
+#, rust-format
+msgid "Tabletist {version}"
+msgstr "Tabletist {version}"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "Tabletist {version} is available"
+msgstr "Доступен Tabletist {version}"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "Tabletist {version} is up to date"
+msgstr "Tabletist {version}: установлена последняя версия"
+
+#: src/ui/settings/updates.rs
 msgid ""
 "The check asks GitHub for the latest release. It sends this version, Windows "
 "and the processor, nothing else: no ID, no usage data, no database details."
@@ -5974,6 +6164,11 @@ msgstr ""
 #: src/ui/settings/updates.rs
 msgid "The file was deleted."
 msgstr "Файл удалён."
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "The {version} download didn't verify"
+msgstr "Загрузка {version} не прошла проверку"
 
 #: src/ui/settings/updates.rs src/ui/settings/updates_terminal.rs
 msgid "Update status"
@@ -6027,13 +6222,41 @@ msgstr "загрузка {table}"
 
 #: src/ui/settings/updates.rs
 #, rust-format
+msgid "on {day} at {time}"
+msgstr "{day} в {time}"
+
+#: src/ui/settings/updates.rs
+#, rust-format
 msgid "query running for {time}"
 msgstr "запрос выполняется уже {time}"
+
+#: src/ui/settings/updates.rs
+msgid "released today"
+msgstr "выпущена сегодня"
+
+#: src/ui/settings/updates.rs
+msgid "released yesterday"
+msgstr "выпущена вчера"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "released {day}"
+msgstr "выпущена {day}"
 
 #: src/ui/settings/updates.rs
 #, rust-format
 msgid "saving {table}"
 msgstr "сохранение {table}"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "today at {time}"
+msgstr "сегодня в {time}"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "yesterday at {time}"
+msgstr "вчера в {time}"
 
 #: src/ui/settings/updates.rs
 #, rust-format
@@ -6067,6 +6290,16 @@ msgstr "{s} с"
 #, rust-format
 msgid "{version} has no build for this computer yet"
 msgstr "Для версии {version} пока нет сборки под этот компьютер"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "{version} is available"
+msgstr "Доступна {version}"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "{version} is ready to install"
+msgstr "{version} готова к установке"
 
 #: src/ui/settings/updates_terminal.rs
 msgid "don't restart"
@@ -6141,11 +6374,6 @@ msgstr "повторить"
 #: src/ui/settings/updates_terminal.rs
 msgid "update now"
 msgstr "обновить сейчас"
-
-#: src/ui/settings/updates_terminal.rs
-#, rust-format
-msgid "{version} available"
-msgstr "Доступна версия {version}"
 
 #: src/ui/sidebar.rs
 msgid "Find any object…"

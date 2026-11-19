@@ -6,7 +6,7 @@
 
 use egui::{Event, Key, Modifiers};
 
-use crate::i18n::{Locale, gettext};
+use crate::i18n::{Locale, Msgid, gettext, msgid};
 use crate::keymap::{Group, Keymap, Layout, Mods, Never, Row, Why, intern, spelling};
 use crate::model::{Action, KeyboardPage, Recorded, Recording};
 use crate::theme::Look;
@@ -106,13 +106,13 @@ pub(super) fn said(
     row: Row,
     [name, scope, keys]: [&str; 3],
 ) -> String {
-    let say = |text| look.label(&gettext(locale, text));
+    let say = |text: Msgid| look.label(&text.say(locale));
     let mut said = format!("{name}, {scope}, {keys}");
     if keymap.changed(Layout::of(look), row) {
-        said.push_str(&format!(", {}", say("changed")));
+        said.push_str(&format!(", {}", say(msgid("changed"))));
     }
     if !row.command.info().built {
-        said.push_str(&format!(", {}", say("not built yet")));
+        said.push_str(&format!(", {}", say(msgid("not built yet"))));
     }
     said
 }

@@ -379,21 +379,22 @@ pub(super) fn place(saved: &SavedConnection) -> String {
 
 /// How long a connection may go unused, as the menu writes it.
 pub(super) fn idle_text(locale: Locale, choice: Idle) -> String {
-    let (minutes, count) = match choice {
+    let minutes = |count: u32| {
+        (
+            ngettext(locale, "After {n} min", "After {n} min", count),
+            count,
+        )
+    };
+    let hours = |count: u32| (ngettext(locale, "After {n} h", "After {n} h", count), count);
+    let (phrase, count) = match choice {
         Idle::Never => return gettext(locale, "Never").into_owned(),
-        Idle::Minutes5 => (true, 5),
-        Idle::Minutes15 => (true, 15),
-        Idle::Minutes30 => (true, 30),
-        Idle::Hour1 => (false, 1),
-        Idle::Hours4 => (false, 4),
+        Idle::Minutes5 => minutes(5),
+        Idle::Minutes15 => minutes(15),
+        Idle::Minutes30 => minutes(30),
+        Idle::Hour1 => hours(1),
+        Idle::Hours4 => hours(4),
     };
-    // Each unit's words said in full, so the extractor finds them.
-    let words = if minutes {
-        ngettext(locale, "After {n} min", "After {n} min", count)
-    } else {
-        ngettext(locale, "After {n} h", "After {n} h", count)
-    };
-    words.replace("{n}", &count.to_string())
+    phrase.replace("{n}", &count.to_string())
 }
 
 /// How often a check for updates runs, as the window writes it.
@@ -917,7 +918,7 @@ pub(super) fn opened(app: &App, row: SettingsRow) -> Option<Vec<Action>> {
 }
 
 /// What a disabled Show Agents tab and Show log say, with no window open.
-pub(super) const NO_WINDOW: &str = "Open a connection to see its agents";
+pub(super) const NO_WINDOW: Msgid = msgid("Open a connection to see its agents");
 
 /// What one of the screen's keys asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

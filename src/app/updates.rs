@@ -6,6 +6,7 @@
 //! ([`crate::backend::UpdatesCommand`]); what the checks found is kept in
 //! the state folder (`updates.json`).
 
+use crate::i18n::{Msgid, msgid};
 use std::time::Duration;
 
 use super::App;
@@ -21,8 +22,8 @@ pub const RELAUNCH: &str = "--relaunch";
 /// What the terminal look's status line says of a version available,
 /// `{version}` for it and `{key}` for Check for Updates' key as the keymap
 /// has it, for [`ANNOUNCED_FOR`]. With no key, [`ANNOUNCEMENT_KEYLESS`].
-pub const ANNOUNCEMENT: &str = "{version} available · {key}";
-pub const ANNOUNCEMENT_KEYLESS: &str = "{version} available";
+pub const ANNOUNCEMENT: Msgid = msgid("{version} available · {key}");
+pub const ANNOUNCEMENT_KEYLESS: Msgid = msgid("{version} available");
 
 /// How long the status line says it.
 pub const ANNOUNCED_FOR: f64 = 8.0;
@@ -289,7 +290,7 @@ impl App {
             Action::AnswerUpdateQuestion(yes) => self.answer_update_question(yes),
             Action::ReportUpdateFailure => {
                 if let Install::Failed { version, failure } = &self.updates.install {
-                    let said = failure.with_parts(failure.said());
+                    let said = failure.with_parts(failure.said().english());
                     self.url_to_open = Some(download::issue_url(version, failure, &said));
                 }
             }
@@ -839,7 +840,8 @@ impl App {
                 true => ANNOUNCEMENT_KEYLESS,
                 false => ANNOUNCEMENT,
             };
-            let said = crate::i18n::gettext(self.locale, words)
+            let said = words
+                .say(self.locale)
                 .replace("{version}", &version)
                 .replace("{key}", key.as_str());
             crate::ui::toast::say_for(ctx, &said, ANNOUNCED_FOR);

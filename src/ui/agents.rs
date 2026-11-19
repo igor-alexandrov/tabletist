@@ -7,7 +7,7 @@
 use egui::{Frame, Id, Margin, Rect, pos2, vec2};
 
 use crate::connections::{SavedConnection, SavedConnections};
-use crate::i18n::{gettext, ngettext, pgettext};
+use crate::i18n::{Msgid, gettext, msgid, ngettext, pgettext};
 use crate::keymap::Keymap;
 use crate::model::{Action, AgentsHere, AgentsView, ConnTabId, Workspace};
 use crate::style::Icon;
@@ -16,7 +16,7 @@ use crate::typography::{Text, TextRole};
 use crate::ui::{Paint, states, widgets};
 
 /// What the app says once the command is on the clipboard.
-pub const COPIED_COMMAND: &str = "Copied the command";
+pub const COPIED_COMMAND: Msgid = msgid("Copied the command");
 
 /// Puts the command that connects an agent on the clipboard, and says so.
 /// Nothing while it is still being worked out, which takes a moment once,
@@ -24,7 +24,7 @@ pub const COPIED_COMMAND: &str = "Copied the command";
 pub fn copy_command(ctx: &egui::Context, locale: crate::i18n::Locale) {
     if let Some(command) = crate::endpoint::agent_command_ready() {
         ctx.copy_text(command.to_owned());
-        crate::ui::toast::say(ctx, &gettext(locale, COPIED_COMMAND));
+        crate::ui::toast::say(ctx, &COPIED_COMMAND.say(locale));
     }
 }
 

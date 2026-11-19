@@ -9,7 +9,7 @@ use std::path::Path;
 
 use egui::{Color32, CornerRadius, Rangef, Rect, Sense, Ui, pos2, vec2};
 
-use crate::i18n::{gettext, msgid};
+use crate::i18n::{Msgid, gettext, msgid};
 use crate::keymap::Bind;
 use crate::settings::{OptionId, SettingsFile};
 use crate::theme::Palette;
@@ -32,8 +32,9 @@ const LINE_MAX: usize = 400;
 
 /// The pane's note, whole: a language has its own place for the word that
 /// stands between the marks, which is written in the colour it names.
-const NOTE_TEXT: &str =
-    "Edits in the file reload live · invalid lines are shown here in {red}red{/red} and ignored";
+const NOTE_TEXT: Msgid = msgid(
+    "Edits in the file reload live · invalid lines are shown here in {red}red{/red} and ignored",
+);
 
 /// What a stretch of a line is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -281,7 +282,7 @@ pub(super) fn show(
 
     // The note before the text: how tall it is says where the text ends.
     // Split after it is translated, each piece in the look's case.
-    let note = gettext(skin.locale, NOTE_TEXT);
+    let note = NOTE_TEXT.say(skin.locale);
     let (before, word, after) = marked_word(&note, "red");
     let note = Text::new(look)
         .add(role, &look.label(before), palette.dim)
@@ -566,7 +567,7 @@ mod tests {
             assert_eq!(marked_word(text, "red"), (text, "", ""));
         }
         // The pane's own note has both.
-        assert_eq!(marked_word(NOTE_TEXT, "red").1, "red");
+        assert_eq!(marked_word(NOTE_TEXT.english(), "red").1, "red");
     }
 
     #[test]
