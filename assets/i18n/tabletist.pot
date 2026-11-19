@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-19 15:44-0500\n"
+"POT-Creation-Date: 2026-11-19 15:48-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -17,6 +17,34 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=INTEGER; plural=EXPRESSION;\n"
+
+#. Translators: a connection never used, as "Last used {when}" says it.
+#: crates/tabletist-core/src/connections.rs
+msgctxt "last used"
+msgid "never"
+msgstr ""
+
+#: crates/tabletist-core/src/connections.rs
+msgctxt "last used"
+msgid "just now"
+msgstr ""
+
+#: crates/tabletist-core/src/connections.rs
+#: crates/tabletist-core/src/recents.rs
+#, rust-format
+msgid "{n} min ago"
+msgstr ""
+
+#: crates/tabletist-core/src/connections.rs
+#: crates/tabletist-core/src/recents.rs
+#, rust-format
+msgid "{n} h ago"
+msgstr ""
+
+#: crates/tabletist-core/src/connections.rs
+msgctxt "last used"
+msgid "yesterday"
+msgstr ""
 
 #: crates/tabletist-core/src/export_sheet.rs
 #, rust-format
@@ -120,6 +148,13 @@ msgstr ""
 msgid "Couldn't export {table}: {why}."
 msgstr ""
 
+#. Translators: what a failed export wrote, of about how much
+#. it would have: "2.1 of ≈ 7.8 MB".
+#: crates/tabletist-core/src/export_sheet.rs
+#, rust-format
+msgid "{part} of ≈ {shown}"
+msgstr ""
+
 #: crates/tabletist-core/src/export_sheet.rs
 #, rust-format
 msgid "✗ can't write {path}: permission denied · :w another path"
@@ -214,6 +249,423 @@ msgstr ""
 #: src/ui/workspace.rs
 msgctxt "label"
 msgid "filter"
+msgstr ""
+
+#. Translators: a count shortened to thousands: "1.2K".
+#: crates/tabletist-core/src/i18n/numbers.rs
+#, rust-format
+msgctxt "thousands"
+msgid "{n}K"
+msgstr ""
+
+#. Translators: a count shortened to millions: "3.4M".
+#: crates/tabletist-core/src/i18n/numbers.rs
+#, rust-format
+msgctxt "millions"
+msgid "{n}M"
+msgstr ""
+
+#. Translators: a count shortened to billions: "7B".
+#: crates/tabletist-core/src/i18n/numbers.rs
+#, rust-format
+msgctxt "billions"
+msgid "{n}B"
+msgstr ""
+
+#. Translators: a size in bytes, kilobytes or megabytes.
+#: crates/tabletist-core/src/i18n/numbers.rs
+#, rust-format
+msgctxt "file size"
+msgid "{n} B"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+#, rust-format
+msgctxt "file size"
+msgid "{n} KB"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+#, rust-format
+msgctxt "file size"
+msgid "{n} MB"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+#, rust-format
+msgctxt "file size"
+msgid "{n} GB"
+msgstr ""
+
+#. Translators: a size as the terminal look writes it: "48.2K".
+#: crates/tabletist-core/src/i18n/numbers.rs
+#, rust-format
+msgctxt "short file size"
+msgid "{n}B"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+#, rust-format
+msgctxt "short file size"
+msgid "{n}K"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+#, rust-format
+msgctxt "short file size"
+msgid "{n}M"
+msgstr ""
+
+#. Translators: a time in milliseconds.
+#: crates/tabletist-core/src/i18n/numbers.rs
+#, rust-format
+msgctxt "duration"
+msgid "{n} ms"
+msgstr ""
+
+#. Translators: a time in seconds.
+#: crates/tabletist-core/src/i18n/numbers.rs
+#, rust-format
+msgctxt "duration"
+msgid "{n} s"
+msgstr ""
+
+#. Translators: a time in whole minutes.
+#: crates/tabletist-core/src/i18n/numbers.rs
+#, rust-format
+msgctxt "duration"
+msgid "{n} min"
+msgstr ""
+
+#. Translators: a time in minutes and seconds.
+#: crates/tabletist-core/src/i18n/numbers.rs
+#, rust-format
+msgctxt "duration"
+msgid "{n} min {s} s"
+msgstr ""
+
+#. Translators: the rows a page shows, of all the table's.
+#: crates/tabletist-core/src/i18n/numbers.rs
+#, rust-format
+msgid "{first}–{last} of {total}"
+msgstr ""
+
+#. Translators: the rows a page shows, of about this many.
+#: crates/tabletist-core/src/i18n/numbers.rs
+#, rust-format
+msgid "{first}–{last} of ~{total}"
+msgstr ""
+
+#. Translators: the rows a page shows, the total not known.
+#: crates/tabletist-core/src/i18n/numbers.rs
+#, rust-format
+msgid "{first}–{last}"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "short month in a date"
+msgid "Jan"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "short month in a date"
+msgid "Feb"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "short month in a date"
+msgid "Mar"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "short month in a date"
+msgid "Apr"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "short month in a date"
+msgid "May"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "short month in a date"
+msgid "Jun"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "short month in a date"
+msgid "Jul"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "short month in a date"
+msgid "Aug"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "short month in a date"
+msgid "Sep"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "short month in a date"
+msgid "Oct"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "short month in a date"
+msgid "Nov"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "short month in a date"
+msgid "Dec"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month"
+msgid "January"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month"
+msgid "February"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month"
+msgid "March"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month"
+msgid "April"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month"
+msgid "May"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month"
+msgid "June"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month"
+msgid "July"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month"
+msgid "August"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month"
+msgid "September"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month"
+msgid "October"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month"
+msgid "November"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month"
+msgid "December"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month in a date"
+msgid "January"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month in a date"
+msgid "February"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month in a date"
+msgid "March"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month in a date"
+msgid "April"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month in a date"
+msgid "May"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month in a date"
+msgid "June"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month in a date"
+msgid "July"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month in a date"
+msgid "August"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month in a date"
+msgid "September"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month in a date"
+msgid "October"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month in a date"
+msgid "November"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "month in a date"
+msgid "December"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "short weekday"
+msgid "Mon"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "short weekday"
+msgid "Tue"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "short weekday"
+msgid "Wed"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "short weekday"
+msgid "Thu"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "short weekday"
+msgid "Fri"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "short weekday"
+msgid "Sat"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "short weekday"
+msgid "Sun"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "weekday initials"
+msgid "Mo"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "weekday initials"
+msgid "Tu"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "weekday initials"
+msgid "We"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "weekday initials"
+msgid "Th"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "weekday initials"
+msgid "Fr"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "weekday initials"
+msgid "Sa"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "weekday initials"
+msgid "Su"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "weekday"
+msgid "Monday"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "weekday"
+msgid "Tuesday"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "weekday"
+msgid "Wednesday"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "weekday"
+msgid "Thursday"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "weekday"
+msgid "Friday"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "weekday"
+msgid "Saturday"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n/numbers.rs
+msgctxt "weekday"
+msgid "Sunday"
+msgstr ""
+
+#. Translators: a day of this year, as History heads its entries.
+#: crates/tabletist-core/src/i18n/numbers.rs
+#, rust-format
+msgctxt "day of this year"
+msgid "{month} {day}"
+msgstr ""
+
+#. Translators: a day of another year, as History heads its entries.
+#: crates/tabletist-core/src/i18n/numbers.rs
+#, rust-format
+msgctxt "day of another year"
+msgid "{month} {day}, {year}"
+msgstr ""
+
+#. Translators: a day ("Oct 13", "Today") and the time on it.
+#: crates/tabletist-core/src/i18n/numbers.rs
+#, rust-format
+msgctxt "day and time"
+msgid "{day} {time}"
 msgstr ""
 
 #: crates/tabletist-core/src/keymap.rs
@@ -1787,6 +2239,14 @@ msgstr ""
 msgid "Format · {format}"
 msgstr ""
 
+#: crates/tabletist-core/src/recents.rs
+msgid "Just now"
+msgstr ""
+
+#: crates/tabletist-core/src/recents.rs src/ui/history.rs
+msgid "Yesterday"
+msgstr ""
+
 #: crates/tabletist-core/src/selection.rs crates/tabletist-core/src/vim.rs
 msgid "-- VISUAL --"
 msgstr ""
@@ -1934,12 +2394,6 @@ msgstr ""
 msgid "-- INSERT --"
 msgstr ""
 
-#: src/app.rs src/app/export.rs src/ui/object_tabs.rs src/ui/row_panel.rs
-#: src/ui/sql_editor.rs
-#, rust-format
-msgid "Query {n}"
-msgstr ""
-
 #: src/app.rs
 #, rust-format
 msgid "{agent} connected to Tabletist"
@@ -2070,6 +2524,12 @@ msgstr ""
 
 #: src/app/export.rs
 msgid "Export rows"
+msgstr ""
+
+#: src/app/export.rs src/ui/history.rs src/ui/object_tabs.rs
+#: src/ui/row_panel.rs src/ui/sql_editor.rs
+#, rust-format
+msgid "Query {n}"
 msgstr ""
 
 #: src/app/export.rs
@@ -2872,6 +3332,20 @@ msgstr ""
 
 #: src/ui/calendar.rs
 msgid "Fraction of a second"
+msgstr ""
+
+#. Translators: the calendar's heading: "January 2026".
+#: src/ui/calendar.rs
+#, rust-format
+msgctxt "calendar"
+msgid "{month} {year}"
+msgstr ""
+
+#. Translators: a calendar's day as a screen reader says it.
+#: src/ui/calendar.rs
+#, rust-format
+msgctxt "calendar"
+msgid "{weekday} {day} {month} {year}"
 msgstr ""
 
 #: src/ui/calendar.rs src/ui/history.rs
@@ -4317,6 +4791,27 @@ msgstr ""
 msgid "{year} BC"
 msgstr ""
 
+#. Translators: a date as the date line says it: "Thu 15 Jan 2026".
+#: src/ui/date_line.rs
+#, rust-format
+msgctxt "date line"
+msgid "{weekday} {day} {month} {year}"
+msgstr ""
+
+#. Translators: a day of the year the date line is about: "15 Jan".
+#: src/ui/date_line.rs
+#, rust-format
+msgctxt "date line"
+msgid "{day} {month}"
+msgstr ""
+
+#. Translators: a day of another year, as the date line says it.
+#: src/ui/date_line.rs
+#, rust-format
+msgctxt "date line"
+msgid "{day} {month} {year}"
+msgstr ""
+
 #: src/ui/date_line.rs
 msgid "tomorrow"
 msgstr ""
@@ -5732,10 +6227,6 @@ msgstr ""
 #: src/ui/history.rs
 #, rust-format
 msgid "{n} statements"
-msgstr ""
-
-#: src/ui/history.rs
-msgid "Yesterday"
 msgstr ""
 
 #: src/ui/host_key_prompt.rs
