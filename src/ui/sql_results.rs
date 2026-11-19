@@ -1077,12 +1077,7 @@ fn after(run: &SqlRun, index: usize, driver: Driver, words: Words) -> String {
         run.outcome.results.get(index).map(|result| &result.outcome)
         && *warnings > 0
     {
-        let phrase = ngettext(
-            words.locale,
-            "{n} warning",
-            "{n} warnings",
-            u32::from(*warnings),
-        );
+        let phrase = ngettext(words.locale, "{n} warning", "{n} warnings", *warnings);
         text.push_str(&format!(
             " · {}",
             words.counted(phrase, &warnings.to_string())

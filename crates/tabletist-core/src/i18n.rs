@@ -108,6 +108,12 @@ impl Count for u32 {
     }
 }
 
+impl Count for u16 {
+    fn as_u64(self) -> u64 {
+        self.into()
+    }
+}
+
 impl Count for usize {
     fn as_u64(self) -> u64 {
         u64::try_from(self).unwrap_or(u64::MAX)
