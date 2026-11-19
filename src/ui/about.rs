@@ -89,7 +89,9 @@ pub fn show(ctx: &egui::Context, paint: Paint) -> Vec<Action> {
             let version = Text::one(&look, widgets::secondary(&look), &version, palette.dim);
             ui.add(egui::Label::new(version.layout(ui.ctx()).galley).selectable(true));
             ui.add_space(12.0);
-            // Cargo.toml's description, so the two cannot drift.
+            // Cargo.toml's description, so the two cannot drift. It stays
+            // English: the extractor reads no message out of `env!`, so no
+            // catalog has one.
             let about = gettext(locale, env!("CARGO_PKG_DESCRIPTION"));
             centered(
                 ui,

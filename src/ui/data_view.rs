@@ -12,7 +12,7 @@ use tabletist_db::{NewValue, SortDir, Value, ValueKind};
 
 use crate::edit::{EditorPlace, Pending, RowMark, State, Table, Told, Unset};
 use crate::format;
-use crate::i18n::{gettext, ngettext};
+use crate::i18n::{Msgid, gettext, msgid, ngettext};
 use crate::keymap::Keymap;
 use crate::model::{
     Action, CellPos, ConnTabId, EditStart, ObjectTab, ObjectView, TabId, Workspace,
@@ -719,13 +719,13 @@ fn sort_chip(
 
 /// The applied filters as the toolbar's chips write them, the raw WHERE
 /// last.
-fn filter_texts(object: &ObjectTab) -> Vec<String> {
+fn filter_texts(object: &ObjectTab, locale: crate::i18n::Locale) -> Vec<String> {
     object
         .query
         .filters
         .iter()
         .map(|filter| {
-            let op = crate::ui::filter_bar::op_label(filter.op);
+            let op = crate::ui::filter_bar::op_label(filter.op).say(locale);
             if matches!(
                 filter.op,
                 tabletist_db::FilterOp::IsNull | tabletist_db::FilterOp::IsNotNull
@@ -759,7 +759,7 @@ pub fn toolbar(
     let Some(object) = workspace.object_tab(object_tab) else {
         return Vec::new();
     };
-    let filters = filter_texts(object);
+    let filters = filter_texts(object, locale);
     let sort = object
         .query
         .sort
@@ -1141,22 +1141,28 @@ pub fn columns_note(
 ) -> Option<String> {
     let id = grid_id(tab, object.id, fit);
     let shown = grid::columns_shown(ctx, id).filter(grid::ColumnsShown::partial)?;
-    let say = |text: &'static str| look.label(&gettext(locale, text));
-    let noun = if look.terminal { "cols" } else { "Columns" };
-    let mut note = format!(
-        "{} {}–{} {} {}",
-        say(noun),
-        shown.first + 1,
-        shown.last + 1,
-        say("of"),
-        shown.total
+    let say = |text: Msgid| look.label(&text.say(locale));
+    let words = if look.terminal {
+        msgid("cols {first}–{last} of {total}")
+    } else {
+        msgid("Columns {first}–{last} of {total}")
+    };
+    let mut note = crate::i18n::fill(
+        &say(words),
+        &[
+            ("{first}", &(shown.first + 1).to_string()),
+            ("{last}", &(shown.last + 1).to_string()),
+            ("{total}", &shown.total.to_string()),
+        ],
     );
     let first = object.page().and_then(|page| page.columns.first());
     if let (true, Some(column)) = (shown.pinned, first) {
         note.push_str(&format!(
-            " · {} {}",
-            format::display_safe(&column.name),
-            say("pinned")
+            " · {}",
+            crate::i18n::fill(
+                &say(msgid("{column} pinned")),
+                &[("{column}", &format::display_safe(&column.name))],
+            )
         ));
     }
     Some(note)
@@ -1263,19 +1269,18 @@ pub fn footer(
                         (
                             can_prev,
                             Icon::ChevronLeft,
-                            "Previous page",
+                            msgid("Previous page"),
                             Action::PrevPage { tab, object_tab },
                         ),
                         (
                             can_next,
                             Icon::ChevronRight,
-                            "Next page",
+                            msgid("Next page"),
                             Action::NextPage { tab, object_tab },
                         ),
                     ] {
                         ui.add_enabled_ui(enabled, |ui| {
-                            if pager(ui, icon, &gettext(locale, label), enabled, &palette).clicked()
-                            {
+                            if pager(ui, icon, &label.say(locale), enabled, &palette).clicked() {
                                 actions.push(action);
                             }
                         });
@@ -2592,7 +2597,7 @@ impl Changes<'_> {
         look: &Look,
         locale: crate::i18n::Locale,
     ) -> Cell<'c> {
-        let say = |text: &'static str| gettext(locale, text).into_owned();
+        let say = |text: Msgid| text.say(locale).into_owned();
         let mut cell = match self.cells.get(&at) {
             Some(pending) => {
                 let mut cell = pending_cell(&pending.new, &value);
@@ -2602,7 +2607,7 @@ impl Changes<'_> {
             }
             None => match self.unset.get(at.1) {
                 Some(Unset::Assigned) if self.marker == Some(at.1) => {
-                    let new = say("new");
+                    let new = say(msgid("new"));
                     Cell {
                         text: if look.terminal {
                             new
@@ -2616,7 +2621,7 @@ impl Changes<'_> {
                 }
                 Some(Unset::Assigned) | None => Cell {
                     mark: Mark::Unset,
-                    hint: Some(say("Assigned by the database on save")),
+                    hint: Some(say(msgid("Assigned by the database on save"))),
                     ..Cell::default()
                 },
                 Some(Unset::Default(text)) => {
@@ -2634,7 +2639,7 @@ impl Changes<'_> {
                     };
                     Cell {
                         mark: Mark::Unset,
-                        hint: Some(say("from DEFAULT")),
+                        hint: Some(say(msgid("from DEFAULT"))),
                         ..cell
                     }
                 }
@@ -2644,7 +2649,7 @@ impl Changes<'_> {
                         .into(),
                     mark: Mark::Unset,
                     slanted: true,
-                    hint: Some(say("from DEFAULT")),
+                    hint: Some(say(msgid("from DEFAULT"))),
                     ..Cell::default()
                 },
                 Some(Unset::Null) => Cell {
@@ -2656,7 +2661,7 @@ impl Changes<'_> {
                 Some(Unset::Required) => Cell {
                     text: format::required_word(self.unique.contains(&at), locale).into(),
                     mark: Mark::Trouble,
-                    hint: Some(say("A save needs a value here")),
+                    hint: Some(say(msgid("A save needs a value here"))),
                     ..Cell::default()
                 },
             },
@@ -2711,35 +2716,33 @@ fn empty_rows(
     (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
     actions: &mut Vec<Action>,
 ) {
-    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let say = |text: Msgid| look.label(&text.say(locale));
     let name = format::display_safe(&object.object.name);
     let object_tab = object.id;
-    let filters = filter_texts(object);
+    let filters = filter_texts(object, locale);
     // Past the first page there are rows, whatever the filters: they end
     // before this page, and the way out is the page before.
     let past = object.query.offset > 0;
     if past || filters.is_empty() {
-        let title = format!(
-            "{} {name}",
-            say(if past {
-                "No more rows in"
-            } else {
-                "No rows in"
-            })
-        );
-        let text = if past {
-            say("This page is past the last row.")
-        } else if object.kind == tabletist_db::ObjectKind::Table {
-            say("The table exists and is empty.")
+        let words = if past {
+            msgid("No more rows in {table}")
         } else {
-            say("It returned no rows.")
+            msgid("No rows in {table}")
+        };
+        let title = crate::i18n::fill(&say(words), &[("{table}", &name)]);
+        let text = if past {
+            say(msgid("This page is past the last row."))
+        } else if object.kind == tabletist_db::ObjectKind::Table {
+            say(msgid("The table exists and is empty."))
+        } else {
+            say(msgid("It returned no rows."))
         };
         let notice = states::Notice {
             icon: Icon::Table,
             title: &title,
             text: &text,
         };
-        let (reload, previous) = (say("Reload"), say("Previous page"));
+        let (reload, previous) = (say(msgid("Reload")), say(msgid("Previous page")));
         let button = if past {
             states::button(&previous, look).label("Previous page")
         } else {
@@ -2762,29 +2765,41 @@ fn empty_rows(
         return;
     }
     let title = if filters.len() == 1 {
-        say("No rows match the filter")
+        say(msgid("No rows match the filter"))
     } else {
-        format!(
-            "{} {} {}",
-            say("No rows match"),
-            filters.len(),
-            say("filters")
+        look.label(
+            &ngettext(
+                locale,
+                "No rows match {n} filter",
+                "No rows match {n} filters",
+                filters.len(),
+            )
+            .replace("{n}", &filters.len().to_string()),
         )
     };
-    let none = format!(
-        "{} {}.",
-        say("None matches"),
-        filters.join(&format!(" {} ", say("and")))
+    // Translators: what joins the filters a page matches none of:
+    // "None matches title = A and price > 2.".
+    let and = crate::i18n::pgettext(locale, "list join", " and ");
+    let none = crate::i18n::fill(
+        &say(msgid("None matches {filters}.")),
+        &[("{filters}", &filters.join(&and))],
     );
     // The catalog's estimate of the whole table, when it has one. None is
     // an estimate of 0: older PostgreSQL says so of a table never analysed.
     let text = match object.estimated_rows.filter(|rows| *rows > 0) {
-        Some(rows) => format!(
-            "{name} {} {} {}. {none}",
-            say("has about"),
-            format::group_digits(rows),
-            say(if rows == 1 { "row" } else { "rows" })
-        ),
+        Some(rows) => {
+            let about = ngettext(
+                locale,
+                "{table} has about {n} row.",
+                "{table} has about {n} rows.",
+                rows,
+            );
+            let about = crate::i18n::fill(
+                &look.label(&about),
+                &[("{table}", &name), ("{n}", &format::group_digits(rows))],
+            );
+            format!("{about} {none}")
+        }
         None => none,
     };
     let notice = states::Notice {
@@ -2792,7 +2807,10 @@ fn empty_rows(
         title: &title,
         text: &text,
     };
-    let (clear, last) = (say("Clear filters"), say("Remove last filter"));
+    let (clear, last) = (
+        say(msgid("Clear filters")),
+        say(msgid("Remove last filter")),
+    );
     let mut buttons = vec![states::button(&clear, look).label("Clear filters")];
     if filters.len() > 1 {
         buttons.push(
@@ -2991,7 +3009,7 @@ pub fn error_box(
     locale: crate::i18n::Locale,
     mut retry: impl FnMut(),
 ) {
-    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let say = |text: Msgid| look.label(&text.say(locale));
     // What the card shows, cut without a copy of all of it first: a
     // database's message can hold megabytes.
     let shown = match error {
@@ -3004,9 +3022,13 @@ pub fn error_box(
         code, detail, hint, ..
     } = error
     {
-        for (label, said) in [("Code", code), ("Detail", detail), ("Hint", hint)] {
+        for (label, said) in [
+            (msgid("Code"), code),
+            (msgid("Detail"), detail),
+            (msgid("Hint"), hint),
+        ] {
             if let Some(said) = said {
-                more.push((gettext(locale, label), said.as_str()));
+                more.push((label.say(locale), said.as_str()));
             }
         }
     }
@@ -3039,7 +3061,7 @@ pub fn error_box(
                 }
             });
         ui.horizontal(|ui| {
-            let (again, copy) = (say("Retry"), say("Copy details"));
+            let (again, copy) = (say(msgid("Retry")), say(msgid("Copy details")));
             let again = states::button(&again, look).label("Retry");
             if again.show(ui, height, look, palette).clicked() {
                 retry();

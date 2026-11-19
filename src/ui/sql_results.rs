@@ -11,7 +11,7 @@ use tabletist_db::{Driver, Error, ScriptEnd, ScriptMode, StatementOutcome, Value
 
 use crate::backend::{CancelReason, RequestId};
 use crate::format;
-use crate::i18n::{Locale, gettext};
+use crate::i18n::{Locale, Msgid, gettext, msgid, ngettext};
 use crate::keymap::Keymap;
 use crate::model::{
     Action, ConnTabId, NoWrites, ResultPane, RunMode, SqlRun, SqlTab, TabId, Workspace,
@@ -56,13 +56,30 @@ struct Words {
 }
 
 impl Words {
-    fn say(self, text: &'static str) -> String {
-        let text = gettext(self.locale, text);
+    fn say(self, text: Msgid) -> String {
+        let text = text.say(self.locale);
         if self.lower {
             text.to_lowercase()
         } else {
             text.into_owned()
         }
+    }
+
+    /// A whole phrase of ours with its placeholders put in, as the look
+    /// writes it: what is put in keeps its case.
+    fn fill(self, text: Msgid, values: &[(&str, &str)]) -> String {
+        crate::i18n::fill(&self.say(text), values)
+    }
+
+    /// A count's phrase from `ngettext` as the look writes it, its `{n}`
+    /// put in.
+    fn counted(self, phrase: std::borrow::Cow<'static, str>, n: &str) -> String {
+        let phrase = if self.lower {
+            phrase.to_lowercase()
+        } else {
+            phrase.into_owned()
+        };
+        crate::i18n::fill(&phrase, &[("{n}", n)])
     }
 
     /// A database's name or a statement's keyword inside a sentence of
@@ -270,7 +287,9 @@ fn draw(ui: &mut Ui, paint: Paint, tab: ConnTabId, from: &Results<'_>, actions: 
     match (state, sql.pane) {
         (State::Idle, _) => {
             let (keys, _) = super::sql_editor::run_keys(ui.ctx(), &look);
-            let hint = env.said(|words| format!("{} {keys}", words.say("Run a statement with")));
+            let hint = env.said(|words| {
+                words.fill(msgid("Run a statement with {keys}"), &[("{keys}", &keys)])
+            });
             note(&body, rest, &hint, palette.secondary, &env);
         }
         (State::Waiting, _) => {
@@ -335,9 +354,11 @@ fn head(sql: &SqlTab, state: &State<'_>, env: &Env<'_>) -> Head {
         info: result.map(|(statement, result)| {
             env.said(|words| {
                 format!(
-                    "{} {} · {}",
-                    words.say("Statement at line"),
-                    statement.first_line,
+                    "{} · {}",
+                    words.fill(
+                        msgid("Statement at line {line}"),
+                        &[("{line}", &statement.first_line.to_string())],
+                    ),
                     format::elapsed(result.elapsed)
                 )
             })
@@ -577,16 +598,16 @@ fn pane_tabs(
     let width = |role: TextRole, text: &str| role.width(ui.ctx(), look.faces, text);
     let space = width(plain, " ");
     let tabs = [
-        (ResultPane::Results, "Results", count, palette.dim),
+        (ResultPane::Results, msgid("Results"), count, palette.dim),
         (
             ResultPane::Messages,
-            "Messages",
+            msgid("Messages"),
             (errors > 0).then_some(errors),
             palette.danger,
         ),
     ]
     .map(|(pane, name, count, count_color)| {
-        let name = gettext(locale, name).into_owned();
+        let name = name.say(locale).into_owned();
         let text = look.label(&name);
         let count = count.map(|count| format::group_digits(count as u64));
         let counted = count
@@ -701,8 +722,13 @@ fn run_state(ui: &mut Ui, spot: &Spot, running: Duration, env: &Env<'_>) -> bool
         center,
         role,
     } = *spot;
-    let time =
-        env.said(|words| format!("{} · {:.1} s", words.say("Running"), running.as_secs_f64()));
+    let time = env.said(|words| {
+        format!(
+            "{} · {:.1} s",
+            words.say(msgid("Running")),
+            running.as_secs_f64()
+        )
+    });
     let label = gettext(locale, "Cancel query");
     let cancel = look.label(&gettext(locale, "Cancel"));
     let keys = super::data_view::cancel_keys(env.keymap, look);
@@ -923,30 +949,28 @@ fn cancel_text(cancel: Option<CancelReason>, words: Words) -> String {
     match cancel {
         Some(CancelReason::Timeout(after)) => {
             let secs = u32::try_from(after.as_secs()).unwrap_or(u32::MAX);
-            format!(
-                "{} {}",
-                words.say("Cancelled after"),
-                super::sql_editor::time_words(secs, words.lower, words.locale)
+            words.fill(
+                msgid("Cancelled after {time}"),
+                &[(
+                    "{time}",
+                    &super::sql_editor::time_words(secs, words.lower, words.locale),
+                )],
             )
         }
-        Some(CancelReason::User) | None => words.say("Cancelled"),
+        Some(CancelReason::User) | None => words.say(msgid("Cancelled")),
     }
 }
 
 /// "5 rows", "1 row".
 fn rows_text(count: u64, words: Words) -> String {
-    let noun = if count == 1 { "row" } else { "rows" };
-    format!("{} {}", format::group_digits(count), words.say(noun))
+    let phrase = ngettext(words.locale, "{n} row", "{n} rows", count);
+    words.counted(phrase, &format::group_digits(count))
 }
 
 /// "12 rows affected", "1 row affected".
 fn affected_text(count: u64, words: Words) -> String {
-    let noun = if count == 1 {
-        "row affected"
-    } else {
-        "rows affected"
-    };
-    format!("{} {}", format::group_digits(count), words.say(noun))
+    let phrase = ngettext(words.locale, "{n} row affected", "{n} rows affected", count);
+    words.counted(phrase, &format::group_digits(count))
 }
 
 /// The statement that reads as cancelled though it has no result: the
@@ -1053,15 +1077,19 @@ fn after(run: &SqlRun, index: usize, driver: Driver, words: Words) -> String {
         run.outcome.results.get(index).map(|result| &result.outcome)
         && *warnings > 0
     {
-        let noun = if *warnings == 1 {
-            "warning"
-        } else {
-            "warnings"
-        };
-        text.push_str(&format!(" · {warnings} {}", words.say(noun)));
+        let phrase = ngettext(
+            words.locale,
+            "{n} warning",
+            "{n} warnings",
+            u32::from(*warnings),
+        );
+        text.push_str(&format!(
+            " · {}",
+            words.counted(phrase, &warnings.to_string())
+        ));
     }
     if undone(run, index, driver) {
-        text.push_str(&format!(" · {}", words.say("rolled back")));
+        text.push_str(&format!(" · {}", words.say(msgid("rolled back"))));
     }
     text
 }
@@ -1072,12 +1100,15 @@ fn statement_message(run: &SqlRun, index: usize, driver: Driver, words: Words) -
     let Some(statement) = run.statements.get(index) else {
         return Message::new(String::new(), String::new(), Tone::Plain);
     };
-    let at = format!("{} {}:", words.say("Line"), statement.first_line);
+    let at = words.fill(
+        msgid("Line {line}:"),
+        &[("{line}", &statement.first_line.to_string())],
+    );
     let Some(result) = run.outcome.results.get(index) else {
         return if stopped_at(run) == Some(index) {
             Message::new(at, cancel_text(run.cancel, words), Tone::Cancelled)
         } else {
-            Message::new(at, words.say("Not run"), Tone::Muted)
+            Message::new(at, words.say(msgid("Not run")), Tone::Muted)
         };
     };
     let time = format::elapsed(result.elapsed);
@@ -1087,7 +1118,7 @@ fn statement_message(run: &SqlRun, index: usize, driver: Driver, words: Words) -
             rows, truncated, ..
         } => {
             let cut = if *truncated {
-                format!(" ({})", words.say("limit reached"))
+                format!(" ({})", words.say(msgid("limit reached")))
             } else {
                 String::new()
             };
@@ -1102,15 +1133,20 @@ fn statement_message(run: &SqlRun, index: usize, driver: Driver, words: Words) -
             Message::new(at, text, Tone::Plain)
         }
         StatementOutcome::Done { affected: None, .. } => {
-            let text = format!("{} · {time}{after}", words.say("Statement ran"));
+            let text = format!("{} · {time}{after}", words.say(msgid("Statement ran")));
             Message::new(at, text, Tone::Plain)
         }
         StatementOutcome::Error { error, position } => {
             let at = match position {
                 Some(position) => {
                     let (line, column) = statement.line_col(*position);
-                    let (line_word, col) = (words.say("Line"), words.say("col"));
-                    format!("{line_word} {line}, {col} {column}:")
+                    words.fill(
+                        msgid("Line {line}, col {column}:"),
+                        &[
+                            ("{line}", &line.to_string()),
+                            ("{column}", &column.to_string()),
+                        ],
+                    )
                 }
                 None => at,
             };
@@ -1128,7 +1164,7 @@ enum Line<'a> {
     /// What the statement at this index of the run did.
     Statement(usize),
     /// More of the error above it: its code, detail or hint.
-    More(&'static str, &'a str),
+    More(Msgid, &'a str),
     /// An error that is no statement's, in its own words: a run that
     /// failed as a whole, or a commit that failed.
     Whole(&'a Error),
@@ -1140,7 +1176,7 @@ enum Line<'a> {
     /// What the database said it could not roll back.
     Kept(&'a str),
     /// A sentence of ours about the run as a whole.
-    Ours(&'static str, Tone),
+    Ours(Msgid, Tone),
 }
 
 impl Line<'_> {
@@ -1163,8 +1199,12 @@ fn more(error: &Error) -> impl Iterator<Item = Line<'_>> {
     let parts = match error {
         Error::Query {
             code, detail, hint, ..
-        } => [("Code", code), ("Detail", detail), ("Hint", hint)]
-            .map(|(label, text)| text.as_deref().map(|text| Line::More(label, text))),
+        } => [
+            (msgid("Code"), code),
+            (msgid("Detail"), detail),
+            (msgid("Hint"), hint),
+        ]
+        .map(|(label, text)| text.as_deref().map(|text| Line::More(label, text))),
         _ => [None, None, None],
     };
     parts.into_iter().flatten()
@@ -1188,7 +1228,7 @@ fn lines(run: &SqlRun) -> Vec<Line<'_>> {
 
 /// What the Messages say once a session was closed because a run sent to
 /// write could not put it back.
-const CLOSED: &str = "The session could not be put back and was closed.";
+const CLOSED: Msgid = msgid("The session could not be put back and was closed.");
 
 /// The lines after the statements' in a run sent to write: how its
 /// transaction ended, what the database said of that, and that its session
@@ -1231,22 +1271,27 @@ fn written(run: &SqlRun, committed: usize, driver: Driver, words: Words) -> Stri
         .and_then(|last| run.statements.get(last))
         .map_or(first, |last| last.first_line);
     let lines = if first == last {
-        format!("{} {first} {}", words.say("Line"), words.say("is written:"))
+        words.fill(
+            msgid("Line {line} is written:"),
+            &[("{line}", &first.to_string())],
+        )
     } else {
-        format!(
-            "{} {first} {} {last} {}",
-            words.say("Lines"),
-            words.say("to"),
-            words.say("are written:")
+        words.fill(
+            msgid("Lines {first} to {last} are written:"),
+            &[
+                ("{first}", &first.to_string()),
+                ("{last}", &last.to_string()),
+            ],
         )
     };
-    format!(
-        "{lines} {} {} {} {}",
-        words.own(driver.label()),
-        words.say("commits"),
-        words.own("CREATE, ALTER, DROP"),
-        words.say("and similar statements as they run.")
-    )
+    let commits = words.fill(
+        msgid("{database} commits {statements} and similar statements as they run."),
+        &[
+            ("{database}", &words.own(driver.label())),
+            ("{statements}", &words.own("CREATE, ALTER, DROP")),
+        ],
+    );
+    format!("{lines} {commits}")
 }
 
 /// How the transaction of `run`, a run sent to write, ended. Where the
@@ -1256,32 +1301,29 @@ fn end_message(run: &SqlRun, driver: Driver, words: Words) -> Message {
     let outcome = &run.outcome;
     let kept = outcome.rollback_warning.is_some();
     let not_undone = || {
-        format!(
-            "{} {}",
-            words.own(driver.label()),
-            words.say("could not roll back every change.")
+        words.fill(
+            msgid("{database} could not roll back every change."),
+            &[("{database}", &words.own(driver.label()))],
         )
     };
     let rest = || {
         if kept {
             not_undone()
         } else {
-            words.say("The rest was rolled back.")
+            words.say(msgid("The rest was rolled back."))
         }
     };
     let (text, tone) = match &outcome.end {
         ScriptEnd::Committed => {
             let count = outcome.results.len();
-            let noun = if count == 1 {
-                "statement"
-            } else {
-                "statements"
-            };
+            let statements = words.counted(
+                ngettext(words.locale, "{n} statement", "{n} statements", count),
+                &count.to_string(),
+            );
             let time: Duration = outcome.results.iter().map(|result| result.elapsed).sum();
             let text = format!(
-                "{} · {count} {} · {}",
-                words.say("Committed"),
-                words.say(noun),
+                "{} · {statements} · {}",
+                words.say(msgid("Committed")),
                 format::elapsed(time)
             );
             (text, Tone::Plain)
@@ -1291,25 +1333,30 @@ fn end_message(run: &SqlRun, driver: Driver, words: Words) -> Message {
         ScriptEnd::RolledBack | ScriptEnd::Partly { committed: 0 } if kept => {
             (not_undone(), Tone::Warned)
         }
-        ScriptEnd::RolledBack | ScriptEnd::Partly { committed: 0 } => {
-            (words.say("Rolled back. Nothing was written."), Tone::Plain)
-        }
+        ScriptEnd::RolledBack | ScriptEnd::Partly { committed: 0 } => (
+            words.say(msgid("Rolled back. Nothing was written.")),
+            Tone::Plain,
+        ),
         ScriptEnd::Partly { committed } => {
             let written = written(run, *committed, driver, words);
             (format!("{written} {}", rest()), Tone::Warned)
         }
         // The rollback after the commit could not undo everything either.
         ScriptEnd::CommitFailed { committed: 0, .. } if kept => (
-            format!("{} {}", words.say("The commit failed."), not_undone()),
+            format!(
+                "{} {}",
+                words.say(msgid("The commit failed.")),
+                not_undone()
+            ),
             Tone::Failed,
         ),
         ScriptEnd::CommitFailed { committed: 0, .. } => (
-            words.say("The commit failed. Nothing was written."),
+            words.say(msgid("The commit failed. Nothing was written.")),
             Tone::Failed,
         ),
         ScriptEnd::CommitFailed { committed, .. } => {
             let written = written(run, *committed, driver, words);
-            let failed = words.say("The commit failed.");
+            let failed = words.say(msgid("The commit failed."));
             (format!("{failed} {written} {}", rest()), Tone::Failed)
         }
     };
@@ -1318,17 +1365,17 @@ fn end_message(run: &SqlRun, driver: Driver, words: Words) -> Message {
 
 /// What is said under a run's error when the run was sent to write and
 /// lost its session before its end was known.
-fn may_be_written(sql: &SqlTab, error: &Error) -> Option<&'static str> {
+fn may_be_written(sql: &SqlTab, error: &Error) -> Option<Msgid> {
     if !sql.lost_writing() {
         return None;
     }
     Some(match error {
-        Error::ConnectionLost(_) => {
-            "The connection was lost during a read-write run. Some or all of it may be written."
-        }
+        Error::ConnectionLost(_) => msgid(
+            "The connection was lost during a read-write run. Some or all of it may be written.",
+        ),
         // The session was closed for what the script did: the error says
         // so itself.
-        _ => "Some or all of the run may be written.",
+        _ => msgid("Some or all of the run may be written."),
     })
 }
 
@@ -1523,13 +1570,16 @@ enum Offer {
 impl Offer {
     /// The button's name, and the command whose key presses it in the
     /// look that has one.
-    fn names(self) -> (&'static str, crate::keymap::Command) {
+    fn names(self) -> (Msgid, crate::keymap::Command) {
         use crate::keymap::Command;
         match self {
-            Self::EditConnection => ("Edit connection", Command::EditRefusedConnection),
-            Self::AllowWrites => ("Allow writes in this tab", Command::AllowRefusedWrite),
+            Self::EditConnection => (msgid("Edit connection"), Command::EditRefusedConnection),
+            Self::AllowWrites => (
+                msgid("Allow writes in this tab"),
+                Command::AllowRefusedWrite,
+            ),
             Self::RunAgain => (
-                "Run in a read-write transaction",
+                msgid("Run in a read-write transaction"),
                 Command::AllowRefusedWrite,
             ),
         }
@@ -1634,56 +1684,71 @@ impl Blocked<'_> {
                 words.into_iter().next()
             })
             .map_or_else(
-                || words.say("the statement"),
-                |verb| format!("{} {}", words.say("the"), words.own(&verb)),
+                || words.say(msgid("the statement")),
+                |verb| words.fill(msgid("the {keyword}"), &[("{keyword}", &words.own(&verb))]),
             );
-        let nothing = words.say("Nothing changed.");
-        let refused = words.say("refused");
+        let nothing = words.say(msgid("Nothing changed."));
+        // One sentence of why, its names put in, then that nothing changed.
+        let refused = |text: Msgid, who: &str| {
+            let why = words.fill(
+                text,
+                &[
+                    ("{connection}", who),
+                    ("{database}", &driver),
+                    ("{statement}", &verb),
+                ],
+            );
+            format!("{why} {nothing}")
+        };
         match self.why {
             Why::Connection { unconfirmed } => (
-                words.say("This connection opens read-only"),
-                format!(
-                    "{} {} {driver} {refused} {verb}. {nothing}",
-                    self.who(words),
-                    words.say("blocks writes, so")
+                words.say(msgid("This connection opens read-only")),
+                refused(
+                    msgid("{connection} blocks writes, so {database} refused {statement}."),
+                    &self.who(words),
                 ),
                 // Never a way on that is none: with the box off a tab of
                 // this connection still could not write.
                 Some(words.say(if unconfirmed {
                     super::sql_editor::UNCONFIRMED
                 } else {
-                    "To write, turn off Open read-only in the connection. It applies from the \
-                     next connect."
+                    msgid(
+                        "To write, turn off Open read-only in the connection. It applies from the \
+                         next connect.",
+                    )
                 })),
             ),
             Why::Tab { unconfirmed } => {
-                let mut text = format!(
-                    "{} {driver} {refused} {verb}. {nothing}",
-                    words.say("Every run here is a read-only transaction, so")
+                let mut text = refused(
+                    msgid(
+                        "Every run here is a read-only transaction, so {database} refused {statement}.",
+                    ),
+                    "",
                 );
                 if unconfirmed {
                     text.push(' ');
                     text.push_str(&words.say(super::sql_editor::UNCONFIRMED));
                 }
-                (words.say("This tab runs read-only"), text, None)
+                (words.say(msgid("This tab runs read-only")), text, None)
             }
             Why::TakenForRead => (
-                words.say("This run was read-only"),
-                format!(
-                    "{} {driver} {refused} {}. {nothing}",
-                    words.say(
+                words.say(msgid("This run was read-only")),
+                refused(
+                    msgid(
                         "Its statements looked like reads, so they ran in a read-only \
-                         transaction and"
+                         transaction and {database} refused this one.",
                     ),
-                    words.say("this one")
+                    "",
                 ),
                 None,
             ),
             Why::SentBefore => (
-                words.say("This run was read-only"),
-                format!(
-                    "{} {driver} {refused} {verb}. {nothing}",
-                    words.say("It was sent before this tab could write, so")
+                words.say(msgid("This run was read-only")),
+                refused(
+                    msgid(
+                        "It was sent before this tab could write, so {database} refused {statement}.",
+                    ),
+                    "",
                 ),
                 None,
             ),
@@ -1740,11 +1805,11 @@ enum Link {
 impl Link {
     /// The link's name, and the command whose letter takes it in the
     /// terminal look.
-    fn names(self) -> (&'static str, crate::keymap::Command) {
+    fn names(self) -> (Msgid, crate::keymap::Command) {
         use crate::keymap::Command;
         match self {
-            Self::ShowAll => ("Show all", Command::ShowAllRows),
-            Self::WithoutTimeout => ("Run without timeout", Command::RunWithoutTimeout),
+            Self::ShowAll => (msgid("Show all"), Command::ShowAllRows),
+            Self::WithoutTimeout => (msgid("Run without timeout"), Command::RunWithoutTimeout),
         }
     }
 
@@ -1807,7 +1872,7 @@ struct LinkLaid {
 impl LinkLaid {
     fn new(ctx: &egui::Context, link: Link, env: &Env<'_>) -> Self {
         let (name, command) = link.names();
-        let name = gettext(env.locale, name).into_owned();
+        let name = name.say(env.locale).into_owned();
         Self {
             link,
             painted: env.look.label(&name),
@@ -1951,7 +2016,7 @@ fn blocked_card(
                 return;
             };
             let (name, command) = offer.names();
-            let painted = look.label(&gettext(locale, name));
+            let painted = look.label(&name.say(locale));
             let key = crate::ui::keys::written(column.ctx(), look, command);
             let button = if look.terminal {
                 states::key_button(&painted, &key, look)
@@ -1959,7 +2024,9 @@ fn blocked_card(
                 states::button(&painted, look)
             };
             let height = states::button_height(look);
-            let pressed = button.label(name).show(column, height, look, palette);
+            let pressed = button
+                .label(&name.say(locale))
+                .show(column, height, look, palette);
             // A click of its own. "Allow writes in this tab" gives way to
             // "Run in a read-write transaction" in the same place, and the
             // second click of a double-click must not answer an offer
@@ -1984,11 +2051,11 @@ fn ran_text(run: &SqlRun, words: Words) -> String {
         }) if run.mode == ScriptMode::Write => {
             format!(
                 "{} · {}",
-                words.say("Statement ran"),
+                words.say(msgid("Statement ran")),
                 affected_text(*count, words)
             )
         }
-        _ => words.say("Statement ran · no rows returned"),
+        _ => words.say(msgid("Statement ran · no rows returned")),
     }
 }
 
@@ -2209,10 +2276,9 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
     if let Some(strip) = strip {
         // The rows there are, not the limit the editor has by now.
         let said = env.said(|words| {
-            format!(
-                "{} {}",
-                words.say("Limited to"),
-                rows_text(rows.len() as u64, words)
+            words.fill(
+                msgid("Limited to {rows}"),
+                &[("{rows}", &rows_text(rows.len() as u64, words))],
             )
         });
         let role = widgets::secondary(look);

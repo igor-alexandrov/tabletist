@@ -1621,48 +1621,64 @@ fn log_pane(
 /// tables asked for, what it returned, the columns masked, how it ran and
 /// for how long; or why it ended as it did; and the agent's project.
 fn log_facts(entry: &tabletist_mcp::Entry, locale: crate::i18n::Locale) -> Vec<(String, String)> {
-    let count = |one: &'static str, many: &'static str, n: i64| {
-        ngettext(locale, one, many, n).replace("{n}", &n.to_string())
-    };
-    let say = |text: &'static str| gettext(locale, text).into_owned();
+    // A phrase from `ngettext` with its count put in.
+    let count =
+        |phrase: std::borrow::Cow<'static, str>, n: i64| phrase.replace("{n}", &n.to_string());
+    let say = |text: Msgid| text.say(locale).into_owned();
     let mut facts = Vec::new();
     if let Some(params) = &entry.params {
         use crate::model::LoggedValues;
         let value = match LoggedValues::of(params) {
             LoggedValues::Each(values) => values.join(", "),
-            LoggedValues::Cut(Some(bytes)) => count(
-                "cut in the log, of {n} byte",
-                "cut in the log, of {n} bytes",
-                i64::try_from(bytes).unwrap_or(i64::MAX),
-            ),
-            LoggedValues::Cut(None) => say("cut in the log"),
-            LoggedValues::Unread => say("not readable in the log"),
+            LoggedValues::Cut(Some(bytes)) => {
+                let n = i64::try_from(bytes).unwrap_or(i64::MAX);
+                count(
+                    ngettext(
+                        locale,
+                        "cut in the log, of {n} byte",
+                        "cut in the log, of {n} bytes",
+                        n,
+                    ),
+                    n,
+                )
+            }
+            LoggedValues::Cut(None) => say(msgid("cut in the log")),
+            LoggedValues::Unread => say(msgid("not readable in the log")),
         };
-        facts.push((say("Params"), value));
+        facts.push((say(msgid("Params")), value));
     }
     if let Some(tables) = &entry.request {
-        facts.push((say("Tables"), tables.clone()));
+        facts.push((say(msgid("Tables")), tables.clone()));
     }
     if entry.result == "ok" {
         match (entry.tool.as_str(), entry.rows) {
             ("describe_schema", Some(tables)) => {
-                facts.push((say("Described"), count("{n} table", "{n} tables", tables)));
+                facts.push((
+                    say(msgid("Described")),
+                    count(ngettext(locale, "{n} table", "{n} tables", tables), tables),
+                ));
             }
             ("list_connections", Some(listed)) => {
                 facts.push((
-                    say("Listed"),
-                    count("{n} connection", "{n} connections", listed),
+                    say(msgid("Listed")),
+                    count(
+                        ngettext(locale, "{n} connection", "{n} connections", listed),
+                        listed,
+                    ),
                 ));
             }
             (_, Some(rows)) => {
-                let mut returned = count("{n} row", "{n} rows", rows);
+                let mut returned = count(ngettext(locale, "{n} row", "{n} rows", rows), rows);
                 if let Some(columns) = entry.columns {
                     returned = format!(
                         "{returned}, {}",
-                        count("{n} column", "{n} columns", columns)
+                        count(
+                            ngettext(locale, "{n} column", "{n} columns", columns),
+                            columns
+                        )
                     );
                 }
-                facts.push((say("Returned"), returned));
+                facts.push((say(msgid("Returned")), returned));
             }
             (_, None) => {}
         }
@@ -1672,25 +1688,25 @@ fn log_facts(entry: &tabletist_mcp::Entry, locale: crate::i18n::Locale) -> Vec<(
             .and_then(|masked| serde_json::from_str::<Vec<String>>(masked).ok())
             .filter(|masked| !masked.is_empty());
         if let Some(masked) = masked {
-            facts.push((say("Masked"), masked.join(", ")));
+            facts.push((say(msgid("Masked")), masked.join(", ")));
         }
     } else {
         if let Some(message) = &entry.message {
             let message = message.split_whitespace().collect::<Vec<_>>().join(" ");
-            facts.push((say("Why"), message));
+            facts.push((say(msgid("Why")), message));
         }
         if let Some(code) = &entry.code {
-            facts.push((say("Code"), code.clone()));
+            facts.push((say(msgid("Code")), code.clone()));
         }
     }
     if let Some(ran) = &entry.ran_as {
-        facts.push((say("Ran as"), ran.clone()));
+        facts.push((say(msgid("Ran as")), ran.clone()));
     }
     if let Some(took) = entry.took_ms {
-        facts.push((say("Took"), format!("{took} ms")));
+        facts.push((say(msgid("Took")), format!("{took} ms")));
     }
     if let Some(project) = &entry.project {
-        facts.push((say("Project"), project.clone()));
+        facts.push((say(msgid("Project")), project.clone()));
     }
     facts
 }
@@ -1903,7 +1919,8 @@ fn terminal_filters(
             vec2(panel.width() - 28.0, FILTER_ROW),
         )
     };
-    let labels = ["search", "agent", "result"].map(|word| look.label(&gettext(locale, word)));
+    let labels = [msgid("search"), msgid("agent"), msgid("result")]
+        .map(|word| look.label(&word.say(locale)));
     for (index, label) in labels.iter().enumerate() {
         let at = label_at(index);
         widgets::paint_text(
@@ -2095,21 +2112,32 @@ fn result_word(result: &str, locale: crate::i18n::Locale) -> String {
 /// to. A read says its rows are not logged.
 fn log_detail(entry: &tabletist_mcp::Entry, locale: crate::i18n::Locale) -> String {
     let at = crate::clock::of_millis(entry.at_ms);
-    let count = |one: &'static str, many: &'static str, n: i64| {
-        ngettext(locale, one, many, n).replace("{n}", &n.to_string())
-    };
+    // A phrase from `ngettext` with its count put in.
+    let count =
+        |phrase: std::borrow::Cow<'static, str>, n: i64| phrase.replace("{n}", &n.to_string());
     let mut said = vec![entry.agent.clone(), crate::clock::moment(at)];
     if entry.result == "ok" {
         match (entry.tool.as_str(), entry.rows) {
             ("describe_schema", Some(tables)) => {
-                said.push(count("{n} table described", "{n} tables described", tables));
+                said.push(count(
+                    ngettext(
+                        locale,
+                        "{n} table described",
+                        "{n} tables described",
+                        tables,
+                    ),
+                    tables,
+                ));
             }
             (_, Some(rows)) => {
-                let mut returned = count("{n} row", "{n} rows", rows);
+                let mut returned = count(ngettext(locale, "{n} row", "{n} rows", rows), rows);
                 if let Some(columns) = entry.columns {
                     returned = format!(
                         "{returned}, {}",
-                        count("{n} column", "{n} columns", columns)
+                        count(
+                            ngettext(locale, "{n} column", "{n} columns", columns),
+                            columns
+                        )
                     );
                 }
                 said.push(gettext(locale, "{what} returned").replace("{what}", &returned));
@@ -2183,8 +2211,13 @@ fn feed(
     let head = Rect::from_min_size(rect.min, vec2(rect.width(), row));
     ui.painter().rect_filled(head, 0.0, palette.panel);
     widgets::hline(ui, head.x_range(), head.bottom() - 0.5, palette.border);
-    let names =
-        ["Time", "Tool", "Request", "Result"].map(|name| look.label(&gettext(locale, name)));
+    let names = [
+        msgid("Time"),
+        msgid("Tool"),
+        msgid("Request"),
+        msgid("Result"),
+    ]
+    .map(|name| look.label(&name.say(locale)));
     for (column, name) in columns.iter().zip(&names) {
         cell(ui, *column, head.center().y, small, name, palette.secondary);
     }
@@ -2243,21 +2276,27 @@ fn ended(
     palette: &Palette,
     locale: crate::i18n::Locale,
 ) -> (String, egui::Color32) {
-    let count = |one: &'static str, many: &'static str, n: u64| {
-        ngettext(locale, one, many, n).replace("{n}", &n.to_string())
-    };
+    // A phrase from `ngettext` with its count put in.
+    let count =
+        |phrase: std::borrow::Cow<'static, str>, n: u64| phrase.replace("{n}", &n.to_string());
     if call.result == "ok" {
         let said = match (call.tool.as_str(), call.rows) {
             ("describe_schema", Some(tables)) => {
-                let mut said = count("{n} table", "{n} tables", tables);
+                let mut said = count(ngettext(locale, "{n} table", "{n} tables", tables), tables);
                 if let Some(columns) = call.columns {
-                    said = format!("{said} · {}", count("{n} column", "{n} columns", columns));
+                    said = format!(
+                        "{said} · {}",
+                        count(
+                            ngettext(locale, "{n} column", "{n} columns", columns),
+                            columns
+                        )
+                    );
                 }
                 said
             }
             (_, Some(rows)) => format!(
                 "{} · {} ms",
-                count("{n} row", "{n} rows", rows),
+                count(ngettext(locale, "{n} row", "{n} rows", rows), rows),
                 call.took.as_millis()
             ),
             (_, None) => gettext(locale, "ok").into_owned(),

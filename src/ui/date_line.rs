@@ -9,14 +9,14 @@ use egui::{Id, Rect, Sense, Ui, pos2, vec2};
 use jiff::civil::{Date, Time, Weekday};
 
 use crate::dates::{Column, Kind, Moment, Range, Reading, Refusal, Stored};
-use crate::i18n::{Locale, gettext};
+use crate::i18n::{Locale, Msgid, msgid, ngettext};
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::{sql_complete, widgets};
 
 /// `text` in the person's language.
-pub(super) fn tr(locale: Locale, text: &'static str) -> String {
-    gettext(locale, text).into_owned()
+pub(super) fn tr(locale: Locale, text: Msgid) -> String {
+    text.say(locale).into_owned()
 }
 
 /// How the line reads.
@@ -68,7 +68,10 @@ impl Line {
 
 /// "sent as" before `literal`, in the look's case: the literal as it is.
 fn sent_words(literal: &str, look: &Look, locale: Locale) -> String {
-    format!("{} {literal}", look.label(&tr(locale, "sent as")))
+    crate::i18n::fill(
+        &look.label(&tr(locale, msgid("sent as {literal}"))),
+        &[("{literal}", literal)],
+    )
 }
 
 const WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -92,24 +95,27 @@ const FULL_MONTHS: [&str; 12] = [
 
 fn weekday_name(day: Weekday, locale: Locale) -> String {
     let at = usize::try_from(day.to_monday_zero_offset()).unwrap_or_default();
-    tr(locale, WEEKDAYS[at % 7])
+    // English until the dates follow the language (run 2c of #344).
+    tr(locale, Msgid::as_is(WEEKDAYS[at % 7]))
 }
 
 fn month_name(month: i8, locale: Locale) -> String {
     let at = usize::try_from(month - 1).unwrap_or_default();
-    tr(locale, MONTHS[at % 12])
+    // English until the dates follow the language (run 2c of #344).
+    tr(locale, Msgid::as_is(MONTHS[at % 12]))
 }
 
 /// "January".
 pub(super) fn full_month_name(month: i8, locale: Locale) -> String {
     let at = usize::try_from(month - 1).unwrap_or_default();
-    tr(locale, FULL_MONTHS[at % 12])
+    // English until the dates follow the language (run 2c of #344).
+    tr(locale, Msgid::as_is(FULL_MONTHS[at % 12]))
 }
 
 /// The year as a person reads it: `2026`, and `44 BC` before 1 AD.
 pub(super) fn year_words(year: i16, locale: Locale) -> String {
     if year < 1 {
-        format!("{} {}", 1 - i32::from(year), tr(locale, "BC"))
+        tr(locale, msgid("{year} BC")).replace("{year}", &(1 - i32::from(year)).to_string())
     } else {
         year.to_string()
     }
@@ -150,11 +156,13 @@ fn time_words(time: Time, digits: u8, seconds: bool) -> String {
 /// "today", "tomorrow", "in 6 days", "3 days ago".
 fn days_words(days: i64, locale: Locale) -> String {
     match days {
-        0 => tr(locale, "today"),
-        1 => tr(locale, "tomorrow"),
-        -1 => tr(locale, "yesterday"),
-        days if days > 0 => tr(locale, "in {count} days").replace("{count}", &days.to_string()),
-        days => tr(locale, "{count} days ago").replace("{count}", &days.abs().to_string()),
+        0 => tr(locale, msgid("today")),
+        1 => tr(locale, msgid("tomorrow")),
+        -1 => tr(locale, msgid("yesterday")),
+        days if days > 0 => ngettext(locale, "in {count} day", "in {count} days", days)
+            .replace("{count}", &days.to_string()),
+        days => ngettext(locale, "{count} day ago", "{count} days ago", days.abs())
+            .replace("{count}", &days.abs().to_string()),
     }
 }
 
@@ -162,79 +170,96 @@ fn days_words(days: i64, locale: Locale) -> String {
 /// "date", "time", "date and time".
 pub fn kind_words(kind: Kind, locale: Locale) -> String {
     match kind {
-        Kind::Date => tr(locale, "date"),
-        Kind::Time { .. } => tr(locale, "time"),
-        Kind::Timestamp | Kind::Zoned => tr(locale, "date and time"),
+        Kind::Date => tr(locale, msgid("date")),
+        Kind::Time { .. } => tr(locale, msgid("time")),
+        Kind::Timestamp | Kind::Zoned => tr(locale, msgid("date and time")),
     }
 }
 
 /// Why `refusal` keeps a text from its column, of the type `type_name`
 /// (as the grid's header names it).
 pub fn refusal_text(refusal: &Refusal, type_name: &str, locale: Locale) -> String {
-    let say = |text: &'static str| tr(locale, text);
+    let say = |text: Msgid| tr(locale, text);
     match refusal {
-        Refusal::NotRead(Kind::Date) => say("Not a date. Try 2026-01-15, 15 Jan 2026 or tomorrow."),
-        Refusal::NotRead(Kind::Time { .. }) => say("Not a time. Try 9:30, 9am or 21:30."),
-        Refusal::NotRead(Kind::Timestamp | Kind::Zoned) => {
-            say("Not a date and time. Try 2026-01-15 9:30 or tomorrow 9am.")
-        }
+        Refusal::NotRead(Kind::Date) => say(msgid(
+            "Not a date. Try 2026-01-15, 15 Jan 2026 or tomorrow.",
+        )),
+        Refusal::NotRead(Kind::Time { .. }) => say(msgid("Not a time. Try 9:30, 9am or 21:30.")),
+        Refusal::NotRead(Kind::Timestamp | Kind::Zoned) => say(msgid(
+            "Not a date and time. Try 2026-01-15 9:30 or tomorrow 9am.",
+        )),
         Refusal::NoMonth(month) => {
-            say("There is no month {month}.").replace("{month}", &month.to_string())
+            say(msgid("There is no month {month}.")).replace("{month}", &month.to_string())
         }
-        Refusal::NoDay { day, month } => say("There is no {day} {month}.")
+        Refusal::NoDay { day, month } => say(msgid("There is no {day} {month}."))
             .replace("{day}", &day.to_string())
             .replace("{month}", &full_month_name(*month, locale)),
-        Refusal::NoTime(typed) => say("{time} is not a time of day.").replace("{time}", typed),
+        Refusal::NoTime(typed) => {
+            say(msgid("{time} is not a time of day.")).replace("{time}", typed)
+        }
         Refusal::Range(range) => match range {
-            Range::PgDate => say("PostgreSQL date holds 4714-11-24 BC to 5874897 AD."),
-            Range::PgTimestamp => say("PostgreSQL timestamp holds 4714-11-24 BC to 294276 AD."),
-            Range::MySqlDate => say("MySQL DATE holds 1000-01-01 to 9999-12-31."),
-            Range::MySqlDatetime => say("MySQL DATETIME holds 1000-01-01 to 9999-12-31."),
-            Range::MySqlTimestamp => say("MySQL TIMESTAMP holds 1970-01-01 to 2038-01-19 UTC."),
-            Range::MySqlTime => say("MySQL TIME holds -838:59:59 to 838:59:59."),
-            Range::PgOffset => say("PostgreSQL keeps offsets from -15:59:59 to +15:59:59."),
-            Range::BigQueryDate => say("BigQuery DATE and DATETIME hold 0001-01-01 to 9999-12-31."),
-            Range::BigQueryTimestamp => {
-                say("BigQuery TIMESTAMP holds 0001-01-01 to 9999-12-31 UTC.")
+            Range::PgDate => say(msgid("PostgreSQL date holds 4714-11-24 BC to 5874897 AD.")),
+            Range::PgTimestamp => say(msgid(
+                "PostgreSQL timestamp holds 4714-11-24 BC to 294276 AD.",
+            )),
+            Range::MySqlDate => say(msgid("MySQL DATE holds 1000-01-01 to 9999-12-31.")),
+            Range::MySqlDatetime => say(msgid("MySQL DATETIME holds 1000-01-01 to 9999-12-31.")),
+            Range::MySqlTimestamp => {
+                say(msgid("MySQL TIMESTAMP holds 1970-01-01 to 2038-01-19 UTC."))
             }
-            Range::BigQueryTime => say("BigQuery TIME holds 00:00:00 to 23:59:59."),
+            Range::MySqlTime => say(msgid("MySQL TIME holds -838:59:59 to 838:59:59.")),
+            Range::PgOffset => say(msgid(
+                "PostgreSQL keeps offsets from -15:59:59 to +15:59:59.",
+            )),
+            Range::BigQueryDate => say(msgid(
+                "BigQuery DATE and DATETIME hold 0001-01-01 to 9999-12-31.",
+            )),
+            Range::BigQueryTimestamp => say(msgid(
+                "BigQuery TIMESTAMP holds 0001-01-01 to 9999-12-31 UTC.",
+            )),
+            Range::BigQueryTime => say(msgid("BigQuery TIME holds 00:00:00 to 23:59:59.")),
         },
-        Refusal::Years => say("Tabletist reads years up to 9999."),
-        Refusal::YearZero => say("There is no year 0: 1 BC comes just before 1 AD."),
+        Refusal::Years => say(msgid("Tabletist reads years up to 9999.")),
+        Refusal::YearZero => say(msgid("There is no year 0: 1 BC comes just before 1 AD.")),
         Refusal::Gap { at, place, .. } => {
             let words = match place.is_empty() {
-                true => say("{time} doesn't exist on {day} in this zone; clocks go forward."),
-                false => say("{time} doesn't exist on {day} in {place}; clocks go forward."),
+                true => say(msgid(
+                    "{time} doesn't exist on {day} in this zone; clocks go forward.",
+                )),
+                false => say(msgid(
+                    "{time} doesn't exist on {day} in {place}; clocks go forward.",
+                )),
             };
             words
                 .replace("{time}", &time_words(at.time(), 0, false))
                 .replace("{day}", &short_day(at.date(), locale))
                 .replace("{place}", place)
         }
-        Refusal::Zero => say("MySQL zero date · pick a date or set NULL"),
+        Refusal::Zero => say(msgid("MySQL zero date · pick a date or set NULL")),
         Refusal::NoZone => {
-            say("{type} keeps no zone: leave the offset out.").replace("{type}", type_name)
+            say(msgid("{type} keeps no zone: leave the offset out.")).replace("{type}", type_name)
         }
-        Refusal::DayOnly => say("A date keeps no time of day."),
-        Refusal::TimeOnly => say("A time keeps no day."),
-        Refusal::ZoneUnknown => say(
+        Refusal::DayOnly => say(msgid("A date keeps no time of day.")),
+        Refusal::TimeOnly => say(msgid("A time keeps no day.")),
+        Refusal::ZoneUnknown => say(msgid(
             "The server's zone is not known: type the day and the time as the server keeps them, with no offset.",
-        ),
+        )),
     }
 }
 
 /// What a value read is said as: the day, its time and zone, how far it is
 /// from today, and how it is kept.
 fn reading_words(reading: &Reading, column: &Column, locale: Locale) -> String {
-    let say = |text: &'static str| tr(locale, text);
+    let say = |text: Msgid| tr(locale, text);
     let (date, time, offset) = match &reading.moment {
-        Moment::Infinity => return say("No end date · stored as infinity"),
-        Moment::MinusInfinity => return say("No start date · stored as -infinity"),
+        Moment::Infinity => return say(msgid("No end date · stored as infinity")),
+        Moment::MinusInfinity => return say(msgid("No start date · stored as -infinity")),
         Moment::EndOfDay => {
-            return format!("24:00:00 · {}", say("the end of the day"));
+            return say(msgid("24:00:00 · the end of the day"));
         }
         Moment::Span(written) => {
-            return format!("{written} · {}", say("a span of time, not a time of day"));
+            return say(msgid("{span} · a span of time, not a time of day"))
+                .replace("{span}", written);
         }
         Moment::At { date, time, offset } => (*date, *time, *offset),
     };
@@ -269,7 +294,7 @@ fn reading_words(reading: &Reading, column: &Column, locale: Locale) -> String {
         parts.push(days_words(days, locale));
     }
     if column.kind == Kind::Timestamp && offset.is_none() {
-        parts.push(say("no zone"));
+        parts.push(say(msgid("no zone")));
     }
     let sqlite = match column.dialect {
         tabletist_db::Dialect::Sqlite => column.kind.has_date(),
@@ -280,15 +305,19 @@ fn reading_words(reading: &Reading, column: &Column, locale: Locale) -> String {
     };
     if sqlite {
         parts.push(match column.stored {
-            Stored::Fresh => say("stored as text"),
-            Stored::Text { .. } => say("stored as text, like the other rows"),
-            Stored::Seconds => say("stored as seconds since 1970, like the other rows"),
-            Stored::Millis => say("stored as milliseconds since 1970, like the other rows"),
-            Stored::Days => say("stored as a Julian day, like the other rows"),
-            Stored::Compact => say("stored as a number such as 20260115, like the other rows"),
-            Stored::Unknown => {
-                say("stored as text: the other rows hold numbers of a form not known here")
-            }
+            Stored::Fresh => say(msgid("stored as text")),
+            Stored::Text { .. } => say(msgid("stored as text, like the other rows")),
+            Stored::Seconds => say(msgid("stored as seconds since 1970, like the other rows")),
+            Stored::Millis => say(msgid(
+                "stored as milliseconds since 1970, like the other rows",
+            )),
+            Stored::Days => say(msgid("stored as a Julian day, like the other rows")),
+            Stored::Compact => say(msgid(
+                "stored as a number such as 20260115, like the other rows",
+            )),
+            Stored::Unknown => say(msgid(
+                "stored as text: the other rows hold numbers of a form not known here",
+            )),
         });
     }
     parts.join(" · ")
@@ -313,11 +342,14 @@ pub fn line(
     };
     if typed.trim().is_empty() {
         let hint = match column.kind {
-            Kind::Date => tr(locale, "Type a date: 2026-01-15, 15 Jan 2026 or tomorrow."),
-            Kind::Time { .. } => tr(locale, "Type a time: 9:30, 9am or 21:30."),
+            Kind::Date => tr(
+                locale,
+                msgid("Type a date: 2026-01-15, 15 Jan 2026 or tomorrow."),
+            ),
+            Kind::Time { .. } => tr(locale, msgid("Type a time: 9:30, 9am or 21:30.")),
             Kind::Timestamp | Kind::Zoned => tr(
                 locale,
-                "Type a date and time: 2026-01-15 9:30 or tomorrow 9am.",
+                msgid("Type a date and time: 2026-01-15 9:30 or tomorrow 9am."),
             ),
         };
         return plain(Tone::Plain, hint);
@@ -344,7 +376,7 @@ pub fn line(
                 };
                 words.push_str(&format!(
                     " · {}",
-                    tr(locale, "was {day}").replace("{day}", &said)
+                    tr(locale, msgid("was {day}")).replace("{day}", &said)
                 ));
             }
             let sent = (reading.literal != typed.trim()).then(|| reading.literal.clone());
@@ -359,11 +391,11 @@ pub fn line(
             let words = match fold.place.is_empty() {
                 true => tr(
                     locale,
-                    "{time} happens twice on {day} in this zone; clocks go back.",
+                    msgid("{time} happens twice on {day} in this zone; clocks go back."),
                 ),
                 false => tr(
                     locale,
-                    "{time} happens twice on {day} in {place}; clocks go back.",
+                    msgid("{time} happens twice on {day} in {place}; clocks go back."),
                 ),
             }
             .replace("{time}", &time_words(fold.at.time(), 0, false))
@@ -399,7 +431,7 @@ pub fn line(
                 words: look.label(&words.unwrap_or_default()),
                 sent: None,
                 offers: vec![Offer {
-                    label: look.label(&tr(locale, "Use {time}").replace("{time}", &time)),
+                    label: look.label(&tr(locale, msgid("Use {time}")).replace("{time}", &time)),
                     text: crate::dates::rewritten(*offered, None, column),
                     chosen: false,
                 }],
@@ -489,13 +521,15 @@ pub fn show(
     let mut words = Text::one(look, small, &line.words, color);
     if let Some(sent) = &line.sent {
         let mono = TextRole::pick(look, TextRole::MonoSecondary, TextRole::OSecondary);
+        // The literal in its own face, where the phrase puts it.
+        let phrase = look.label(&tr(locale, msgid("sent as {literal}")));
+        let (before, after) = crate::i18n::around(&phrase, "{literal}");
         words = words
-            .add(
-                small,
-                &format!(" · {} ", look.label(&tr(locale, "sent as"))),
-                color,
-            )
+            .add(small, &format!(" · {before}"), color)
             .add(mono, sent, color);
+        if !after.is_empty() {
+            words = words.add(small, after, color);
+        }
     }
     let laid = words.wrap(inner).layout(ui.ctx());
     let head_laid = look.terminal.then(|| {

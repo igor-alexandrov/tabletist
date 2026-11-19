@@ -11,7 +11,7 @@ use tabletist_db::{Value, ValueKind};
 
 use crate::edit::{Editor, Lock, State, Table, Unset};
 use crate::format;
-use crate::i18n::{gettext, ngettext, pgettext};
+use crate::i18n::{Msgid, gettext, msgid, ngettext, pgettext};
 use crate::keymap::Command;
 use crate::model::{Action, CellPos, ConnTabId, RowFields, Tab, TabId, Workspace};
 use crate::style::Icon;
@@ -170,7 +170,7 @@ fn facts(
     look: &Look,
     locale: crate::i18n::Locale,
 ) -> Vec<String> {
-    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let say = |text: Msgid| look.label(&text.say(locale));
     match value {
         // Sixteen bytes read as a UUID: there is nothing more to say.
         Value::Bytes(bytes) if format::uuid(bytes).is_some() => Vec::new(),
@@ -178,13 +178,16 @@ fn facts(
             .chain(format::sniff(bytes).map(str::to_lowercase))
             .collect(),
         Value::Bytes(bytes) => std::iter::once(format::human_size(bytes.len()))
-            .chain(format::sniff(bytes).map(|kind| format!("{} {kind}", say("looks like"))))
+            .chain(
+                format::sniff(bytes)
+                    .map(|kind| say(msgid("looks like {kind}")).replace("{kind}", kind)),
+            )
             .collect(),
         Value::Text(text) if listed(text, column) => format::array_items(text)
             .map(|array| {
                 let count = array.items.len();
-                let noun = if count == 1 { "element" } else { "elements" };
-                format!("{count} {}", say(noun))
+                let words = ngettext(locale, "{n} element", "{n} elements", count);
+                look.label(&words).replace("{n}", &count.to_string())
             })
             .into_iter()
             .collect(),
@@ -192,8 +195,13 @@ fn facts(
             .and_then(|field| field.characters)
             .filter(|count| *count > COUNTED_CHARS)
             .map(|count| {
-                let noun = if look.terminal { "chars" } else { "characters" };
-                format!("{} {}", format::group_digits(count as u64), say(noun))
+                let words = if look.terminal {
+                    ngettext(locale, "{n} char", "{n} chars", count)
+                } else {
+                    ngettext(locale, "{n} character", "{n} characters", count)
+                };
+                look.label(&words)
+                    .replace("{n}", &format::group_digits(count as u64))
             })
             .into_iter()
             .collect(),
@@ -308,7 +316,7 @@ fn column_facts(
     look: &Look,
     locale: crate::i18n::Locale,
 ) -> Vec<String> {
-    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let say = |text: Msgid| look.label(&text.say(locale));
     let mut facts = Vec::new();
     if let Some(allowed) = &column.allowed_values {
         let listed: Vec<_> = allowed
@@ -318,11 +326,11 @@ fn column_facts(
         facts.push(listed.join(", "));
     }
     if column.identity {
-        facts.push(say("identity"));
+        facts.push(say(msgid("identity")));
     } else if column.generated {
-        facts.push(say("generated"));
+        facts.push(say(msgid("generated")));
     } else if column.nullable {
-        facts.push(say("nullable"));
+        facts.push(say(msgid("nullable")));
     }
     facts
 }
@@ -699,11 +707,14 @@ fn draw(
                 // edited offers, then the words of its own keys, when the
                 // whole name does not fit before them. The name is cut
                 // where the hint begins, 10 before it.
-                let steps: widgets::Hint<'_> = (&rows_key, "prev/next", true);
-                let focus: widgets::Hint<'_> = (&focus_key, "focus", true);
+                let [prev_next, focus_word, edit_field] =
+                    [msgid("prev/next"), msgid("focus"), msgid("edit field")]
+                        .map(|word| word.say(locale));
+                let steps: widgets::Hint<'_> = (&rows_key, &*prev_next, true);
+                let focus: widgets::Hint<'_> = (&focus_key, &*focus_word, true);
                 let editable = source.table && locked.is_none();
                 let hints: [&[widgets::Hint<'_>]; 4] = [
-                    &[steps, focus, (&edit_key, "edit field", true)],
+                    &[steps, focus, (&edit_key, &*edit_field, true)],
                     &[steps, focus],
                     &[steps],
                     &[(&rows_key, "", true)],
@@ -776,7 +787,10 @@ fn draw(
                     &palette,
                 );
                 // The brackets are what the pointer steps the rows by.
-                let steps = [(can_prev, -1, "Previous row"), (can_next, 1, "Next row")];
+                let steps = [
+                    (can_prev, -1, msgid("Previous row")),
+                    (can_next, 1, msgid("Next row")),
+                ];
                 for (enabled, step, label) in steps.into_iter().filter(|_| !hint.is_empty()) {
                     let hit = Rect::from_min_size(
                         pos2(
@@ -787,7 +801,7 @@ fn draw(
                     );
                     let response = ui.interact(hit, ui.id().with(("step", step)), Sense::click());
                     response.widget_info(|| {
-                        WidgetInfo::labeled(WidgetType::Button, enabled, gettext(locale, label))
+                        WidgetInfo::labeled(WidgetType::Button, enabled, label.say(locale))
                     });
                     if response.clicked() && enabled {
                         actions.push(Action::MoveSelection {
@@ -820,12 +834,9 @@ fn draw(
                     _ if fresh.is_some() => (not_saved.clone(), green.marker),
                     0 => (source.name.clone(), palette.dim),
                     _ => {
-                        let what = if changed == 1 {
-                            "unsaved change"
-                        } else {
-                            "unsaved changes"
-                        };
-                        let said = format!("{changed} {}", gettext(locale, what));
+                        let said =
+                            ngettext(locale, "{n} unsaved change", "{n} unsaved changes", changed)
+                                .replace("{n}", &changed.to_string());
                         (said, palette.warning)
                     }
                 };
@@ -879,13 +890,13 @@ fn draw(
                 for (icon, label, enabled, action) in [
                     (
                         Icon::X,
-                        "Close the row panel",
+                        msgid("Close the row panel"),
                         true,
                         Action::ToggleRowPanel(tab),
                     ),
                     (
                         Icon::ChevronDown,
-                        "Next row",
+                        msgid("Next row"),
                         can_next,
                         Action::MoveSelection {
                             tab,
@@ -896,7 +907,7 @@ fn draw(
                     ),
                     (
                         Icon::ChevronUp,
-                        "Previous row",
+                        msgid("Previous row"),
                         can_prev,
                         Action::MoveSelection {
                             tab,
@@ -913,7 +924,7 @@ fn draw(
                         let button = widgets::icon_button_sized(
                             ui,
                             icon,
-                            &gettext(locale, label),
+                            &label.say(locale),
                             vec2(30.0, 30.0),
                             14.0,
                             &look,
@@ -2248,11 +2259,11 @@ const CHIP_SIDE: f32 = 6.0;
 /// field nothing is set in. `unique` says the row is a copy that cleared
 /// the column for holding what no other row may.
 fn unset_words(unset: &Unset, unique: bool, locale: crate::i18n::Locale) -> String {
-    let say = |text: &'static str| gettext(locale, text);
+    let say = |text: Msgid| text.say(locale);
     match unset {
-        Unset::Assigned => say("assigned by the database").into_owned(),
+        Unset::Assigned => say(msgid("assigned by the database")).into_owned(),
         Unset::Default(text) | Unset::Expression(text) => {
-            format!("{} {}", say("default"), format::display_safe(text))
+            format!("{} {}", say(msgid("default")), format::display_safe(text))
         }
         Unset::Null => "NULL".to_owned(),
         Unset::Required => format::required_word(unique, locale),
@@ -2279,13 +2290,14 @@ fn unset_value(
         locale,
         ..
     } = skin;
-    let say = |text: &'static str| gettext(locale, text);
+    let say = |text: Msgid| text.say(locale);
     // What a save is called in each look: the terminal's is its command,
     // which is no word to translate.
     let on_save = if look.terminal {
-        format!("{} :w", look.label(&say("on")))
+        look.label(&say(msgid("on {command}")))
+            .replace("{command}", ":w")
     } else {
-        say("on save").into_owned()
+        say(msgid("on save")).into_owned()
     };
     let whole_line = |ui: &mut egui::Ui| {
         let size = vec2(ui.available_width(), line_of(ui, role, look));
@@ -2312,7 +2324,7 @@ fn unset_value(
             let text = short(text);
             if look.terminal {
                 let line = whole_line(ui);
-                let said = format!("{text} · {}", say("default"));
+                let said = format!("{text} · {}", say(msgid("default")));
                 let said = Text::one(look, role, &said, palette.dim);
                 widgets::paint_label(ui, line.left(), line.center().y, said);
                 line
@@ -2328,7 +2340,12 @@ fn unset_value(
                         line
                     }
                 };
-                let from = Text::one(look, caption(look), &say("from DEFAULT"), palette.faint);
+                let from = Text::one(
+                    look,
+                    caption(look),
+                    &say(msgid("from DEFAULT")),
+                    palette.faint,
+                );
                 widgets::paint_text_right(ui, line.right(), line.center().y, from);
                 line
             }
@@ -2346,10 +2363,12 @@ fn unset_value(
         Unset::Assigned => {
             let line = whole_line(ui);
             let said = if look.terminal {
-                let given = format!("{} {on_save}", look.label(&say("assigned")));
+                let given = look
+                    .label(&say(msgid("assigned {when}")))
+                    .replace("{when}", &on_save);
                 let what = match lock {
-                    Some(Lock::Assigned) => Some(say("identity")),
-                    Some(Lock::Generated) => Some(say("generated")),
+                    Some(Lock::Assigned) => Some(say(msgid("identity"))),
+                    Some(Lock::Generated) => Some(say(msgid("generated"))),
                     _ => None,
                 };
                 match what {
@@ -2357,7 +2376,7 @@ fn unset_value(
                     None => given,
                 }
             } else {
-                say("Assigned by the database on save").into_owned()
+                say(msgid("Assigned by the database on save")).into_owned()
             };
             let role = if look.terminal {
                 role
@@ -2475,7 +2494,7 @@ fn new_row_footer(
 /// own case, as it does in the status line.
 fn copy_line(made: &crate::edit::Copied, look: &Look, locale: crate::i18n::Locale) -> String {
     use crate::edit::{Cleared, NotCopied};
-    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let say = |text: Msgid| look.label(&text.say(locale));
     let name = |name: &str| format::display_safe(name).into_owned();
     let mut said = Vec::new();
     let copied: Vec<String> = made.copied.iter().map(|column| name(column)).collect();
@@ -2485,48 +2504,61 @@ fn copy_line(made: &crate::edit::Copied, look: &Look, locale: crate::i18n::Local
         [] => None,
         [first, second, rest @ ..] if rest.len() > 1 => {
             // A placeholder: a translation puts the number where it reads.
-            let more = gettext(locale, "{count} more").replace("{count}", &rest.len().to_string());
-            Some(format!(
-                "{first}, {second} {} {}",
-                say("and"),
-                look.label(&more)
+            let more = ngettext(
+                locale,
+                "{first}, {second} and {count} more",
+                "{first}, {second} and {count} more",
+                rest.len(),
+            )
+            .replace("{count}", &rest.len().to_string());
+            Some(crate::i18n::fill(
+                &look.label(&more),
+                &[("{first}", first), ("{second}", second)],
             ))
         }
         all => Some(all.join(", ")),
     };
     if let Some(listed) = listed {
-        said.push(format!("{}: {listed}.", say("Copied")));
+        said.push(format!("{}: {listed}.", say(msgid("Copied"))));
     }
     let cleared: Vec<String> = made
         .cleared
         .iter()
         .map(|(column, why)| {
             let why = match why {
-                Cleared::Identity => say("identity"),
-                Cleared::Generated => say("generated"),
-                Cleared::PrimaryKey => say("primary key"),
-                Cleared::Unique => say("unique"),
+                Cleared::Identity => say(msgid("identity")),
+                Cleared::Generated => say(msgid("generated")),
+                Cleared::PrimaryKey => say(msgid("primary key")),
+                Cleared::Unique => say(msgid("unique")),
             };
             format!("{} ({why})", name(column))
         })
         .collect();
     if !cleared.is_empty() {
-        said.push(format!("{}: {}.", say("Cleared"), cleared.join(", ")));
+        said.push(format!(
+            "{}: {}.",
+            say(msgid("Cleared")),
+            cleared.join(", ")
+        ));
     }
     let not_copied: Vec<String> = made
         .not_copied
         .iter()
         .map(|(column, why)| {
             let why = match why {
-                NotCopied::Unknown => say("unknown"),
-                NotCopied::Binary => say("binary"),
-                NotCopied::TooLarge => say("too large"),
+                NotCopied::Unknown => say(msgid("unknown")),
+                NotCopied::Binary => say(msgid("binary")),
+                NotCopied::TooLarge => say(msgid("too large")),
             };
             format!("{} ({why})", name(column))
         })
         .collect();
     if !not_copied.is_empty() {
-        said.push(format!("{}: {}.", say("Not copied"), not_copied.join(", ")));
+        said.push(format!(
+            "{}: {}.",
+            say(msgid("Not copied")),
+            not_copied.join(", ")
+        ));
     }
     said.join(" ")
 }
@@ -2715,7 +2747,7 @@ fn value_of(
     let Some(formatted) = formatted else {
         return shown;
     };
-    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let say = |text: Msgid| look.label(&text.say(locale));
     match value {
         // Sixteen bytes are the UUID they hold: text, laid out below.
         Value::Bytes(bytes) if format::uuid(bytes).is_some() => {}
@@ -2734,9 +2766,9 @@ fn value_of(
             let marks = crate::ui::grid::marks(ui.ctx(), look);
             if let Some(blank) = format::blank_text(text, marks) {
                 let note = if text.is_empty() {
-                    say("empty string")
+                    say(msgid("empty string"))
                 } else {
-                    say("whitespace only")
+                    say(msgid("whitespace only"))
                 };
                 ui.add_space(pad);
                 let stood = stand_in(ui, &blank, &note, look, palette);
@@ -2748,7 +2780,7 @@ fn value_of(
                 && let Some(array) = format::array_items(text)
             {
                 if array.items.is_empty() {
-                    stand_in(ui, "{}", &say("empty array"), look, palette);
+                    stand_in(ui, "{}", &say(msgid("empty array")), look, palette);
                 } else {
                     elements(ui, &array, look, palette, locale);
                 }
@@ -3026,12 +3058,12 @@ fn binary(
     palette: &Palette,
     locale: crate::i18n::Locale,
 ) -> bool {
-    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let say = |text: Msgid| look.label(&text.say(locale));
     if bytes.is_empty() {
         Text::one(
             look,
             widgets::secondary(look),
-            &say("no bytes"),
+            &say(msgid("no bytes")),
             palette.secondary,
         )
         .layout(ui.ctx())
@@ -3042,17 +3074,23 @@ fn binary(
     let more = bytes.len().saturating_sub(format::HEX_PREVIEW);
     let rest = (more > 0).then(|| {
         let count = format::group_digits(more as u64);
-        if look.terminal {
-            format!("… {count} {}", say("more"))
+        let words = if look.terminal {
+            ngettext(locale, "… {n} more", "… {n} more", more)
         } else {
-            format!(
-                "… {count} {} · {} {} {}",
-                say("more bytes"),
-                say("first"),
-                format::HEX_PREVIEW,
-                say("shown")
+            ngettext(
+                locale,
+                "… {n} more byte · first {shown} shown",
+                "… {n} more bytes · first {shown} shown",
+                more,
             )
-        }
+        };
+        crate::i18n::fill(
+            &look.label(&words),
+            &[
+                ("{n}", &count),
+                ("{shown}", &format::HEX_PREVIEW.to_string()),
+            ],
+        )
     });
     let lines = |ui: &mut egui::Ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
@@ -3079,7 +3117,7 @@ fn binary(
                 lines(ui);
             });
     }
-    let save = say("Save to file…");
+    let save = say(msgid("Save to file…"));
     let link = Text::one(look, widgets::secondary(look), &save, palette.accent)
         .layout(ui.ctx())
         .label_sense(ui, Sense::click());
@@ -3331,14 +3369,19 @@ fn editing_footer(
         let key = |command| crate::ui::keys::written(ui.ctx(), look, command);
         let (duplicate, delete_key) = (key(Command::DuplicateRow), key(Command::DeleteRow));
         // On a marked row the key takes the mark off again.
-        let deletes = if marked { "restore" } else { "delete" };
+        let deletes = if marked {
+            msgid("restore")
+        } else {
+            msgid("delete")
+        };
         let keys = [
-            (&duplicate, "duplicate", no_copy),
+            (&duplicate, msgid("duplicate"), no_copy),
             (&delete_key, deletes, no_delete),
         ];
         let width = (inner.width() - gap) / 2.0;
         let faded = |color: egui::Color32| palette.panel.lerp_to_gamma(color, 0.55);
         for (index, (key, label, why)) in keys.into_iter().enumerate() {
+            let label = label.say(locale);
             let place = Rect::from_min_size(
                 pos2(inner.left() + index as f32 * (width + gap), top),
                 vec2(width, 28.0),
@@ -3377,7 +3420,7 @@ fn editing_footer(
                 (measure(key), text)
             } else {
                 let text = text.space(role, " ");
-                (total, text.add(role, label, shade(palette.dim)))
+                (total, text.add(role, &label, shade(palette.dim)))
             };
             let x = place.center().x - total / 2.0;
             widgets::paint_text(ui, x, place.center().y, text);

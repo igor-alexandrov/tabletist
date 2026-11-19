@@ -8,7 +8,7 @@ use egui::{
 };
 
 use crate::format;
-use crate::i18n::{Locale, gettext, ngettext};
+use crate::i18n::{Locale, Msgid, gettext, msgid, ngettext};
 use crate::keymap::{Command, Keymap, Scope, Written};
 use crate::model::{Action, ConnTabId, NoWrites, RunMode, SqlTab, TabId, Workspace};
 use crate::settings::Settings;
@@ -28,7 +28,8 @@ const MIN_PANE: f32 = 80.0;
 
 /// Why Run and Run all cannot be pressed while a read-write run is in
 /// flight.
-const WRITING: &str = "A read-write run is still going in this tab. Cancel it or wait for it.";
+const WRITING: Msgid =
+    msgid("A read-write run is still going in this tab. Cancel it or wait for it.");
 
 /// The height of what divides the editor from the results: a band to drag
 /// between two rules, or the terminal's one rule.
@@ -279,8 +280,12 @@ fn timeout_name(secs: Option<u32>, locale: Locale) -> String {
 /// none.
 fn timeout_text(secs: Option<u32>, short: bool, look: &Look, locale: Locale) -> String {
     let Some(secs) = secs else {
-        let none = if short { "Off" } else { "No timeout" };
-        return look.label(&gettext(locale, none));
+        let none = if short {
+            msgid("Off")
+        } else {
+            msgid("No timeout")
+        };
+        return look.label(&none.say(locale));
     };
     let time = time_words(secs, look.terminal, locale);
     if short {
@@ -525,33 +530,35 @@ fn menus(
 /// Why a tab of a writable connection to production cannot be switched to
 /// Read-write: its runs are to be confirmed first, with their statements
 /// on screen, and that question is not built yet.
-pub(super) const UNCONFIRMED: &str =
-    "Read-write runs on a production connection are not available yet.";
+pub(super) const UNCONFIRMED: Msgid =
+    msgid("Read-write runs on a production connection are not available yet.");
 
 /// The switch's two segments, in the order it draws them.
 const MODES: [RunMode; 2] = [RunMode::ReadOnly, RunMode::ReadWrite];
 
 /// A mode as its segment of the switch names it.
-fn mode_name(mode: RunMode) -> &'static str {
+fn mode_name(mode: RunMode) -> Msgid {
     match mode {
-        RunMode::ReadOnly => "Read-only",
-        RunMode::ReadWrite => "Read-write",
+        RunMode::ReadOnly => msgid("Read-only"),
+        RunMode::ReadWrite => msgid("Read-write"),
     }
 }
 
 /// What a mode does, as its segment says on hover.
-fn mode_does(mode: RunMode) -> &'static str {
+fn mode_does(mode: RunMode) -> Msgid {
     match mode {
-        RunMode::ReadOnly => "Runs are rolled back. Nothing is changed.",
-        RunMode::ReadWrite => "A run that changes data is committed when every statement succeeds.",
+        RunMode::ReadOnly => msgid("Runs are rolled back. Nothing is changed."),
+        RunMode::ReadWrite => {
+            msgid("A run that changes data is committed when every statement succeeds.")
+        }
     }
 }
 
 /// Why no editor of the connection can write, as the Read-write segment
 /// says where it cannot be picked.
-fn no_writes(no: NoWrites) -> &'static str {
+fn no_writes(no: NoWrites) -> Msgid {
     match no {
-        NoWrites::ReadOnlyConnection => "This connection opens read-only.",
+        NoWrites::ReadOnlyConnection => msgid("This connection opens read-only."),
         NoWrites::Unconfirmed => UNCONFIRMED,
     }
 }
@@ -559,13 +566,15 @@ fn no_writes(no: NoWrites) -> &'static str {
 /// What the segment of the mode in use says on hover: what the mode does,
 /// and on a connection whose editors cannot write, why not.
 fn switch_tip(bar: &Bar<'_>) -> String {
-    let say = |text: &'static str| gettext(bar.locale, text);
+    let say = |text: Msgid| text.say(bar.locale);
     let does = say(mode_does(bar.mode));
     match bar.writes {
         Ok(()) => does.into_owned(),
         Err(no @ NoWrites::ReadOnlyConnection) => format!(
             "{}. {}",
-            say("Every query runs in a read-only transaction that is rolled back"),
+            say(msgid(
+                "Every query runs in a read-only transaction that is rolled back"
+            )),
             say(no_writes(no))
         ),
         Err(no @ NoWrites::Unconfirmed) => format!("{does} {}", say(no_writes(no))),
@@ -589,7 +598,7 @@ fn switch_cells(ui: &Ui, bar: &Bar<'_>) -> [f32; 2] {
     let look = bar.look;
     MODES.map(|mode| {
         let chosen = mode == bar.mode;
-        let words = look.label(&gettext(bar.locale, mode_name(mode)));
+        let words = look.label(&mode_name(mode).say(bar.locale));
         let words = switch_role(look, chosen).width(ui.ctx(), look.faces, &words);
         if look.terminal {
             return 6.0 + words + 6.0;
@@ -664,13 +673,13 @@ fn switch(ui: &mut Ui, rect: Rect, bar: &Bar<'_>) -> Option<RunMode> {
         );
         left += width + gap;
         let chosen = choice == mode;
-        let name = gettext(locale, mode_name(choice));
+        let name = mode_name(choice).say(locale);
         let id = ui.id().with(("transaction-mode", index));
         // A segment that cannot be picked answers no press, and still
         // takes the keyboard, as a button that cannot be pressed does: the
         // keyboard can then read why.
         let reason = match writes {
-            Err(no) if !chosen => Some(gettext(locale, no_writes(no))),
+            Err(no) if !chosen => Some(no_writes(no).say(locale)),
             _ => None,
         };
         let response = match (&reason, writes) {
@@ -755,7 +764,7 @@ fn switch(ui: &mut Ui, rect: Rect, bar: &Bar<'_>) -> Option<RunMode> {
                 reason.to_string()
             }
             None if chosen => switch_tip(bar),
-            None => gettext(locale, mode_does(choice)).into_owned(),
+            None => mode_does(choice).say(locale).into_owned(),
         };
         let _ = response.on_hover_text(tip);
     }
@@ -790,7 +799,7 @@ fn run_button(
         },
     );
     if bar.writing {
-        let waits = gettext(bar.locale, WRITING);
+        let waits = WRITING.say(bar.locale);
         button
             .disabled(&waits)
             .show_at(ui, rect, bar.look, bar.palette);
@@ -1210,22 +1219,22 @@ fn run_summary(sql: &SqlTab, locale: Locale) -> Option<String> {
 /// what is said, whatever the end; and a commit that failed after the
 /// database had committed part by itself reads as what it left, partly
 /// committed.
-fn end_words(run: &crate::model::SqlRun) -> &'static str {
+fn end_words(run: &crate::model::SqlRun) -> Msgid {
     use tabletist_db::ScriptEnd;
     if run.mode == tabletist_db::ScriptMode::ReadOnly {
         return match run.chosen {
-            RunMode::ReadOnly => "rolled back",
-            RunMode::ReadWrite => "nothing to commit",
+            RunMode::ReadOnly => msgid("rolled back"),
+            RunMode::ReadWrite => msgid("nothing to commit"),
         };
     }
     if run.outcome.rollback_warning.is_some() {
-        return "not fully rolled back";
+        return msgid("not fully rolled back");
     }
     match &run.outcome.end {
-        ScriptEnd::Committed => "committed",
-        ScriptEnd::RolledBack | ScriptEnd::Partly { committed: 0 } => "rolled back",
-        ScriptEnd::CommitFailed { committed: 0, .. } => "commit failed",
-        ScriptEnd::Partly { .. } | ScriptEnd::CommitFailed { .. } => "partly committed",
+        ScriptEnd::Committed => msgid("committed"),
+        ScriptEnd::RolledBack | ScriptEnd::Partly { committed: 0 } => msgid("rolled back"),
+        ScriptEnd::CommitFailed { committed: 0, .. } => msgid("commit failed"),
+        ScriptEnd::Partly { .. } | ScriptEnd::CommitFailed { .. } => msgid("partly committed"),
     }
 }
 
@@ -1235,13 +1244,13 @@ fn end_words(run: &crate::model::SqlRun) -> &'static str {
 fn end_note(sql: &SqlTab, locale: Locale) -> Option<String> {
     let run = sql.last_run().filter(|_| ran(sql))?;
     let chosen = match run.chosen {
-        RunMode::ReadOnly => "Read-only",
-        RunMode::ReadWrite => "Read-write",
+        RunMode::ReadOnly => msgid("Read-only"),
+        RunMode::ReadWrite => msgid("Read-write"),
     };
     Some(format!(
         "{} · {}",
-        gettext(locale, chosen),
-        gettext(locale, end_words(run))
+        chosen.say(locale),
+        end_words(run).say(locale)
     ))
 }
 
@@ -1273,7 +1282,7 @@ fn footer(
     // Vim's mode leads, where the editor has the keyboard.
     let mode = vim_mode(ui.ctx(), &look, tab, workspace, settings)
         .and_then(crate::vim::Mode::label)
-        .map(|label| gettext(locale, label).into_owned());
+        .map(|label| label.say(locale).into_owned());
     egui::Panel::bottom(Id::new(("sql-footer", tab.0, id.0)))
         .exact_size(33.0)
         .resizable(false)
@@ -1365,7 +1374,7 @@ pub fn status_summary(workspace: &Workspace, locale: Locale) -> Option<String> {
     ];
     parts.extend(run_summary(sql, locale));
     if let Some(run) = sql.last_run().filter(|_| ran(sql)) {
-        parts.push(gettext(locale, end_words(run)).into_owned());
+        parts.push(end_words(run).say(locale).into_owned());
     }
     Some(parts.join(" · "))
 }
@@ -1451,7 +1460,7 @@ mod tests {
 
     /// The colour a segment's words are painted in, as `look` writes them.
     fn segment_color(harness: &Harness, look: &Look, mode: RunMode) -> Option<egui::Color32> {
-        harness.painted_color(&look.label(mode_name(mode)))
+        harness.painted_color(&look.label(mode_name(mode).english()))
     }
 
     #[test]
@@ -1700,7 +1709,7 @@ mod tests {
             set_mode(&mut harness, tab, id, RunMode::ReadOnly);
             harness.app.workspace_mut(tab).unwrap().environment =
                 crate::env::Environment::Production;
-            read_write_is_off(&mut harness, UNCONFIRMED, &look);
+            read_write_is_off(&mut harness, UNCONFIRMED.english(), &look);
             harness.click("Read-write");
             assert_eq!(
                 own_mode(&harness, tab, id),
@@ -1717,7 +1726,10 @@ mod tests {
             );
             // The segment in use says why on hover.
             let shown = hovered(&mut harness, "Read-only");
-            let tip = format!("Runs are rolled back. Nothing is changed. {UNCONFIRMED}");
+            let tip = format!(
+                "Runs are rolled back. Nothing is changed. {}",
+                UNCONFIRMED.english()
+            );
             assert!(shown.contains(&tip), "{}", look.name);
         }
     }
@@ -1735,7 +1747,7 @@ mod tests {
             for name in ["Run", "Run all"] {
                 assert_eq!(
                     button(&mut harness, name),
-                    (true, Some(WRITING.to_owned())),
+                    (true, Some(WRITING.english().to_owned())),
                     "{name} in {}",
                     look.name
                 );

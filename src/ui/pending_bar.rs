@@ -9,7 +9,7 @@ use tabletist_db::Error;
 use crate::edit::{Note, Saved};
 use crate::format;
 pub use crate::i18n::counted;
-use crate::i18n::{Locale, gettext, ngettext};
+use crate::i18n::{Locale, Msgid, gettext, msgid, ngettext};
 use crate::model::{Action, ConnTabId, ObjectTab, SaveBlock};
 use crate::style::Icon;
 use crate::typography::{Text, TextRole};
@@ -179,8 +179,8 @@ fn note_said(
     locale: Locale,
     own: impl Fn(&str) -> String,
 ) -> String {
-    let say = |text: &'static str| own(&gettext(locale, text));
-    let nothing = say("Nothing was written.");
+    let say = |text: Msgid| own(&text.say(locale));
+    let nothing = say(msgid("Nothing was written."));
     match note {
         Note::Conflict { row, gone, others } => {
             let what = if *gone {
@@ -204,14 +204,17 @@ fn note_said(
         // No row of the page to name: the new row says it is the one.
         Note::FailedInsert { error } => format!(
             "{} {}",
-            say("Nothing was saved. 1 new row failed, so the whole transaction rolled back."),
+            say(msgid(
+                "Nothing was saved. 1 new row failed, so the whole transaction rolled back."
+            )),
             database_said(error)
         ),
         // The spec's banner. A save stops at its first statement that
         // fails, so one row fails at a time.
         Note::FailedDelete { row, error } => {
-            let rolled =
-                say("Nothing was saved. 1 row failed, so the whole transaction rolled back.");
+            let rolled = say(msgid(
+                "Nothing was saved. 1 row failed, so the whole transaction rolled back.",
+            ));
             let said = database_said(error);
             // Who holds the row, once it was counted.
             let doomed = object.edits.deleted.get(row);
@@ -225,25 +228,41 @@ fn note_said(
         }
         // Of a save that wrote: the rows by their keys, which are theirs.
         Note::AlreadyDeleted(rows) => match rows.as_slice() {
-            [row] => format!("{} {row} {}", say("Row"), say("was already deleted.")),
+            [row] => say(msgid("Row {row} was already deleted.")).replace("{row}", row),
             // Up to three by name; of more, three and how many more.
             rows => {
                 let named = rows.len().min(3);
                 let names = rows.get(..named).unwrap_or_default().join(", ");
-                let said = format!(
-                    "{} {} {names}",
-                    rows.len(),
-                    say("rows were already deleted:")
-                );
-                match rows.len() - named {
-                    0 => format!("{said}."),
-                    more => format!("{said} {} {more} {}.", say("and"), say("more")),
-                }
+                let more = rows.len() - named;
+                let words = match more {
+                    0 => ngettext(
+                        locale,
+                        "{n} row was already deleted: {names}.",
+                        "{n} rows were already deleted: {names}.",
+                        rows.len(),
+                    ),
+                    _ => ngettext(
+                        locale,
+                        "{n} row was already deleted: {names} and {more} more.",
+                        "{n} rows were already deleted: {names} and {more} more.",
+                        rows.len(),
+                    ),
+                };
+                crate::i18n::fill(
+                    &own(&words),
+                    &[
+                        ("{n}", &rows.len().to_string()),
+                        ("{names}", &names),
+                        ("{more}", &more.to_string()),
+                    ],
+                )
             }
         },
-        Note::Lost => say("The connection was lost while saving. Reload to see what was written."),
-        Note::NotSent => say("Not connected. Nothing was sent."),
-        Note::Cancelled => format!("{} {nothing}", say("Save cancelled.")),
+        Note::Lost => say(msgid(
+            "The connection was lost while saving. Reload to see what was written.",
+        )),
+        Note::NotSent => say(msgid("Not connected. Nothing was sent.")),
+        Note::Cancelled => format!("{} {nothing}", say(msgid("Save cancelled."))),
         Note::Refused(error) => format!(
             "{} {nothing}",
             sentence(&format::capped(&error.to_string()))

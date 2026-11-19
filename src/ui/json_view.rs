@@ -451,14 +451,22 @@ impl View<'_> {
             self.push(&mut job, key, self.keys);
             self.push(&mut job, ": ", self.palette.text);
         }
-        let (open_bracket, close_bracket, count, noun) = match value {
+        let (open_bracket, close_bracket, noun) = match value {
             Json::Array(items) if !items.is_empty() => {
                 let count = items.len();
-                ("[", "]", count, self.noun(count, "item", "items"))
+                (
+                    "[",
+                    "]",
+                    self.with_count(ngettext(self.locale, "{n} item", "{n} items", count), count),
+                )
             }
             Json::Object(entries) if !entries.is_empty() => {
                 let count = entries.len();
-                ("{", "}", count, self.noun(count, "key", "keys"))
+                (
+                    "{",
+                    "}",
+                    self.with_count(ngettext(self.locale, "{n} key", "{n} keys", count), count),
+                )
             }
             leaf => {
                 let (text, color) = match leaf {
@@ -484,14 +492,18 @@ impl View<'_> {
         self.push(&mut job, open_bracket, self.palette.text);
         if !open {
             self.folded += 1;
-            self.push(&mut job, &format!(" {count} {noun} "), self.palette.dim);
+            self.push(&mut job, &format!(" {noun} "), self.palette.dim);
             self.push(&mut job, close_bracket, self.palette.text);
             if comma {
                 self.push(&mut job, ",", self.palette.text);
             }
         }
-        let verb = if open { "Collapse" } else { "Expand" };
-        let toggle = format!("{} {name}", gettext(self.locale, verb));
+        let verb = if open {
+            gettext(self.locale, "Collapse {name}")
+        } else {
+            gettext(self.locale, "Expand {name}")
+        };
+        let toggle = crate::i18n::fill(&verb, &[("{name}", name)]);
         if self.row(ui, depth, Some((open, &toggle, id)), job) {
             ui.data_mut(|data| data.insert_temp(id, !open));
         }
@@ -532,8 +544,9 @@ impl View<'_> {
         }
     }
 
-    fn noun(&self, count: usize, one: &'static str, many: &'static str) -> String {
-        ngettext(self.locale, one, many, count).into_owned()
+    /// `phrase` with its `{n}` put in: "3 items".
+    fn with_count(&self, phrase: std::borrow::Cow<'static, str>, count: usize) -> String {
+        phrase.replace("{n}", &count.to_string())
     }
 
     /// The next line's text, empty.

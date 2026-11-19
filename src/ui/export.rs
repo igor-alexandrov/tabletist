@@ -12,7 +12,7 @@ use crate::export::{
 use crate::export_sheet::{
     ColumnPick, DestinationChoice, ExportChange, ExportSheet, RowsChoice, count_words,
 };
-use crate::i18n::{gettext, ngettext};
+use crate::i18n::{Msgid, gettext, msgid, ngettext};
 use crate::keymap::{Command, Scope, When};
 use crate::model::Action;
 use crate::theme::{Look, Palette};
@@ -37,8 +37,8 @@ struct Skin<'a> {
 
 impl Skin<'_> {
     /// `text` translated, in the look's case.
-    fn say(&self, text: &'static str) -> String {
-        self.look.label(&gettext(self.locale, text))
+    fn say(&self, text: Msgid) -> String {
+        self.look.label(&text.say(self.locale))
     }
 }
 
@@ -440,7 +440,7 @@ fn review(ui: &mut Ui, skin: Skin<'_>) {
         });
     ui.add_space(8.0);
     let note = match skin.look.terminal {
-        true => skin.say("runs once, read-only, streamed in batches of 5,000 rows"),
+        true => skin.say(msgid("runs once, read-only, streamed in batches of 5,000 rows")),
         false => gettext(
             skin.locale,
             "Runs once, read-only, streamed to the file in batches of 5,000 rows. Nothing is written to the database.",
@@ -528,13 +528,15 @@ fn choices(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec<A
     } = skin;
     let change = |actions: &mut Vec<Action>, change| actions.push(Action::ChangeExport(change));
     // Format.
-    row(ui, &skin.say("Format"), skin, |ui| {
+    row(ui, &skin.say(msgid("Format")), skin, |ui| {
         if look.terminal {
             let options: Vec<(Format, String)> = Format::ALL
                 .iter()
                 .map(|format| (*format, format.key().to_owned()))
                 .collect();
-            if let Some(format) = choice(ui, &skin.say("Format"), &options, sheet.format, skin) {
+            if let Some(format) =
+                choice(ui, &skin.say(msgid("Format")), &options, sheet.format, skin)
+            {
                 change(actions, ExportChange::Format(format));
             }
         } else {
@@ -552,20 +554,30 @@ fn choices(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec<A
         }
     });
     // Rows.
-    row(ui, &skin.say("Rows"), skin, |ui| {
+    row(ui, &skin.say(msgid("Rows")), skin, |ui| {
         rows_list(ui, sheet, skin, actions);
     });
     // Columns.
-    row(ui, &skin.say("Columns"), skin, |ui| {
+    row(ui, &skin.say(msgid("Columns")), skin, |ui| {
         ui.horizontal(|ui| {
             let options = [
                 (
                     false,
-                    skin.say(if look.terminal { "all" } else { "All columns" }),
+                    skin.say(if look.terminal {
+                        msgid("all")
+                    } else {
+                        msgid("All columns")
+                    }),
                 ),
-                (true, skin.say("Choose")),
+                (true, skin.say(msgid("Choose"))),
             ];
-            if let Some(choose) = choice(ui, &skin.say("Columns"), &options, sheet.choose, skin) {
+            if let Some(choose) = choice(
+                ui,
+                &skin.say(msgid("Columns")),
+                &options,
+                sheet.choose,
+                skin,
+            ) {
                 change(actions, ExportChange::Choose(choose));
             }
             let total = sheet.columns.len();
@@ -615,17 +627,21 @@ fn choices(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec<A
         change(actions, ExportChange::Options(Box::new(options)));
     }
     // Destination.
-    row(ui, &skin.say("Destination"), skin, |ui| {
+    row(ui, &skin.say(msgid("Destination")), skin, |ui| {
         let options = [
             (
                 DestinationChoice::File,
-                skin.say(if look.terminal { "to file" } else { "File" }),
+                skin.say(if look.terminal {
+                    msgid("to file")
+                } else {
+                    msgid("File")
+                }),
             ),
-            (DestinationChoice::Clipboard, skin.say("Clipboard")),
+            (DestinationChoice::Clipboard, skin.say(msgid("Clipboard"))),
         ];
         if let Some(destination) = choice(
             ui,
-            &skin.say("Destination"),
+            &skin.say(msgid("Destination")),
             &options,
             sheet.destination,
             skin,
@@ -634,9 +650,9 @@ fn choices(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec<A
             change(actions, ExportChange::Destination(destination));
         }
         let note = match (sheet.destination, facts.clipboard_refused) {
-            (_, true) => skin.say("Clipboard: more than 10,000 rows, file only"),
+            (_, true) => skin.say(msgid("Clipboard: more than 10,000 rows, file only")),
             (DestinationChoice::Clipboard, false) => {
-                skin.say("Up to 10,000 rows and 20 MB on the clipboard.")
+                skin.say(msgid("Up to 10,000 rows and 20 MB on the clipboard."))
             }
             (DestinationChoice::File, false) if look.terminal => String::new(),
             (DestinationChoice::File, false) => gettext(
@@ -650,12 +666,12 @@ fn choices(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec<A
         }
     });
     if look.terminal && sheet.destination == DestinationChoice::File {
-        row(ui, &skin.say("save to"), skin, |ui| {
+        row(ui, &skin.say(msgid("save to")), skin, |ui| {
             // `ctrl+o pick` at the line's right end, as the boards draw it;
             // the path stops short of it.
             let pick =
                 crate::ui::keys::written_in(ui.ctx(), look, Command::ExportPickFile, Scope::Prompt);
-            let words = format!("{pick} {}", skin.say("pick"));
+            let words = format!("{pick} {}", skin.say(msgid("pick")));
             let hint = || Text::one(look, TextRole::OSecondary, &words, palette.dim);
             let room = widgets::measure(ui, hint()) + 16.0;
             let id = path_id(sheet);
@@ -726,7 +742,7 @@ fn choices(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec<A
                 widgets::label(
                     ui,
                     TextRole::OSecondary,
-                    &skin.say("! exists · enter again replaces it"),
+                    &skin.say(msgid("! exists · enter again replaces it")),
                     palette.warning,
                     look,
                 );
@@ -919,7 +935,7 @@ fn rows_list(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec
         locale,
         facts,
     } = skin;
-    let say = |text: &'static str| skin.say(text);
+    let say = |text: Msgid| skin.say(text);
     let (first, last) = facts.page;
     let page_line = match look.terminal {
         true => format!(
@@ -951,14 +967,14 @@ fn rows_list(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec
         None => vec![
             (
                 RowsChoice::Selected,
-                say("Selected rows"),
+                say(msgid("Selected rows")),
                 String::new(),
                 Some(crate::format::group_digits(facts.selected as u64)),
                 facts.selected > 0,
             ),
             (
                 RowsChoice::Page,
-                say("Current page"),
+                say(msgid("Current page")),
                 page_line,
                 Some(crate::format::group_digits(
                     last.saturating_sub(first.saturating_sub(1)),
@@ -968,9 +984,9 @@ fn rows_list(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec
             (
                 RowsChoice::Matching,
                 say(if look.terminal {
-                    "matching the filter"
+                    msgid("matching the filter")
                 } else {
-                    "All rows matching the filter"
+                    msgid("All rows matching the filter")
                 }),
                 matching_line,
                 known(facts.matching),
@@ -978,7 +994,7 @@ fn rows_list(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec
             ),
             (
                 RowsChoice::Whole,
-                say("Whole table"),
+                say(msgid("Whole table")),
                 whole_line,
                 known(facts.whole),
                 true,
@@ -991,7 +1007,7 @@ fn rows_list(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec
     for (choice, name, line, count, enabled) in rows {
         // Run again's count is "counted as it runs" (spec 4, S5).
         let count = match (choice, count) {
-            (RowsChoice::RunAgain, None) => Some(say("counted as it runs")),
+            (RowsChoice::RunAgain, None) => Some(say(msgid("counted as it runs"))),
             (_, count) => count,
         };
         let chosen = sheet.rows == choice;
@@ -1010,7 +1026,7 @@ fn rows_list(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec
         );
         let spoken = match &count {
             Some(count) => format!("{name}, {count}"),
-            None => format!("{name}, {}", say("not counted")),
+            None => format!("{name}, {}", say(msgid("not counted"))),
         };
         response.widget_info(|| {
             let mut info =
@@ -1073,7 +1089,7 @@ fn rows_list(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec
             );
         }
         let right = rect.right() - 4.0;
-        let count_text = count.clone().unwrap_or_else(|| say("not counted"));
+        let count_text = count.clone().unwrap_or_else(|| say(msgid("not counted")));
         let width = widgets::paint_text_right(
             ui,
             right,
@@ -1085,8 +1101,8 @@ fn rows_list(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec
             && facts.matching.is_none_or(|count| !count.exact);
         if estimate {
             let words = match facts.counting {
-                true => say("Counting…"),
-                false => say("Count exactly"),
+                true => say(msgid("Counting…")),
+                false => say(msgid("Count exactly")),
             };
             let text = Text::one(look, widgets::secondary(look), &words, palette.accent);
             let laid = text.layout(ui.ctx());
@@ -1116,47 +1132,51 @@ fn result_rows(
 ) -> Vec<(RowsChoice, String, String, Option<String>, bool)> {
     use crate::export_sheet::NotAgain;
     let (look, locale, facts) = (skin.look, skin.locale, skin.facts);
-    let say = |text: &'static str| skin.say(text);
+    let say = |text: Msgid| skin.say(text);
     let loaded_line = match (look.terminal, result.cut) {
-        (true, true) => say("limit reached"),
+        (true, true) => say(msgid("limit reached")),
         (true, false) => String::new(),
-        (false, true) => say("the result as shown · limit reached"),
-        (false, false) => say("the result as shown"),
+        (false, true) => say(msgid("the result as shown · limit reached")),
+        (false, false) => say(msgid("the result as shown")),
     };
     let again_line = match (result.again, look.terminal) {
-        (Ok(()), true) => say("reads only"),
+        (Ok(()), true) => say(msgid("reads only")),
         (Ok(()), false) => gettext(
             locale,
             "reads only · same statement, no LIMIT, no timeout from Settings › Editor",
         )
         .into_owned(),
-        (Err(NotAgain::ChangedData), true) => say("not after a write"),
-        (Err(NotAgain::ChangedData), false) => say("Not offered: this run changed data"),
-        (Err(NotAgain::AllLoaded), true) => say("every row is loaded"),
-        (Err(NotAgain::AllLoaded), false) => say("Not needed: every row is loaded"),
-        (Err(NotAgain::Edited), true) => say("edited since it ran"),
-        (Err(NotAgain::Edited), false) => say("Not offered: the statement was edited since it ran"),
-        (Err(NotAgain::Disconnected), true) => say("not connected"),
-        (Err(NotAgain::Disconnected), false) => say("Not offered: the connection is not ready"),
+        (Err(NotAgain::ChangedData), true) => say(msgid("not after a write")),
+        (Err(NotAgain::ChangedData), false) => say(msgid("Not offered: this run changed data")),
+        (Err(NotAgain::AllLoaded), true) => say(msgid("every row is loaded")),
+        (Err(NotAgain::AllLoaded), false) => say(msgid("Not needed: every row is loaded")),
+        (Err(NotAgain::Edited), true) => say(msgid("edited since it ran")),
+        (Err(NotAgain::Edited), false) => {
+            say(msgid("Not offered: the statement was edited since it ran"))
+        }
+        (Err(NotAgain::Disconnected), true) => say(msgid("not connected")),
+        (Err(NotAgain::Disconnected), false) => {
+            say(msgid("Not offered: the connection is not ready"))
+        }
     };
     vec![
         (
             RowsChoice::Selected,
-            say("Selected rows"),
+            say(msgid("Selected rows")),
             String::new(),
             Some(crate::format::group_digits(facts.selected as u64)),
             facts.selected > 0,
         ),
         (
             RowsChoice::Loaded,
-            say("Rows already loaded"),
+            say(msgid("Rows already loaded")),
             loaded_line,
             Some(crate::format::group_digits(result.loaded)),
             true,
         ),
         (
             RowsChoice::RunAgain,
-            say("Run again without the limit"),
+            say(msgid("Run again without the limit")),
             again_line,
             None,
             result.again.is_ok(),
@@ -1296,7 +1316,7 @@ fn column_list(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut V
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         let hint = match look.terminal {
-            true => skin.say("space include · K/J move up/down · a all · n none"),
+            true => skin.say(msgid("space include · K/J move up/down · a all · n none")),
             false => {
                 let up = crate::ui::keys::written_in(
                     ui.ctx(),
@@ -1353,15 +1373,18 @@ fn format_options(ui: &mut Ui, format: Format, options: &mut Options, skin: Skin
         locale,
         facts,
     } = skin;
-    let say = |text: &'static str| skin.say(text);
+    let say = |text: Msgid| skin.say(text);
     let checkbox = |ui: &mut Ui, value: &mut bool, text: &str| {
         widgets::checkbox(ui, value, text, look, palette);
     };
     let null_as = |ui: &mut Ui, null_as: &mut NullAs, text: &mut String| {
-        row(ui, &say("NULL as"), skin, |ui| {
+        row(ui, &say(msgid("NULL as")), skin, |ui| {
             ui.horizontal(|ui| {
-                let choices = [(NullAs::Empty, say("Empty")), (NullAs::Text, say("Text"))];
-                if let Some(chosen) = choice(ui, &say("NULL as"), &choices, *null_as, skin) {
+                let choices = [
+                    (NullAs::Empty, say(msgid("Empty"))),
+                    (NullAs::Text, say(msgid("Text"))),
+                ];
+                if let Some(chosen) = choice(ui, &say(msgid("NULL as")), &choices, *null_as, skin) {
                     *null_as = chosen;
                 }
                 if *null_as == NullAs::Text {
@@ -1380,22 +1403,29 @@ fn format_options(ui: &mut Ui, format: Format, options: &mut Options, skin: Skin
         });
     };
     let line_ending = |ui: &mut Ui, ending: &mut LineEnding| {
-        row(ui, &say("Line endings"), skin, |ui| {
-            let choices = [(LineEnding::Lf, say("LF")), (LineEnding::Crlf, say("CRLF"))];
-            if let Some(chosen) = choice(ui, &say("Line endings"), &choices, *ending, skin) {
+        row(ui, &say(msgid("Line endings")), skin, |ui| {
+            let choices = [
+                (LineEnding::Lf, say(msgid("LF"))),
+                (LineEnding::Crlf, say(msgid("CRLF"))),
+            ];
+            if let Some(chosen) = choice(ui, &say(msgid("Line endings")), &choices, *ending, skin) {
                 *ending = chosen;
             }
         });
     };
     let binary = |ui: &mut Ui, binary: &mut Binary| {
-        row(ui, &say("Binary values"), skin, |ui| {
-            let choices = [(Binary::Hex, say("Hex")), (Binary::Base64, say("Base64"))];
-            if let Some(chosen) = choice(ui, &say("Binary values"), &choices, *binary, skin) {
+        row(ui, &say(msgid("Binary values")), skin, |ui| {
+            let choices = [
+                (Binary::Hex, say(msgid("Hex"))),
+                (Binary::Base64, say(msgid("Base64"))),
+            ];
+            if let Some(chosen) = choice(ui, &say(msgid("Binary values")), &choices, *binary, skin)
+            {
                 *binary = chosen;
             }
         });
     };
-    let note = |ui: &mut Ui, label: &'static str, text: &str| {
+    let note = |ui: &mut Ui, label: Msgid, text: &str| {
         row(ui, &say(label), skin, |ui| {
             widgets::label(
                 ui,
@@ -1407,13 +1437,18 @@ fn format_options(ui: &mut Ui, format: Format, options: &mut Options, skin: Skin
         });
     };
     let json_values = |ui: &mut Ui, values: &mut JsonValues| {
-        row(ui, &say("json and jsonb values"), skin, |ui| {
+        row(ui, &say(msgid("json and jsonb values")), skin, |ui| {
             let choices = [
-                (JsonValues::Nested, say("Nested as JSON")),
-                (JsonValues::Strings, say("As strings")),
+                (JsonValues::Nested, say(msgid("Nested as JSON"))),
+                (JsonValues::Strings, say(msgid("As strings"))),
             ];
-            if let Some(chosen) = choice(ui, &say("json and jsonb values"), &choices, *values, skin)
-            {
+            if let Some(chosen) = choice(
+                ui,
+                &say(msgid("json and jsonb values")),
+                &choices,
+                *values,
+                skin,
+            ) {
                 *values = chosen;
             }
         });
@@ -1421,10 +1456,14 @@ fn format_options(ui: &mut Ui, format: Format, options: &mut Options, skin: Skin
     match format {
         Format::Csv => {
             let csv = &mut options.csv;
-            row(ui, &say("Header row"), skin, |ui| {
-                checkbox(ui, &mut csv.header, &say("Column names as the first row"))
+            row(ui, &say(msgid("Header row")), skin, |ui| {
+                checkbox(
+                    ui,
+                    &mut csv.header,
+                    &say(msgid("Column names as the first row")),
+                )
             });
-            row(ui, &say("Delimiter"), skin, |ui| {
+            row(ui, &say(msgid("Delimiter")), skin, |ui| {
                 ui.horizontal(|ui| {
                     let known = [',', ';', '|'];
                     let current = if known.contains(&csv.delimiter) {
@@ -1436,9 +1475,11 @@ fn format_options(ui: &mut Ui, format: Format, options: &mut Options, skin: Skin
                         (Some(','), ",".to_owned()),
                         (Some(';'), ";".to_owned()),
                         (Some('|'), "|".to_owned()),
-                        (None, say("Other…")),
+                        (None, say(msgid("Other…"))),
                     ];
-                    if let Some(chosen) = choice(ui, &say("Delimiter"), &choices, current, skin) {
+                    if let Some(chosen) =
+                        choice(ui, &say(msgid("Delimiter")), &choices, current, skin)
+                    {
                         csv.delimiter = chosen.unwrap_or('\t');
                     }
                     if current.is_none() {
@@ -1454,35 +1495,41 @@ fn format_options(ui: &mut Ui, format: Format, options: &mut Options, skin: Skin
                     }
                 });
             });
-            row(ui, &say("Quoting"), skin, |ui| {
+            row(ui, &say(msgid("Quoting")), skin, |ui| {
                 let choices = [
-                    (Quoting::WhenNeeded, say("When needed")),
-                    (Quoting::Every, say("Every value")),
+                    (Quoting::WhenNeeded, say(msgid("When needed"))),
+                    (Quoting::Every, say(msgid("Every value"))),
                 ];
-                if let Some(chosen) = choice(ui, &say("Quoting"), &choices, csv.quoting, skin) {
+                if let Some(chosen) =
+                    choice(ui, &say(msgid("Quoting")), &choices, csv.quoting, skin)
+                {
                     csv.quoting = chosen;
                 }
             });
             null_as(ui, &mut csv.null_as, &mut csv.null_text);
-            row(ui, &say("For Excel"), skin, |ui| {
-                checkbox(ui, &mut csv.bom, &say("Add a UTF-8 BOM"))
+            row(ui, &say(msgid("For Excel")), skin, |ui| {
+                checkbox(ui, &mut csv.bom, &say(msgid("Add a UTF-8 BOM")))
             });
             line_ending(ui, &mut csv.line_ending);
             binary(ui, &mut csv.binary);
         }
         Format::Tsv => {
             let tsv = &mut options.tsv;
-            row(ui, &say("Header row"), skin, |ui| {
-                checkbox(ui, &mut tsv.header, &say("Column names as the first row"))
+            row(ui, &say(msgid("Header row")), skin, |ui| {
+                checkbox(
+                    ui,
+                    &mut tsv.header,
+                    &say(msgid("Column names as the first row")),
+                )
             });
             note(
                 ui,
-                "Tabs and line breaks",
-                &gettext(locale, r"inside values are written as \t and \n"),
+                msgid("Tabs and line breaks"),
+                &gettext(locale, "inside values are written as \\t and \\n"),
             );
             null_as(ui, &mut tsv.null_as, &mut tsv.null_text);
-            row(ui, &say("For Excel"), skin, |ui| {
-                checkbox(ui, &mut tsv.bom, &say("Add a UTF-8 BOM"))
+            row(ui, &say(msgid("For Excel")), skin, |ui| {
+                checkbox(ui, &mut tsv.bom, &say(msgid("Add a UTF-8 BOM")))
             });
             line_ending(ui, &mut tsv.line_ending);
             binary(ui, &mut tsv.binary);
@@ -1491,21 +1538,22 @@ fn format_options(ui: &mut Ui, format: Format, options: &mut Options, skin: Skin
             let json = &mut options.json;
             note(
                 ui,
-                "Shape",
+                msgid("Shape"),
                 &gettext(locale, "one array of objects, keys in column order"),
             );
             json_values(ui, &mut json.values);
             note(
                 ui,
-                "Dates and times",
+                msgid("Dates and times"),
                 &gettext(locale, "ISO 8601, with the offset for timestamptz"),
             );
-            row(ui, &say("Layout"), skin, |ui| {
+            row(ui, &say(msgid("Layout")), skin, |ui| {
                 let choices = [
-                    (Layout::Indented, say("Indented")),
-                    (Layout::OneLine, say("One line")),
+                    (Layout::Indented, say(msgid("Indented"))),
+                    (Layout::OneLine, say(msgid("One line"))),
                 ];
-                if let Some(chosen) = choice(ui, &say("Layout"), &choices, json.layout, skin) {
+                if let Some(chosen) = choice(ui, &say(msgid("Layout")), &choices, json.layout, skin)
+                {
                     json.layout = chosen;
                 }
             });
@@ -1513,19 +1561,19 @@ fn format_options(ui: &mut Ui, format: Format, options: &mut Options, skin: Skin
         }
         Format::JsonLines => {
             let jsonl = &mut options.jsonl;
-            note(ui, "Shape", &gettext(locale, "one object per line"));
+            note(ui, msgid("Shape"), &gettext(locale, "one object per line"));
             json_values(ui, &mut jsonl.values);
             note(
                 ui,
-                "Dates and times",
+                msgid("Dates and times"),
                 &gettext(locale, "ISO 8601, with the offset for timestamptz"),
             );
             binary(ui, &mut jsonl.binary);
         }
         Format::SqlInsert => {
             let sql = &mut options.sql;
-            note(ui, "Target table", &facts.qualified);
-            row(ui, &say("Rows per INSERT"), skin, |ui| {
+            note(ui, msgid("Target table"), &facts.qualified);
+            row(ui, &say(msgid("Rows per INSERT")), skin, |ui| {
                 let choices = [
                     (1, "1".to_owned()),
                     (100, "100".to_owned()),
@@ -1533,7 +1581,7 @@ fn format_options(ui: &mut Ui, format: Format, options: &mut Options, skin: Skin
                 ];
                 if let Some(chosen) = choice(
                     ui,
-                    &say("Rows per INSERT"),
+                    &say(msgid("Rows per INSERT")),
                     &choices,
                     sql.rows_per_insert,
                     skin,
@@ -1541,7 +1589,7 @@ fn format_options(ui: &mut Ui, format: Format, options: &mut Options, skin: Skin
                     sql.rows_per_insert = chosen;
                 }
             });
-            row(ui, &say("Table definition"), skin, |ui| {
+            row(ui, &say(msgid("Table definition")), skin, |ui| {
                 match facts.result {
                     // Greyed, with why: no table to read a definition of
                     // (spec 4, S4). The remembered choice stays as it is.
@@ -1552,7 +1600,7 @@ fn format_options(ui: &mut Ui, format: Format, options: &mut Options, skin: Skin
                             checkbox(
                                 ui,
                                 &mut off,
-                                &say("Start with CREATE TABLE from the DDL view"),
+                                &say(msgid("Start with CREATE TABLE from the DDL view")),
                             );
                         })
                         .response
@@ -1568,7 +1616,7 @@ fn format_options(ui: &mut Ui, format: Format, options: &mut Options, skin: Skin
                     None => checkbox(
                         ui,
                         &mut sql.create_table,
-                        &say("Start with CREATE TABLE from the DDL view"),
+                        &say(msgid("Start with CREATE TABLE from the DDL view")),
                     ),
                 }
             });
@@ -1587,12 +1635,12 @@ fn format_options(ui: &mut Ui, format: Format, options: &mut Options, skin: Skin
             };
             note(
                 ui,
-                "Dialect",
+                msgid("Dialect"),
                 &gettext(locale, "{dialect}, from this connection").replace("{dialect}", dialect),
             );
             note(
                 ui,
-                "Binary values",
+                msgid("Binary values"),
                 &gettext(locale, "written as {literal} literals").replace("{literal}", literal),
             );
         }
@@ -1600,23 +1648,27 @@ fn format_options(ui: &mut Ui, format: Format, options: &mut Options, skin: Skin
             let md = &mut options.md;
             note(
                 ui,
-                "Header row",
+                msgid("Header row"),
                 &gettext(locale, "always, with a separator line"),
             );
             null_as(ui, &mut md.null_as, &mut md.null_text);
             note(
                 ui,
-                "Pipes and line breaks",
-                &gettext(locale, r"escaped as \| and <br>"),
+                msgid("Pipes and line breaks"),
+                &gettext(locale, "escaped as \\| and <br>"),
             );
-            row(ui, &say("Long values"), skin, |ui| {
+            row(ui, &say(msgid("Long values")), skin, |ui| {
                 let choices = [
-                    (LongValues::Full, say("In full")),
-                    (LongValues::Cut, say("Cut at 200 characters")),
+                    (LongValues::Full, say(msgid("In full"))),
+                    (LongValues::Cut, say(msgid("Cut at 200 characters"))),
                 ];
-                if let Some(chosen) =
-                    choice(ui, &say("Long values"), &choices, md.long_values, skin)
-                {
+                if let Some(chosen) = choice(
+                    ui,
+                    &say(msgid("Long values")),
+                    &choices,
+                    md.long_values,
+                    skin,
+                ) {
                     md.long_values = chosen;
                 }
             });
@@ -1692,7 +1744,7 @@ fn terminal(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec<
     let head = crate::ui::terminal_dialog::head(ui, radius, palette.panel, palette);
     let y = crate::ui::terminal_dialog::head_line(head);
     let title = match sheet.review {
-        true => skin.say("review sql"),
+        true => skin.say(msgid("review sql")),
         false => self::title(facts, look, locale),
     };
     let mut x = head.left() + 14.0;
@@ -1759,17 +1811,17 @@ fn terminal(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec<
     let review_key = written(Command::ExportReviewSql);
     let pick_key = written(Command::ExportPickFile);
     let primary = match (sheet.review, sheet.destination) {
-        (true, _) | (_, DestinationChoice::File) => skin.say("export"),
-        (_, DestinationChoice::Clipboard) => skin.say("copy"),
+        (true, _) | (_, DestinationChoice::File) => skin.say(msgid("export")),
+        (_, DestinationChoice::Clipboard) => skin.say(msgid("copy")),
     };
     let (next, choose, review_word, cancel, back) = (
-        skin.say("next"),
-        skin.say("choose"),
-        skin.say("review sql"),
-        skin.say("cancel"),
-        skin.say("back"),
+        skin.say(msgid("next")),
+        skin.say(msgid("choose")),
+        skin.say(msgid("review sql")),
+        skin.say(msgid("cancel")),
+        skin.say(msgid("back")),
     );
-    let pick_word = skin.say("pick file");
+    let pick_word = skin.say(msgid("pick file"));
     let primary_name = primary_words(sheet, facts, look, locale);
     let mut keys = Vec::new();
     if !sheet.review {

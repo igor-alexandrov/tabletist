@@ -8,7 +8,7 @@
 use egui::{Frame, Id, Rect, pos2, vec2};
 
 use crate::history::{Entry, Outcome, Source};
-use crate::i18n::{Locale, gettext, ngettext, pgettext};
+use crate::i18n::{Locale, Msgid, gettext, msgid, ngettext, pgettext};
 use crate::keymap::Keymap;
 use crate::model::{Action, ConnTabId, HistoryFilterSet, HistoryRow, HistoryTab, Workspace};
 use crate::style::Icon;
@@ -29,12 +29,12 @@ const PANE: f32 = 360.0;
 const PANE_TERMINAL: f32 = 380.0;
 
 /// What the person said of the copy.
-const COPIED: &str = crate::ui::review::COPIED_SQL;
+const COPIED: Msgid = crate::ui::review::COPIED_SQL;
 
 /// What the tab says while the history is off, as its title.
-pub const OFF: &str = "History is off";
+pub const OFF: Msgid = msgid("History is off");
 /// An agent's entry whose call the Agents Log has dropped.
-pub const GONE: &str = "No longer in the Agents Log";
+pub const GONE: Msgid = msgid("No longer in the Agents Log");
 
 /// The height of an entry's row.
 fn row_height(look: &Look) -> f32 {
@@ -133,7 +133,7 @@ pub fn show(
             Ask::Do(action) => actions.push(*action),
             Ask::Copy(sql) => {
                 ui.ctx().copy_text(sql);
-                crate::ui::toast::say(ui.ctx(), &gettext(locale, COPIED));
+                crate::ui::toast::say(ui.ctx(), &COPIED.say(locale));
             }
         }
     }
@@ -167,8 +167,8 @@ impl View<'_> {
         }
     }
 
-    fn say(&self, text: &'static str) -> String {
-        self.look.label(&gettext(self.locale, text))
+    fn say(&self, text: Msgid) -> String {
+        self.look.label(&text.say(self.locale))
     }
 
     /// The filter field's label, open or closed.
@@ -213,7 +213,7 @@ impl View<'_> {
         let strong = TextRole::pick(look, TextRole::UiBodyStrong, TextRole::OBody);
         let mut right = bar.right() - 16.0;
         if self.history.clearing {
-            let (clear, cancel) = (self.say("Clear history"), self.say("Cancel"));
+            let (clear, cancel) = (self.say(msgid("Clear history")), self.say(msgid("Cancel")));
             for (label, clears) in [(&cancel, false), (&clear, true)] {
                 let mut button = states::button(label, look).salt("history-clear-question");
                 if clears {
@@ -240,7 +240,7 @@ impl View<'_> {
             widgets::announce(ui, bar, &question);
             return bar.bottom();
         }
-        let label = self.say("Clear history…");
+        let label = self.say(msgid("Clear history…"));
         let button = states::button(&label, look);
         let width = button.width(ui, look);
         let at =
@@ -249,33 +249,41 @@ impl View<'_> {
             asks.push(ask(Action::ClearHistory(self.tab)));
         }
         right = at.left() - 12.0;
-        let of = self.say("History of");
-        let what = self.say("every statement run here: SQL editor, grid saves, filters and agents");
+        // The connection's name in its own face, where the phrase puts it.
+        let of = self.say(msgid("History of {connection}"));
+        let (before, after) = crate::i18n::around(&of, "{connection}");
+        let what = self.say(msgid(
+            "every statement run here: SQL editor, grid saves, filters and agents",
+        ));
         let room = (right - bar.left() - 16.0).max(0.0);
         let line = Text::new(look)
-            .add(body, &of, palette.secondary)
-            .space(body, " ")
+            .add(body, before, palette.secondary)
             .add(strong, self.name, palette.text)
-            .add(body, &format!(" · {what}"), palette.secondary);
+            .add(body, &format!("{after} · {what}"), palette.secondary);
         let laid = line.layout(ui.ctx());
         if laid.width() <= room {
             laid.paint_left(ui.painter(), bar.left() + 16.0, bar.center().y);
         } else {
             let line = Text::new(look)
-                .add(body, &of, palette.secondary)
-                .space(body, " ")
-                .add(strong, self.name, palette.text);
+                .add(body, before, palette.secondary)
+                .add(strong, self.name, palette.text)
+                .add(body, after, palette.secondary);
             widgets::paint_text(ui, bar.left() + 16.0, bar.center().y, line);
         }
-        widgets::announce(ui, bar, &format!("{of} {} · {what}", self.name));
+        let said = crate::i18n::fill(&of, &[("{connection}", self.name)]);
+        widgets::announce(ui, bar, &format!("{said} · {what}"));
         bar.bottom()
     }
 
     /// "Clear history for Bookshop · dev? This can't be undone…"
     fn clear_question(&self) -> String {
-        let words = "Clear history for {connection}? This can't be undone. It holds the values typed into grid saves, on this computer.";
-        self.look
-            .label(&gettext(self.locale, words).replace("{connection}", self.name))
+        self.look.label(
+            &gettext(
+                self.locale,
+                "Clear history for {connection}? This can't be undone. It holds the values typed into grid saves, on this computer.",
+            )
+            .replace("{connection}", self.name),
+        )
     }
 
     /// The count, and what the history keeps: "184 statements · keeps the
@@ -432,10 +440,18 @@ impl View<'_> {
                 .add(body, &question, palette.warning)
                 .space(body, "  ")
                 .add(body, self.keys.yes.as_str(), palette.accent)
-                .add(body, &format!(" {}", self.say("yes")), palette.secondary)
+                .add(
+                    body,
+                    &format!(" {}", self.say(msgid("yes"))),
+                    palette.secondary,
+                )
                 .space(body, "  ")
                 .add(body, self.keys.no.as_str(), palette.accent)
-                .add(body, &format!(" {}", self.say("no")), palette.secondary);
+                .add(
+                    body,
+                    &format!(" {}", self.say(msgid("no"))),
+                    palette.secondary,
+                );
             widgets::paint_text(ui, left, y, text);
             widgets::announce(ui, bar, &question);
             return bar.bottom();
@@ -509,7 +525,9 @@ impl View<'_> {
                 x += 8.0;
             }
             if !read.unknown.is_empty() {
-                let said = format!("{} {}", self.say("ignored:"), read.unknown.join(" "));
+                let said = self
+                    .say(msgid("ignored: {words}"))
+                    .replace("{words}", &read.unknown.join(" "));
                 widgets::announce(
                     ui,
                     Rect::from_min_max(pos2(field_rect.right(), bar.top()), bar.max),
@@ -520,7 +538,7 @@ impl View<'_> {
                 .add(body, self.keys.close.as_str(), palette.accent)
                 .add(
                     body,
-                    &format!(" {}", self.say("closes, and keeps it")),
+                    &format!(" {}", self.say(msgid("closes, and keeps it"))),
                     palette.secondary,
                 );
             let laid = hint.layout(ui.ctx());
@@ -536,7 +554,11 @@ impl View<'_> {
                 .add(body, " · ", palette.secondary)
                 .add(body, "source:agent source:save result:error", palette.text)
                 .space(body, "  ")
-                .add(body, &self.say("plain words search the sql"), palette.dim);
+                .add(
+                    body,
+                    &self.say(msgid("plain words search the sql")),
+                    palette.dim,
+                );
             let laid = hint.layout(ui.ctx());
             if laid.width() <= room {
                 laid.paint_left(ui.painter(), at, y);
@@ -570,17 +592,19 @@ impl View<'_> {
         let history = self.history;
         let shown: Vec<&HistoryRow> = history.shown().collect();
         let empty = match (&history.failed, history.read) {
-            _ if self.keep == 0 => Some(self.say("Nothing is recorded while History is off.")),
+            _ if self.keep == 0 => {
+                Some(self.say(msgid("Nothing is recorded while History is off.")))
+            }
             (Some(failed), _) => Some(format!(
                 "{} {failed}",
-                self.say("The history could not be read:")
+                self.say(msgid("The history could not be read:"))
             )),
-            (None, false) => Some(self.say("Reading the history…")),
+            (None, false) => Some(self.say(msgid("Reading the history…"))),
             (None, true) if !shown.is_empty() => None,
             (None, true) if history.filter.is_set() => {
-                Some(self.say("No statements in the history match these filters."))
+                Some(self.say(msgid("No statements in the history match these filters.")))
             }
-            (None, true) => Some(self.say("No statements run on this connection yet.")),
+            (None, true) => Some(self.say(msgid("No statements run on this connection yet."))),
         };
         // Time, source, statement, rows, ms, result: the statement takes
         // what is left.
@@ -595,8 +619,15 @@ impl View<'_> {
             fixed(92.0, 0.15),
         ];
         widths[2] = (room - widths.iter().sum::<f32>()).max(0.0);
-        let names =
-            ["Time", "Source", "Statement", "Rows", "ms", "Result"].map(|name| self.say(name));
+        let names = [
+            msgid("Time"),
+            msgid("Source"),
+            msgid("Statement"),
+            msgid("Rows"),
+            msgid("ms"),
+            msgid("Result"),
+        ]
+        .map(|name| self.say(name));
         let head = Rect::from_min_size(rect.min, vec2(rect.width(), HEAD));
         if !look.terminal {
             ui.painter().rect_filled(head, 0.0, palette.panel);
@@ -620,7 +651,7 @@ impl View<'_> {
             Id::new(("history-list", self.tab.0)),
             egui::Sense::focusable_noninteractive(),
         );
-        let label = self.say("Statements");
+        let label = self.say(msgid("Statements"));
         stop.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, &label));
         ui.ctx().accesskit_node_builder(stop.id, |node| {
             node.set_role(egui::accesskit::Role::Table);
@@ -876,7 +907,7 @@ impl View<'_> {
             Id::new(("history-pane", self.tab.0)),
             egui::Sense::hover(),
         );
-        let named = self.say("Statement");
+        let named = self.say(msgid("Statement"));
         region.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, &named));
         ui.ctx().accesskit_node_builder(region.id, |node| {
             node.set_role(egui::accesskit::Role::Region);
@@ -895,7 +926,7 @@ impl View<'_> {
                 match self.history.chosen() {
                     Some(chosen) => self.detail(ui, chosen, asks),
                     None => {
-                        let said = self.say("Select a statement to see it whole.");
+                        let said = self.say(msgid("Select a statement to see it whole."));
                         Text::one(look, widgets::secondary(look), &said, palette.dim)
                             .wrap(ui.available_width())
                             .layout(ui.ctx())
@@ -920,14 +951,12 @@ impl View<'_> {
         Text::one(look, strong, &self.say(OFF), palette.text)
             .layout(ui.ctx())
             .label(ui);
-        let note = self.say(
-            "Tabletist isn't recording statements on this computer. Turn it on to see every statement run on this connection.",
-        );
+        let note = self.say(msgid("Tabletist isn't recording statements on this computer. Turn it on to see every statement run on this connection."));
         Text::one(look, widgets::secondary(look), &note, palette.secondary)
             .wrap(width)
             .layout(ui.ctx())
             .label(ui);
-        let label = self.say("Open Settings › Editor");
+        let label = self.say(msgid("Open Settings › Editor"));
         if states::button(&label, look)
             .show(ui, states::button_height(look), look, palette)
             .clicked()
@@ -968,7 +997,7 @@ impl View<'_> {
                 .layout(ui.ctx())
                 .label(ui);
             if self.production {
-                let pill = self.say("production");
+                let pill = self.say(msgid("production"));
                 let laid = Text::one(look, small, &pill, palette.on_accent).layout(ui.ctx());
                 let (place, _) =
                     ui.allocate_exact_size(vec2(laid.width() + 14.0, 18.0), egui::Sense::hover());
@@ -1030,13 +1059,13 @@ impl View<'_> {
             // The keys, as the board has them.
             let mut hints: Vec<(&crate::keymap::Written, String)> = Vec::new();
             if entry.runs_again() {
-                hints.push((&self.keys.run, self.say("run again")));
+                hints.push((&self.keys.run, self.say(msgid("run again"))));
             }
             if entry.source == Source::Filter {
-                hints.push((&self.keys.reapply, self.say("reapply filter")));
+                hints.push((&self.keys.reapply, self.say(msgid("reapply filter"))));
             }
-            hints.push((&self.keys.open, self.say("open in sql")));
-            hints.push((&self.keys.copy, self.say("copy sql")));
+            hints.push((&self.keys.open, self.say(msgid("open in sql"))));
+            hints.push((&self.keys.copy, self.say(msgid("copy sql"))));
             let mut text = Text::new(look);
             for (index, (written, word)) in hints.iter().enumerate() {
                 if index > 0 {
@@ -1104,9 +1133,7 @@ impl View<'_> {
         let width = ui.available_width();
         let body = widgets::body(look);
         let small = widgets::secondary(look);
-        let kept = self.say(
-            "What an agent sent is kept only in the Agents Log. History shows when it ran and the result, and links to the call.",
-        );
+        let kept = self.say(msgid("What an agent sent is kept only in the Agents Log. History shows when it ran and the result, and links to the call."));
         let frame = egui::Frame::new()
             .fill(palette.window)
             .stroke(egui::Stroke::new(1.0, palette.border))
@@ -1133,7 +1160,7 @@ impl View<'_> {
                 .add(body, self.keys.call.as_str(), palette.accent)
                 .add(
                     body,
-                    &format!(" {}", self.say("agents log")),
+                    &format!(" {}", self.say(msgid("agents log"))),
                     palette.secondary,
                 )
                 .layout(ui.ctx())
@@ -1145,9 +1172,7 @@ impl View<'_> {
                 asks.push(ask(Action::ShowHistoryCall { tab, key }));
             }
         }
-        let note = self.say(
-            "Run again and Open in SQL editor are on the call in the Agents Log. After the log drops the call, this entry says it is no longer there.",
-        );
+        let note = self.say(msgid("Run again and Open in SQL editor are on the call in the Agents Log. After the log drops the call, this entry says it is no longer there."));
         Text::one(look, small, &note, palette.dim)
             .wrap(width)
             .layout(ui.ctx())
@@ -1198,22 +1223,22 @@ impl View<'_> {
     /// The entry's facts, line by line, as the pane says them.
     fn facts(&self, entry: &Entry) -> Vec<(String, String)> {
         let locale = self.locale;
-        let say = |text: &'static str| self.say(text);
+        let say = |text: Msgid| self.say(text);
         let mut facts = Vec::new();
         let rows = |rows: Option<u64>| match rows {
             Some(rows) => crate::format::group_digits(rows),
-            None => say("none"),
+            None => say(msgid("none")),
         };
         match entry.source {
-            Source::Save => facts.push((say("Rows changed"), rows(entry.rows))),
+            Source::Save => facts.push((say(msgid("Rows changed")), rows(entry.rows))),
             Source::Sql | Source::Filter | Source::Agent => {
-                facts.push((say("Rows"), rows(entry.rows)))
+                facts.push((say(msgid("Rows")), rows(entry.rows)))
             }
-            Source::Export => facts.push((say("Rows exported"), rows(entry.rows))),
+            Source::Export => facts.push((say(msgid("Rows exported")), rows(entry.rows))),
         }
         if let Some(took) = entry.took_ms {
             facts.push((
-                say("Took"),
+                say(msgid("Took")),
                 format!("{} ms", crate::format::group_digits(took)),
             ));
         }
@@ -1224,13 +1249,13 @@ impl View<'_> {
                 (Outcome::Cancelled | Outcome::Ok, Some(why)) => format!("{result} · {why}"),
                 _ => result,
             };
-            facts.push((say("Result"), result));
+            facts.push((say(msgid("Result")), result));
         }
         if let (Outcome::Error, Some(message)) = (entry.outcome, &entry.message) {
-            facts.push((say("Message"), message.clone()));
+            facts.push((say(msgid("Message")), message.clone()));
         }
         if entry.source == Source::Sql {
-            facts.push((say("Database"), entry.database.clone()));
+            facts.push((say(msgid("Database")), entry.database.clone()));
         }
         facts
     }
@@ -1238,31 +1263,31 @@ impl View<'_> {
     /// The pane's small print, by what the entry offers.
     fn note(&self, entry: &Entry) -> String {
         let words = match (entry.source, entry.runs_again(), entry.outcome) {
-            (Source::Filter, _, _) => {
-                "Reapply filter opens the table with this filter and sort, the way you set them."
-            }
-            (_, true, _) if self.production => {
-                "On production, Run again opens a read-only tab, whatever the statement. It runs on the connection it came from."
-            }
-            (_, true, Outcome::Error | Outcome::Cancelled) => {
-                "Errors and cancelled reads can be run again too. The timeout from Settings › Editor applies."
-            }
+            (Source::Filter, _, _) => msgid(
+                "Reapply filter opens the table with this filter and sort, the way you set them.",
+            ),
+            (_, true, _) if self.production => msgid(
+                "On production, Run again opens a read-only tab, whatever the statement. It runs on the connection it came from.",
+            ),
+            (_, true, Outcome::Error | Outcome::Cancelled) => msgid(
+                "Errors and cancelled reads can be run again too. The timeout from Settings › Editor applies.",
+            ),
             (_, true, _) if self.look.terminal => {
                 return self
-                    .say("{key} opens a new sql tab and runs it on the current data. results are never stored.")
+                    .say(msgid("{key} opens a new sql tab and runs it on the current data. results are never stored."))
                     .replace("{key}", self.keys.run.as_str());
             }
-            (_, true, _) => {
-                "Run again opens a new SQL tab and runs this on the current data. Results are never stored, only the statement."
-            }
+            (_, true, _) => msgid(
+                "Run again opens a new SQL tab and runs this on the current data. Results are never stored, only the statement.",
+            ),
             (_, false, _) if self.look.terminal => {
                 return self
-                    .say("writes: {key} only, into a read-only tab.")
+                    .say(msgid("writes: {key} only, into a read-only tab."))
                     .replace("{key}", self.keys.open.as_str());
             }
-            (_, false, _) => {
-                "Writes are never run again from History. Open in SQL editor puts the statements in a new read-only tab; switch the tab to read-write to run them."
-            }
+            (_, false, _) => msgid(
+                "Writes are never run again from History. Open in SQL editor puts the statements in a new read-only tab; switch the tab to read-write to run them.",
+            ),
         };
         self.say(words)
     }
@@ -1412,7 +1437,7 @@ fn statement_line(entry: &Entry, gone: bool, locale: Locale, look: &Look) -> Str
         Source::Agent => {
             let tool = entry.tool.clone().unwrap_or_default();
             let place = match (gone, look.terminal) {
-                (true, _) => gettext(locale, GONE),
+                (true, _) => GONE.say(locale),
                 (false, true) => gettext(locale, "in the Agents Log"),
                 (false, false) => gettext(locale, "in the Agents Log →"),
             };

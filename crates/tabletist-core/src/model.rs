@@ -2250,11 +2250,12 @@ pub enum SshAuthKind {
 impl SshAuthKind {
     pub const ALL: [Self; 3] = [Self::Password, Self::KeyFile, Self::Agent];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> crate::i18n::Msgid {
+        use crate::i18n::msgid;
         match self {
-            Self::Password => "Password",
-            Self::KeyFile => "Key file",
-            Self::Agent => "Agent",
+            Self::Password => msgid("Password"),
+            Self::KeyFile => msgid("Key file"),
+            Self::Agent => msgid("Agent"),
         }
     }
 }

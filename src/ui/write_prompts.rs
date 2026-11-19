@@ -13,7 +13,7 @@ use egui::{
 };
 
 use crate::format;
-use crate::i18n::{Locale, gettext, ngettext};
+use crate::i18n::{Locale, Msgid, gettext, msgid, ngettext};
 use crate::keymap::{Command, Layout};
 use crate::model::{Action, Held, LeavePrompt, Workspace, WritePrompt};
 use crate::review::{Line, Review, Values};
@@ -54,8 +54,10 @@ const FEWEST_ROWS: f32 = 3.0;
 
 /// What the Leave prompt says of a save that is running when the window is
 /// asked to close.
-const SAVING: &str = "A save is still running. It writes everything or nothing, \
-                      and closing now means not seeing which.";
+const SAVING: Msgid = msgid(
+    "A save is still running. It writes everything or nothing, \
+                      and closing now means not seeing which.",
+);
 
 /// How a prompt draws.
 #[derive(Clone, Copy)]
@@ -67,8 +69,8 @@ pub(super) struct Skin<'a> {
 
 impl Skin<'_> {
     /// `text` translated, in the look's case.
-    pub(super) fn say(&self, text: &'static str) -> String {
-        self.look.label(&gettext(self.locale, text))
+    pub(super) fn say(&self, text: Msgid) -> String {
+        self.look.label(&text.say(self.locale))
     }
 
     /// The frame of a prompt whose parts fill it edge to edge, and the
@@ -80,31 +82,32 @@ impl Skin<'_> {
     }
 }
 
-/// What was asked for and is held, as the question words it. The terminal
-/// says `closing` of a tab, as its design does.
-fn doing(held: &Held, terminal: bool) -> &'static str {
+/// What was asked for and is held, as the terminal look's question words
+/// it: `closing with pending edits`, of a tab as its design does.
+fn doing(held: &Held) -> Msgid {
     match held {
         Held::Action(action) => match **action {
-            Action::CloseTab { .. } if terminal => "closing",
-            Action::CloseTab { .. } => "closing the tab",
+            Action::CloseTab { .. } => msgid("closing with pending edits"),
             Action::Refresh(_) | Action::RetryRows { .. } | Action::RetryStructure { .. } => {
-                "reloading"
+                msgid("reloading with pending edits")
             }
-            Action::NextPage { .. } | Action::PrevPage { .. } => "changing the page",
-            Action::SortBy { .. } | Action::ClearSort { .. } => "sorting",
+            Action::NextPage { .. } | Action::PrevPage { .. } => {
+                msgid("changing the page with pending edits")
+            }
+            Action::SortBy { .. } | Action::ClearSort { .. } => msgid("sorting with pending edits"),
             Action::ApplyFilters { .. }
             | Action::ClearFilters { .. }
             | Action::DropFilter { .. }
             | Action::FollowForeignKey { .. }
-            | Action::OpenFiltered { .. } => "filtering",
-            Action::SwitchDatabase { .. } => "switching database",
+            | Action::OpenFiltered { .. } => msgid("filtering with pending edits"),
+            Action::SwitchDatabase { .. } => msgid("switching database with pending edits"),
             Action::CloseConnTab(_) | Action::Disconnect(_) | Action::Connect { .. } => {
-                "disconnecting"
+                msgid("disconnecting with pending edits")
             }
-            _ => "going on",
+            _ => msgid("going on with pending edits"),
         },
-        Held::CloseWindow => "closing the window",
-        Held::Nothing => "discarding",
+        Held::CloseWindow => msgid("closing the window with pending edits"),
+        Held::Nothing => msgid("discarding with pending edits"),
     }
 }
 
@@ -297,7 +300,7 @@ fn leave_sheet(
     };
     let title = title.replace("{changes}", &changes);
     let text = if prompt.saving {
-        gettext(locale, SAVING)
+        SAVING.say(locale)
     } else {
         ngettext(
             locale,
@@ -400,29 +403,28 @@ fn leave_box(
         Some(Command::LeaveDiscard) => actions.push(Action::LeaveDiscard),
         _ => {}
     }
-    let mut line = format!(
-        "{} {}",
-        skin.say(doing(&prompt.held, true)),
-        skin.say("with pending edits")
-    );
+    let mut line = skin.say(doing(&prompt.held));
     if prompt.tabs.len() > 1 {
-        line.push_str(&format!(
-            " {} {} {}",
-            skin.say("in"),
-            prompt.tabs.len(),
-            skin.say("tabs")
-        ));
+        let tabs = prompt.tabs.len();
+        let words = ngettext(locale, "{what} in {n} tab", "{what} in {n} tabs", tabs);
+        line = crate::i18n::fill(
+            &look.label(&words),
+            &[("{what}", &line), ("{n}", &tabs.to_string())],
+        );
     }
     // Under a save there is no telling what is written: the box says
     // what closing comes to.
     let count = if prompt.saving {
         skin.say(SAVING)
     } else {
-        format!(
-            "{} {}",
-            look.label(&counted(locale, prompt.changes, "change", "changes")),
-            skin.say("not written")
-        )
+        let words = ngettext(
+            locale,
+            "{n} change not written",
+            "{n} changes not written",
+            prompt.changes,
+        );
+        look.label(&words)
+            .replace("{n}", &prompt.changes.to_string())
     };
     let (frame, radius) = skin.frame();
     let modal = widgets::modal(Id::new("leave-prompt"), look, palette)
@@ -443,7 +445,11 @@ fn leave_box(
                         .label(ui);
                 });
             let foot = terminal_dialog::foot(ui, radius, palette);
-            let (write, discard, stay) = (skin.say("write"), skin.say("discard"), skin.say("stay"));
+            let (write, discard, stay) = (
+                skin.say(msgid("write")),
+                skin.say(msgid("discard")),
+                skin.say(msgid("stay")),
+            );
             let names = [
                 gettext(locale, "Write"),
                 gettext(locale, "Discard"),
@@ -683,7 +689,7 @@ pub fn confirm_write(
         // With what the sheet says the deletes take with them.
         whole.also(&prompt.review.effects());
         ctx.copy_text(review::text(&whole, locale));
-        crate::ui::toast::say(ctx, &gettext(locale, review::COPIED_SQL));
+        crate::ui::toast::say(ctx, &review::COPIED_SQL.say(locale));
     }
     if ripe && !early { actions } else { Vec::new() }
 }
@@ -946,12 +952,9 @@ fn confirm_box(
     let armed = prompt.typed == facts.name;
     // What the field asks for, and why the button that sends cannot be
     // pressed before it has it.
-    let ask = format!(
-        "{} {} {}",
-        skin.say("type"),
-        format::display_safe(&facts.name),
-        skin.say("to confirm")
-    );
+    let ask = skin
+        .say(msgid("type {name} to confirm"))
+        .replace("{name}", &format::display_safe(&facts.name));
     let id = Id::new("write-prompt");
     let modal = widgets::modal(id, look, palette).frame(frame);
     let modal = match panel {
@@ -981,7 +984,9 @@ fn confirm_box(
         ui.painter()
             .rect_filled(chip, CornerRadius::same(2), danger);
         tag.paint_left(ui.painter(), chip.left() + 6.0, y);
-        let title = format!("{} {}?", skin.say("write"), look.label(&facts.changes));
+        let title = skin
+            .say(msgid("write {changes}?"))
+            .replace("{changes}", &look.label(&facts.changes));
         widgets::paint_label(
             ui,
             chip.right() + 10.0,
@@ -1001,11 +1006,14 @@ fn confirm_box(
                     ui.add_space(2.0);
                     one_row(ui, role, &about, palette.dim, look);
                     ui.add_space(10.0);
-                    // In place of the statements: where they are.
+                    // In place of the statements: where they are, the
+                    // command in the accent, where the phrase puts it.
+                    let shown = skin.say(msgid("sql shown with {command}"));
+                    let (before, after) = crate::i18n::around(&shown, "{command}");
                     Text::new(look)
-                        .add(role, &skin.say("sql shown with"), palette.dim)
-                        .space(role, " ")
+                        .add(role, before, palette.dim)
                         .add(role, ":diff", palette.accent)
+                        .add(role, after, palette.dim)
                         .layout(ui.ctx())
                         .label(ui);
                 } else {
@@ -1055,9 +1063,9 @@ fn confirm_box(
             });
         let foot = terminal_dialog::foot(ui, radius, palette);
         let (confirm, cancel, scroll) = (
-            skin.say("confirm"),
-            skin.say("cancel"),
-            skin.say("scroll sql"),
+            skin.say(msgid("confirm")),
+            skin.say(msgid("cancel")),
+            skin.say(msgid("scroll sql")),
         );
         let names = [
             gettext(locale, "Save to production"),

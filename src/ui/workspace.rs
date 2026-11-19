@@ -6,7 +6,7 @@ use tabletist_db::{Access, TlsMode};
 
 use crate::app::App;
 use crate::format::display_safe;
-use crate::i18n::{gettext, pgettext};
+use crate::i18n::{Msgid, fill, gettext, msgid, ngettext, pgettext, pmsgid};
 use crate::keymap::Command;
 use crate::model::{Action, ConnTabId, ObjectView, SessionStatus, TabId};
 use crate::style::Icon;
@@ -534,23 +534,26 @@ fn connecting(
         palette,
         look,
     } = paint;
-    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let say = |text: Msgid| look.label(&text.say(locale));
     let spec = &workspace.spec;
     let (reach, target) = match spec.driver {
-        Driver::Sqlite | Driver::Files => ("Open", spec.summary()),
+        Driver::Sqlite | Driver::Files => (msgid("Open"), spec.summary()),
         // The project is the whole target.
-        Driver::BigQuery => ("Connect to", spec.summary()),
+        Driver::BigQuery => (msgid("Connect to"), spec.summary()),
         Driver::Postgres | Driver::MySql => {
             let target = format!("{}:{}", spec.host, spec.port);
             let target = match &spec.ssh {
-                Some(ssh) => format!("{target} {} {}", say("via"), ssh.host),
+                Some(ssh) => fill(
+                    &say(msgid("{place} via {host}")),
+                    &[("{place}", &target), ("{host}", &ssh.host)],
+                ),
                 None => target,
             };
-            ("Connect to", target)
+            (msgid("Connect to"), target)
         }
     };
     let connected = matches!(workspace.status, SessionStatus::Connected);
-    let (reach, load) = (say(reach), say("Load schema"));
+    let (reach, load) = (say(reach), say(msgid("Load schema")));
     let list = [
         states::Step {
             state: if connected {
@@ -574,7 +577,7 @@ fn connecting(
     let body = ui.max_rect();
     let height = states::steps_height(list.len(), &look);
     let button_height = states::button_height(&look);
-    let name = say("Cancel");
+    let name = say(msgid("Cancel"));
     // A tab with SQL editors open keeps them through a switch of database:
     // it has no button that would close them, and the bar's Disconnect is
     // the way out. Named apart from a password prompt's Cancel, which can
@@ -627,49 +630,64 @@ fn connecting(
 fn failure_title(
     error: Option<&tabletist_db::Error>,
     spec: &tabletist_db::ConnectSpec,
-    say: impl Fn(&'static str) -> String,
+    say: impl Fn(Msgid) -> String,
 ) -> (Icon, String) {
     use tabletist_db::{Driver, Error, SshStage};
     let Some(error) = error else {
-        return (Icon::CircleAlert, say("Connection cancelled"));
+        return (Icon::CircleAlert, say(msgid("Connection cancelled")));
     };
     match error {
-        Error::Auth(_) if spec.user.is_empty() => (Icon::Lock, say("Login refused")),
+        Error::Auth(_) if spec.user.is_empty() => (Icon::Lock, say(msgid("Login refused"))),
         Error::Auth(_) => (
             Icon::Lock,
-            format!("{} {}", say("Password rejected for"), spec.user),
+            fill(
+                &say(msgid("Password rejected for {user}")),
+                &[("{user}", &spec.user)],
+            ),
         ),
         Error::Connect(_) | Error::Timeout => match spec.driver {
             Driver::Sqlite | Driver::Files => (
                 Icon::CircleAlert,
-                format!("{} {}", say("Can't open"), spec.summary()),
+                fill(
+                    &say(msgid("Can't open {file}")),
+                    &[("{file}", &spec.summary())],
+                ),
             ),
             Driver::Postgres | Driver::MySql => (
                 Icon::WifiOff,
-                format!("{} {}:{}", say("Can't reach"), spec.host, spec.port),
+                fill(
+                    &say(msgid("Can't reach {place}")),
+                    &[("{place}", &format!("{}:{}", spec.host, spec.port))],
+                ),
             ),
             Driver::BigQuery => (
                 Icon::WifiOff,
-                format!("{} {}", say("Can't reach"), spec.summary()),
+                fill(
+                    &say(msgid("Can't reach {place}")),
+                    &[("{place}", &spec.summary())],
+                ),
             ),
         },
-        Error::Tls(_) => (Icon::ShieldAlert, say("TLS or certificate problem")),
+        Error::Tls(_) => (Icon::ShieldAlert, say(msgid("TLS or certificate problem"))),
         Error::Ssh {
             stage: SshStage::HostKeyUnknown { .. } | SshStage::HostKeyMismatch { .. },
             ..
-        } => (Icon::ShieldAlert, say("SSH host key not trusted")),
+        } => (Icon::ShieldAlert, say(msgid("SSH host key not trusted"))),
         Error::Ssh { .. } => {
             let host = spec.ssh.as_ref().map_or("", |ssh| ssh.host.as_str());
             (
                 Icon::WifiOff,
-                format!("{} {host} {}", say("SSH tunnel to"), say("failed")),
+                fill(
+                    &say(msgid("SSH tunnel to {host} failed")),
+                    &[("{host}", host)],
+                ),
             )
         }
         Error::InvalidSpec(_) => (
             Icon::CircleAlert,
-            say("The connection's settings are not valid"),
+            say(msgid("The connection's settings are not valid")),
         ),
-        _ => (Icon::CircleAlert, say("Could not connect")),
+        _ => (Icon::CircleAlert, say(msgid("Could not connect"))),
     }
 }
 
@@ -688,7 +706,7 @@ fn failure(
         palette,
         look,
     } = paint;
-    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let say = |text: Msgid| look.label(&text.say(locale));
     let error = match &workspace.status {
         SessionStatus::Disconnected(error) => Some(error),
         _ => None,
@@ -738,7 +756,7 @@ fn failure(
         Text::one(
             &look,
             widgets::secondary(&look),
-            &say("Details"),
+            &say(msgid("Details")),
             palette.dim,
         )
         .layout(ui.ctx())
@@ -752,7 +770,11 @@ fn failure(
     let details = format!("{title}\n{raw}");
     ui.horizontal(|ui| {
         let height = states::button_height(&look);
-        let (again, change, copy) = (say("Retry"), say("Edit connection"), say("Copy details"));
+        let (again, change, copy) = (
+            say(msgid("Retry")),
+            say(msgid("Edit connection")),
+            say(msgid("Copy details")),
+        );
         // The button that fixes the cause is the primary one.
         fn lead(button: ButtonSpec<'_>, first: bool) -> ButtonSpec<'_> {
             if first { button.primary() } else { button }
@@ -781,9 +803,9 @@ fn failure(
         });
     });
     if tls {
-        let note = say(
+        let note = say(msgid(
             "There is no \"connect anyway\". Change the TLS mode or the host in the connection.",
-        );
+        ));
         Text::one(&look, widgets::secondary(&look), &note, palette.secondary)
             .wrap(width)
             .layout(ui.ctx())
@@ -807,7 +829,7 @@ pub(super) struct BarInfo {
     pub(super) read_only: bool,
     pub(super) database: String,
     pub(super) databases: Vec<String>,
-    tls: Option<(&'static str, Tone)>,
+    tls: Option<(Msgid, Tone)>,
     ssh_host: Option<String>,
     chips: Vec<Chip>,
     /// The key that shows the connections, and the one that closes this
@@ -873,7 +895,7 @@ pub(super) fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
             matches!(workspace.status, SessionStatus::Connected).then_some(workspace.encrypted);
         let (text, warn) = match workspace.driver {
             // HTTPS to Google's API, verified against the system roots.
-            Driver::BigQuery => ("HTTPS", false),
+            Driver::BigQuery => (Msgid::as_is("HTTPS"), false),
             Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::Files => {
                 tls_status(spec.effective_tls(), encrypted)
             }
@@ -941,7 +963,7 @@ fn card_rows(
     now: u64,
 ) -> Vec<(String, String)> {
     use tabletist_db::Driver;
-    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let say = |text: Msgid| look.label(&text.say(locale));
     let spec = &workspace.spec;
     let mut rows = Vec::new();
     match workspace.driver {
@@ -951,30 +973,36 @@ fn card_rows(
                 .as_ref()
                 .map(|path| path.display().to_string())
                 .unwrap_or_default();
-            rows.push((say("File"), path));
+            rows.push((say(msgid("File")), path));
         }
         Driver::BigQuery => {
-            rows.push((say("Project"), display_safe(&spec.database).into_owned()));
+            rows.push((
+                say(msgid("Project")),
+                display_safe(&spec.database).into_owned(),
+            ));
             if let Some(key) = &spec.bigquery_key {
-                rows.push((say("Key file"), key.display().to_string()));
+                rows.push((say(msgid("Key file")), key.display().to_string()));
             }
         }
         Driver::Files => match &spec.files {
             Some(tabletist_db::files::Source::Folder(folder)) => {
-                rows.push((say("Folder"), tabletist_db::files::shown(folder)));
+                rows.push((say(msgid("Folder")), tabletist_db::files::shown(folder)));
             }
             Some(source @ tabletist_db::files::Source::Files(_)) => {
-                rows.push((say("Files"), source.summary()));
+                rows.push((say(msgid("Files")), source.summary()));
             }
             None => {}
         },
         Driver::Postgres | Driver::MySql => {
-            rows.push((say("Host"), format!("{}:{}", spec.host, spec.port)));
+            rows.push((say(msgid("Host")), format!("{}:{}", spec.host, spec.port)));
             if !spec.database.is_empty() {
-                rows.push((say("Database"), display_safe(&spec.database).into_owned()));
+                rows.push((
+                    say(msgid("Database")),
+                    display_safe(&spec.database).into_owned(),
+                ));
             }
             if !spec.user.is_empty() {
-                rows.push((say("User"), spec.user.clone()));
+                rows.push((say(msgid("User")), spec.user.clone()));
             }
         }
     }
@@ -983,38 +1011,39 @@ fn card_rows(
         .value
         .clone()
         .unwrap_or_else(|| workspace.driver.label().to_owned());
-    rows.push((say("Server"), server));
+    rows.push((say(msgid("Server")), server));
     let connected = matches!(workspace.status, SessionStatus::Connected);
     let tls = if is_remote(workspace) {
         let encrypted = connected.then_some(workspace.encrypted);
         say(match workspace.driver {
-            Driver::BigQuery => "HTTPS",
+            Driver::BigQuery => Msgid::as_is("HTTPS"),
             Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::Files => {
                 tls_status(spec.effective_tls(), encrypted).0
             }
         })
     } else {
-        say("Local")
+        say(msgid("Local"))
     };
     let ssh = match &spec.ssh {
-        Some(ssh) => format!("{} {}", say("SSH via"), ssh.host),
-        None => say("no SSH"),
+        Some(ssh) => say(msgid("SSH via {host}")).replace("{host}", &ssh.host),
+        None => say(msgid("no SSH")),
     };
-    rows.push((say("Security"), format!("{tls} · {ssh}")));
+    rows.push((say(msgid("Security")), format!("{tls} · {ssh}")));
     let state = match &workspace.status {
         SessionStatus::Connected => {
             let tabs = match workspace.tabs.len() {
-                0 => say("no tabs open"),
-                1 => say("1 tab open"),
-                count => format!("{count} {}", say("tabs open")),
+                0 => say(msgid("no tabs open")),
+                count => look
+                    .label(&ngettext(locale, "{n} tab open", "{n} tabs open", count))
+                    .replace("{n}", &count.to_string()),
             };
             let since = crate::connections::when(workspace.connected_at, now);
-            (say("Connected"), format!("{since} · {tabs}"))
+            (say(msgid("Connected")), format!("{since} · {tabs}"))
         }
-        SessionStatus::Connecting { .. } => (say("Status"), say("Connecting…")),
-        SessionStatus::Disconnected(_) => (say("Status"), say("Disconnected")),
-        SessionStatus::Cancelled => (say("Status"), say("Cancelled")),
-        SessionStatus::Idle => (say("Status"), say("Disconnected while idle")),
+        SessionStatus::Connecting { .. } => (say(msgid("Status")), say(msgid("Connecting…"))),
+        SessionStatus::Disconnected(_) => (say(msgid("Status")), say(msgid("Disconnected"))),
+        SessionStatus::Cancelled => (say(msgid("Status")), say(msgid("Cancelled"))),
+        SessionStatus::Idle => (say(msgid("Status")), say(msgid("Disconnected while idle"))),
     };
     rows.push(state);
     rows
@@ -1029,13 +1058,13 @@ fn card_hint(
     locale: crate::i18n::Locale,
 ) -> Option<String> {
     let text = if !chip.own {
-        "Click to switch to this connection"
+        msgid("Click to switch to this connection")
     } else if switchable {
-        "Click to switch database"
+        msgid("Click to switch database")
     } else {
         return None;
     };
-    Some(look.label(&gettext(locale, text)))
+    Some(look.label(&text.say(locale)))
 }
 
 /// A chip's card, shown while the pointer rests on it: the connection and
@@ -1486,7 +1515,7 @@ fn mac_bar(
             Tone::Good => palette.success,
             Tone::Warn => palette.warning,
         };
-        pills.push((Some(Icon::Lock), gettext(locale, text).into_owned(), color));
+        pills.push((Some(Icon::Lock), text.say(locale).into_owned(), color));
     }
     if let Some(host) = &info.ssh_host {
         pills.push((
@@ -1757,7 +1786,7 @@ fn terminal_bar(
             Tone::Good => palette.success,
             Tone::Warn => palette.warning,
         };
-        tags.push((gettext(locale, text).into_owned(), color));
+        tags.push((text.say(locale).into_owned(), color));
     }
     if let Some(host) = &info.ssh_host {
         tags.push((
@@ -2007,7 +2036,7 @@ struct Editing {
     /// Where Tab moves on to: the next cell from an editor on a cell, the
     /// next field from one in the row panel. Nowhere from the large
     /// editor, in either place: Tab is its text's own.
-    walks: Option<&'static str>,
+    walks: Option<Msgid>,
     /// Insert mode is in a foreign key cell's picker: the line names the
     /// list's keys in place of the editor's.
     picking: bool,
@@ -2128,7 +2157,7 @@ fn editing_status(
             ..Editing::default()
         };
     };
-    let say = |text: &'static str| gettext(locale, text);
+    let say = |text: Msgid| text.say(locale);
     let edits = &object.edits;
     // The keys that edit are the grid's: the Structure view has none.
     let data = object.view == ObjectView::Data;
@@ -2148,15 +2177,21 @@ fn editing_status(
     });
     let counts = edits.counts();
     let pending = (counts.changes > 0).then(|| {
+        let changes = ngettext(locale, "{n} pending", "{n} pending", counts.changes)
+            .replace("{n}", &counts.changes.to_string());
         format!(
-            "{} {} · {}",
-            counts.changes,
-            say("pending"),
+            "{changes} · {}",
             counted(locale, counts.rows, "row", "rows")
         )
     });
-    let added = (counts.added > 0).then(|| format!("+{} {}", counts.added, say("new")));
-    let deleted = (counts.deleted > 0).then(|| format!("-{} {}", counts.deleted, say("to delete")));
+    let added = (counts.added > 0).then(|| {
+        ngettext(locale, "+{n} new", "+{n} new", counts.added)
+            .replace("{n}", &counts.added.to_string())
+    });
+    let deleted = (counts.deleted > 0).then(|| {
+        ngettext(locale, "-{n} to delete", "-{n} to delete", counts.deleted)
+            .replace("{n}", &counts.deleted.to_string())
+    });
     let can_delete = data
         && object.selection.is_some_and(|cell| {
             crate::edit::Table::of(workspace, object)
@@ -2177,8 +2212,19 @@ fn editing_status(
     let needs = {
         match asked.lacking.as_slice() {
             [] => None,
-            [one] => Some(format!("{one} {}", look.label(&say("required")))),
-            more => Some(look.label(&format!("{} {}", more.len(), say("values required")))),
+            [one] => Some(
+                look.label(&say(msgid("{column} required")))
+                    .replace("{column}", one),
+            ),
+            more => Some(
+                look.label(&ngettext(
+                    locale,
+                    "{n} value required",
+                    "{n} values required",
+                    more.len(),
+                ))
+                .replace("{n}", &more.len().to_string()),
+            ),
         }
     };
     // What a save came to stands a step back from the keys and the counts.
@@ -2209,7 +2255,7 @@ fn editing_status(
         let line = crate::format::capped(line);
         Some(Said {
             mark: None,
-            text: format!("{} {}", say("not a command:"), display_safe(&line)),
+            text: format!("{} {}", say(msgid("not a command:")), display_safe(&line)),
             tail: None,
             color: states::Tone::Danger.color(palette),
         })
@@ -2233,7 +2279,7 @@ fn editing_status(
         // that has something pending: another tab's, shown by a click.
         Some(Said {
             mark: None,
-            text: look.label(&say("nothing pending")),
+            text: look.label(&say(msgid("nothing pending"))),
             tail: None,
             color: palette.text,
         })
@@ -2259,17 +2305,17 @@ fn editing_status(
         Some(match note {
             Note::Conflict { .. } => Said {
                 mark: Some((&["≠"], states::Tone::Warning)),
-                text: format!("{} {text}", say("conflict")),
+                text: format!("{} {text}", say(msgid("conflict"))),
                 tail: None,
                 color: back,
             },
             Note::Failed { .. } => Said {
                 mark: Some((FAILED, states::Tone::Danger)),
-                text: format!("{} {text}", say("failed")),
+                text: format!("{} {text}", say(msgid("failed"))),
                 tail: Some(format!(
                     "{} · {}",
-                    say("rolled back"),
-                    say("cells stay pending in red")
+                    say(msgid("rolled back")),
+                    say(msgid("cells stay pending in red"))
                 )),
                 color: back,
             },
@@ -2278,7 +2324,7 @@ fn editing_status(
             Note::FailedDelete { .. } => Said {
                 mark: Some((FAILED, states::Tone::Danger)),
                 text,
-                tail: Some(say("the row stays marked").into_owned()),
+                tail: Some(say(msgid("the row stays marked")).into_owned()),
                 color: back,
             },
             // Of a save that wrote.
@@ -2309,7 +2355,11 @@ fn editing_status(
     };
     let walks = edits.editor.as_ref().and_then(|editor| {
         let panel = editor.place == crate::edit::EditorPlace::Panel;
-        (!editor.large).then_some(if panel { "next field" } else { "next cell" })
+        (!editor.large).then_some(if panel {
+            msgid("next field")
+        } else {
+            msgid("next cell")
+        })
     });
     let picking = edits.editor.as_ref().is_some_and(|editor| {
         // A search that failed leaves the plain text editor, keys and all.
@@ -3016,17 +3066,17 @@ fn status_line(
     ]
     .map(|command| keymap.key(layout, command));
     let history_words = [
-        "move",
-        "run again",
-        "open in sql",
-        "agents log",
-        "reapply filter",
-        "copy sql",
-        "filter",
-        "clear",
-        "back",
+        msgid("move"),
+        msgid("run again"),
+        msgid("open in sql"),
+        msgid("agents log"),
+        msgid("reapply filter"),
+        msgid("copy sql"),
+        pmsgid("key hint", "filter"),
+        msgid("clear"),
+        msgid("back"),
     ]
-    .map(|word| gettext(locale, word));
+    .map(|word| word.say(locale));
     let mut editing = editing_status(paint, workspace, asked.editing);
     // What was just done (a copy of the review's SQL), where the line has
     // nothing of a lock or of a save to say: this look floats no toast.
@@ -3083,11 +3133,32 @@ fn status_line(
             let y = rect.top() + 1.0 + 15.0;
             // The row is shown in the inspector; the cell is edited, where
             // it can be.
+            // The keys' words the table's, the editor's and the log's lines share.
+            let [
+                row_word,
+                col_word,
+                inspect_word,
+                filter_word,
+                tables_word,
+                copy_word,
+                copy_as_word,
+            ] = [
+                pmsgid("key hint", "row"),
+                msgid("col"),
+                msgid("inspect"),
+                pmsgid("key hint", "filter"),
+                msgid("tables"),
+                msgid("copy"),
+                msgid("copy as"),
+            ]
+            .map(|word| word.say(locale));
+            let (export_word, export_result_word) =
+                (gettext(locale, "export"), gettext(locale, "export result"));
             let edit = gettext(locale, "edit");
             let mut table_hints: Vec<widgets::Hint<'_>> = vec![
-                (&rows_key, "row", true),
-                (&cols_key, "col", true),
-                (&inspect_key, "inspect", true),
+                (&rows_key, &*row_word, true),
+                (&cols_key, &*col_word, true),
+                (&inspect_key, &*inspect_word, true),
             ];
             if editing.can_edit {
                 table_hints.push((&edit_key, &*edit, true));
@@ -3103,11 +3174,14 @@ fn status_line(
                 table_hints.push((&delete_key, &*delete, true));
             }
             table_hints.extend([
-                (&filter_key, "filter", true),
-                (&sidebar_key, "tables", true),
+                (&filter_key, &*filter_word, true),
+                (&sidebar_key, &*tables_word, true),
             ]);
             table_hints.extend(panes_hint);
-            table_hints.extend([(&copy_key, "copy", true), (&copy_as_key, "copy as", true)]);
+            table_hints.extend([
+                (&copy_key, &*copy_word, true),
+                (&copy_as_key, &*copy_as_word, true),
+            ]);
             // The prompt's line that saves, where a save can be made.
             let write = gettext(locale, "write");
             if !read_only {
@@ -3122,30 +3196,34 @@ fn status_line(
                 table_hints.push((&review_key, &*review, true));
             }
             // Export last: the first to give way where room runs out.
-            table_hints.push((&export_key, "export", true));
+            table_hints.push((&export_key, &*export_word, true));
             // An editor's keys: a table's do nothing on it.
             let words = [
-                "run",
-                "run all",
-                "cancel",
-                if to_normal { "normal" } else { "leave editor" },
-                "tables",
-                "complete",
-                "results",
-                "editor",
+                msgid("run"),
+                msgid("run all"),
+                msgid("cancel"),
+                if to_normal {
+                    msgid("normal")
+                } else {
+                    msgid("leave editor")
+                },
+                msgid("tables"),
+                msgid("complete"),
+                msgid("results"),
+                msgid("editor"),
             ]
-            .map(|word| gettext(locale, word));
+            .map(|word| word.say(locale));
             // The result's rows have the keys: their own, the way back up
             // to the script, its copy in a format, and its export (spec
             // 4), the first to give way.
             let result_keys = !ui.ctx().text_edit_focused() && results_shown;
             let mut editor_hints: Vec<widgets::Hint<'_>> = if result_keys {
                 vec![
-                    (&rows_key, "row", true),
-                    (&cols_key, "col", true),
-                    (&inspect_key, "inspect", true),
-                    (&copy_key, "copy", true),
-                    (&copy_as_key, "copy as", true),
+                    (&rows_key, &*row_word, true),
+                    (&cols_key, &*col_word, true),
+                    (&inspect_key, &*inspect_word, true),
+                    (&copy_key, &*copy_word, true),
+                    (&copy_as_key, &*copy_as_word, true),
                     (&editor_key, &*words[7], true),
                 ]
             } else {
@@ -3158,7 +3236,7 @@ fn status_line(
             };
             if result_keys {
                 editor_hints.extend(panes_hint);
-                editor_hints.push((&export_key, "export result", true));
+                editor_hints.push((&export_key, &*export_result_word, true));
             } else {
                 // The script's: down to the results, where they show rows.
                 if results_shown {
@@ -3171,8 +3249,13 @@ fn status_line(
                 editor_hints.insert(0, (&complete_key, &*words[5], true));
             }
             // The Structure view's keys: a row's do nothing on it.
-            let structure_words =
-                ["column", "use as label", "choose", "tables"].map(|word| gettext(locale, word));
+            let structure_words = [
+                pmsgid("key hint", "column"),
+                msgid("use as label"),
+                msgid("choose"),
+                msgid("tables"),
+            ]
+            .map(|word| word.say(locale));
             let mut structure_hints: Vec<widgets::Hint<'_>> =
                 vec![(&column_key, &*structure_words[0], true)];
             if labels {
@@ -3199,16 +3282,16 @@ fn status_line(
             // is pending in the table's rows is saved and reviewed from
             // here too.
             let ddl_words = [
-                "line",
-                "select lines",
-                "copy",
-                "open in sql",
-                "section",
-                "rows",
-                "structure",
-                "normal",
+                msgid("line"),
+                msgid("select lines"),
+                msgid("copy"),
+                msgid("open in sql"),
+                msgid("section"),
+                msgid("rows"),
+                msgid("structure"),
+                msgid("normal"),
             ]
-            .map(|word| gettext(locale, word));
+            .map(|word| word.say(locale));
             let mut ddl_hints: Vec<widgets::Hint<'_>> = ddl_keys
                 .iter()
                 .zip(&ddl_words)
@@ -3302,7 +3385,7 @@ fn status_line(
                 }
                 None => agents_hints.push((&agents_log_key, &*log_words[0], true)),
             }
-            agents_hints.push((&sidebar_key, "tables", true));
+            agents_hints.push((&sidebar_key, &*tables_word, true));
             if let Some((chosen, said, shown)) = &history_line {
                 // j/k move, r run again, enter open in sql, a agents log,
                 // f reapply filter, y copy sql, / filter, :history clear,
@@ -3419,14 +3502,14 @@ fn status_line(
                     } else {
                         palette.magenta
                     };
-                    let label = gettext(locale, label);
+                    let label = label.say(locale);
                     let text = Text::one(&look, TextRole::OModeLine, &label, color);
                     left += widgets::paint_label(ui, left, y, text) + gap;
                 }
                 // A visual selection of the result: its mode, its size and
                 // its keys, in place of the editor's.
                 if let Some((visual, held)) = &editing.visual {
-                    let mode = gettext(locale, visual.mode());
+                    let mode = visual.mode().say(locale);
                     let mode = Text::one(&look, TextRole::OModeLine, &mode, palette.magenta);
                     left += widgets::paint_label(ui, left, y, mode) + gap;
                     let text = Text::one(&look, role, held, palette.secondary);
@@ -3502,7 +3585,7 @@ fn status_line(
                 // A visual selection: the mode, what it holds and the
                 // counts. Its keys, at the right, give way: `V`'s rows
                 // are deleted, the others' cells copied.
-                let mode = gettext(locale, visual.mode());
+                let mode = visual.mode().say(locale);
                 let mode = || Text::one(&look, TextRole::OModeLine, &mode, palette.magenta);
                 let rows = *visual == crate::selection::Visual::Rows;
                 let (act_key, acts) = if rows {
@@ -3558,7 +3641,7 @@ fn status_line(
                 let mode = gettext(locale, "-- INSERT --");
                 let mode = || Text::one(&look, TextRole::OModeLine, &mode, palette.success);
                 let normal = gettext(locale, "normal");
-                let next = editing.walks.map(|next| gettext(locale, next));
+                let next = editing.walks.map(|next| next.say(locale));
                 let moves = gettext(locale, "move");
                 let sets = gettext(locale, "set");
                 let closes = gettext(locale, "close");
@@ -3843,12 +3926,12 @@ fn status_line(
 /// `encrypted` is what the session negotiated, once it has connected.
 /// `prefer` and `require` do not check the certificate (as in libpq), so
 /// anyone on the network path could be the server.
-fn tls_status(mode: TlsMode, encrypted: Option<bool>) -> (&'static str, bool) {
+fn tls_status(mode: TlsMode, encrypted: Option<bool>) -> (Msgid, bool) {
     match (mode, encrypted) {
-        (TlsMode::Disable, _) | (_, Some(false)) => ("Not encrypted", true),
-        (TlsMode::Prefer | TlsMode::Require, _) => ("TLS, not verified", true),
-        (TlsMode::VerifyCa, _) => ("TLS, host name not checked", false),
-        (TlsMode::VerifyFull, _) => ("TLS verified", false),
+        (TlsMode::Disable, _) | (_, Some(false)) => (msgid("Not encrypted"), true),
+        (TlsMode::Prefer | TlsMode::Require, _) => (msgid("TLS, not verified"), true),
+        (TlsMode::VerifyCa, _) => (msgid("TLS, host name not checked"), false),
+        (TlsMode::VerifyFull, _) => (msgid("TLS verified"), false),
     }
 }
 
@@ -3866,7 +3949,7 @@ fn banner(
         palette,
         look,
     } = paint;
-    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let say = |text: Msgid| look.label(&text.say(locale));
     let name = display_safe(&workspace.name).into_owned();
     // What happened, the plain sentence when it says more, the exact error.
     let (lead, sentence, raw, reconnecting) = match &workspace.status {
@@ -3875,7 +3958,7 @@ fn banner(
         SessionStatus::Connected | SessionStatus::Idle => return Vec::new(),
         SessionStatus::Connecting { .. } if workspace.woken => return Vec::new(),
         SessionStatus::Connecting { .. } => (
-            format!("{} {name}…", say("Reconnecting to")),
+            say(msgid("Reconnecting to {name}…")).replace("{name}", &name),
             String::new(),
             String::new(),
             true,
@@ -3898,14 +3981,15 @@ fn banner(
                 crate::format::describe_error(locale, error)
             };
             (
-                format!("{} {name}{env} {}", say("Connection to"), say("lost.")),
+                say(msgid("Connection to {connection} lost."))
+                    .replace("{connection}", &format!("{name}{env}")),
                 sentence,
                 error.to_string(),
                 false,
             )
         }
         SessionStatus::Cancelled => (
-            say("Connection cancelled."),
+            say(msgid("Connection cancelled.")),
             String::new(),
             String::new(),
             false,
@@ -3921,7 +4005,7 @@ fn banner(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 12.0;
                 let height = if look.terminal { 24.0 } else { 28.0 };
-                let (out, back) = (say("Disconnect"), say("Reconnect"));
+                let (out, back) = (say(msgid("Disconnect")), say(msgid("Reconnect")));
                 let leave = states::button(&out, &look)
                     .label("Disconnect")
                     .salt("lost")
@@ -4144,7 +4228,7 @@ mod tests {
     fn a_failed_connects_title_names_what_was_tried() {
         use tabletist_db::{ConnectSpec, Error, SshStage};
         let (mut spec, _) = ConnectSpec::from_url("postgres://reader@db.example.com/app").unwrap();
-        let say = |text: &str| text.to_owned();
+        let say = |text: Msgid| text.english().to_owned();
         let title = |error: Option<&Error>, spec: &ConnectSpec| failure_title(error, spec, say).1;
         assert_eq!(title(None, &spec), "Connection cancelled");
         assert_eq!(

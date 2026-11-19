@@ -12,7 +12,7 @@ use egui::{
 
 use crate::edit::{Answer, LEAD, Shown, ShownLine};
 use crate::format::{self, Marks};
-use crate::i18n::{Locale, gettext};
+use crate::i18n::{Locale, Msgid, gettext, msgid};
 use crate::keymap::{Command, Keymap, Layout};
 use crate::model::{Action, ConflictPrompt, ObjectTab, Workspace};
 use crate::theme::Look;
@@ -85,18 +85,26 @@ impl Form {
 /// The keys of the terminal's box in the order its foot has them, as the
 /// design writes them: the answer, the command whose letter gives it (the
 /// keymap has the letter), and what its hint says.
-const KEYS: [(Answer, Command, &str); 4] = [
-    (Answer::Overwrite, Command::ConflictOverwrite, "overwrite"),
-    (Answer::UseServer, Command::ConflictUseServer, "use server"),
+const KEYS: [(Answer, Command, Msgid); 4] = [
+    (
+        Answer::Overwrite,
+        Command::ConflictOverwrite,
+        msgid("overwrite"),
+    ),
+    (
+        Answer::UseServer,
+        Command::ConflictUseServer,
+        msgid("use server"),
+    ),
     (
         Answer::KeepMine,
         Command::ConflictKeepMine,
-        "keep mine, reload",
+        msgid("keep mine, reload"),
     ),
     (
         Answer::Discard,
         Command::ConflictDiscard,
-        "discard my changes",
+        msgid("discard my changes"),
     ),
 ];
 
@@ -135,14 +143,14 @@ impl Title {
 
 /// The heading of the question about the page's row `row`.
 pub fn title(object: &ObjectTab, row: usize, gone: bool, look: &Look, locale: Locale) -> Title {
-    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let say = |text: Msgid| look.label(&text.say(locale));
     Title {
-        before: say("Row"),
+        before: say(msgid("Row")),
         name: super::pending_bar::row_name(object, row),
         after: if gone {
-            say("no longer exists on the server")
+            say(msgid("no longer exists on the server"))
         } else {
-            say("changed on the server")
+            say(msgid("changed on the server"))
         },
     }
 }
@@ -172,16 +180,14 @@ pub fn place(
 
 /// The answers the question about a row offers, by the names of their
 /// buttons: one for a row that is gone, three for one that changed.
-pub fn answers(gone: bool) -> &'static [(&'static str, Answer)] {
-    if gone {
-        &[("Discard my changes", Answer::Discard)]
-    } else {
-        &[
-            ("Keep mine, reload row", Answer::KeepMine),
-            ("Use server values", Answer::UseServer),
-            ("Overwrite", Answer::Overwrite),
-        ]
-    }
+pub fn answers(gone: bool) -> &'static [(Msgid, Answer)] {
+    const GONE: &[(Msgid, Answer)] = &[(msgid("Discard my changes"), Answer::Discard)];
+    const CHANGED: &[(Msgid, Answer)] = &[
+        (msgid("Keep mine, reload row"), Answer::KeepMine),
+        (msgid("Use server values"), Answer::UseServer),
+        (msgid("Overwrite"), Answer::Overwrite),
+    ];
+    if gone { GONE } else { CHANGED }
 }
 
 /// The keys a question was given in a frame, taken before it is drawn.
@@ -349,9 +355,9 @@ fn sheet(
 fn told(ui: &mut egui::Ui, asked: &Asked<'_>, color: Color32, skin: Skin<'_>) {
     let Skin { look, .. } = skin;
     let sentence = skin.say(if asked.gone {
-        "Someone deleted it after you loaded it. Nothing was written."
+        msgid("Someone deleted it after you loaded it. Nothing was written.")
     } else {
-        "Someone saved it after you loaded it. Nothing was written."
+        msgid("Someone saved it after you loaded it. Nothing was written.")
     });
     let width = ui.available_width();
     ui.add_space(4.0);
@@ -442,14 +448,14 @@ fn conflict_box(
             if asked.lines.len() as f32 * height > MOST {
                 let scrolls = Command::ScrollStatements;
                 let key = crate::ui::keys::written(ui.ctx(), look, scrolls);
-                keys.push((None, key, skin.say("scroll"), None));
+                keys.push((None, key, skin.say(msgid("scroll")), None));
             }
             // The answers this row has, by the names the sheet's buttons
             // have.
             let offered = self::answers(asked.gone);
             for (answer, command, words) in KEYS {
                 if let Some((name, _)) = offered.iter().find(|(_, of)| *of == answer) {
-                    let name = gettext(locale, name);
+                    let name = name.say(locale);
                     let letter = crate::ui::keys::written(ui.ctx(), look, command);
                     keys.push((
                         Some(answer),
@@ -502,7 +508,7 @@ fn headed(ui: &mut egui::Ui, title: &Title, skin: Skin<'_>) {
         let mark = Text::one(look, role, mark, palette.warning);
         left += widgets::paint_text(ui, left, y, mark) + measure(" ");
     }
-    let word = Text::one(look, role, &skin.say("conflict"), palette.warning);
+    let word = Text::one(look, role, &skin.say(msgid("conflict")), palette.warning);
     left += widgets::paint_label(ui, left, y, word) + 10.0;
     let place = Rect::from_min_max(pos2(left.min(row.right()), row.top()), row.max);
     let name = grid::ellipsize(&title.name, place.width(), false, |name| {
@@ -525,14 +531,12 @@ fn values(ui: &mut egui::Ui, asked: &Asked<'_>, height: f32, pages: f32, skin: S
     let size = vec2(ui.available_width(), height);
     let (head, _) = ui.allocate_exact_size(size, Sense::hover());
     // A row that is gone has nothing on the server to show.
-    let words: &[&'static str] = if gone {
-        &["loaded", "yours"]
-    } else {
-        &["loaded", "server", "yours"]
-    };
+    const GONE: &[Msgid] = &[msgid("loaded"), msgid("yours")];
+    const CHANGED: &[Msgid] = &[msgid("loaded"), msgid("server"), msgid("yours")];
+    let words = if gone { GONE } else { CHANGED };
     for (at, word) in words.iter().enumerate() {
         let x = BOX.cell(head, words.len(), at).left();
-        let text = Text::one(look, TextRole::OBody, &skin.say(word), palette.dim);
+        let text = Text::one(look, TextRole::OBody, &skin.say(*word), palette.dim);
         widgets::paint_label(ui, x, head.center().y, text);
     }
     lines(ui, asked, height, pages, |ui, row, index, shown| {
@@ -627,14 +631,12 @@ fn table(ui: &mut egui::Ui, asked: &Asked<'_>, pages: f32, skin: Skin<'_>) {
             };
             ui.painter().rect_filled(head, top, palette.surface);
             // A row that is gone has nothing on the server to show.
-            let words: &[&'static str] = if gone {
-                &["loaded", "yours"]
-            } else {
-                &["loaded", "now on server", "yours"]
-            };
+            const GONE: &[Msgid] = &[msgid("loaded"), msgid("yours")];
+            const CHANGED: &[Msgid] = &[msgid("loaded"), msgid("now on server"), msgid("yours")];
+            let words = if gone { GONE } else { CHANGED };
             for (at, word) in words.iter().enumerate() {
                 let x = SHEET.cell(head, words.len(), at).left() + SHEET.inset;
-                let word = gettext(locale, word);
+                let word = word.say(locale);
                 let role = widgets::secondary(look);
                 let text = Text::one(look, role, &word, palette.secondary);
                 widgets::paint_label(ui, x, head.center().y, text);
@@ -694,7 +696,7 @@ fn line(
     let painted = told_apart(&read, room, |text| role.width(ui.ctx(), look.faces, text));
     // What a screen reader is told of a value the server changed, after
     // the value: its tint, or its colour, is all that says so on screen.
-    let changed = skin.say("changed on the server");
+    let changed = skin.say(msgid("changed on the server"));
     let cells = values.into_iter().zip(read.into_iter().zip(painted));
     for (at, ((_, tone, color), (read, painted))) in cells.enumerate() {
         let place = form.cell(row, of, at);
@@ -964,10 +966,7 @@ fn foot(ui: &mut egui::Ui, gone: bool, skin: Skin<'_>, enter: bool, answers: &mu
         locale,
     } = skin;
     let offered = self::answers(gone);
-    let names: Vec<_> = offered
-        .iter()
-        .map(|(name, _)| gettext(locale, name))
-        .collect();
+    let names: Vec<_> = offered.iter().map(|(name, _)| name.say(locale)).collect();
     let (mut link, mut buttons, mut given) = (None, Vec::new(), Vec::new());
     for ((_, answer), name) in offered.iter().zip(&names) {
         match answer {

@@ -320,3 +320,76 @@ fn the_russian_agents_note_stacks_its_wrapped_paragraphs() {
     let second = rect("без ddl");
     assert!(first.bottom() <= second.top(), "{first:?} over {second:?}");
 }
+
+/// `harness`'s window in Russian, as the app draws it at its start when
+/// the system's first language is Russian.
+fn in_russian(harness: &mut Harness) {
+    harness.app.system_language = Some(tag("ru-RU"));
+    let settings = harness.app.settings.clone();
+    harness.app.apply_settings(settings);
+    harness.settle();
+    assert_eq!(harness.app.locale, Locale::Russian);
+}
+
+/// The looks whose grid is edited in place.
+fn desktop_looks() -> impl Iterator<Item = Look> {
+    Look::ALL.into_iter().filter(|look| !look.terminal)
+}
+
+/// A row the review cannot send says why in one Russian phrase, its key
+/// and its column put in where the translation has them.
+#[test]
+fn the_review_s_comments_are_whole_russian_phrases() {
+    for look in desktop_looks() {
+        let (mut harness, tab, id) = super::tests::editable_in(look);
+        in_russian(&mut harness);
+        super::tests::make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        super::tests::review(&mut harness, tab, id);
+        super::tests::leave_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+        super::tests::leave_pending(&mut harness, tab, id, (3, 2), "{oops");
+        harness.settle();
+        let blocked = "-- строка id 4 · заблокирована: сначала исправьте meta";
+        assert!(
+            painted(&harness, blocked),
+            "{}: {:?}",
+            look.name,
+            harness.painted
+        );
+    }
+}
+
+/// A comment's count takes the Russian form for its number.
+#[test]
+fn a_review_comment_counts_its_rows_in_russian() {
+    use crate::review::Line;
+    let said = |rows| crate::ui::review::comment(&Line::DeleteRun(rows), Locale::Russian);
+    assert_eq!(said(1).as_deref(), Some("-- удалить 1 строку"));
+    assert_eq!(said(3).as_deref(), Some("-- удалить 3 строки"));
+    assert_eq!(said(5).as_deref(), Some("-- удалить 5 строк"));
+    assert_eq!(said(21).as_deref(), Some("-- удалить 21 строку"));
+    let english = crate::ui::review::comment(&Line::DeleteRun(3), Locale::English);
+    assert_eq!(english.as_deref(), Some("-- delete 3 rows"));
+}
+
+/// A number past what the column holds is said with the type's limits,
+/// in Russian and as one phrase: the type, then from and to.
+#[test]
+fn the_cell_editor_says_a_type_s_limits_in_russian() {
+    for look in desktop_looks() {
+        let (mut harness, tab, id) = super::tests::with_quantities(look);
+        in_russian(&mut harness);
+        super::tests::open_editor(&mut harness, tab, id, (1, 2));
+        super::tests::type_text(&mut harness, "99999999999999999999");
+        let limits = harness
+            .painted
+            .iter()
+            .find(|(text, _)| text.starts_with("INTEGER: от "))
+            .map(|(text, _)| text.clone());
+        let limits = limits.unwrap_or_else(|| panic!("{}: {:?}", look.name, harness.painted));
+        let (from, to) = limits["INTEGER: от ".len()..]
+            .split_once(" до ")
+            .unwrap_or_else(|| panic!("{}: {limits:?}", look.name));
+        assert!(from.parse::<i128>().is_ok(), "{}: {limits:?}", look.name);
+        assert!(to.parse::<i128>().is_ok(), "{}: {limits:?}", look.name);
+    }
+}

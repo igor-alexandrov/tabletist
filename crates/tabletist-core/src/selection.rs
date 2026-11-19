@@ -8,6 +8,7 @@
 //! read in places, so a range drawn over a new row covers it where it
 //! stands.
 
+use crate::i18n::msgid;
 use std::collections::BTreeSet;
 
 use crate::edit::Order;
@@ -51,11 +52,11 @@ pub enum Visual {
 
 impl Visual {
     /// The mode as the status line writes it.
-    pub fn mode(self) -> &'static str {
+    pub fn mode(self) -> crate::i18n::Msgid {
         match self {
-            Self::Cells => "-- VISUAL --",
-            Self::Block => "-- VISUAL BLOCK --",
-            Self::Rows => "-- VISUAL LINE --",
+            Self::Cells => msgid("-- VISUAL --"),
+            Self::Block => msgid("-- VISUAL BLOCK --"),
+            Self::Rows => msgid("-- VISUAL LINE --"),
         }
     }
 }

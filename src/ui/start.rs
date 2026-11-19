@@ -11,7 +11,7 @@ use tabletist_db::{Driver, ObjectKind, ObjectRef};
 
 use crate::env::{Platform, env_colors};
 use crate::format::display_safe;
-use crate::i18n::{Locale, gettext, ngettext};
+use crate::i18n::{Locale, Msgid, gettext, msgid, ngettext};
 use crate::keymap::{Command, Keymap, Layout, Scope, Written};
 use crate::model::{Action, ConnTabId, Found, Pane, StartRecent, Workspace};
 use crate::style::Icon;
@@ -212,8 +212,8 @@ struct Skin<'a> {
 }
 
 impl Skin<'_> {
-    fn say(&self, text: &'static str) -> String {
-        self.look.label(&gettext(self.locale, text))
+    fn say(&self, text: Msgid) -> String {
+        self.look.label(&text.say(self.locale))
     }
 }
 
@@ -372,7 +372,7 @@ fn ready_line(ui: &mut egui::Ui, version: &str, skin: Skin<'_>, actions: &mut Ve
 fn line_words(shown: &Shown, skin: Skin<'_>) -> String {
     let mut parts = Vec::new();
     if shown.info.env.is_production() && shown.info.read_only {
-        parts.push(skin.say("Read-only"));
+        parts.push(skin.say(msgid("Read-only")));
     }
     parts.push(
         shown
@@ -381,12 +381,17 @@ fn line_words(shown: &Shown, skin: Skin<'_>) -> String {
             .unwrap_or_else(|| shown.driver.label().to_owned()),
     );
     if let Some(count) = shown.objects {
-        let word = if skin.look.terminal {
-            "objects"
+        let words = if skin.look.terminal {
+            ngettext(skin.locale, "{n} object", "{n} objects", count)
         } else {
-            "tables and views"
+            ngettext(
+                skin.locale,
+                "{n} table or view",
+                "{n} tables and views",
+                count,
+            )
         };
-        parts.push(format!("{count} {}", skin.say(word)));
+        parts.push(words.replace("{n}", &count.to_string()));
     }
     skin.look.label(&parts.join(" · "))
 }
@@ -512,9 +517,9 @@ fn lists(
     let zone = jiff::tz::TimeZone::system();
     let kind_word = |kind: ObjectKind| {
         skin.say(match kind {
-            ObjectKind::Table => "table",
-            ObjectKind::View => "view",
-            ObjectKind::MaterializedView => "materialized view",
+            ObjectKind::Table => msgid("table"),
+            ObjectKind::View => msgid("view"),
+            ObjectKind::MaterializedView => msgid("materialized view"),
         })
     };
     let rows: Vec<Row> = if shown.recents.is_empty() {
@@ -560,7 +565,7 @@ fn lists(
                     tab: skin.tab,
                     index,
                 };
-                let opened = skin.say("opened");
+                let opened = skin.say(msgid("opened"));
                 match recent {
                     StartRecent::Object { object, kind, .. } => {
                         let name = display_safe(&object.name).into_owned();
@@ -586,10 +591,10 @@ fn lists(
                     StartRecent::Sql {
                         number, comment, ..
                     } => {
-                        let name = format!("{} {number}", skin.say("Query"));
-                        let editor = skin.say("SQL editor");
+                        let name = format!("{} {number}", skin.say(msgid("Query")));
+                        let editor = skin.say(msgid("SQL editor"));
                         let detail = if look.terminal {
-                            skin.say("sql")
+                            skin.say(msgid("sql"))
                         } else {
                             comment.clone().unwrap_or_else(|| editor.clone())
                         };
@@ -634,9 +639,11 @@ fn lists(
     let note = if first_visit {
         Some(match shown.driver {
             Driver::Postgres | Driver::MySql => {
-                skin.say("From table statistics. Nothing is queried.")
+                skin.say(msgid("From table statistics. Nothing is queried."))
             }
-            Driver::Sqlite | Driver::BigQuery | Driver::Files => skin.say("Nothing is queried."),
+            Driver::Sqlite | Driver::BigQuery | Driver::Files => {
+                skin.say(msgid("Nothing is queried."))
+            }
         })
     } else {
         None
@@ -916,19 +923,19 @@ fn starts(
     let lines: Vec<(&Written, String, String, Option<Action>)> = vec![
         (
             &keys.sql_here,
-            skin.say("new sql query"),
+            skin.say(msgid("new sql query")),
             keys.sql.as_str().to_owned(),
             Some(Action::NewSqlTab(skin.tab)),
         ),
         (
             &keys.database_here,
-            skin.say("switch database"),
+            skin.say(msgid("switch database")),
             database_hint,
             None,
         ),
         (
             &keys.edit_here,
-            skin.say("edit connection"),
+            skin.say(msgid("edit connection")),
             edit_hint,
             shown
                 .saved
@@ -938,7 +945,7 @@ fn starts(
     let agents = agents_words.map(|words| {
         (
             &keys.agents_here,
-            skin.say("agents"),
+            skin.say(msgid("agents")),
             words,
             Some(Action::ShowAgents(skin.tab)),
         )
@@ -977,7 +984,7 @@ fn starts(
             y,
             Text::one(look, TextRole::OBody, &hint, palette.dim),
         );
-        if words == skin.say("switch database") {
+        if words == skin.say(msgid("switch database")) {
             let id = database_menu_id(skin.tab, true);
             if switchable {
                 database_menu(
@@ -1162,11 +1169,14 @@ fn results(
             .iter()
             .take_while(|found| found.kind == ObjectKind::Table)
             .count();
-        for (title, range) in [("Tables", 0..tables), ("Views", tables..matches.len())] {
+        for (title, range) in [
+            (msgid("Tables"), 0..tables),
+            (msgid("Views"), tables..matches.len()),
+        ] {
             if range.is_empty() {
                 continue;
             }
-            group_header(ui, &gettext(locale, title), skin);
+            group_header(ui, &title.say(locale), skin);
             for index in range {
                 result_row(ui, index, &matches[index], index == selected, skin, actions);
             }
@@ -1209,8 +1219,8 @@ fn result_row(
     let name = display_safe(&object.name).into_owned();
     let schema = display_safe(&object.schema).into_owned();
     let kind_word = skin.say(match kind {
-        ObjectKind::Table => "table",
-        ObjectKind::View | ObjectKind::MaterializedView => "view",
+        ObjectKind::Table => msgid("table"),
+        ObjectKind::View | ObjectKind::MaterializedView => msgid("view"),
     });
     let label = format!("{name}, {kind_word}, {schema}");
     response
@@ -1331,7 +1341,13 @@ pub(crate) fn marked(
 /// one, open one in a SQL editor, and clear the search.
 fn search_footer(ui: &mut egui::Ui, keys: &Keys, skin: Skin<'_>) {
     let (look, palette, locale) = (skin.look, skin.palette, skin.locale);
-    let words = ["move", "open", "open in SQL editor", "clear"].map(|word| gettext(locale, word));
+    let words = [
+        msgid("move"),
+        msgid("open"),
+        msgid("open in SQL editor"),
+        msgid("clear"),
+    ]
+    .map(|word| word.say(locale));
     let hints: Vec<widgets::Hint<'_>> = vec![
         (&keys.search_move, &*words[0], true),
         (&keys.search_open, &*words[1], true),
@@ -1415,18 +1431,18 @@ pub fn status_line(
     // Otherwise the line names the ways to start, `/` for the search among
     // them.
     let words = [
-        "open recent",
-        "search",
-        "new sql",
-        "database",
-        "edit connection",
-        "tables",
-        "all keys",
-        "move",
-        "open",
-        "back",
+        msgid("open recent"),
+        msgid("search"),
+        msgid("new sql"),
+        msgid("database"),
+        msgid("edit connection"),
+        msgid("tables"),
+        msgid("all keys"),
+        msgid("move"),
+        msgid("open"),
+        msgid("back"),
     ]
-    .map(|word| gettext(locale, word));
+    .map(|word| word.say(locale));
     // The tree or its filter field has the keyboard: their keys.
     let hints: Vec<widgets::Hint<'_>> = if let Some(own) = own {
         super::pane_hints::drawn(own)

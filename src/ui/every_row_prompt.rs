@@ -8,7 +8,7 @@
 use egui::{Align2, Frame, Id, Key, Margin, Modifiers, Rect, Stroke, pos2};
 
 use crate::format;
-use crate::i18n::{gettext, ngettext};
+use crate::i18n::{gettext, msgid, ngettext, pgettext};
 use crate::keymap::{Command, Layout, When};
 use crate::model::{Action, EveryRowPrompt, WideStatement};
 use crate::typography::{Text, TextRole};
@@ -95,7 +95,12 @@ fn listed(tables: &[String], skin: Skin<'_>) -> String {
     match names.as_slice() {
         [] => String::new(),
         [one] => one.clone(),
-        [rest @ .., last] => format!("{} {} {last}", rest.join(", "), skin.say("and")),
+        [rest @ .., last] => {
+            // Translators: what joins the last two tables of a list:
+            // "authors, books and covers".
+            let and = pgettext(skin.locale, "list join", " and ");
+            format!("{}{}{last}", rest.join(", "), skin.look.label(&and))
+        }
     }
 }
 
@@ -103,12 +108,12 @@ fn listed(tables: &[String], skin: Skin<'_>) -> String {
 /// book_covers?", "Truncate books and covers?".
 fn asked(wide: &WideStatement, skin: Skin<'_>) -> String {
     let words = match (wide.verb, wide.tables.is_empty()) {
-        (Verb::Update, false) => "Update every row in {tables}?",
-        (Verb::Update, true) => "Update every row of its table?",
-        (Verb::Delete, false) => "Delete every row in {tables}?",
-        (Verb::Delete, true) => "Delete every row of its table?",
-        (Verb::Truncate, false) => "Truncate {tables}?",
-        (Verb::Truncate, true) => "Truncate its tables?",
+        (Verb::Update, false) => msgid("Update every row in {tables}?"),
+        (Verb::Update, true) => msgid("Update every row of its table?"),
+        (Verb::Delete, false) => msgid("Delete every row in {tables}?"),
+        (Verb::Delete, true) => msgid("Delete every row of its table?"),
+        (Verb::Truncate, false) => msgid("Truncate {tables}?"),
+        (Verb::Truncate, true) => msgid("Truncate its tables?"),
     };
     skin.say(words)
         .replace("{tables}", &listed(&wide.tables, skin))
@@ -118,9 +123,17 @@ fn asked(wide: &WideStatement, skin: Skin<'_>) -> String {
 fn question(prompt: &EveryRowPrompt, skin: Skin<'_>) -> String {
     match prompt.wide.as_slice() {
         [one] => asked(one, skin),
-        many => skin
-            .say("Run {n} statements that change every row?")
-            .replace("{n}", &many.len().to_string()),
+        many => {
+            let words = ngettext(
+                skin.locale,
+                "Run {n} statement that changes every row?",
+                "Run {n} statements that change every row?",
+                many.len(),
+            );
+            skin.look
+                .label(&words)
+                .replace("{n}", &many.len().to_string())
+        }
     }
 }
 
@@ -137,7 +150,8 @@ fn rows(wide: &WideStatement, skin: Skin<'_>) -> Option<String> {
 
 /// "Line 3"
 fn line_of(wide: &WideStatement, skin: Skin<'_>) -> String {
-    skin.say("Line {n}").replace("{n}", &wide.line.to_string())
+    skin.say(msgid("Line {n}"))
+        .replace("{n}", &wide.line.to_string())
 }
 
 /// What the dialog says under its question: for one statement, its line
@@ -146,13 +160,22 @@ fn details(prompt: &EveryRowPrompt, skin: Skin<'_>) -> Vec<String> {
     match prompt.wide.as_slice() {
         [one] => {
             let why = match one.verb {
-                Verb::Update | Verb::Delete => skin.say("has no WHERE."),
-                Verb::Truncate => skin.say("takes out every row."),
+                Verb::Update | Verb::Delete => msgid("Line {n} has no WHERE."),
+                Verb::Truncate => msgid("Line {n} takes out every row."),
             };
-            let mut text = format!("{} {why}", line_of(one, skin));
-            if let Some(rows) = rows(one, skin) {
-                let by = skin.say("by the database's statistics.");
-                text.push_str(&format!(" {}, {by}", capitalized(&rows, skin)));
+            let mut text = skin.say(why).replace("{n}", &one.line.to_string());
+            if let Some(rows) = one.rows {
+                let by = ngettext(
+                    skin.locale,
+                    "About {n} row, by the database's statistics.",
+                    "About {n} rows, by the database's statistics.",
+                    rows,
+                );
+                let by = skin
+                    .look
+                    .label(&by)
+                    .replace("{n}", &format::group_digits(rows));
+                text.push_str(&format!(" {by}"));
             }
             vec![text]
         }
@@ -167,15 +190,6 @@ fn details(prompt: &EveryRowPrompt, skin: Skin<'_>) -> Vec<String> {
                 text
             })
             .collect(),
-    }
-}
-
-/// `text` with a capital first letter, where the look writes capitals.
-fn capitalized(text: &str, skin: Skin<'_>) -> String {
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) if !skin.look.terminal => first.to_uppercase().chain(chars).collect(),
-        _ => text.to_owned(),
     }
 }
 
@@ -296,8 +310,10 @@ fn line(
         .map(|wide| wide.line.to_string())
         .collect();
     tail.push(match numbers.as_slice() {
-        [one] => skin.say("line {n}").replace("{n}", one),
-        many => skin.say("lines {n}").replace("{n}", &many.join(", ")),
+        [one] => skin.say(msgid("line {n}")).replace("{n}", one),
+        many => skin
+            .say(msgid("lines {n}"))
+            .replace("{n}", &many.join(", ")),
     });
     let tail = tail.join(" · ");
     let said = question(prompt, skin);
@@ -305,7 +321,7 @@ fn line(
         crate::ui::keys::written(ctx, look, Command::RunEveryRow).bracketed(),
         crate::ui::keys::written(ctx, look, Command::CancelEveryRow).bracketed(),
     );
-    let (yes, no) = (skin.say("yes"), skin.say("no"));
+    let (yes, no) = (skin.say(msgid("yes")), skin.say(msgid("no")));
     let (run, cancel) = (gettext(locale, "Run anyway"), gettext(locale, "Cancel"));
     let modal = egui::Modal::new(Id::new("every-row-prompt"))
         .backdrop_color(egui::Color32::TRANSPARENT)

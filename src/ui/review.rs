@@ -10,7 +10,7 @@ use egui::{Color32, Frame, Id, Rect, Sense, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::sql::TokenKind;
 
 use crate::edit::Effect;
-use crate::i18n::{Locale, gettext, ngettext};
+use crate::i18n::{Locale, Msgid, fill, gettext, msgid, ngettext, pgettext, pmsgid};
 use crate::model::{Action, ConnTabId, ObjectTab, TabId};
 use crate::review::{Ink, Line, Review};
 use crate::theme::{Look, Palette};
@@ -45,84 +45,82 @@ const FOOT: f32 = 28.0;
 const GAP: f32 = 18.0;
 
 /// What the app says once a review is on the clipboard.
-pub const COPIED_SQL: &str = "Copied SQL";
+pub const COPIED_SQL: Msgid = msgid("Copied SQL");
 
 /// What a copied review opens with, after the comment's dashes: pasted
 /// elsewhere, nothing checks a row and nothing wraps a transaction.
-const COPIED: &str = "What Tabletist runs to save these changes, in one transaction. \
+const COPIED: Msgid = msgid(
+    "What Tabletist runs to save these changes, in one transaction. \
                       Each UPDATE runs only while its row is still as the comment \
-                      above it says.";
+                      above it says.",
+);
 
 /// A comment line as it reads, its `--` included. `None` for a line of a
 /// statement, which is drawn from its pieces. The app's own words are lower
 /// case in every look, as a comment's are; a name, a value and the
 /// builder's reason stand as the line holds them.
 pub fn comment(line: &Line, locale: Locale) -> Option<String> {
-    let say = |text: &'static str| gettext(locale, text);
-    Some(match line {
-        Line::Row(row) => format!("-- {} {row}", say("row")),
+    // A whole phrase of the comment, its names and values put in.
+    let said = |text: Msgid, values: &[(&str, &str)]| fill(&text.say(locale), values);
+    let comment = match line {
+        Line::Row(row) => said(msgid("row {row}"), &[("{row}", row)]),
         Line::Check(loaded) => {
             let still: Vec<String> = loaded
                 .iter()
-                .map(|(column, value)| format!("{column} {} {value}", say("is still")))
+                .map(|(column, value)| {
+                    said(
+                        msgid("{column} is still {value}"),
+                        &[("{column}", column), ("{value}", value)],
+                    )
+                })
                 .collect();
-            let and = format!(" {} ", say("and"));
-            format!("-- {} {}", say("only if"), still.join(&and))
-        }
-        Line::Blocked { row, columns } => format!(
-            "-- {} {row} · {} {} {}",
-            say("row"),
-            say("blocked: fix"),
-            columns.join(", "),
-            say("first")
-        ),
-        Line::Refused { row, reason } => {
-            format!(
-                "-- {} {row} · {} {reason}",
-                say("row"),
-                say("cannot be sent:")
+            // Translators: what joins the conditions of an UPDATE's
+            // comment: "-- only if title is still A and price is still 2".
+            let and = pgettext(locale, "list join", " and ");
+            said(
+                msgid("only if {conditions}"),
+                &[("{conditions}", &still.join(&and))],
             )
         }
+        Line::Blocked { row, columns } => said(
+            msgid("row {row} · blocked: fix {columns} first"),
+            &[("{row}", row), ("{columns}", &columns.join(", "))],
+        ),
+        Line::Refused { row, reason } => said(
+            msgid("row {row} · cannot be sent: {reason}"),
+            &[("{row}", row), ("{reason}", reason)],
+        ),
         // The disabled Save's sentence, as a comment begins.
-        Line::Unsendable => format!(
-            "-- {}",
-            say("these changes cannot be sent: the table's key is not known")
+        Line::Unsendable => said(
+            msgid("these changes cannot be sent: the table's key is not known"),
+            &[],
         ),
-        Line::New => format!("-- {}", say("new row")),
-        Line::NewBlocked(columns) => format!(
-            "-- {} · {} {} {}",
-            say("new row"),
-            say("blocked: fix"),
-            columns.join(", "),
-            say("first")
+        Line::New => said(pmsgid("label", "new row"), &[]),
+        Line::NewBlocked(columns) => said(
+            msgid("new row · blocked: fix {columns} first"),
+            &[("{columns}", &columns.join(", "))],
         ),
-        Line::NewRequired(columns) => {
-            let blocked = ngettext(
+        Line::NewRequired(columns) => fill(
+            &ngettext(
                 locale,
-                "blocked: {columns} is required",
-                "blocked: {columns} are required",
+                "new row · blocked: {columns} is required",
+                "new row · blocked: {columns} are required",
                 columns.len(),
-            );
-            format!(
-                "-- {} · {}",
-                say("new row"),
-                blocked.replace("{columns}", &columns.join(", "))
-            )
-        }
-        Line::NewRefused(reason) => {
-            format!(
-                "-- {} · {} {reason}",
-                say("new row"),
-                say("cannot be sent:")
-            )
-        }
-        Line::Delete(row) => format!("-- {} {} {row}", say("delete"), say("row")),
-        Line::DeleteRun(rows) => format!("-- {} {rows} {}", say("delete"), say("rows")),
-        Line::DeleteRefused { row, reason } => format!(
-            "-- {} {} {row} · {} {reason}",
-            say("delete"),
-            say("row"),
-            say("cannot be sent:")
+            ),
+            &[("{columns}", &columns.join(", "))],
+        ),
+        Line::NewRefused(reason) => said(
+            msgid("new row · cannot be sent: {reason}"),
+            &[("{reason}", reason)],
+        ),
+        Line::Delete(row) => said(msgid("delete row {row}"), &[("{row}", row)]),
+        Line::DeleteRun(rows) => fill(
+            &ngettext(locale, "delete {n} row", "delete {n} rows", *rows),
+            &[("{n}", &rows.to_string())],
+        ),
+        Line::DeleteRefused { row, reason } => said(
+            msgid("delete row {row} · cannot be sent: {reason}"),
+            &[("{row}", row), ("{reason}", reason)],
         ),
         // The action as SQL writes it: it is the key's, not the app's.
         Line::Also(Effect::Deletes { table, rows }) => {
@@ -136,7 +134,7 @@ pub fn comment(line: &Line, locale: Locale) -> Option<String> {
                 .replace("{n}", &rows.to_string()),
                 None => gettext(locale, "also deletes rows in {table}").into_owned(),
             };
-            format!("-- {} (ON DELETE CASCADE)", what.replace("{table}", table))
+            format!("{} (ON DELETE CASCADE)", what.replace("{table}", table))
         }
         Line::Also(Effect::Clears {
             table,
@@ -153,14 +151,15 @@ pub fn comment(line: &Line, locale: Locale) -> Option<String> {
                 .replace("{n}", &rows.to_string()),
                 None => gettext(locale, "also clears {columns} in {table} rows").into_owned(),
             };
-            let what = crate::i18n::fill(
+            let what = fill(
                 &what,
                 &[("{table}", table), ("{columns}", &columns.join(", "))],
             );
-            format!("-- {what} (ON DELETE SET NULL)")
+            format!("{what} (ON DELETE SET NULL)")
         }
         Line::Sql(_) => return None,
-    })
+    };
+    Some(format!("-- {comment}"))
 }
 
 /// The colour a piece of a statement is drawn in: the SQL editor's for
@@ -306,7 +305,7 @@ pub fn widest(
 /// A review as the clipboard gets it: the line that says what it is, then
 /// one line of text for each of its lines, a line break after each.
 pub fn text(review: &Review, locale: Locale) -> String {
-    let mut text = format!("-- {}\n", gettext(locale, COPIED));
+    let mut text = format!("-- {}\n", COPIED.say(locale));
     for line in &review.lines {
         if let Some(words) = comment(line, locale).or_else(|| line.sql()) {
             text.push_str(&words);
@@ -435,7 +434,7 @@ pub fn show(
         && let Some(review) = whole()
     {
         ui.ctx().copy_text(text(&review, locale));
-        toast::say(ui.ctx(), &gettext(locale, COPIED_SQL));
+        toast::say(ui.ctx(), &COPIED_SQL.say(locale));
     }
     let placed = Placed {
         tab,
@@ -475,8 +474,8 @@ struct Skin<'a> {
 
 impl Skin<'_> {
     /// `text` translated, in the look's case.
-    fn say(&self, text: &'static str) -> String {
-        self.look.label(&gettext(self.locale, text))
+    fn say(&self, text: Msgid) -> String {
+        self.look.label(&text.say(self.locale))
     }
 }
 
@@ -489,7 +488,7 @@ struct Asked {
 
 /// What the head says while an editor holds typed text: a save would send
 /// it too, and the lines under the head do not show it.
-const TYPING: &str = "Without the cell being edited";
+const TYPING: Msgid = msgid("Without the cell being edited");
 
 /// The head on macOS and Windows: what a save is, and Copy SQL at its
 /// right. The counts are in the bar under the drawer. While a cell is
@@ -513,7 +512,7 @@ fn desktop_head(ui: &mut egui::Ui, head: Rect, side: f32, typing: bool, skin: Sk
     );
     let copy = button.show_at(ui, at, look, palette).clicked();
     let (said, color) = if typing {
-        (gettext(locale, TYPING), Tone::Warning.color(palette))
+        (TYPING.say(locale), Tone::Warning.color(palette))
     } else {
         (
             gettext(locale, "Runs in one transaction"),
@@ -548,7 +547,7 @@ fn terminal_head(
     // The new rows, then the changes and their rows, then the rows to
     // delete, each where there is any: "pending · 1 new row · 2 changes
     // · 1 row · 1 to delete".
-    let mut counts = vec![skin.say("pending")];
+    let mut counts = vec![skin.say(msgid("pending"))];
     if added > 0 {
         counts.push(look.label(&counted(locale, added, "new row", "new rows")));
     }
@@ -557,7 +556,10 @@ fn terminal_head(
         counts.push(look.label(&counted(locale, rows, "row", "rows")));
     }
     if deleted > 0 {
-        counts.push(format!("{deleted} {}", skin.say("to delete")));
+        counts.push(
+            look.label(&ngettext(locale, "{n} to delete", "{n} to delete", deleted))
+                .replace("{n}", &deleted.to_string()),
+        );
     }
     let counts = counts.join(" · ");
     let counts = Text::one(look, TextRole::OGroup, &counts, palette.text);
@@ -567,7 +569,7 @@ fn terminal_head(
     let (said, color) = if typing {
         (skin.say(TYPING), Tone::Warning.color(palette))
     } else {
-        (skin.say("one transaction"), palette.dim)
+        (skin.say(msgid("one transaction")), palette.dim)
     };
     let said = || Text::one(look, TextRole::OSecondary, &said, color);
     let start = head.right() - side - widgets::measure(ui, said());
@@ -596,7 +598,11 @@ fn terminal_foot(
     ui.painter().rect_filled(foot, 0, palette.panel);
     widgets::hline(ui, foot.x_range(), foot.top() + 0.5, palette.outline);
     let y = foot.top() + 1.0 + (FOOT - 1.0) / 2.0;
-    let (close, copy, write) = (skin.say("close"), skin.say("copy sql"), skin.say("write"));
+    let (close, copy, write) = (
+        skin.say(msgid("close")),
+        skin.say(msgid("copy sql")),
+        skin.say(msgid("write")),
+    );
     let names = [gettext(locale, "Hide SQL"), gettext(locale, "Copy SQL")];
     let mut pressed = [false; 2];
     let mut x = foot.left() + side;
