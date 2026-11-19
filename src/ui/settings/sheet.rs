@@ -2049,12 +2049,11 @@ fn ignored_lines(ui: &Ui, ignored: &[usize], width: f32, skin: &Skin) -> Option<
     if count == 0 {
         return None;
     }
-    let lines = u32::try_from(count).unwrap_or(u32::MAX);
     let said = ngettext(
         skin.locale,
         "{n} line in the file could not be read and was ignored: {lines}",
         "{n} lines in the file could not be read and were ignored: {lines}",
-        lines,
+        count,
     );
     let said = said
         .replace("{n}", &count.to_string())
@@ -2067,7 +2066,6 @@ fn ignored_lines(ui: &Ui, ignored: &[usize], width: f32, skin: &Skin) -> Option<
 /// the first ten, and how many more.
 fn line_numbers(locale: crate::i18n::Locale, ignored: &[usize]) -> String {
     const NAMED: usize = 10;
-    let lines = u32::try_from(ignored.len()).unwrap_or(u32::MAX);
     let mut numbers: Vec<String> = ignored
         .iter()
         .take(NAMED)
@@ -2076,7 +2074,8 @@ fn line_numbers(locale: crate::i18n::Locale, ignored: &[usize]) -> String {
     if ignored.len() > NAMED {
         numbers.push("…".to_owned());
     }
-    ngettext(locale, "line {lines}", "lines {lines}", lines).replace("{lines}", &numbers.join(", "))
+    ngettext(locale, "line {lines}", "lines {lines}", ignored.len())
+        .replace("{lines}", &numbers.join(", "))
 }
 
 /// How tall the footer is: its rule, and its line between its padding,
@@ -2300,12 +2299,11 @@ fn keyboard_footer(
     let resetting = dialog.keyboard.resetting;
     let changed = super::keyboard::changed_count(keymap, Layout::of(look));
     let parts: Vec<(String, Option<(egui::Color32, Action)>)> = if resetting {
-        let lines = u32::try_from(changed).unwrap_or(u32::MAX);
         let asks = ngettext(
             skin.locale,
             "Reset all keyboard shortcuts? Your {n} change will be removed.",
             "Reset all keyboard shortcuts? Your {n} changes will be removed.",
-            lines,
+            changed,
         )
         .replace("{n}", &changed.to_string());
         vec![

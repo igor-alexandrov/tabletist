@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-18 21:39-0500\n"
+"POT-Creation-Date: 2026-11-19 07:25-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -199,6 +199,12 @@ msgstr ""
 
 #: crates/tabletist-core/src/i18n.rs src/ui/help.rs
 msgid "Settings"
+msgstr ""
+
+#: crates/tabletist-core/src/i18n.rs src/ui/agents.rs src/ui/history.rs
+#: src/ui/workspace.rs
+msgctxt "label"
+msgid "filter"
 msgstr ""
 
 #: crates/tabletist-core/src/selection.rs src/ui/pending_bar.rs
@@ -570,11 +576,6 @@ msgstr ""
 
 #: src/ui/agents.rs src/ui/workspace.rs
 msgid "this connection"
-msgstr ""
-
-#: src/ui/agents.rs src/ui/history.rs src/ui/workspace.rs
-msgctxt "label"
-msgid "filter"
 msgstr ""
 
 #: src/ui/agents.rs src/ui/workspace.rs
@@ -2850,6 +2851,20 @@ msgstr ""
 #: src/ui/sql_editor.rs
 msgid "Format the SQL"
 msgstr ""
+
+#: src/ui/sql_editor.rs
+#, rust-format
+msgid "{n} row · {took}"
+msgid_plural "{n} rows · {took}"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/sql_editor.rs
+#, rust-format
+msgid "{n} row affected · {took}"
+msgid_plural "{n} rows affected · {took}"
+msgstr[0] ""
+msgstr[1] ""
 
 #: src/ui/sql_editor.rs
 #, rust-format

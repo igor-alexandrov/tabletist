@@ -3000,13 +3000,12 @@ fn elements(
         }
         let more = array.items.len() - shown;
         if more > 0 {
-            let plural = u32::try_from(more).unwrap_or(u32::MAX);
             let rest = look
                 .label(&ngettext(
                     locale,
                     "… {n} more elements",
                     "… {n} more elements",
-                    plural,
+                    more,
                 ))
                 .replace("{n}", &format::group_digits(more as u64));
             Text::one(look, role, &rest, palette.faint)

@@ -56,7 +56,7 @@ pub fn done_words(exporting: &Exporting, locale: crate::i18n::Locale) -> Option<
         locale,
         "Exported {n} row to {file} · {size} · {time}",
         "Exported {n} rows to {file} · {size} · {time}",
-        u32::try_from(rows).unwrap_or(u32::MAX),
+        rows,
     );
     Some(crate::i18n::fill(
         &words,

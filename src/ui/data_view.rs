@@ -76,8 +76,7 @@ fn selection_note(
     // Several rows: how many, whatever kind each is.
     let rows = object.selected_rows().len();
     if rows > 1 {
-        let plural = u32::try_from(rows).unwrap_or(u32::MAX);
-        let said = ngettext(locale, "{n} row selected", "{n} rows selected", plural);
+        let said = ngettext(locale, "{n} row selected", "{n} rows selected", rows);
         return Some(said.replace("{n}", &rows.to_string()));
     }
     let Some(id) = crate::edit::new_id(cell.row) else {
@@ -89,8 +88,7 @@ fn selection_note(
     if missing == 0 {
         return Some(new.into_owned());
     }
-    let plural = u32::try_from(missing).unwrap_or(u32::MAX);
-    let fields = ngettext(locale, "{n} required field", "{n} required fields", plural);
+    let fields = ngettext(locale, "{n} required field", "{n} required fields", missing);
     Some(format!(
         "{new} · {}",
         fields.replace("{n}", &missing.to_string())
@@ -110,20 +108,17 @@ fn subtitle(object: &ObjectTab, look: &Look, locale: crate::i18n::Locale) -> Vec
     // The table's estimate is marked as one, as the footer marks it.
     let estimate = object.estimated_rows.filter(|_| !filtered);
     let rows = exact.or(estimate).map(|rows| {
-        let plural = u32::try_from(rows).unwrap_or(u32::MAX);
         let count = format!(
             "{}{}",
             if exact.is_some() { "" } else { "~" },
             format::group_digits(rows)
         );
-        ngettext(locale, "{n} row", "{n} rows", plural).replace("{n}", &count)
+        ngettext(locale, "{n} row", "{n} rows", rows).replace("{n}", &count)
     });
     // The rows to add, beside the table's own: "13 rows + 1 new".
     let added = object.edits.added.len();
-    let new = (added > 0).then(|| {
-        let plural = u32::try_from(added).unwrap_or(u32::MAX);
-        ngettext(locale, "{n} new", "{n} new", plural).replace("{n}", &added.to_string())
-    });
+    let new = (added > 0)
+        .then(|| ngettext(locale, "{n} new", "{n} new", added).replace("{n}", &added.to_string()));
     match (rows, new) {
         (Some(rows), Some(new)) => parts.push(format!("{rows} + {new}")),
         (Some(one), None) | (None, Some(one)) => parts.push(one),
@@ -132,16 +127,14 @@ fn subtitle(object: &ObjectTab, look: &Look, locale: crate::i18n::Locale) -> Vec
     // The rows to delete, beside them: "13 rows · 1 to delete".
     let deleted = object.edits.deleted.len();
     if deleted > 0 {
-        let plural = u32::try_from(deleted).unwrap_or(u32::MAX);
-        let to_delete = ngettext(locale, "{n} to delete", "{n} to delete", plural);
+        let to_delete = ngettext(locale, "{n} to delete", "{n} to delete", deleted);
         parts.push(to_delete.replace("{n}", &deleted.to_string()));
     }
     if let Some(page) = page {
         let count = page.columns.len();
-        let plural = u32::try_from(count).unwrap_or(u32::MAX);
         let said = match look.terminal {
-            true => ngettext(locale, "{n} col", "{n} cols", plural),
-            false => ngettext(locale, "{n} column", "{n} columns", plural),
+            true => ngettext(locale, "{n} col", "{n} cols", count),
+            false => ngettext(locale, "{n} column", "{n} columns", count),
         };
         parts.push(said.replace("{n}", &count.to_string()));
     }
@@ -1661,12 +1654,11 @@ pub fn show(
     // last save deleted: said to a screen reader.
     let told = match (&object.edits.told, &object.edits.saved) {
         (Some(Told::Marked { row, deleted }), _) => {
-            let plural = u32::try_from(*deleted).unwrap_or(u32::MAX);
             let said = ngettext(
                 locale,
                 "Row {row} marked for deletion. {n} to delete.",
                 "Row {row} marked for deletion. {n} to delete.",
-                plural,
+                *deleted,
             );
             Some(
                 said.replace("{n}", &deleted.to_string())
@@ -1688,8 +1680,7 @@ pub fn show(
             let mut parts = Vec::new();
             if *marked > 0 {
                 parts.push(super::pending_bar::marked_text(*marked, *skipped, locale));
-                let plural = u32::try_from(*deleted).unwrap_or(u32::MAX);
-                let to_delete = ngettext(locale, "{n} to delete.", "{n} to delete.", plural);
+                let to_delete = ngettext(locale, "{n} to delete.", "{n} to delete.", *deleted);
                 parts.push(to_delete.replace("{n}", &deleted.to_string()));
             }
             if *dropped > 0 {

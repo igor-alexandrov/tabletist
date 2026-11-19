@@ -1004,13 +1004,7 @@ fn status_text(on: bool, count: usize, skin: &Skin) -> (Text, Text) {
     let agents = match count {
         0 => skin.say("no agents"),
         count => look.label(
-            &ngettext(
-                locale,
-                "{n} agent",
-                "{n} agents",
-                u32::try_from(count).unwrap_or(u32::MAX),
-            )
-            .replace("{n}", &count.to_string()),
+            &ngettext(locale, "{n} agent", "{n} agents", count).replace("{n}", &count.to_string()),
         ),
     };
     let value = Text::new(look)

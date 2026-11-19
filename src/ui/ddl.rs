@@ -97,8 +97,7 @@ pub fn copy(ctx: &egui::Context, paint: Paint, tab: ConnTabId, object: &ObjectTa
     let said = match &part {
         Some(part) => {
             let lines = part.lines().count().max(1);
-            let count = u32::try_from(lines).unwrap_or(u32::MAX);
-            crate::i18n::ngettext(locale, "Copied {n} line", "Copied {n} lines", count)
+            crate::i18n::ngettext(locale, "Copied {n} line", "Copied {n} lines", lines)
                 .replace("{n}", &lines.to_string())
         }
         None => gettext(locale, "Copied DDL").into_owned(),
@@ -247,28 +246,22 @@ fn left_out(driver: Driver, locale: Locale) -> Option<Cow<'static, str>> {
 /// how long ago the definition arrived.
 pub fn read_ago(waited: Duration, locale: Locale) -> String {
     let seconds = waited.as_secs();
-    let plural = |count: u64| u32::try_from(count).unwrap_or(u32::MAX);
     // A whole phrase for each unit, so a translation can spell its unit
     // out and say it for the count.
     let (count, said) = match seconds {
         0 => return gettext(locale, "read just now").into_owned(),
         1..60 => (
             seconds,
-            ngettext(locale, "read {n} s ago", "read {n} s ago", plural(seconds)),
+            ngettext(locale, "read {n} s ago", "read {n} s ago", seconds),
         ),
         60..3600 => {
             let minutes = seconds / 60;
-            let said = ngettext(
-                locale,
-                "read {n} min ago",
-                "read {n} min ago",
-                plural(minutes),
-            );
+            let said = ngettext(locale, "read {n} min ago", "read {n} min ago", minutes);
             (minutes, said)
         }
         _ => {
             let hours = seconds / 3600;
-            let said = ngettext(locale, "read {n} h ago", "read {n} h ago", plural(hours));
+            let said = ngettext(locale, "read {n} h ago", "read {n} h ago", hours);
             (hours, said)
         }
     };
@@ -950,8 +943,7 @@ pub fn footer(ui: &mut egui::Ui, paint: Paint, tab: ConnTabId, object: &ObjectTa
             };
             let center = rect.center().y;
             let role = widgets::secondary(&look);
-            let count = u32::try_from(lines).unwrap_or(u32::MAX);
-            let count = crate::i18n::ngettext(locale, "{n} line", "{n} lines", count)
+            let count = crate::i18n::ngettext(locale, "{n} line", "{n} lines", lines)
                 .replace("{n}", &lines.to_string());
             let count = format!("{count} · {}", engine(driver));
             let mut x = rect.left() + 24.0;

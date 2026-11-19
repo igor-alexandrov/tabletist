@@ -238,17 +238,14 @@ pub(super) fn ready_said(updates: &Updates) -> &'static str {
 /// name: `3 unsaved edits in book_covers`.
 pub(super) fn work_said(work: &Work, locale: Locale) -> String {
     match &work.what {
-        Pending::Edits { count, table } => {
-            let plural = u32::try_from(*count).unwrap_or(u32::MAX);
-            ngettext(
-                locale,
-                "{n} unsaved edit in {table}",
-                "{n} unsaved edits in {table}",
-                plural,
-            )
-            .replace("{n}", &count.to_string())
-            .replace("{table}", table)
-        }
+        Pending::Edits { count, table } => ngettext(
+            locale,
+            "{n} unsaved edit in {table}",
+            "{n} unsaved edits in {table}",
+            *count,
+        )
+        .replace("{n}", &count.to_string())
+        .replace("{table}", table),
         Pending::Saving { table } => gettext(locale, "saving {table}").replace("{table}", table),
         Pending::Writing { query } => {
             gettext(locale, "a write running in Query {n}").replace("{n}", &query.to_string())

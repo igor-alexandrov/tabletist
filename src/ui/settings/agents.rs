@@ -225,13 +225,8 @@ fn status(ui: &mut Ui, server: Server, skin: &Skin, actions: &mut Vec<Action>) {
                 palette.dim,
             ),
             count => (
-                ngettext(
-                    locale,
-                    "{n} agent connected",
-                    "{n} agents connected",
-                    u32::try_from(count).unwrap_or(u32::MAX),
-                )
-                .replace("{n}", &count.to_string()),
+                ngettext(locale, "{n} agent connected", "{n} agents connected", count)
+                    .replace("{n}", &count.to_string()),
                 palette.success,
             ),
         };

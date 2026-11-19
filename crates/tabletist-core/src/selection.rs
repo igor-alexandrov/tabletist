@@ -438,8 +438,7 @@ pub fn size_words(
 /// selected", or "3 rows selected" for whole rows.
 pub fn said(locale: crate::i18n::Locale, (rows, cols): (usize, usize), whole_rows: bool) -> String {
     if whole_rows {
-        let plural = u32::try_from(rows).unwrap_or(u32::MAX);
-        return crate::i18n::ngettext(locale, "{n} row selected", "{n} rows selected", plural)
+        return crate::i18n::ngettext(locale, "{n} row selected", "{n} rows selected", rows)
             .replace("{n}", &rows.to_string());
     }
     let rows = crate::i18n::counted(locale, rows, "row", "rows");

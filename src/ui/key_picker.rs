@@ -172,12 +172,11 @@ fn count_line(picker: &Picker, table: &str, locale: Locale) -> Option<String> {
             .replace("{count}", &LIMIT.to_string())
             .replace("{table}", &table)
     } else {
-        let plural = u32::try_from(count).unwrap_or(u32::MAX);
         ngettext(
             locale,
             "{count} match in {table}",
             "{count} matches in {table}",
-            plural,
+            count,
         )
         .replace("{count}", &count.to_string())
         .replace("{table}", &table)
@@ -298,8 +297,7 @@ fn matches_text(picker: &Picker, terse: bool, locale: Locale) -> String {
         return gettext(locale, words).replace("{count}", &LIMIT.to_string());
     }
     let count = picker.options.len();
-    let plural = u32::try_from(count).unwrap_or(u32::MAX);
-    ngettext(locale, "{count} match", "{count} matches", plural)
+    ngettext(locale, "{count} match", "{count} matches", count)
         .replace("{count}", &count.to_string())
 }
 
