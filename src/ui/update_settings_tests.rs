@@ -348,7 +348,7 @@ fn a_copy_something_else_installed_says_what_updates_it_and_copies_the_command()
     for look in looks() {
         let mut harness = harness(look);
         harness.app.updates.installed = Some(Installed::Elsewhere(Managed {
-            said: "Installed with Homebrew, so Homebrew updates it",
+            said: crate::i18n::msgid("Installed with Homebrew, so Homebrew updates it"),
             command: Some("brew upgrade --cask tabletist"),
         }));
         harness.app.updates.seen.offer = Some(offer());
@@ -733,7 +733,7 @@ fn available_offers_download_and_install_where_this_copy_installs_it() {
 fn a_copy_that_does_not_install_it_offers_the_page_alone() {
     for installed in [
         Installed::Elsewhere(Managed {
-            said: "Tabletist can't replace itself here",
+            said: crate::i18n::msgid("Tabletist can't replace itself here"),
             command: None,
         }),
         Installed::Itself(Kind::Portable),

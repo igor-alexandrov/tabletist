@@ -8,7 +8,7 @@ use egui::emath::GuiRounding as _;
 use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, WidgetInfo, WidgetType, pos2, vec2};
 
 use crate::app::{PinState, Work};
-use crate::i18n::{Locale, gettext, ngettext};
+use crate::i18n::{Locale, Msgid, gettext, msgid, ngettext, pmsgid};
 use crate::keymap::{Bind, Command, Keymap, Layout};
 use crate::model::{Action, SettingsDialog, SettingsPane, SettingsRow};
 use crate::settings::{Idle, OptionId, OptionValue, Settings, SettingsFile};
@@ -130,13 +130,13 @@ pub(super) struct Asked<'a> {
 
 impl Skin<'_> {
     /// `text` translated, in the look's case.
-    pub(super) fn say(&self, text: &'static str) -> String {
-        self.look.label(&gettext(self.locale, text))
+    pub(super) fn say(&self, text: Msgid) -> String {
+        self.look.label(&text.say(self.locale))
     }
 
     /// A row's label as the screen writes it: as [`Self::say`] has it,
     /// with the run key in it where it names one.
-    fn label(&self, ctx: &egui::Context, text: &'static str) -> String {
+    fn label(&self, ctx: &egui::Context, text: Msgid) -> String {
         self.look
             .label(&super::said(ctx, self.look, self.locale, text))
     }
@@ -299,10 +299,10 @@ fn history_question(
     let y = rect.top() + 1.0 + FOOTER / 2.0;
     let asks = skin.say(match question {
         crate::model::HistoryQuestion::ClearAll => {
-            "clear the history of every connection? this can't be undone"
+            msgid("clear the history of every connection? this can't be undone")
         }
         crate::model::HistoryQuestion::Forget => {
-            "history is off · delete the statements it kept on this computer?"
+            msgid("history is off · delete the statements it kept on this computer?")
         }
     });
     let mut left = rect.left() + 12.0;
@@ -313,8 +313,12 @@ fn history_question(
         Text::one(look, TextRole::OSecondary, &asks, palette.warning),
     ) + 16.0;
     for (command, what, answer) in [
-        (Command::SettingsDeleteHistory, skin.say("delete"), true),
-        (Command::SettingsKeepHistory, skin.say("keep"), false),
+        (
+            Command::SettingsDeleteHistory,
+            skin.say(msgid("delete")),
+            true,
+        ),
+        (Command::SettingsKeepHistory, skin.say(msgid("keep")), false),
     ] {
         let key = key(ui, look, command);
         let hint = [(&key, what.as_str(), true)];
@@ -349,18 +353,23 @@ fn update_question(ui: &mut Ui, version: &str, skin: &Skin, actions: &mut Vec<Ac
     let y = rect.top() + 1.0 + FOOTER / 2.0;
     let role = TextRole::OSecondary;
     let asks = skin
-        .say("install {version} and restart?")
+        .say(msgid("install {version} and restart?"))
         .replace("{version}", version);
     let mut left = rect.left() + 12.0;
     left += widgets::paint_label(ui, left, y, Text::one(look, role, &asks, palette.text)) + 18.0;
     for (command, word, name, yes) in [
         (
             Command::SettingsInstallYes,
-            "yes",
-            "Install and restart",
+            msgid("yes"),
+            msgid("Install and restart"),
             true,
         ),
-        (Command::SettingsInstallNo, "no", "Cancel", false),
+        (
+            Command::SettingsInstallNo,
+            msgid("no"),
+            msgid("Cancel"),
+            false,
+        ),
     ] {
         let written = key(ui, look, command).bracketed();
         let word = skin.say(word);
@@ -375,7 +384,7 @@ fn update_question(ui: &mut Ui, version: &str, skin: &Skin, actions: &mut Vec<Ac
         );
         widgets::announce(ui, place, &format!("{} {word}", written.as_str()));
         left += width + 16.0;
-        if ButtonSpec::new(&gettext(locale, name))
+        if ButtonSpec::new(&name.say(locale))
             .hidden_at(ui, place)
             .clicked()
         {
@@ -408,7 +417,7 @@ fn header(ui: &mut Ui, pane: SettingsPane, skin: &Skin) {
         Text::one(
             look,
             TextRole::OScreenTitle,
-            &skin.say("Settings"),
+            &skin.say(msgid("Settings")),
             palette.text,
         ),
     ) + 12.0;
@@ -419,12 +428,12 @@ fn header(ui: &mut Ui, pane: SettingsPane, skin: &Skin) {
         Text::one(look, TextRole::OBody, &skin.say(pane.name()), palette.dim),
     );
     let role = widgets::secondary(look);
-    let note = format!("{} · ", skin.say("Changes apply right away"));
+    let note = format!("{} · ", skin.say(msgid("Changes apply right away")));
     let note = Text::new(look)
         .add(role, &note, palette.dim)
         .add(role, &key(ui, look, Command::Settings), palette.accent)
         .space(role, " ")
-        .add(role, &skin.say("opens this"), palette.dim)
+        .add(role, &skin.say(msgid("opens this")), palette.dim)
         .layout(ui.ctx());
     // The note gives way to the title in a window too narrow for both.
     let right = rect.right() - 14.0;
@@ -505,7 +514,7 @@ fn nav(
             vec2(rect.width(), line + 6.0),
         );
         let on = pane == shown;
-        let name = gettext(locale, pane.name());
+        let name = pane.name().say(locale);
         let button = ButtonSpec::new(&name).hidden_at(ui, item);
         button.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, on, &name));
         focus::hint(ui, &button, item, Ring::Inset { radius: 0 });
@@ -535,7 +544,7 @@ fn nav(
     }
     if listed.len() > 1 {
         let switch = key(ui, look, Command::SettingsPane);
-        let what = skin.say("pane");
+        let what = skin.say(msgid("pane"));
         let y = rect.bottom() - 10.0 - line / 2.0;
         let hint = [(&switch, what.as_str(), true)];
         widgets::key_hints(ui, (rect.left() + 14.0, y), &hint, 0.0, look, palette);
@@ -545,7 +554,7 @@ fn nav(
 /// A group's heading over its rows: 12 over it and 4 under, after `top`
 /// at the pane's top or between two groups. A whole number of points, so
 /// the rows' fills start on a pixel.
-pub(super) fn heading(ui: &mut Ui, text: &'static str, top: f32, skin: &Skin) {
+pub(super) fn heading(ui: &mut Ui, text: Msgid, top: f32, skin: &Skin) {
     let Skin { look, palette, .. } = *skin;
     let role = TextRole::OCaption;
     let line = role.row_height(ui.ctx(), look.faces);
@@ -572,10 +581,10 @@ fn rows(ui: &mut Ui, settings: &Settings, cursor: usize, skin: &Skin, actions: &
     );
     let mut index = 0;
     for (heading_text, top, options) in [
-        ("Language", 8.0, &OptionId::LANGUAGE[..]),
-        ("Startup", 12.0, &OptionId::STARTUP[..]),
-        ("Data", 12.0, &OptionId::DATA[..]),
-        ("Safety", 12.0, &OptionId::SAFETY[..]),
+        (msgid("Language"), 8.0, &OptionId::LANGUAGE[..]),
+        (msgid("Startup"), 12.0, &OptionId::STARTUP[..]),
+        (msgid("Data"), 12.0, &OptionId::DATA[..]),
+        (msgid("Safety"), 12.0, &OptionId::SAFETY[..]),
     ] {
         heading(ui, heading_text, top, skin);
         for option in options.iter().copied() {
@@ -612,11 +621,11 @@ fn appearance_rows(
     );
     let mut index = 0;
     for (heading_text, top, options) in [
-        ("Interface", 8.0, &OptionId::INTERFACE[..]),
-        ("Theme", 12.0, &OptionId::THEME[..]),
-        ("Text", 12.0, &OptionId::TERMINAL_TEXT[..]),
-        ("Grid", 12.0, &OptionId::GRID[..]),
-        ("Environment", 12.0, &OptionId::ENVIRONMENT[..]),
+        (msgid("Interface"), 8.0, &OptionId::INTERFACE[..]),
+        (msgid("Theme"), 12.0, &OptionId::THEME[..]),
+        (msgid("Text"), 12.0, &OptionId::TERMINAL_TEXT[..]),
+        (msgid("Grid"), 12.0, &OptionId::GRID[..]),
+        (msgid("Environment"), 12.0, &OptionId::ENVIRONMENT[..]),
     ] {
         heading(ui, heading_text, top, skin);
         for option in options.iter().copied() {
@@ -638,9 +647,9 @@ fn appearance_rows(
     }
     // Under the options, the preview, no row of the cursor's either: 4
     // over and under it, as far in as the rows' words.
-    heading(ui, "Preview", 12.0, skin);
+    heading(ui, msgid("Preview"), 12.0, skin);
     ui.add_space(4.0);
-    let name = skin.say("Preview");
+    let name = skin.say(msgid("Preview"));
     super::preview::show(ui, (&name, ROW_SIDE), settings, skin.look, skin.palette);
     ui.add_space(4.0);
 }
@@ -665,15 +674,15 @@ fn editor_rows(
     let columns = columns(ui, room, widths(ui, &shown, settings, skin), skin);
     let mut index = 0;
     for (heading_text, top, options) in [
-        ("Running queries", 8.0, &OptionId::RUNNING[..]),
-        ("Typing", 12.0, &OptionId::TERMINAL_TYPING[..]),
+        (msgid("Running queries"), 8.0, &OptionId::RUNNING[..]),
+        (msgid("Typing"), 12.0, &OptionId::TERMINAL_TYPING[..]),
         // The board's: "format · = in normal mode".
         (
-            "Format · {format} in normal mode",
+            msgid("Format · {format} in normal mode"),
             12.0,
             &OptionId::FORMAT[..],
         ),
-        ("History", 12.0, &OptionId::HISTORY[..]),
+        (msgid("History"), 12.0, &OptionId::HISTORY[..]),
     ] {
         heading(ui, heading_text, top, skin);
         for option in options.iter().copied() {
@@ -691,7 +700,7 @@ fn editor_rows(
     }
     // Under the options, the editor's preview, no row of the cursor's: 4
     // over and under it, as far in as the rows' words.
-    heading(ui, "Preview", 12.0, skin);
+    heading(ui, msgid("Preview"), 12.0, skin);
     ui.add_space(4.0);
     super::editor_preview::show(
         ui,
@@ -711,7 +720,7 @@ fn palette_row(
     actions: &mut Vec<Action>,
 ) {
     let palette = skin.palette;
-    let (row, left, right, _) = row_frame(ui, (usize::MAX, "Palette"), false, skin, actions);
+    let (row, left, right, _) = row_frame(ui, (usize::MAX, msgid("Palette")), false, skin, actions);
     let label_width = label_width.min(right - left);
     let value_width = value_width.min(right - left - label_width);
     let swatches = [
@@ -759,11 +768,13 @@ fn palette_source(skin: &Skin) -> Text {
     } = *skin;
     let said = match desktop.pin {
         Some((_, PinState::Drawn(pinned))) if pinned.omarchy => {
-            skin.say("read from the omarchy theme")
+            skin.say(msgid("read from the omarchy theme"))
         }
-        Some((name, PinState::Drawn(_))) => skin.say("read from {name}").replace("{name}", name),
-        _ if desktop.follows_omarchy => skin.say("read from the omarchy theme"),
-        _ => skin.say("tabletist's own light or dark"),
+        Some((name, PinState::Drawn(_))) => {
+            skin.say(msgid("read from {name}")).replace("{name}", name)
+        }
+        _ if desktop.follows_omarchy => skin.say(msgid("read from the omarchy theme")),
+        _ => skin.say(msgid("tabletist's own light or dark")),
     };
     Text::one(look, TextRole::OBody, &said, palette.dim)
 }
@@ -780,28 +791,30 @@ fn theme_hint(skin: &Skin) -> Text {
     let role = TextRole::OBody;
     match desktop.pin {
         Some((name, PinState::Drawn(_))) => {
-            let said = skin.say("now: {name} · pinned").replace("{name}", name);
+            let said = skin
+                .say(msgid("now: {name} · pinned"))
+                .replace("{name}", name);
             Text::one(look, role, &said, palette.dim)
         }
         Some((name, PinState::Missing)) => {
             let said = skin.say(if desktop.follows_omarchy {
-                "“{name}” not found · following omarchy"
+                msgid("“{name}” not found · following omarchy")
             } else {
-                "“{name}” not found · following the system"
+                msgid("“{name}” not found · following the system")
             });
             Text::one(look, role, &said.replace("{name}", name), palette.warning)
         }
         // A pin still being read is drawn as the desktop until it is.
         Some((_, PinState::Reading)) | None if desktop.follows_omarchy => {
             let name = look.label(desktop.current.unwrap_or("Omarchy"));
-            let said = skin.say("now: {name} · switches with omarchy-theme");
+            let said = skin.say(msgid("now: {name} · switches with omarchy-theme"));
             Text::one(look, role, &said.replace("{name}", &name), palette.dim)
         }
         Some((_, PinState::Reading)) | None => {
             let said = skin.say(if palette.dark {
-                "now: dark, from the system"
+                msgid("now: dark, from the system")
             } else {
-                "now: light, from the system"
+                msgid("now: light, from the system")
             });
             Text::one(look, role, &said, palette.dim)
         }
@@ -821,19 +834,19 @@ fn font_hint(skin: &Skin) -> Text {
     let family = font.family.map(|family| look.label(family));
     match (font.missing, family) {
         (None, Some(family)) => {
-            let said = skin.say("now: {family}, from fontconfig");
+            let said = skin.say(msgid("now: {family}, from fontconfig"));
             Text::one(look, role, &said.replace("{family}", &family), palette.dim)
         }
         (None, None) => Text::one(
             look,
             role,
-            &skin.say("now: jetbrains mono, bundled"),
+            &skin.say(msgid("now: jetbrains mono, bundled")),
             palette.dim,
         ),
         // Shorter: the row has the room for what was not found first.
         (Some(name), family) => {
-            let drawn = family.unwrap_or_else(|| skin.say("jetbrains mono, bundled"));
-            let said = skin.say("“{name}” not found · now: {family}");
+            let drawn = family.unwrap_or_else(|| skin.say(msgid("jetbrains mono, bundled")));
+            let said = skin.say(msgid("“{name}” not found · now: {family}"));
             let said = crate::i18n::fill(&said, &[("{name}", name), ("{family}", &drawn)]);
             Text::one(look, role, &said, palette.warning)
         }
@@ -847,7 +860,7 @@ fn font_value(settings: &Settings, skin: &Skin) -> String {
         Some(name) if !name.is_empty() && !name.eq_ignore_ascii_case("monospace") => {
             name.to_owned()
         }
-        _ => skin.say("system monospace"),
+        _ => skin.say(msgid("system monospace")),
     }
 }
 
@@ -876,15 +889,15 @@ fn agent_rows(
     // The rows that are no options', each its label, value and hint: made
     // again for each use, as a text is laid out once. The command for other
     // agents gives way in its middle to what `fits`, and is copied whole.
-    let text_of = |ui: &Ui, which: usize, fits: f32| -> (&'static str, Text, Text) {
+    let text_of = |ui: &Ui, which: usize, fits: f32| -> (Msgid, Text, Text) {
         match which {
             0 => {
                 let (value, hint) = status_text(server.on, server.connected, skin);
-                ("Status", value, hint)
+                (msgid("Status"), value, hint)
             }
             1 => {
                 let (value, hint) = access_text(ui, skin);
-                ("Set for each connection", value, hint)
+                (msgid("Set for each connection"), value, hint)
             }
             _ => {
                 let ctx = ui.ctx().clone();
@@ -892,9 +905,9 @@ fn agent_rows(
                     role.width(&ctx, look.faces, text)
                 });
                 (
-                    "Cursor, others",
+                    msgid("Cursor, others"),
                     Text::one(look, role, &shown, palette.text),
-                    dim(skin, "same server, stdio"),
+                    dim(skin, msgid("same server, stdio")),
                 )
             }
         }
@@ -934,7 +947,7 @@ fn agent_rows(
             actions,
         );
     };
-    heading(ui, "MCP server", 8.0, skin);
+    heading(ui, msgid("MCP server"), 8.0, skin);
     option_row(
         ui,
         (0, OptionId::AgentsOn),
@@ -946,14 +959,14 @@ fn agent_rows(
     );
     text(ui, 1, 0, actions);
 
-    heading(ui, "Connect an agent", 12.0, skin);
+    heading(ui, msgid("Connect an agent"), 12.0, skin);
     command_box(ui, skin, locale);
     text(ui, usize::MAX, 2, actions);
 
-    heading(ui, "Access", 12.0, skin);
+    heading(ui, msgid("Access"), 12.0, skin);
     text(ui, 2, 1, actions);
 
-    heading(ui, "Log", 12.0, skin);
+    heading(ui, msgid("Log"), 12.0, skin);
     option_row(
         ui,
         (3, OptionId::LogDays),
@@ -978,7 +991,7 @@ fn agent_rows(
 }
 
 /// A dim hint.
-fn dim(skin: &Skin, text: &'static str) -> Text {
+fn dim(skin: &Skin, text: Msgid) -> Text {
     Text::one(
         skin.look,
         TextRole::OBody,
@@ -998,19 +1011,28 @@ fn status_text(on: bool, count: usize, skin: &Skin) -> (Text, Text) {
     } = *skin;
     let role = TextRole::OBody;
     if !on {
-        let value = Text::one(look, role, &format!("● {}", skin.say("off")), palette.dim);
-        return (value, dim(skin, "agents can't connect"));
+        let value = Text::one(
+            look,
+            role,
+            &format!("● {}", skin.say(msgid("off"))),
+            palette.dim,
+        );
+        return (value, dim(skin, msgid("agents can't connect")));
     }
     let agents = match count {
-        0 => skin.say("no agents"),
+        0 => skin.say(msgid("no agents")),
         count => look.label(
             &ngettext(locale, "{n} agent", "{n} agents", count).replace("{n}", &count.to_string()),
         ),
     };
     let value = Text::new(look)
-        .add(role, &format!("● {}", skin.say("running")), palette.success)
+        .add(
+            role,
+            &format!("● {}", skin.say(msgid("running"))),
+            palette.success,
+        )
         .add(role, &format!(" · {agents}"), palette.text);
-    (value, dim(skin, "stdio · this computer"))
+    (value, dim(skin, msgid("stdio · this computer")))
 }
 
 /// The access row's value and hint: where access is set, and the key
@@ -1019,10 +1041,10 @@ fn access_text(ui: &Ui, skin: &Skin) -> (Text, Text) {
     let Skin { look, palette, .. } = *skin;
     let role = TextRole::OBody;
     let change = key(ui, look, Command::ChangeAgentAccess);
-    let value = Text::one(look, role, &skin.say("in connections"), palette.text);
+    let value = Text::one(look, role, &skin.say(msgid("in connections")), palette.text);
     let hint = Text::new(look).add(role, &change, palette.accent).add(
         role,
-        &format!(" {}", skin.say("on a row")),
+        &format!(" {}", skin.say(msgid("on a row"))),
         palette.dim,
     );
     (value, hint)
@@ -1054,7 +1076,7 @@ fn command_box(ui: &mut Ui, skin: &Skin, locale: Locale) {
     let hint = Text::new(look)
         .add(role, &copy, palette.accent)
         .space(role, " ")
-        .add(role, &skin.say("copy"), palette.dim)
+        .add(role, &skin.say(msgid("copy")), palette.dim)
         .layout(ui.ctx());
     let right = boxed.right() - 12.0;
     hint.paint_right(ui.painter(), right, boxed.center().y);
@@ -1091,8 +1113,8 @@ fn note(ui: &mut Ui, skin: &Skin) {
     let Skin { look, palette, .. } = *skin;
     let role = TextRole::OBody;
     let lines = [
-        "reads run in a read-only transaction with each connection's limits",
-        "no ddl, no multiple statements, no copy, no secrets sent",
+        msgid("reads run in a read-only transaction with each connection's limits"),
+        msgid("no ddl, no multiple statements, no copy, no secrets sent"),
     ];
     let line = role.row_height(ui.ctx(), look.faces);
     let height = (lines.len() as f32 * line * 1.2 + 20.0).ceil();
@@ -1205,7 +1227,7 @@ fn range(option: OptionId, skin: &Skin) -> Option<String> {
         format!(
             "{} {} {}",
             sizes.min.text(),
-            skin.say("to"),
+            skin.say(msgid("to")),
             sizes.max.text()
         )
     })
@@ -1281,7 +1303,7 @@ fn stepped_text(option: OptionId, settings: &Settings, skin: &Skin) -> String {
             .label(&super::days(skin.locale, settings.mcp_log_days)),
         // As the file writes it: `30m`; never in words.
         OptionId::IdleDisconnect => match settings.idle_disconnect {
-            Idle::Never => skin.say("Never"),
+            Idle::Never => skin.say(msgid("Never")),
             choice => choice.name().to_owned(),
         },
         // As the artboard writes it: `system (русский)`, `english`.
@@ -1304,17 +1326,17 @@ fn stepped_text(option: OptionId, settings: &Settings, skin: &Skin) -> String {
         // As the editor writes a time (`30s`, `1m`, `1m 30s`), or `off`.
         OptionId::Timeout => match settings.sql_timeout_secs {
             Some(secs) => crate::ui::sql_editor::time_words(secs, true, skin.locale),
-            None => skin.say("Off"),
+            None => skin.say(msgid("Off")),
         },
         OptionId::Indent => skin.say(match settings.indent {
-            crate::settings::Indent::Two => "2 spaces",
-            crate::settings::Indent::Four => "4 spaces",
-            crate::settings::Indent::Tab => "Tab",
+            crate::settings::Indent::Two => msgid("2 spaces"),
+            crate::settings::Indent::Four => msgid("4 spaces"),
+            crate::settings::Indent::Tab => msgid("Tab"),
         }),
         OptionId::HistoryKeep => match settings.history_keep {
-            0 => skin.say("Don't keep"),
+            0 => skin.say(msgid("Don't keep")),
             keep => skin
-                .say("{n} per connection")
+                .say(msgid("{n} per connection"))
                 .replace("{n}", &keep.to_string()),
         },
         // As the file writes it: `daily`.
@@ -1359,7 +1381,7 @@ fn segment(ui: &Ui, word: Said, skin: &Skin) -> f32 {
 /// its label. Returns the row, and where its words stand between.
 fn row_frame(
     ui: &mut Ui,
-    (index, name): (usize, &'static str),
+    (index, name): (usize, Msgid),
     on_cursor: bool,
     skin: &Skin,
     actions: &mut Vec<Action>,
@@ -1404,7 +1426,7 @@ fn row_frame(
 /// left out.
 fn text_row(
     ui: &mut Ui,
-    (index, name): (usize, &'static str),
+    (index, name): (usize, Msgid),
     on_cursor: bool,
     (label_width, value_width): (f32, f32),
     (value, hint): (Text, Text),
@@ -1749,13 +1771,13 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
                 .replace("{folder}", "assets/i18n");
             dim(&said)
         }
-        OptionId::PageSize => dim(&skin.say("table view")),
-        OptionId::Tz => dim(&skin.say("sent with offset")),
+        OptionId::PageSize => dim(&skin.say(msgid("table view"))),
+        OptionId::Tz => dim(&skin.say(msgid("sent with offset"))),
         OptionId::Timestamps => dim(sample_timestamp(settings.timestamps)),
         OptionId::GroupDigits => dim(&skin.say(if settings.group_digits.unwrap_or_default() {
-            "grouping on"
+            msgid("grouping on")
         } else {
-            "grouping off"
+            msgid("grouping off")
         })),
         // Two tags as a grid shows them: in the first two slots' colours,
         // or as plain values. They are values of a column, not words:
@@ -1777,25 +1799,29 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
             .add(role, &key(ui, look, Command::ShowCalendar), palette.accent)
             .add(role, " · ", palette.dim)
             .add(role, &key(ui, look, Command::HideCalendar), palette.accent),
-        OptionId::RestoreTabs => dim(&skin.say("per connection")),
-        OptionId::OnLaunch => dim(&skin.say("or connections · a chosen connection")),
-        OptionId::ProductionReadOnly => dim(&skin.say("default for new connections")),
+        OptionId::RestoreTabs => dim(&skin.say(msgid("per connection"))),
+        OptionId::OnLaunch => dim(&skin.say(msgid("or connections · a chosen connection"))),
+        OptionId::ProductionReadOnly => dim(&skin.say(msgid("default for new connections"))),
         // As drawn: nothing to add.
         OptionId::ConfirmCloseEdits => Text::new(look),
-        OptionId::IdleDisconnect => dim(&skin.say("tabs reconnect on use")),
-        OptionId::AgentsOn => dim(&skin.say("while tabletist is open")),
+        OptionId::IdleDisconnect => dim(&skin.say(msgid("tabs reconnect on use"))),
+        OptionId::AgentsOn => dim(&skin.say(msgid("while tabletist is open"))),
         // The key that shows the log, from this row, where there is a
         // window to show it in.
-        OptionId::LogDays if !skin.window => dim(&skin.say("on this computer")),
+        OptionId::LogDays if !skin.window => dim(&skin.say(msgid("on this computer"))),
         OptionId::LogDays => Text::new(look)
             .add(
                 role,
                 &key(ui, look, Command::SettingsOpenRow),
                 palette.accent,
             )
-            .add(role, &format!(" {}", skin.say("shows it")), palette.dim),
-        OptionId::AgentsNotify => dim(&skin.say("a desktop notification")),
-        OptionId::Look => dim(&skin.say("classic is the system's own look")),
+            .add(
+                role,
+                &format!(" {}", skin.say(msgid("shows it"))),
+                palette.dim,
+            ),
+        OptionId::AgentsNotify => dim(&skin.say(msgid("a desktop notification"))),
+        OptionId::Look => dim(&skin.say(msgid("classic is the system's own look"))),
         OptionId::Theme => theme_hint(skin),
         // macOS's and Windows's: no row of this look's.
         OptionId::InterfaceScale => Text::new(look),
@@ -1816,55 +1842,67 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
                 role,
                 &format!(
                     " {} · {}",
-                    skin.say("anywhere"),
-                    skin.say("rows and panes grow with it")
+                    skin.say(msgid("anywhere")),
+                    skin.say(msgid("rows and panes grow with it"))
                 ),
                 palette.dim,
             ),
-        OptionId::RowHeight => dim(&skin.say("1 · 1.5 · 2 lines")),
+        OptionId::RowHeight => dim(&skin.say(msgid("1 · 1.5 · 2 lines"))),
         OptionId::Zebra => Text::new(look),
-        OptionId::ColumnTypes => dim(&skin.say("second header line")),
+        OptionId::ColumnTypes => dim(&skin.say(msgid("second header line"))),
         // The key that flips the sidebar's list, from the keymap.
         OptionId::TableList => Text::new(look)
-            .add(role, &format!("{} ", skin.say("default;")), palette.dim)
+            .add(
+                role,
+                &format!("{} ", skin.say(msgid("default;"))),
+                palette.dim,
+            )
             .add(role, &key(ui, look, Command::ToggleTree), palette.accent)
-            .add(role, &format!(" {}", skin.say("toggles")), palette.dim),
+            .add(
+                role,
+                &format!(" {}", skin.say(msgid("toggles"))),
+                palette.dim,
+            ),
         // Not the board's "ctrl+w toggles per tab": ctrl+w closes the tab.
         // The commands that switch it, from the keymap.
         OptionId::NewTab => Text::new(look)
             .add(role, &key(ui, look, Command::ReadOnlyTab), palette.accent)
             .add(role, " / ", palette.dim)
             .add(role, &key(ui, look, Command::ReadWriteTab), palette.accent)
-            .add(role, &format!(" {}", skin.say("per tab")), palette.dim),
-        OptionId::RowLimit => {
-            dim(&skin.say("caps results you browse · show all and exports get every row"))
-        }
+            .add(
+                role,
+                &format!(" {}", skin.say(msgid("per tab"))),
+                palette.dim,
+            ),
+        OptionId::RowLimit => dim(&skin.say(msgid(
+            "caps results you browse · show all and exports get every row",
+        ))),
         // A selection is visual mode's where the keys are vim's.
         OptionId::RunScope => {
             if settings.editor_keys_in(true) == crate::settings::EditorKeys::Vim {
-                dim(&skin.say("a visual selection always wins"))
+                dim(&skin.say(msgid("a visual selection always wins")))
             } else {
-                dim(&skin.say("a selection always wins"))
+                dim(&skin.say(msgid("a selection always wins")))
             }
         }
-        OptionId::ConfirmUnsafeWrites => dim(&skin.say("connections that allow writes")),
+        OptionId::ConfirmUnsafeWrites => dim(&skin.say(msgid("connections that allow writes"))),
         // Vim's own words for the mode, in its case; the standard keys
         // have no mode to show.
         OptionId::EditorKeys => {
             if settings.editor_keys_in(true) == crate::settings::EditorKeys::Vim {
                 Text::new(look).add(role, "-- INSERT --", palette.dim).add(
                     role,
-                    &format!(" {}", skin.say("shown in the status line")),
+                    &format!(" {}", skin.say(msgid("shown in the status line"))),
                     palette.dim,
                 )
             } else {
                 Text::new(look)
             }
         }
-        OptionId::Autocomplete => dim(&skin.say("schema objects")),
-        OptionId::HistoryKeep => {
-            dim(&skin.say("per connection · sql, saves, filters, agents · never results"))
-        }
+        OptionId::Autocomplete => dim(&skin.say(msgid("schema objects"))),
+        OptionId::HistoryKeep => dim(&skin.say(msgid(
+            "per connection · sql, saves, filters, agents · never results",
+        ))),
         // When the last check ran, and the key that checks. Not the
         // board's "or weekly · never" before them: beside the file the
         // hint has no room for all of it, and the chevrons say there are
@@ -1879,7 +1917,11 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
                 &key(ui, look, Command::SettingsCheckNow),
                 palette.accent,
             )
-            .add(role, &format!(" {}", skin.say("check now")), palette.dim)
+            .add(
+                role,
+                &format!(" {}", skin.say(msgid("check now"))),
+                palette.dim,
+            )
         }
         OptionId::Timeout
         | OptionId::Indent
@@ -1898,7 +1940,7 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
             )
             .add(
                 role,
-                &format!(" {}", skin.say("always tinted")),
+                &format!(" {}", skin.say(msgid("always tinted"))),
                 palette.dim,
             ),
     }
@@ -1945,15 +1987,19 @@ fn footer(
     let edit = Some(Action::EditSettingsFile);
     // `$EDITOR` is a name: the look does not lower-case it.
     let in_editor = skin
-        .say("open file in {editor}")
+        .say(msgid("open file in {editor}"))
         .replace("{editor}", "$EDITOR");
     // The key, what it does, the button it stands for, and what that does.
     let mut keys: Vec<(Command, String, Option<Button<'_>>)> = vec![
-        (Command::SettingsMove, skin.say("move"), None),
-        (Command::SettingsChange, skin.say("change"), None),
+        (Command::SettingsMove, skin.say(msgid("move")), None),
+        (
+            Command::SettingsChange,
+            skin.say(pmsgid("key hint", "change")),
+            None,
+        ),
         (
             Command::SettingsToggle,
-            skin.say("toggle"),
+            skin.say(msgid("toggle")),
             Some(("Toggle", flip.map(|flip| vec![flip]))),
         ),
     ];
@@ -1964,16 +2010,16 @@ fn footer(
     {
         keys.push((
             Command::SettingsOpenRow,
-            skin.say("show history"),
+            skin.say(msgid("show history")),
             Some(("Show History", Some(shows))),
         ));
     }
     if pane == SettingsPane::Agents {
         if let Some((row, opens)) = opens {
             let (what, name) = match row {
-                SettingsRow::AgentsAccess => ("open connections", "Open Connections"),
-                SettingsRow::Option(OptionId::LogDays) => ("show log", "Show log"),
-                _ => ("show agents tab", "Show Agents tab"),
+                SettingsRow::AgentsAccess => (msgid("open connections"), "Open Connections"),
+                SettingsRow::Option(OptionId::LogDays) => (msgid("show log"), "Show log"),
+                _ => (msgid("show agents tab"), "Show Agents tab"),
             };
             keys.push((
                 Command::SettingsOpenRow,
@@ -1983,7 +2029,7 @@ fn footer(
         }
         keys.push((
             Command::SettingsCopyCommand,
-            skin.say("copy command"),
+            skin.say(msgid("copy command")),
             Some(("Copy the command", None)),
         ));
     }
@@ -1995,12 +2041,12 @@ fn footer(
         ),
         (
             Command::SettingsReset,
-            skin.say("reset option"),
+            skin.say(msgid("reset option")),
             Some(("Reset option", reset.map(|reset| vec![reset]))),
         ),
         (
             Command::SettingsClose,
-            skin.say("close"),
+            skin.say(msgid("close")),
             Some(("Close", Some(vec![Action::CloseDialog]))),
         ),
     ]);
@@ -2069,25 +2115,25 @@ fn keyboard_footer(
     let cursor = super::keyboard_terminal::cursor(keymap, Layout::of(look), locale, page);
     // `$EDITOR` is a name: the look does not lower-case it.
     let in_editor = skin
-        .say("open file in {editor}")
+        .say(msgid("open file in {editor}"))
         .replace("{editor}", "$EDITOR");
     let keys: Vec<(Command, String, Option<Button<'_>>)> = if page.recording.is_some() {
         vec![
-            (Command::SettingsOpenRow, skin.say("end"), None),
+            (Command::SettingsOpenRow, skin.say(msgid("end")), None),
             (
                 Command::SettingsClose,
-                skin.say("cancel"),
+                skin.say(msgid("cancel")),
                 Some(("Cancel", Some(vec![Action::StopRecording]))),
             ),
         ]
     } else {
         let row = |action: fn(crate::keymap::Row) -> Action| cursor.map(|row| vec![action(row)]);
         vec![
-            (Command::SettingsMove, skin.say("move"), None),
-            (Command::SettingsChange, skin.say("group"), None),
+            (Command::SettingsMove, skin.say(msgid("move")), None),
+            (Command::SettingsChange, skin.say(msgid("group")), None),
             (
                 Command::SettingsOpenRow,
-                skin.say("record"),
+                skin.say(msgid("record")),
                 Some((
                     "Record",
                     cursor.map(|row| vec![Action::RecordKeys(crate::model::Recorded::Row(row))]),
@@ -2095,16 +2141,24 @@ fn keyboard_footer(
             ),
             (
                 Command::SettingsUnbind,
-                skin.say("unbind"),
+                skin.say(msgid("unbind")),
                 Some(("Unbind", row(Action::UnbindRow))),
             ),
             (
                 Command::SettingsReset,
-                skin.say("reset"),
+                skin.say(msgid("reset")),
                 Some(("Reset", row(Action::ResetRow))),
             ),
-            (Command::SettingsFilter, skin.say("filter"), None),
-            (Command::SettingsFindKey, skin.say("find by key"), None),
+            (
+                Command::SettingsFilter,
+                skin.say(pmsgid("key hint", "filter")),
+                None,
+            ),
+            (
+                Command::SettingsFindKey,
+                skin.say(msgid("find by key")),
+                None,
+            ),
             (
                 Command::SettingsOpenFile,
                 in_editor,
@@ -2112,7 +2166,7 @@ fn keyboard_footer(
             ),
             (
                 Command::SettingsClose,
-                skin.say("close"),
+                skin.say(msgid("close")),
                 Some(("Close", Some(vec![Action::CloseDialog]))),
             ),
         ]

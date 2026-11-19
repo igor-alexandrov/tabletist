@@ -1433,7 +1433,7 @@ mod tests {
         let mut elsewhere = offered();
         elsewhere.app.updates.installed = Some(crate::update::Installed::Elsewhere(
             crate::update::Managed {
-                said: "Installed with Homebrew, so Homebrew updates it",
+                said: crate::i18n::msgid("Installed with Homebrew, so Homebrew updates it"),
                 command: Some("brew upgrade --cask tabletist"),
             },
         ));

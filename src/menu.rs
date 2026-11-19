@@ -15,6 +15,7 @@ pub use bar::Bar;
 pub use replay::Replay;
 pub use tabletist_menubar::{Native, Role, Via};
 
+use crate::i18n::{Msgid, msgid};
 use crate::keymap::{Command, EditItem, Keymap, Layout, MenuKey};
 
 /// The platforms with a menu bar.
@@ -58,7 +59,7 @@ pub enum Item {
 /// One menu of the bar: its title and its items, in order.
 pub struct Menu {
     /// An msgid.
-    pub title: &'static str,
+    pub title: Msgid,
     pub role: Role,
     pub items: Vec<Item>,
 }
@@ -75,7 +76,7 @@ pub fn bar(platform: Platform) -> Vec<Menu> {
     let mut menus = Vec::new();
     if mac {
         menus.push(Menu {
-            title: "Tabletist",
+            title: msgid("Tabletist"),
             role: Role::Plain,
             items: vec![
                 Item::About,
@@ -111,12 +112,12 @@ pub fn bar(platform: Platform) -> Vec<Menu> {
         file.extend([Sep, Run(C::Settings), Sep, Item::Exit]);
     }
     menus.push(Menu {
-        title: "File",
+        title: msgid("File"),
         role: Role::Plain,
         items: file,
     });
     menus.push(Menu {
-        title: "Edit",
+        title: msgid("Edit"),
         role: Role::Plain,
         items: vec![
             Item::Edit(EditItem::Undo),
@@ -146,12 +147,12 @@ pub fn bar(platform: Platform) -> Vec<Menu> {
         Run(C::DefaultTextSize),
     ]);
     menus.push(Menu {
-        title: "View",
+        title: msgid("View"),
         role: Role::Plain,
         items: view,
     });
     menus.push(Menu {
-        title: "Query",
+        title: msgid("Query"),
         role: Role::Plain,
         items: vec![
             Run(C::RunAll),
@@ -182,7 +183,7 @@ pub fn bar(platform: Platform) -> Vec<Menu> {
         cycle.to_vec()
     };
     menus.push(Menu {
-        title: "Window",
+        title: msgid("Window"),
         role: Role::Window,
         items: window,
     });
@@ -192,7 +193,7 @@ pub fn bar(platform: Platform) -> Vec<Menu> {
         help.extend([Sep, Run(C::CheckForUpdates), Item::About]);
     }
     menus.push(Menu {
-        title: "Help",
+        title: msgid("Help"),
         role: Role::Help,
         items: help,
     });
@@ -201,71 +202,71 @@ pub fn bar(platform: Platform) -> Vec<Menu> {
 
 /// `item`'s title, an msgid. `on` picks a toggle's second title: the
 /// sidebar or the row panel shown, the tab read-only.
-pub fn title(item: Item, on: bool) -> &'static str {
+pub fn title(item: Item, on: bool) -> Msgid {
     use Command as C;
     match item {
         Item::Command(command) => match command {
-            C::NewConnection => "New Connection",
-            C::NewSqlTab => "New SQL Query",
-            C::Connections => "Connections",
-            C::EditConnection => "Edit Connection",
-            C::CloseConnection => "Close Connection",
-            C::CloseTab => "Close Tab",
-            C::Export => "Export…",
-            C::ExportTable => "Export a Table…",
-            C::Settings => "Settings…",
-            C::CheckForUpdates => "Check for Updates…",
-            C::ToggleSidebar if on => "Hide Sidebar",
-            C::ToggleSidebar => "Show Sidebar",
-            C::ToggleInspector if on => "Hide Row Panel",
-            C::ToggleInspector => "Show Row Panel",
-            C::FilterBar => "Filter Rows",
-            C::History => "History",
-            C::ShowAgents => "Agents",
-            C::LargerText => "Larger",
-            C::SmallerText => "Smaller",
-            C::DefaultTextSize => "Actual Size",
-            C::RunAll => "Run All",
-            C::CancelQuery => "Cancel Query",
-            C::Format => "Format SQL",
-            C::ToggleSqlMode if on => "Make Tab Read-Write",
-            C::ToggleSqlMode => "Make Tab Read-Only",
-            C::ReviewSql => "Review Pending SQL",
-            C::SaveChanges => "Save Changes",
-            C::DiscardChanges => "Discard All Changes",
-            C::Reload => "Reload Schema",
-            C::SwitchDatabase => "Switch Database",
-            C::NextTab => "Next Tab",
-            C::PreviousTab => "Previous Tab",
-            C::NextConnection => "Next Connection",
-            C::PreviousConnection => "Previous Connection",
-            C::Help => "Keyboard Shortcuts",
+            C::NewConnection => msgid("New Connection"),
+            C::NewSqlTab => msgid("New SQL Query"),
+            C::Connections => msgid("Connections"),
+            C::EditConnection => msgid("Edit Connection"),
+            C::CloseConnection => msgid("Close Connection"),
+            C::CloseTab => msgid("Close Tab"),
+            C::Export => msgid("Export…"),
+            C::ExportTable => msgid("Export a Table…"),
+            C::Settings => msgid("Settings…"),
+            C::CheckForUpdates => msgid("Check for Updates…"),
+            C::ToggleSidebar if on => msgid("Hide Sidebar"),
+            C::ToggleSidebar => msgid("Show Sidebar"),
+            C::ToggleInspector if on => msgid("Hide Row Panel"),
+            C::ToggleInspector => msgid("Show Row Panel"),
+            C::FilterBar => msgid("Filter Rows"),
+            C::History => msgid("History"),
+            C::ShowAgents => msgid("Agents"),
+            C::LargerText => msgid("Larger"),
+            C::SmallerText => msgid("Smaller"),
+            C::DefaultTextSize => msgid("Actual Size"),
+            C::RunAll => msgid("Run All"),
+            C::CancelQuery => msgid("Cancel Query"),
+            C::Format => msgid("Format SQL"),
+            C::ToggleSqlMode if on => msgid("Make Tab Read-Write"),
+            C::ToggleSqlMode => msgid("Make Tab Read-Only"),
+            C::ReviewSql => msgid("Review Pending SQL"),
+            C::SaveChanges => msgid("Save Changes"),
+            C::DiscardChanges => msgid("Discard All Changes"),
+            C::Reload => msgid("Reload Schema"),
+            C::SwitchDatabase => msgid("Switch Database"),
+            C::NextTab => msgid("Next Tab"),
+            C::PreviousTab => msgid("Previous Tab"),
+            C::NextConnection => msgid("Next Connection"),
+            C::PreviousConnection => msgid("Previous Connection"),
+            C::Help => msgid("Keyboard Shortcuts"),
             // Never in the bar (the model's tests hold it to RUNNABLE).
-            _ => "",
+            _ => Msgid::EMPTY,
         },
-        Item::About => "About Tabletist",
-        Item::QuickOpen => "Quick Open",
-        Item::Import => "Import…",
-        Item::Exit => "Exit",
+        Item::About => msgid("About Tabletist"),
+        Item::QuickOpen => msgid("Quick Open"),
+        Item::Import => msgid("Import…"),
+        Item::Exit => msgid("Exit"),
         Item::Edit(edit) => match edit {
-            EditItem::Undo => "Undo",
-            EditItem::Redo => "Redo",
-            EditItem::Cut => "Cut",
-            EditItem::Copy => "Copy",
-            EditItem::Paste => "Paste",
-            EditItem::SelectAll => "Select All",
+            EditItem::Undo => msgid("Undo"),
+            EditItem::Redo => msgid("Redo"),
+            EditItem::Cut => msgid("Cut"),
+            EditItem::Copy => msgid("Copy"),
+            EditItem::Paste => msgid("Paste"),
+            EditItem::SelectAll => msgid("Select All"),
         },
         Item::Native(native) => match native {
-            Native::Services => "Services",
-            Native::Hide => "Hide Tabletist",
-            Native::HideOthers => "Hide Others",
-            Native::ShowAll => "Show All",
-            Native::Quit => "Quit Tabletist",
-            Native::Minimize => "Minimize",
-            Native::Zoom => "Zoom",
-            Native::BringAllToFront => "Bring All to Front",
+            Native::Services => msgid("Services"),
+            Native::Hide => msgid("Hide Tabletist"),
+            Native::HideOthers => msgid("Hide Others"),
+            Native::ShowAll => msgid("Show All"),
+            Native::Quit => msgid("Quit Tabletist"),
+            Native::Minimize => msgid("Minimize"),
+            Native::Zoom => msgid("Zoom"),
+            Native::BringAllToFront => msgid("Bring All to Front"),
         },
-        Item::Separator => "",
+        Item::Separator => Msgid::EMPTY,
     }
 }
 

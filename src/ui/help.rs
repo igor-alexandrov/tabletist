@@ -9,7 +9,7 @@
 
 use egui::{CornerRadius, Key, Modifiers, Rect, Sense, Stroke, pos2, vec2};
 
-use crate::i18n::{Locale, gettext};
+use crate::i18n::{Locale, Msgid, gettext, msgid};
 use crate::keymap::{Command, Group, Keymap, Layout, Written, key_written};
 use crate::model::{Action, HelpSearch};
 use crate::typography::{Text, TextRole};
@@ -19,13 +19,13 @@ use crate::ui::{Paint, widgets};
 
 /// The groups the list is in, in its order, as the Keyboard page of the
 /// design names them.
-const GROUPS: [(Group, &str); 6] = [
-    (Group::Window, "Window and connections"),
-    (Group::Navigation, "Navigation"),
-    (Group::Editing, "Grid and editing"),
-    (Group::Sql, "SQL editor"),
-    (Group::Ai, "AI assistant"),
-    (Group::Prompts, "Prompts and dialogs"),
+const GROUPS: [(Group, Msgid); 6] = [
+    (Group::Window, msgid("Window and connections")),
+    (Group::Navigation, msgid("Navigation")),
+    (Group::Editing, msgid("Grid and editing")),
+    (Group::Sql, msgid("SQL editor")),
+    (Group::Ai, msgid("AI assistant")),
+    (Group::Prompts, msgid("Prompts and dialogs")),
 ];
 
 /// What the list holds for `layout`: every command that is built and has
@@ -45,12 +45,12 @@ pub(crate) fn rows(keymap: &Keymap, layout: Layout) -> Vec<(Group, Command, Writ
     rows
 }
 
-/// A group's heading, in English: the caller translates.
-pub(crate) fn heading(group: Group) -> &'static str {
+/// A group's heading, marked: the caller says it.
+pub(crate) fn heading(group: Group) -> Msgid {
     GROUPS
         .iter()
         .find(|(of, _)| *of == group)
-        .map_or("", |(_, name)| name)
+        .map_or(Msgid::EMPTY, |(_, name)| *name)
 }
 
 /// A command the dialog lists while it is searched: its group, its keys
@@ -78,8 +78,8 @@ pub(crate) fn listed(
     rows(keymap, layout)
         .into_iter()
         .filter_map(|(group, command, keys)| {
-            let name = gettext(locale, command.info().name);
-            let group_name = gettext(locale, heading(group));
+            let name = command.info().name.say(locale);
+            let group_name = heading(group).say(locale);
             let caps = keymap.caps(layout, command);
             let caps: Vec<&str> = caps.iter().map(|cap| cap.as_str()).collect();
             let spelled = keymap.command_keys(layout, command);
@@ -179,7 +179,7 @@ pub fn show(
     let layout = paint.layout();
     let all = rows(keymap, layout);
     let listed = listed(keymap, layout, locale, search);
-    let say = |words: &'static str| look.label(&gettext(locale, words));
+    let say = |words: Msgid| look.label(&words.say(locale));
     let searching = !search.search.is_empty() || search.found.is_some();
     let mut actions = Vec::new();
     crate::ui::widgets::modal(egui::Id::new("help"), &look, &palette).show(ctx, |ui| {
@@ -214,13 +214,13 @@ pub fn show(
             let what = Text::one(
                 &look,
                 widgets::body(&look),
-                &gettext(locale, command.info().name),
+                &command.info().name.say(locale),
                 palette.text,
             );
             natural = natural.max(widgets::measure(ui, what) + GAP + widgets::measure(ui, keys));
         }
         for (group, _) in GROUPS {
-            let name = look.label(&gettext(locale, heading(group)));
+            let name = look.label(&heading(group).say(locale));
             let label = widgets::section_label(&name, &look, &palette);
             natural = natural.max(widgets::measure(ui, label));
         }
@@ -295,8 +295,12 @@ pub fn show(
             let (rect, _) =
                 ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::hover());
             let esc = key_written(layout, "esc");
-            let does = say(if searching { "clear" } else { "close" });
-            let typing = say("type to filter, or press keys to find them");
+            let does = say(if searching {
+                msgid("clear")
+            } else {
+                msgid("close")
+            });
+            let typing = say(msgid("type to filter, or press keys to find them"));
             let none = Written::default();
             let hints = [(&none, typing.as_str(), true), (&esc, does.as_str(), true)];
             widgets::key_hints(
@@ -326,7 +330,7 @@ struct Placed {
 fn group_rows(ui: &mut egui::Ui, paint: Paint, rows: &[Listed], width: f32, first: bool) -> Placed {
     let Paint { locale, look, .. } = paint;
     let group = rows[0].group;
-    let name = look.label(&gettext(locale, heading(group)));
+    let name = look.label(&heading(group).say(locale));
     let builder = egui::UiBuilder::new().id_salt(("help-group", heading(group)));
     ui.scope_builder(builder, |ui| {
         ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
@@ -381,7 +385,7 @@ fn row_line(ui: &mut egui::Ui, paint: Paint, row: &Listed, width: f32) {
     let layout = egui::Layout::left_to_right(egui::Align::Center);
     let mut cells = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout));
     let marked = TextRole::pick(&look, TextRole::UiBodySemibold, TextRole::OGroup);
-    let name = gettext(locale, row.command.info().name);
+    let name = row.command.info().name.say(locale);
     let marks = (body, palette.text, marked, palette.accent_hover);
     crate::ui::start::marked(&look, &name, &row.spans, marks)
         .layout(ui.ctx())
@@ -423,7 +427,7 @@ fn pin(ui: &egui::Ui, paint: Paint, view: Rect, placed: &[Placed], width: f32) {
     let painter = ui.painter_at(view);
     let band = Rect::from_x_y_ranges(view.x_range(), (foot - PINNED)..=foot);
     painter.rect_filled(band, CornerRadius::ZERO, palette.overlay);
-    let name = look.label(&gettext(locale, heading(placed[at].group)));
+    let name = look.label(&heading(placed[at].group).say(locale));
     let left = placed[at].left;
     let label = Rect::from_x_y_ranges(left..=left + width, band.y_range());
     heading_label(ui, &painter, label, &name, paint);
@@ -567,9 +571,9 @@ fn nothing_listed(ui: &mut egui::Ui, paint: Paint, search: &HelpSearch) {
         }
     };
     let then = if look.terminal {
-        "Esc clears the filter"
+        msgid("Esc clears the filter")
     } else {
-        "Esc clears the search"
+        msgid("Esc clears the search")
     };
     ui.vertical_centered(|ui| {
         ui.add_space(24.0);
@@ -581,7 +585,7 @@ fn nothing_listed(ui: &mut egui::Ui, paint: Paint, search: &HelpSearch) {
             &look,
         );
         ui.add_space(6.0);
-        let then = look.label(&gettext(locale, then));
+        let then = look.label(&then.say(locale));
         widgets::label(ui, widgets::secondary(&look), &then, palette.dim, &look);
     });
 }

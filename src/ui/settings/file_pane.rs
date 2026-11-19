@@ -9,7 +9,7 @@ use std::path::Path;
 
 use egui::{Color32, CornerRadius, Rangef, Rect, Sense, Ui, pos2, vec2};
 
-use crate::i18n::gettext;
+use crate::i18n::{gettext, msgid};
 use crate::keymap::Bind;
 use crate::settings::{OptionId, SettingsFile};
 use crate::theme::Palette;
@@ -264,7 +264,7 @@ pub(super) fn show(
     // Where the path ends: at the pane's side, or before the word there.
     let mut path_right = right;
     if file.live {
-        let live = Text::one(look, role, &skin.say("live"), palette.dim);
+        let live = Text::one(look, role, &skin.say(msgid("live")), palette.dim);
         path_right -= widgets::paint_text_right(ui, right, y, live) + 12.0;
     }
     // The pane's heading: strong, as a heading over a rule is in this look.
@@ -346,10 +346,13 @@ pub(super) fn show(
             (
                 Some(keys_lines(file)),
                 vec![
-                    format!("# {}", skin.say("only changes from the defaults live here")),
                     format!(
                         "# {}",
-                        skin.say("{list} writes the full list")
+                        skin.say(msgid("only changes from the defaults live here"))
+                    ),
+                    format!(
+                        "# {}",
+                        skin.say(msgid("{list} writes the full list"))
                             .replace("{list}", list.as_str())
                     ),
                     String::new(),

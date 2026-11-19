@@ -40,6 +40,21 @@ pub const fn pmsgid(context: &'static str, text: &'static str) -> Msgid {
 }
 
 impl Msgid {
+    /// No message: an item that draws no words (a separator), never said.
+    pub const EMPTY: Self = Self {
+        context: None,
+        text: "",
+    };
+
+    /// `text` drawn as it is in every language, never extracted: a word
+    /// the settings file writes (a `[keys.<table>]` name), a product's.
+    pub const fn as_is(text: &'static str) -> Self {
+        Self {
+            context: None,
+            text,
+        }
+    }
+
     /// The message as the code writes it: the settings file's and the
     /// tests' word, never drawn in another language.
     pub const fn english(self) -> &'static str {
@@ -52,6 +67,21 @@ impl Msgid {
             Some(context) => pgettext(locale, context, self.text),
             None => gettext(locale, self.text),
         }
+    }
+}
+
+/// A message is its English where code compares it with text: a test's
+/// expected word, a command found by its name. It has no `Display`, so it
+/// is never written out unsaid.
+impl PartialEq<&str> for Msgid {
+    fn eq(&self, other: &&str) -> bool {
+        self.text == *other
+    }
+}
+
+impl PartialEq<Msgid> for &str {
+    fn eq(&self, other: &Msgid) -> bool {
+        *self == other.text
     }
 }
 
@@ -408,7 +438,7 @@ mod tests {
     fn every_russian_translation_keeps_its_placeholders() {
         let text = include_str!("../../../assets/i18n/ru.po");
         let entries = entries(text);
-        assert!(entries.len() > 600, "{} entries", entries.len());
+        assert!(entries.len() > 1400, "{} entries", entries.len());
         for (ids, strs) in entries {
             let Some(id) = ids.first().filter(|id| !id.is_empty()) else {
                 continue;
@@ -416,6 +446,24 @@ mod tests {
             let wanted = placeholders(id);
             for translated in strs.iter().filter(|text| !text.is_empty()) {
                 assert_eq!(placeholders(translated), wanted, "{id:?} → {translated:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_russian_entry_is_translated_without_an_em_dash() {
+        let text = include_str!("../../../assets/i18n/ru.po");
+        assert!(!text.contains("#, fuzzy"), "a fuzzy entry shows in English");
+        for (ids, strs) in entries(text) {
+            let Some(id) = ids.first().filter(|id| !id.is_empty()) else {
+                continue;
+            };
+            assert!(
+                !strs.is_empty() && strs.iter().all(|text| !text.is_empty()),
+                "{id:?} is not translated"
+            );
+            for translated in &strs {
+                assert!(!translated.contains('—'), "{id:?} → {translated:?}");
             }
         }
     }

@@ -3,7 +3,7 @@
 //! grid's, a SQL editor's and the views' sets are drawn by the line itself,
 //! with the pane keys added where they move.
 
-use crate::i18n::{Locale, gettext};
+use crate::i18n::{Locale, Msgid, gettext, msgid, pmsgid};
 use crate::keymap::{Command, Keymap, Layout, Scope, Written};
 use crate::model::{ConnTabId, Pane, Workspace};
 use crate::ui::focus::{self, Region};
@@ -96,23 +96,32 @@ pub fn tree(
     pending: Pending,
 ) -> Vec<Owned> {
     let tree = |command| keymap.key_in(layout, command, Scope::Sidebar);
-    let word = |word| gettext(locale, word).into_owned();
+    let word = |word: Msgid| word.say(locale).into_owned();
     let mut hints = vec![
         // The pair as the keymap shows it (`j/k`), not its first key.
-        (keymap.key(layout, Command::MoveInTree), word("move")),
-        (tree(Command::OpenObject), word("open")),
-        (tree(Command::FilterObjects), word("filter")),
-        (tree(Command::ToggleTree), word("tree")),
-        (tree(Command::FoldGroup), word("fold")),
+        (keymap.key(layout, Command::MoveInTree), word(msgid("move"))),
+        (tree(Command::OpenObject), word(msgid("open"))),
+        (
+            tree(Command::FilterObjects),
+            word(pmsgid("key hint", "filter")),
+        ),
+        (tree(Command::ToggleTree), word(msgid("tree"))),
+        (tree(Command::FoldGroup), word(msgid("fold"))),
     ];
     hints.extend(panes(ctx, keymap, layout, Region::Tree));
     if pending.write {
-        hints.push((keymap.key(layout, Command::SaveChanges), word("write")));
+        hints.push((
+            keymap.key(layout, Command::SaveChanges),
+            word(msgid("write")),
+        ));
     }
     if pending.review {
-        hints.push((keymap.key(layout, Command::ReviewSql), word("review")));
+        hints.push((
+            keymap.key(layout, Command::ReviewSql),
+            word(msgid("review")),
+        ));
     }
-    hints.push((tree(Command::Export), word("export table")));
+    hints.push((tree(Command::Export), word(msgid("export table"))));
     hints.retain(|(key, _)| !key.is_empty());
     hints
 }
@@ -138,21 +147,21 @@ pub fn panel(
     editable: bool,
 ) -> Vec<Owned> {
     let panel = |command| keymap.key_in(layout, command, Scope::Inspector);
-    let word = |word| gettext(locale, word).into_owned();
+    let word = |word: Msgid| word.say(locale).into_owned();
     let rows = keymap.together(layout, &[Command::PreviousRow, Command::NextRow]);
     let mut hints = vec![
-        (keymap.key(layout, Command::MoveField), word("field")),
-        (rows, word("row")),
+        (keymap.key(layout, Command::MoveField), word(msgid("field"))),
+        (rows, word(pmsgid("key hint", "row"))),
     ];
     if editable {
         // `i`, as the panel's header and the grid's line write it.
-        hints.push((keymap.key(layout, Command::EditCell), word("edit")));
+        hints.push((keymap.key(layout, Command::EditCell), word(msgid("edit"))));
     }
     hints.extend([
-        (panel(Command::CopyRowAs), word("copy as")),
+        (panel(Command::CopyRowAs), word(msgid("copy as"))),
         (
             keymap.own_key_in(layout, Command::BackToGrid, Scope::Inspector),
-            word("grid"),
+            word(msgid("grid")),
         ),
     ]);
     hints.extend(panes(ctx, keymap, layout, Region::Panel));

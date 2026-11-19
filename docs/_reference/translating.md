@@ -10,8 +10,9 @@ text file, a gettext catalog, in
 `ru.po` for Russian. The interface looks its strings up there, and one the
 catalog lacks shows in English, so a catalog can be finished a part at a
 time. A few strings are not in the catalog yet, such as the window's title
-and some menu items, and stay English whatever it says: they need a change
-to the code, not to the catalog, so tell us in an
+and some of the words in the grid and the SQL editor, and stay English
+whatever it says: they need a change to the code, not to the catalog, so
+tell us in an
 [issue](https://github.com/igor-alexandrov/tabletist/issues).
 
 Only the app is translated. This website and its guide stay in English.

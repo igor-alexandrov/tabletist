@@ -17,8 +17,8 @@ pub enum Installed {
 /// What updates a copy that does not update itself, as the card says it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Managed {
-    /// The line under the card's title. English: the caller translates.
-    pub said: &'static str,
+    /// The line under the card's title, marked: the caller says it.
+    pub said: crate::i18n::Msgid,
     /// What to run, where it is known.
     pub command: Option<&'static str>,
 }
@@ -39,10 +39,10 @@ impl Installed {
             Err(reason) => reason,
         };
         let managed = |said, command| Self::Elsewhere(Managed { said, command });
-        let package = "Your package manager updates Tabletist";
+        let package = crate::i18n::msgid("Your package manager updates Tabletist");
         match reason {
             Unsupported::Homebrew => managed(
-                "Installed with Homebrew, so Homebrew updates it",
+                crate::i18n::msgid("Installed with Homebrew, so Homebrew updates it"),
                 Some(if exe.is_some_and(in_cellar) {
                     "brew upgrade tabletist"
                 } else {
@@ -50,7 +50,7 @@ impl Installed {
                 }),
             ),
             Unsupported::Cargo => managed(
-                "Installed with cargo, so cargo updates it",
+                crate::i18n::msgid("Installed with cargo, so cargo updates it"),
                 Some("cargo install tabletist --locked"),
             ),
             Unsupported::SystemPackage(PackageManager::Pacman) => {
@@ -73,16 +73,24 @@ impl Installed {
             Unsupported::Snap => managed(package, Some("sudo snap refresh")),
             Unsupported::Nix | Unsupported::SystemDirectory => managed(package, None),
             Unsupported::MoveToApplications => managed(
-                "Move Tabletist to Applications, then open it from there to update it",
+                crate::i18n::msgid(
+                    "Move Tabletist to Applications, then open it from there to update it",
+                ),
                 None,
             ),
             Unsupported::NotPortable
             | Unsupported::NotWritable
             | Unsupported::ForeignBundle
             | Unsupported::Platform
-            | Unsupported::Unavailable(_) => managed("Tabletist can't replace itself here", None),
+            | Unsupported::Unavailable(_) => managed(
+                crate::i18n::msgid("Tabletist can't replace itself here"),
+                None,
+            ),
             // A reason of a later fastframe-update's.
-            _ => managed("Tabletist can't replace itself here", None),
+            _ => managed(
+                crate::i18n::msgid("Tabletist can't replace itself here"),
+                None,
+            ),
         }
     }
 
@@ -152,7 +160,7 @@ mod tests {
         assert_eq!(
             homebrew,
             Installed::Elsewhere(Managed {
-                said: "Installed with Homebrew, so Homebrew updates it",
+                said: crate::i18n::msgid("Installed with Homebrew, so Homebrew updates it"),
                 command: Some("brew upgrade --cask tabletist"),
             })
         );
@@ -216,7 +224,7 @@ mod tests {
             assert_eq!(
                 installed,
                 Installed::Elsewhere(Managed {
-                    said: "Your package manager updates Tabletist",
+                    said: crate::i18n::msgid("Your package manager updates Tabletist"),
                     command: None,
                 }),
                 "{unknown:?}"
@@ -234,7 +242,7 @@ mod tests {
             assert_eq!(
                 Installed::of(Err(&reason), none, None),
                 Installed::Elsewhere(Managed {
-                    said: "Tabletist can't replace itself here",
+                    said: crate::i18n::msgid("Tabletist can't replace itself here"),
                     command: None,
                 }),
                 "{reason:?}"

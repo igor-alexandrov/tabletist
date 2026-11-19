@@ -7,7 +7,7 @@ use egui::accesskit::Live;
 use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 
 use crate::app::Work;
-use crate::i18n::gettext;
+use crate::i18n::{Msgid, gettext, msgid};
 use crate::keymap::Command;
 use crate::model::Action;
 use crate::settings::{OptionId, Settings};
@@ -22,9 +22,13 @@ use super::updates::{
 };
 
 /// What the note under the row says, word for word as the board has it.
-const NOTE: &str = "installed with a package manager (pacman, an AUR helper, nix, cargo install)? then that tool updates tabletist: this pane only checks and shows the command, for example";
+const NOTE: Msgid = msgid(
+    "installed with a package manager (pacman, an AUR helper, nix, cargo install)? then that tool updates tabletist: this pane only checks and shows the command, for example",
+);
 const NOTE_COMMAND: &str = "cargo install tabletist --locked";
-const PRIVACY: &str = "the check asks github for the latest release and sends this version, os and cpu, nothing else.";
+const PRIVACY: Msgid = msgid(
+    "the check asks github for the latest release and sends this version, os and cpu, nothing else.",
+);
 
 /// The pane: the block, then its one row under `automatic`, then the
 /// note. The cursor's row is the pane's only one. `interrupted` lists what
@@ -39,7 +43,7 @@ pub(super) fn rows(
     actions: &mut Vec<Action>,
 ) {
     block(ui, status, interrupted, skin);
-    heading(ui, "Automatic", 8.0, skin);
+    heading(ui, msgid("Automatic"), 8.0, skin);
     let room = ui.available_width() - 2.0 * ROW_SIDE;
     let columns = columns(
         ui,
@@ -114,7 +118,7 @@ fn progress_row(ui: &Ui, downloading: &crate::update::Downloading, skin: &Skin) 
                 .to_owned(),
             palette.dim,
         ),
-        (format!(" {}", skin.say("cancel")), palette.dim),
+        (format!(" {}", skin.say(msgid("cancel"))), palette.dim),
     ]
 }
 
@@ -143,7 +147,7 @@ fn block(ui: &mut Ui, status: Status, interrupted: impl FnOnce() -> Vec<Work>, s
         Card::Held { .. } => palette.warning,
         _ => palette.accent,
     };
-    let say = |text: &'static str| skin.say(text);
+    let say = |text: Msgid| skin.say(text);
     let mut sub: Vec<String> = Vec::new();
     let mut lines: Vec<Line> = Vec::new();
     // Which of `lines` are the progress row, and which the work a restart
@@ -151,7 +155,7 @@ fn block(ui: &mut Ui, status: Status, interrupted: impl FnOnce() -> Vec<Work>, s
     let mut progress = None;
     let mut work = 0..0;
     match shown {
-        Card::NotChecked => sub.push(say("not checked yet")),
+        Card::NotChecked => sub.push(say(msgid("not checked yet"))),
         Card::Checking => sub.push(crate::update::check::ASKED.to_owned()),
         Card::UpToDate { checked } => sub.push(look.label(
             &gettext(locale, "Checked {when}").replace("{when}", &when(locale, checked, now)),
@@ -196,7 +200,7 @@ fn block(ui: &mut Ui, status: Status, interrupted: impl FnOnce() -> Vec<Work>, s
                     &gettext(locale, "Last successful check: {when}")
                         .replace("{when}", &when(locale, at, now)),
                 ),
-                None => say("no check has worked yet"),
+                None => say(msgid("no check has worked yet")),
             });
             let said = failed.with_numbers(&gettext(locale, failed.said()));
             lines.push(vec![(look.label(&said), palette.danger)]);
@@ -208,8 +212,8 @@ fn block(ui: &mut Ui, status: Status, interrupted: impl FnOnce() -> Vec<Work>, s
         Card::Ready(_) => sub.push(say(super::updates::ready_said(status.updates))),
         Card::Held { when_done, .. } => {
             sub.push(say(match when_done {
-                false => "restart now would interrupt:",
-                true => "tabletist restarts once this is done:",
+                false => msgid("restart now would interrupt:"),
+                true => msgid("tabletist restarts once this is done:"),
             }));
             let listed = interrupted();
             let start = lines.len();
@@ -221,9 +225,9 @@ fn block(ui: &mut Ui, status: Status, interrupted: impl FnOnce() -> Vec<Work>, s
             }
             work = start..lines.len();
         }
-        Card::Restarting(_) => sub.push(say("tabletist restarts in a moment")),
+        Card::Restarting(_) => sub.push(say(msgid("tabletist restarts in a moment"))),
         Card::NotInstalled { failure, .. } => {
-            sub.push(say("nothing was installed. your copy is unchanged."));
+            sub.push(say(msgid("nothing was installed. your copy is unchanged.")));
             lines.push(vec![(
                 look.label(&failure_said(failure, locale)),
                 palette.danger,
@@ -233,41 +237,41 @@ fn block(ui: &mut Ui, status: Status, interrupted: impl FnOnce() -> Vec<Work>, s
     // The pane's keys that act on what the block shows.
     let keys: Vec<(Command, String)> = match shown {
         Card::NotChecked | Card::UpToDate { .. } => {
-            vec![(Command::SettingsCheckNow, say("check now"))]
+            vec![(Command::SettingsCheckNow, say(msgid("check now")))]
         }
-        Card::Failed { .. } => vec![(Command::SettingsCheckNow, say("try again"))],
+        Card::Failed { .. } => vec![(Command::SettingsCheckNow, say(msgid("try again")))],
         Card::Checking => Vec::new(),
         Card::Available(offer) | Card::NoBuild(offer) => {
             let mut keys = Vec::new();
             if matches!(shown, Card::Available(_)) && installs(status) {
-                keys.push((Command::SettingsInstallUpdate, say("update now")));
+                keys.push((Command::SettingsInstallUpdate, say(msgid("update now"))));
             }
-            keys.push((Command::SettingsReleaseNotes, say("release notes")));
+            keys.push((Command::SettingsReleaseNotes, say(msgid("release notes"))));
             keys.push((
                 Command::SettingsSkipVersion,
-                format!("{} {}", say("skip"), offer.version),
+                format!("{} {}", say(msgid("skip")), offer.version),
             ));
             keys
         }
         // The progress row has its key.
         Card::Downloading(_) | Card::Restarting(_) => Vec::new(),
-        Card::Ready(_) => vec![(Command::SettingsInstallUpdate, say("restart now"))],
+        Card::Ready(_) => vec![(Command::SettingsInstallUpdate, say(msgid("restart now")))],
         Card::Held { when_done, .. } => vec![(
             Command::SettingsInstallUpdate,
             say(match when_done {
-                false => "restart when done",
-                true => "don't restart",
+                false => msgid("restart when done"),
+                true => msgid("don't restart"),
             }),
         )],
         Card::NotInstalled { .. } => {
-            vec![(Command::SettingsInstallUpdate, say("download again"))]
+            vec![(Command::SettingsInstallUpdate, say(msgid("download again")))]
         }
         Card::Elsewhere(_, managed) => match managed.command {
             Some(_) => vec![
-                (Command::SettingsCopyCommand, say("copy")),
-                (Command::SettingsReleaseNotes, say("release notes")),
+                (Command::SettingsCopyCommand, say(msgid("copy"))),
+                (Command::SettingsReleaseNotes, say(msgid("release notes"))),
             ],
-            None => vec![(Command::SettingsReleaseNotes, say("release notes"))],
+            None => vec![(Command::SettingsReleaseNotes, say(msgid("release notes")))],
         },
     };
     let mut keyed: Line = Vec::new();
@@ -303,7 +307,7 @@ fn block(ui: &mut Ui, status: Status, interrupted: impl FnOnce() -> Vec<Work>, s
     // The region, named; its lines are its own.
     let region_id = ui.id().with("update-status");
     let region = ui.interact(band, region_id, Sense::hover());
-    let named = skin.say("Update status");
+    let named = skin.say(msgid("Update status"));
     region.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, &named));
     ui.ctx().accesskit_node_builder(region_id, |node| {
         node.set_role(egui::accesskit::Role::Region);
@@ -362,7 +366,7 @@ fn block(ui: &mut Ui, status: Status, interrupted: impl FnOnce() -> Vec<Work>, s
         );
         let list_id = ui.id().with("update-work");
         let list = ui.interact(rect, list_id, Sense::hover());
-        let named = skin.say("Work in progress");
+        let named = skin.say(msgid("Work in progress"));
         list.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, &named));
         ui.ctx().accesskit_node_builder(list_id, |node| {
             node.set_role(egui::accesskit::Role::List);
