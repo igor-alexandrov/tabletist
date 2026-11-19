@@ -1203,7 +1203,9 @@ impl App {
             destination: destination.clone(),
         };
         let (file, shown_path) = self.export_file(&destination);
-        let query = gettext(self.locale, "Query {n}").replace("{n}", &result.query.to_string());
+        // Recorded in English, as a run's label is: History says it in the
+        // window's language as it draws (`history::detail_words`).
+        let query = format!("Query {}", result.query);
         Some(Exporting {
             job,
             tab: sheet.tab,
