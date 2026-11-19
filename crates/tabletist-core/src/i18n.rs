@@ -20,6 +20,8 @@ include!(concat!(env!("OUT_DIR"), "/catalogs.rs"));
 pub struct Msgid {
     context: Option<&'static str>,
     text: &'static str,
+    /// Drawn as it is, never looked up: [`Msgid::as_is`].
+    verbatim: bool,
 }
 
 /// `text`, marked for the catalog.
@@ -27,6 +29,7 @@ pub const fn msgid(text: &'static str) -> Msgid {
     Msgid {
         context: None,
         text,
+        verbatim: false,
     }
 }
 
@@ -36,15 +39,13 @@ pub const fn pmsgid(context: &'static str, text: &'static str) -> Msgid {
     Msgid {
         context: Some(context),
         text,
+        verbatim: false,
     }
 }
 
 impl Msgid {
     /// No message: an item that draws no words (a separator), never said.
-    pub const EMPTY: Self = Self {
-        context: None,
-        text: "",
-    };
+    pub const EMPTY: Self = Self::as_is("");
 
     /// `text` drawn as it is in every language, never extracted: a word
     /// the settings file writes (a `[keys.<table>]` name), a product's.
@@ -52,6 +53,7 @@ impl Msgid {
         Self {
             context: None,
             text,
+            verbatim: true,
         }
     }
 
@@ -64,6 +66,7 @@ impl Msgid {
     /// The message in `locale`.
     pub fn say(self, locale: Locale) -> Cow<'static, str> {
         match self.context {
+            _ if self.verbatim => Cow::Borrowed(self.text),
             Some(context) => pgettext(locale, context, self.text),
             None => gettext(locale, self.text),
         }
@@ -339,6 +342,14 @@ mod tests {
         assert_eq!(filter.english(), "filter");
         assert_eq!(filter.say(Locale::English), "filter");
         assert_eq!(filter.say(Locale::Russian), "фильтр");
+    }
+
+    #[test]
+    fn a_message_as_is_is_never_looked_up() {
+        // "Settings" has a Russian entry; a word the settings file writes
+        // stays as it is all the same.
+        assert_eq!(Msgid::as_is("Settings").say(Locale::Russian), "Settings");
+        assert_eq!(Msgid::EMPTY.say(Locale::Russian), "");
     }
 
     #[test]

@@ -8,7 +8,9 @@ use tabletist_db::ObjectKind;
 
 use super::insert_audit_tests::{covers_as, covers_in, select, type_key};
 use super::pane_keys_tests::ran;
+use crate::i18n::Locale;
 use crate::model::{Action, Advance, CellPos, EditStart, Pane};
+use crate::settings::{Language, OptionValue};
 use crate::testing::Harness;
 use crate::theme::Look;
 
@@ -197,6 +199,39 @@ fn where_room_runs_out_the_export_gives_way_first_then_the_pane_keys() {
         }
     }
     assert_eq!(gone, ["E export table", "ctrl+h/l panes", "za fold"]);
+}
+
+#[test]
+fn a_russian_tree_says_its_keys_in_russian_and_still_gives_way() {
+    let (mut harness, _, _) = covers_in(Look::omarchy());
+    let russian = Language::Fixed(Locale::Russian);
+    harness
+        .app
+        .apply(Action::SetOption(OptionValue::Language(russian)));
+    harness.press(Key::H, Modifiers::CTRL);
+    harness.settle();
+    // Enter acts: the key hint's «открыть», never the picker's «открыто».
+    assert!(
+        starts(&harness, &["j/k перемещение", "enter открыть"]),
+        "{:?}",
+        line(&harness)
+    );
+    assert!(has(&harness, "ctrl+h/l панели"), "{:?}", line(&harness));
+    // Narrowed, the pane keys give way by their Russian word too.
+    let full = harness.size;
+    let mut width = full.x;
+    let mut gone = Vec::new();
+    while has(&harness, "j/k перемещение") && width > 200.0 {
+        width -= 10.0;
+        harness.size = egui::vec2(width, full.y);
+        harness.settle();
+        for hint in ["E экспорт таблицы", "ctrl+h/l панели"] {
+            if !has(&harness, hint) && !gone.contains(&hint) {
+                gone.push(hint);
+            }
+        }
+    }
+    assert_eq!(gone, ["E экспорт таблицы", "ctrl+h/l панели"]);
 }
 
 #[test]

@@ -9162,7 +9162,7 @@ impl App {
         if self.pin_told.as_deref() == Some(pin) || !seen {
             return;
         }
-        let said = gettext(self.locale, crate::ui::settings::pin_missing(&self.themes));
+        let said = crate::ui::settings::pin_missing(&self.themes).say(self.locale);
         let said = self.look.label(&said).replace("{name}", pin);
         crate::ui::toast::say(ctx, &said);
         self.pin_told = Some(pin.to_owned());

@@ -1117,7 +1117,17 @@ fn note(ui: &mut Ui, skin: &Skin) {
         msgid("no ddl, no multiple statements, no copy, no secrets sent"),
     ];
     let line = role.row_height(ui.ctx(), look.faces);
-    let height = (lines.len() as f32 * line * 1.2 + 20.0).ceil();
+    // Each paragraph laid out at the band's width first: a long one (the
+    // Russian) wraps, and the band grows by its lines.
+    let side = (ui.available_width() - 2.0 * ROW_SIDE).max(0.0);
+    let width = (side - 24.0).max(0.0);
+    let texts = lines.map(|said| {
+        Text::one(look, role, &skin.say(said), palette.dim)
+            .wrap(width)
+            .layout(ui.ctx())
+    });
+    let step = |text: &crate::typography::Laid| text.height().max(line) + line * 0.2;
+    let height = (texts.iter().map(step).sum::<f32>() + 20.0).ceil();
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
     let band = Rect::from_min_max(
         pos2(rect.left() + ROW_SIDE, rect.top()),
@@ -1131,19 +1141,15 @@ fn note(ui: &mut Ui, skin: &Skin) {
     let bar = Rect::from_min_size(band.min, vec2(2.0, band.height()));
     ui.painter()
         .rect_filled(bar, CornerRadius::ZERO, palette.accent);
-    let width = (band.width() - 24.0).max(0.0);
     let mut y = band.top() + 10.0;
-    for said in lines {
-        let text = Text::one(look, role, &skin.say(said), palette.dim)
-            .wrap(width)
-            .layout(ui.ctx());
+    for text in &texts {
         text.paint(ui.painter(), pos2(band.left() + 12.0, y));
         widgets::announce(
             ui,
             Rect::from_min_size(pos2(band.left() + 12.0, y), text.size()),
             text.galley.text(),
         );
-        y += line * 1.2;
+        y += step(text);
     }
 }
 

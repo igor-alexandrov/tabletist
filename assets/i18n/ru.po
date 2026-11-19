@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-19 08:07-0500\n"
+"POT-Creation-Date: 2026-11-19 09:33-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -3861,9 +3861,14 @@ msgstr "таблица"
 msgid "move"
 msgstr "перемещение"
 
-#: src/ui/pane_hints.rs src/ui/picker.rs
+#: src/ui/pane_hints.rs src/ui/workspace.rs
+msgctxt "key hint"
 msgid "open"
-msgstr "открыто"
+msgstr "открыть"
+
+#: src/ui/pane_hints.rs
+msgid "panes"
+msgstr "панели"
 
 #: src/ui/pane_hints.rs src/ui/workspace.rs
 msgid "review"
@@ -4119,6 +4124,10 @@ msgstr "подключения"
 #: src/ui/picker.rs
 msgid "filter connections"
 msgstr "фильтр подключений"
+
+#: src/ui/picker.rs
+msgid "open"
+msgstr "открыто"
 
 #: src/ui/quick_open.rs
 msgid "Find object"
@@ -4636,6 +4645,22 @@ msgid "A selection always wins"
 msgstr "Выделение всегда в приоритете"
 
 #: src/ui/settings/mod.rs
+#, rust-format
+msgid "After {n} h"
+msgid_plural "After {n} h"
+msgstr[0] "Через {n} ч"
+msgstr[1] "Через {n} ч"
+msgstr[2] "Через {n} ч"
+
+#: src/ui/settings/mod.rs
+#, rust-format
+msgid "After {n} min"
+msgid_plural "After {n} min"
+msgstr[0] "Через {n} мин"
+msgstr[1] "Через {n} мин"
+msgstr[2] "Через {n} мин"
+
+#: src/ui/settings/mod.rs
 msgid "Alternate row shading"
 msgstr "Чередование фона строк"
 
@@ -4737,6 +4762,14 @@ msgid "Every call and its SQL, never the rows. On this computer only"
 msgstr "Каждый вызов и его SQL, но не строки. Только на этом компьютере"
 
 #: src/ui/settings/mod.rs
+msgid "Every day"
+msgstr "Каждый день"
+
+#: src/ui/settings/mod.rs
+msgid "Every week"
+msgstr "Каждую неделю"
+
+#: src/ui/settings/mod.rs
 msgid "Everything in the window: text, controls, rows and spacing"
 msgstr "Всё в окне: текст, элементы управления, строки и отступы"
 
@@ -4820,6 +4853,10 @@ msgstr "На каждом подключении, где разрешена за
 #: src/ui/settings/mod.rs
 msgid "On launch"
 msgstr "При запуске"
+
+#: src/ui/settings/mod.rs
+msgid "Only when I ask"
+msgstr "Только по запросу"
 
 #: src/ui/settings/mod.rs
 msgid "Or: show Connections · open a chosen connection"
@@ -4914,6 +4951,16 @@ msgstr "Таблицы, представления, столбцы и функц
 #: src/ui/settings/mod.rs
 msgid "The badge in each tab can still switch it"
 msgstr "Значок на каждой вкладке всё равно может его переключить"
+
+#: src/ui/settings/mod.rs
+#, rust-format
+msgid "Theme “{name}” not found: following Omarchy"
+msgstr "Тема «{name}» не найдена: как в Omarchy"
+
+#: src/ui/settings/mod.rs
+#, rust-format
+msgid "Theme “{name}” not found: following the system"
+msgstr "Тема «{name}» не найдена: как в системе"
 
 #: src/ui/settings/mod.rs
 msgid "Time zone for timestamptz"
@@ -6555,11 +6602,6 @@ msgstr "журнал"
 #: src/ui/workspace.rs
 msgid "normal"
 msgstr "обычный режим"
-
-#: src/ui/workspace.rs
-msgctxt "key hint"
-msgid "open"
-msgstr "открыть"
 
 #: src/ui/workspace.rs
 msgid "sessions"

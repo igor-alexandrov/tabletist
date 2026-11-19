@@ -243,11 +243,11 @@ pub const FONT_NOT_INSTALLED: Msgid = msgid("“{name}” is not installed: IBM 
 
 /// What is said of a pinned theme that is nowhere to be found, `{name}`
 /// for its name: what is drawn instead. English.
-pub fn pin_missing(catalog: &crate::theme::Catalog) -> &'static str {
+pub fn pin_missing(catalog: &crate::theme::Catalog) -> Msgid {
     if catalog.follows_omarchy() {
-        "Theme “{name}” not found: following Omarchy"
+        msgid("Theme “{name}” not found: following Omarchy")
     } else {
-        "Theme “{name}” not found: following the system"
+        msgid("Theme “{name}” not found: following the system")
     }
 }
 
@@ -379,25 +379,31 @@ pub(super) fn place(saved: &SavedConnection) -> String {
 
 /// How long a connection may go unused, as the menu writes it.
 pub(super) fn idle_text(locale: Locale, choice: Idle) -> String {
-    let (one, many, count) = match choice {
+    let (minutes, count) = match choice {
         Idle::Never => return gettext(locale, "Never").into_owned(),
-        Idle::Minutes5 => ("After {n} min", "After {n} min", 5),
-        Idle::Minutes15 => ("After {n} min", "After {n} min", 15),
-        Idle::Minutes30 => ("After {n} min", "After {n} min", 30),
-        Idle::Hour1 => ("After {n} h", "After {n} h", 1),
-        Idle::Hours4 => ("After {n} h", "After {n} h", 4),
+        Idle::Minutes5 => (true, 5),
+        Idle::Minutes15 => (true, 15),
+        Idle::Minutes30 => (true, 30),
+        Idle::Hour1 => (false, 1),
+        Idle::Hours4 => (false, 4),
     };
-    ngettext(locale, one, many, count).replace("{n}", &count.to_string())
+    // Each unit's words said in full, so the extractor finds them.
+    let words = if minutes {
+        ngettext(locale, "After {n} min", "After {n} min", count)
+    } else {
+        ngettext(locale, "After {n} h", "After {n} h", count)
+    };
+    words.replace("{n}", &count.to_string())
 }
 
 /// How often a check for updates runs, as the window writes it.
 pub(super) fn check_text(locale: Locale, choice: UpdateCheck) -> String {
     let words = match choice {
-        UpdateCheck::Daily => "Every day",
-        UpdateCheck::Weekly => "Every week",
-        UpdateCheck::Never => "Only when I ask",
+        UpdateCheck::Daily => msgid("Every day"),
+        UpdateCheck::Weekly => msgid("Every week"),
+        UpdateCheck::Never => msgid("Only when I ask"),
     };
-    gettext(locale, words).into_owned()
+    words.say(locale).into_owned()
 }
 
 /// The days the log keeps a call, as the window writes them.

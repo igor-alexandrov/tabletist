@@ -294,3 +294,29 @@ fn the_keyboard_help_says_its_commands_in_russian() {
         );
     }
 }
+
+#[test]
+fn the_russian_agents_note_stacks_its_wrapped_paragraphs() {
+    if !SettingsPane::listed().contains(&SettingsPane::Agents) {
+        return;
+    }
+    // A window narrow enough that the Russian first paragraph wraps.
+    let mut harness = general(Look::omarchy(), Some("ru-RU"));
+    harness.size = egui::vec2(700.0, 2400.0);
+    harness
+        .app
+        .apply(Action::ShowSettingsPane(SettingsPane::Agents));
+    harness.settle();
+    let rect = |start: &str| {
+        let found = harness
+            .text_rects
+            .iter()
+            .filter(|(text, _)| text.starts_with(start))
+            .map(|(_, rect)| *rect)
+            .reduce(|a, b| a.union(b));
+        found.unwrap_or_else(|| panic!("no {start:?} in {:?}", harness.painted))
+    };
+    let first = rect("чтение выполняется");
+    let second = rect("без ddl");
+    assert!(first.bottom() <= second.top(), "{first:?} over {second:?}");
+}

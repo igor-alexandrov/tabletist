@@ -47,20 +47,31 @@ impl Held {
 }
 
 /// What the pane keys' hint says they do.
-const PANES: &str = "panes";
+const PANES: Msgid = msgid("panes");
 
 /// `ctrl+h/l panes`, where those keys would move the keyboard from `from`.
-pub fn panes(ctx: &egui::Context, keymap: &Keymap, layout: Layout, from: Region) -> Option<Owned> {
+pub fn panes(
+    ctx: &egui::Context,
+    keymap: &Keymap,
+    layout: Layout,
+    locale: Locale,
+    from: Region,
+) -> Option<Owned> {
     focus::can_step(ctx, &Region::PANES, from).then(|| {
         let keys = keymap.together(layout, &[Command::PaneLeft, Command::PaneRight]);
-        (keys, PANES.to_owned())
+        (keys, PANES.say(locale).into_owned())
     })
 }
 
 /// What of `hints` the line has room for, where `fits` says: all of them,
 /// or without the last (the export), then without the pane keys too,
-/// wherever they stand, then fewer from the end.
-pub fn giving_way<'a>(hints: &[Hint<'a>], fits: impl Fn(&[Hint<'a>]) -> bool) -> Vec<Hint<'a>> {
+/// wherever they stand, then fewer from the end. The pane keys are known
+/// by their word in `locale`.
+pub fn giving_way<'a>(
+    hints: &[Hint<'a>],
+    locale: Locale,
+    fits: impl Fn(&[Hint<'a>]) -> bool,
+) -> Vec<Hint<'a>> {
     if fits(hints) {
         return hints.to_vec();
     }
@@ -68,7 +79,8 @@ pub fn giving_way<'a>(hints: &[Hint<'a>], fits: impl Fn(&[Hint<'a>]) -> bool) ->
     if fits(&shown) {
         return shown;
     }
-    shown.retain(|(_, word, _)| *word != PANES);
+    let panes = PANES.say(locale);
+    shown.retain(|(_, word, _)| *word != panes);
     while !shown.is_empty() && !fits(&shown) {
         shown.pop();
     }
@@ -100,7 +112,7 @@ pub fn tree(
     let mut hints = vec![
         // The pair as the keymap shows it (`j/k`), not its first key.
         (keymap.key(layout, Command::MoveInTree), word(msgid("move"))),
-        (tree(Command::OpenObject), word(msgid("open"))),
+        (tree(Command::OpenObject), word(pmsgid("key hint", "open"))),
         (
             tree(Command::FilterObjects),
             word(pmsgid("key hint", "filter")),
@@ -108,7 +120,7 @@ pub fn tree(
         (tree(Command::ToggleTree), word(msgid("tree"))),
         (tree(Command::FoldGroup), word(msgid("fold"))),
     ];
-    hints.extend(panes(ctx, keymap, layout, Region::Tree));
+    hints.extend(panes(ctx, keymap, layout, locale, Region::Tree));
     if pending.write {
         hints.push((
             keymap.key(layout, Command::SaveChanges),
@@ -164,7 +176,7 @@ pub fn panel(
             word(msgid("grid")),
         ),
     ]);
-    hints.extend(panes(ctx, keymap, layout, Region::Panel));
+    hints.extend(panes(ctx, keymap, layout, locale, Region::Panel));
     hints.retain(|(key, _)| !key.is_empty());
     hints
 }

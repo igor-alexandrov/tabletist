@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-19 08:07-0500\n"
+"POT-Creation-Date: 2026-11-19 09:33-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -3732,12 +3732,17 @@ msgstr ""
 msgid "New SQL editor"
 msgstr ""
 
+#: src/ui/pane_hints.rs
+msgid "panes"
+msgstr ""
+
 #: src/ui/pane_hints.rs src/ui/settings/terminal.rs src/ui/sql_complete.rs
 #: src/ui/workspace.rs
 msgid "move"
 msgstr ""
 
-#: src/ui/pane_hints.rs src/ui/picker.rs
+#: src/ui/pane_hints.rs src/ui/workspace.rs
+msgctxt "key hint"
 msgid "open"
 msgstr ""
 
@@ -3987,6 +3992,10 @@ msgstr ""
 
 #: src/ui/picker.rs src/ui/settings/agents.rs
 msgid "Show Agents tab"
+msgstr ""
+
+#: src/ui/picker.rs
+msgid "open"
 msgstr ""
 
 #: src/ui/picker.rs
@@ -4779,6 +4788,16 @@ msgid "“{name}” is not installed: IBM Plex Mono is used"
 msgstr ""
 
 #: src/ui/settings/mod.rs
+#, rust-format
+msgid "Theme “{name}” not found: following Omarchy"
+msgstr ""
+
+#: src/ui/settings/mod.rs
+#, rust-format
+msgid "Theme “{name}” not found: following the system"
+msgstr ""
+
+#: src/ui/settings/mod.rs
 msgid "Menus, labels and messages; data and SQL stay as they are"
 msgstr ""
 
@@ -4827,6 +4846,32 @@ msgstr ""
 
 #: src/ui/settings/mod.rs src/ui/settings/terminal.rs
 msgid "Never"
+msgstr ""
+
+#: src/ui/settings/mod.rs
+#, rust-format
+msgid "After {n} min"
+msgid_plural "After {n} min"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/settings/mod.rs
+#, rust-format
+msgid "After {n} h"
+msgid_plural "After {n} h"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/settings/mod.rs
+msgid "Every day"
+msgstr ""
+
+#: src/ui/settings/mod.rs
+msgid "Every week"
+msgstr ""
+
+#: src/ui/settings/mod.rs
+msgid "Only when I ask"
 msgstr ""
 
 #: src/ui/settings/mod.rs
@@ -6394,11 +6439,6 @@ msgstr ""
 
 #: src/ui/workspace.rs
 msgid "calls"
-msgstr ""
-
-#: src/ui/workspace.rs
-msgctxt "key hint"
-msgid "open"
 msgstr ""
 
 #: src/ui/workspace.rs

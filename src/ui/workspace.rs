@@ -3058,7 +3058,8 @@ fn status_line(
     };
     let own = own(editing.can_edit, pending);
     // Ctrl+h/l, where it moves from the rows (a table's, or a result's).
-    let grid_panes = pane_hints::panes(ui.ctx(), keymap, layout, super::focus::Region::Grid);
+    let grid_panes =
+        pane_hints::panes(ui.ctx(), keymap, layout, locale, super::focus::Region::Grid);
     let panes_hint = grid_panes
         .as_ref()
         .map(|(key, word)| -> widgets::Hint<'_> { (key, word.as_str(), true) });
@@ -3393,7 +3394,7 @@ fn status_line(
             // the pane keys, then the rest from the end.
             let gap = 18.0;
             let fit = |limit: f32| {
-                pane_hints::giving_way(hints, |shown| {
+                pane_hints::giving_way(hints, locale, |shown| {
                     rect.left() + 12.0 + widgets::key_hints_width(ui, shown, gap, &look, &palette)
                         <= limit
                 })
