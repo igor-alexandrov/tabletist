@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-19 13:41-0500\n"
+"POT-Creation-Date: 2026-11-19 15:44-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -1731,6 +1731,16 @@ msgstr "Данные"
 msgid "Environment color"
 msgstr "Цвет среды"
 
+#: crates/tabletist-core/src/model.rs src/ui/connect_dialog/files.rs
+#: src/ui/workspace.rs
+msgid "Files"
+msgstr "Файлы"
+
+#: crates/tabletist-core/src/model.rs src/ui/connect_dialog/files.rs
+#: src/ui/workspace.rs
+msgid "Folder"
+msgstr "Папка"
+
 #: crates/tabletist-core/src/model.rs
 #, rust-format
 msgid "Format · {format}"
@@ -3224,8 +3234,14 @@ msgid "Keep mine, reload row"
 msgstr "Оставить мои, перечитать строку"
 
 #: src/ui/conflict_prompt.rs
-msgid "Row"
-msgstr "Строка"
+#, rust-format
+msgid "Row {row} changed on the server"
+msgstr "Строка {row} изменена на сервере"
+
+#: src/ui/conflict_prompt.rs
+#, rust-format
+msgid "Row {row} no longer exists on the server"
+msgstr "Строки {row} больше нет на сервере"
 
 #: src/ui/conflict_prompt.rs
 msgid "Someone deleted it after you loaded it. Nothing was written."
@@ -3259,10 +3275,6 @@ msgstr "оставить мои, перечитать"
 #: src/ui/conflict_prompt.rs
 msgid "loaded"
 msgstr "загружено"
-
-#: src/ui/conflict_prompt.rs
-msgid "no longer exists on the server"
-msgstr "больше нет на сервере"
 
 #: src/ui/conflict_prompt.rs
 msgid "now on server"
@@ -3484,14 +3496,6 @@ msgid ""
 msgstr ""
 "Каждый файл CSV, Parquet, JSON, NDJSON, Excel и .duckdb в папке становится "
 "таблицей. Файлы, добавленные позже, появятся при следующем открытии."
-
-#: src/ui/connect_dialog/files.rs src/ui/workspace.rs
-msgid "Files"
-msgstr "Файлы"
-
-#: src/ui/connect_dialog/files.rs src/ui/workspace.rs
-msgid "Folder"
-msgstr "Папка"
 
 #: src/ui/connect_dialog/files.rs
 msgid "Kind"
@@ -7436,8 +7440,18 @@ msgid "Changed"
 msgstr "Изменённые"
 
 #: src/ui/settings/keyboard_sheet.rs
+#, rust-format
+msgid "Changed · {n}"
+msgstr "Изменённые · {n}"
+
+#: src/ui/settings/keyboard_sheet.rs
 msgid "Changed, none"
 msgstr "Изменённые, нет"
+
+#: src/ui/settings/keyboard_sheet.rs
+#, rust-format
+msgid "Changed, {n}"
+msgstr "Изменённые, {n}"
 
 #: src/ui/settings/keyboard_sheet.rs
 msgid ""
@@ -8172,8 +8186,11 @@ msgstr "Установлено"
 
 #: src/ui/settings/sheet.rs
 #, rust-format
-msgid "Last {n} queries"
-msgstr "Последние запросы: {n}"
+msgid "Last {n} query"
+msgid_plural "Last {n} queries"
+msgstr[0] "Последний {n} запрос"
+msgstr[1] "Последние {n} запроса"
+msgstr[2] "Последние {n} запросов"
 
 #: src/ui/settings/sheet.rs
 msgid "Leading"
@@ -10124,8 +10141,9 @@ msgid "normal"
 msgstr "обычный режим"
 
 #: src/ui/workspace.rs
-msgid "not a command:"
-msgstr "не команда:"
+#, rust-format
+msgid "not a command: {command}"
+msgstr "не команда: {command}"
 
 #: src/ui/workspace.rs
 msgid "nothing pending"
@@ -10473,7 +10491,7 @@ msgstr "введите {name} для подтверждения"
 #: src/ui/write_prompts.rs
 #, rust-format
 msgid "write {changes}?"
-msgstr "записать {changes}?"
+msgstr "записать: {changes}?"
 
 #: src/ui/write_prompts.rs
 #, rust-format

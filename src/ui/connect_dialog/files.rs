@@ -101,8 +101,7 @@ fn kind(
     skin: &Skin,
     actions: &mut Vec<Action>,
 ) {
-    // The formats by their own names, in every language.
-    let labels = FilesKind::ALL.map(|kind| skin.look.label(kind.label()));
+    let labels = FilesKind::ALL.map(|kind| skin.say(kind.label()));
     let options: Vec<(FilesKind, Choice<'_>)> = FilesKind::ALL
         .iter()
         .zip(&labels)

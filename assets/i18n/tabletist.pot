@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-19 13:41-0500\n"
+"POT-Creation-Date: 2026-11-19 15:44-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -1698,6 +1698,16 @@ msgstr ""
 msgid "{keys} is no default key in {scope}"
 msgstr ""
 
+#: crates/tabletist-core/src/model.rs src/ui/connect_dialog/files.rs
+#: src/ui/workspace.rs
+msgid "Folder"
+msgstr ""
+
+#: crates/tabletist-core/src/model.rs src/ui/connect_dialog/files.rs
+#: src/ui/workspace.rs
+msgid "Files"
+msgstr ""
+
 #: crates/tabletist-core/src/model.rs src/ui/connect_dialog/sheet.rs
 #: src/ui/connect_dialog/terminal.rs
 msgid "Password"
@@ -3179,15 +3189,13 @@ msgid "discard my changes"
 msgstr ""
 
 #: src/ui/conflict_prompt.rs
-msgid "Row"
+#, rust-format
+msgid "Row {row} no longer exists on the server"
 msgstr ""
 
 #: src/ui/conflict_prompt.rs
-msgid "no longer exists on the server"
-msgstr ""
-
-#: src/ui/conflict_prompt.rs
-msgid "changed on the server"
+#, rust-format
+msgid "Row {row} changed on the server"
 msgstr ""
 
 #: src/ui/conflict_prompt.rs
@@ -3233,6 +3241,10 @@ msgstr ""
 
 #: src/ui/conflict_prompt.rs
 msgid "now on server"
+msgstr ""
+
+#: src/ui/conflict_prompt.rs
+msgid "changed on the server"
 msgstr ""
 
 #: src/ui/connect_dialog/agents.rs src/ui/export.rs
@@ -3404,10 +3416,6 @@ msgstr ""
 msgid "No folder chosen"
 msgstr ""
 
-#: src/ui/connect_dialog/files.rs src/ui/workspace.rs
-msgid "Folder"
-msgstr ""
-
 #: src/ui/connect_dialog/files.rs src/ui/connect_dialog/sheet.rs
 #: src/ui/history.rs
 msgid "Source"
@@ -3420,10 +3428,6 @@ msgstr ""
 
 #: src/ui/connect_dialog/files.rs
 msgid "Choose a folder"
-msgstr ""
-
-#: src/ui/connect_dialog/files.rs src/ui/workspace.rs
-msgid "Files"
 msgstr ""
 
 #: src/ui/connect_dialog/files.rs
@@ -7225,6 +7229,16 @@ msgid "Changed, none"
 msgstr ""
 
 #: src/ui/settings/keyboard_sheet.rs
+#, rust-format
+msgid "Changed · {n}"
+msgstr ""
+
+#: src/ui/settings/keyboard_sheet.rs
+#, rust-format
+msgid "Changed, {n}"
+msgstr ""
+
+#: src/ui/settings/keyboard_sheet.rs
 msgid "Shortcuts shown"
 msgstr ""
 
@@ -7946,8 +7960,10 @@ msgstr ""
 
 #: src/ui/settings/sheet.rs
 #, rust-format
-msgid "Last {n} queries"
-msgstr ""
+msgid "Last {n} query"
+msgid_plural "Last {n} queries"
+msgstr[0] ""
+msgstr[1] ""
 
 #: src/ui/settings/sheet.rs
 msgid "Compact"
@@ -9724,7 +9740,8 @@ msgstr[0] ""
 msgstr[1] ""
 
 #: src/ui/workspace.rs
-msgid "not a command:"
+#, rust-format
+msgid "not a command: {command}"
 msgstr ""
 
 #: src/ui/workspace.rs

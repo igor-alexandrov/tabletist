@@ -248,8 +248,11 @@ fn search_row(
         (skin.say(msgid("Changed")), skin.say(msgid("Changed, none")))
     } else {
         (
-            format!("{} · {changed}", skin.say(msgid("Changed"))),
-            format!("{}, {changed}", skin.say(msgid("Changed"))),
+            // A count on a label, so one form for every number.
+            skin.say(msgid("Changed · {n}"))
+                .replace("{n}", &changed.to_string()),
+            skin.say(msgid("Changed, {n}"))
+                .replace("{n}", &changed.to_string()),
         )
     };
     let shown = skin.say(msgid("Shortcuts shown"));

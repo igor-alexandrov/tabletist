@@ -1234,8 +1234,13 @@ fn control(
         OptionId::HistoryKeep => {
             let words = |keep: u32| match keep {
                 0 => skin.say(msgid("Don't keep")),
-                keep => skin
-                    .say(msgid("Last {n} queries"))
+                keep => look
+                    .label(&ngettext(
+                        skin.locale,
+                        "Last {n} query",
+                        "Last {n} queries",
+                        keep,
+                    ))
                     .replace("{n}", &group_digits(u64::from(keep))),
             };
             let current = settings.history_keep;

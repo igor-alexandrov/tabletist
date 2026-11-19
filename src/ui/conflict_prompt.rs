@@ -120,12 +120,14 @@ fn lettered(keymap: &Keymap, layout: Layout, typed: &str) -> Option<Answer> {
 /// What the question about a row is headed with, in the parts its line is
 /// laid out from: only the row's name gives way when the line is too long.
 pub struct Title {
-    /// "Row", in the look's case.
+    /// What the heading says before the row's name, in the look's case,
+    /// with its space: "Row ".
     pub before: String,
     /// The row by its key, as the row panel names it: `id 2`. The key is
     /// the database's, and stays as it is.
     pub name: String,
-    /// What became of the row, in the look's case.
+    /// What it says after the name, with its space: " changed on the
+    /// server".
     pub after: String,
 }
 
@@ -137,21 +139,25 @@ impl Title {
 
     /// The title with `name` for the row's name: the name cut, or whole.
     fn with(&self, name: &str) -> String {
-        format!("{} {name} {}", self.before, self.after)
+        format!("{}{name}{}", self.before, self.after)
     }
 }
 
 /// The heading of the question about the page's row `row`.
 pub fn title(object: &ObjectTab, row: usize, gone: bool, look: &Look, locale: Locale) -> Title {
-    let say = |text: Msgid| look.label(&text.say(locale));
+    // One phrase, split around the name: a language words the row by what
+    // became of it ("Строки … больше нет").
+    let heading = if gone {
+        msgid("Row {row} no longer exists on the server")
+    } else {
+        msgid("Row {row} changed on the server")
+    };
+    let heading = look.label(&heading.say(locale));
+    let (before, after) = crate::i18n::around(&heading, "{row}");
     Title {
-        before: say(msgid("Row")),
+        before: before.to_owned(),
         name: super::pending_bar::row_name(object, row),
-        after: if gone {
-            say(msgid("no longer exists on the server"))
-        } else {
-            say(msgid("changed on the server"))
-        },
+        after: after.to_owned(),
     }
 }
 
@@ -1347,6 +1353,20 @@ mod tests {
             title(false, Look::omarchy()).whole(),
             "row id 2 changed on the server"
         );
+        // Each heading is one phrase, so a language words the row by what
+        // became of it, the name still a part of its own.
+        let russian = |gone: bool| {
+            super::title(
+                object,
+                1,
+                gone,
+                &Look::standard(),
+                crate::i18n::Locale::Russian,
+            )
+        };
+        assert_eq!(russian(false).whole(), "Строка id 2 изменена на сервере");
+        assert_eq!(russian(true).whole(), "Строки id 2 больше нет на сервере");
+        assert_eq!(russian(true).name, "id 2");
         assert!(
             painted(&harness, "Row id 2 changed on the server"),
             "{:?}",

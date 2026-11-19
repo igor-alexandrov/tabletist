@@ -2255,7 +2255,10 @@ fn editing_status(
         let line = crate::format::capped(line);
         Some(Said {
             mark: None,
-            text: format!("{} {}", say(msgid("not a command:")), display_safe(&line)),
+            text: crate::i18n::fill(
+                &say(msgid("not a command: {command}")),
+                &[("{command}", &display_safe(&line))],
+            ),
             tail: None,
             color: states::Tone::Danger.color(palette),
         })

@@ -2217,10 +2217,11 @@ pub enum FilesKind {
 impl FilesKind {
     pub const ALL: [Self; 2] = [Self::Folder, Self::Files];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> crate::i18n::Msgid {
+        use crate::i18n::msgid;
         match self {
-            Self::Folder => "Folder",
-            Self::Files => "Files",
+            Self::Folder => msgid("Folder"),
+            Self::Files => msgid("Files"),
         }
     }
 }
