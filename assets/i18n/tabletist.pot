@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-19 06:43-0500\n"
+"POT-Creation-Date: 2026-11-19 07:41-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -852,6 +852,83 @@ msgstr[1] ""
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Connected"
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "{file} couldn't be read."
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "Read {column} as text"
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "Read '{value}' as empty"
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "Skip {file}"
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "Row {row} has '{value}' in {column}, {kind}."
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "Row {row} has {found} values, where the file's rows have {expected}."
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "Line {line} isn't JSON."
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "Line {line} has a value of another type than the lines before it."
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+msgid "a date column"
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+msgid "a time column"
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+msgid "a timestamp column"
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+msgid "a whole number column"
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+msgid "a number column"
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+msgid "a true or false column"
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+msgid "a UUID column"
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+msgid "an interval column"
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "a column of type {kind}"
 msgstr ""
 
 #: src/ui/connect_dialog/reading.rs

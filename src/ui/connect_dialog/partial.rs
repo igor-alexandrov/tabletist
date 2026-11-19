@@ -9,6 +9,7 @@ use tabletist_db::files::{Failure, Why};
 
 use super::Skin;
 use crate::format::group_digits;
+use crate::i18n::gettext;
 use crate::keymap::Command;
 use crate::model::{ConnectionForm, FileFix};
 use crate::ui::banner::{Action, Banner};
@@ -53,12 +54,13 @@ impl Partial {
     }
 }
 
-/// `template` with each `{name}` in it put as `pairs` say: the template is
-/// translated and in the look's case, what goes in it as it is (a file's
+/// `template` with each `{name}` in it put as `pairs` say: the template,
+/// translated where its literal is (so the catalogs have it), is put in
+/// the look's case, what goes in it as it is (a file's
 /// or a column's name, a value). One pass: what goes in is not read for
 /// names again, whatever a file's value says.
-fn put(skin: &Skin, template: &'static str, pairs: &[(&str, &str)]) -> String {
-    let template = skin.say(template);
+fn put(skin: &Skin, template: &str, pairs: &[(&str, &str)]) -> String {
+    let template = skin.look.label(template);
     let mut text = String::with_capacity(template.len());
     let mut rest = template.as_str();
     while let Some(open) = rest.find('{') {
@@ -104,7 +106,11 @@ pub(super) fn of(ctx: &egui::Context, form: &ConnectionForm, skin: &Skin) -> Opt
     let file = failure.file.as_str();
     let lead = match terminal {
         true => format!("! {file}"),
-        false => put(skin, "{file} couldn't be read.", &[("file", file)]),
+        false => put(
+            skin,
+            &gettext(skin.locale, "{file} couldn't be read."),
+            &[("file", file)],
+        ),
     };
     let mut text = sentence(failure, skin);
     // The terminal look's line is a clause, with no stop.
@@ -118,20 +124,32 @@ pub(super) fn of(ctx: &egui::Context, form: &ConnectionForm, skin: &Skin) -> Opt
         && failure.takes_column_fixes()
     {
         fixes.push(Fix {
-            label: put(skin, "Read {column} as text", &[("column", &short(column))]),
+            label: put(
+                skin,
+                &gettext(skin.locale, "Read {column} as text"),
+                &[("column", &short(column))],
+            ),
             fix: FileFix::Text,
             key: key(Command::FormFixText),
             quiet: false,
         });
         fixes.push(Fix {
-            label: put(skin, "Read '{value}' as empty", &[("value", &short(value))]),
+            label: put(
+                skin,
+                &gettext(skin.locale, "Read '{value}' as empty"),
+                &[("value", &short(value))],
+            ),
             fix: FileFix::Empty,
             key: key(Command::FormFixEmpty),
             quiet: false,
         });
     }
     fixes.push(Fix {
-        label: put(skin, "Skip {file}", &[("file", &short(file))]),
+        label: put(
+            skin,
+            &gettext(skin.locale, "Skip {file}"),
+            &[("file", &short(file))],
+        ),
         fix: FileFix::Skip,
         key: key(Command::FormFixSkip),
         quiet: true,
@@ -149,7 +167,7 @@ fn sentence(failure: &Failure, skin: &Skin) -> String {
             kind,
         } => put(
             skin,
-            "Row {row} has '{value}' in {column}, {kind}.",
+            &gettext(skin.locale, "Row {row} has '{value}' in {column}, {kind}."),
             &[
                 ("row", &group_digits(*row)),
                 ("value", value),
@@ -163,7 +181,10 @@ fn sentence(failure: &Failure, skin: &Skin) -> String {
             found,
         } => put(
             skin,
-            "Row {row} has {found} values, where the file's rows have {expected}.",
+            &gettext(
+                skin.locale,
+                "Row {row} has {found} values, where the file's rows have {expected}.",
+            ),
             &[
                 ("row", &group_digits(*row)),
                 ("found", &found.to_string()),
@@ -175,7 +196,7 @@ fn sentence(failure: &Failure, skin: &Skin) -> String {
             malformed: true,
         } => put(
             skin,
-            "Line {line} isn't JSON.",
+            &gettext(skin.locale, "Line {line} isn't JSON."),
             &[("line", &group_digits(*line))],
         ),
         Why::Json {
@@ -183,7 +204,10 @@ fn sentence(failure: &Failure, skin: &Skin) -> String {
             malformed: false,
         } => put(
             skin,
-            "Line {line} has a value of another type than the lines before it.",
+            &gettext(
+                skin.locale,
+                "Line {line} has a value of another type than the lines before it.",
+            ),
             &[("line", &group_digits(*line))],
         ),
         Why::Other(message) => message.clone(),
@@ -194,25 +218,25 @@ fn sentence(failure: &Failure, skin: &Skin) -> String {
 /// date column".
 fn kind_word(kind: &str, skin: &Skin) -> String {
     let kind = kind.to_ascii_uppercase();
-    let words: &'static str = match kind.as_str() {
-        "DATE" => "a date column",
-        "TIME" => "a time column",
-        kind if kind.starts_with("TIMESTAMP") => "a timestamp column",
+    let words = match kind.as_str() {
+        "DATE" => gettext(skin.locale, "a date column"),
+        "TIME" => gettext(skin.locale, "a time column"),
+        kind if kind.starts_with("TIMESTAMP") => gettext(skin.locale, "a timestamp column"),
         "BIGINT" | "INTEGER" | "SMALLINT" | "TINYINT" | "HUGEINT" | "UBIGINT" | "UINTEGER"
-        | "USMALLINT" | "UTINYINT" | "UHUGEINT" => "a whole number column",
-        "DOUBLE" | "FLOAT" => "a number column",
-        kind if kind.starts_with("DECIMAL") => "a number column",
-        "BOOLEAN" => "a true or false column",
-        "UUID" => "a UUID column",
-        "INTERVAL" => "an interval column",
+        | "USMALLINT" | "UTINYINT" | "UHUGEINT" => gettext(skin.locale, "a whole number column"),
+        "DOUBLE" | "FLOAT" => gettext(skin.locale, "a number column"),
+        kind if kind.starts_with("DECIMAL") => gettext(skin.locale, "a number column"),
+        "BOOLEAN" => gettext(skin.locale, "a true or false column"),
+        "UUID" => gettext(skin.locale, "a UUID column"),
+        "INTERVAL" => gettext(skin.locale, "an interval column"),
         // DuckDB's own name in lower case: "a column of type blob".
         _ => {
             return put(
                 skin,
-                "a column of type {kind}",
+                &gettext(skin.locale, "a column of type {kind}"),
                 &[("kind", &kind.to_ascii_lowercase())],
             );
         }
     };
-    skin.say(words)
+    skin.look.label(&words)
 }

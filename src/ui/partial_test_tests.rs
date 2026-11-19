@@ -746,3 +746,35 @@ fn the_footer_reads_as_whole_phrases_in_russian() {
         );
     }
 }
+
+/// The banner's sentence and fixes are in the catalogs: in Russian they
+/// read in Russian, the file's and the column's names and the value as
+/// they are.
+#[test]
+fn the_banner_and_its_fixes_read_in_russian() {
+    use crate::i18n::Locale;
+    use crate::settings::{Language, OptionValue};
+    for look in looks() {
+        let mut harness = exports(look);
+        harness
+            .app
+            .apply(Action::SetOption(OptionValue::Language(Language::Fixed(
+                Locale::Russian,
+            ))));
+        tested(&mut harness, vec![late_na()], &[]);
+        let tree = harness.settle();
+        let sentence = look.label("в returned_at стоит 'n/a', а это столбец дат");
+        assert!(
+            tree.nodes.iter().any(|(_, node)| node.role() == Role::Alert
+                && node
+                    .label()
+                    .is_some_and(|label| label.to_lowercase().contains(&sentence.to_lowercase()))),
+            "{}",
+            look.name
+        );
+        let skip = look.label("Пропустить ") + "returns.csv";
+        assert!(node(&tree, &skip, Role::Button).is_some(), "{}", look.name);
+        let text = look.label("Читать ") + "returned_at" + &look.label(" как текст");
+        assert!(node(&tree, &text, Role::Button).is_some(), "{}", look.name);
+    }
+}
