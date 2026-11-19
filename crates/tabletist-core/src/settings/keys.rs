@@ -371,10 +371,17 @@ struct Table {
 /// it is. Keys written inline or dotted, which lines cannot be added to,
 /// get the keys' tables written whole.
 pub(super) fn write(text: &str, overrides: &Overrides) -> String {
-    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
     if text.len() > MAX_BYTES || text.lines().count() > MAX_LINES {
         return text.to_owned();
     }
+    write_unmeasured(text, overrides)
+}
+
+/// [`write`] of a text that is not measured here: one written from a text
+/// that fit, on its way to a text that is measured before it is saved
+/// ([`super::Settings::write_change`]). It can be a few lines longer than is read.
+pub(super) fn write_unmeasured(text: &str, overrides: &Overrides) -> String {
+    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let (working, _) = readable(text);
     let (document, _) = DeTable::parse_recoverable(&working);
     let document = document.into_inner();

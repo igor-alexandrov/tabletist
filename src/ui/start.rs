@@ -11,7 +11,7 @@ use tabletist_db::{Driver, ObjectKind, ObjectRef};
 
 use crate::env::{Platform, env_colors};
 use crate::format::display_safe;
-use crate::i18n::{Locale, gettext};
+use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::{Command, Keymap, Layout, Scope, Written};
 use crate::model::{Action, ConnTabId, Found, Pane, StartRecent, Workspace};
 use crate::style::Icon;
@@ -715,7 +715,8 @@ pub(crate) fn estimate_words(rows: u64, look: &Look, grouped: bool, locale: Loca
         } else {
             rows.to_string()
         };
-        format!("≈ {count} {}", look.label(&gettext(locale, "rows")))
+        look.label(&ngettext(locale, "≈ {n} rows", "≈ {n} rows", rows))
+            .replace("{n}", &count)
     }
 }
 

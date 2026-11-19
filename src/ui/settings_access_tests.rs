@@ -97,7 +97,7 @@ fn every_rows_controls_are_described_by_its_small_print() {
                 for node in found {
                     assert_eq!(
                         node.description(),
-                        said,
+                        said.map(crate::i18n::Msgid::english),
                         "{:?} in {} on {shown:?}",
                         node.label(),
                         look.name
@@ -197,7 +197,8 @@ fn the_agents_panes_own_controls_are_described_by_what_is_written_beside_them() 
         .iter()
         .map(|(_, node)| node)
         .find(|node| {
-            node.role() == Role::CheckBox && node.label() == Some(label(OptionId::AgentsOn))
+            node.role() == Role::CheckBox
+                && node.label() == Some(label(OptionId::AgentsOn).english())
         })
         .expect("the server's switch");
     assert!(
@@ -227,9 +228,9 @@ fn a_missing_data_fonts_warning_describes_both_its_menus() {
             .nodes
             .iter()
             .map(|(_, node)| node)
-            .find(|node| node.role() == Role::ComboBox && node.label() == Some(menu))
-            .unwrap_or_else(|| panic!("no menu {menu}"));
-        assert_eq!(node.description(), Some(warning), "{menu}");
+            .find(|node| node.role() == Role::ComboBox && node.label() == Some(menu.english()))
+            .unwrap_or_else(|| panic!("no menu {}", menu.english()));
+        assert_eq!(node.description(), Some(warning), "{}", menu.english());
     }
 }
 
@@ -281,6 +282,7 @@ fn the_terminal_generals_rows_are_described_by_their_hints() {
         &mut harness,
         SettingsPane::General,
         &[
+            (OptionId::Language, Some(super::language_tests::SYSTEM_HINT)),
             (
                 OptionId::OnLaunch,
                 Some("or connections · a chosen connection"),

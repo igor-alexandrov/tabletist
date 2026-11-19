@@ -19,7 +19,7 @@ use tabletist_db::{Driver, TlsMode};
 
 use crate::connections::PasswordMode;
 use crate::env::{EnvColors, Environment, Platform, env_colors};
-use crate::i18n::{Locale, gettext};
+use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::{Command, Keymap, Scope};
 use crate::model::{
     Action, ConnectionForm, FilesKind, LoadedTables, SshAuthKind, SshHints, TestState,
@@ -1076,9 +1076,10 @@ fn ssh_host_note(hints: &SshHints, skin: &Skin) -> Option<(String, Color32)> {
         _ => "",
     };
     let name = hints.host_name.as_deref().unwrap_or("");
-    let text = gettext(locale, sentence)
-        .replace("{hops}", hops)
-        .replace("{name}", name);
+    let text = crate::i18n::fill(
+        &gettext(locale, sentence),
+        &[("{hops}", hops), ("{name}", name)],
+    );
     Some((text, skin.palette.dim))
 }
 
@@ -1194,9 +1195,12 @@ impl Messages {
             TestState::Untrusted {
                 host, fingerprint, ..
             } => {
-                let text = format!(
-                    "{} {host}: {fingerprint}",
-                    gettext(skin.locale, "Unknown SSH host key for")
+                let text = crate::i18n::fill(
+                    &gettext(
+                        skin.locale,
+                        "Unknown SSH host key for {host}: {fingerprint}",
+                    ),
+                    &[("{host}", host), ("{fingerprint}", fingerprint)],
                 );
                 texts.push((text.into(), palette.warning));
                 untrusted = true;
@@ -1374,15 +1378,14 @@ fn status(form: &ConnectionForm, skin: &Skin) -> Option<Status> {
             let mut text = match read {
                 // What a Files connection's Test read: "Read 3 files ·
                 // 2.4 GB".
-                Some(read) => format!(
-                    "{} {} · {}",
-                    gettext(skin.locale, "Read"),
-                    match read.files {
-                        1 => gettext(skin.locale, "1 file").into_owned(),
-                        files => format!("{files} {}", gettext(skin.locale, "files")),
-                    },
-                    tabletist_db::files::size_text(read.bytes)
-                ),
+                Some(read) => ngettext(
+                    skin.locale,
+                    "Read {n} file · {size}",
+                    "Read {n} files · {size}",
+                    read.files,
+                )
+                .replace("{n}", &read.files.to_string())
+                .replace("{size}", &tabletist_db::files::size_text(read.bytes)),
                 None => format!("{} · {}", gettext(skin.locale, "Connected"), driver.label()),
             };
             if let Some(took) = form.test_took {
@@ -1458,6 +1461,29 @@ fn paint_check(painter: &egui::Painter, place: Rect, color: Color32) {
         vec![at(5.0, 12.0), at(10.0, 17.0), at(19.0, 7.0)],
         Stroke::new(2.6 * unit, color),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A ProxyJump from ~/.ssh/config that holds the host's placeholder is
+    /// written as it is, before the host's name.
+    #[test]
+    fn a_braced_proxy_jump_is_written_as_it_is() {
+        let (look, palette) = (Look::macos(), Palette::light());
+        let skin = Skin::new(&look, &palette, Locale::English, Environment::None);
+        let hints = SshHints {
+            host_name: Some("db.internal".into()),
+            proxy: Some(Proxy::Jump("{name}".into())),
+            ..SshHints::default()
+        };
+        let (text, _) = ssh_host_note(&hints, &skin).unwrap();
+        assert_eq!(
+            text,
+            "db.internal through ProxyJump {name} from ~/.ssh/config"
+        );
+    }
 }
 
 #[cfg(test)]

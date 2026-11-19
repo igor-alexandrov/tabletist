@@ -16,7 +16,7 @@ use tabletist_db::ddl::{PartKind, Source};
 use tabletist_db::{Ddl, Driver, ObjectKind};
 
 use crate::format;
-use crate::i18n::{Locale, gettext};
+use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::Command;
 use crate::model::{Action, ConnTabId, ObjectTab, TabId};
 use crate::style::Icon;
@@ -97,8 +97,7 @@ pub fn copy(ctx: &egui::Context, paint: Paint, tab: ConnTabId, object: &ObjectTa
     let said = match &part {
         Some(part) => {
             let lines = part.lines().count().max(1);
-            let count = u32::try_from(lines).unwrap_or(u32::MAX);
-            crate::i18n::ngettext(locale, "Copied {n} line", "Copied {n} lines", count)
+            crate::i18n::ngettext(locale, "Copied {n} line", "Copied {n} lines", lines)
                 .replace("{n}", &lines.to_string())
         }
         None => gettext(locale, "Copied DDL").into_owned(),
@@ -249,17 +248,26 @@ fn left_out(driver: Driver, locale: Locale) -> Option<Cow<'static, str>> {
 /// how long ago the definition arrived.
 pub fn read_ago(waited: Duration, locale: Locale) -> String {
     let seconds = waited.as_secs();
-    let ago = |count: u64, unit: &str| {
-        gettext(locale, "read {count} {unit} ago")
-            .replace("{count}", &count.to_string())
-            .replace("{unit}", unit)
+    // A whole phrase for each unit, so a translation can spell its unit
+    // out and say it for the count.
+    let (count, said) = match seconds {
+        0 => return gettext(locale, "read just now").into_owned(),
+        1..60 => (
+            seconds,
+            ngettext(locale, "read {n} s ago", "read {n} s ago", seconds),
+        ),
+        60..3600 => {
+            let minutes = seconds / 60;
+            let said = ngettext(locale, "read {n} min ago", "read {n} min ago", minutes);
+            (minutes, said)
+        }
+        _ => {
+            let hours = seconds / 3600;
+            let said = ngettext(locale, "read {n} h ago", "read {n} h ago", hours);
+            (hours, said)
+        }
     };
-    match seconds {
-        0 => gettext(locale, "read just now").into_owned(),
-        1..60 => ago(seconds, "s"),
-        60..3600 => ago(seconds / 60, "min"),
-        _ => ago(seconds / 3600, "h"),
-    }
+    said.replace("{n}", &count.to_string())
 }
 
 /// The terminal header's summary in the DDL view: "ddl · read-only ·
@@ -940,8 +948,7 @@ pub fn footer(ui: &mut egui::Ui, paint: Paint, tab: ConnTabId, object: &ObjectTa
             };
             let center = rect.center().y;
             let role = widgets::secondary(&look);
-            let count = u32::try_from(lines).unwrap_or(u32::MAX);
-            let count = crate::i18n::ngettext(locale, "{n} line", "{n} lines", count)
+            let count = crate::i18n::ngettext(locale, "{n} line", "{n} lines", lines)
                 .replace("{n}", &lines.to_string());
             let count = format!("{count} · {}", engine(driver));
             let mut x = rect.left() + 24.0;

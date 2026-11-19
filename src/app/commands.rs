@@ -9,6 +9,7 @@ use std::cell::RefCell;
 
 use tabletist_db::Dialect;
 
+use crate::i18n::{Msgid, msgid};
 use crate::keymap::Command;
 use crate::model::{About, Action, ConnTabId, RunMode, Runnable, Tab, TabName};
 
@@ -168,14 +169,14 @@ impl App {
                 } else {
                     About::Nothing
                 };
-                ("New SQL query", about, vec![Action::NewSqlTab(tab)])
+                (msgid("New SQL query"), about, vec![Action::NewSqlTab(tab)])
             }
             // Where the server has another database to switch to.
             Command::SwitchDatabase => {
                 let databases = workspace.databases.value.as_ref();
                 databases.filter(|databases| databases.len() > 1)?;
                 (
-                    "Switch database",
+                    msgid("Switch database"),
                     About::Nothing,
                     vec![Action::ShowDatabaseMenu(tab)],
                 )
@@ -185,21 +186,29 @@ impl App {
                 if !crate::endpoint::AVAILABLE {
                     return None;
                 }
-                ("Agents", About::Agents, vec![Action::ShowAgents(tab)])
+                (
+                    msgid("Agents"),
+                    About::Agents,
+                    vec![Action::ShowAgents(tab)],
+                )
             }
-            Command::History => ("History", About::Connection, vec![Action::ShowHistory(tab)]),
+            Command::History => (
+                msgid("History"),
+                About::Connection,
+                vec![Action::ShowHistory(tab)],
+            ),
             Command::Reload => (
-                "Reload schema",
+                msgid("Reload schema"),
                 About::Connection,
                 vec![Action::RefreshTree(tab)],
             ),
             Command::EditConnection => {
                 self.connections.get(&workspace.conn_id)?;
                 let edit = Action::EditConnection(workspace.conn_id.clone());
-                ("Edit connection", About::Connection, vec![edit])
+                (msgid("Edit connection"), About::Connection, vec![edit])
             }
             Command::CloseConnection => (
-                "Close connection",
+                msgid("Close connection"),
                 About::Connection,
                 vec![Action::CloseConnTab(tab)],
             ),
@@ -209,16 +218,16 @@ impl App {
                     return None;
                 }
                 let (name, step) = match command {
-                    Command::NextConnection => ("Next connection", 1),
-                    _ => ("Previous connection", -1),
+                    Command::NextConnection => (msgid("Next connection"), 1),
+                    _ => (msgid("Previous connection"), -1),
                 };
                 (name, About::Nothing, vec![Action::CycleConnTab(step)])
             }
             Command::ToggleSidebar => {
                 let name = if workspace.sidebar_hidden {
-                    "Show sidebar"
+                    msgid("Show sidebar")
                 } else {
-                    "Hide sidebar"
+                    msgid("Hide sidebar")
                 };
                 (name, About::Nothing, vec![Action::ToggleSidebar(tab)])
             }
@@ -233,32 +242,40 @@ impl App {
                     return Some((
                         Runnable {
                             command,
-                            name: "Export result of Query {n}…",
+                            name: msgid("Export result of Query {n}…"),
                             about,
                         },
                         vec![open],
                     ));
                 }
                 let table = object?.object.name.clone();
-                ("Export {table}…", About::CurrentTable(table), vec![open])
+                (
+                    msgid("Export {table}…"),
+                    About::CurrentTable(table),
+                    vec![open],
+                )
             }
             // A table of the connection, picked next.
             Command::ExportTable => {
                 let pick = Action::PickTableToExport(tab);
-                ("Export a table…", About::PickNext, vec![pick])
+                (msgid("Export a table…"), About::PickNext, vec![pick])
             }
             // The tab in front's.
             Command::CloseTab => {
                 let id = front?.id();
-                ("Close tab", in_front()?, vec![Action::CloseTab { tab, id }])
+                (
+                    msgid("Close tab"),
+                    in_front()?,
+                    vec![Action::CloseTab { tab, id }],
+                )
             }
             Command::NextTab | Command::PreviousTab => {
                 if workspace.tabs.len() < 2 {
                     return None;
                 }
                 let (name, step) = match command {
-                    Command::NextTab => ("Next tab", 1),
-                    _ => ("Previous tab", -1),
+                    Command::NextTab => (msgid("Next tab"), 1),
+                    _ => (msgid("Previous tab"), -1),
                 };
                 (name, About::Nothing, vec![Action::CycleTab { tab, step }])
             }
@@ -272,7 +289,7 @@ impl App {
                 } else {
                     Action::ToggleFilterBar(tab)
                 };
-                ("Filter rows", in_front()?, vec![filter])
+                (msgid("Filter rows"), in_front()?, vec![filter])
             }
             // Where it has a row to show: a table's rows, or the row
             // selected in a SQL editor's result.
@@ -284,9 +301,9 @@ impl App {
                     return None;
                 }
                 let name = if workspace.row_panel {
-                    "Hide row panel"
+                    msgid("Hide row panel")
                 } else {
-                    "Show row panel"
+                    msgid("Show row panel")
                 };
                 (name, in_front()?, vec![Action::ToggleRowPanel(tab)])
             }
@@ -299,12 +316,12 @@ impl App {
                     id,
                     show: true,
                 };
-                ("Review pending SQL", in_front()?, vec![review])
+                (msgid("Review pending SQL"), in_front()?, vec![review])
             }
             Command::SaveChanges => {
                 let id = pending?.id;
                 (
-                    "Save changes",
+                    msgid("Save changes"),
                     in_front()?,
                     vec![Action::WriteEdits { tab, id }],
                 )
@@ -312,7 +329,7 @@ impl App {
             Command::DiscardChanges => {
                 let id = pending?.id;
                 (
-                    "Discard all pending",
+                    msgid("Discard all pending"),
                     in_front()?,
                     vec![Action::DiscardEdits { tab, id }],
                 )
@@ -333,7 +350,7 @@ impl App {
                     sql_tab: sql.id,
                     all: true,
                 };
-                ("Run all", about, vec![run])
+                (msgid("Run all"), about, vec![run])
             }
             Command::Format => {
                 let sql = sql.filter(|sql| !sql.text.trim().is_empty())?;
@@ -341,13 +358,13 @@ impl App {
                     tab,
                     sql_tab: sql.id,
                 };
-                ("Format SQL", in_front()?, vec![format])
+                (msgid("Format SQL"), in_front()?, vec![format])
             }
             Command::ToggleSqlMode => {
                 let sql = sql.filter(|_| workspace.sql_writes().is_ok())?;
                 let name = match sql.mode {
-                    RunMode::ReadOnly => "Read-write tab",
-                    RunMode::ReadWrite => "Read-only tab",
+                    RunMode::ReadOnly => msgid("Read-write tab"),
+                    RunMode::ReadWrite => msgid("Read-only tab"),
                 };
                 let toggle = Action::ToggleSqlMode {
                     tab,
@@ -359,7 +376,7 @@ impl App {
             Command::CancelQuery => {
                 self.is_busy(tab).then_some(())?;
                 (
-                    "Cancel running query",
+                    msgid("Cancel running query"),
                     About::Connection,
                     vec![Action::CancelQuery(tab)],
                 )
@@ -377,7 +394,7 @@ impl App {
     /// The commands of the window, not of a connection: they apply on the
     /// connection picker too, which has no workspace. They have no arm in
     /// `run_of`'s match, which asks here first: None here is None there.
-    fn window_run(&self, command: Command) -> Option<(&'static str, About, Vec<Action>)> {
+    fn window_run(&self, command: Command) -> Option<(Msgid, About, Vec<Action>)> {
         // The terminal look's font size, the others' interface scale.
         let settings = &self.settings;
         let stepped = |larger| match self.look.terminal {
@@ -385,29 +402,45 @@ impl App {
             false => settings.ui_scale.stepped(larger) != settings.ui_scale,
         };
         let run = match command {
-            Command::Connections => ("Connections", About::Nothing, vec![Action::ShowConnections]),
+            Command::Connections => (
+                msgid("Connections"),
+                About::Nothing,
+                vec![Action::ShowConnections],
+            ),
             Command::NewConnection => (
-                "New connection",
+                msgid("New connection"),
                 About::Nothing,
                 vec![Action::NewConnection],
             ),
-            Command::Settings => ("Settings", About::Nothing, vec![Action::ShowSettings]),
+            Command::Settings => (
+                msgid("Settings"),
+                About::Nothing,
+                vec![Action::ShowSettings],
+            ),
             Command::CheckForUpdates => (
-                "Check for Updates…",
+                msgid("Check for Updates…"),
                 About::Nothing,
                 vec![Action::ShowUpdates],
             ),
-            Command::Help => ("Keyboard shortcuts", About::Nothing, vec![Action::ShowHelp]),
+            Command::Help => (
+                msgid("Keyboard shortcuts"),
+                About::Nothing,
+                vec![Action::ShowHelp],
+            ),
             // Each where it changes the size: not at the end of the steps,
             // nor back to the look's own where it is that already.
             Command::LargerText => {
                 stepped(true).then_some(())?;
-                ("Larger", About::Nothing, vec![Action::TextSize(Some(true))])
+                (
+                    msgid("Larger"),
+                    About::Nothing,
+                    vec![Action::TextSize(Some(true))],
+                )
             }
             Command::SmallerText => {
                 stepped(false).then_some(())?;
                 (
-                    "Smaller",
+                    msgid("Smaller"),
                     About::Nothing,
                     vec![Action::TextSize(Some(false))],
                 )
@@ -422,7 +455,11 @@ impl App {
                 if actual {
                     return None;
                 }
-                ("Actual size", About::Nothing, vec![Action::TextSize(None)])
+                (
+                    msgid("Actual size"),
+                    About::Nothing,
+                    vec![Action::TextSize(None)],
+                )
             }
             _ => return None,
         };

@@ -8,7 +8,7 @@ use egui::{CornerRadius, Rect, Sense, Stroke, Ui, WidgetInfo, WidgetType, pos2, 
 
 use crate::app::Work;
 use crate::format::group_digits;
-use crate::i18n::{Locale, gettext, ngettext};
+use crate::i18n::{Locale, Msgid, msgid, ngettext};
 use crate::keymap::{Command, Keymap, Layout};
 use crate::model::{Action, SettingsDialog, SettingsPane};
 use crate::settings::{
@@ -93,6 +93,8 @@ pub(super) struct Skin<'a> {
     pub(super) locale: Locale,
     /// The computer's zone's name, which the System zone writes beside it.
     pub(super) system: Option<&'a str>,
+    /// The system's first language, which the System language follows.
+    pub(super) language: Option<&'a crate::i18n::LanguageTag>,
     /// The zone database's names, which the zone menu lists: none until
     /// the backend has read it.
     pub(super) zones: &'a [String],
@@ -122,8 +124,8 @@ pub(super) struct DataFonts<'a> {
 
 impl Skin<'_> {
     /// `text` translated.
-    pub(super) fn say(&self, text: &'static str) -> String {
-        gettext(self.locale, text).into_owned()
+    pub(super) fn say(&self, text: Msgid) -> String {
+        text.say(self.locale).into_owned()
     }
 }
 
@@ -211,12 +213,12 @@ pub(super) fn show(
             let limit = room.top() + height - foot;
             let builder = egui::UiBuilder::new().id_salt("content").max_rect(pane);
             let mut pane = ui.new_child(builder.layout(egui::Layout::top_down(egui::Align::Min)));
-            let show_history = skin.say("Show History");
-            let no_window = skin.say("Open a connection to see its history");
+            let show_history = skin.say(msgid("Show History"));
+            let no_window = skin.say(msgid("Open a connection to see its history"));
             match dialog.pane {
                 SettingsPane::General => content(
                     &mut pane,
-                    ("General", Some(GENERAL)),
+                    (msgid("General"), Some(GENERAL)),
                     (SettingsPane::General.sections(), Preview::None, None),
                     // As the window shows them: what the look has where the
                     // settings do not say (the grouping of numbers).
@@ -227,7 +229,7 @@ pub(super) fn show(
                 ),
                 SettingsPane::Appearance => content(
                     &mut pane,
-                    ("Appearance", Some(APPEARANCE)),
+                    (msgid("Appearance"), Some(APPEARANCE)),
                     (SettingsPane::Appearance.sections(), Preview::Grid, None),
                     &asked.shown,
                     limit,
@@ -237,9 +239,9 @@ pub(super) fn show(
                 SettingsPane::Editor => content(
                     &mut pane,
                     (
-                        "Editor",
+                        msgid("Editor"),
                         Some(
-                            "The SQL editor: how queries run, how typing behaves, and what is remembered.",
+                            msgid("The SQL editor: how queries run, how typing behaves, and what is remembered."),
                         ),
                     ),
                     (
@@ -356,7 +358,7 @@ fn nav(
         ui,
         corner.x + NAV_PAD.x + 10.0,
         top + line / 2.0,
-        Text::one(look, role, &skin.say("Settings"), palette.text),
+        Text::one(look, role, &skin.say(msgid("Settings")), palette.text),
     );
     for (index, pane) in SettingsPane::listed().iter().copied().enumerate() {
         // Up to the nav's rule at the right, 2 apart.
@@ -397,7 +399,7 @@ fn nav(
                 Rect::from_center_size(pos2(item.right() - 12.0, item.center().y), vec2(7.0, 7.0));
             ui.painter()
                 .circle_filled(dot.center(), 3.5, palette.accent);
-            widgets::announce(ui, dot, &skin.say("Update available"));
+            widgets::announce(ui, dot, &skin.say(msgid("Update available")));
         }
         // An item of a list: the ring is inside its fill, as a row's is.
         focus::hint(ui, &button, item, Ring::Inset { radius: 5 });
@@ -405,11 +407,11 @@ fn nav(
 }
 
 /// What the General pane says under its title.
-const GENERAL: &str =
-    "How Tabletist starts, shows data and protects your work. Changes apply right away.";
+const GENERAL: Msgid =
+    msgid("How Tabletist starts, shows data and protects your work. Changes apply right away.");
 /// What the Appearance pane says under its title.
-const APPEARANCE: &str =
-    "Theme, type and how dense the grid is. The preview updates as you change things.";
+const APPEARANCE: Msgid =
+    msgid("Theme, type and how dense the grid is. The preview updates as you change things.");
 
 /// The preview that ends a pane, where it has one.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -424,7 +426,7 @@ enum Preview {
 /// A pane's sections, each its heading and its options; the preview it
 /// has; and the button after one of its rows.
 type Sections<'a> = (
-    &'a [(&'static str, &'a [OptionId])],
+    &'a [(Msgid, &'a [OptionId])],
     Preview,
     Option<(OptionId, After<'a>)>,
 );
@@ -436,7 +438,7 @@ type Sections<'a> = (
 #[allow(clippy::too_many_arguments)] // one pane: what it says, what it shows, what it pushes
 fn content(
     ui: &mut Ui,
-    (title, about): (&'static str, Option<&'static str>),
+    (title, about): (Msgid, Option<Msgid>),
     (sections, preview, mut after): Sections<'_>,
     settings: &Settings,
     limit: f32,
@@ -466,7 +468,7 @@ fn content(
     };
     // The first heading stays over the rows as they scroll; the others
     // scroll with their rows, 14 under the last row before them.
-    widgets::section_label(&said(ui.ctx(), look, skin.locale, first), look, palette)
+    widgets::section_label(&said(ui.ctx(), look, skin.locale, *first), look, palette)
         .layout(ui.ctx())
         .label(ui);
     ui.add_space(2.0);
@@ -489,7 +491,7 @@ fn content(
                 if nth > 0 {
                     ui.add_space(14.0);
                     widgets::section_label(
-                        &said(ui.ctx(), look, skin.locale, heading),
+                        &said(ui.ctx(), look, skin.locale, *heading),
                         look,
                         palette,
                     )
@@ -537,7 +539,7 @@ fn content(
             // Under the options, 14 under the last of them, the preview,
             // and 14 under it.
             if preview != Preview::None {
-                let name = skin.say("Preview");
+                let name = skin.say(msgid("Preview"));
                 ui.add_space(14.0);
                 widgets::section_label(&name, look, palette)
                     .layout(ui.ctx())
@@ -588,9 +590,9 @@ fn tiles(ui: &mut Ui, settings: &Settings, skin: &Skin, actions: &mut Vec<Action
     let mut x = rect.left();
     let top = rect.top() + 6.0;
     for (mode, word) in [
-        (Mode::System, "System"),
-        (Mode::Light, "Light"),
-        (Mode::Dark, "Dark"),
+        (Mode::System, msgid("System")),
+        (Mode::Light, msgid("Light")),
+        (Mode::Dark, msgid("Dark")),
     ] {
         let area = Rect::from_min_size(pos2(x, top), tile);
         x += tile.x + 12.0;
@@ -719,13 +721,13 @@ fn tiles(ui: &mut Ui, settings: &Settings, skin: &Skin, actions: &mut Vec<Action
 /// What the System tile follows, under the tiles: the OS of the look's
 /// keys. Linux's classic look, macOS's with Windows' keys off Windows,
 /// follows the desktop.
-fn theme_hint(look: &Look) -> &'static str {
+fn theme_hint(look: &Look) -> Msgid {
     if cfg!(target_os = "windows") {
-        "System follows Windows."
+        msgid("System follows Windows.")
     } else if look.keys == Layout::Mac {
-        "System follows macOS, including Auto."
+        msgid("System follows macOS, including Auto.")
     } else {
-        "System follows the desktop's light or dark."
+        msgid("System follows the desktop's light or dark.")
     }
 }
 
@@ -779,12 +781,13 @@ fn look_beside(
 /// from the labels, and the small print wraps.
 pub(super) fn label_column(ui: &Ui, options: &[OptionId], skin: &Skin) -> f32 {
     let role = TextRole::Secondary;
-    // Keep query history's small print, the longest, wraps under its
-    // label: the column it would make leaves the other rows' hints no room.
+    // Keep query history's and the language's small print, the longest,
+    // wrap under their labels: the column either would make leaves the
+    // other rows' hints no room.
     let widest = options
         .iter()
         .copied()
-        .filter(|option| *option != OptionId::HistoryKeep)
+        .filter(|option| !matches!(option, OptionId::HistoryKeep | OptionId::Language))
         .filter_map(small_print)
         .map(|print| role.width(ui.ctx(), skin.look.faces, &skin.say(print)))
         .fold(LABEL, f32::max);
@@ -859,7 +862,14 @@ fn row_of(
         TextRole::UiBody,
         &said(ui.ctx(), look, skin.locale, label(option)),
         palette.text,
-    )
+    );
+    // «Язык · Language»: the English word, dim, in any other language.
+    let name = match super::language_aside_label(skin.locale) {
+        Some(english) if option == OptionId::Language => {
+            name.add(TextRole::UiBody, &format!(" · {english}"), palette.dim)
+        }
+        _ => name,
+    }
     .wrap(column)
     .layout(ui.ctx());
     // A data font that is not installed is said in place of the small
@@ -873,6 +883,12 @@ fn row_of(
         }
         None => match &shown {
             Some(shown) => Some((shown.text.to_owned(), palette.dim)),
+            // That the system's language is not translated yet, where it
+            // is: else the row's small print.
+            None if option == OptionId::Language => Some((
+                super::language_print(skin.locale, settings.language, skin.language),
+                palette.dim,
+            )),
             None => small_print(option).map(|print| (skin.say(print), palette.dim)),
         },
     };
@@ -1039,7 +1055,9 @@ fn keyboard_came_to(ui: &Ui, place: Rect) -> bool {
 /// How tall `option`'s control is: its row is at least as tall.
 fn control_height(option: OptionId, look: &Look) -> f32 {
     match option {
-        OptionId::PageSize | OptionId::Tz | OptionId::OnLaunch => look.control_height,
+        OptionId::PageSize | OptionId::Tz | OptionId::OnLaunch | OptionId::Language => {
+            look.control_height
+        }
         // The track has 2 over its segments and under them.
         OptionId::Timestamps | OptionId::GroupDigits => SEGMENT + 4.0,
         OptionId::Look | OptionId::RowHeight | OptionId::TableList | OptionId::EnvBar => {
@@ -1089,14 +1107,14 @@ fn control(
     let Skin { look, palette, .. } = *skin;
     let name = said(ui.ctx(), look, skin.locale, label(option));
     // Two or three words of segments, picked into a value.
-    let mut segmented = |words: &[&'static str], selected: usize| {
-        let words: Vec<String> = words.iter().map(|word| skin.say(word)).collect();
+    let mut segmented = |words: &[Msgid], selected: usize| {
+        let words: Vec<String> = words.iter().map(|word| skin.say(*word)).collect();
         segments(ui, (&name, description), &words, selected, skin)
     };
     match option {
         OptionId::NewTab => {
             let selected = usize::from(settings.new_tab == NewTab::Connection);
-            let words = ["Read-only transaction", "Follow connection"];
+            let words = [msgid("Read-only transaction"), msgid("Follow connection")];
             if let Some(picked) = segmented(&words, selected) {
                 let choice = [NewTab::ReadOnly, NewTab::Connection][picked];
                 actions.push(Action::SetOption(OptionValue::NewTab(choice)));
@@ -1104,7 +1122,10 @@ fn control(
         }
         OptionId::RunScope => {
             let selected = usize::from(settings.run_scope == RunScope::All);
-            if let Some(picked) = segmented(&["Statement at cursor", "Whole tab"], selected) {
+            if let Some(picked) = segmented(
+                &[msgid("Statement at cursor"), msgid("Whole tab")],
+                selected,
+            ) {
                 let scope = [RunScope::Statement, RunScope::All][picked];
                 actions.push(Action::SetOption(OptionValue::RunScope(scope)));
             }
@@ -1112,7 +1133,7 @@ fn control(
         OptionId::EditorKeys => {
             let keys = settings.editor_keys_in(look.terminal);
             let selected = usize::from(keys == EditorKeys::Vim);
-            if let Some(picked) = segmented(&["Standard", "Vim"], selected) {
+            if let Some(picked) = segmented(&[msgid("Standard"), msgid("Vim")], selected) {
                 let keys = [EditorKeys::Standard, EditorKeys::Vim][picked];
                 actions.push(Action::SetOption(OptionValue::EditorKeys(Some(keys))));
             }
@@ -1122,15 +1143,24 @@ fn control(
                 .iter()
                 .position(|indent| *indent == settings.indent)
                 .unwrap_or(0);
-            if let Some(picked) = segmented(&["2 spaces", "4 spaces", "Tab"], selected) {
+            if let Some(picked) = segmented(
+                &[msgid("2 spaces"), msgid("4 spaces"), msgid("Tab")],
+                selected,
+            ) {
                 actions.push(Action::SetOption(OptionValue::Indent(Indent::ALL[picked])));
             }
         }
         OptionId::Autocomplete => {
             // The middle one names the key that asks for a list.
             let complete = crate::ui::keys::written(ui.ctx(), look, Command::Complete);
-            let manual = skin.say("On {key}").replace("{key}", complete.as_str());
-            let words = [skin.say("As you type"), manual, skin.say("Off")];
+            let manual = skin
+                .say(msgid("On {key}"))
+                .replace("{key}", complete.as_str());
+            let words = [
+                skin.say(msgid("As you type")),
+                manual,
+                skin.say(msgid("Off")),
+            ];
             let selected = Autocomplete::ALL
                 .iter()
                 .position(|choice| *choice == settings.autocomplete)
@@ -1146,14 +1176,17 @@ fn control(
                 .iter()
                 .position(|choice| *choice == case)
                 .unwrap_or(0);
-            if let Some(picked) = segmented(&["UPPERCASE", "lowercase", "Keep"], selected) {
+            if let Some(picked) = segmented(
+                &[msgid("UPPERCASE"), msgid("lowercase"), msgid("Keep")],
+                selected,
+            ) {
                 let case = KeywordCase::ALL[picked];
                 actions.push(Action::SetOption(OptionValue::Keywords(Some(case))));
             }
         }
         OptionId::Commas => {
             let selected = usize::from(settings.commas == Commas::Leading);
-            if let Some(picked) = segmented(&["Trailing", "Leading"], selected) {
+            if let Some(picked) = segmented(&[msgid("Trailing"), msgid("Leading")], selected) {
                 let commas = [Commas::Trailing, Commas::Leading][picked];
                 actions.push(Action::SetOption(OptionValue::Commas(commas)));
             }
@@ -1182,7 +1215,7 @@ fn control(
         OptionId::Timeout => {
             let words = |secs: Option<u32>| match secs {
                 Some(secs) => sql_editor::time_words(secs, false, skin.locale),
-                None => skin.say("Off"),
+                None => skin.say(msgid("Off")),
             };
             let current = settings.sql_timeout_secs;
             let choices = Settings::sql_timeouts_with(current)
@@ -1200,9 +1233,9 @@ fn control(
         }
         OptionId::HistoryKeep => {
             let words = |keep: u32| match keep {
-                0 => skin.say("Don't keep"),
+                0 => skin.say(msgid("Don't keep")),
                 keep => skin
-                    .say("Last {n} queries")
+                    .say(msgid("Last {n} queries"))
                     .replace("{n}", &group_digits(u64::from(keep))),
             };
             let current = settings.history_keep;
@@ -1284,8 +1317,15 @@ fn control(
         }
         OptionId::Tz => zone_menu(ui, (&name, description), settings, skin, actions),
         OptionId::OnLaunch => launch_menu(ui, (&name, description), settings, skin, actions),
+        OptionId::Language => {
+            language_menu(ui, (&name, description), settings, skin, actions);
+            help_translate(ui, skin);
+        }
         OptionId::Timestamps => {
-            let words = [skin.say("To the second"), skin.say("Full precision")];
+            let words = [
+                skin.say(msgid("To the second")),
+                skin.say(msgid("Full precision")),
+            ];
             let selected = usize::from(settings.timestamps == Timestamps::Full);
             if let Some(picked) = segments(ui, (&name, description), &words, selected, skin) {
                 let value = [Timestamps::Second, Timestamps::Full][picked];
@@ -1307,9 +1347,9 @@ fn control(
             // them: without the rule under a row (28, 36 and 44 on macOS).
             let words = RowHeight::ALL.map(|height| {
                 let word = match height {
-                    RowHeight::Compact => "Compact",
-                    RowHeight::Regular => "Regular",
-                    RowHeight::Roomy => "Roomy",
+                    RowHeight::Compact => msgid("Compact"),
+                    RowHeight::Regular => msgid("Regular"),
+                    RowHeight::Roomy => msgid("Roomy"),
                 };
                 let rows = Look {
                     density: height,
@@ -1343,7 +1383,10 @@ fn control(
         }
         OptionId::FontSize => size_menu(ui, description, settings, skin, actions),
         OptionId::TableList => {
-            let words = [skin.say("Grouped by prefix"), skin.say("Flat")];
+            let words = [
+                skin.say(msgid("Grouped by prefix")),
+                skin.say(msgid("Flat")),
+            ];
             let selected = usize::from(settings.table_list.flat());
             if let Some(picked) = segments(ui, (&name, description), &words, selected, skin) {
                 actions.push(Action::SetOption(OptionValue::TableList(TableList::of(
@@ -1354,7 +1397,7 @@ fn control(
         // Classic is the look of the OS: macOS's on macOS and Linux, the
         // standard look on Windows.
         OptionId::Look => {
-            let words = [skin.say("Classic"), skin.say("Omarchy")];
+            let words = [skin.say(msgid("Classic")), skin.say(msgid("Omarchy"))];
             let selected = usize::from(settings.look.is_some_and(LookChoice::terminal));
             if let Some(picked) = segments(ui, (&name, description), &words, selected, skin) {
                 let choice = [LookChoice::Classic, LookChoice::Omarchy][picked];
@@ -1362,7 +1405,10 @@ fn control(
             }
         }
         OptionId::EnvBar => {
-            let words = [skin.say("Tint + stripe"), skin.say("Stripe only")];
+            let words = [
+                skin.say(msgid("Tint + stripe")),
+                skin.say(msgid("Stripe only")),
+            ];
             let selected = usize::from(settings.env_bar == EnvBar::Label);
             if let Some(picked) = segments(ui, (&name, description), &words, selected, skin) {
                 let bar = [EnvBar::Tint, EnvBar::Label][picked];
@@ -1473,7 +1519,7 @@ fn font_menu(
             pick(ui, text, installed.is_none() && face == bundled, font);
         }
         if !skin.fonts.installed.is_empty() {
-            menu::heading(ui, &skin.say("Installed"), look, palette);
+            menu::heading(ui, &skin.say(msgid("Installed")), look, palette);
         }
         for family in skin.fonts.installed {
             let current = installed.is_some_and(|name| name.eq_ignore_ascii_case(family));
@@ -1500,11 +1546,11 @@ fn scale_menu(
     let Skin { look, palette, .. } = *skin;
     let percent = |scale: UiScale| format!("{}%", scale.percent());
     let pixels = |scale: UiScale| {
-        skin.say("{px} px text")
+        skin.say(msgid("{px} px text"))
             .replace("{px}", &scale.text_px().to_string())
     };
     let spoken = |scale: UiScale| {
-        skin.say("{percent} percent, {px} pixel text")
+        skin.say(msgid("{percent} percent, {px} pixel text"))
             .replace("{percent}", &scale.percent().to_string())
             .replace("{px}", &scale.text_px().to_string())
     };
@@ -1512,7 +1558,7 @@ fn scale_menu(
     let shown = format!("{} · {}", percent(current), pixels(current));
     let dropdown =
         menu::Dropdown::new("interface-scale", &shown, SCALE_MENU).description(description);
-    let default = skin.say("default");
+    let default = skin.say(msgid("default"));
     let menu = dropdown.show(ui, look, palette, |ui| {
         for scale in UiScale::ALL {
             let (text, note, entry_name) = (percent(scale), pixels(scale), spoken(scale));
@@ -1689,6 +1735,81 @@ fn launch_menu(
     });
 }
 
+/// The language's menu: System where the system's first language has a
+/// catalog, then each language in its own name, with its name in the
+/// window's language beside it.
+fn language_menu(
+    ui: &mut Ui,
+    (name, description): (&str, Option<&str>),
+    settings: &Settings,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
+    let Skin { look, palette, .. } = *skin;
+    let system = skin.language;
+    let shown = super::language_text(skin.locale, settings.language, system);
+    let current = settings.language.shown(system);
+    let dropdown = menu::Dropdown::new("language", &shown, ZONE_MENU).description(description);
+    let menu = dropdown.show(ui, look, palette, |ui| {
+        for language in crate::settings::Language::choices(system) {
+            let text = super::language_text(skin.locale, language, system);
+            let aside = match language {
+                crate::settings::Language::System => None,
+                crate::settings::Language::Fixed(locale) => {
+                    super::language_aside(skin.locale, locale)
+                }
+            };
+            let entry_name = format!("{name} {text}");
+            let mut entry = menu::Item::choice(&text, language == current).name(&entry_name);
+            if let Some(aside) = &aside {
+                entry = entry.detail(aside);
+            }
+            if entry.show(ui, look, palette).clicked() {
+                actions.push(Action::SetOption(OptionValue::Language(language)));
+                ui.close();
+            }
+            // System stands apart from the languages.
+            if language == crate::settings::Language::System {
+                menu::separator(ui, palette);
+            }
+        }
+    });
+    menu.response.widget_info(|| {
+        let mut info = WidgetInfo::labeled(WidgetType::ComboBox, true, name);
+        info.current_text_value = Some(shown.clone());
+        info
+    });
+}
+
+/// "Help translate" after the language's menu: the contributor guide, in
+/// the browser.
+fn help_translate(ui: &mut Ui, skin: &Skin) {
+    let Skin { palette, look, .. } = *skin;
+    let text = super::language_words(skin.locale)[2].clone();
+    let role = TextRole::Secondary;
+    let width = role.width(ui.ctx(), look.faces, &text).ceil();
+    // A sheet too narrow for it leaves it out rather than past the row's
+    // end, where it would be cut and could not be clicked.
+    if ui.available_width() < HINT_GAP + width {
+        return;
+    }
+    ui.add_space(HINT_GAP);
+    let (place, _) = ui.allocate_exact_size(vec2(width, LINK), Sense::hover());
+    let link = link(
+        ui,
+        ui.id().with("help-translate"),
+        place.left_center(),
+        width,
+        &text,
+        palette.accent,
+        skin,
+    );
+    if pressed(ui, &link) {
+        ui.ctx()
+            .open_url(egui::OpenUrl::new_tab(super::TRANSLATING));
+    }
+}
+
 /// The zone's menu: the computer's zone and UTC, then every zone of the
 /// database, which a search field over them narrows. What was typed there
 /// is the field's own, kept in egui's memory while the menu is open.
@@ -1718,7 +1839,7 @@ fn zone_menu(
         pick(ui, Zone::System);
         pick(ui, Zone::Utc);
         let mut typed: String = ui.data(|data| data.get_temp(search_id)).unwrap_or_default();
-        let search = skin.say("Search zones");
+        let search = skin.say(msgid("Search zones"));
         let field = widgets::search_field(ui, &mut typed, &search, look);
         widgets::add_search(ui, field, look)
             .widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, true, &search));
@@ -1755,7 +1876,7 @@ fn zone_menu(
 fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settings, skin: &Skin) {
     let Skin { look, palette, .. } = *skin;
     let text = match option {
-        OptionId::PageSize | OptionId::Tz => return,
+        OptionId::PageSize | OptionId::Tz | OptionId::Language => return,
         OptionId::Timestamps => Text::one(
             look,
             TextRole::MonoSecondary,
@@ -1765,7 +1886,7 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
         OptionId::GroupDigits => Text::one(
             look,
             TextRole::Secondary,
-            &skin.say("Grouping is display only; copy gives the raw value"),
+            &skin.say(msgid("Grouping is display only; copy gives the raw value")),
             palette.dim,
         ),
         OptionId::ValueTags => return tags(ui, at, right, settings.value_tags, skin),
@@ -1782,9 +1903,9 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
             .map(|command| key(command).as_str().to_owned());
             let said = format!(
                 "{larger} {} · {smaller} {} · {actual} {}",
-                skin.say("larger"),
-                skin.say("smaller"),
-                skin.say("back to 100%")
+                skin.say(msgid("larger")),
+                skin.say(msgid("smaller")),
+                skin.say(msgid("back to 100%"))
             );
             let said = Text::one(look, TextRole::Secondary, &said, palette.dim).layout(ui.ctx());
             if at.x + said.width() <= right {
@@ -1796,15 +1917,15 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
         OptionId::RunScope => Text::one(
             look,
             TextRole::Secondary,
-            &skin.say("A selection always wins"),
+            &skin.say(msgid("A selection always wins")),
             palette.dim,
         ),
         // The other two choices.
         OptionId::UpdatesCheck => {
             let others = match settings.update_check {
-                UpdateCheck::Daily => "Or: every week · only when I ask",
-                UpdateCheck::Weekly => "Or: every day · only when I ask",
-                UpdateCheck::Never => "Or: every day · every week",
+                UpdateCheck::Daily => msgid("Or: every week · only when I ask"),
+                UpdateCheck::Weekly => msgid("Or: every day · only when I ask"),
+                UpdateCheck::Never => msgid("Or: every day · every week"),
             };
             Text::one(look, TextRole::Secondary, &skin.say(others), palette.dim)
         }
@@ -1935,13 +2056,13 @@ fn tags(ui: &Ui, at: egui::Pos2, right: f32, on: bool, skin: &Skin) {
 /// What the link that shows the file in the file manager says: the words
 /// of the system the app was built for, as the program it starts is that
 /// system's. English.
-fn reveal_words() -> &'static str {
+fn reveal_words() -> Msgid {
     if cfg!(target_os = "macos") {
-        "Reveal in Finder"
+        msgid("Reveal in Finder")
     } else if cfg!(windows) {
-        "Show in Explorer"
+        msgid("Show in Explorer")
     } else {
-        "Show in folder"
+        msgid("Show in folder")
     }
 }
 
@@ -1952,14 +2073,15 @@ fn ignored_lines(ui: &Ui, ignored: &[usize], width: f32, skin: &Skin) -> Option<
     if count == 0 {
         return None;
     }
-    let lines = u32::try_from(count).unwrap_or(u32::MAX);
     let said = ngettext(
         skin.locale,
-        "line in the file could not be read and was ignored",
-        "lines in the file could not be read and were ignored",
-        lines,
+        "{n} line in the file could not be read and was ignored: {lines}",
+        "{n} lines in the file could not be read and were ignored: {lines}",
+        count,
     );
-    let said = format!("{count} {said}: {}", line_numbers(skin.locale, ignored));
+    let said = said
+        .replace("{n}", &count.to_string())
+        .replace("{lines}", &line_numbers(skin.locale, ignored));
     let text = Text::one(skin.look, TextRole::Secondary, &said, skin.palette.warning);
     Some(text.wrap(width).layout(ui.ctx()))
 }
@@ -1968,7 +2090,6 @@ fn ignored_lines(ui: &Ui, ignored: &[usize], width: f32, skin: &Skin) -> Option<
 /// the first ten, and how many more.
 fn line_numbers(locale: crate::i18n::Locale, ignored: &[usize]) -> String {
     const NAMED: usize = 10;
-    let lines = u32::try_from(ignored.len()).unwrap_or(u32::MAX);
     let mut numbers: Vec<String> = ignored
         .iter()
         .take(NAMED)
@@ -1977,7 +2098,8 @@ fn line_numbers(locale: crate::i18n::Locale, ignored: &[usize]) -> String {
     if ignored.len() > NAMED {
         numbers.push("…".to_owned());
     }
-    ngettext(locale, "line {lines}", "lines {lines}", lines).replace("{lines}", &numbers.join(", "))
+    ngettext(locale, "line {lines}", "lines {lines}", ignored.len())
+        .replace("{lines}", &numbers.join(", "))
 }
 
 /// How tall the footer is: its rule, and its line between its padding,
@@ -1989,14 +2111,14 @@ fn footer_height(ui: &Ui, ignored: Option<&Laid>, skin: &Skin) -> f32 {
 }
 
 /// What Reset to defaults asks on `pane`. English.
-fn reset_question(pane: SettingsPane) -> &'static str {
+fn reset_question(pane: SettingsPane) -> Msgid {
     match pane {
-        SettingsPane::General => "Reset all General settings to their defaults?",
-        SettingsPane::Editor => "Reset all Editor settings to their defaults?",
+        SettingsPane::General => msgid("Reset all General settings to their defaults?"),
+        SettingsPane::Editor => msgid("Reset all Editor settings to their defaults?"),
         SettingsPane::Appearance
         | SettingsPane::Keyboard
         | SettingsPane::Agents
-        | SettingsPane::Updates => "Reset every option on this tab?",
+        | SettingsPane::Updates => msgid("Reset every option on this tab?"),
     }
 }
 
@@ -2057,7 +2179,7 @@ fn footer(
     }
     // Where else a check is asked for: the menu bar's item, on macOS.
     if shown_pane == SettingsPane::Updates && cfg!(target_os = "macos") && asking.is_none() {
-        let said = skin.say("Also in the menu: Tabletist › Check for Updates…");
+        let said = skin.say(msgid("Also in the menu: Tabletist › Check for Updates…"));
         let text = Text::one(look, role, &said, palette.secondary).layout(ui.ctx());
         write(ui, right - text.width(), middle, &text);
         return;
@@ -2067,23 +2189,25 @@ fn footer(
         vec![
             (skin.say(reset_question(pane)), None),
             (
-                skin.say("Reset"),
+                skin.say(msgid("Reset")),
                 Some((palette.danger, Action::ConfirmResetSettings(true))),
             ),
             (
-                skin.say("Cancel"),
+                skin.say(msgid("Cancel")),
                 Some((palette.accent, Action::ConfirmResetSettings(false))),
             ),
         ]
     } else if let Some(question) = question {
         let (asks, yes) = match question {
             crate::model::HistoryQuestion::ClearAll => (
-                "Clear the history of every connection? This can't be undone. It holds the values typed into grid saves.",
-                "Clear history",
+                msgid(
+                    "Clear the history of every connection? This can't be undone. It holds the values typed into grid saves.",
+                ),
+                msgid("Clear history"),
             ),
             crate::model::HistoryQuestion::Forget => (
-                "History is off. Delete the statements it kept on this computer?",
-                "Delete",
+                msgid("History is off. Delete the statements it kept on this computer?"),
+                msgid("Delete"),
             ),
         };
         vec![
@@ -2093,7 +2217,7 @@ fn footer(
                 Some((palette.danger, Action::AnswerHistoryQuestion(true))),
             ),
             (
-                skin.say("Keep"),
+                skin.say(msgid("Keep")),
                 Some((palette.accent, Action::AnswerHistoryQuestion(false))),
             ),
         ]
@@ -2104,19 +2228,19 @@ fn footer(
                 Some((palette.accent, Action::RevealSettingsFile)),
             ),
             (
-                skin.say("Export…"),
+                skin.say(msgid("Export…")),
                 Some((palette.accent, Action::ExportSettings)),
             ),
         ];
         // Every connection's history, from the pane that keeps it.
         if shown_pane == SettingsPane::Editor {
             links.push((
-                skin.say("Clear history…"),
+                skin.say(msgid("Clear history…")),
                 Some((palette.danger, Action::ClearAllHistory)),
             ));
         }
         links.push((
-            skin.say("Reset to defaults"),
+            skin.say(msgid("Reset to defaults")),
             Some((palette.danger, Action::ResetSettings)),
         ));
         links
@@ -2161,7 +2285,8 @@ fn footer(
 
     // "Stored in" whole or left out, then as much of the path as there is
     // room for before the links.
-    let stored = Text::one(look, role, &skin.say("Stored in"), palette.secondary).layout(ui.ctx());
+    let stored =
+        Text::one(look, role, &skin.say(msgid("Stored in")), palette.secondary).layout(ui.ctx());
     let room = first - FOOT_GAP;
     if left + stored.width() > room {
         return;
@@ -2201,28 +2326,27 @@ fn keyboard_footer(
     let resetting = dialog.keyboard.resetting;
     let changed = super::keyboard::changed_count(keymap, Layout::of(look));
     let parts: Vec<(String, Option<(egui::Color32, Action)>)> = if resetting {
-        let lines = u32::try_from(changed).unwrap_or(u32::MAX);
         let asks = ngettext(
             skin.locale,
             "Reset all keyboard shortcuts? Your {n} change will be removed.",
             "Reset all keyboard shortcuts? Your {n} changes will be removed.",
-            lines,
+            changed,
         )
         .replace("{n}", &changed.to_string());
         vec![
             (asks, None),
             (
-                skin.say("Reset all"),
+                skin.say(msgid("Reset all")),
                 Some((palette.danger, Action::ResetAllKeys)),
             ),
             (
-                skin.say("Cancel"),
+                skin.say(msgid("Cancel")),
                 Some((palette.accent, Action::AskResetAllKeys(false))),
             ),
         ]
     } else {
         vec![(
-            skin.say("Export cheat sheet"),
+            skin.say(msgid("Export cheat sheet")),
             Some((palette.accent, Action::ExportCheatSheet)),
         )]
     };
@@ -2263,8 +2387,8 @@ fn keyboard_footer(
         return;
     }
     // Where the editor's vim keys are set, the place named a link there.
-    let before = skin.say("Vim keys for the SQL editor are set in");
-    let place = skin.say("Editor · Keybindings");
+    let before = skin.say(msgid("Vim keys for the SQL editor are set in"));
+    let place = skin.say(msgid("Editor · Keybindings"));
     let laid = Text::one(look, role, &before, palette.secondary).layout(ui.ctx());
     if left + laid.width() > first - FOOT_GAP {
         return;

@@ -3751,7 +3751,8 @@ impl TabName {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Runnable {
     pub command: crate::keymap::Command,
-    pub name: &'static str,
+    /// Its name as quick open lists it, marked: said in `named`.
+    pub name: crate::i18n::Msgid,
     pub about: About,
 }
 
@@ -3759,7 +3760,7 @@ impl Runnable {
     /// Its name in `locale`, the table in front written into it where it
     /// names one ("Export {table}…").
     pub fn named(&self, locale: crate::i18n::Locale) -> String {
-        let name = crate::i18n::gettext(locale, self.name);
+        let name = self.name.say(locale);
         match &self.about {
             About::CurrentTable(table) => name.replace("{table}", table),
             About::CurrentResult(query) => name.replace("{n}", &query.to_string()),
@@ -4043,15 +4044,15 @@ impl SettingsPane {
         }
     }
 
-    /// The pane's name. English: the caller translates it.
-    pub fn name(self) -> &'static str {
+    /// The pane's name, marked: the caller says it.
+    pub fn name(self) -> crate::i18n::Msgid {
         match self {
-            Self::General => "General",
-            Self::Appearance => "Appearance",
-            Self::Editor => "Editor",
-            Self::Keyboard => "Keyboard",
-            Self::Agents => "Agents",
-            Self::Updates => "Updates",
+            Self::General => crate::i18n::msgid("General"),
+            Self::Appearance => crate::i18n::msgid("Appearance"),
+            Self::Editor => crate::i18n::msgid("Editor"),
+            Self::Keyboard => crate::i18n::msgid("Keyboard"),
+            Self::Agents => crate::i18n::msgid("Agents"),
+            Self::Updates => crate::i18n::msgid("Updates"),
         }
     }
 
@@ -4072,30 +4073,37 @@ impl SettingsPane {
     /// The sections the sheet (macOS, Windows) shows the pane's options
     /// in, each under its heading (English), in order. The Agents pane
     /// draws its own, and has none here.
-    pub fn sections(self) -> &'static [(&'static str, &'static [crate::settings::OptionId])] {
+    pub fn sections(self) -> &'static [(crate::i18n::Msgid, &'static [crate::settings::OptionId])] {
+        use crate::i18n::{Msgid, msgid};
         use crate::settings::OptionId;
+        type Sections = &'static [(Msgid, &'static [OptionId])];
+        // Consts, as a call in a slice is not promoted to a static.
+        const GENERAL: Sections = &[
+            (msgid("Language"), &OptionId::LANGUAGE),
+            (msgid("Startup"), &OptionId::STARTUP),
+            (msgid("Data"), &OptionId::DATA),
+            (msgid("Safety"), &OptionId::SAFETY),
+        ];
+        // The look's control is beside the theme's tiles, in their
+        // section: the sheet has no room for another.
+        const APPEARANCE: Sections = &[
+            (msgid("Theme"), &[OptionId::Look, OptionId::Theme]),
+            (msgid("Text"), &OptionId::TEXT),
+            (msgid("Grid"), &OptionId::GRID),
+            (msgid("Environment color"), &OptionId::ENVIRONMENT),
+        ];
+        // `{format}` is the editor's Format key, as the keymap writes it
+        // for the look.
+        const EDITOR: Sections = &[
+            (msgid("Running queries"), &OptionId::RUNNING),
+            (msgid("Typing"), &OptionId::TYPING),
+            (msgid("Format · {format}"), &OptionId::FORMAT),
+            (msgid("History"), &OptionId::HISTORY),
+        ];
         match self {
-            Self::General => &[
-                ("Startup", &OptionId::STARTUP),
-                ("Data", &OptionId::DATA),
-                ("Safety", &OptionId::SAFETY),
-            ],
-            // The look's control is beside the theme's tiles, in their
-            // section: the sheet has no room for another.
-            Self::Appearance => &[
-                ("Theme", &[OptionId::Look, OptionId::Theme]),
-                ("Text", &OptionId::TEXT),
-                ("Grid", &OptionId::GRID),
-                ("Environment color", &OptionId::ENVIRONMENT),
-            ],
-            // `{format}` is the editor's Format key, as the keymap writes
-            // it for the look.
-            Self::Editor => &[
-                ("Running queries", &OptionId::RUNNING),
-                ("Typing", &OptionId::TYPING),
-                ("Format · {format}", &OptionId::FORMAT),
-                ("History", &OptionId::HISTORY),
-            ],
+            Self::General => GENERAL,
+            Self::Appearance => APPEARANCE,
+            Self::Editor => EDITOR,
             Self::Keyboard | Self::Agents | Self::Updates => &[],
         }
     }
@@ -4130,13 +4138,18 @@ impl SettingsPane {
 
     /// What Reset to defaults puts back: the pane's options but the
     /// server's switch, which turned off would end every agent's session
-    /// for a question about defaults, and but the look (Appearance's first),
-    /// which would change the whole window under the person. The Editor pane's are all of its
+    /// for a question about defaults, and but the language (General's
+    /// first) and the look (Appearance's first), each of which would change
+    /// the whole window under the person. The Editor pane's are all of its
     /// keys, the ones it has no row for yet among them.
     pub fn reset_options(self) -> &'static [crate::settings::OptionId] {
         use crate::settings::OptionId;
         match self {
-            Self::General => &OptionId::GENERAL,
+            // But the language (General's first), which would change the
+            // whole window's words under the person, as the look would.
+            Self::General => OptionId::GENERAL
+                .split_first()
+                .map_or(&[], |(_, rest)| rest),
             // But the look: a question about defaults would change the
             // whole window under the person.
             Self::Appearance => OptionId::APPEARANCE
@@ -4155,6 +4168,7 @@ impl SettingsPane {
         use crate::settings::OptionId;
         match self {
             Self::General => &[
+                SettingsRow::Option(OptionId::Language),
                 SettingsRow::Option(OptionId::OnLaunch),
                 SettingsRow::Option(OptionId::RestoreTabs),
                 SettingsRow::Option(OptionId::PageSize),

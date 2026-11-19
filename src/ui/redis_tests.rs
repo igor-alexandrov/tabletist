@@ -1212,3 +1212,20 @@ fn a_reconnect_that_cannot_go_back_falls_back_to_the_sessions_database() {
     );
     assert!(harness.app.said.is_some());
 }
+
+#[test]
+fn a_databases_keys_are_counted_in_the_words_of_the_language() {
+    use crate::i18n::Locale;
+    let words = |keys| super::redis::keys_words(keys, Locale::English);
+    assert_eq!(words(0), "empty");
+    assert_eq!(words(1), "1 key");
+    assert_eq!(words(1204), "1,204 keys");
+    // Russian counts keys with three forms, and a Redis key is no key on
+    // the keyboard (клавиша).
+    let words = |keys| super::redis::keys_words(keys, Locale::Russian);
+    assert_eq!(words(0), "пусто");
+    assert_eq!(words(1), "1 ключ");
+    assert_eq!(words(3), "3 ключа");
+    assert_eq!(words(5), "5 ключей");
+    assert_eq!(words(21), "21 ключ");
+}

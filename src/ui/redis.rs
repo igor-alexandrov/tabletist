@@ -8,7 +8,7 @@ use egui::{
 };
 use tabletist_db::redis::{KeyInfo, KeyType};
 
-use crate::i18n::gettext;
+use crate::i18n::{gettext, ngettext};
 use crate::keymap::{Command, Keymap, Scope};
 use crate::keyspace::{Browser, KeyTab, Place, RedisAction, Row, ScanState, Shown, lossy};
 use crate::model::{Action, ConnTabId};
@@ -203,16 +203,12 @@ fn database_line(ui: &mut Ui, paint: Paint, browser: &Browser, full: Rect) {
     }
 }
 
-/// "1,204 keys", "1 key", "empty".
-fn keys_words(keys: u64, locale: crate::i18n::Locale) -> String {
+/// "1,204 keys", "1 key", "empty": a Redis database's keys.
+pub(crate) fn keys_words(keys: u64, locale: crate::i18n::Locale) -> String {
     match keys {
         0 => gettext(locale, "empty").into_owned(),
-        1 => gettext(locale, "1 key").into_owned(),
-        keys => format!(
-            "{} {}",
-            crate::format::group_digits(keys),
-            gettext(locale, "keys")
-        ),
+        keys => ngettext(locale, "{count} key", "{count} keys", keys)
+            .replace("{count}", &crate::format::group_digits(keys)),
     }
 }
 
@@ -405,10 +401,17 @@ fn tree_row(
                 y,
                 Text::one(&look, count_role, &counted, palette.dim),
             );
-            let keys = gettext(locale, "keys");
-            let said = format!(
-                "{name}, {} {keys}",
-                crate::format::group_digits(*count as u64)
+            let said = crate::i18n::fill(
+                &ngettext(
+                    locale,
+                    "{name}, {count} key",
+                    "{name}, {count} keys",
+                    *count,
+                ),
+                &[
+                    ("{name}", &name),
+                    ("{count}", &crate::format::group_digits(*count as u64)),
+                ],
             );
             response.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, &said));
             let open = *open;
@@ -537,49 +540,67 @@ fn footer_of(
     let total = browser.scan.total;
     let of = |count: u64| crate::format::group_digits(count);
     let took = crate::format::elapsed(browser.scan.took);
+    // "Scanned 300+ of 1,204 keys": whole phrases, so a language can put
+    // the numbers where its words need them; the noun agrees with the
+    // total, or with what is held while the total is not known.
+    let count = total.unwrap_or(held);
+    let phrase = |text: std::borrow::Cow<'static, str>, total: String| {
+        look.label(&crate::i18n::fill(
+            &text,
+            &[("{held}", &of(held)), ("{total}", &total)],
+        ))
+    };
+    let unknown = || "?".to_owned();
     let (said, button): (String, Option<(String, RedisAction)>) = match &browser.scan.state {
         ScanState::Idle => (say("Scanning…"), None),
         ScanState::Running { .. } => (
-            format!(
-                "{} {}+ {} {} {}",
-                say("Scanned"),
-                of(held),
-                say("of"),
-                total.map_or_else(|| "?".into(), of),
-                say("keys")
+            phrase(
+                ngettext(
+                    locale,
+                    "Scanned {held}+ of {total} key",
+                    "Scanned {held}+ of {total} keys",
+                    count,
+                ),
+                total.map_or_else(unknown, of),
             ),
             Some((say("Stop"), RedisAction::Stop)),
         ),
         ScanState::Done => (
             format!(
-                "{} {} {} {} {} · {took}",
-                say("Scanned"),
-                of(held),
-                say("of"),
-                of(total.unwrap_or(held)),
-                say("keys")
+                "{} · {took}",
+                phrase(
+                    ngettext(
+                        locale,
+                        "Scanned {held} of {total} key",
+                        "Scanned {held} of {total} keys",
+                        count
+                    ),
+                    of(total.unwrap_or(held)),
+                )
             ),
             Some((reload_words(paint, keymap), RedisAction::Reload)),
         ),
         ScanState::Stopped => (
-            format!(
-                "{} {} {} {} {}",
-                say("Stopped at"),
-                of(held),
-                say("of"),
-                total.map_or_else(|| "?".into(), of),
-                say("keys")
+            phrase(
+                ngettext(
+                    locale,
+                    "Stopped at {held} of {total} key",
+                    "Stopped at {held} of {total} keys",
+                    count,
+                ),
+                total.map_or_else(unknown, of),
             ),
             Some((reload_words(paint, keymap), RedisAction::Reload)),
         ),
         ScanState::Limited => (
-            format!(
-                "{} {} {} {} {}",
-                say("Showing groups from the first"),
-                of(held),
-                say("of"),
-                total.map_or_else(|| "?".into(), crate::format::compact_count),
-                say("keys")
+            phrase(
+                ngettext(
+                    locale,
+                    "Showing groups from the first {held} of {total} key",
+                    "Showing groups from the first {held} of {total} keys",
+                    count,
+                ),
+                total.map_or_else(unknown, crate::format::compact_count),
             ),
             Some((say("Scan all"), RedisAction::ScanAll)),
         ),
@@ -1049,7 +1070,7 @@ fn table(
         .map(|at| if at == 0 { first } else { rest })
         .collect();
     let row_height = if look.terminal { 24.0 } else { 34.0 };
-    let name = format!("{} {}", gettext(locale, "Value of"), lossy(&open.key));
+    let name = gettext(locale, "Value of {key}").replace("{key}", &lossy(&open.key));
     let (frame, _) = ui.allocate_exact_size(vec2(width, 0.0), Sense::hover());
     let table = ui.interact(
         Rect::from_min_size(frame.min, vec2(width, 1.0)),

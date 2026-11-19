@@ -1738,7 +1738,7 @@ impl App {
             self.locale,
             "Exported {n} row to {file}",
             "Exported {n} rows to {file}",
-            u32::try_from(rows).unwrap_or(u32::MAX),
+            rows,
         )
         .replace("{n}", &crate::format::group_digits(rows))
         .replace("{file}", &exporting.file);
@@ -1804,7 +1804,7 @@ impl App {
                 self.locale,
                 "Copied {n} row as {format}",
                 "Copied {n} rows as {format}",
-                u32::try_from(rows).unwrap_or(u32::MAX),
+                rows,
             )
             .replace("{n}", &crate::format::group_digits(rows))
             .replace("{format}", format.name());

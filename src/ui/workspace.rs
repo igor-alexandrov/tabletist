@@ -6,7 +6,7 @@ use tabletist_db::{Access, TlsMode};
 
 use crate::app::App;
 use crate::format::display_safe;
-use crate::i18n::gettext;
+use crate::i18n::{gettext, pgettext};
 use crate::keymap::Command;
 use crate::model::{Action, ConnTabId, ObjectView, SessionStatus, TabId};
 use crate::style::Icon;
@@ -1255,12 +1255,12 @@ fn link_color(link: Link, env: &crate::env::EnvColors, palette: &Palette) -> egu
 
 /// What a click on another connection's chip is announced as.
 fn switch_label(chip: &Chip, look: &Look, locale: crate::i18n::Locale) -> String {
-    format!(
-        "{} {} · {}",
-        gettext(locale, "Switch to"),
-        chip.name,
-        chip.env.label(crate::env::Platform::of(look))
-    )
+    gettext(locale, "Switch to {connection} · {environment}")
+        .replace(
+            "{environment}",
+            chip.env.label(crate::env::Platform::of(look)),
+        )
+        .replace("{connection}", &chip.name)
 }
 
 /// Announces the bar's own chip: the database switcher.
@@ -1547,7 +1547,7 @@ fn mac_bar(
     if let Some(host) = &info.ssh_host {
         pills.push((
             None,
-            format!("{} {host}", gettext(locale, "via SSH")),
+            gettext(locale, "via SSH {host}").replace("{host}", host),
             palette.secondary,
         ));
     }
@@ -1817,7 +1817,7 @@ fn terminal_bar(
     }
     if let Some(host) = &info.ssh_host {
         tags.push((
-            format!("{} {host}", gettext(locale, "via SSH")),
+            gettext(locale, "via SSH {host}").replace("{host}", host),
             palette.dim,
         ));
     }
@@ -2608,16 +2608,20 @@ pub fn export_line(app: &App) -> Option<(String, egui::Color32)> {
                 .iter()
                 .map(|exporting| export_brief(exporting, locale))
                 .collect();
-            let count = u32::try_from(several.len()).unwrap_or(u32::MAX);
-            let text = crate::i18n::ngettext(
+            let words = crate::i18n::ngettext(
                 locale,
                 "{n} export · {each} · {cancel}",
                 "{n} exports · {each} · {cancel}",
-                count,
-            )
-            .replace("{n}", &several.len().to_string())
-            .replace("{each}", &each.join(" · "))
-            .replace("{cancel}", cancel.as_str());
+                several.len(),
+            );
+            let text = crate::i18n::fill(
+                &words,
+                &[
+                    ("{n}", &several.len().to_string()),
+                    ("{each}", &each.join(" · ")),
+                    ("{cancel}", cancel.as_str()),
+                ],
+            );
             Some((text, app.palette.text))
         }
     }
@@ -2636,14 +2640,13 @@ pub fn export_brief(
     };
     match exporting.share() {
         Some(share) => format!("{} {}%", exporting.name(), (share * 100.0).round() as u32),
-        None => crate::i18n::ngettext(
-            locale,
-            "{name} {n} row",
-            "{name} {n} rows",
-            u32::try_from(rows).unwrap_or(u32::MAX),
-        )
-        .replace("{name}", exporting.name())
-        .replace("{n}", &crate::format::group_digits(rows)),
+        None => crate::i18n::fill(
+            &crate::i18n::ngettext(locale, "{name} {n} row", "{name} {n} rows", rows),
+            &[
+                ("{name}", exporting.name()),
+                ("{n}", &crate::format::group_digits(rows)),
+            ],
+        ),
     }
 }
 
@@ -2669,21 +2672,29 @@ fn one_export_line(
                 (Some(share), Some(total)) => {
                     let filled = ((share * 12.0).round() as usize).min(12);
                     let bar = format!("{}{}", "█".repeat(filled), "░".repeat(12 - filled));
-                    gettext(
-                        locale,
-                        "export {name} [{bar}] {share}% · {done}/{total} · {cancel}",
+                    crate::i18n::fill(
+                        &gettext(
+                            locale,
+                            "export {name} [{bar}] {share}% · {done}/{total} · {cancel}",
+                        ),
+                        &[
+                            ("{name}", &name),
+                            ("{bar}", &bar),
+                            ("{share}", &((share * 100.0).round() as u32).to_string()),
+                            ("{done}", &done),
+                            ("{total}", &count_words(total)),
+                            ("{cancel}", cancel.as_str()),
+                        ],
                     )
-                    .replace("{name}", &name)
-                    .replace("{bar}", &bar)
-                    .replace("{share}", &((share * 100.0).round() as u32).to_string())
-                    .replace("{done}", &done)
-                    .replace("{total}", &count_words(total))
-                    .replace("{cancel}", cancel.as_str())
                 }
-                _ => gettext(locale, "export {name} · {done} rows · {cancel}")
-                    .replace("{name}", &name)
-                    .replace("{done}", &done)
-                    .replace("{cancel}", cancel.as_str()),
+                _ => crate::i18n::fill(
+                    &gettext(locale, "export {name} · {done} rows · {cancel}"),
+                    &[
+                        ("{name}", &name),
+                        ("{done}", &done),
+                        ("{cancel}", cancel.as_str()),
+                    ],
+                ),
             };
             (text, palette.text)
         }
@@ -2692,15 +2703,19 @@ fn one_export_line(
         } => {
             let open = key(crate::keymap::Command::OpenExportFolder);
             let rows = crate::format::group_digits(*rows);
-            let text = gettext(
-                locale,
-                "✓ exported {rows} rows → {path} · {size} · {time} · {key} open folder",
-            )
-            .replace("{rows}", &rows)
-            .replace("{path}", &exporting.shown_path)
-            .replace("{size}", &size_words(*bytes, locale).to_lowercase())
-            .replace("{time}", &took_words(*took))
-            .replace("{key}", open.as_str());
+            let text = crate::i18n::fill(
+                &gettext(
+                    locale,
+                    "✓ exported {rows} rows → {path} · {size} · {time} · {key} open folder",
+                ),
+                &[
+                    ("{rows}", &rows),
+                    ("{path}", &exporting.shown_path),
+                    ("{size}", &size_words(*bytes, locale).to_lowercase()),
+                    ("{time}", &took_words(*took)),
+                    ("{key}", open.as_str()),
+                ],
+            );
             (text, palette.success)
         }
         ExportStatus::Cancelled { .. } => (
@@ -2809,8 +2824,7 @@ fn tree_summary(
         .object_info(object)
         .and_then(|info| info.estimated_rows)
         .map(|rows| {
-            let plural = u32::try_from(rows).unwrap_or(u32::MAX);
-            crate::i18n::ngettext(locale, "{n} row", "{n} rows", plural)
+            crate::i18n::ngettext(locale, "{n} row", "{n} rows", rows)
                 .replace("{n}", &rows.to_string())
         });
     Some(match rows {
@@ -2985,10 +2999,13 @@ fn status_line(
         let at = format!("{}/{}", object.ddl_cursor + 1, object.ddl_lines());
         Some(match object.ddl_selected() {
             Some(selected) => {
-                let count = u32::try_from(selected.len()).unwrap_or(u32::MAX);
-                let said =
-                    crate::i18n::ngettext(locale, "{n} line selected", "{n} lines selected", count)
-                        .replace("{n}", &selected.len().to_string());
+                let said = crate::i18n::ngettext(
+                    locale,
+                    "{n} line selected",
+                    "{n} lines selected",
+                    selected.len(),
+                )
+                .replace("{n}", &selected.len().to_string());
                 format!("{said} · {at}")
             }
             None => at,
@@ -3097,7 +3114,8 @@ fn status_line(
     };
     let own = own(editing.can_edit, pending);
     // Ctrl+h/l, where it moves from the rows (a table's, or a result's).
-    let grid_panes = pane_hints::panes(ui.ctx(), keymap, layout, super::focus::Region::Grid);
+    let grid_panes =
+        pane_hints::panes(ui.ctx(), keymap, layout, locale, super::focus::Region::Grid);
     let panes_hint = grid_panes
         .as_ref()
         .map(|(key, word)| -> widgets::Hint<'_> { (key, word.as_str(), true) });
@@ -3131,7 +3149,7 @@ fn status_line(
                 table_hints.push((&edit_key, &*edit, true));
             }
             // A new row is opened, where the table takes one.
-            let new_row = gettext(locale, "new row");
+            let new_row = pgettext(locale, "label", "new row");
             if editing.can_add {
                 table_hints.push((&add_key, &*new_row, true));
             }
@@ -3313,9 +3331,9 @@ fn status_line(
                 gettext(locale, "calls"),
                 gettext(locale, "all connections"),
                 gettext(locale, "this connection"),
-                gettext(locale, "filter"),
+                pgettext(locale, "label", "filter"),
                 gettext(locale, "details"),
-                gettext(locale, "open"),
+                pgettext(locale, "key hint", "open"),
                 gettext(locale, "export"),
             ];
             match agents_log {
@@ -3367,9 +3385,9 @@ fn status_line(
                 // Why a key did nothing, or what was just done, at the
                 // line's end: this look floats no toast.
                 // Else how many it shows: ":history · 184 statements".
-                let count = u32::try_from(*shown).unwrap_or(u32::MAX);
-                let count = crate::i18n::ngettext(locale, "{n} statement", "{n} statements", count)
-                    .replace("{n}", &shown.to_string());
+                let count =
+                    crate::i18n::ngettext(locale, "{n} statement", "{n} statements", *shown)
+                        .replace("{n}", &shown.to_string());
                 let said = said
                     .as_ref()
                     .map(|said| (look.label(said), palette.warning))
@@ -3432,7 +3450,7 @@ fn status_line(
             // the pane keys, then the rest from the end.
             let gap = 18.0;
             let fit = |limit: f32| {
-                pane_hints::giving_way(hints, |shown| {
+                pane_hints::giving_way(hints, locale, |shown| {
                     rect.left() + 12.0 + widgets::key_hints_width(ui, shown, gap, &look, &palette)
                         <= limit
                 })

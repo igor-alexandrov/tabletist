@@ -1,7 +1,7 @@
 //! The menu bar attached to the window, kept in step with the app: each
 //! frame it takes what was chosen, and after each frame it shows what is
 //! enabled and, when the keymap or the look changes, is built again with
-//! the new keys.
+//! the new keys, and when the language changes, with the new words.
 //!
 //! What it decides is in plain functions and types (`describe`, `route`,
 //! `changes`, `Keyed`, `Feed`), tested headlessly in `tests.rs`; [`Bar`]
@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tabletist_menubar::{Entry, MenuBar, Shortcut, Via};
 
 use crate::app::{App, ItemState};
-use crate::i18n::gettext;
+use crate::i18n::{Locale, Msgid};
 use crate::keymap::{EditItem, Keymap, Layout, MenuKey};
 
 use super::{Handling, Item, Platform, Replay, bar, handling, key_of, title};
@@ -36,7 +36,7 @@ pub(super) struct Described {
 /// The bar on `platform` for muda, with `app`'s keys and words.
 pub(super) fn describe(platform: Platform, app: &App) -> Described {
     let layout = app.layout();
-    let text = |msgid: &'static str| gettext(app.locale, msgid).into_owned();
+    let text = |msgid: Msgid| msgid.say(app.locale).into_owned();
     let mut items = HashMap::new();
     let mut shown = HashMap::new();
     let mut menus = Vec::new();
@@ -132,8 +132,7 @@ pub(super) fn route(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Change {
     Enabled(Id, bool),
-    /// An msgid.
-    Title(Id, &'static str),
+    Title(Id, Msgid),
 }
 
 /// What differs between `shown` and `app` now, for each of `items`;
@@ -159,11 +158,13 @@ pub(super) fn changes(
     changes
 }
 
-/// The keys the bar was built with, and the keymap and look they came
-/// from: what decides when the bar is built again.
+/// The keys the bar was built with, the keymap and look they came from,
+/// and the language its words are in: what decides when the bar is built
+/// again.
 pub(super) struct Keyed {
     keymap: Arc<Keymap>,
     layout: Layout,
+    locale: Locale,
     /// The key each item was built with.
     pub keys: HashMap<Id, Option<MenuKey>>,
 }
@@ -174,29 +175,33 @@ impl Keyed {
         Self {
             keymap: app.keymap.clone(),
             layout: app.layout(),
+            locale: app.locale,
             keys: keys_of(items, app),
         }
     }
 
     /// The keys to build the bar again with, where `app`'s keymap or look
-    /// changed and with it an item's key; None where the bar's still
-    /// hold. Every settings change makes a new keymap (`refresh_keymap`),
-    /// so the pointer only says the keys may have changed. The keymap and
-    /// look are recorded either way, so a rebuild muda refuses is asked
-    /// once; the keys are the caller's to keep once the bar is built.
+    /// changed and with it an item's key, or where its language changed;
+    /// None where the bar's keys and words still hold. Every settings
+    /// change makes a new keymap (`refresh_keymap`), so the pointer only
+    /// says the keys may have changed. The keymap, look and language are
+    /// recorded either way, so a rebuild muda refuses is asked once; the
+    /// keys are the caller's to keep once the bar is built.
     pub fn rekey(
         &mut self,
         items: &HashMap<Id, Item>,
         app: &App,
     ) -> Option<HashMap<Id, Option<MenuKey>>> {
         let layout = app.layout();
-        if Arc::ptr_eq(&self.keymap, &app.keymap) && layout == self.layout {
+        let reworded = app.locale != self.locale;
+        if !reworded && Arc::ptr_eq(&self.keymap, &app.keymap) && layout == self.layout {
             return None;
         }
         self.keymap = app.keymap.clone();
         self.layout = layout;
+        self.locale = app.locale;
         let keys = keys_of(items, app);
-        (keys != self.keys).then_some(keys)
+        (reworded || keys != self.keys).then_some(keys)
     }
 }
 
@@ -351,7 +356,7 @@ impl Bar {
         for change in changes(&mut self.shown, &self.items, app) {
             match change {
                 Change::Enabled(id, enabled) => self.menu.set_enabled(id, enabled),
-                Change::Title(id, msgid) => self.menu.set_title(id, &gettext(app.locale, msgid)),
+                Change::Title(id, msgid) => self.menu.set_title(id, &msgid.say(app.locale)),
             }
         }
     }

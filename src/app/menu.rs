@@ -11,8 +11,7 @@ use super::App;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ItemState {
     pub enabled: bool,
-    /// An msgid.
-    pub title: &'static str,
+    pub title: crate::i18n::Msgid,
 }
 
 impl App {
@@ -56,7 +55,7 @@ impl App {
             },
             Item::Separator => ItemState {
                 enabled: false,
-                title: "",
+                title: crate::i18n::Msgid::EMPTY,
             },
             // Held for later (spec, Entry points).
             Item::Import => ItemState {

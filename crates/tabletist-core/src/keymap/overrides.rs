@@ -141,35 +141,41 @@ impl Why {
     /// `{name}` for the row's command (or the other row's, for a key that
     /// is taken) and `{scope}` for its scope: the caller translates it and
     /// fills them in.
-    pub fn text(&self, layout: Layout) -> &'static str {
+    pub fn text(&self, layout: Layout) -> crate::i18n::Msgid {
         let omarchy = layout == Layout::Omarchy;
         match self {
-            Self::NoRow => "{name} has no keys in {scope}",
-            Self::Fixed(_) => "{name} keeps its keys",
+            Self::NoRow => crate::i18n::msgid("{name} has no keys in {scope}"),
+            Self::Fixed(_) => crate::i18n::msgid("{name} keeps its keys"),
             Self::Kind(takes) => match takes.as_slice() {
-                [Press::Typed] => "{name} takes typed keys",
-                [Press::Line] => "{name} takes a : line",
-                [Press::Chord] if omarchy => "{name} takes a chord",
-                [Press::Chord] if layout == Layout::Windows => "Add Ctrl or Alt",
-                [Press::Chord] => "Add ⌘, ⌃ or ⌥",
-                _ => "{name} takes other keys",
+                [Press::Typed] => crate::i18n::msgid("{name} takes typed keys"),
+                [Press::Line] => crate::i18n::msgid("{name} takes a : line"),
+                [Press::Chord] if omarchy => crate::i18n::msgid("{name} takes a chord"),
+                [Press::Chord] if layout == Layout::Windows => {
+                    crate::i18n::msgid("Add Ctrl or Alt")
+                }
+                [Press::Chord] => crate::i18n::msgid("Add ⌘, ⌃ or ⌥"),
+                _ => crate::i18n::msgid("{name} takes other keys"),
             },
             Self::Alone => match layout {
-                Layout::Mac => "Add ⌘, ⌃ or ⌥",
-                Layout::Windows | Layout::Omarchy => "Add Ctrl or Alt",
+                Layout::Mac => crate::i18n::msgid("Add ⌘, ⌃ or ⌥"),
+                Layout::Windows | Layout::Omarchy => crate::i18n::msgid("Add Ctrl or Alt"),
             },
-            Self::Reserved(Owner::MacOs) => "{keys} is used by macOS",
-            Self::Reserved(Owner::Windows) => "{keys} is used by Windows",
-            Self::Never(Never::Super) => "super is never bound: hyprland owns it",
-            Self::Never(Never::Colon) => ": opens the prompt and is never bound",
-            Self::Never(Never::Escape) => "esc cancels and is never bound",
-            Self::Vim => "{keys} is vim's in insert mode",
-            Self::Count => "a digit first is a count",
-            Self::OneLetter => "{name} takes one letter",
-            Self::Taken(_) if omarchy => "{keys} is {name}",
-            Self::Taken(_) => "{keys} is already “{name}”.",
-            Self::Tabletist(_) => "{keys} is used by Tabletist",
-            Self::NotBound => "{keys} is no default key in {scope}",
+            Self::Reserved(Owner::MacOs) => crate::i18n::msgid("{keys} is used by macOS"),
+            Self::Reserved(Owner::Windows) => crate::i18n::msgid("{keys} is used by Windows"),
+            Self::Never(Never::Super) => {
+                crate::i18n::msgid("super is never bound: hyprland owns it")
+            }
+            Self::Never(Never::Colon) => {
+                crate::i18n::msgid(": opens the prompt and is never bound")
+            }
+            Self::Never(Never::Escape) => crate::i18n::msgid("esc cancels and is never bound"),
+            Self::Vim => crate::i18n::msgid("{keys} is vim's in insert mode"),
+            Self::Count => crate::i18n::msgid("a digit first is a count"),
+            Self::OneLetter => crate::i18n::msgid("{name} takes one letter"),
+            Self::Taken(_) if omarchy => crate::i18n::msgid("{keys} is {name}"),
+            Self::Taken(_) => crate::i18n::msgid("{keys} is already “{name}”."),
+            Self::Tabletist(_) => crate::i18n::msgid("{keys} is used by Tabletist"),
+            Self::NotBound => crate::i18n::msgid("{keys} is no default key in {scope}"),
         }
     }
 }
@@ -1197,9 +1203,15 @@ mod tests {
     #[test]
     fn a_refusal_names_the_looks_own_keys() {
         let kind = Why::Kind(vec![Press::Chord]);
-        assert_eq!(kind.text(Layout::Mac), "Add ⌘, ⌃ or ⌥");
-        assert_eq!(kind.text(Layout::Windows), "Add Ctrl or Alt");
-        assert_eq!(kind.text(Layout::Omarchy), "{name} takes a chord");
+        assert_eq!(kind.text(Layout::Mac), crate::i18n::msgid("Add ⌘, ⌃ or ⌥"));
+        assert_eq!(
+            kind.text(Layout::Windows),
+            crate::i18n::msgid("Add Ctrl or Alt")
+        );
+        assert_eq!(
+            kind.text(Layout::Omarchy),
+            crate::i18n::msgid("{name} takes a chord")
+        );
     }
 
     #[test]

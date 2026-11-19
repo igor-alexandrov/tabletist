@@ -8,7 +8,7 @@ use egui::{
 };
 
 use crate::format;
-use crate::i18n::{Locale, gettext};
+use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::{Command, Keymap, Scope, Written};
 use crate::model::{Action, ConnTabId, NoWrites, RunMode, SqlTab, TabId, Workspace};
 use crate::settings::Settings;
@@ -254,9 +254,13 @@ pub(crate) fn time_words(secs: u32, terminal: bool, locale: Locale) -> String {
         (true, 0, _) => format!("{secs}s"),
         (true, _, 0) => format!("{minutes}m"),
         (true, _, _) => format!("{minutes}m {rest}s"),
-        (false, 0, _) => format!("{secs} s"),
-        (false, _, 0) => format!("{minutes} {}", gettext(locale, "min")),
-        (false, _, _) => format!("{minutes} {} {rest} s", gettext(locale, "min")),
+        (false, 0, _) => gettext(locale, "{seconds} s").replace("{seconds}", &secs.to_string()),
+        (false, _, 0) => {
+            ngettext(locale, "{n} min", "{n} min", minutes).replace("{n}", &minutes.to_string())
+        }
+        (false, _, _) => gettext(locale, "{minutes} min {seconds} s")
+            .replace("{minutes}", &minutes.to_string())
+            .replace("{seconds}", &rest.to_string()),
     }
 }
 
@@ -364,7 +368,9 @@ fn toolbar(
         return Vec::new();
     };
     let (mode, writes) = (workspace.run_mode(sql), workspace.sql_writes());
-    let title = look.label(&format!("{} {}", gettext(locale, "Query"), sql.number));
+    let title = look
+        .label(&gettext(locale, "Query {n}"))
+        .replace("{n}", &sql.number.to_string());
     let limit = sql.limit;
     let secs = sql
         .timeout
@@ -1164,19 +1170,22 @@ fn run_summary(sql: &SqlTab, locale: Locale) -> Option<String> {
     if !ran(sql) {
         return None;
     }
-    let counted = |count: u64, one: &'static str, many: &'static str, took| {
-        format!(
-            "{} {} · {}",
-            format::group_digits(count),
-            gettext(locale, if count == 1 { one } else { many }),
-            format::elapsed(took)
+    let counted = |count: u64, phrase: std::borrow::Cow<'static, str>, took| {
+        crate::i18n::fill(
+            &phrase,
+            &[
+                ("{n}", &format::group_digits(count)),
+                ("{took}", &format::elapsed(took)),
+            ],
         )
     };
     if let Some((_, result)) = sql.shown() {
         let StatementOutcome::Rows { rows, .. } = &result.outcome else {
             return None;
         };
-        return Some(counted(rows.len() as u64, "row", "rows", result.elapsed));
+        let count = rows.len() as u64;
+        let phrase = ngettext(locale, "{n} row · {took}", "{n} rows · {took}", count);
+        return Some(counted(count, phrase, result.elapsed));
     }
     let run = sql.last_run()?;
     let last = run.outcome.results.last()?;
@@ -1184,12 +1193,15 @@ fn run_summary(sql: &SqlTab, locale: Locale) -> Option<String> {
         StatementOutcome::Done {
             affected: Some(count),
             ..
-        } if run.mode == tabletist_db::ScriptMode::Write => Some(counted(
-            *count,
-            "row affected",
-            "rows affected",
-            last.elapsed,
-        )),
+        } if run.mode == tabletist_db::ScriptMode::Write => {
+            let phrase = ngettext(
+                locale,
+                "{n} row affected · {took}",
+                "{n} rows affected · {took}",
+                *count,
+            );
+            Some(counted(*count, phrase, last.elapsed))
+        }
         _ => None,
     }
 }
@@ -1255,11 +1267,9 @@ fn footer(
         return;
     };
     let (line, column) = sql.line_col();
-    let cursor = format!(
-        "{} {line}, {} {column}",
-        gettext(locale, "Ln"),
-        gettext(locale, "Col")
-    );
+    let cursor = gettext(locale, "Ln {line}, Col {column}")
+        .replace("{line}", &line.to_string())
+        .replace("{column}", &column.to_string());
     let summary = run_summary(sql, locale);
     let note = end_note(sql, locale);
     let version = workspace.server_version.value.clone();
@@ -1351,7 +1361,11 @@ pub fn vim_mode(
 pub fn status_summary(workspace: &Workspace, locale: Locale) -> Option<String> {
     let sql = workspace.active_sql_tab()?;
     let (line, column) = sql.line_col();
-    let mut parts = vec![format!("{} {line}:{column}", gettext(locale, "ln"))];
+    let mut parts = vec![
+        gettext(locale, "ln {line}:{column}")
+            .replace("{line}", &line.to_string())
+            .replace("{column}", &column.to_string()),
+    ];
     parts.extend(run_summary(sql, locale));
     if let Some(run) = sql.last_run().filter(|_| ran(sql)) {
         parts.push(gettext(locale, end_words(run)).into_owned());

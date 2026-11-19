@@ -95,9 +95,13 @@ impl Target {
         match &self.search {
             // A placeholder each: a translation puts the names where they
             // read.
-            Some(search) => gettext(locale, "Search {table} for {column}")
-                .replace("{table}", &display_safe(&search.table))
-                .replace("{column}", &display_safe(&self.name)),
+            Some(search) => crate::i18n::fill(
+                &gettext(locale, "Search {table} for {column}"),
+                &[
+                    ("{table}", &display_safe(&search.table)),
+                    ("{column}", &display_safe(&self.name)),
+                ],
+            ),
             None => format!("{} {}", gettext(locale, "Edit"), display_safe(&self.name)),
         }
     }
@@ -1295,7 +1299,7 @@ fn band(
         ),
         None => {
             let count = |count: usize, one: &'static str, many: &'static str| {
-                let noun = ngettext(locale, one, many, u32::try_from(count).unwrap_or(u32::MAX));
+                let noun = ngettext(locale, one, many, count);
                 let count = crate::format::group_digits(count as u64);
                 format!("{count} {noun}")
             };

@@ -140,9 +140,10 @@ fn state_line(
         let said = if text.is_empty() {
             gettext(locale, "No {table}").replace("{table}", &table)
         } else {
-            gettext(locale, "No {table} match \"{text}\"")
-                .replace("{table}", &table)
-                .replace("{text}", &display_safe(text))
+            crate::i18n::fill(
+                &gettext(locale, "No {table} match \"{text}\""),
+                &[("{table}", &table), ("{text}", &display_safe(text))],
+            )
         };
         return Some((said, false));
     }
@@ -171,12 +172,11 @@ fn count_line(picker: &Picker, table: &str, locale: Locale) -> Option<String> {
             .replace("{count}", &LIMIT.to_string())
             .replace("{table}", &table)
     } else {
-        let plural = u32::try_from(count).unwrap_or(u32::MAX);
         ngettext(
             locale,
             "{count} match in {table}",
             "{count} matches in {table}",
-            plural,
+            count,
         )
         .replace("{count}", &count.to_string())
         .replace("{table}", &table)
@@ -212,9 +212,10 @@ fn head_line(
     if text.is_empty() {
         format!("{table} · {keys}")
     } else {
-        let listed = gettext(locale, "{table} matching \"{text}\"")
-            .replace("{table}", &table)
-            .replace("{text}", &display_safe(text));
+        let listed = crate::i18n::fill(
+            &gettext(locale, "{table} matching \"{text}\""),
+            &[("{table}", &table), ("{text}", &display_safe(text))],
+        );
         format!("{listed} · {keys}")
     }
 }
@@ -296,8 +297,7 @@ fn matches_text(picker: &Picker, terse: bool, locale: Locale) -> String {
         return gettext(locale, words).replace("{count}", &LIMIT.to_string());
     }
     let count = picker.options.len();
-    let plural = u32::try_from(count).unwrap_or(u32::MAX);
-    ngettext(locale, "{count} match", "{count} matches", plural)
+    ngettext(locale, "{count} match", "{count} matches", count)
         .replace("{count}", &count.to_string())
 }
 
@@ -317,9 +317,13 @@ pub fn changed_text(picker: &Picker, locale: Locale) -> Option<String> {
         (Some(_), Source::User | Source::KeysOnly) => "Labelled by {column}. {matches}.",
     };
     let column = label.column.as_deref().unwrap_or_default();
-    let said = gettext(locale, words)
-        .replace("{column}", &display_safe(column))
-        .replace("{matches}", &matches_text(picker, false, locale));
+    let said = crate::i18n::fill(
+        &gettext(locale, words),
+        &[
+            ("{column}", &display_safe(column)),
+            ("{matches}", &matches_text(picker, false, locale)),
+        ],
+    );
     Some(said)
 }
 
@@ -338,10 +342,13 @@ pub fn changed_line(picker: &Picker, look: &Look, locale: Locale) -> Option<Stri
         None => "Label keys only · {matches}",
     };
     let column = label.column.as_deref().unwrap_or_default();
-    let said = look
-        .label(&gettext(locale, words))
-        .replace("{column}", &display_safe(column))
-        .replace("{matches}", &matches_text(picker, true, locale));
+    let said = crate::i18n::fill(
+        &look.label(&gettext(locale, words)),
+        &[
+            ("{column}", &display_safe(column)),
+            ("{matches}", &matches_text(picker, true, locale)),
+        ],
+    );
     Some(said)
 }
 
@@ -367,7 +374,7 @@ pub fn gone_text(picker: &Picker, look: &Look, locale: Locale) -> Option<Gone> {
     } else {
         "{column} is gone, so labels use Automatic ({auto})."
     };
-    let fill = |words: String| words.replace("{column}", &gone).replace("{auto}", &auto);
+    let fill = |words: String| crate::i18n::fill(&words, &[("{column}", &gone), ("{auto}", &auto)]);
     Some(Gone {
         line: fill(look.label(&gettext(locale, line))),
         told: fill(gettext(locale, "{column} is gone. Labels use Automatic, {auto}.").into_owned()),
@@ -598,13 +605,18 @@ pub fn picked_text(column: &str, picked: &crate::edit::Picked, locale: Locale) -
     let key = display_safe(&picked.key);
     match &picked.label {
         // A placeholder each: a translation puts them where they read.
-        Some(label) => gettext(locale, "{column} set to {key}, {label}")
-            .replace("{column}", &column)
-            .replace("{key}", &key)
-            .replace("{label}", &display_safe(label)),
-        None => gettext(locale, "{column} set to {key}")
-            .replace("{column}", &column)
-            .replace("{key}", &key),
+        Some(label) => crate::i18n::fill(
+            &gettext(locale, "{column} set to {key}, {label}"),
+            &[
+                ("{column}", &column),
+                ("{key}", &key),
+                ("{label}", &display_safe(label)),
+            ],
+        ),
+        None => crate::i18n::fill(
+            &gettext(locale, "{column} set to {key}"),
+            &[("{column}", &column), ("{key}", &key)],
+        ),
     }
 }
 
@@ -618,10 +630,14 @@ pub fn doubt_text(found: &crate::key_picker::Unmatched, look: &Look, locale: Loc
     let table = display_safe(&found.table);
     // A placeholder each: a translation puts them where they read, and
     // what they stand for is not the app's to lower.
-    look.label(&gettext(locale, "No {row} with {key} {value}"))
-        .replace("{row}", &crate::ui::row_panel::singular(&table))
-        .replace("{key}", &display_safe(&found.key))
-        .replace("{value}", &display_safe(&found.value))
+    crate::i18n::fill(
+        &look.label(&gettext(locale, "No {row} with {key} {value}")),
+        &[
+            ("{row}", &crate::ui::row_panel::singular(&table)),
+            ("{key}", &display_safe(&found.key)),
+            ("{value}", &display_safe(&found.value)),
+        ],
+    )
 }
 
 /// The warnings that stand on a table's tab, in the page's order with new

@@ -127,8 +127,7 @@ fn question(prompt: &EveryRowPrompt, skin: Skin<'_>) -> String {
 /// "about 1,200 rows", where the statistics say.
 fn rows(wide: &WideStatement, skin: Skin<'_>) -> Option<String> {
     let rows = wide.rows?;
-    let plural = u32::try_from(rows).unwrap_or(u32::MAX);
-    let words = ngettext(skin.locale, "about {n} row", "about {n} rows", plural);
+    let words = ngettext(skin.locale, "about {n} row", "about {n} rows", rows);
     Some(
         skin.look
             .label(&words)

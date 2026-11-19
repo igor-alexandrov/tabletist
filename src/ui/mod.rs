@@ -106,6 +106,8 @@ pub mod label_chooser;
 #[cfg(test)]
 mod label_tests;
 #[cfg(test)]
+mod language_tests;
+#[cfg(test)]
 mod look_switch_tests;
 pub mod menu;
 pub mod object_tabs;
@@ -532,9 +534,13 @@ pub fn agents_held_said(
     let changes = match parts.as_slice() {
         [one] => one.clone(),
         // A catalog may join them otherwise, and in another order.
-        [rest @ .., last] => crate::i18n::gettext(locale, "{rest}, and {last}")
-            .replace("{rest}", &rest.join(&crate::i18n::gettext(locale, ", ")))
-            .replace("{last}", last),
+        [rest @ .., last] => crate::i18n::fill(
+            &crate::i18n::gettext(locale, "{rest}, and {last}"),
+            &[
+                ("{rest}", &rest.join(&crate::i18n::gettext(locale, ", "))),
+                ("{last}", last),
+            ],
+        ),
         [] => return None,
     };
     Some(
@@ -1378,12 +1384,14 @@ mod tests {
     }
 
     /// The cursor on the first Data row, Rows per page: the rows of the
-    /// Startup group are over it, and have tests of their own.
+    /// Language and Startup groups are over it, and have tests of their own.
     fn settings_screen_in(mut harness: Harness) -> Harness {
         harness.set_look(crate::theme::Look::omarchy());
         harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
         assert!(settings_open(&harness));
-        for _ in 0..crate::settings::OptionId::STARTUP.len() {
+        for _ in
+            0..crate::settings::OptionId::LANGUAGE.len() + crate::settings::OptionId::STARTUP.len()
+        {
             harness.press(egui::Key::J, egui::Modifiers::NONE);
         }
         harness
@@ -1421,7 +1429,10 @@ value_tags   = true
     /// Data group: the tests of the rows over it read [`settings_row`].
     fn settings_cursor(harness: &Harness) -> usize {
         settings_row(harness)
-            .checked_sub(crate::settings::OptionId::STARTUP.len())
+            .checked_sub(
+                crate::settings::OptionId::LANGUAGE.len()
+                    + crate::settings::OptionId::STARTUP.len(),
+            )
             .expect("the cursor is under the Startup group")
     }
 
@@ -1589,7 +1600,7 @@ value_tags   = true
             let names = crate::testing::labels(&harness.finish_animations());
             for (_, command, keys) in &rows {
                 assert_eq!(*keys, keymap.label(layout, *command));
-                let name = command.info().name;
+                let name = command.info().name.english();
                 assert!(
                     names.iter().any(|shown| shown == name),
                     "{}: {name} is not in the list",
@@ -1622,6 +1633,7 @@ value_tags   = true
             for text in [
                 "Settings",
                 "General",
+                "Language",
                 "How Tabletist starts, shows data and protects your work. Changes apply right away.",
                 "Rows per page",
                 "Table view; the SQL editor has its own limit",
@@ -1776,7 +1788,9 @@ value_tags   = true
         ] {
             assert!(harness.painted_color(text).is_some(), "{text}");
         }
-        // The cursor opens on the first.
+        // The cursor opens on Language, the first row: one down is the first
+        // of the group.
+        harness.press(egui::Key::J, egui::Modifiers::NONE);
         assert!(harness.painted_color("▌on launch").is_some());
         assert!(harness.painted_color("‹ restore last session ›").is_some());
         harness.press(egui::Key::L, egui::Modifiers::NONE);
@@ -1901,7 +1915,9 @@ value_tags   = true
             })
             .expect("the row");
         // From Rows per page, where the screen's tests start.
-        for _ in crate::settings::OptionId::STARTUP.len()..row {
+        for _ in crate::settings::OptionId::LANGUAGE.len()
+            + crate::settings::OptionId::STARTUP.len()..row
+        {
             harness.press(egui::Key::J, egui::Modifiers::NONE);
         }
         assert!(
@@ -2125,7 +2141,7 @@ value_tags   = true
             // the first of them.
             let stored = harness.painted_rect("Stored in").expect("the footer");
             assert!(stored.bottom() < size.y, "{stored:?}");
-            let row = harness.painted_rect("On launch").expect("a row");
+            let row = harness.painted_rect("Language").expect("a row");
             assert!(row.bottom() < stored.top(), "{row:?} {stored:?}");
             harness.click("Export…");
             assert_eq!(harness.app.backend.saves.len(), 1);
@@ -2748,7 +2764,7 @@ value_tags   = true
         let mut harness = Harness::with_size(egui::vec2(1000.0, 700.0));
         harness.set_look(crate::theme::Look::omarchy());
         harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
-        assert!(harness.painted_color("▌on launch").is_some());
+        assert!(harness.painted_color("▌language").is_some());
         assert!(harness.painted_color("[data]").is_none());
     }
 

@@ -11,7 +11,7 @@ use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 
 use crate::app::{Pending, Work};
 use crate::clock::Day;
-use crate::i18n::{Locale, gettext, ngettext};
+use crate::i18n::{Locale, Msgid, gettext, msgid, ngettext};
 use crate::model::Action;
 use crate::settings::{OptionId, Settings};
 use crate::style::Icon;
@@ -119,32 +119,34 @@ impl<'a> Card<'a> {
     pub(super) fn title(self, locale: Locale) -> String {
         let current = crate::update::CURRENT;
         let (words, version) = match self {
-            Self::NotChecked => ("Tabletist {version}", current),
-            Self::Checking => ("Checking for updates…", current),
-            Self::UpToDate { .. } => ("Tabletist {version} is up to date", current),
-            Self::Available(offer) | Self::NoBuild(offer) => {
-                ("Tabletist {version} is available", offer.version.as_str())
-            }
-            Self::Elsewhere(offer, _) => ("{version} is available", offer.version.as_str()),
-            Self::Failed { .. } => ("Couldn't check for updates", current),
-            Self::Downloading(downloading) => {
-                ("Downloading {version}…", downloading.version.as_str())
-            }
-            Self::Ready(version) => ("{version} is ready to install", version),
-            Self::Held { .. } => ("Finish your work first", current),
-            Self::Restarting(version) => ("Installing {version}…", version),
+            Self::NotChecked => (msgid("Tabletist {version}"), current),
+            Self::Checking => (msgid("Checking for updates…"), current),
+            Self::UpToDate { .. } => (msgid("Tabletist {version} is up to date"), current),
+            Self::Available(offer) | Self::NoBuild(offer) => (
+                msgid("Tabletist {version} is available"),
+                offer.version.as_str(),
+            ),
+            Self::Elsewhere(offer, _) => (msgid("{version} is available"), offer.version.as_str()),
+            Self::Failed { .. } => (msgid("Couldn't check for updates"), current),
+            Self::Downloading(downloading) => (
+                msgid("Downloading {version}…"),
+                downloading.version.as_str(),
+            ),
+            Self::Ready(version) => (msgid("{version} is ready to install"), version),
+            Self::Held { .. } => (msgid("Finish your work first"), current),
+            Self::Restarting(version) => (msgid("Installing {version}…"), version),
             Self::NotInstalled { version, failure } => {
                 let words = match failure {
-                    Failure::Unverified(_) => "The {version} download didn't verify",
-                    Failure::Undone(_) => "Couldn't download {version}",
+                    Failure::Unverified(_) => msgid("The {version} download didn't verify"),
+                    Failure::Undone(_) => msgid("Couldn't download {version}"),
                     Failure::NotHanded(_) | Failure::WorkBegan | Failure::TooLate => {
-                        "Couldn't install {version}"
+                        msgid("Couldn't install {version}")
                     }
                 };
                 (words, version)
             }
         };
-        gettext(locale, words).replace("{version}", version)
+        words.say(locale).replace("{version}", version)
     }
 }
 
@@ -208,7 +210,7 @@ pub(super) fn downloading_said(downloading: &Downloading, locale: Locale) -> Str
     match downloading.time_left() {
         Some(left) => {
             let (words, count) = download::left_words(left);
-            let left = gettext(locale, words).replace("{n}", &count.to_string());
+            let left = words.say(locale).replace("{n}", &count.to_string());
             format!("{amount} · {left}")
         }
         None => amount,
@@ -218,7 +220,7 @@ pub(super) fn downloading_said(downloading: &Downloading, locale: Locale) -> Str
 /// What the box of a download that gave nothing says: what failed and,
 /// where the file was refused, that it was deleted.
 pub(super) fn failure_said(failure: &Failure, locale: Locale) -> String {
-    let said = failure.with_parts(&gettext(locale, failure.said()));
+    let said = failure.with_parts(&failure.said().say(locale));
     match failure.unverified() {
         true => format!("{said} {}", gettext(locale, "The file was deleted.")),
         false => said,
@@ -227,10 +229,10 @@ pub(super) fn failure_said(failure: &Failure, locale: Locale) -> String {
 
 /// What the line under Ready's title says: where the helper waits for
 /// the quit already, that a quit installs it.
-pub(super) fn ready_said(updates: &Updates) -> &'static str {
+pub(super) fn ready_said(updates: &Updates) -> Msgid {
     match updates.install.handed() {
-        Some(_) => "Signature checked · quitting Tabletist now installs it",
-        None => "Signature checked · restart to finish",
+        Some(_) => msgid("Signature checked · quitting Tabletist now installs it"),
+        None => msgid("Signature checked · restart to finish"),
     }
 }
 
@@ -238,17 +240,14 @@ pub(super) fn ready_said(updates: &Updates) -> &'static str {
 /// name: `3 unsaved edits in book_covers`.
 pub(super) fn work_said(work: &Work, locale: Locale) -> String {
     match &work.what {
-        Pending::Edits { count, table } => {
-            let plural = u32::try_from(*count).unwrap_or(u32::MAX);
-            ngettext(
-                locale,
-                "{n} unsaved edit in {table}",
-                "{n} unsaved edits in {table}",
-                plural,
-            )
-            .replace("{n}", &count.to_string())
-            .replace("{table}", table)
-        }
+        Pending::Edits { count, table } => ngettext(
+            locale,
+            "{n} unsaved edit in {table}",
+            "{n} unsaved edits in {table}",
+            *count,
+        )
+        .replace("{n}", &count.to_string())
+        .replace("{table}", table),
         Pending::Saving { table } => gettext(locale, "saving {table}").replace("{table}", table),
         Pending::Writing { query } => {
             gettext(locale, "a write running in Query {n}").replace("{n}", &query.to_string())
@@ -314,11 +313,12 @@ pub(super) fn when(locale: Locale, at: u64, now: u64) -> String {
     let (at, now) = (time_of(at), time_of(now));
     let hour = crate::clock::hour(at);
     let (words, day) = match crate::clock::day_of(at, now) {
-        Day::Today => ("today at {time}", String::new()),
-        Day::Yesterday => ("yesterday at {time}", String::new()),
-        Day::On(day) => ("on {day} at {time}", day),
+        Day::Today => (msgid("today at {time}"), String::new()),
+        Day::Yesterday => (msgid("yesterday at {time}"), String::new()),
+        Day::On(day) => (msgid("on {day} at {time}"), day),
     };
-    gettext(locale, words)
+    words
+        .say(locale)
         .replace("{time}", &hour)
         .replace("{day}", &day)
 }
@@ -326,11 +326,11 @@ pub(super) fn when(locale: Locale, at: u64, now: u64) -> String {
 /// The day a release came out, as the card says it: `released today`.
 pub(super) fn released(locale: Locale, at: u64, now: u64) -> String {
     let (words, day) = match crate::clock::day_of(time_of(at), time_of(now)) {
-        Day::Today => ("released today", String::new()),
-        Day::Yesterday => ("released yesterday", String::new()),
-        Day::On(day) => ("released {day}", day),
+        Day::Today => (msgid("released today"), String::new()),
+        Day::Yesterday => (msgid("released yesterday"), String::new()),
+        Day::On(day) => (msgid("released {day}"), day),
     };
-    gettext(locale, words).replace("{day}", &day)
+    words.say(locale).replace("{day}", &day)
 }
 
 /// `secs` as a time; one past what the system's clock holds is the epoch,
@@ -366,18 +366,26 @@ pub(crate) fn checked_text(
 
 /// What the pane says under its title: on Windows no release is
 /// notarized.
-const ABOUT: &str = if cfg!(windows) {
-    "New versions come from Tabletist's GitHub releases, signed. Nothing installs without asking."
+const ABOUT: Msgid = if cfg!(windows) {
+    msgid(
+        "New versions come from Tabletist's GitHub releases, signed. Nothing installs without asking.",
+    )
 } else {
-    "New versions come from Tabletist's GitHub releases, signed and notarized. Nothing installs without asking."
+    msgid(
+        "New versions come from Tabletist's GitHub releases, signed and notarized. Nothing installs without asking.",
+    )
 };
 
 /// What the check sends, word for word as the pane says it: on Windows
 /// the User-Agent names the system, not its version.
-pub(super) const PRIVACY: &str = if cfg!(windows) {
-    "The check asks GitHub for the latest release. It sends this version, Windows and the processor, nothing else: no ID, no usage data, no database details."
+pub(super) const PRIVACY: Msgid = if cfg!(windows) {
+    msgid(
+        "The check asks GitHub for the latest release. It sends this version, Windows and the processor, nothing else: no ID, no usage data, no database details.",
+    )
 } else {
-    "The check asks GitHub for the latest release. It sends this version, the macOS version and the chip, nothing else: no ID, no usage data, no database details."
+    msgid(
+        "The check asks GitHub for the latest release. It sends this version, the macOS version and the chip, nothing else: no ID, no usage data, no database details.",
+    )
 };
 
 /// The space inside the card, at its sides and over and under.
@@ -407,7 +415,7 @@ pub(super) fn content(
     widgets::label(
         ui,
         TextRole::DialogTitle,
-        &skin.say("Updates"),
+        &skin.say(msgid("Updates")),
         palette.text,
         look,
     );
@@ -425,7 +433,7 @@ pub(super) fn content(
         .show(ui, |ui| {
             card(ui, status, interrupted, skin, actions);
             ui.add_space(14.0);
-            widgets::section_label(&skin.say("Automatic"), look, palette)
+            widgets::section_label(&skin.say(msgid("Automatic")), look, palette)
                 .layout(ui.ctx())
                 .label(ui);
             ui.add_space(2.0);
@@ -458,7 +466,7 @@ fn card(
     let title = shown.title(locale);
     // What it says under the title, then its notes or its box.
     let sub = match shown {
-        Card::NotChecked => skin.say("Not checked yet"),
+        Card::NotChecked => skin.say(msgid("Not checked yet")),
         Card::Checking => crate::update::check::ASKED.to_owned(),
         Card::UpToDate { checked } => {
             gettext(locale, "Checked {when}").replace("{when}", &when(locale, checked, now))
@@ -479,18 +487,20 @@ fn card(
         Card::Failed { last, .. } => match last {
             Some(at) => gettext(locale, "Last successful check: {when}")
                 .replace("{when}", &when(locale, at, now)),
-            None => skin.say("No check has worked yet"),
+            None => skin.say(msgid("No check has worked yet")),
         },
         Card::Downloading(downloading) => downloading_said(downloading, locale),
         Card::Ready(_) => skin.say(ready_said(status.updates)),
         Card::Held {
             when_done: false, ..
-        } => skin.say("Restart now would interrupt:"),
+        } => skin.say(msgid("Restart now would interrupt:")),
         Card::Held {
             when_done: true, ..
-        } => skin.say("Tabletist restarts once this is done:"),
-        Card::Restarting(_) => skin.say("Tabletist restarts in a moment"),
-        Card::NotInstalled { .. } => skin.say("Nothing was installed. Your copy is unchanged."),
+        } => skin.say(msgid("Tabletist restarts once this is done:")),
+        Card::Restarting(_) => skin.say(msgid("Tabletist restarts in a moment")),
+        Card::NotInstalled { .. } => {
+            skin.say(msgid("Nothing was installed. Your copy is unchanged."))
+        }
     };
     let title_laid = Text::one(look, TextRole::StateTitle, &title, palette.text)
         .wrap(words)
@@ -510,7 +520,7 @@ fn card(
     // command another tool updates with.
     let boxed = match shown {
         Card::Failed { failed, .. } => {
-            let said = failed.with_numbers(&gettext(locale, failed.said()));
+            let said = failed.with_numbers(&failed.said().say(locale));
             Some((said, palette.danger))
         }
         Card::NotInstalled { failure, .. } => Some((failure_said(failure, locale), palette.danger)),
@@ -577,7 +587,7 @@ fn card(
     // The region, named; what is in it is its own.
     let region_id = ui.id().with("update-status");
     let region = ui.interact(rect, region_id, Sense::hover());
-    let named = skin.say("Update status");
+    let named = skin.say(msgid("Update status"));
     region.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, &named));
     ui.ctx().accesskit_node_builder(region_id, |node| {
         node.set_role(Role::Region);
@@ -656,7 +666,7 @@ fn card(
             vec2(words, notes.iter().map(|laid| laid.height() + 2.0).sum()),
         );
         let list = ui.interact(list_rect, list_id, Sense::hover());
-        let named = skin.say("What's new");
+        let named = skin.say(msgid("What's new"));
         list.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, &named));
         ui.ctx().accesskit_node_builder(list_id, |node| {
             node.set_role(Role::List);
@@ -786,7 +796,7 @@ fn work_box(ui: &mut Ui, (left, top, width): (f32, f32, f32), work: &[Laid], ski
     );
     let list_id = ui.id().with("update-work");
     let list = ui.interact(band, list_id, Sense::hover());
-    let named = skin.say("Work in progress");
+    let named = skin.say(msgid("Work in progress"));
     list.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, &named));
     ui.ctx().accesskit_node_builder(list_id, |node| {
         node.set_role(Role::List);
@@ -832,11 +842,11 @@ fn card_actions(
     let height = look.control_height;
     let current = crate::update::CURRENT;
     let whats_new = gettext(locale, "What's new in {version}").replace("{version}", current);
-    let on_github = skin.say("Release notes on GitHub");
+    let on_github = skin.say(msgid("Release notes on GitHub"));
     let open = |ui: &Ui, url: &str| ui.ctx().open_url(egui::OpenUrl::new_tab(url));
     match shown {
         Card::NotChecked | Card::UpToDate { .. } => {
-            if ButtonSpec::new(&skin.say("Check now"))
+            if ButtonSpec::new(&skin.say(msgid("Check now")))
                 .show(ui, height, look, palette)
                 .clicked()
             {
@@ -851,7 +861,7 @@ fn card_actions(
             }
         }
         Card::Checking => {
-            if ButtonSpec::new(&skin.say("Cancel"))
+            if ButtonSpec::new(&skin.say(msgid("Cancel")))
                 .show(ui, height, look, palette)
                 .clicked()
             {
@@ -861,7 +871,7 @@ fn card_actions(
         Card::Available(offer) | Card::NoBuild(offer) => {
             let installs = installs && matches!(shown, Card::Available(_));
             if installs
-                && ButtonSpec::new(&skin.say("Download and install"))
+                && ButtonSpec::new(&skin.say(msgid("Download and install")))
                     .primary()
                     .show(ui, height, look, palette)
                     .clicked()
@@ -879,7 +889,7 @@ fn card_actions(
             if notes.show(ui, height, look, palette).clicked() {
                 open(ui, &offer.url);
             }
-            let skip = skin.say("Skip this version");
+            let skip = skin.say(msgid("Skip this version"));
             if ButtonSpec::new(&skip)
                 .link()
                 .show(ui, height, look, palette)
@@ -899,7 +909,7 @@ fn card_actions(
             }
         }
         Card::Failed { .. } => {
-            if ButtonSpec::new(&skin.say("Try again"))
+            if ButtonSpec::new(&skin.say(msgid("Try again")))
                 .show(ui, height, look, palette)
                 .clicked()
             {
@@ -907,7 +917,7 @@ fn card_actions(
             }
         }
         Card::Downloading(_) => {
-            if ButtonSpec::new(&skin.say("Cancel"))
+            if ButtonSpec::new(&skin.say(msgid("Cancel")))
                 .show(ui, height, look, palette)
                 .clicked()
             {
@@ -915,7 +925,7 @@ fn card_actions(
             }
         }
         Card::Ready(_) => {
-            let restart = skin.say("Restart now");
+            let restart = skin.say(msgid("Restart now"));
             if ButtonSpec::new(&restart)
                 .primary()
                 .show(ui, height, look, palette)
@@ -923,7 +933,7 @@ fn card_actions(
             {
                 actions.push(Action::RestartToUpdate);
             }
-            if ButtonSpec::new(&skin.say("Later"))
+            if ButtonSpec::new(&skin.say(msgid("Later")))
                 .show(ui, height, look, palette)
                 .clicked()
             {
@@ -932,8 +942,8 @@ fn card_actions(
         }
         Card::Held { when_done, .. } => {
             let (words, action) = match when_done {
-                false => ("Restart when done", Action::RestartWhenDone),
-                true => ("Don't restart", Action::DontRestart),
+                false => (msgid("Restart when done"), Action::RestartWhenDone),
+                true => (msgid("Don't restart"), Action::DontRestart),
             };
             if ButtonSpec::new(&skin.say(words))
                 .primary()
@@ -942,7 +952,7 @@ fn card_actions(
             {
                 actions.push(action);
             }
-            if ButtonSpec::new(&skin.say("Show them"))
+            if ButtonSpec::new(&skin.say(msgid("Show them")))
                 .show(ui, height, look, palette)
                 .clicked()
             {
@@ -952,8 +962,8 @@ fn card_actions(
         Card::Restarting(_) => {}
         Card::NotInstalled { failure, .. } => {
             let again = match failure.unverified() {
-                true => "Download again",
-                false => "Try again",
+                true => msgid("Download again"),
+                false => msgid("Try again"),
             };
             if ButtonSpec::new(&skin.say(again))
                 .show(ui, height, look, palette)
@@ -962,7 +972,7 @@ fn card_actions(
                 actions.push(Action::DownloadUpdate);
             }
             if failure.unverified()
-                && ButtonSpec::new(&skin.say("Report on GitHub"))
+                && ButtonSpec::new(&skin.say(msgid("Report on GitHub")))
                     .link()
                     .show(ui, height, look, palette)
                     .clicked()
@@ -1035,7 +1045,7 @@ fn check_row(
 ) {
     let column = super::sheet::label_column(ui, &OptionId::UPDATES, skin);
     let print = checked_text(status, skin.look, skin.locale, false)
-        .unwrap_or_else(|| skin.say("Not checked yet"));
+        .unwrap_or_else(|| skin.say(msgid("Not checked yet")));
     super::sheet::row_with(
         ui,
         (OptionId::UpdatesCheck, false, column),
@@ -1044,7 +1054,7 @@ fn check_row(
         actions,
         super::sheet::Print {
             text: &print,
-            link: Some((&skin.say("Check now"), Action::CheckForUpdates)),
+            link: Some((&skin.say(msgid("Check now")), Action::CheckForUpdates)),
         },
     );
 }
@@ -1113,5 +1123,22 @@ mod tests {
         assert_eq!(running(12), "query running for 12 s");
         assert_eq!(running(72), "query running for 1 min 12 s");
         assert_eq!(running(120), "query running for 2 min");
+    }
+
+    /// The card's words reach the catalog whole: its title, when it last
+    /// checked, a release's day, and a failure under the title.
+    #[test]
+    fn the_card_says_its_words_in_russian() {
+        let ru = Locale::Russian;
+        let failed = crate::update::check::Failed::Unreadable;
+        let card = Card::Failed {
+            failed: &failed,
+            last: None,
+        };
+        assert_eq!(card.title(ru), "Не удалось проверить обновления");
+        let now = 1_763_500_000;
+        assert!(when(ru, now, now).starts_with("сегодня в "));
+        assert_eq!(released(ru, now - 86_400, now), "выпущена вчера");
+        assert_ne!(failed.said().say(ru), failed.said().english());
     }
 }

@@ -8,6 +8,7 @@
 
 use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, WidgetInfo, WidgetType, pos2, vec2};
 
+use crate::i18n::msgid;
 use crate::keymap::{Group, Keymap, Layout, Row, Why, Written, fixed};
 use crate::model::{Action, KeyboardPage, Recorded, Recording};
 use crate::style::Icon;
@@ -82,8 +83,8 @@ pub(super) fn content(
     let changed = keyboard::changed_count(keymap, layout);
 
     // Reset all…, at the right of the title.
-    let reset = skin.say("Reset all…");
-    let none = skin.say("No shortcuts changed");
+    let reset = skin.say(msgid("Reset all…"));
+    let none = skin.say(msgid("No shortcuts changed"));
     let mut button = ButtonSpec::new(&reset).salt("keyboard-reset-all");
     if changed == 0 {
         button = button.disabled(&none);
@@ -105,7 +106,7 @@ pub(super) fn content(
     widgets::label(
         &mut words,
         TextRole::DialogTitle,
-        &skin.say("Keyboard"),
+        &skin.say(msgid("Keyboard")),
         palette.text,
         look,
     );
@@ -114,7 +115,7 @@ pub(super) fn content(
         look,
         TextRole::UiBody,
         &skin.say(
-            "Click a shortcut to record a new one. The same keys can do different things in different scopes.",
+            msgid("Click a shortcut to record a new one. The same keys can do different things in different scopes."),
         ),
         palette.dim,
     )
@@ -142,19 +143,19 @@ pub(super) fn content(
         ui,
         name_x,
         middle,
-        Text::one(look, role, &skin.say("Command"), palette.dim),
+        Text::one(look, role, &skin.say(msgid("Command")), palette.dim),
     );
     widgets::paint_text(
         ui,
         scope_x,
         middle,
-        Text::one(look, role, &skin.say("Scope"), palette.dim),
+        Text::one(look, role, &skin.say(msgid("Scope")), palette.dim),
     );
     widgets::paint_text_right(
         ui,
         keys_right,
         middle,
-        Text::one(look, role, &skin.say("Shortcut"), palette.dim),
+        Text::one(look, role, &skin.say(msgid("Shortcut")), palette.dim),
     );
     widgets::hline(ui, heads.x_range(), heads.bottom() - 0.5, palette.border);
     ui.advance_cursor_after_rect(heads);
@@ -168,9 +169,9 @@ pub(super) fn content(
         .show(ui, |ui| {
             if listed.is_empty() {
                 let said = if page.changed_only && page.search.is_empty() && page.found.is_none() {
-                    skin.say("No shortcuts changed")
+                    skin.say(msgid("No shortcuts changed"))
                 } else {
-                    skin.say("No commands match")
+                    skin.say(msgid("No commands match"))
                 };
                 ui.add_space(24.0);
                 widgets::label(ui, TextRole::UiBody, &said, palette.dim, look);
@@ -179,7 +180,7 @@ pub(super) fn content(
             // The list is a table of its groups, each a group of rows.
             let builder = egui::UiBuilder::new().id_salt("keyboard-table");
             ui.scope_builder(builder, |ui| {
-                let label = skin.say("Keyboard shortcuts");
+                let label = skin.say(msgid("Keyboard shortcuts"));
                 ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
                     node.set_role(egui::accesskit::Role::Table);
                     node.set_label(label.as_str());
@@ -220,7 +221,7 @@ fn search_row(
         actions.push(Action::KeyboardFind(Some(keys)));
     }
     let mut text = page.search.clone();
-    let hint = skin.say("Search commands or press a shortcut");
+    let hint = skin.say(msgid("Search commands or press a shortcut"));
     let mut field_ui = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(field_rect)
@@ -242,16 +243,16 @@ fn search_row(
             .max_rect(switch_rect)
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
-    let all = skin.say("All");
+    let all = skin.say(msgid("All"));
     let (changed_text, changed_name) = if changed == 0 {
-        (skin.say("Changed"), skin.say("Changed, none"))
+        (skin.say(msgid("Changed")), skin.say(msgid("Changed, none")))
     } else {
         (
-            format!("{} · {changed}", skin.say("Changed")),
-            format!("{}, {changed}", skin.say("Changed")),
+            format!("{} · {changed}", skin.say(msgid("Changed"))),
+            format!("{}, {changed}", skin.say(msgid("Changed"))),
         )
     };
-    let shown = skin.say("Shortcuts shown");
+    let shown = skin.say(msgid("Shortcuts shown"));
     let picked = widgets::segmented(
         &mut segment_ui,
         &[
@@ -289,7 +290,7 @@ fn found_line(ui: &mut Ui, found: &'static str, skin: &Skin, actions: &mut Vec<A
     let middle = top.y + height / 2.0;
     let key = crate::keymap::key_written(Layout::of(look), found);
     let said = skin
-        .say("Commands bound to {keys}")
+        .say(msgid("Commands bound to {keys}"))
         .replace("{keys}", key.as_str());
     let width = widgets::paint_label(
         ui,
@@ -297,7 +298,7 @@ fn found_line(ui: &mut Ui, found: &'static str, skin: &Skin, actions: &mut Vec<A
         middle,
         Text::one(look, role, &said, palette.secondary),
     );
-    let all = skin.say("Show all");
+    let all = skin.say(msgid("Show all"));
     let all_width = role.width(ui.ctx(), look.faces, &all).ceil();
     let rect = Rect::from_min_size(pos2(top.x + width + 12.0, top.y), vec2(all_width, height));
     let link = ui.interact(rect, ui.id().with("keyboard-show-all"), Sense::click());
@@ -455,7 +456,7 @@ fn key_row(
     // A command nothing answers yet keeps its keys, and says so where the
     // Command column has room: a screen reader is told it always.
     if !built {
-        let said = skin.say("Not built yet");
+        let said = skin.say(msgid("Not built yet"));
         let note = || Text::one(look, TextRole::Secondary, &said, palette.faint);
         let x = name_x + width + 8.0;
         if x + widgets::measure(ui, note()) <= scope_x - 8.0 {
@@ -481,18 +482,21 @@ fn key_row(
             .map(|keys| crate::keymap::key_written(layout, keys).as_str().to_owned())
             .collect();
         let shown = if defaults.is_empty() {
-            skin.say("Reset: not set")
+            skin.say(msgid("Reset: not set"))
         } else {
-            skin.say("Reset to {keys}")
+            skin.say(msgid("Reset to {keys}"))
                 .replace("{keys}", &defaults.join(", "))
         };
-        let named = skin
-            .say("Reset {name} to {keys}")
-            .replace("{name}", &name)
-            .replace(
-                "{keys}",
-                &keyboard::spoken_defaults(layout, skin.locale, row),
-            );
+        let named = crate::i18n::fill(
+            &skin.say(msgid("Reset {name} to {keys}")),
+            &[
+                ("{name}", &name),
+                (
+                    "{keys}",
+                    &keyboard::spoken_defaults(layout, skin.locale, row),
+                ),
+            ],
+        );
         let place =
             Rect::from_center_size(pos2(keys_right - RESET / 2.0, middle), vec2(RESET, RESET));
         let reset = ui.interact(place, reset_id, Sense::click());
@@ -534,7 +538,7 @@ fn key_row(
             ui,
             right,
             middle,
-            Text::one(look, role, &skin.say("Not set"), palette.faint),
+            Text::one(look, role, &skin.say(msgid("Not set")), palette.faint),
         );
         right - width
     } else {
@@ -550,7 +554,7 @@ fn key_row(
     if let Some(recording) = recording {
         let role = TextRole::Secondary;
         let press = if recording.typed.is_empty() {
-            skin.say("Press keys…")
+            skin.say(msgid("Press keys…"))
         } else {
             recording.typed.clone()
         };
@@ -563,7 +567,9 @@ fn key_row(
         widgets::announce_polite(
             ui,
             caps_rect,
-            &skin.say("Recording. Press the new shortcut, Escape to cancel."),
+            &skin.say(msgid(
+                "Recording. Press the new shortcut, Escape to cancel.",
+            )),
         );
     }
     // The caps are a button that records: a fixed row's keys can be read
@@ -575,14 +581,16 @@ fn key_row(
     };
     let button = ui.interact(caps_rect, caps_id, sense);
     let named = match fixed {
-        Some(_) => skin
-            .say("Shortcut for {name}: {keys}. It cannot be changed.")
-            .replace("{name}", &name)
-            .replace("{keys}", &spoken),
-        None => skin
-            .say("Shortcut for {name}: {keys}. Press Return to record.")
-            .replace("{name}", &name)
-            .replace("{keys}", &spoken),
+        Some(_) => crate::i18n::fill(
+            &skin.say(msgid("Shortcut for {name}: {keys}. It cannot be changed.")),
+            &[("{name}", &name), ("{keys}", &spoken)],
+        ),
+        None => crate::i18n::fill(
+            &skin.say(msgid(
+                "Shortcut for {name}: {keys}. Press Return to record.",
+            )),
+            &[("{name}", &name), ("{keys}", &spoken)],
+        ),
     };
     button.widget_info(|| WidgetInfo::labeled(WidgetType::Button, fixed.is_none(), &named));
     focus::hint(
@@ -597,8 +605,8 @@ fn key_row(
     // The row's menu: what its reset button does, and an unbind.
     if fixed.is_none() {
         crate::ui::menu::context(&line, look, palette, |menu| {
-            let reset = skin.say("Reset to default");
-            let none = skin.say("Not changed");
+            let reset = skin.say(msgid("Reset to default"));
+            let none = skin.say(msgid("Not changed"));
             let mut item = crate::ui::menu::Item::action(&reset);
             if !changed {
                 item = item.disabled(&none);
@@ -607,8 +615,8 @@ fn key_row(
                 actions.push(Action::ResetRow(row));
                 menu.close();
             }
-            let unbind = skin.say("Unbind");
-            let unbound = skin.say("Not set");
+            let unbind = skin.say(msgid("Unbind"));
+            let unbound = skin.say(msgid("Not set"));
             let mut item = crate::ui::menu::Item::action(&unbind);
             if keys.is_empty() {
                 item = item.disabled(&unbound);
@@ -644,14 +652,14 @@ fn refusal_line(
         .paint_at(ui, icon);
     let said = keyboard::refusal(look, skin.locale, row, keys, why);
     let role = TextRole::Secondary;
-    let swap = skin.say("Swap");
+    let swap = skin.say(msgid("Swap"));
     // The key that gives up, as the keymap writes it: the screen's close.
     let close = crate::ui::keys::published(ui.ctx()).key_in(
         Layout::of(look),
         crate::keymap::Command::SettingsClose,
         crate::keymap::Scope::Prompt,
     );
-    let cancel = format!("{} · {}", skin.say("Cancel"), close.as_str());
+    let cancel = format!("{} · {}", skin.say(msgid("Cancel")), close.as_str());
     let link_width = |text: &str| role.width(ui.ctx(), look.faces, text).ceil();
     let mut x = inner.right() - 10.0 - link_width(&cancel);
     let cancel_rect = Rect::from_min_size(pos2(x, middle - 9.0), vec2(link_width(&cancel), 18.0));

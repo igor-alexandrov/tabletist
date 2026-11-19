@@ -49,7 +49,6 @@ pub fn primary_words(
     look: &Look,
     locale: crate::i18n::Locale,
 ) -> String {
-    let plural = |count: crate::export_sheet::Count| u32::try_from(count.rows).unwrap_or(u32::MAX);
     let again = sheet.rows == RowsChoice::RunAgain;
     let words = match (sheet.destination, facts.rows) {
         // A result run again: counted as it runs (spec 4).
@@ -58,22 +57,19 @@ pub fn primary_words(
         }
         (DestinationChoice::File, None) if again => gettext(locale, "Run and export…").into_owned(),
         (DestinationChoice::Clipboard, Some(rows)) => {
-            ngettext(locale, "Copy {rows} row", "Copy {rows} rows", plural(rows))
+            ngettext(locale, "Copy {rows} row", "Copy {rows} rows", rows.rows)
                 .replace("{rows}", &count_words(rows))
         }
         (DestinationChoice::Clipboard, None) => gettext(locale, "Copy rows").into_owned(),
-        (DestinationChoice::File, Some(rows)) if look.terminal => ngettext(
-            locale,
-            "Export {rows} row",
-            "Export {rows} rows",
-            plural(rows),
-        )
-        .replace("{rows}", &count_words(rows)),
+        (DestinationChoice::File, Some(rows)) if look.terminal => {
+            ngettext(locale, "Export {rows} row", "Export {rows} rows", rows.rows)
+                .replace("{rows}", &count_words(rows))
+        }
         (DestinationChoice::File, Some(rows)) => ngettext(
             locale,
             "Export {rows} row…",
             "Export {rows} rows…",
-            plural(rows),
+            rows.rows,
         )
         .replace("{rows}", &count_words(rows)),
         (DestinationChoice::File, None) if look.terminal => gettext(locale, "Export").into_owned(),
@@ -868,9 +864,15 @@ fn notes(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>) {
         let pending =
             crate::i18n::counted(locale, facts.pending, "unsaved change", "unsaved changes");
         let one = facts.pending == 1;
-        let note = match (look.terminal, one) {
-            (true, true) => gettext(locale, "! {pending} in {table} isn't exported · :w first to include it"),
-            (true, false) => gettext(locale, "! {pending} in {table} aren't exported · :w first to include them"),
+        let words = match (look.terminal, one) {
+            (true, true) => gettext(
+                locale,
+                "! {pending} in {table} isn't exported · :w first to include it",
+            ),
+            (true, false) => gettext(
+                locale,
+                "! {pending} in {table} aren't exported · :w first to include them",
+            ),
             (false, true) => gettext(
                 locale,
                 "{pending} in {table} isn't exported. Export reads what is saved in the database. Save first {key}",
@@ -879,10 +881,15 @@ fn notes(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>) {
                 locale,
                 "{pending} in {table} aren't exported. Export reads what is saved in the database. Save first {key}",
             ),
-        }
-        .replace("{pending}", &pending)
-        .replace("{table}", &facts.table)
-        .replace("{key}", save.as_str());
+        };
+        let note = crate::i18n::fill(
+            &words,
+            &[
+                ("{pending}", &pending),
+                ("{table}", &facts.table),
+                ("{key}", save.as_str()),
+            ],
+        );
         Text::one(look, widgets::secondary(look), &note, palette.warning)
             .wrap(ui.available_width())
             .layout(ui.ctx())

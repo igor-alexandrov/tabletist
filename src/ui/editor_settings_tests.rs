@@ -139,7 +139,9 @@ fn the_old_keys_are_read_and_give_way_to_the_new_on_a_change() {
     let before = loaded.settings;
     let mut after = before.clone();
     after.sql_limit = 500;
-    let written = after.write_into(text, &before.changed_keys(&after));
+    let written = after
+        .write_into(text, &before.changed_keys(&after))
+        .unwrap();
     assert_eq!(
         written,
         "# mine\n[editor]\n# the editor's\nsql_timeout_secs = 10\n\n\

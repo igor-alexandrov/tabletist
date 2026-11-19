@@ -98,6 +98,20 @@ command with `TABLETIST_TEST_MYSQL_URL=mysql://tabletist:tabletist@localhost:533
 (CI's `mariadb` job). A test that expects what only one of them does asks the server's version.
 The native keyring test is `#[ignore]`d; run it by hand on a desktop session.
 
+A change that adds, changes or takes out a user-facing string runs
+`assets/i18n/update.sh` (GNU gettext 1.0 or later), which writes the
+template and merges it into every catalog; CI's `translations` job runs it
+with `--check`. Each message is a whole phrase with named placeholders
+(`{n}`, `{table}`), and a count goes through `ngettext`: never a sentence
+glued from translated pieces. A message drawn later than it is written (a
+table of names, a command's name, a word handed to `say`) is marked where
+it is written with `i18n::msgid("…")`, or `pmsgid("context", "…")` for a
+word with two meanings, and is a `Msgid` until it is drawn with
+`.say(locale)`. A function that translates text it is handed takes a
+`Msgid`, never a `&str`. A count goes to `ngettext` as it is
+(`rows.len()`), never through `u32`. A new message shows in English until
+its catalog has it.
+
 Views draw text only through `TextRole`s (`src/typography.rs`); a view never
 names a font, a family or a size.
 

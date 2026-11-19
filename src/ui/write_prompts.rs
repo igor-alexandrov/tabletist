@@ -108,6 +108,61 @@ fn doing(held: &Held, terminal: bool) -> &'static str {
     }
 }
 
+/// The leave prompt's title, Save's or Discard's, by what waits on the
+/// answer: "Save {changes} before closing the tab?". Each a whole phrase,
+/// so a translation can put what waits in the case its words ask for.
+fn before_title(held: &Held, save: bool, locale: Locale) -> std::borrow::Cow<'static, str> {
+    let either = |save_title, discard_title| if save { save_title } else { discard_title };
+    match held {
+        Held::Action(action) => match **action {
+            Action::CloseTab { .. } => either(
+                gettext(locale, "Save {changes} before closing the tab?"),
+                gettext(locale, "Discard {changes} before closing the tab?"),
+            ),
+            Action::Refresh(_) | Action::RetryRows { .. } | Action::RetryStructure { .. } => {
+                either(
+                    gettext(locale, "Save {changes} before reloading?"),
+                    gettext(locale, "Discard {changes} before reloading?"),
+                )
+            }
+            Action::NextPage { .. } | Action::PrevPage { .. } => either(
+                gettext(locale, "Save {changes} before changing the page?"),
+                gettext(locale, "Discard {changes} before changing the page?"),
+            ),
+            Action::SortBy { .. } | Action::ClearSort { .. } => either(
+                gettext(locale, "Save {changes} before sorting?"),
+                gettext(locale, "Discard {changes} before sorting?"),
+            ),
+            Action::ApplyFilters { .. }
+            | Action::ClearFilters { .. }
+            | Action::DropFilter { .. }
+            | Action::FollowForeignKey { .. }
+            | Action::OpenFiltered { .. } => either(
+                gettext(locale, "Save {changes} before filtering?"),
+                gettext(locale, "Discard {changes} before filtering?"),
+            ),
+            Action::SwitchDatabase { .. } => either(
+                gettext(locale, "Save {changes} before switching database?"),
+                gettext(locale, "Discard {changes} before switching database?"),
+            ),
+            Action::CloseConnTab(_) | Action::Disconnect(_) | Action::Connect { .. } => either(
+                gettext(locale, "Save {changes} before disconnecting?"),
+                gettext(locale, "Discard {changes} before disconnecting?"),
+            ),
+            _ => either(
+                gettext(locale, "Save {changes} before going on?"),
+                gettext(locale, "Discard {changes} before going on?"),
+            ),
+        },
+        Held::CloseWindow => either(
+            gettext(locale, "Save {changes} before closing the window?"),
+            gettext(locale, "Discard {changes} before closing the window?"),
+        ),
+        // Asked for no other step: the prompt only drops the changes.
+        Held::Nothing => gettext(locale, "Discard {changes}?"),
+    }
+}
+
 /// `width`, or what a small window leaves of it: 24 clear at each side.
 pub(super) fn fitted(ctx: &egui::Context, width: f32) -> f32 {
     width.min(ctx.content_rect().width() - 48.0).max(240.0)
@@ -227,29 +282,20 @@ fn leave_sheet(
     let title = match (prompt.can_save, prompt.tabs.len()) {
         // The changes themselves were asked to be dropped: nothing waits
         // on the answer to be named.
-        _ if matches!(prompt.held, Held::Nothing) => {
-            format!("{} {changes}?", gettext(locale, "Discard"))
+        _ if matches!(prompt.held, Held::Nothing) => gettext(locale, "Discard {changes}?"),
+        (true, _) => before_title(&prompt.held, true, locale),
+        (false, 0 | 1) => before_title(&prompt.held, false, locale),
+        (false, tabs) => {
+            let title = ngettext(
+                locale,
+                "Discard {changes} in {n} tab?",
+                "Discard {changes} in {n} tabs?",
+                tabs,
+            );
+            title.replace("{n}", &tabs.to_string()).into()
         }
-        (true, _) => format!(
-            "{} {changes} {} {}?",
-            gettext(locale, "Save"),
-            gettext(locale, "before"),
-            gettext(locale, doing(&prompt.held, false))
-        ),
-        (false, 0 | 1) => format!(
-            "{} {changes} {} {}?",
-            gettext(locale, "Discard"),
-            gettext(locale, "before"),
-            gettext(locale, doing(&prompt.held, false))
-        ),
-        (false, tabs) => format!(
-            "{} {changes} {} {tabs} {}?",
-            gettext(locale, "Discard"),
-            gettext(locale, "in"),
-            gettext(locale, "tabs")
-        ),
     };
-    let plural = u32::try_from(prompt.changes).unwrap_or(u32::MAX);
+    let title = title.replace("{changes}", &changes);
     let text = if prompt.saving {
         gettext(locale, SAVING)
     } else {
@@ -257,7 +303,7 @@ fn leave_sheet(
             locale,
             "It has not been written.",
             "They have not been written.",
-            plural,
+            prompt.changes,
         )
     };
     let modal = widgets::modal(Id::new("leave-prompt"), look, palette).show(ctx, |ui| {
@@ -538,7 +584,10 @@ pub fn confirm_write(
     let what = match parts.as_slice() {
         [] => String::new(),
         [one] => one.clone(),
-        [first @ .., last] => format!("{} {} {last}", first.join(", "), gettext(locale, "and")),
+        [first @ .., last] => crate::i18n::fill(
+            &gettext(locale, "{list} and {last}"),
+            &[("{list}", &first.join(", ")), ("{last}", last)],
+        ),
     };
     let facts = Facts {
         connection: format!(
@@ -552,11 +601,14 @@ pub fn confirm_write(
         rows: if prompt.rows == 0 && (prompt.added > 0 || prompt.deleted > 0) {
             table.clone()
         } else {
-            format!(
-                "{} {} {table}",
-                counted(locale, prompt.rows, "row", "rows"),
-                gettext(locale, "in")
+            ngettext(
+                locale,
+                "{n} row in {table}",
+                "{n} rows in {table}",
+                prompt.rows,
             )
+            .replace("{n}", &prompt.rows.to_string())
+            .replace("{table}", &table)
         },
         columns,
         tag: workspace.environment.label(crate::env::Platform::of(&look)),
@@ -717,12 +769,8 @@ fn confirm_sheet(
         palette,
         locale,
     } = skin;
-    let title = format!(
-        "{} {} {}?",
-        gettext(locale, "Save"),
-        facts.changes,
-        gettext(locale, "to production")
-    );
+    let title =
+        gettext(locale, "Save {changes} to production?").replace("{changes}", &facts.changes);
     let about = format!("{} · {}", facts.connection, facts.rows);
     let (frame, radius) = skin.frame();
     let mut copy = false;

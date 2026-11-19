@@ -888,6 +888,32 @@ fn clear_history_clears_this_connection_and_settings_clears_every_one() {
 }
 
 #[test]
+fn dont_keep_refused_for_a_settings_file_too_long_asks_nothing() {
+    let (mut harness, _, _) = covers(Look::macos());
+    harness
+        .app
+        .apply(Action::ShowSettingsPane(crate::model::SettingsPane::Editor));
+    harness.settle();
+    // 998 lines with no `[editor.history]` table: its header and key
+    // would make the file too long to be read.
+    let text = format!("[data]\n{}", "# note\n".repeat(997));
+    harness.app.settings_file.text = text.clone();
+    let keep = harness.app.settings.history_keep;
+    assert!(keep > 0);
+    harness.app.apply(Action::SetOption(
+        crate::settings::OptionValue::HistoryKeep(0),
+    ));
+    harness.settle();
+    assert_eq!(harness.app.settings.history_keep, keep);
+    assert_eq!(harness.app.settings_file.text, text);
+    assert!(!harness.has("History is off. Delete the statements it kept on this computer?"));
+    assert!(matches!(
+        &harness.app.dialog,
+        Some(crate::model::Dialog::Settings(dialog)) if dialog.history_question.is_none()
+    ));
+}
+
+#[test]
 fn dont_keep_in_settings_asks_whether_to_delete_what_is_kept() {
     for (look, delete) in [
         (Look::macos(), true),

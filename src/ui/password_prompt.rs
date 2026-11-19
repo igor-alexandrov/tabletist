@@ -16,15 +16,12 @@ pub fn show(ctx: &egui::Context, paint: Paint, prompt: &mut PasswordPrompt) -> V
         ctx,
         |ui| {
             ui.set_width(360.0);
-            let title = format!(
-                "{} {}",
-                match prompt.kind {
-                    SecretKind::Database => gettext(locale, "Password for"),
-                    SecretKind::SshPassword => gettext(locale, "SSH password for"),
-                    SecretKind::SshPassphrase => gettext(locale, "Key passphrase for"),
-                },
-                prompt.name
-            );
+            let title = match prompt.kind {
+                SecretKind::Database => gettext(locale, "Password for {connection}"),
+                SecretKind::SshPassword => gettext(locale, "SSH password for {connection}"),
+                SecretKind::SshPassphrase => gettext(locale, "Key passphrase for {connection}"),
+            };
+            let title = title.replace("{connection}", &prompt.name);
             let title = widgets::label(
                 ui,
                 widgets::dialog_title(&look),

@@ -6,7 +6,7 @@
 
 use egui::{Event, Key, Modifiers};
 
-use crate::i18n::{Locale, gettext};
+use crate::i18n::{Locale, Msgid, gettext, msgid};
 use crate::keymap::{Group, Keymap, Layout, Mods, Never, Row, Why, intern, spelling};
 use crate::model::{Action, KeyboardPage, Recorded, Recording};
 use crate::theme::Look;
@@ -35,8 +35,8 @@ pub(super) fn listed(
             continue;
         }
         let group = row.command.info().group;
-        let name = gettext(locale, row.command.info().name);
-        let heading = gettext(locale, group.name(layout));
+        let name = row.command.info().name.say(locale);
+        let heading = group.name(layout).say(locale);
         let caps = keymap.row_keys(layout, row);
         let caps: Vec<&str> = caps.iter().map(|cap| cap.as_str()).collect();
         let keys = keymap.keys_of(layout, row);
@@ -93,7 +93,7 @@ pub(super) fn spoken_defaults(layout: Layout, locale: Locale, row: Row) -> Strin
 
 /// A command's name as the look writes it, translated.
 pub(super) fn name(look: &Look, locale: Locale, command: crate::keymap::Command) -> String {
-    look.label(&gettext(locale, command.info().name))
+    look.label(&command.info().name.say(locale))
 }
 
 /// What a screen reader says of a row: its name, scope and keys as the
@@ -106,13 +106,13 @@ pub(super) fn said(
     row: Row,
     [name, scope, keys]: [&str; 3],
 ) -> String {
-    let say = |text| look.label(&gettext(locale, text));
+    let say = |text: Msgid| look.label(&text.say(locale));
     let mut said = format!("{name}, {scope}, {keys}");
     if keymap.changed(Layout::of(look), row) {
-        said.push_str(&format!(", {}", say("changed")));
+        said.push_str(&format!(", {}", say(msgid("changed"))));
     }
     if !row.command.info().built {
-        said.push_str(&format!(", {}", say("not built yet")));
+        said.push_str(&format!(", {}", say(msgid("not built yet"))));
     }
     said
 }
@@ -137,11 +137,15 @@ pub(super) fn refusal(
     } else {
         crate::keymap::key_written(layout, keys).as_str().to_owned()
     };
-    let scope = look.label(&gettext(locale, row.scope.name(layout)));
-    gettext(locale, why.text(layout))
-        .replace("{keys}", &written)
-        .replace("{name}", &name(look, locale, about))
-        .replace("{scope}", &scope)
+    let scope = look.label(&row.scope.name(layout).say(locale));
+    crate::i18n::fill(
+        &why.text(layout).say(locale),
+        &[
+            ("{keys}", &written),
+            ("{name}", &name(look, locale, about)),
+            ("{scope}", &scope),
+        ],
+    )
 }
 
 /// The key the window sends a clipboard event in place of, held with the

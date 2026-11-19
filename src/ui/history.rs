@@ -8,7 +8,7 @@
 use egui::{Frame, Id, Rect, pos2, vec2};
 
 use crate::history::{Entry, Outcome, Source};
-use crate::i18n::{Locale, gettext, ngettext};
+use crate::i18n::{Locale, gettext, ngettext, pgettext};
 use crate::keymap::Keymap;
 use crate::model::{Action, ConnTabId, HistoryFilterSet, HistoryRow, HistoryTab, Workspace};
 use crate::style::Icon;
@@ -174,6 +174,11 @@ impl View<'_> {
         self.look.label(&gettext(self.locale, text))
     }
 
+    /// The filter field's label, open or closed.
+    fn filter_label(&self) -> String {
+        self.look.label(&pgettext(self.locale, "label", "filter"))
+    }
+
     fn draw(&self, ui: &mut egui::Ui, rect: Rect, asks: &mut Vec<Ask>) {
         let mut top = rect.top();
         if self.look.terminal {
@@ -282,14 +287,13 @@ impl View<'_> {
         if self.keep == 0 {
             return self.say(OFF);
         }
-        let n = u32::try_from(shown).unwrap_or(u32::MAX);
         let statements = match self.history.filter.is_set() {
-            false => ngettext(self.locale, "{n} statement", "{n} statements", n),
+            false => ngettext(self.locale, "{n} statement", "{n} statements", shown),
             true => ngettext(
                 self.locale,
                 "{n} statement matches",
                 "{n} statements match",
-                n,
+                shown,
             ),
         }
         .replace("{n}", &crate::format::group_digits(shown as u64));
@@ -446,13 +450,8 @@ impl View<'_> {
             keep => format!(
                 "{} · {} · {}",
                 look.label(
-                    &ngettext(
-                        locale,
-                        "{n} kept",
-                        "{n} kept",
-                        u32::try_from(shown).unwrap_or(u32::MAX)
-                    )
-                    .replace("{n}", &shown.to_string())
+                    &ngettext(locale, "{n} kept", "{n} kept", shown)
+                        .replace("{n}", &shown.to_string())
                 ),
                 look.label(&gettext(locale, "last {n}").replace("{n}", &keep.to_string())),
                 self.database,
@@ -484,7 +483,7 @@ impl View<'_> {
                     .id(search_id(self.tab)),
             );
             ui.ctx().accesskit_node_builder(field.id, |node| {
-                node.set_label(look.label(&gettext(locale, "filter")).as_str());
+                node.set_label(look.label(&pgettext(locale, "label", "filter")).as_str());
             });
             let seen_id = Id::new(("history-line-seen", self.tab.0));
             let seen: Option<u64> = ui.data(|data| data.get_temp(seen_id));
@@ -536,7 +535,7 @@ impl View<'_> {
         if self.history.line.trim().is_empty() {
             // "/ filter · source:agent source:save result:error  plain words search the sql".
             let hint = Text::new(look)
-                .add(body, &self.say("filter"), palette.secondary)
+                .add(body, &self.filter_label(), palette.secondary)
                 .add(body, " · ", palette.secondary)
                 .add(body, "source:agent source:save result:error", palette.text)
                 .space(body, "  ")
@@ -560,7 +559,7 @@ impl View<'_> {
         widgets::announce(
             ui,
             Rect::from_min_max(pos2(at, bar.top()), pos2(at + room, bar.bottom())),
-            &format!("{} {}", self.say("filter"), self.history.line),
+            &format!("{} {}", self.filter_label(), self.history.line),
         );
         bar.bottom()
     }
@@ -1185,13 +1184,8 @@ impl View<'_> {
                 let mut said = vec![entry.tool.clone().unwrap_or_default()];
                 if let Some(rows) = entry.rows {
                     said.push(
-                        ngettext(
-                            locale,
-                            "{n} row",
-                            "{n} rows",
-                            u32::try_from(rows).unwrap_or(u32::MAX),
-                        )
-                        .replace("{n}", &crate::format::group_digits(rows)),
+                        ngettext(locale, "{n} row", "{n} rows", rows)
+                            .replace("{n}", &crate::format::group_digits(rows)),
                     );
                 }
                 if let Some(took) = entry.took_ms {

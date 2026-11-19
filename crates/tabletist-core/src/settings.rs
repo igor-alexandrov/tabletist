@@ -4,6 +4,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
+use crate::i18n::{LanguageTag, Locale};
 use crate::keymap::Layout;
 use crate::paths::AppDirs;
 use crate::util::toml_string;
@@ -38,6 +39,77 @@ impl Timestamps {
         [Self::Second, Self::Full]
             .into_iter()
             .find(|choice| choice.name() == name)
+    }
+}
+
+/// The language the interface is drawn in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Language {
+    /// The system's first language where the app has a catalog for it,
+    /// else English.
+    #[default]
+    System,
+    /// One the person chose.
+    Fixed(Locale),
+}
+
+impl Language {
+    /// As the file says it: `system`, `en`, `ru`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Fixed(locale) => locale.tag(),
+        }
+    }
+
+    /// The language the file names, where the app ships it: `system` in
+    /// any case, or a tag whose language has a catalog (`ru`, `RU`,
+    /// `ru-RU`). Anything else is no value: the line is shown as wrong and
+    /// left.
+    pub fn from_name(name: &str) -> Option<Self> {
+        if name.eq_ignore_ascii_case("system") {
+            return Some(Self::System);
+        }
+        LanguageTag::parse(name)
+            .as_ref()
+            .and_then(Locale::from_tag)
+            .map(Self::Fixed)
+    }
+
+    /// The language the window is drawn in, where `system` is the system's
+    /// first language: only that one counts, and with no catalog for it
+    /// the window is English.
+    pub fn resolve(self, system: Option<&LanguageTag>) -> Locale {
+        match self {
+            Self::Fixed(locale) => locale,
+            Self::System => system.and_then(Locale::from_tag).unwrap_or_default(),
+        }
+    }
+
+    /// Whether the system's first language has a catalog, so that System
+    /// is an entry of its own.
+    pub fn system_listed(system: Option<&LanguageTag>) -> bool {
+        system.and_then(Locale::from_tag).is_some()
+    }
+
+    /// The language menu's entries, in order: System where the system's
+    /// first language has a catalog, then each language the app ships.
+    pub fn choices(system: Option<&LanguageTag>) -> Vec<Self> {
+        let system = Self::system_listed(system).then_some(Self::System);
+        system
+            .into_iter()
+            .chain(Locale::ALL.into_iter().map(Self::Fixed))
+            .collect()
+    }
+
+    /// The entry the menu marks: this one, but System as English where
+    /// System is no entry (the system's language has no catalog). The
+    /// file keeps `system`, so the app follows a catalog that ships later.
+    pub fn shown(self, system: Option<&LanguageTag>) -> Self {
+        match self {
+            Self::System if !Self::system_listed(system) => Self::Fixed(Locale::English),
+            other => other,
+        }
     }
 }
 
@@ -703,6 +775,10 @@ impl Launch {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// The language the interface is drawn in. Not in an older version's
+    /// `settings.json`, which had none.
+    #[serde(skip)]
+    pub language: Language,
     /// What a launch opens: the windows open at the last quit, the
     /// saved connections, or one of them. Not in an older version's
     /// `settings.json`, which had none.
@@ -849,6 +925,7 @@ pub struct Settings {
 /// A key of the settings file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
+    Language,
     OnLaunch,
     RestoreTabs,
     PageSize,
@@ -906,7 +983,8 @@ impl Key {
     /// In the order the file has them: a table's keys together.
     /// An old key comes before the one that took its place: the new one
     /// is read over it.
-    pub const ALL: [Key; 45] = [
+    pub const ALL: [Key; 46] = [
+        Self::Language,
         Self::OnLaunch,
         Self::RestoreTabs,
         Self::PageSize,
@@ -957,6 +1035,7 @@ impl Key {
     /// The key's table and its name there.
     pub fn path(self) -> (&'static str, &'static str) {
         match self {
+            Self::Language => ("interface", "language"),
             Self::OnLaunch => ("startup", "on_launch"),
             Self::RestoreTabs => ("startup", "restore_tabs"),
             Self::PageSize => ("data", "page_size"),
@@ -1020,6 +1099,7 @@ impl Key {
     /// value: see [`Settings::note`].
     fn note(self) -> Option<&'static str> {
         match self {
+            Self::Language => Some("system | \"en\" | \"ru\""),
             Self::OnLaunch => Some("restore | connections | \"conn:<id>\""),
             Self::Timestamps => Some("second | full"),
             Self::Tz => Some("system | utc | \"Area/City\""),
@@ -1077,6 +1157,8 @@ fn theme_note(terminal: bool) -> &'static str {
 /// An option the Settings window shows: one row of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OptionId {
+    /// The interface's language: `interface.language`.
+    Language,
     /// What a launch opens: `startup.on_launch`.
     OnLaunch,
     /// Whether a connection reopens its tables: `startup.restore_tabs`.
@@ -1148,7 +1230,8 @@ pub enum OptionId {
 impl OptionId {
     /// Every option, the General pane's, the Appearance pane's, the Editor
     /// pane's, the Agents pane's and then the Updates pane's.
-    pub const ALL: [OptionId; 40] = [
+    pub const ALL: [OptionId; 41] = [
+        Self::Language,
         Self::OnLaunch,
         Self::RestoreTabs,
         Self::PageSize,
@@ -1191,7 +1274,8 @@ impl OptionId {
         Self::UpdatesCheck,
     ];
     /// The General pane's, in the order it has them.
-    pub const GENERAL: [OptionId; 11] = [
+    pub const GENERAL: [OptionId; 12] = [
+        Self::Language,
         Self::OnLaunch,
         Self::RestoreTabs,
         Self::PageSize,
@@ -1204,7 +1288,9 @@ impl OptionId {
         Self::ConfirmCloseEdits,
         Self::IdleDisconnect,
     ];
-    /// The General pane's sections, in order: Startup, Data and Safety.
+    /// The General pane's sections, in order: Language, Startup, Data and
+    /// Safety.
+    pub const LANGUAGE: [OptionId; 1] = [Self::Language];
     pub const STARTUP: [OptionId; 2] = [Self::OnLaunch, Self::RestoreTabs];
     pub const DATA: [OptionId; 6] = [
         Self::PageSize,
@@ -1311,6 +1397,7 @@ impl OptionId {
     /// The key of the file the option is stored under.
     pub fn key(self) -> Key {
         match self {
+            Self::Language => Key::Language,
             Self::OnLaunch => Key::OnLaunch,
             Self::RestoreTabs => Key::RestoreTabs,
             Self::PageSize => Key::PageSize,
@@ -1363,6 +1450,7 @@ impl OptionId {
 /// An option with a value: what a key, a click or a reset sets.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OptionValue {
+    Language(Language),
     OnLaunch(Launch),
     RestoreTabs(bool),
     PageSize(u32),
@@ -1450,6 +1538,7 @@ impl OptionValue {
 
     pub fn option(&self) -> OptionId {
         match self {
+            Self::Language(_) => OptionId::Language,
             Self::OnLaunch(_) => OptionId::OnLaunch,
             Self::RestoreTabs(_) => OptionId::RestoreTabs,
             Self::PageSize(_) => OptionId::PageSize,
@@ -1496,6 +1585,7 @@ impl OptionValue {
     /// Puts the value in `settings`.
     pub fn set(&self, settings: &mut Settings) {
         match self.clone() {
+            Self::Language(language) => settings.language = language,
             Self::OnLaunch(launch) => settings.on_launch = launch,
             Self::RestoreTabs(on) => settings.restore_tabs = on,
             Self::PageSize(size) => settings.page_size = size,
@@ -1588,6 +1678,12 @@ const HEADER: &str = "# written by tabletist, safe to edit by hand\n";
 /// is something else.
 const MAX_LINES: usize = 1_000;
 const MAX_BYTES: usize = 64 * 1024;
+
+/// Whether `text` is longer than a settings file is read to (`MAX_LINES`,
+/// `MAX_BYTES`): the reader ignores all of it.
+fn too_long(text: &str) -> bool {
+    text.len() > MAX_BYTES || text.lines().count() > MAX_LINES
+}
 
 /// Where a start's settings came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2189,6 +2285,7 @@ impl Settings {
     /// What `option` is set to.
     pub fn value(&self, option: OptionId) -> OptionValue {
         match option {
+            OptionId::Language => OptionValue::Language(self.language),
             OptionId::OnLaunch => OptionValue::OnLaunch(self.on_launch.clone()),
             OptionId::RestoreTabs => OptionValue::RestoreTabs(self.restore_tabs),
             OptionId::PageSize => OptionValue::PageSize(self.page_size),
@@ -2276,6 +2373,9 @@ impl Settings {
             // System, UTC, and the zone the file names, where it names
             // one: any other is set in the file.
             OptionId::Tz => self.stepped_zone(None, forward),
+            // Without the system's language System is no entry: English
+            // and the languages after it.
+            OptionId::Language => self.stepped_language(None, forward),
             OptionId::Timestamps => OptionValue::Timestamps(if forward {
                 Timestamps::Full
             } else {
@@ -2440,6 +2540,26 @@ impl Settings {
         }
     }
 
+    /// The language one step from this one among the menu's entries
+    /// ([`Language::choices`]), where `system` is the system's first
+    /// language. It stops at either end.
+    pub fn stepped_language(&self, system: Option<&LanguageTag>, forward: bool) -> OptionValue {
+        let choices = Language::choices(system);
+        let shown = self.language.shown(system);
+        let at = choices
+            .iter()
+            .position(|choice| *choice == shown)
+            .unwrap_or(0);
+        let to = if forward {
+            (at + 1).min(choices.len() - 1)
+        } else {
+            at.saturating_sub(1)
+        };
+        // A step that stays leaves System as it is, not English in its place.
+        let language = if to == at { self.language } else { choices[to] };
+        OptionValue::Language(language)
+    }
+
     /// The zone one step from this one: System, UTC, then a named zone,
     /// the one set or else `named` (the last the session had), so that a
     /// step off it can come back. Any other zone is set in the file.
@@ -2533,9 +2653,11 @@ impl Settings {
     /// The other value of an option that has two; `None` for one with more.
     pub fn flipped(&self, option: OptionId) -> Option<OptionValue> {
         match option {
-            OptionId::PageSize | OptionId::Tz | OptionId::IdleDisconnect | OptionId::OnLaunch => {
-                None
-            }
+            OptionId::PageSize
+            | OptionId::Tz
+            | OptionId::IdleDisconnect
+            | OptionId::OnLaunch
+            | OptionId::Language => None,
             OptionId::Timestamps => Some(OptionValue::Timestamps(match self.timestamps {
                 Timestamps::Second => Timestamps::Full,
                 Timestamps::Full => Timestamps::Second,
@@ -2619,6 +2741,7 @@ impl Settings {
     /// out: a theme that is not set, and stripes left to the look.
     fn written(&self, key: Key) -> Option<String> {
         Some(match key {
+            Key::Language => toml_string(self.language.name()),
             Key::OnLaunch => toml_string(&self.on_launch.name()),
             Key::RestoreTabs => self.restore_tabs.to_string(),
             Key::PageSize => self.page_size.to_string(),
@@ -2688,8 +2811,22 @@ impl Settings {
     /// header line, and a table for the keys that are not at their
     /// default, in the order of [`Key::ALL`], each with its note.
     pub fn to_toml(&self) -> String {
-        keys::write(&self.write_into("", &Key::ALL), &self.keys)
+        // An empty text is always edited in place: it is never written whole.
+        let text = self
+            .edited("", &Key::ALL)
+            .unwrap_or_else(|| HEADER.to_owned());
+        keys::write(&text, &self.keys)
     }
+
+    /// Whether `text` is short enough to be read as a settings file: one
+    /// longer is ignored whole when the app starts, every setting in it.
+    pub fn fits(text: &str) -> bool {
+        !too_long(text)
+    }
+
+    /// The most lines, and bytes, a settings file is read to: what a
+    /// change that would not fit says it is over.
+    pub const LIMITS: (usize, usize) = (MAX_LINES, MAX_BYTES);
 
     /// `text` with its keys' tables saying what [`Settings::keys`] says,
     /// and nothing else of it changed (`keys::write`): the person's
@@ -2719,17 +2856,42 @@ impl Settings {
     /// with dotted keys can have a value replaced in place and nothing
     /// more: a key to add or take out there gets the file written as
     /// [`Settings::to_toml`] has it. So does a text too long to be read.
-    pub fn write_into(&self, text: &str, keys: &[Key]) -> String {
-        self.write_kept(text, keys)
-            .unwrap_or_else(|| self.to_toml())
+    ///
+    /// `None` where the text written would be too long to be read
+    /// (`MAX_LINES`, `MAX_BYTES`): saved, it would cost every setting in it
+    /// at the next start. The file is to be left as it is.
+    pub fn write_into(&self, text: &str, keys: &[Key]) -> Option<String> {
+        self.write_change(text, keys, false)
+    }
+
+    /// [`Self::write_into`], and with `shortcuts` the keys' tables written
+    /// too ([`Self::write_keys_into`]): one change of both, measured once
+    /// it is whole. Only the text to be saved has to fit; one on the way
+    /// to it can be longer.
+    pub fn write_change(&self, text: &str, keys: &[Key], shortcuts: bool) -> Option<String> {
+        let mut written = self.edited(text, keys).unwrap_or_else(|| self.to_toml());
+        if shortcuts {
+            // From a text that fit, or one written whole: what it can be
+            // on the way is not measured, only what it comes to.
+            written = keys::write_unmeasured(&written, &self.keys);
+        }
+        Self::fits(&written).then_some(written)
     }
 
     /// [`Self::write_into`] where it keeps the rest of `text` as it was,
-    /// and `None` where it would write the file whole instead: what a
-    /// change nobody asked for (a start moving an older key) writes, or
-    /// leaves the file alone.
+    /// and `None` where it would write the file whole instead, or the text
+    /// written would be too long to be read: what a change nobody asked
+    /// for (a start moving an older key) writes, or leaves the file alone.
     pub fn write_kept(&self, text: &str, keys: &[Key]) -> Option<String> {
-        if text.len() > MAX_BYTES || text.lines().count() > MAX_LINES {
+        self.edited(text, keys)
+            .filter(|written| Self::fits(written))
+    }
+
+    /// `text` with `keys` written into it, the rest kept as it was, and
+    /// `None` where the file is to be written whole instead. The text
+    /// written is not measured: it can be too long to be read.
+    fn edited(&self, text: &str, keys: &[Key]) -> Option<String> {
+        if too_long(text) {
             return None;
         }
         let text = if text.trim_matches([' ', '\t', '\r', '\n']).is_empty() {
@@ -2939,6 +3101,9 @@ impl Settings {
             float.parse::<f64>().ok()
         });
         match key {
+            Key::Language => text
+                .and_then(Language::from_name)
+                .map(|language| self.language = language),
             Key::OnLaunch => text
                 .and_then(Launch::from_name)
                 .map(|launch| self.on_launch = launch),
@@ -3066,7 +3231,7 @@ impl Settings {
     }
 
     fn read(text: &str, last: &Settings) -> Loaded {
-        if text.len() > MAX_BYTES || text.lines().count() > MAX_LINES {
+        if too_long(text) {
             let invalid = text
                 .lines()
                 .enumerate()
@@ -3169,6 +3334,7 @@ impl Settings {
     /// Takes `key`'s value from `other`.
     fn keep(&mut self, key: Key, other: &Settings) {
         match key {
+            Key::Language => self.language = other.language,
             Key::OnLaunch => self.on_launch = other.on_launch.clone(),
             Key::RestoreTabs => self.restore_tabs = other.restore_tabs,
             Key::PageSize => self.page_size = other.page_size,
@@ -3258,6 +3424,7 @@ impl Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            language: Language::System,
             on_launch: Launch::Restore,
             restore_tabs: true,
             page_size: Self::DEFAULT_PAGE_SIZE,
@@ -3364,6 +3531,136 @@ mod tests {
         assert_eq!(loaded.invalid, [2]);
         assert_eq!(loaded.settings.idle_disconnect, Idle::Hour1);
         assert!(!loaded.settings.confirm_close_edits);
+    }
+
+    fn tag(text: &str) -> LanguageTag {
+        LanguageTag::parse(text).expect("a tag")
+    }
+
+    #[test]
+    fn the_language_is_read_by_its_tag_and_anything_else_is_a_wrong_line() {
+        let read = |value: &str| {
+            let text = format!("[interface]\nlanguage = \"{value}\"\n");
+            Settings::from_toml(&text)
+        };
+        assert_eq!(read("system").settings.language, Language::System);
+        assert_eq!(read("SYSTEM").settings.language, Language::System);
+        assert_eq!(
+            read("en").settings.language,
+            Language::Fixed(Locale::English)
+        );
+        assert_eq!(
+            read("ru").settings.language,
+            Language::Fixed(Locale::Russian)
+        );
+        assert_eq!(
+            read("RU").settings.language,
+            Language::Fixed(Locale::Russian)
+        );
+        assert_eq!(
+            read("ru-RU").settings.language,
+            Language::Fixed(Locale::Russian)
+        );
+        // A language the app has no catalog for is no value, and the last
+        // good one stays.
+        let last = Settings {
+            language: Language::Fixed(Locale::Russian),
+            ..Settings::default()
+        };
+        for wrong in ["fr", "xx", ""] {
+            let text = format!("[interface]\nlanguage = \"{wrong}\"\n");
+            let loaded = Settings::from_toml_over(&text, &last);
+            assert_eq!(loaded.invalid, [2], "{wrong:?}");
+            assert_eq!(loaded.settings.language, Language::Fixed(Locale::Russian));
+        }
+        // Written as its tag, and the default not at all.
+        let russian = Settings {
+            language: Language::Fixed(Locale::Russian),
+            ..Settings::default()
+        };
+        assert!(russian.to_toml().contains("[interface]\nlanguage = \"ru\""));
+        assert!(!Settings::default().to_toml().contains("language"));
+    }
+
+    #[test]
+    fn system_follows_the_first_language_only_and_else_english() {
+        let system = Language::System;
+        assert_eq!(system.resolve(Some(&tag("ru-RU"))), Locale::Russian);
+        assert_eq!(system.resolve(Some(&tag("en_GB.UTF-8"))), Locale::English);
+        assert_eq!(system.resolve(Some(&tag("fr-FR"))), Locale::English);
+        assert_eq!(system.resolve(None), Locale::English);
+        let fixed = Language::Fixed(Locale::Russian);
+        assert_eq!(fixed.resolve(Some(&tag("fr-FR"))), Locale::Russian);
+        assert_eq!(fixed.resolve(None), Locale::Russian);
+    }
+
+    #[test]
+    fn the_menu_lists_system_only_where_its_language_has_a_catalog() {
+        let english = Language::Fixed(Locale::English);
+        let russian = Language::Fixed(Locale::Russian);
+        assert_eq!(
+            Language::choices(Some(&tag("ru-RU"))),
+            [Language::System, english, russian]
+        );
+        assert_eq!(
+            Language::choices(Some(&tag("en-US"))),
+            [Language::System, english, russian]
+        );
+        assert_eq!(Language::choices(Some(&tag("fr-FR"))), [english, russian]);
+        assert_eq!(Language::choices(None), [english, russian]);
+        // Where System is no entry, it is shown as English.
+        assert_eq!(Language::System.shown(Some(&tag("fr-FR"))), english);
+        assert_eq!(Language::System.shown(Some(&tag("ru"))), Language::System);
+        assert_eq!(russian.shown(Some(&tag("fr-FR"))), russian);
+    }
+
+    #[test]
+    fn a_step_moves_through_the_menu_and_stops_at_its_ends() {
+        let at = |language| Settings {
+            language,
+            ..Settings::default()
+        };
+        let english = Language::Fixed(Locale::English);
+        let russian = Language::Fixed(Locale::Russian);
+        let step = |language, system: Option<&LanguageTag>, forward| {
+            at(language).stepped_language(system, forward)
+        };
+        let ru = tag("ru-RU");
+        assert_eq!(
+            step(Language::System, Some(&ru), true),
+            OptionValue::Language(english)
+        );
+        assert_eq!(
+            step(english, Some(&ru), true),
+            OptionValue::Language(russian)
+        );
+        assert_eq!(
+            step(russian, Some(&ru), true),
+            OptionValue::Language(russian)
+        );
+        assert_eq!(
+            step(english, Some(&ru), false),
+            OptionValue::Language(Language::System)
+        );
+        assert_eq!(
+            step(Language::System, Some(&ru), false),
+            OptionValue::Language(Language::System)
+        );
+        // Shown as English, System steps on to Russian, and back stays
+        // System rather than writing English in its place.
+        let fr = tag("fr-FR");
+        assert_eq!(
+            step(Language::System, Some(&fr), true),
+            OptionValue::Language(russian)
+        );
+        assert_eq!(
+            step(Language::System, Some(&fr), false),
+            OptionValue::Language(Language::System)
+        );
+        assert_eq!(
+            step(russian, Some(&fr), false),
+            OptionValue::Language(english)
+        );
     }
 
     fn chosen(id: &str, name: &str) -> Launch {
@@ -3555,6 +3852,7 @@ mod tests {
     /// Every key away from its default.
     fn all_set() -> Settings {
         Settings {
+            language: Language::Fixed(Locale::Russian),
             on_launch: Launch::Connection {
                 id: crate::connections::ConnectionId("6a0c1f0e-5a52-4b7b-9c56-3f0c8f2f7a11".into()),
                 name: "Bookshop".into(),
@@ -3620,6 +3918,9 @@ mod tests {
             format!(
                 "\
 # written by tabletist, safe to edit by hand
+[interface]
+language = \"ru\"  # system | \"en\" | \"ru\"
+
 [startup]
 on_launch = \"conn:6a0c1f0e-5a52-4b7b-9c56-3f0c8f2f7a11\"  # Bookshop
 restore_tabs = false
@@ -3748,48 +4049,49 @@ skip = \"0.4.0\"  # a version to stop offering
         assert_eq!(
             loaded.lines,
             vec![
-                (Key::OnLaunch, 3),
-                (Key::RestoreTabs, 4),
-                (Key::PageSize, 7),
-                (Key::Timestamps, 8),
-                (Key::Tz, 9),
-                (Key::GroupDigits, 10),
-                (Key::ValueTags, 11),
-                (Key::DatePicker, 12),
-                (Key::ProductionReadOnly, 15),
-                (Key::ConfirmCloseEdits, 16),
-                (Key::IdleDisconnect, 17),
-                (Key::ShowSystemSchemas, 20),
-                (Key::NewTab, 23),
-                (Key::SqlLimit, 24),
-                (Key::SqlTimeoutSecs, 25),
-                (Key::RunScope, 26),
-                (Key::ConfirmUnsafeWrites, 27),
-                (Key::EditorKeys, 30),
-                (Key::Indent, 31),
-                (Key::Autocomplete, 32),
-                (Key::ClosePairs, 33),
-                (Key::LineNumbers, 34),
-                (Key::HighlightLine, 35),
-                (Key::Wrap, 36),
-                (Key::Keywords, 39),
-                (Key::Commas, 40),
-                (Key::HistoryKeep, 43),
-                (Key::McpEnabled, 46),
-                (Key::McpLogDays, 47),
-                (Key::McpNotify, 48),
-                (Key::Look, 51),
-                (Key::Theme, 52),
-                (Key::UiScale, 53),
-                (Key::Font, 54),
-                (Key::FontSize, 55),
-                (Key::RowHeight, 58),
-                (Key::Zebra, 59),
-                (Key::ColumnTypes, 60),
-                (Key::TableList, 61),
-                (Key::EnvBar, 64),
-                (Key::UpdatesCheck, 67),
-                (Key::UpdatesSkip, 68),
+                (Key::Language, 3),
+                (Key::OnLaunch, 6),
+                (Key::RestoreTabs, 7),
+                (Key::PageSize, 10),
+                (Key::Timestamps, 11),
+                (Key::Tz, 12),
+                (Key::GroupDigits, 13),
+                (Key::ValueTags, 14),
+                (Key::DatePicker, 15),
+                (Key::ProductionReadOnly, 18),
+                (Key::ConfirmCloseEdits, 19),
+                (Key::IdleDisconnect, 20),
+                (Key::ShowSystemSchemas, 23),
+                (Key::NewTab, 26),
+                (Key::SqlLimit, 27),
+                (Key::SqlTimeoutSecs, 28),
+                (Key::RunScope, 29),
+                (Key::ConfirmUnsafeWrites, 30),
+                (Key::EditorKeys, 33),
+                (Key::Indent, 34),
+                (Key::Autocomplete, 35),
+                (Key::ClosePairs, 36),
+                (Key::LineNumbers, 37),
+                (Key::HighlightLine, 38),
+                (Key::Wrap, 39),
+                (Key::Keywords, 42),
+                (Key::Commas, 43),
+                (Key::HistoryKeep, 46),
+                (Key::McpEnabled, 49),
+                (Key::McpLogDays, 50),
+                (Key::McpNotify, 51),
+                (Key::Look, 54),
+                (Key::Theme, 55),
+                (Key::UiScale, 56),
+                (Key::Font, 57),
+                (Key::FontSize, 58),
+                (Key::RowHeight, 61),
+                (Key::Zebra, 62),
+                (Key::ColumnTypes, 63),
+                (Key::TableList, 64),
+                (Key::EnvBar, 67),
+                (Key::UpdatesCheck, 70),
+                (Key::UpdatesSkip, 71),
             ]
         );
     }
@@ -3799,7 +4101,9 @@ skip = \"0.4.0\"  # a version to stop offering
         let before = Settings::from_toml(text).settings;
         let mut after = before.clone();
         change(&mut after);
-        after.write_into(text, &before.changed_keys(&after))
+        after
+            .write_into(text, &before.changed_keys(&after))
+            .expect("fits")
     }
 
     #[test]
@@ -4565,6 +4869,60 @@ skip = \"0.4.0\"  # a version to stop offering
     }
 
     #[test]
+    fn a_change_that_would_make_the_file_too_long_to_read_is_not_written() {
+        // 998 lines, with no `[sidebar]` table.
+        let text = format!("[data]\n{}", "# note\n".repeat(MAX_LINES - 3));
+        assert_eq!(text.lines().count(), MAX_LINES - 2);
+        let before = Settings::from_toml(&text).settings;
+        // A key of a table the file lacks: a blank line, the header and
+        // the key would make 1,001 lines, and the reader would ignore the
+        // file whole.
+        let mut after = before.clone();
+        after.show_system_schemas = !before.show_system_schemas;
+        let keys = before.changed_keys(&after);
+        assert!(!Settings::fits(&after.edited(&text, &keys).unwrap()));
+        assert_eq!(after.write_into(&text, &keys), None);
+        assert_eq!(after.write_kept(&text, &keys), None);
+        // A key of a table it has is one line more, and fits.
+        let mut after = before.clone();
+        after.page_size = 500;
+        let written = after
+            .write_into(&text, &before.changed_keys(&after))
+            .unwrap();
+        assert_eq!(written.lines().count(), MAX_LINES - 1);
+        assert!(written.starts_with("[data]\npage_size = 500"));
+        assert_eq!(Settings::from_toml(&written).settings, after);
+        // Few lines, but a table more would be more bytes than are read.
+        let wide = format!("# {}\n", "x".repeat(MAX_BYTES - 10));
+        let before = Settings::from_toml(&wide).settings;
+        let mut after = before.clone();
+        after.page_size = 500;
+        assert_eq!(after.write_into(&wide, &before.changed_keys(&after)), None);
+    }
+
+    #[test]
+    fn a_change_is_measured_once_its_keys_tables_are_written() {
+        // 998 lines: a table of a key, and comments.
+        let text = format!(
+            "[keys.unbind]\ngrid = [\"gd\"]\n{}",
+            "# note\n".repeat(MAX_LINES - 4)
+        );
+        assert_eq!(text.lines().count(), MAX_LINES - 2);
+        let before = Settings::from_toml(&text).settings;
+        assert_ne!(before.keys, crate::keymap::Overrides::default(), "{text}");
+        // A table more, and the keys' table taken out: three lines in, two
+        // out, which fits once it is whole.
+        let mut after = before.clone();
+        after.show_system_schemas = !before.show_system_schemas;
+        after.keys = crate::keymap::Overrides::default();
+        let keys = before.changed_keys(&after);
+        assert_eq!(after.write_into(&text, &keys), None);
+        let written = after.write_change(&text, &keys, true).unwrap();
+        assert!(Settings::fits(&written));
+        assert_eq!(Settings::from_toml(&written).settings, after);
+    }
+
+    #[test]
     fn what_the_app_holds_of_the_file_comes_from_what_was_loaded() {
         let text = "[data]\npage_size = 100\ngroup_digits = \"yes\"\n";
         let (settings, file) = Settings::from_toml(text).into_parts();
@@ -4876,6 +5234,7 @@ skip = \"0.4.0\"  # a version to stop offering
         assert_eq!(
             keys,
             vec![
+                Key::Language,
                 Key::OnLaunch,
                 Key::RestoreTabs,
                 Key::PageSize,
@@ -4930,6 +5289,7 @@ skip = \"0.4.0\"  # a version to stop offering
         // The sections of the General and Appearance panes hold their
         // options, in order.
         let sections = [
+            &OptionId::LANGUAGE[..],
             &OptionId::STARTUP[..],
             &OptionId::DATA[..],
             &OptionId::SAFETY[..],
@@ -5235,7 +5595,7 @@ skip = \"0.4.0\"  # a version to stop offering
             let text = settings.to_toml();
             assert!(text.contains(line), "{look:?}: {text}");
             // Written into a file too, as the window writes a change.
-            let written = settings.write_into("", &[Key::FontSize]);
+            let written = settings.write_into("", &[Key::FontSize]).unwrap();
             assert!(written.contains(line), "{look:?}: {written}");
         }
     }
@@ -5591,7 +5951,10 @@ skip = \"0.4.0\"  # a version to stop offering
             assert_eq!(loaded.settings.ui_scale, UiScale::of(scale).unwrap());
             // Read from the old key alone: the scale is to be written.
             assert_eq!(loaded.migrated(), [Key::UiScale], "{size}");
-            let written = loaded.settings.write_into(&text, &loaded.migrated());
+            let written = loaded
+                .settings
+                .write_into(&text, &loaded.migrated())
+                .unwrap();
             assert!(!written.contains("interface_size"), "{written}");
             let again = Settings::from_toml(&written);
             assert_eq!(again.settings.ui_scale, loaded.settings.ui_scale);
@@ -5601,7 +5964,10 @@ skip = \"0.4.0\"  # a version to stop offering
         let written = |size: &str| {
             let text = format!("[appearance]\ninterface_size = \"{size}\"\n");
             let loaded = Settings::from_toml(&text);
-            loaded.settings.write_into(&text, &loaded.migrated())
+            loaded
+                .settings
+                .write_into(&text, &loaded.migrated())
+                .unwrap()
         };
         assert_eq!(
             written("large"),
