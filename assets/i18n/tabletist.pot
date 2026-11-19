@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-18 21:39-0500\n"
+"POT-Creation-Date: 2026-11-19 06:43-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -816,6 +816,32 @@ msgstr ""
 #: src/ui/connect_dialog/mod.rs
 msgid "Trust and test"
 msgstr ""
+
+#: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid "checking {n} file…"
+msgid_plural "checking {n} files…"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid "{file} failed"
+msgstr ""
+
+#: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid "{n} failed"
+msgid_plural "{n} failed"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid "Read {read} of {n} file"
+msgid_plural "Read {read} of {n} files"
+msgstr[0] ""
+msgstr[1] ""
 
 #: src/ui/connect_dialog/mod.rs
 #, rust-format

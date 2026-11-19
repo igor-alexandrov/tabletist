@@ -707,3 +707,41 @@ fn keep_after_delete_brings_back_no_check_that_is_not_running() {
         crate::testing::labels(&tree)
     );
 }
+
+/// The footer's partial line is whole phrases a catalog translates, each
+/// count with its own plural: in Russian "of 4 files" and "checking 2
+/// files" take forms the English words glued together could not.
+#[test]
+fn the_footer_reads_as_whole_phrases_in_russian() {
+    use crate::i18n::Locale;
+    use crate::settings::{Language, OptionValue};
+    for look in looks() {
+        let mut harness = exports(look);
+        harness
+            .app
+            .apply(Action::SetOption(OptionValue::Language(Language::Fixed(
+                Locale::Russian,
+            ))));
+        let request = tested(&mut harness, vec![late_na()], &["customers", "orders"]);
+        let first =
+            look.label("Прочитано 3 из 4 файлов") + " · returns.csv " + &look.label("не прочитан");
+        assert!(shows(&mut harness, &first), "{}", look.name);
+        let tree = harness.settle();
+        assert!(
+            crate::testing::labels(&tree)
+                .iter()
+                .any(|label| label.ends_with(&look.label("проверяются 2 файла…"))),
+            "{}",
+            look.name
+        );
+        checked(&mut harness, request, Some(late_na()), 1);
+        let tree = harness.settle();
+        assert!(
+            crate::testing::labels(&tree)
+                .iter()
+                .any(|label| label.ends_with(&look.label("проверяется 1 файл…"))),
+            "{}",
+            look.name
+        );
+    }
+}

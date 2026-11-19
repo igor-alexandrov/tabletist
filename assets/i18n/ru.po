@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-18 21:39-0500\n"
+"POT-Creation-Date: 2026-11-19 06:43-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -854,6 +854,14 @@ msgstr[1] "Прочитано {n} файла · {size}"
 msgstr[2] "Прочитано {n} файлов · {size}"
 
 #: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid "Read {read} of {n} file"
+msgid_plural "Read {read} of {n} files"
+msgstr[0] "Прочитано {read} из {n} файла"
+msgstr[1] "Прочитано {read} из {n} файлов"
+msgstr[2] "Прочитано {read} из {n} файлов"
+
+#: src/ui/connect_dialog/mod.rs
 msgid "Trust and test"
 msgstr "Доверять и проверить"
 
@@ -863,8 +871,29 @@ msgid "Unknown SSH host key for {host}: {fingerprint}"
 msgstr "Неизвестный ключ SSH-хоста {host}: {fingerprint}"
 
 #: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid "checking {n} file…"
+msgid_plural "checking {n} files…"
+msgstr[0] "проверяется {n} файл…"
+msgstr[1] "проверяются {n} файла…"
+msgstr[2] "проверяются {n} файлов…"
+
+#: src/ui/connect_dialog/mod.rs
 msgid "from ~/.ssh/config"
 msgstr "из ~/.ssh/config"
+
+#: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid "{file} failed"
+msgstr "{file} не прочитан"
+
+#: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid "{n} failed"
+msgid_plural "{n} failed"
+msgstr[0] "{n} не прочитан"
+msgstr[1] "{n} не прочитаны"
+msgstr[2] "{n} не прочитаны"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Reset"

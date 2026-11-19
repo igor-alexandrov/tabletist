@@ -207,10 +207,10 @@ fn kind_word(kind: &str, skin: &Skin) -> String {
         "INTERVAL" => "an interval column",
         // DuckDB's own name in lower case: "a column of type blob".
         _ => {
-            return format!(
-                "{} {}",
-                skin.say("a column of type"),
-                kind.to_ascii_lowercase()
+            return put(
+                skin,
+                "a column of type {kind}",
+                &[("kind", &kind.to_ascii_lowercase())],
             );
         }
     };

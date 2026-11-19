@@ -19,7 +19,7 @@ use tabletist_db::{Driver, TlsMode};
 
 use crate::connections::PasswordMode;
 use crate::env::{EnvColors, Environment, Platform, env_colors};
-use crate::i18n::{Locale, gettext, ngettext};
+use crate::i18n::{Locale, fill, gettext, ngettext};
 use crate::keymap::{Command, Keymap, Scope};
 use crate::model::{
     Action, ConnectionForm, FilesKind, LoadedTables, SshAuthKind, SshHints, TestState,
@@ -1386,35 +1386,49 @@ fn status(form: &ConnectionForm, skin: &Skin) -> Option<Status> {
             };
             // What a Files connection's check in full still has to read:
             // "checking 2 files…".
-            let checking = match form.files_check {
-                Some((_, 1)) => Some(gettext(skin.locale, "checking 1 file…").into_owned()),
-                Some((_, left)) => Some(format!(
-                    "{} {left} {}",
-                    gettext(skin.locale, "checking"),
-                    gettext(skin.locale, "files…")
-                )),
-                None => None,
-            };
+            let plural = |count: usize| u32::try_from(count).unwrap_or(u32::MAX);
+            let checking = form.files_check.map(|(_, left)| {
+                fill(
+                    &ngettext(
+                        skin.locale,
+                        "checking {n} file…",
+                        "checking {n} files…",
+                        plural(left),
+                    ),
+                    &[("{n}", &left.to_string())],
+                )
+            });
             // Some files it could not read: "Read 3 of 4 files · returns.csv
             // failed", or with several, how many.
             if let Some(read) = read.filter(|read| !read.failed.is_empty()) {
                 // The file's own name keeps its case: only the words take
-                // the look's.
-                let failed = skin.say("failed");
+                // the look's, so it goes in after them.
                 let failed = match read.failed.as_slice() {
-                    [one] => format!("{} {failed}", one.file),
-                    many => format!("{} {failed}", many.len()),
+                    [one] => fill(
+                        &skin.look.label(&gettext(skin.locale, "{file} failed")),
+                        &[("{file}", &one.file)],
+                    ),
+                    many => fill(
+                        &skin.look.label(&ngettext(
+                            skin.locale,
+                            "{n} failed",
+                            "{n} failed",
+                            plural(many.len()),
+                        )),
+                        &[("{n}", &many.len().to_string())],
+                    ),
                 };
-                let mut text = skin.look.label(&format!(
-                    "{} {} {} {} {}",
-                    gettext(skin.locale, "Read"),
-                    read.files - read.failed.len(),
-                    gettext(skin.locale, "of"),
-                    read.files,
-                    match read.files {
-                        1 => gettext(skin.locale, "file"),
-                        _ => gettext(skin.locale, "files"),
-                    },
+                let mut text = skin.look.label(&fill(
+                    &ngettext(
+                        skin.locale,
+                        "Read {read} of {n} file",
+                        "Read {read} of {n} files",
+                        plural(read.files),
+                    ),
+                    &[
+                        ("{read}", &(read.files - read.failed.len()).to_string()),
+                        ("{n}", &read.files.to_string()),
+                    ],
                 ));
                 text = format!("{text} · {failed}");
                 if let Some(checking) = checking {
@@ -1425,17 +1439,14 @@ fn status(form: &ConnectionForm, skin: &Skin) -> Option<Status> {
             let mut text = match read {
                 // What a Files connection's Test read: "Read 3 files ·
                 // 2.4 GB".
-                Some(read) => {
-                    let plural = u32::try_from(read.files).unwrap_or(u32::MAX);
-                    ngettext(
-                        skin.locale,
-                        "Read {n} file · {size}",
-                        "Read {n} files · {size}",
-                        plural,
-                    )
-                    .replace("{n}", &read.files.to_string())
-                    .replace("{size}", &tabletist_db::files::size_text(read.bytes))
-                }
+                Some(read) => ngettext(
+                    skin.locale,
+                    "Read {n} file · {size}",
+                    "Read {n} files · {size}",
+                    plural(read.files),
+                )
+                .replace("{n}", &read.files.to_string())
+                .replace("{size}", &tabletist_db::files::size_text(read.bytes)),
                 None => format!("{} · {}", gettext(skin.locale, "Connected"), driver.label()),
             };
             if let Some(took) = form.test_took {
