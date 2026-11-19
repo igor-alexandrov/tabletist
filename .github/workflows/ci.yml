@@ -43,6 +43,20 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  # The translation template and every catalog are in step with the code.
+  # The script needs gettext 1.0 or later. Ubuntu's is too old to read
+  # Rust; Homebrew's is new enough.
+  translations:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          brew install gettext
+          echo "$(brew --prefix gettext)/bin" >> "$GITHUB_PATH"
+      - run: assets/i18n/update.sh --check
+      - run: assets/i18n/update_test.sh
+
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

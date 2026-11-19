@@ -135,6 +135,11 @@ pub struct App {
     /// The last named zone the settings had this session: the Omarchy
     /// screen's steps reach it after a step off it.
     pub named_zone: Option<String>,
+    /// The system's first language as the app found it at its start:
+    /// what the System language of the settings follows.
+    pub system_language: Option<crate::i18n::LanguageTag>,
+    /// The language the window is drawn in: the settings' language,
+    /// resolved against [`App::system_language`].
     pub locale: Locale,
     pub palette: Palette,
     pub look: crate::theme::Look,
@@ -448,6 +453,8 @@ impl App {
         // An installed data font is read once the window exists (`attach`).
         let look = crate::theme::Look::chosen(settings.look, crate::update::release::Os::current())
             .with_text(&settings, false);
+        let system_language = system_language();
+        let locale = settings.language.resolve(system_language.as_ref());
         let mut app = Self {
             dirs,
             settings,
@@ -458,7 +465,8 @@ impl App {
             stopped_clock: None,
             named_zone,
             zones: None,
-            locale: Locale::default(),
+            system_language,
+            locale,
             palette: Palette::dark(),
             look,
             keymap: std::sync::Arc::default(),
@@ -5247,7 +5255,8 @@ impl App {
                 // takes the statements over.
                 let ran = sql.in_flight.as_ref().map(|run| {
                     let base = crate::history::Entry {
-                        detail: format!("{} {}", gettext(locale, "Query"), sql.number),
+                        detail: gettext(locale, "Query {n}")
+                            .replace("{n}", &sql.number.to_string()),
                         read_only: run.mode == tabletist_db::ScriptMode::ReadOnly,
                         at_ms: base.at_ms.saturating_sub(
                             i64::try_from(run.started.elapsed().as_millis()).unwrap_or_default(),
@@ -6098,6 +6107,12 @@ impl App {
     pub fn apply_settings(&mut self, new: Settings) {
         let was_on = self.agents_on();
         let old = std::mem::replace(&mut self.settings, new);
+        // A language of its own or the system's: the window is drawn in it
+        // from the next frame, and the menu bar is described again then.
+        self.locale = self
+            .settings
+            .language
+            .resolve(self.system_language.as_ref());
         // The keys: the text they were read from is the file's now.
         self.refresh_keymap();
         let terminal = self.look.terminal;
@@ -6660,6 +6675,16 @@ fn week_start() -> jiff::civil::Weekday {
         fastframe_i18n::system_languages(),
     );
     crate::dates::first_weekday(region.as_deref())
+}
+
+/// The system's first language ([`crate::i18n::first_system_language`]).
+/// None in a test, whatever the machine's, so what tests show is English:
+/// a test of the System language sets `App::system_language`.
+fn system_language() -> Option<crate::i18n::LanguageTag> {
+    if cfg!(test) {
+        return None;
+    }
+    crate::i18n::first_system_language()
 }
 
 /// The computer's time zone, or UTC where it cannot be found. Tests have
@@ -9556,18 +9581,16 @@ pub fn copy_said(locale: crate::i18n::Locale, copying: &Copying, how: How) -> St
         Copied::Text { statements, .. } => {
             let size = (copying.rows, copying.cols);
             let what = crate::selection::size_words(locale, size, copying.whole_rows);
-            let copied = gettext(locale, "Copied");
             match how {
                 How::ColumnNames => {
                     let names = counted(locale, copying.cols, "column name", "column names");
-                    format!("{copied} {names}")
+                    gettext(locale, "Copied {what}").replace("{what}", &names)
                 }
-                How::Plain => format!("{copied} {what} {} TSV", gettext(locale, "as")),
+                How::Plain => gettext(locale, "Copied {what} as TSV").replace("{what}", &what),
                 How::As(format) => {
-                    let said = format!(
-                        "{copied} {what} {} {}",
-                        gettext(locale, "as"),
-                        format.name()
+                    let said = crate::i18n::fill(
+                        &gettext(locale, "Copied {what} as {format}"),
+                        &[("{what}", &what), ("{format}", format.name())],
                     );
                     if format == crate::export::Format::SqlInsert {
                         let made = counted(locale, *statements, "statement", "statements");

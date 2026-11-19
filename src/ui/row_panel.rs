@@ -11,7 +11,7 @@ use tabletist_db::{Value, ValueKind};
 
 use crate::edit::{Editor, Lock, State, Table, Unset};
 use crate::format;
-use crate::i18n::gettext;
+use crate::i18n::{gettext, ngettext, pgettext};
 use crate::keymap::Command;
 use crate::model::{Action, CellPos, ConnTabId, RowFields, Tab, TabId, Workspace};
 use crate::style::Icon;
@@ -353,7 +353,7 @@ fn source(workspace: &Workspace, id: TabId, locale: crate::i18n::Locale) -> Opti
         Tab::Sql(sql) => {
             let (columns, rows, _) = sql.shown_rows()?;
             Some(Source {
-                name: format!("{} {}", gettext(locale, "Query"), sql.number),
+                name: gettext(locale, "Query {n}").replace("{n}", &sql.number.to_string()),
                 columns,
                 rows,
                 // The cell only while its row shows: under the Messages
@@ -655,8 +655,14 @@ fn draw(
                 let role = TextRole::OBody;
                 let mut x = header.left() + side;
                 let (word, ink) = match fresh {
-                    Some(_) => (format!("+ {}", gettext(locale, "new row")), green.bar),
-                    None => (gettext(locale, "row").into_owned(), palette.text),
+                    Some(_) => (
+                        format!("+ {}", pgettext(locale, "label", "new row")),
+                        green.bar,
+                    ),
+                    None => (
+                        pgettext(locale, "row panel title", "row").into_owned(),
+                        palette.text,
+                    ),
                 };
                 let word = Text::one(&look, TextRole::OGroup, &word, ink);
                 x += widgets::paint_label(ui, x, y, word) + 10.0;
@@ -795,10 +801,11 @@ fn draw(
             } else {
                 let title = match (&key_column, &key_value, &fresh) {
                     (_, _, Some(_)) => gettext(locale, "New row").into_owned(),
-                    (Some(key), Some(value), None) => {
-                        format!("{} · {key} {value}", gettext(locale, "Row"))
-                    }
-                    _ => format!("{} {number}", gettext(locale, "Row")),
+                    (Some(key), Some(value), None) => crate::i18n::fill(
+                        &gettext(locale, "Row · {key} {value}"),
+                        &[("{key}", key), ("{value}", value)],
+                    ),
+                    _ => gettext(locale, "Row {n}").replace("{n}", &number.to_string()),
                 };
                 // The title over the table's name, centred in the 52.
                 let (title_role, sub_role) = (TextRole::UiBodySemibold, TextRole::FieldLabel);
@@ -1481,7 +1488,9 @@ fn was(ui: &mut egui::Ui, col: usize, column: &str, skin: FieldSkin<'_>) -> bool
     };
     ui.add_space(if look.terminal { 2.0 } else { 3.0 });
     let role = caption(look);
-    let text = format!("{} {}", look.label(&gettext(locale, "was")), pending.was);
+    let text = look
+        .label(&gettext(locale, "was {value}"))
+        .replace("{value}", &pending.was);
     let width = ui.available_width();
     if look.terminal {
         // Its key reverts: `u`.
@@ -1646,7 +1655,7 @@ fn field(
     };
     // A screen reader hears the mark as a word.
     let name = if pending {
-        format!("{text}, {}", gettext(locale, "pending"))
+        gettext(locale, "{value}, pending").replace("{value}", &text)
     } else {
         text.clone()
     };
@@ -1675,8 +1684,10 @@ fn field(
         },
     );
     if let Some(pending) = pending_cell.filter(|_| pending) {
-        let from = gettext(locale, "changed from");
-        said = format!("{said}, {from} {}", pending.was);
+        said = crate::i18n::fill(
+            &gettext(locale, "{value}, changed from {old}"),
+            &[("{value}", &said), ("{old}", &pending.was)],
+        );
     }
     if let Some(words) = &info.doubt {
         said = format!("{said}, {words}");
@@ -1694,7 +1705,7 @@ fn field(
     // the terminal look's has its hints: there it is said under the value.
     let was = pending_cell
         .filter(|_| pending && !look.terminal && doc.is_none())
-        .map(|cell| format!("{} {}", gettext(locale, "was"), cell.was));
+        .map(|cell| gettext(locale, "was {value}").replace("{value}", &cell.was));
     let revert = gettext(locale, "revert");
     let revert_width = measure(" · ") + measure(&revert);
     // The label gives way to it, down to a few words of what the cell was.
@@ -2762,11 +2773,8 @@ fn value_of(
             ("gd open".to_owned(), target.clone())
         } else {
             (
-                format!(
-                    "{} {} →",
-                    gettext(locale, "Open"),
-                    singular(&format::display_safe(&target.name))
-                ),
+                gettext(locale, "Open {table} →")
+                    .replace("{table}", &singular(&format::display_safe(&target.name))),
                 target.clone(),
             )
         }
@@ -2858,11 +2866,8 @@ fn value_of(
                 let link = Text::one(look, small, &text, palette.accent)
                     .layout(ui.ctx())
                     .label_sense(ui, Sense::click());
-                let name = format!(
-                    "{} {}",
-                    gettext(locale, "Open"),
-                    format::display_safe(&target.name)
-                );
+                let name = gettext(locale, "Open {table}")
+                    .replace("{table}", &format::display_safe(&target.name));
                 link.widget_info(|| WidgetInfo::labeled(WidgetType::Link, true, &name));
                 if link.clicked() {
                     actions.push(Action::FollowForeignKey {
@@ -2995,11 +3000,15 @@ fn elements(
         }
         let more = array.items.len() - shown;
         if more > 0 {
-            let rest = format!(
-                "… {} {}",
-                format::group_digits(more as u64),
-                look.label(&gettext(locale, "more elements"))
-            );
+            let plural = u32::try_from(more).unwrap_or(u32::MAX);
+            let rest = look
+                .label(&ngettext(
+                    locale,
+                    "… {n} more elements",
+                    "… {n} more elements",
+                    plural,
+                ))
+                .replace("{n}", &format::group_digits(more as u64));
             Text::one(look, role, &rest, palette.faint)
                 .layout(ui.ctx())
                 .label(ui);
@@ -3116,7 +3125,7 @@ fn format_link(
     // The large editor's own key for it: Omarchy's `=` is a SQL tab's.
     let scope = crate::keymap::Scope::CellEditor;
     let chord = crate::ui::keys::written_in(ui.ctx(), look, Command::Format, scope);
-    let label = format!("{} {chord}", gettext(locale, "Format"));
+    let label = gettext(locale, "Format {key}").replace("{key}", &chord);
     let role = TextRole::FieldLabel;
     let size = vec2(
         role.width(ui.ctx(), look.faces, &label),
@@ -3416,11 +3425,10 @@ fn editing_footer(
     let measure = |text: &str| note_role.width(ui.ctx(), look.faces, text);
     // And, as the design's hint ends, the keys that copy and delete.
     let key = |command| crate::ui::keys::written(ui.ctx(), look, command);
-    let click = gettext(locale, "Click a value or press");
-    let edit = gettext(locale, "to edit");
+    let edit = gettext(locale, "Click a value or press {key} to edit")
+        .replace("{key}", &key(Command::OpenInspector));
     let said = format!(
-        "{click} {} {edit} · {} · {}",
-        key(Command::OpenInspector),
+        "{edit} · {} · {}",
         key(Command::DuplicateRow),
         key(Command::DeleteRow)
     );

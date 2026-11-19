@@ -24,16 +24,13 @@ pub fn show(ctx: &egui::Context, paint: Paint, prompt: &HostKeyPrompt) -> Vec<Ac
             &look,
         );
         ui.add_space(4.0);
-        let message = format!(
-            "{}:{} {}",
-            prompt.host,
-            prompt.port,
-            gettext(
-                locale,
-                "has a key this computer has not seen before. \
-                 Compare its fingerprint with the server's before trusting it."
-            )
-        );
+        let message = gettext(
+            locale,
+            "{host}:{port} has a key this computer has not seen before. \
+             Compare its fingerprint with the server's before trusting it.",
+        )
+        .replace("{port}", &prompt.port.to_string())
+        .replace("{host}", &prompt.host);
         let width = ui.available_width();
         Text::one(&look, widgets::body(&look), &message, palette.secondary)
             .wrap(width)

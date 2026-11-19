@@ -65,7 +65,7 @@ pub fn row_name(how: CopyHow, row: bool, locale: crate::i18n::Locale) -> String 
         CopyHow::ColumnNames => gettext(locale, "Column names").into_owned(),
     };
     if row {
-        format!("{} {name}", gettext(locale, "Copy row as"))
+        gettext(locale, "Copy row as {format}").replace("{format}", &name)
     } else {
         name
     }

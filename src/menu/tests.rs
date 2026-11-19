@@ -1074,6 +1074,30 @@ fn the_bar_is_built_again_only_when_an_item_s_key_changed() {
 }
 
 #[test]
+fn the_bar_is_built_again_in_a_language_chosen_in_settings() {
+    use crate::i18n::Locale;
+    use crate::settings::Language;
+    let mut harness = Harness::new();
+    let Described { items, menus, .. } = describe(Platform::MacOs, &harness.app);
+    let mut keyed = Keyed::new(&items, &harness.app);
+    assert!(menus.iter().any(|menu| menu.title == "View"));
+    harness
+        .app
+        .change_settings(|settings| settings.language = Language::Fixed(Locale::Russian));
+    assert_eq!(harness.app.locale, Locale::Russian);
+    // The keys are as they were, but the words are not: built again.
+    let keys = keyed
+        .rekey(&items, &harness.app)
+        .expect("the language changed");
+    assert_eq!(keys, keyed.keys);
+    // Asked once.
+    assert_eq!(keyed.rekey(&items, &harness.app), None);
+    let Described { menus, .. } = describe(Platform::MacOs, &harness.app);
+    let titles: Vec<&str> = menus.iter().map(|menu| menu.title.as_str()).collect();
+    assert!(titles.contains(&"Вид"), "{titles:?}");
+}
+
+#[test]
 fn run_all_is_enabled_as_each_edit_leaves_the_script() {
     let (mut harness, tab) = sql_editor();
     let run_all = Item::Command(Command::RunAll);

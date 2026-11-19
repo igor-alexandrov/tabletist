@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use crate::backend::export::{ExportFailure, ExportJob};
 use crate::export::{Format, Options};
-use crate::i18n::{Locale, gettext, ngettext};
+use crate::i18n::{Locale, fill, gettext, ngettext};
 use crate::model::{ConnTabId, TabId};
 
 /// Which rows an export writes.
@@ -292,11 +292,10 @@ impl ExportSheet {
                     let name = column.name.clone();
                     self.columns.insert(to, column);
                     self.column = to;
-                    return Some(
-                        gettext(locale, "{column} moved to position {n}")
-                            .replace("{column}", &name)
-                            .replace("{n}", &(to + 1).to_string()),
-                    );
+                    return Some(fill(
+                        &gettext(locale, "{column} moved to position {n}"),
+                        &[("{column}", &name), ("{n}", &(to + 1).to_string())],
+                    ));
                 }
             }
             ExportChange::AllColumns => self.columns.iter_mut().for_each(|c| c.included = true),
@@ -697,12 +696,16 @@ pub fn failure_words(
             try_again,
         ),
         ExportFailure::ConnectionLost { rows: lost } => (
-            gettext(
-                locale,
-                "Connection to {connection} was lost after {rows}. The partial file was removed.",
-            )
-            .replace("{connection}", &exporting.connection)
-            .replace("{rows}", &of_total((*lost).max(rows), total, locale)),
+            fill(
+                &gettext(
+                    locale,
+                    "Connection to {connection} was lost after {rows}. The partial file was removed.",
+                ),
+                &[
+                    ("{connection}", &exporting.connection),
+                    ("{rows}", &of_total((*lost).max(rows), total, locale)),
+                ],
+            ),
             try_again,
         ),
         ExportFailure::Timeout { after } => (
@@ -728,9 +731,13 @@ pub fn failure_words(
             Some(gettext(locale, "Export…").into_owned()),
         ),
         ExportFailure::Other(why) => (
-            gettext(locale, "Couldn't export {table}: {why}.")
-                .replace("{table}", &exporting.table)
-                .replace("{why}", why.trim_end_matches('.')),
+            fill(
+                &gettext(locale, "Couldn't export {table}: {why}."),
+                &[
+                    ("{table}", &exporting.table),
+                    ("{why}", why.trim_end_matches('.')),
+                ],
+            ),
             try_again,
         ),
     }
@@ -800,12 +807,16 @@ pub fn failure_line(
         ExportFailure::TooLarge => {
             gettext(locale, "✗ that's over 20 mb · :export to a file").into_owned()
         }
-        ExportFailure::Other(why) => gettext(
-            locale,
-            "✗ couldn't export {table}: {why} · :export to retry",
-        )
-        .replace("{table}", &exporting.table)
-        .replace("{why}", why.trim_end_matches('.')),
+        ExportFailure::Other(why) => fill(
+            &gettext(
+                locale,
+                "✗ couldn't export {table}: {why} · :export to retry",
+            ),
+            &[
+                ("{table}", &exporting.table),
+                ("{why}", why.trim_end_matches('.')),
+            ],
+        ),
     };
     line.to_lowercase()
 }
@@ -1011,9 +1022,8 @@ mod tests {
         );
     }
 
-    /// The disk-full sentence says what was written when it filled up.
-    #[test]
-    fn a_full_disk_says_what_was_written() {
+    /// An export of `books` from Bookshop that failed with `failure`.
+    fn failed(failure: ExportFailure) -> Exporting {
         let job = crate::backend::export::ExportJob {
             id: crate::backend::export::ExportId(1),
             open: crate::backend::export::Opener {
@@ -1033,8 +1043,7 @@ mod tests {
             dialect: tabletist_db::Dialect::Sqlite,
             destination: crate::backend::export::Destination::Clipboard,
         };
-        let failure = ExportFailure::DiskFull { written: 6_100_000 };
-        let exporting = Exporting {
+        Exporting {
             job,
             tab: ConnTabId(1),
             table: "books".into(),
@@ -1048,7 +1057,7 @@ mod tests {
             statement: None,
             sheet: Box::new(sheet()),
             status: ExportStatus::Failed {
-                failure: failure.clone(),
+                failure,
                 rows: 24_560,
                 bytes: 0,
                 at: Instant::now(),
@@ -1058,7 +1067,14 @@ mod tests {
             announced: None,
             reopens: false,
             history: None,
-        };
+        }
+    }
+
+    /// The disk-full sentence says what was written when it filled up.
+    #[test]
+    fn a_full_disk_says_what_was_written() {
+        let failure = ExportFailure::DiskFull { written: 6_100_000 };
+        let exporting = failed(failure.clone());
         let (words, action) =
             failure_words(&exporting, &failure, (24_560, 0), None, Locale::English);
         assert_eq!(
@@ -1069,6 +1085,36 @@ mod tests {
         assert_eq!(
             failure_line(&exporting, &failure, (24_560, 0), None, Locale::English),
             "✗ disk full after 6.1 of ≈ 7.8 mb · partial file removed · :export to retry"
+        );
+    }
+
+    /// A moved column called `{n}` is said as it is called.
+    #[test]
+    fn a_moved_braced_column_is_said_as_it_is() {
+        let mut sheet = sheet();
+        sheet.columns[2].name = "{n}".into();
+        let said = sheet.change(ExportChange::Move { from: 2, by: -2 }, Locale::English);
+        assert_eq!(said.as_deref(), Some("{n} moved to position 1"));
+    }
+
+    /// A name that holds another placeholder's name is written as it is.
+    #[test]
+    fn a_failure_writes_a_braced_name_as_it_is() {
+        let failure = ExportFailure::Other("disk said no".into());
+        let mut exporting = failed(failure.clone());
+        exporting.table = "{why}".into();
+        exporting.connection = "{rows}".into();
+        let (words, _) = failure_words(&exporting, &failure, (0, 0), None, Locale::English);
+        assert_eq!(words, "Couldn't export {why}: disk said no.");
+        assert_eq!(
+            failure_line(&exporting, &failure, (0, 0), None, Locale::English),
+            "✗ couldn't export {why}: disk said no · :export to retry"
+        );
+        let lost = ExportFailure::ConnectionLost { rows: 10 };
+        let (words, _) = failure_words(&exporting, &lost, (10, 0), None, Locale::English);
+        assert!(
+            words.starts_with("Connection to {rows} was lost after 10 of"),
+            "{words}"
         );
     }
 

@@ -7,7 +7,7 @@
 use egui::{Frame, Id, Margin, Rect, pos2, vec2};
 
 use crate::connections::{SavedConnection, SavedConnections};
-use crate::i18n::{gettext, ngettext};
+use crate::i18n::{gettext, ngettext, pgettext};
 use crate::keymap::Keymap;
 use crate::model::{Action, AgentsHere, AgentsView, ConnTabId, Workspace};
 use crate::style::Icon;
@@ -226,26 +226,29 @@ pub fn show(
                 }
                 left = child.min_rect().right().max(place.right()) + 12.0;
             }
-            let on = look.label(&gettext(locale, "Agents on"));
+            // The words either side of the connection's name, which is
+            // drawn in its own weight.
+            let on = look.label(&gettext(locale, "Agents on {connection}"));
+            let (before, after) = crate::i18n::around(&on, "{connection}");
             // A connection's name gives way at its end to a narrow tab.
             let strong = TextRole::pick(&look, TextRole::UiBodyStrong, TextRole::OBody);
             let body = widgets::body(&look);
-            let around = body.width(ui.ctx(), look.faces, &format!("{on}  · {access}"));
+            let around = body.width(ui.ctx(), look.faces, &format!("{before}{after} · {access}"));
             let room = (right - left - around).max(0.0);
             let name = crate::ui::grid::ellipsize(&connection, room, false, |text| {
                 strong.width(ui.ctx(), look.faces, text)
             });
             let line = Text::new(&look)
-                .add(widgets::body(&look), &on, palette.secondary)
-                .space(widgets::body(&look), " ")
+                .add(widgets::body(&look), before, palette.secondary)
                 .add(strong, &name, palette.text)
                 .add(
                     widgets::body(&look),
-                    &format!(" · {access}"),
+                    &format!("{after} · {access}"),
                     palette.secondary,
                 );
             widgets::paint_text(ui, left, full.center().y, line);
-            widgets::announce(ui, full, &format!("{on} {connection} · {access}"));
+            let said = on.replace("{connection}", &connection);
+            widgets::announce(ui, full, &format!("{said} · {access}"));
         });
     if !look.terminal {
         status_bar(ui, tab, (&here, &show_key), (&look, &palette, locale));
@@ -318,7 +321,8 @@ pub fn show(
                     }
                 }
                 AgentsHere::OffHere => {
-                    let title = format!("{} {connection}", gettext(locale, "Agents can't use"));
+                    let title = gettext(locale, "Agents can't use {connection}")
+                        .replace("{connection}", &connection);
                     let notice = states::Notice {
                         icon: Icon::SquareTerminal,
                         title: &title,
@@ -431,7 +435,7 @@ fn status_bar(
         AgentsHere::ServerOff => gettext(locale, "Server: off"),
         _ => gettext(locale, "Server: stdio"),
     };
-    let shows = format!("{} {}", key.as_str(), gettext(locale, "shows this tab"));
+    let shows = gettext(locale, "{key} shows this tab").replace("{key}", key.as_str());
     egui::Panel::bottom(Id::new(("agents-status", tab.0)))
         .exact_size(STATUS)
         .resizable(false)
@@ -488,7 +492,8 @@ fn none_connected(
         text.job_mut().halign = align;
         text.layout(&ctx)
     };
-    let title = format!("{} {connection}", gettext(locale, "No agents connected to"));
+    let title =
+        gettext(locale, "No agents connected to {connection}").replace("{connection}", connection);
     let text = gettext(
         locale,
         "Agents like Claude Code can read this database. Connect one with this command, then ask it about {name}.",
@@ -641,7 +646,10 @@ impl Elsewhere {
     /// "Cursor on Bookshop · staging", or "Cursor · no connection yet".
     fn said(&self, locale: crate::i18n::Locale) -> String {
         match &self.on {
-            Some((_, name)) => format!("{} {} {name}", self.agent, gettext(locale, "on")),
+            Some((_, name)) => crate::i18n::fill(
+                &gettext(locale, "{agent} on {connection}"),
+                &[("{agent}", &self.agent), ("{connection}", name)],
+            ),
             None => format!("{} · {}", self.agent, gettext(locale, "no connection yet")),
         }
     }
@@ -782,7 +790,7 @@ fn session_rows(
         let small = widgets::secondary(look);
         let mut said = format!("{agent} · {facts}");
         if let Some(runs_as) = runs_as {
-            let runs = format!("{} {runs_as}", gettext(locale, "Runs as"));
+            let runs = gettext(locale, "Runs as {environment}").replace("{environment}", runs_as);
             let laid = Text::one(look, small, &runs, palette.secondary).layout(ui.ctx());
             laid.paint_left(ui.painter(), right - laid.width(), line.center().y);
             right -= laid.width() + 16.0;
@@ -820,11 +828,10 @@ fn session_facts(session: &tabletist_mcp::SessionInfo, locale: crate::i18n::Loca
     if let Some(project) = &session.project {
         facts.push(project.clone());
     }
-    facts.push(format!(
-        "{} {}",
-        gettext(locale, "connected"),
-        crate::clock::hour(session.connected_at)
-    ));
+    facts.push(
+        gettext(locale, "connected {time}")
+            .replace("{time}", &crate::clock::hour(session.connected_at)),
+    );
     facts.push(
         ngettext(
             locale,
@@ -870,7 +877,8 @@ fn terminal_activity(
                 widgets::hline(ui, line.x_range(), line.bottom() - 0.5, palette.outline);
                 let mut facts = session_facts(session, locale);
                 if let Some(runs_as) = runs_as {
-                    facts = format!("{facts} · {} {runs_as}", gettext(locale, "runs as"));
+                    let runs = gettext(locale, "runs as {environment}");
+                    facts = format!("{facts} · {}", runs.replace("{environment}", runs_as));
                 }
                 let agent = look.label(&crate::model::agent_name(session));
                 let strong = TextRole::pick(look, TextRole::UiBodyStrong, TextRole::OBody);
@@ -933,7 +941,7 @@ fn terminal_nav(
     show_key: &crate::keymap::Written,
     (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
 ) {
-    let shows = format!("{} {}", show_key.as_str(), gettext(locale, "shows"));
+    let shows = gettext(locale, "{key} shows").replace("{key}", show_key.as_str());
     // A narrow window gives the calls the room the list would take.
     let nav = NAV.min(ui.available_width() * 0.35);
     egui::Panel::left(Id::new(("agents-sessions", tab.0)))
@@ -1137,7 +1145,7 @@ fn log_view(
             .add(body, keys.filter.as_str(), palette.accent)
             .add(
                 body,
-                &format!(" {}", look.label(&gettext(locale, "filter"))),
+                &format!(" {}", look.label(&pgettext(locale, "label", "filter"))),
                 palette.secondary,
             );
         if log.total > 0 {
@@ -1875,17 +1883,16 @@ fn terminal_filters(
         // "filters  agent cursor · result refused · search “select”".
         let mut said = Vec::new();
         if let Some(agent) = &log.agent {
-            said.push(format!("{} {}", gettext(locale, "agent"), agent));
+            said.push(gettext(locale, "agent {name}").replace("{name}", agent));
         }
         if let Some(result) = &log.result {
-            said.push(format!(
-                "{} {}",
-                gettext(locale, "result"),
-                result_word(result, locale)
-            ));
+            said.push(
+                gettext(locale, "result {result}")
+                    .replace("{result}", &result_word(result, locale)),
+            );
         }
         if !log.search.is_empty() {
-            said.push(format!("{} “{}”", gettext(locale, "search"), log.search));
+            said.push(gettext(locale, "search “{text}”").replace("{text}", &log.search));
         }
         let line = Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), FILTER_ROW));
         let words = look.label(&said.join(" · "));
@@ -2123,7 +2130,7 @@ fn log_detail(entry: &tabletist_mcp::Entry, locale: crate::i18n::Locale) -> Stri
                         count("{n} column", "{n} columns", columns)
                     );
                 }
-                said.push(format!("{returned} {}", gettext(locale, "returned")));
+                said.push(gettext(locale, "{what} returned").replace("{what}", &returned));
             }
             (_, None) => {}
         }

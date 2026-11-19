@@ -1,0 +1,3523 @@
+# Russian translations for Tabletist package.
+# Copyright (C) 2026 Tabletist contributors
+# This file is distributed under the same license as the Tabletist package.
+# Automatically generated, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Tabletist\n"
+"Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
+"POT-Creation-Date: 2026-11-18 21:39-0500\n"
+"PO-Revision-Date: 2026-11-17 22:38-0500\n"
+"Last-Translator: Automatically generated\n"
+"Language-Team: none\n"
+"Language: ru\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && "
+"n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
+
+#: crates/tabletist-core/src/export_sheet.rs
+#, rust-format
+msgid "! {path} exists · :w! to replace, or another name"
+msgstr "! {path} уже существует · :w!: заменить, или другое имя"
+
+#: crates/tabletist-core/src/export_sheet.rs
+#, rust-format
+msgid "Can't write to {folder}. Permission denied."
+msgstr "Не удаётся записать в {folder}. Доступ запрещён."
+
+#: crates/tabletist-core/src/export_sheet.rs
+msgid "Choose folder…"
+msgstr "Выбрать папку…"
+
+#: crates/tabletist-core/src/export_sheet.rs
+#, rust-format
+msgid ""
+"Connection to {connection} was lost after {rows}. The partial file was "
+"removed."
+msgstr ""
+"Соединение с {connection} прервалось после {rows}. Неполный файл удалён."
+
+#: crates/tabletist-core/src/export_sheet.rs
+#, rust-format
+msgid "Couldn't export {table}: {why}."
+msgstr "Не удалось экспортировать {table}: {why}."
+
+#: crates/tabletist-core/src/export_sheet.rs src/ui/agents.rs
+#: src/ui/data_view.rs src/ui/export.rs src/ui/sql_results.rs src/ui/toast.rs
+msgid "Export…"
+msgstr "Экспорт…"
+
+#: crates/tabletist-core/src/export_sheet.rs src/ui/export.rs
+#: src/ui/pending_bar.rs
+msgid "Review SQL"
+msgstr "Показать SQL"
+
+#: crates/tabletist-core/src/export_sheet.rs
+msgid "That's more than 10,000 rows. Export to a file?"
+msgstr "Это больше 10 000 строк. Экспортировать в файл?"
+
+#: crates/tabletist-core/src/export_sheet.rs src/app.rs
+msgid "That's over 20 MB. Export to a file?"
+msgstr "Это больше 20 МБ. Экспортировать в файл?"
+
+#: crates/tabletist-core/src/export_sheet.rs
+#, rust-format
+msgid "The disk is full. {written} written. The partial file was removed."
+msgstr "Диск заполнен. Записано: {written}. Неполный файл удалён."
+
+#: crates/tabletist-core/src/export_sheet.rs
+#, rust-format
+msgid ""
+"The server stopped the query after {time} (statement_timeout on "
+"{connection})."
+msgstr ""
+"Сервер остановил запрос через {time} (statement_timeout на {connection})."
+
+#: crates/tabletist-core/src/export_sheet.rs src/ui/ddl.rs
+msgid "Try again"
+msgstr "Повторить"
+
+#: crates/tabletist-core/src/export_sheet.rs
+#, rust-format
+msgid "about {n} min left"
+msgstr "осталось около {n} мин"
+
+#: crates/tabletist-core/src/export_sheet.rs
+#, rust-format
+msgid "about {n} s left"
+msgstr "осталось около {n} с"
+
+#: crates/tabletist-core/src/export_sheet.rs
+#, rust-format
+msgid "{column} moved to position {n}"
+msgstr "Столбец {column} перемещён на позицию {n}"
+
+#: crates/tabletist-core/src/export_sheet.rs
+#, rust-format
+msgid "{done} of {total} rows"
+msgstr "{done} из {total} строк"
+
+#: crates/tabletist-core/src/export_sheet.rs
+#, rust-format
+msgid "{file} already exists. Nothing was replaced."
+msgstr "{file} уже существует. Ничего не заменено."
+
+#: crates/tabletist-core/src/export_sheet.rs
+#, rust-format
+msgid "{n} byte"
+msgid_plural "{n} bytes"
+msgstr[0] "{n} байт"
+msgstr[1] "{n} байта"
+msgstr[2] "{n} байт"
+
+#: crates/tabletist-core/src/export_sheet.rs crates/tabletist-core/src/i18n.rs
+#: src/ui/data_view.rs src/ui/history.rs src/ui/workspace.rs
+#, rust-format
+msgid "{n} row"
+msgid_plural "{n} rows"
+msgstr[0] "{n} строка"
+msgstr[1] "{n} строки"
+msgstr[2] "{n} строк"
+
+#: crates/tabletist-core/src/export_sheet.rs
+#, rust-format
+msgid "✗ can't write {path}: permission denied · :w another path"
+msgstr "✗ не удаётся записать {path}: доступ запрещён · :w в другой путь"
+
+#: crates/tabletist-core/src/export_sheet.rs
+#, rust-format
+msgid ""
+"✗ connection lost after {rows} · partial file removed · :export to retry"
+msgstr ""
+"✗ соединение прервалось после {rows} · неполный файл удалён · :export: "
+"повторить"
+
+#: crates/tabletist-core/src/export_sheet.rs
+#, rust-format
+msgid "✗ couldn't export {table}: {why} · :export to retry"
+msgstr "✗ не удалось экспортировать {table}: {why} · :export: повторить"
+
+#: crates/tabletist-core/src/export_sheet.rs
+#, rust-format
+msgid "✗ disk full after {written} · partial file removed · :export to retry"
+msgstr ""
+"✗ диск заполнен после {written} · неполный файл удалён · :export: повторить"
+
+#: crates/tabletist-core/src/export_sheet.rs
+#, rust-format
+msgid ""
+"✗ server stopped the query after {time} (statement_timeout) · :export review "
+"sql"
+msgstr ""
+"✗ сервер остановил запрос через {time} (statement_timeout) · :export: "
+"показать SQL"
+
+#: crates/tabletist-core/src/export_sheet.rs
+msgid "✗ that's more than 10,000 rows · :export to a file"
+msgstr "✗ это больше 10 000 строк · :export: в файл"
+
+#: crates/tabletist-core/src/export_sheet.rs
+msgid "✗ that's over 20 mb · :export to a file"
+msgstr "✗ это больше 20 мб · :export: в файл"
+
+#: crates/tabletist-core/src/format.rs
+msgid ""
+"Could not reach the server. Check the host and port, and that the server is "
+"running."
+msgstr ""
+"Не удалось связаться с сервером. Проверьте хост и порт и убедитесь, что "
+"сервер запущен."
+
+#: crates/tabletist-core/src/format.rs
+msgid "The SSH login failed."
+msgstr "Не удалось войти по SSH."
+
+#: crates/tabletist-core/src/format.rs
+msgid "The SSH server could not be reached."
+msgstr "Не удалось связаться с SSH-сервером."
+
+#: crates/tabletist-core/src/format.rs
+msgid "The SSH server could not reach the database."
+msgstr "SSH-серверу не удалось связаться с базой данных."
+
+#: crates/tabletist-core/src/format.rs
+msgid "The connection was lost."
+msgstr "Соединение потеряно."
+
+#: crates/tabletist-core/src/format.rs
+msgid ""
+"The secure connection failed. Try another TLS mode, or check the certificate."
+msgstr ""
+"Не удалось установить защищённое соединение. Попробуйте другой режим TLS или "
+"проверьте сертификат."
+
+#: crates/tabletist-core/src/format.rs
+msgid "The server did not answer in time."
+msgstr "Сервер не ответил вовремя."
+
+#: crates/tabletist-core/src/format.rs
+msgid "The server refused the login. Check the user and password."
+msgstr "Сервер отклонил вход. Проверьте пользователя и пароль."
+
+#: crates/tabletist-core/src/format.rs
+msgid "required"
+msgstr "обязательно"
+
+#: crates/tabletist-core/src/format.rs
+msgid "unique"
+msgstr "уникально"
+
+#: crates/tabletist-core/src/i18n.rs src/ui/help.rs
+msgid "Settings"
+msgstr "Настройки"
+
+#: crates/tabletist-core/src/selection.rs src/ui/export.rs
+msgid "column"
+msgid_plural "columns"
+msgstr[0] "столбец"
+msgstr[1] "столбца"
+msgstr[2] "столбцов"
+
+#: crates/tabletist-core/src/selection.rs src/ui/pending_bar.rs
+#: src/ui/review.rs src/ui/workspace.rs
+msgid "row"
+msgid_plural "rows"
+msgstr[0] "строка"
+msgstr[1] "строки"
+msgstr[2] "строк"
+
+#: crates/tabletist-core/src/selection.rs src/ui/data_view.rs
+#, rust-format
+msgid "{n} row selected"
+msgid_plural "{n} rows selected"
+msgstr[0] "Выбрана {n} строка"
+msgstr[1] "Выбраны {n} строки"
+msgstr[2] "Выбрано {n} строк"
+
+#: crates/tabletist-core/src/selection.rs
+#, rust-format
+msgid "{rows} by {cols} selected"
+msgstr "Выбрано: {rows} на {cols}"
+
+#: src/app.rs
+#, rust-format
+msgid "Copied {what}"
+msgstr "Скопировано: {what}"
+
+#: src/app.rs
+#, rust-format
+msgid "Copied {what} as TSV"
+msgstr "Скопировано: {what} в формате TSV"
+
+#: src/app.rs
+#, rust-format
+msgid "Copied {what} as {format}"
+msgstr "Скопировано: {what} в формате {format}"
+
+#: src/app.rs
+msgid "It can use the connections you allow agents. Review shows what it does."
+msgstr ""
+"Ему доступны подключения, которые вы разрешили агентам. «Просмотреть» "
+"покажет, что он делает."
+
+#: src/app.rs src/app/export.rs src/ui/object_tabs.rs src/ui/row_panel.rs
+#: src/ui/sql_editor.rs
+#, rust-format
+msgid "Query {n}"
+msgstr "Запрос {n}"
+
+#: src/app.rs
+#, rust-format
+msgid "That's {rows} rows. Export to a file?"
+msgstr "Строк: {rows}. Экспортировать в файл?"
+
+#: src/app.rs
+msgid "column name"
+msgid_plural "column names"
+msgstr[0] "имя столбца"
+msgstr[1] "имени столбцов"
+msgstr[2] "имён столбцов"
+
+#: src/app.rs
+msgid "statement"
+msgid_plural "statements"
+msgstr[0] "оператор"
+msgstr[1] "оператора"
+msgstr[2] "операторов"
+
+#: src/app.rs
+#, rust-format
+msgid "{agent} connected to Tabletist"
+msgstr "{agent} подключён к Tabletist"
+
+#: src/app/export.rs
+#, rust-format
+msgid "Copied {name}"
+msgstr "Скопировано: {name}"
+
+#: src/app/export.rs
+#, rust-format
+msgid "Copied {n} row as {format}"
+msgid_plural "Copied {n} rows as {format}"
+msgstr[0] "Скопирована {n} строка как {format}"
+msgstr[1] "Скопированы {n} строки как {format}"
+msgstr[2] "Скопировано {n} строк как {format}"
+
+#: src/app/export.rs
+msgid "Export rows"
+msgstr "Экспорт строк"
+
+#: src/app/export.rs
+#, rust-format
+msgid "Exported {n} row to {file}"
+msgid_plural "Exported {n} rows to {file}"
+msgstr[0] "Экспортирована {n} строка в {file}"
+msgstr[1] "Экспортированы {n} строки в {file}"
+msgstr[2] "Экспортировано {n} строк в {file}"
+
+#: src/app/export.rs
+#, rust-format
+msgid "Export{rows} rows"
+msgstr "Экспорт{rows} строк"
+
+#: src/app/export.rs
+#, rust-format
+msgid ""
+"New rows aren't exported. Export reads what is saved in the database. Save "
+"first {key}"
+msgstr ""
+"Новые строки не экспортируются: экспорт читает то, что сохранено в базе "
+"данных. Сначала сохраните {key}"
+
+#: src/app/export.rs src/ui/agents.rs src/ui/workspace.rs
+msgid "export"
+msgstr "экспорт"
+
+#: src/app/export.rs
+msgid "new rows aren't exported · :w first to include them"
+msgstr "новые строки не экспортируются · сначала :w, чтобы включить их"
+
+#: src/app/export.rs
+msgid "no export is running"
+msgstr "экспорт не выполняется"
+
+#: src/app/export.rs
+#, rust-format
+msgid "✗ no format for {extension} · csv tsv json jsonl sql md"
+msgstr "✗ нет формата для {extension} · csv tsv json jsonl sql md"
+
+#: src/app/history.rs
+msgid "Writes open in a SQL editor, into a read-only tab"
+msgstr ""
+"Изменяющие запросы открываются в редакторе SQL, во вкладке только для чтения"
+
+#: src/app/history.rs
+#, rust-format
+msgid "writes open with {key}, into a read-only tab"
+msgstr "изменяющие запросы открываются по {key}, во вкладке только для чтения"
+
+#: src/ui/about.rs src/ui/connect_dialog/sheet.rs src/ui/help.rs
+#: src/ui/object_tabs.rs
+msgid "Close"
+msgstr "Закрыть"
+
+#: src/ui/about.rs
+msgid "Font licenses"
+msgstr "Лицензии шрифтов"
+
+#: src/ui/about.rs
+msgid "License"
+msgstr "Лицензия"
+
+#: src/ui/about.rs
+msgid "Tabletist icon"
+msgstr "Значок Tabletist"
+
+#: src/ui/about.rs
+msgid "Version"
+msgstr "Версия"
+
+#: src/ui/agents.rs
+#, rust-format
+msgid " and {n} more"
+msgid_plural " and {n} more"
+msgstr[0] " и ещё {n}"
+msgstr[1] " и ещё {n}"
+msgstr[2] " и ещё {n}"
+
+#: src/ui/agents.rs
+msgid "Access"
+msgstr "Доступ"
+
+#: src/ui/agents.rs
+msgid "Access is Off for this connection, so agents don't see it at all."
+msgstr ""
+"Для этого подключения доступ выключен, поэтому агенты его вообще не видят."
+
+#: src/ui/agents.rs
+msgid "Activity"
+msgstr "Активность"
+
+#: src/ui/agents.rs src/ui/history.rs
+msgid "Agent"
+msgstr "Агент"
+
+#: src/ui/agents.rs
+#, rust-format
+msgid "Agents can't use {connection}"
+msgstr "Агентам недоступно подключение {connection}"
+
+#: src/ui/agents.rs
+#, rust-format
+msgid ""
+"Agents like Claude Code can read this database. Connect one with this "
+"command, then ask it about {name}."
+msgstr ""
+"Агенты вроде Claude Code могут читать эту базу данных. Подключите агента "
+"этой командой и спросите его о {name}."
+
+#: src/ui/agents.rs
+#, rust-format
+msgid "Agents on {connection}"
+msgstr "Агенты для {connection}"
+
+#: src/ui/agents.rs
+msgid "All agents"
+msgstr "Все агенты"
+
+#: src/ui/agents.rs
+msgid "All connections"
+msgstr "Все подключения"
+
+#: src/ui/agents.rs src/ui/history.rs
+msgid "All results"
+msgstr "Все результаты"
+
+#: src/ui/agents.rs
+msgid "Allow agents…"
+msgstr "Разрешить агентам…"
+
+#: src/ui/agents.rs
+msgid "Also:"
+msgstr "Также:"
+
+#: src/ui/agents.rs
+msgid "Calls on"
+msgstr "Вызовы для"
+
+#: src/ui/agents.rs
+msgid "Connection"
+msgstr "Подключение"
+
+#: src/ui/agents.rs src/ui/ddl.rs src/ui/row_panel.rs src/ui/settings/agents.rs
+#: src/ui/settings/terminal.rs src/ui/settings/updates.rs
+msgid "Copy"
+msgstr "Копировать"
+
+#: src/ui/agents.rs
+msgid "Elsewhere"
+msgstr "На других подключениях"
+
+#: src/ui/agents.rs
+msgid "Its connection was deleted."
+msgstr "Его подключение удалено."
+
+#: src/ui/agents.rs
+msgid "Log"
+msgstr "Журнал"
+
+#: src/ui/agents.rs
+#, rust-format
+msgid "No agents connected to {connection}"
+msgstr "Нет агентов, подключённых к {connection}"
+
+#: src/ui/agents.rs
+msgid "No agents here"
+msgstr "Здесь нет агентов"
+
+#: src/ui/agents.rs
+msgid "No calls in the log match these filters."
+msgstr "В журнале нет вызовов, подходящих под эти фильтры."
+
+#: src/ui/agents.rs
+msgid "No calls in the log."
+msgstr "В журнале нет вызовов."
+
+#: src/ui/agents.rs
+msgid "No calls on this connection in the log."
+msgstr "В журнале нет вызовов на этом подключении."
+
+#: src/ui/agents.rs
+msgid "No calls on this connection yet."
+msgstr "На этом подключении пока нет вызовов."
+
+#: src/ui/agents.rs
+msgid "No calls to export."
+msgstr "Нет вызовов для экспорта."
+
+#: src/ui/agents.rs src/ui/picker.rs
+msgid "Off"
+msgstr "Выкл."
+
+#: src/ui/agents.rs
+msgid "On this connection"
+msgstr "Для этого подключения"
+
+#: src/ui/agents.rs src/ui/ddl.rs src/ui/history.rs
+msgid "Open in SQL editor"
+msgstr "Открыть в редакторе SQL"
+
+#: src/ui/agents.rs
+msgid "Other agents…"
+msgstr "Другие агенты…"
+
+#: src/ui/agents.rs src/ui/picker.rs
+msgid "Read"
+msgstr "Чтение"
+
+#: src/ui/agents.rs
+msgid "Reading the log…"
+msgstr "Чтение журнала…"
+
+#: src/ui/agents.rs
+msgid "Request"
+msgstr "Запрос"
+
+#: src/ui/agents.rs src/ui/history.rs
+msgid "Result"
+msgstr "Результат"
+
+#: src/ui/agents.rs src/ui/data_view.rs
+msgid "Rows"
+msgstr "Строки"
+
+#: src/ui/agents.rs
+msgid "Rows themselves are not logged."
+msgstr "Сами строки в журнал не записываются."
+
+#: src/ui/agents.rs
+#, rust-format
+msgid "Runs as {environment}"
+msgstr "Среда: {environment}"
+
+#: src/ui/agents.rs
+msgid "Search requests…"
+msgstr "Поиск по запросам…"
+
+#: src/ui/agents.rs
+msgid "Server: off"
+msgstr "Сервер: выкл."
+
+#: src/ui/agents.rs
+msgid "Server: stdio"
+msgstr "Сервер: stdio"
+
+#: src/ui/agents.rs
+msgid "Settings…"
+msgstr "Настройки…"
+
+#: src/ui/agents.rs
+msgid "Show"
+msgstr "Показать"
+
+#: src/ui/agents.rs src/ui/settings/agents.rs
+msgid "Show log"
+msgstr "Показать журнал"
+
+#: src/ui/agents.rs
+msgid "Show more"
+msgstr "Показать ещё"
+
+#: src/ui/agents.rs
+msgid "Stop agents here"
+msgstr "Остановить агентов здесь"
+
+#: src/ui/agents.rs
+msgid "Stop session"
+msgstr "Завершить сеанс"
+
+#: src/ui/agents.rs
+#, rust-format
+msgid "Stopped {n} agent. Access is now Off for {name}."
+msgid_plural "Stopped {n} agents. Access is now Off for {name}."
+msgstr[0] "Остановлен {n} агент. Доступ к {name} теперь выключен."
+msgstr[1] "Остановлено {n} агента. Доступ к {name} теперь выключен."
+msgstr[2] "Остановлено {n} агентов. Доступ к {name} теперь выключен."
+
+#: src/ui/agents.rs
+msgid "The agent server is off"
+msgstr "Сервер агентов выключен"
+
+#: src/ui/agents.rs
+msgid "The log could not be read:"
+msgstr "Не удалось прочитать журнал:"
+
+#: src/ui/agents.rs
+msgid "This connection"
+msgstr "Это подключение"
+
+#: src/ui/agents.rs
+msgid "Time"
+msgstr "Время"
+
+#: src/ui/agents.rs
+msgid "Tool"
+msgstr "Инструмент"
+
+#: src/ui/agents.rs
+msgid ""
+"Turn it on to let agents like Claude Code use the connections you allow. It "
+"runs only while Tabletist is open, on this computer."
+msgstr ""
+"Включите его, чтобы агенты вроде Claude Code могли использовать разрешённые "
+"вами подключения. Он работает только на этом компьютере и только пока открыт "
+"Tabletist."
+
+#: src/ui/agents.rs
+msgid "Turn on"
+msgstr "Включить"
+
+#: src/ui/agents.rs
+#, rust-format
+msgid "agent {name}"
+msgstr "агент {name}"
+
+#: src/ui/agents.rs
+msgid "all"
+msgstr "все"
+
+#: src/ui/agents.rs src/ui/workspace.rs
+msgid "all connections"
+msgstr "все подключения"
+
+#: src/ui/agents.rs
+msgid "cancelled"
+msgstr "отменён"
+
+#: src/ui/agents.rs
+msgid "closes, and keeps them"
+msgstr "закрывает и сохраняет их"
+
+#: src/ui/agents.rs
+#, rust-format
+msgid "connected {time}"
+msgstr "подключён в {time}"
+
+#: src/ui/agents.rs src/ui/workspace.rs
+msgid "details"
+msgstr "подробности"
+
+#: src/ui/agents.rs
+msgid "failed"
+msgstr "ошибка"
+
+#: src/ui/agents.rs src/ui/history.rs src/ui/workspace.rs
+msgctxt "label"
+msgid "filter"
+msgstr "фильтр"
+
+#: src/ui/agents.rs
+msgid "filters"
+msgstr "фильтры"
+
+#: src/ui/agents.rs
+#, rust-format
+msgid "last {n} day"
+msgid_plural "last {n} days"
+msgstr[0] "за последний {n} день"
+msgstr[1] "за последние {n} дня"
+msgstr[2] "за последние {n} дней"
+
+#: src/ui/agents.rs
+msgid "ms"
+msgstr "мс"
+
+#: src/ui/agents.rs
+msgid "no connection yet"
+msgstr "пока без подключения"
+
+#: src/ui/agents.rs
+msgid "ok"
+msgstr "успешно"
+
+#: src/ui/agents.rs src/ui/history.rs
+msgid "on this computer"
+msgstr "на этом компьютере"
+
+#: src/ui/agents.rs
+msgid "open in sql tab"
+msgstr "открыть во вкладке SQL"
+
+#: src/ui/agents.rs
+msgid "refused"
+msgstr "отклонён"
+
+#: src/ui/agents.rs
+#, rust-format
+msgid "result {result}"
+msgstr "результат: {result}"
+
+#: src/ui/agents.rs
+msgid "rows themselves are not logged"
+msgstr "сами строки в журнал не записываются"
+
+#: src/ui/agents.rs
+#, rust-format
+msgid "runs as {environment}"
+msgstr "среда: {environment}"
+
+#: src/ui/agents.rs
+#, rust-format
+msgid "search “{text}”"
+msgstr "поиск «{text}»"
+
+#: src/ui/agents.rs src/ui/workspace.rs
+msgid "stop session"
+msgstr "завершить сеанс"
+
+#: src/ui/agents.rs
+msgid "stopped"
+msgstr "остановлен"
+
+#: src/ui/agents.rs src/ui/workspace.rs
+msgid "this connection"
+msgstr "это подключение"
+
+#: src/ui/agents.rs
+msgid "timed out"
+msgstr "тайм-аут"
+
+#: src/ui/agents.rs
+#, rust-format
+msgid "{agent} on {connection}"
+msgstr "{agent} в {connection}"
+
+#: src/ui/agents.rs
+#, rust-format
+msgid "{key} shows"
+msgstr "{key}: показать"
+
+#: src/ui/agents.rs
+#, rust-format
+msgid "{key} shows this tab"
+msgstr "{key}: показать эту вкладку"
+
+#: src/ui/agents.rs
+#, rust-format
+msgid "{n} agent here"
+msgid_plural "{n} agents here"
+msgstr[0] "Здесь {n} агент"
+msgstr[1] "Здесь {n} агента"
+msgstr[2] "Здесь {n} агентов"
+
+#: src/ui/agents.rs
+#, rust-format
+msgid "{n} call"
+msgid_plural "{n} calls"
+msgstr[0] "{n} вызов"
+msgstr[1] "{n} вызова"
+msgstr[2] "{n} вызовов"
+
+#: src/ui/agents.rs
+#, rust-format
+msgid "{n} call matches"
+msgid_plural "{n} calls match"
+msgstr[0] "Подходит {n} вызов"
+msgstr[1] "Подходят {n} вызова"
+msgstr[2] "Подходит {n} вызовов"
+
+#: src/ui/agents.rs
+#, rust-format
+msgid "{what} returned"
+msgstr "в ответе: {what}"
+
+#: src/ui/cancel_export.rs
+msgid "Cancel export"
+msgstr "Отменить экспорт"
+
+#: src/ui/cancel_export.rs src/ui/copy_as.rs src/ui/workspace.rs
+msgid "close"
+msgstr "закрыть"
+
+#: src/ui/cancel_export.rs src/ui/copy_as.rs
+msgid "one key picks"
+msgstr "выбор одной клавишей"
+
+#: src/ui/cancel_export.rs
+#, rust-format
+msgid "{n} running"
+msgstr "выполняется: {n}"
+
+#: src/ui/cell_editor.rs src/ui/picker.rs src/ui/row_panel.rs
+msgid "Edit"
+msgstr "Изменить"
+
+#: src/ui/cell_editor.rs
+#, rust-format
+msgid "Search {table} for {column}"
+msgstr "Поиск {column} в {table}"
+
+#: src/ui/cell_editor.rs
+msgid "Select fewer rows, or delete in the SQL editor."
+msgstr "Выберите меньше строк или удалите их в редакторе SQL."
+
+#: src/ui/cell_editor.rs
+msgid "The time of the save, by the database's clock"
+msgstr "Время сохранения по часам базы данных"
+
+#: src/ui/cell_editor.rs
+msgid "Valid JSON"
+msgstr "Корректный JSON"
+
+#: src/ui/cell_editor.rs
+msgid "apply"
+msgstr "применить"
+
+#: src/ui/cell_editor.rs
+msgid "cancel"
+msgstr "отменить"
+
+#: src/ui/cell_editor.rs
+msgid "keep"
+msgstr "оставить"
+
+#: src/ui/cell_editor.rs
+msgid "now"
+msgstr "сейчас"
+
+#: src/ui/conflict_prompt.rs
+#, rust-format
+msgid "{at} of {count}"
+msgstr "{at} из {count}"
+
+#: src/ui/connect_dialog/files.rs
+msgid "Add files"
+msgstr "Добавить файлы"
+
+#: src/ui/connect_dialog/mod.rs
+msgid "Connected"
+msgstr "Подключено"
+
+#: src/ui/connect_dialog/mod.rs
+msgid "Hosts from ~/.ssh/config"
+msgstr "Хосты из ~/.ssh/config"
+
+#: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid "Read {n} file · {size}"
+msgid_plural "Read {n} files · {size}"
+msgstr[0] "Прочитан {n} файл · {size}"
+msgstr[1] "Прочитано {n} файла · {size}"
+msgstr[2] "Прочитано {n} файлов · {size}"
+
+#: src/ui/connect_dialog/mod.rs
+msgid "Trust and test"
+msgstr "Доверять и проверить"
+
+#: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid "Unknown SSH host key for {host}: {fingerprint}"
+msgstr "Неизвестный ключ SSH-хоста {host}: {fingerprint}"
+
+#: src/ui/connect_dialog/mod.rs
+msgid "from ~/.ssh/config"
+msgstr "из ~/.ssh/config"
+
+#: src/ui/connect_dialog/reading.rs
+msgid "Reset"
+msgstr "Сбросить"
+
+#: src/ui/connect_dialog/reading.rs
+msgid "override"
+msgid_plural "overrides"
+msgstr[0] "исключение"
+msgstr[1] "исключения"
+msgstr[2] "исключений"
+
+#: src/ui/connect_dialog/reading.rs
+msgid "skipped"
+msgstr "пропущен"
+
+#: src/ui/connect_dialog/sheet.rs
+msgid "Authentication"
+msgstr "Аутентификация"
+
+#: src/ui/connect_dialog/sheet.rs src/ui/data_view.rs
+#: src/ui/every_row_prompt.rs src/ui/export.rs src/ui/export_toast.rs
+#: src/ui/host_key_prompt.rs src/ui/password_prompt.rs src/ui/pending_bar.rs
+#: src/ui/sql_results.rs src/ui/structure.rs src/ui/write_prompts.rs
+msgid "Cancel"
+msgstr "Отменить"
+
+#: src/ui/connect_dialog/sheet.rs src/ui/picker.rs src/ui/row_panel.rs
+msgid "Delete"
+msgstr "Удалить"
+
+#: src/ui/connect_dialog/sheet.rs
+msgid "Parameters"
+msgstr "Параметры"
+
+#: src/ui/connect_dialog/sheet.rs src/ui/pending_bar.rs src/ui/write_prompts.rs
+msgid "Save"
+msgstr "Сохранить"
+
+#: src/ui/connect_dialog/sheet.rs
+msgid "Save & Connect"
+msgstr "Сохранить и подключиться"
+
+#: src/ui/connect_dialog/sheet.rs
+msgid "Saved for the next connect. Off, it is asked for every time."
+msgstr ""
+"Сохраняется для следующего подключения. Если выключено, запрашивается каждый "
+"раз."
+
+#: src/ui/connect_dialog/sheet.rs
+msgid "Test"
+msgstr "Проверить"
+
+#: src/ui/connect_dialog/sheet.rs
+msgid "URL"
+msgstr "URL"
+
+#: src/ui/connect_dialog/terminal.rs
+msgid "Connect through SSH tunnel"
+msgstr "Подключаться через SSH-туннель"
+
+#: src/ui/connect_dialog/terminal.rs
+msgid "Open read-only"
+msgstr "Открывать только для чтения"
+
+#: src/ui/connect_dialog/terminal.rs
+msgid "Paste URL"
+msgstr "Вставить URL"
+
+#: src/ui/copy_as.rs
+msgid "Column names"
+msgstr "Имена столбцов"
+
+#: src/ui/copy_as.rs
+#, rust-format
+msgid "Copy row as {format}"
+msgstr "Копировать строку как {format}"
+
+#: src/ui/data_view.rs
+msgid "1 row selected"
+msgstr "Выбрана 1 строка"
+
+#: src/ui/data_view.rs
+msgid "Add filter"
+msgstr "Добавить фильтр"
+
+#: src/ui/data_view.rs
+msgid "Add row"
+msgstr "Добавить строку"
+
+#: src/ui/data_view.rs src/ui/sql_results.rs
+msgid "Cancel query"
+msgstr "Отменить запрос"
+
+#: src/ui/data_view.rs
+msgid "Checked before saving"
+msgstr "Проверяется перед сохранением"
+
+#: src/ui/data_view.rs
+msgid "Clear sort"
+msgstr "Сбросить сортировку"
+
+#: src/ui/data_view.rs
+msgid "Count"
+msgstr "Посчитать"
+
+#: src/ui/data_view.rs src/ui/export.rs
+msgid "Count the rows exactly"
+msgstr "Точно посчитать строки"
+
+#: src/ui/data_view.rs
+msgid "Counting…"
+msgstr "Подсчёт…"
+
+#: src/ui/data_view.rs
+msgid "DDL"
+msgstr "DDL"
+
+#: src/ui/data_view.rs
+msgid "Filtered"
+msgstr "Отфильтровано"
+
+#: src/ui/data_view.rs
+msgid "Full precision"
+msgstr "Полная точность"
+
+#: src/ui/data_view.rs src/ui/row_panel.rs
+msgid "New row"
+msgstr "Новая строка"
+
+#: src/ui/data_view.rs src/ui/sql_results.rs
+msgid "No rows"
+msgstr "Нет строк"
+
+#: src/ui/data_view.rs
+#, rust-format
+msgid "Query {elapsed}"
+msgstr "Запрос: {elapsed}"
+
+#: src/ui/data_view.rs
+msgid "Remove filter"
+msgstr "Убрать фильтр"
+
+#: src/ui/data_view.rs
+#, rust-format
+msgid "Row {row} marked for deletion. {n} to delete."
+msgid_plural "Row {row} marked for deletion. {n} to delete."
+msgstr[0] "Строка {row} помечена на удаление. К удалению: {n}."
+msgstr[1] "Строка {row} помечена на удаление. К удалению: {n}."
+msgstr[2] "Строка {row} помечена на удаление. К удалению: {n}."
+
+#: src/ui/data_view.rs
+#, rust-format
+msgid "Row {row} restored."
+msgstr "Строка {row} восстановлена."
+
+#: src/ui/data_view.rs
+msgid "Running query…"
+msgstr "Выполнение запроса…"
+
+#: src/ui/data_view.rs
+msgid "Sort"
+msgstr "Сортировка"
+
+#: src/ui/data_view.rs
+msgid "Structure"
+msgstr "Структура"
+
+#: src/ui/data_view.rs
+msgid "This object has no primary key, so rows may move between pages."
+msgstr ""
+"У этого объекта нет первичного ключа, поэтому строки могут переходить между "
+"страницами."
+
+#: src/ui/data_view.rs
+msgid "Timestamps shown in full"
+msgstr "Время показано полностью"
+
+#: src/ui/data_view.rs
+msgid "Timestamps shown to the second"
+msgstr "Время показано до секунд"
+
+#: src/ui/data_view.rs
+msgid "To the second"
+msgstr "До секунд"
+
+#: src/ui/data_view.rs
+msgid "Unordered"
+msgstr "Без порядка"
+
+#: src/ui/data_view.rs
+msgid "View"
+msgstr "Вид"
+
+#: src/ui/data_view.rs
+#, rust-format
+msgid "Visual. {selection}."
+msgstr "Визуальный режим. {selection}."
+
+#: src/ui/data_view.rs
+msgid "Waiting for server"
+msgstr "Ожидание сервера"
+
+#: src/ui/data_view.rs
+msgid "a condition, then Enter"
+msgstr "условие, затем Enter"
+
+#: src/ui/data_view.rs
+msgid "new"
+msgstr "новая"
+
+#: src/ui/data_view.rs
+msgid "new row dropped"
+msgid_plural "new rows dropped"
+msgstr[0] "новая строка отброшена"
+msgstr[1] "новые строки отброшены"
+msgstr[2] "новых строк отброшено"
+
+#: src/ui/data_view.rs
+msgid "open rows"
+msgstr "открыть строки"
+
+#: src/ui/data_view.rs src/ui/ddl.rs src/ui/export.rs src/ui/row_panel.rs
+#: src/ui/workspace.rs
+msgid "read-only"
+msgstr "только чтение"
+
+#: src/ui/data_view.rs src/ui/pending_bar.rs
+msgid "row deleted"
+msgid_plural "rows deleted"
+msgstr[0] "строка удалена"
+msgstr[1] "строки удалены"
+msgstr[2] "строк удалено"
+
+#: src/ui/data_view.rs
+msgid "row restored"
+msgid_plural "rows restored"
+msgstr[0] "строка восстановлена"
+msgstr[1] "строки восстановлены"
+msgstr[2] "строк восстановлено"
+
+#: src/ui/data_view.rs
+#, rust-format
+msgid "sort {column}"
+msgstr "сортировка: {column}"
+
+#: src/ui/data_view.rs src/ui/row_panel.rs
+#, rust-format
+msgid "was {value}"
+msgstr "было: {value}"
+
+#: src/ui/data_view.rs
+#, rust-format
+msgid "{expression} from DEFAULT"
+msgstr "{expression} из DEFAULT"
+
+#: src/ui/data_view.rs
+#, rust-format
+msgid "{key} edits the filter"
+msgstr "{key}: изменить фильтр"
+
+#: src/ui/data_view.rs
+#, rust-format
+msgid "{key} reverts"
+msgstr "{key}: отменить"
+
+#: src/ui/data_view.rs
+#, rust-format
+msgid "{n} col"
+msgid_plural "{n} cols"
+msgstr[0] "{n} столбец"
+msgstr[1] "{n} столбца"
+msgstr[2] "{n} столбцов"
+
+#: src/ui/data_view.rs
+#, rust-format
+msgid "{n} column"
+msgid_plural "{n} columns"
+msgstr[0] "{n} столбец"
+msgstr[1] "{n} столбца"
+msgstr[2] "{n} столбцов"
+
+#: src/ui/data_view.rs
+#, rust-format
+msgid "{n} new"
+msgid_plural "{n} new"
+msgstr[0] "{n} новая"
+msgstr[1] "{n} новые"
+msgstr[2] "{n} новых"
+
+#: src/ui/data_view.rs
+#, rust-format
+msgid "{n} required field"
+msgid_plural "{n} required fields"
+msgstr[0] "{n} обязательное поле"
+msgstr[1] "{n} обязательных поля"
+msgstr[2] "{n} обязательных полей"
+
+#: src/ui/data_view.rs src/ui/pending_bar.rs
+#, rust-format
+msgid "{n} to delete"
+msgid_plural "{n} to delete"
+msgstr[0] "{n} к удалению"
+msgstr[1] "{n} к удалению"
+msgstr[2] "{n} к удалению"
+
+#: src/ui/data_view.rs
+#, rust-format
+msgid "{n} to delete."
+msgid_plural "{n} to delete."
+msgstr[0] "К удалению: {n}."
+msgstr[1] "К удалению: {n}."
+msgstr[2] "К удалению: {n}."
+
+#: src/ui/data_view.rs
+#, rust-format
+msgid "{size} selected"
+msgstr "Выбрано: {size}"
+
+#: src/ui/ddl.rs
+msgid "Copied DDL"
+msgstr "DDL скопирован"
+
+#: src/ui/ddl.rs
+#, rust-format
+msgid "Copied {n} line"
+msgid_plural "Copied {n} lines"
+msgstr[0] "Скопирована {n} строка"
+msgstr[1] "Скопированы {n} строки"
+msgstr[2] "Скопировано {n} строк"
+
+#: src/ui/ddl.rs
+msgid "Copy error"
+msgstr "Копировать ошибку"
+
+#: src/ui/ddl.rs
+#, rust-format
+msgid "Couldn't read the definition of {name}"
+msgstr "Не удалось прочитать определение {name}"
+
+#: src/ui/ddl.rs
+#, rust-format
+msgid "DDL of {name}"
+msgstr "DDL {name}"
+
+#: src/ui/ddl.rs
+msgid ""
+"Not included: owner, grants, sequences owned by the table, row-level policies"
+msgstr ""
+"Не включено: владелец, права, последовательности, принадлежащие таблице, "
+"политики на уровне строк"
+
+#: src/ui/ddl.rs src/ui/workspace.rs
+msgid "Read-only"
+msgstr "Только чтение"
+
+#: src/ui/ddl.rs
+msgid "Reading the definition…"
+msgstr "Чтение определения…"
+
+#: src/ui/ddl.rs src/ui/sidebar.rs
+msgid "Reload"
+msgstr "Обновить"
+
+#: src/ui/ddl.rs
+msgid "Select text to copy part of it"
+msgstr "Выделите текст, чтобы скопировать его часть"
+
+#: src/ui/ddl.rs
+msgid "as stored in the database"
+msgstr "как хранится в базе данных"
+
+#: src/ui/ddl.rs
+msgid "built from the catalog"
+msgstr "собран по каталогу"
+
+#: src/ui/ddl.rs
+msgid "ddl"
+msgstr "ddl"
+
+#: src/ui/ddl.rs
+msgid "keys"
+msgstr "клавиши"
+
+#: src/ui/ddl.rs
+msgid "not included"
+msgstr "не включено"
+
+#: src/ui/ddl.rs
+msgid "owner · grants · owned sequences"
+msgstr "владелец · права · свои последовательности"
+
+#: src/ui/ddl.rs
+msgid "read just now"
+msgstr "прочитано только что"
+
+#: src/ui/ddl.rs
+#, rust-format
+msgid "read {n} h ago"
+msgid_plural "read {n} h ago"
+msgstr[0] "прочитано {n} ч назад"
+msgstr[1] "прочитано {n} ч назад"
+msgstr[2] "прочитано {n} ч назад"
+
+#: src/ui/ddl.rs
+#, rust-format
+msgid "read {n} min ago"
+msgid_plural "read {n} min ago"
+msgstr[0] "прочитано {n} мин назад"
+msgstr[1] "прочитано {n} мин назад"
+msgstr[2] "прочитано {n} мин назад"
+
+#: src/ui/ddl.rs
+#, rust-format
+msgid "read {n} s ago"
+msgid_plural "read {n} s ago"
+msgstr[0] "прочитано {n} с назад"
+msgstr[1] "прочитано {n} с назад"
+msgstr[2] "прочитано {n} с назад"
+
+#: src/ui/ddl.rs
+msgid "row-level policies"
+msgstr "политики на уровне строк"
+
+#: src/ui/ddl.rs
+#, rust-format
+msgid "sections · {next} next  {previous} prev"
+msgstr "разделы · {next} след.  {previous} пред."
+
+#: src/ui/ddl.rs
+#, rust-format
+msgid "{n} line"
+msgid_plural "{n} lines"
+msgstr[0] "{n} строка"
+msgstr[1] "{n} строки"
+msgstr[2] "{n} строк"
+
+#: src/ui/every_row_prompt.rs
+msgid "Run anyway"
+msgstr "Всё равно выполнить"
+
+#: src/ui/every_row_prompt.rs
+#, rust-format
+msgid "about {n} row"
+msgid_plural "about {n} rows"
+msgstr[0] "около {n} строки"
+msgstr[1] "около {n} строк"
+msgstr[2] "около {n} строк"
+
+#: src/ui/export.rs
+#, rust-format
+msgid "! {pending} in {table} aren't exported · :w first to include them"
+msgstr ""
+"! {pending} в {table} не попадут в экспорт · сначала :w, чтобы включить"
+
+#: src/ui/export.rs
+#, rust-format
+msgid "! {pending} in {table} isn't exported · :w first to include it"
+msgstr ""
+"! {pending} в {table} не попадёт в экспорт · сначала :w, чтобы включить"
+
+#: src/ui/export.rs
+msgid "All"
+msgstr "Все"
+
+#: src/ui/export.rs
+msgid "Back"
+msgstr "Назад"
+
+#: src/ui/export.rs
+msgid "Choose at least one column"
+msgstr "Выберите хотя бы один столбец"
+
+#: src/ui/export.rs
+msgid "Choose the name and folder next. Saved readable by your account only."
+msgstr ""
+"Имя и папку вы выберете дальше. Файл будет доступен для чтения только вашей "
+"учётной записи."
+
+#: src/ui/export.rs
+msgid "Copy rows"
+msgstr "Копировать строки"
+
+#: src/ui/export.rs
+#, rust-format
+msgid "Copy {rows} row"
+msgid_plural "Copy {rows} rows"
+msgstr[0] "Копировать {rows} строку"
+msgstr[1] "Копировать {rows} строки"
+msgstr[2] "Копировать {rows} строк"
+
+#: src/ui/export.rs src/ui/history.rs
+msgid "Export"
+msgstr "Экспорт"
+
+#: src/ui/export.rs
+msgid "Export result"
+msgstr "Экспорт результата"
+
+#: src/ui/export.rs
+#, rust-format
+msgid "Export {rows} row"
+msgid_plural "Export {rows} rows"
+msgstr[0] "Экспортировать {rows} строку"
+msgstr[1] "Экспортировать {rows} строки"
+msgstr[2] "Экспортировать {rows} строк"
+
+#: src/ui/export.rs
+#, rust-format
+msgid "Export {rows} row…"
+msgid_plural "Export {rows} rows…"
+msgstr[0] "Экспортировать {rows} строку…"
+msgstr[1] "Экспортировать {rows} строки…"
+msgstr[2] "Экспортировать {rows} строк…"
+
+#: src/ui/export.rs
+#, rust-format
+msgid "Export {table}"
+msgstr "Экспорт {table}"
+
+#: src/ui/export.rs
+msgid "ISO 8601, with the offset for timestamptz"
+msgstr "ISO 8601, со смещением для timestamptz"
+
+#: src/ui/export.rs
+msgid "None"
+msgstr "Ни одного"
+
+#: src/ui/export.rs
+msgid "Not for a result: no table to read"
+msgstr "Недоступно для результата: нет таблицы, которую можно прочитать"
+
+#: src/ui/export.rs
+msgid "Nothing runs: these rows are the ones loaded"
+msgstr "Ничего не выполняется: это уже загруженные строки"
+
+#: src/ui/export.rs
+msgid "Run and export"
+msgstr "Выполнить и экспортировать"
+
+#: src/ui/export.rs
+msgid "Run and export…"
+msgstr "Выполнить и экспортировать…"
+
+#: src/ui/export.rs
+msgid ""
+"Runs once, read-only, streamed to the file in batches of 5,000 rows. Nothing "
+"is written to the database."
+msgstr ""
+"Выполняется один раз, только для чтения, и пишется в файл порциями по 5 000 "
+"строк. В базу данных ничего не записывается."
+
+#: src/ui/export.rs
+#, rust-format
+msgid "Space includes or leaves out · {up} {down} move · drag ⋮⋮ to reorder"
+msgstr ""
+"Space: включить или исключить · {up} {down}: переместить · перетащите ⋮⋮, "
+"чтобы изменить порядок"
+
+#: src/ui/export.rs
+#, rust-format
+msgid ""
+"Values the grid cuts off at 256 KiB are exported in full. These options are "
+"remembered for {format}."
+msgstr ""
+"Значения, которые таблица обрезает на 256 КиБ, экспортируются полностью. Эти "
+"параметры запоминаются для {format}."
+
+#: src/ui/export.rs
+msgid "after a read-write run only \"rows already loaded\" is offered"
+msgstr "после выполнения с записью доступны только «уже загруженные строки»"
+
+#: src/ui/export.rs
+msgid "always, with a separator line"
+msgstr "всегда, с разделительной строкой"
+
+#: src/ui/export.rs
+msgid "escaped as \\| and <br>"
+msgstr "экранируются как \\| и <br>"
+
+#: src/ui/export.rs
+msgid "filter"
+msgid_plural "filters"
+msgstr[0] "фильтр"
+msgstr[1] "фильтра"
+msgstr[2] "фильтров"
+
+#: src/ui/export.rs
+msgid "inside values are written as \\t and \\n"
+msgstr "внутри значений записываются как \\t и \\n"
+
+#: src/ui/export.rs
+msgid "no filter, primary key order"
+msgstr "без фильтра, по порядку первичного ключа"
+
+#: src/ui/export.rs
+msgid "one array of objects, keys in column order"
+msgstr "один массив объектов, ключи в порядке столбцов"
+
+#: src/ui/export.rs
+msgid "one object per line"
+msgstr "один объект на строку"
+
+#: src/ui/export.rs
+#, rust-format
+msgid "query {query}, statement {statement}"
+msgstr "запрос {query}, оператор {statement}"
+
+#: src/ui/export.rs
+msgid "read-only connection"
+msgstr "подключение только для чтения"
+
+#: src/ui/export.rs src/ui/history.rs
+msgid "read-only transaction"
+msgstr "транзакция только для чтения"
+
+#: src/ui/export.rs
+msgid ""
+"reads only · same statement, no LIMIT, no timeout from Settings › Editor"
+msgstr ""
+"только чтение · тот же оператор, без LIMIT, без тайм-аута из Настройки › "
+"Редактор"
+
+#: src/ui/export.rs
+#, rust-format
+msgid "result of Query {query}, statement {statement}"
+msgstr "результат «Запроса {query}», оператор {statement}"
+
+#: src/ui/export.rs
+#, rust-format
+msgid "rows {first} to {last}, as sorted"
+msgstr "строки с {first} по {last}, в порядке сортировки"
+
+#: src/ui/export.rs
+#, rust-format
+msgid "sorted by {sort}"
+msgstr "сортировка: {sort}"
+
+#: src/ui/export.rs
+msgid "unsaved change"
+msgid_plural "unsaved changes"
+msgstr[0] "несохранённое изменение"
+msgstr[1] "несохранённых изменения"
+msgstr[2] "несохранённых изменений"
+
+#: src/ui/export.rs
+msgid ""
+"values cut at 256 KiB in the grid are written in full · file readable by you "
+"only"
+msgstr ""
+"значения, обрезанные в таблице на 256 КиБ, записываются полностью · файл "
+"доступен для чтения только вам"
+
+#: src/ui/export.rs
+#, rust-format
+msgid "written as {literal} literals"
+msgstr "записываются как литералы {literal}"
+
+#: src/ui/export.rs
+#, rust-format
+msgid "{dialect}, from this connection"
+msgstr "{dialect}, по этому подключению"
+
+#: src/ui/export.rs
+#, rust-format
+msgid "{format} options"
+msgstr "Параметры {format}"
+
+#: src/ui/export.rs
+#, rust-format
+msgid "{n} of {total}, in this order"
+msgstr "{n} из {total}, в этом порядке"
+
+#: src/ui/export.rs
+#, rust-format
+msgid ""
+"{pending} in {table} aren't exported. Export reads what is saved in the "
+"database. Save first {key}"
+msgstr ""
+"{pending} в {table} не попадут в экспорт: экспорт читает то, что сохранено в "
+"базе данных. Сначала сохраните {key}"
+
+#: src/ui/export.rs
+#, rust-format
+msgid ""
+"{pending} in {table} isn't exported. Export reads what is saved in the "
+"database. Save first {key}"
+msgstr ""
+"{pending} в {table} не попадёт в экспорт: экспорт читает то, что сохранено в "
+"базе данных. Сначала сохраните {key}"
+
+#: src/ui/export_toast.rs
+#, rust-format
+msgid "Copying {table}"
+msgstr "Копирование {table}"
+
+#: src/ui/export_toast.rs src/ui/mod.rs src/ui/pending_bar.rs
+msgid "Dismiss"
+msgstr "Закрыть"
+
+#: src/ui/export_toast.rs
+#, rust-format
+msgid "Exported {n} row to {file} · {size} · {time}"
+msgid_plural "Exported {n} rows to {file} · {size} · {time}"
+msgstr[0] "Экспортирована {n} строка в {file} · {size} · {time}"
+msgstr[1] "Экспортированы {n} строки в {file} · {size} · {time}"
+msgstr[2] "Экспортировано {n} строк в {file} · {size} · {time}"
+
+#: src/ui/export_toast.rs
+#, rust-format
+msgid "Exporting {file}"
+msgstr "Экспорт {file}"
+
+#: src/ui/export_toast.rs
+#, rust-format
+msgid "Exporting {table}"
+msgstr "Экспорт {table}"
+
+#: src/ui/export_toast.rs
+#, rust-format
+msgid "Exporting {table}, {n} percent"
+msgstr "Экспорт {table}: {n}%"
+
+#: src/ui/export_toast.rs
+msgid "Hide"
+msgstr "Скрыть"
+
+#: src/ui/file_list.rs
+msgid "Remove"
+msgstr "Убрать"
+
+#: src/ui/file_list.rs
+msgid "missing"
+msgstr "отсутствует"
+
+#: src/ui/filter_bar.rs
+msgid "+ Condition"
+msgstr "+ Условие"
+
+#: src/ui/filter_bar.rs
+msgid "Apply"
+msgstr "Применить"
+
+#: src/ui/filter_bar.rs src/ui/start.rs
+msgid "Clear"
+msgstr "Очистить"
+
+#: src/ui/filter_bar.rs
+msgid "Filter column"
+msgstr "Столбец фильтра"
+
+#: src/ui/filter_bar.rs
+msgid "Filter operator"
+msgstr "Оператор фильтра"
+
+#: src/ui/filter_bar.rs
+msgid "Raw WHERE"
+msgstr "WHERE вручную"
+
+#: src/ui/filter_bar.rs
+msgid "Remove condition"
+msgstr "Убрать условие"
+
+#: src/ui/filter_bar.rs
+msgid "Value"
+msgstr "Значение"
+
+#: src/ui/help.rs
+msgid "About Tabletist"
+msgstr "О программе Tabletist"
+
+#: src/ui/help.rs
+#, rust-format
+msgid "Commands bound to {keys}"
+msgstr "Команды на {keys}"
+
+#: src/ui/help.rs
+msgid "Keyboard shortcuts"
+msgstr "Сочетания клавиш"
+
+#: src/ui/help.rs
+#, rust-format
+msgid "No command is bound to {keys}"
+msgstr "На {keys} не назначено ни одной команды"
+
+#: src/ui/help.rs
+#, rust-format
+msgid "No commands match “{words}”"
+msgstr "Нет команд по запросу «{words}»"
+
+#: src/ui/help.rs
+msgid "Search commands or press a shortcut"
+msgstr "Найдите команду или нажмите сочетание клавиш"
+
+#: src/ui/help.rs src/ui/row_panel.rs
+msgid "Show all"
+msgstr "Показать все"
+
+#: src/ui/help.rs
+msgid "filter commands, or press a key to find it"
+msgstr "фильтр команд, или нажмите клавишу, чтобы найти команду"
+
+#: src/ui/history.rs src/ui/object_tabs.rs src/ui/picker.rs src/ui/sidebar.rs
+msgid "Agents"
+msgstr "Агенты"
+
+#: src/ui/history.rs
+msgid "All sources"
+msgstr "Все источники"
+
+#: src/ui/history.rs
+msgid "Approved"
+msgstr "Одобрено"
+
+#: src/ui/history.rs
+msgid "Cancelled"
+msgstr "Отменено"
+
+#: src/ui/history.rs
+#, rust-format
+msgid "Cancelled after {time}"
+msgstr "Отменено через {time}"
+
+#: src/ui/history.rs src/ui/review.rs src/ui/write_prompts.rs
+msgid "Copy SQL"
+msgstr "Копировать SQL"
+
+#: src/ui/history.rs
+msgid "Denied"
+msgstr "Запрещено"
+
+#: src/ui/history.rs
+msgid "Error"
+msgstr "Ошибка"
+
+#: src/ui/history.rs
+msgid "Exports"
+msgstr "Экспорты"
+
+#: src/ui/history.rs
+msgid "Filter"
+msgstr "Фильтр"
+
+#: src/ui/history.rs
+msgid "Filters"
+msgstr "Фильтры"
+
+#: src/ui/history.rs
+msgid "Grid save"
+msgstr "Сохранение из таблицы"
+
+#: src/ui/history.rs
+msgid "Grid saves"
+msgstr "Сохранения из таблицы"
+
+#: src/ui/history.rs
+msgid "OK"
+msgstr "Успешно"
+
+#: src/ui/history.rs
+msgid "Reapply filter"
+msgstr "Применить фильтр снова"
+
+#: src/ui/history.rs
+msgid "Refused"
+msgstr "Отклонено"
+
+#: src/ui/history.rs
+msgid "Run again"
+msgstr "Выполнить снова"
+
+#: src/ui/history.rs src/ui/sidebar.rs
+msgid "SQL editor"
+msgstr "Редактор SQL"
+
+#: src/ui/history.rs
+msgid "Saved"
+msgstr "Сохранено"
+
+#: src/ui/history.rs
+msgid "Search SQL…"
+msgstr "Поиск по SQL…"
+
+#: src/ui/history.rs
+msgid "Show in Agents Log"
+msgstr "Показать в журнале агентов"
+
+#: src/ui/history.rs
+msgid "Source"
+msgstr "Источник"
+
+#: src/ui/history.rs
+msgid "Today"
+msgstr "Сегодня"
+
+#: src/ui/history.rs
+msgid "Yesterday"
+msgstr "Вчера"
+
+#: src/ui/history.rs
+msgid "in the Agents Log"
+msgstr "в журнале агентов"
+
+#: src/ui/history.rs
+msgid "in the Agents Log →"
+msgstr "в журнале агентов →"
+
+#: src/ui/history.rs
+#, rust-format
+msgid "keeps the last {n}"
+msgstr "хранит последние {n}"
+
+#: src/ui/history.rs
+#, rust-format
+msgid "last {n}"
+msgstr "последние {n}"
+
+#: src/ui/history.rs
+msgid "one transaction"
+msgstr "одна транзакция"
+
+#: src/ui/history.rs
+msgid "read-write"
+msgstr "чтение и запись"
+
+#: src/ui/history.rs
+msgid "save"
+msgstr "сохранение"
+
+#: src/ui/history.rs src/ui/object_tabs.rs
+msgid "sql"
+msgstr "sql"
+
+#: src/ui/history.rs
+#, rust-format
+msgid "{n} kept"
+msgid_plural "{n} kept"
+msgstr[0] "хранится {n}"
+msgstr[1] "хранятся {n}"
+msgstr[2] "хранится {n}"
+
+#: src/ui/history.rs src/ui/workspace.rs
+#, rust-format
+msgid "{n} statement"
+msgid_plural "{n} statements"
+msgstr[0] "{n} оператор"
+msgstr[1] "{n} оператора"
+msgstr[2] "{n} операторов"
+
+#: src/ui/history.rs
+#, rust-format
+msgid "{n} statement matches"
+msgid_plural "{n} statements match"
+msgstr[0] "Подходит {n} оператор"
+msgstr[1] "Подходят {n} оператора"
+msgstr[2] "Подходит {n} операторов"
+
+#: src/ui/history.rs
+#, rust-format
+msgid "{n} statements"
+msgstr "операторов: {n}"
+
+#: src/ui/host_key_prompt.rs
+msgid "Trust and connect"
+msgstr "Доверять и подключиться"
+
+#: src/ui/host_key_prompt.rs
+msgid "Trust this SSH host?"
+msgstr "Доверять этому SSH-хосту?"
+
+#: src/ui/host_key_prompt.rs
+#, rust-format
+msgid ""
+"{host}:{port} has a key this computer has not seen before. Compare its "
+"fingerprint with the server's before trusting it."
+msgstr ""
+"Сервер {host}:{port} предъявил ключ, которого этот компьютер ещё не видел. "
+"Прежде чем доверять ему, сравните его отпечаток с отпечатком сервера."
+
+#: src/ui/json_view.rs
+msgid "(Copy gives the whole value.)"
+msgstr "(«Копировать» копирует значение целиком.)"
+
+#: src/ui/json_view.rs
+msgid "Collapse all"
+msgstr "Свернуть все"
+
+#: src/ui/json_view.rs
+msgid "Expand all"
+msgstr "Развернуть все"
+
+#: src/ui/key_picker.rs src/ui/structure.rs
+msgid "Change label column"
+msgstr "Сменить столбец подписи"
+
+#: src/ui/key_picker.rs
+msgid "Esc cancels"
+msgstr "Esc: отмена"
+
+#: src/ui/key_picker.rs
+#, rust-format
+msgid "First {count} shown. Keep typing to narrow."
+msgstr "Показаны первые {count}. Продолжайте вводить, чтобы сузить поиск."
+
+#: src/ui/key_picker.rs
+msgid "Label: keys only."
+msgstr "Подпись: только ключи."
+
+#: src/ui/key_picker.rs
+#, rust-format
+msgid "Matching {table}"
+msgstr "Совпадения в {table}"
+
+#: src/ui/key_picker.rs
+#, rust-format
+msgid "No matches in {table}"
+msgstr "Нет совпадений в {table}"
+
+#: src/ui/key_picker.rs
+#, rust-format
+msgid "No {row} with {key} {value}"
+msgstr "Не найдено: {row} с {key} {value}"
+
+#: src/ui/key_picker.rs
+#, rust-format
+msgid "No {table}"
+msgstr "В {table} нет строк"
+
+#: src/ui/key_picker.rs
+#, rust-format
+msgid "No {table} match \"{text}\""
+msgstr "В {table} нет совпадений с «{text}»"
+
+#: src/ui/key_picker.rs
+#, rust-format
+msgid "Searching {table}…"
+msgstr "Поиск в {table}…"
+
+#: src/ui/key_picker.rs
+msgid "Set NULL"
+msgstr "Задать NULL"
+
+#: src/ui/key_picker.rs
+msgid "current"
+msgstr "текущий"
+
+#: src/ui/key_picker.rs
+msgid "keys only"
+msgstr "только ключи"
+
+#: src/ui/key_picker.rs
+#, rust-format
+msgid "{column} is gone. Labels use Automatic, {auto}."
+msgstr ""
+"Столбца {column} больше нет. Для подписей выбрано «Автоматически»: {auto}."
+
+#: src/ui/key_picker.rs
+#, rust-format
+msgid "{column} set to {key}"
+msgstr "В {column} задано {key}"
+
+#: src/ui/key_picker.rs
+#, rust-format
+msgid "{column} set to {key}, {label}"
+msgstr "В {column} задано {key}, {label}"
+
+#: src/ui/key_picker.rs
+#, rust-format
+msgid "{count} match"
+msgid_plural "{count} matches"
+msgstr[0] "{count} совпадение"
+msgstr[1] "{count} совпадения"
+msgstr[2] "{count} совпадений"
+
+#: src/ui/key_picker.rs
+#, rust-format
+msgid "{count} match in {table}"
+msgid_plural "{count} matches in {table}"
+msgstr[0] "{count} совпадение в {table}"
+msgstr[1] "{count} совпадения в {table}"
+msgstr[2] "{count} совпадений в {table}"
+
+#: src/ui/key_picker.rs src/ui/row_panel.rs src/ui/sql_complete.rs
+#, rust-format
+msgid "{count} more"
+msgstr "ещё {count}"
+
+#: src/ui/key_picker.rs
+#, rust-format
+msgid "{count} or more matches in {table}"
+msgstr "{count} или больше совпадений в {table}"
+
+#: src/ui/key_picker.rs
+#, rust-format
+msgid "{move} choose · {set} set"
+msgstr "{move} выбрать · {set} задать"
+
+#: src/ui/key_picker.rs
+#, rust-format
+msgid "{table} has only its key column"
+msgstr "В {table} есть только ключевой столбец"
+
+#: src/ui/key_picker.rs
+#, rust-format
+msgid "{table} matching \"{text}\""
+msgstr "{table} по запросу «{text}»"
+
+#: src/ui/keys.rs
+msgid "Row yanked"
+msgstr "Строка скопирована"
+
+#: src/ui/label_chooser.rs src/ui/structure.rs
+msgid "Columns"
+msgstr "Столбцы"
+
+#: src/ui/label_chooser.rs
+msgid "Columns loaded."
+msgstr "Столбцы загружены."
+
+#: src/ui/label_chooser.rs
+#, rust-format
+msgid "Label {table} by"
+msgstr "Подпись для {table}"
+
+#: src/ui/mod.rs
+msgid ", "
+msgstr ", "
+
+#: src/ui/mod.rs
+#, rust-format
+msgid ""
+"Agent access was changed outside Tabletist: {changes}. Until you answer, "
+"agents may not. Keep it, or put it back?"
+msgstr ""
+"Доступ агентов изменён вне Tabletist: {changes}. Пока вы не ответите, агенты "
+"этим не воспользуются. Оставить или вернуть как было?"
+
+#: src/ui/mod.rs
+msgid "Keep"
+msgstr "Оставить"
+
+#: src/ui/mod.rs
+msgid "Put back"
+msgstr "Вернуть"
+
+#: src/ui/mod.rs
+#, rust-format
+msgid "agents may read more of {name}"
+msgstr "агентам разрешено читать больше в {name}"
+
+#: src/ui/mod.rs
+#, rust-format
+msgid "agents may read {name}"
+msgstr "агентам разрешено читать {name}"
+
+#: src/ui/mod.rs
+msgid "the agent server was turned on"
+msgstr "включён сервер агентов"
+
+#: src/ui/mod.rs
+#, rust-format
+msgid "{rest}, and {last}"
+msgstr "{rest} и {last}"
+
+#: src/ui/object_tabs.rs src/ui/sidebar.rs
+msgid "History"
+msgstr "История"
+
+#: src/ui/object_tabs.rs src/ui/sidebar.rs
+msgid "New SQL editor"
+msgstr "Новый редактор SQL"
+
+#: src/ui/object_tabs.rs
+msgid "Show or hide the row panel"
+msgstr "Показать или скрыть панель строки"
+
+#: src/ui/object_tabs.rs
+msgid "Show or hide the sidebar"
+msgstr "Показать или скрыть боковую панель"
+
+#: src/ui/object_tabs.rs
+#, rust-format
+msgid "{name} tab"
+msgstr "Вкладка {name}"
+
+#: src/ui/object_tabs.rs
+#, rust-format
+msgid "{name} tab, unsaved"
+msgstr "Вкладка {name}, не сохранена"
+
+#: src/ui/pane_hints.rs
+msgid "tree"
+msgstr "дерево"
+
+#: src/ui/password_prompt.rs
+msgid "Connect"
+msgstr "Подключиться"
+
+#: src/ui/password_prompt.rs
+#, rust-format
+msgid "Key passphrase for {connection}"
+msgstr "Парольная фраза ключа для {connection}"
+
+#: src/ui/password_prompt.rs
+#, rust-format
+msgid "Password for {connection}"
+msgstr "Пароль для {connection}"
+
+#: src/ui/password_prompt.rs
+#, rust-format
+msgid "SSH password for {connection}"
+msgstr "Пароль SSH для {connection}"
+
+#: src/ui/password_prompt.rs
+msgid "Save in keyring"
+msgstr "Сохранить в связке ключей"
+
+#: src/ui/pending_bar.rs
+msgid "Cancel save"
+msgstr "Отменить сохранение"
+
+#: src/ui/pending_bar.rs
+msgid "Discard all"
+msgstr "Сбросить все"
+
+#: src/ui/pending_bar.rs
+msgid "Fill required fields to save"
+msgstr "Заполните обязательные поля, чтобы сохранить"
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid "Fix {n} value to save"
+msgid_plural "Fix {n} values to save"
+msgstr[0] "Исправьте {n} значение, чтобы сохранить"
+msgstr[1] "Исправьте {n} значения, чтобы сохранить"
+msgstr[2] "Исправьте {n} значений, чтобы сохранить"
+
+#: src/ui/pending_bar.rs src/ui/review.rs
+msgid "Hide SQL"
+msgstr "Скрыть SQL"
+
+#: src/ui/pending_bar.rs
+msgid "More actions"
+msgstr "Другие действия"
+
+#: src/ui/pending_bar.rs
+msgid "Not connected"
+msgstr "Нет подключения"
+
+#: src/ui/pending_bar.rs src/ui/row_panel.rs
+msgid "Open rows"
+msgstr "Открыть строки"
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid "Row {row} changed on the server."
+msgstr "Строка {row} изменена на сервере."
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid "Row {row} no longer exists on the server."
+msgstr "Строки {row} больше нет на сервере."
+
+#: src/ui/pending_bar.rs
+msgid "Saving…"
+msgstr "Сохранение…"
+
+#: src/ui/pending_bar.rs
+msgid "These changes cannot be sent: the table's key is not known"
+msgstr "Эти изменения нельзя отправить: ключ таблицы неизвестен"
+
+#: src/ui/pending_bar.rs
+msgid "This connection opens read-only"
+msgstr "Это подключение открывается только для чтения"
+
+#: src/ui/pending_bar.rs src/ui/review.rs src/ui/write_prompts.rs
+msgid "change"
+msgid_plural "changes"
+msgstr[0] "изменение"
+msgstr[1] "изменения"
+msgstr[2] "изменений"
+
+#: src/ui/pending_bar.rs src/ui/review.rs src/ui/write_prompts.rs
+msgid "new row"
+msgid_plural "new rows"
+msgstr[0] "новая строка"
+msgstr[1] "новые строки"
+msgstr[2] "новых строк"
+
+#: src/ui/pending_bar.rs
+msgid "row marked for deletion"
+msgid_plural "rows marked for deletion"
+msgstr[0] "строка помечена на удаление"
+msgstr[1] "строки помечены на удаление"
+msgstr[2] "строк помечено на удаление"
+
+#: src/ui/pending_bar.rs
+msgid "value names no row"
+msgid_plural "values name no row"
+msgstr[0] "значение не указывает ни на одну строку"
+msgstr[1] "значения не указывают ни на одну строку"
+msgstr[2] "значений не указывают ни на одну строку"
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid "written {what}"
+msgstr "записано: {what}"
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid "{changes} in {n} row"
+msgid_plural "{changes} in {n} rows"
+msgstr[0] "{changes} в {n} строке"
+msgstr[1] "{changes} в {n} строках"
+msgstr[2] "{changes} в {n} строках"
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid "{column} is required"
+msgstr "Столбец {column} обязателен"
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid "{n} can't be deleted."
+msgid_plural "{n} can't be deleted."
+msgstr[0] "Нельзя удалить: {n}."
+msgstr[1] "Нельзя удалить: {n}."
+msgstr[2] "Нельзя удалить: {n}."
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid "{n} more row too."
+msgid_plural "{n} more rows too."
+msgstr[0] "И ещё {n} строка."
+msgstr[1] "И ещё {n} строки."
+msgstr[2] "И ещё {n} строк."
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid "{n} row in {table} still points at this row"
+msgid_plural "{n} rows in {table} still point at this row"
+msgstr[0] "{n} строка в {table} всё ещё ссылается на эту строку"
+msgstr[1] "{n} строки в {table} всё ещё ссылаются на эту строку"
+msgstr[2] "{n} строк в {table} всё ещё ссылаются на эту строку"
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid "{n} to fix"
+msgid_plural "{n} to fix"
+msgstr[0] "{n} к исправлению"
+msgstr[1] "{n} к исправлению"
+msgstr[2] "{n} к исправлению"
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid "{n} value is required"
+msgid_plural "{n} values are required"
+msgstr[0] "Нужно заполнить {n} значение"
+msgstr[1] "Нужно заполнить {n} значения"
+msgstr[2] "Нужно заполнить {n} значений"
+
+#: src/ui/picker.rs
+msgid ""
+"Add a PostgreSQL, MySQL or SQLite database, or a folder of data files, to "
+"start browsing."
+msgstr ""
+"Добавьте базу данных PostgreSQL, MySQL или SQLite либо папку с файлами "
+"данных, чтобы начать работу."
+
+#: src/ui/picker.rs src/ui/workspace.rs
+msgid "Connections"
+msgstr "Подключения"
+
+#: src/ui/picker.rs src/ui/row_panel.rs
+msgid "Duplicate"
+msgstr "Дублировать"
+
+#: src/ui/picker.rs
+msgid "Find connection…"
+msgstr "Найти подключение…"
+
+#: src/ui/picker.rs
+#, rust-format
+msgid "Last used {when}"
+msgstr "Использовалось {when}"
+
+#: src/ui/picker.rs
+#, rust-format
+msgid "More actions for {connection}"
+msgstr "Другие действия для {connection}"
+
+#: src/ui/picker.rs
+msgid "New connection"
+msgstr "Новое подключение"
+
+#: src/ui/picker.rs
+msgid "No connections match"
+msgstr "Нет подходящих подключений"
+
+#: src/ui/picker.rs
+msgid "No connections yet"
+msgstr "Подключений пока нет"
+
+#: src/ui/picker.rs
+msgid "Passwords are stored in the macOS Keychain"
+msgstr "Пароли хранятся в Связке ключей macOS"
+
+#: src/ui/picker.rs
+msgid "Passwords are stored in the system keyring"
+msgstr "Пароли хранятся в системной связке ключей"
+
+#: src/ui/picker.rs src/ui/settings/agents.rs
+msgid "Show Agents tab"
+msgstr "Показывать вкладку «Агенты»"
+
+#: src/ui/picker.rs
+msgid "Tables, columns and limits…"
+msgstr "Таблицы, столбцы и лимиты…"
+
+#: src/ui/picker.rs
+msgid "Tabletist stores passwords in the macOS Keychain."
+msgstr "Tabletist хранит пароли в Связке ключей macOS."
+
+#: src/ui/picker.rs
+msgid "Tabletist stores passwords in the system keyring."
+msgstr "Tabletist хранит пароли в системной связке ключей."
+
+#: src/ui/picker.rs
+#, rust-format
+msgid "agents {level}"
+msgstr "агенты: {level}"
+
+#: src/ui/picker.rs
+msgid "connections"
+msgstr "подключения"
+
+#: src/ui/picker.rs
+msgid "filter connections"
+msgstr "фильтр подключений"
+
+#: src/ui/picker.rs
+msgid "open"
+msgstr "открыто"
+
+#: src/ui/quick_open.rs
+msgid "Find object"
+msgstr "Найти объект"
+
+#: src/ui/quick_open.rs
+#, rust-format
+msgid "No commands match “{query}”"
+msgstr "Нет команд по запросу «{query}»"
+
+#: src/ui/quick_open.rs
+#, rust-format
+msgid "No objects match “{query}” in open connections"
+msgstr "Нет объектов по запросу «{query}» в открытых подключениях"
+
+#: src/ui/quick_open.rs
+#, rust-format
+msgid "No objects match “{query}” in {place}"
+msgstr "Нет объектов по запросу «{query}» в {place}"
+
+#: src/ui/quick_open.rs
+msgid "Quick open"
+msgstr "Быстрое открытие"
+
+#: src/ui/quick_open.rs
+msgid "Search all open connections"
+msgstr "Искать во всех открытых подключениях"
+
+#: src/ui/quick_open.rs
+msgid "none connected"
+msgstr "никто не подключён"
+
+#: src/ui/quick_open.rs
+msgid "off here"
+msgstr "здесь выкл."
+
+#: src/ui/quick_open.rs
+msgid "server off"
+msgstr "сервер выкл."
+
+#: src/ui/review.rs
+msgid "Runs in one transaction"
+msgstr "Выполняется в одной транзакции"
+
+#: src/ui/review.rs
+#, rust-format
+msgid "also clears {columns} in {n} {table} row"
+msgid_plural "also clears {columns} in {n} {table} rows"
+msgstr[0] "также очищает {columns} в {n} строке {table}"
+msgstr[1] "также очищает {columns} в {n} строках {table}"
+msgstr[2] "также очищает {columns} в {n} строках {table}"
+
+#: src/ui/review.rs
+#, rust-format
+msgid "also clears {columns} in {table} rows"
+msgstr "также очищает {columns} в строках {table}"
+
+#: src/ui/review.rs
+#, rust-format
+msgid "also deletes rows in {table}"
+msgstr "также удаляет строки в {table}"
+
+#: src/ui/review.rs
+#, rust-format
+msgid "also deletes {n} row in {table}"
+msgid_plural "also deletes {n} rows in {table}"
+msgstr[0] "также удаляет {n} строку в {table}"
+msgstr[1] "также удаляет {n} строки в {table}"
+msgstr[2] "также удаляет {n} строк в {table}"
+
+#: src/ui/review.rs
+#, rust-format
+msgid "blocked: {columns} is required"
+msgid_plural "blocked: {columns} are required"
+msgstr[0] "заблокировано: заполните {columns}"
+msgstr[1] "заблокировано: заполните {columns}"
+msgstr[2] "заблокировано: заполните {columns}"
+
+#: src/ui/row_form.rs
+msgid "Editing in the grid…"
+msgstr "Редактирование в таблице…"
+
+#: src/ui/row_panel.rs
+msgid "Add another"
+msgstr "Добавить ещё"
+
+#: src/ui/row_panel.rs
+#, rust-format
+msgid "Click a value or press {key} to edit"
+msgstr "Щёлкните значение или нажмите {key}, чтобы изменить"
+
+#: src/ui/row_panel.rs
+msgid "Close the row panel"
+msgstr "Закрыть панель строки"
+
+#: src/ui/row_panel.rs
+msgid "Copy row"
+msgstr "Копировать строку"
+
+#: src/ui/row_panel.rs
+msgid "Discard new row"
+msgstr "Сбросить новую строку"
+
+#: src/ui/row_panel.rs
+msgid "Export row…"
+msgstr "Экспортировать строку…"
+
+#: src/ui/row_panel.rs
+#, rust-format
+msgid "Format {key}"
+msgstr "Форматировать {key}"
+
+#: src/ui/row_panel.rs
+msgid "Locked"
+msgstr "Заблокировано"
+
+#: src/ui/row_panel.rs
+#, rust-format
+msgid "Open {table}"
+msgstr "Открыть {table}"
+
+#: src/ui/row_panel.rs
+#, rust-format
+msgid "Open {table} →"
+msgstr "Открыть {table} →"
+
+#: src/ui/row_panel.rs
+msgid "Read-only connection"
+msgstr "Подключение только для чтения"
+
+#: src/ui/row_panel.rs
+msgid ""
+"Required fields come first. Columns with a default show it and send nothing "
+"unless you change them."
+msgstr ""
+"Обязательные поля идут первыми. Столбцы со значением по умолчанию показывают "
+"его и ничего не отправляют, пока вы их не измените."
+
+#: src/ui/row_panel.rs
+msgid "Restore"
+msgstr "Восстановить"
+
+#: src/ui/row_panel.rs
+msgid "Revert"
+msgstr "Вернуть"
+
+#: src/ui/row_panel.rs
+#, rust-format
+msgid "Row {n}"
+msgstr "Строка {n}"
+
+#: src/ui/row_panel.rs
+#, rust-format
+msgid "Row · {key} {value}"
+msgstr "Строка · {key} {value}"
+
+#: src/ui/row_panel.rs
+msgid "Select a row to see its fields"
+msgstr "Выберите строку, чтобы увидеть её поля"
+
+#: src/ui/row_panel.rs
+msgid "Show less"
+msgstr "Показать меньше"
+
+#: src/ui/row_panel.rs
+msgid ""
+"This table has no primary key. The row can be inserted, but not edited or "
+"deleted afterwards."
+msgstr ""
+"У этой таблицы нет первичного ключа. Строку можно вставить, но потом её "
+"нельзя будет изменить или удалить."
+
+#: src/ui/row_panel.rs
+msgid "Will be deleted on save"
+msgstr "Будет удалена при сохранении"
+
+#: src/ui/row_panel.rs
+msgid "default"
+msgstr "по умолчанию"
+
+#: src/ui/row_panel.rs src/ui/workspace.rs
+msgctxt "label"
+msgid "new row"
+msgstr "новая строка"
+
+#: src/ui/row_panel.rs
+msgid "not saved"
+msgstr "не сохранено"
+
+#: src/ui/row_panel.rs
+msgid "restore"
+msgstr "восстановить"
+
+#: src/ui/row_panel.rs
+msgid "revert"
+msgstr "вернуть"
+
+#: src/ui/row_panel.rs
+msgctxt "row panel title"
+msgid "row"
+msgstr "строка"
+
+#: src/ui/row_panel.rs
+#, rust-format
+msgid "{enter} next field · {esc} leaves the row pending"
+msgstr "{enter}: следующее поле · {esc}: оставить строку несохранённой"
+
+#: src/ui/row_panel.rs
+#, rust-format
+msgid "{value}, changed from {old}"
+msgstr "{value}, прежнее значение: {old}"
+
+#: src/ui/row_panel.rs
+#, rust-format
+msgid "{value}, pending"
+msgstr "{value}, ожидает сохранения"
+
+#: src/ui/row_panel.rs
+#, rust-format
+msgid "… {n} more elements"
+msgid_plural "… {n} more elements"
+msgstr[0] "… ещё {n} элемент"
+msgstr[1] "… ещё {n} элемента"
+msgstr[2] "… ещё {n} элементов"
+
+#: src/ui/settings/agents.rs
+msgid "Connect an agent"
+msgstr "Подключить агента"
+
+#: src/ui/settings/agents.rs
+msgid "No agents connected"
+msgstr "Нет подключённых агентов"
+
+#: src/ui/settings/agents.rs
+msgid "Open Connections"
+msgstr "Открыть подключения"
+
+#: src/ui/settings/agents.rs
+#, rust-format
+msgid "{n} agent connected"
+msgid_plural "{n} agents connected"
+msgstr[0] "Подключён {n} агент"
+msgstr[1] "Подключено {n} агента"
+msgstr[2] "Подключено {n} агентов"
+
+#: src/ui/settings/file_pane.rs
+msgid "Ignored"
+msgstr "Пропущено"
+
+#: src/ui/settings/keyboard.rs
+msgid "not set"
+msgstr "не задано"
+
+#: src/ui/settings/keyboard.rs src/ui/workspace.rs
+msgid "or"
+msgstr "или"
+
+#: src/ui/settings/mod.rs
+msgid "Connection not found"
+msgstr "Подключение не найдено"
+
+#: src/ui/settings/mod.rs
+msgid "English"
+msgstr "Английский"
+
+#: src/ui/settings/mod.rs
+msgid "Help translate"
+msgstr "Помочь с переводом"
+
+#: src/ui/settings/mod.rs
+msgid "Language"
+msgstr "Язык"
+
+#: src/ui/settings/mod.rs
+msgid "Menus, labels and messages; data and SQL stay as they are"
+msgstr "Меню, подписи и сообщения; данные и SQL остаются как есть"
+
+#: src/ui/settings/mod.rs
+msgid "Never"
+msgstr "Никогда"
+
+#: src/ui/settings/mod.rs
+msgid "Restore last session"
+msgstr "Восстановить прошлый сеанс"
+
+#: src/ui/settings/mod.rs
+msgid "Russian"
+msgstr "Русский"
+
+#: src/ui/settings/mod.rs
+msgid "Show Connections"
+msgstr "Показать подключения"
+
+#: src/ui/settings/mod.rs
+msgid "System"
+msgstr "Системный"
+
+#: src/ui/settings/mod.rs
+#, rust-format
+msgid "System ({language})"
+msgstr "Системный ({language})"
+
+#: src/ui/settings/mod.rs
+#, rust-format
+msgid "System · {zone}"
+msgstr "Системный · {zone}"
+
+#: src/ui/settings/mod.rs
+#, rust-format
+msgid "{language} is not translated yet"
+msgstr "{language}: перевода пока нет"
+
+#: src/ui/settings/mod.rs
+#, rust-format
+msgid "{n} day"
+msgid_plural "{n} days"
+msgstr[0] "{n} день"
+msgstr[1] "{n} дня"
+msgstr[2] "{n} дней"
+
+#: src/ui/settings/sheet.rs
+#, rust-format
+msgid "Reset all keyboard shortcuts? Your {n} change will be removed."
+msgid_plural "Reset all keyboard shortcuts? Your {n} changes will be removed."
+msgstr[0] "Сбросить все сочетания клавиш? Ваше {n} изменение будет удалено."
+msgstr[1] "Сбросить все сочетания клавиш? Ваши {n} изменения будут удалены."
+msgstr[2] "Сбросить все сочетания клавиш? Ваши {n} изменений будут удалены."
+
+#: src/ui/settings/sheet.rs
+#, rust-format
+msgid "line {lines}"
+msgid_plural "lines {lines}"
+msgstr[0] "строка {lines}"
+msgstr[1] "строки {lines}"
+msgstr[2] "строки {lines}"
+
+#: src/ui/settings/sheet.rs
+#, rust-format
+msgid "{n} line in the file could not be read and was ignored: {lines}"
+msgid_plural ""
+"{n} lines in the file could not be read and were ignored: {lines}"
+msgstr[0] "{n} строка файла не прочитана и пропущена: {lines}"
+msgstr[1] "{n} строки файла не прочитаны и пропущены: {lines}"
+msgstr[2] "{n} строк файла не прочитано и пропущено: {lines}"
+
+#: src/ui/settings/terminal.rs
+#, rust-format
+msgid "System ({zone})"
+msgstr "Системный ({zone})"
+
+#: src/ui/settings/terminal.rs
+msgid "Update available"
+msgstr "Доступно обновление"
+
+#: src/ui/settings/terminal.rs
+msgid "from the system"
+msgstr "из системы"
+
+#: src/ui/settings/terminal.rs
+#, rust-format
+msgid "from {variable}"
+msgstr "из {variable}"
+
+#: src/ui/settings/terminal.rs
+#, rust-format
+msgid "help translate: {folder}"
+msgstr "помочь с переводом: {folder}"
+
+#: src/ui/settings/terminal.rs
+#, rust-format
+msgid "{n} agent"
+msgid_plural "{n} agents"
+msgstr[0] "{n} агент"
+msgstr[1] "{n} агента"
+msgstr[2] "{n} агентов"
+
+#: src/ui/settings/updates.rs src/ui/settings/updates_terminal.rs
+#, rust-format
+msgid "Checked {when}"
+msgstr "Проверено {when}"
+
+#: src/ui/settings/updates.rs
+msgid "Copied the command"
+msgstr "Команда скопирована"
+
+#: src/ui/settings/updates.rs
+msgid "Download progress"
+msgstr "Ход загрузки"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "Last checked {when}"
+msgstr "Последняя проверка: {when}"
+
+#: src/ui/settings/updates.rs src/ui/settings/updates_terminal.rs
+#, rust-format
+msgid "Last successful check: {when}"
+msgstr "Последняя успешная проверка: {when}"
+
+#: src/ui/settings/updates.rs
+msgid "The file was deleted."
+msgstr "Файл удалён."
+
+#: src/ui/settings/updates.rs
+msgid "Verifying…"
+msgstr "Проверка…"
+
+#: src/ui/settings/updates.rs
+msgid "Waiting for the network"
+msgstr "Ожидание сети"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "What's new in {version}"
+msgstr "Что нового в версии {version}"
+
+#: src/ui/settings/updates.rs src/ui/settings/updates_terminal.rs
+#, rust-format
+msgid "You have {version}"
+msgstr "У вас версия {version}"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "a write running in Query {n}"
+msgstr "идёт запись в «Запросе {n}»"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "exporting {name}"
+msgstr "экспорт {name}"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "last checked {time}"
+msgstr "последняя проверка: {time}"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "loading {table}"
+msgstr "загрузка {table}"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "query running for {time}"
+msgstr "запрос выполняется уже {time}"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "saving {table}"
+msgstr "сохранение {table}"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "{m} min"
+msgstr "{m} мин"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "{m} min {s} s"
+msgstr "{m} мин {s} с"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "{n} unsaved edit in {table}"
+msgid_plural "{n} unsaved edits in {table}"
+msgstr[0] "{n} несохранённая правка в {table}"
+msgstr[1] "{n} несохранённые правки в {table}"
+msgstr[2] "{n} несохранённых правок в {table}"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "{part} of {whole}"
+msgstr "{part} из {whole}"
+
+#: src/ui/settings/updates.rs
+#, rust-format
+msgid "{s} s"
+msgstr "{s} с"
+
+#: src/ui/settings/updates.rs src/ui/settings/updates_terminal.rs
+#, rust-format
+msgid "{version} has no build for this computer yet"
+msgstr "Для версии {version} пока нет сборки под этот компьютер"
+
+#: src/ui/settings/updates_terminal.rs
+#, rust-format
+msgid "{version} available"
+msgstr "Доступна версия {version}"
+
+#: src/ui/sidebar.rs
+msgid "Find any object…"
+msgstr "Найти любой объект…"
+
+#: src/ui/sidebar.rs
+msgid "Import comes after Export"
+msgstr "Импорт появится после экспорта"
+
+#: src/ui/sidebar.rs
+msgid "Loading…"
+msgstr "Загрузка…"
+
+#: src/ui/sidebar.rs
+msgid "No tables or views"
+msgstr "Нет таблиц и представлений"
+
+#: src/ui/sidebar.rs
+msgid "None connected"
+msgstr "Никто не подключён"
+
+#: src/ui/sidebar.rs
+msgid "Objects"
+msgstr "Объекты"
+
+#: src/ui/sidebar.rs
+msgid "Off here"
+msgstr "Здесь выкл."
+
+#: src/ui/sidebar.rs
+msgid "Open a new SQL editor"
+msgstr "Открыть новый редактор SQL"
+
+#: src/ui/sidebar.rs
+msgid "Or pick another database in the top bar."
+msgstr "Или выберите другую базу данных на верхней панели."
+
+#: src/ui/sidebar.rs
+msgid "Reload objects"
+msgstr "Обновить объекты"
+
+#: src/ui/sidebar.rs
+msgid "Retry"
+msgstr "Повторить"
+
+#: src/ui/sidebar.rs
+msgid "SQL Editor"
+msgstr "Редактор SQL"
+
+#: src/ui/sidebar.rs
+msgid "Schema"
+msgstr "Схема"
+
+#: src/ui/sidebar.rs
+msgid "Server off"
+msgstr "Сервер выкл."
+
+#: src/ui/sidebar.rs
+msgid "The connected user may lack the privileges to list them."
+msgstr "Возможно, у подключённого пользователя нет прав на их просмотр."
+
+#: src/ui/sidebar.rs
+msgid "This database has no schemas you can see."
+msgstr "В этой базе данных нет схем, которые вам видны."
+
+#: src/ui/sidebar.rs
+msgid "filter objects"
+msgstr "фильтр объектов"
+
+#: src/ui/sidebar.rs src/ui/sql_complete.rs
+msgid "materialized view"
+msgstr "материализованное представление"
+
+#: src/ui/sidebar.rs
+msgid "mview"
+msgstr "мат. представление"
+
+#: src/ui/sidebar.rs src/ui/sql_complete.rs
+msgid "table"
+msgstr "таблица"
+
+#: src/ui/sidebar.rs src/ui/sql_complete.rs
+msgid "view"
+msgstr "представление"
+
+#: src/ui/sidebar.rs
+#, rust-format
+msgid "{name}, {n} table"
+msgid_plural "{name}, {n} tables"
+msgstr[0] "{name}, {n} таблица"
+msgstr[1] "{name}, {n} таблицы"
+msgstr[2] "{name}, {n} таблиц"
+
+#: src/ui/sql_complete.rs
+msgid "Completions"
+msgstr "Варианты дополнения"
+
+#: src/ui/sql_complete.rs
+msgid "Loading"
+msgstr "Загрузка"
+
+#: src/ui/sql_complete.rs
+msgctxt "label"
+msgid "column"
+msgstr "столбец"
+
+#: src/ui/sql_complete.rs
+msgid "complete"
+msgstr "дополнить"
+
+#: src/ui/sql_complete.rs
+msgid "insert"
+msgstr "вставить"
+
+#: src/ui/sql_complete.rs
+msgid "keyword"
+msgstr "ключевое слово"
+
+#: src/ui/sql_complete.rs src/ui/workspace.rs
+msgid "move"
+msgstr "перемещение"
+
+#: src/ui/sql_complete.rs
+msgid "schema"
+msgstr "схема"
+
+#: src/ui/sql_editor.rs
+msgid "Format"
+msgstr "Форматировать"
+
+#: src/ui/sql_editor.rs
+msgid "Format the SQL"
+msgstr "Форматировать SQL"
+
+#: src/ui/sql_editor.rs
+msgid "Limit"
+msgstr "Лимит"
+
+#: src/ui/sql_editor.rs
+#, rust-format
+msgid "Ln {line}, Col {column}"
+msgstr "Стр. {line}, стлб {column}"
+
+#: src/ui/sql_editor.rs
+msgid "No limit"
+msgstr "Без лимита"
+
+#: src/ui/sql_editor.rs
+msgid "No timeout"
+msgstr "Без тайм-аута"
+
+#: src/ui/sql_editor.rs
+msgid "Resize the editor"
+msgstr "Изменить размер редактора"
+
+#: src/ui/sql_editor.rs
+msgid "Run"
+msgstr "Выполнить"
+
+#: src/ui/sql_editor.rs
+msgid "Run all"
+msgstr "Выполнить все"
+
+#: src/ui/sql_editor.rs
+msgid "Timeout"
+msgstr "Тайм-аут"
+
+#: src/ui/sql_editor.rs
+#, rust-format
+msgid "ln {line}:{column}"
+msgstr "стр. {line}:{column}"
+
+#: src/ui/sql_editor.rs
+#, rust-format
+msgid "{minutes} min {seconds} s"
+msgstr "{minutes} мин {seconds} с"
+
+#: src/ui/sql_editor.rs
+#, rust-format
+msgid "{n} min"
+msgid_plural "{n} min"
+msgstr[0] "{n} мин"
+msgstr[1] "{n} мин"
+msgstr[2] "{n} мин"
+
+#: src/ui/sql_editor.rs
+#, rust-format
+msgid "{seconds} s"
+msgstr "{seconds} с"
+
+#: src/ui/sql_results.rs
+msgid "Copy as"
+msgstr "Копировать как"
+
+#: src/ui/sql_results.rs
+msgid "No rows to export"
+msgstr "Нет строк для экспорта"
+
+#: src/ui/sql_results.rs
+msgid "Pick a cell of the rows first"
+msgstr "Сначала выберите ячейку в строках"
+
+#: src/ui/sql_results.rs
+msgid "Wait for the run to finish"
+msgstr "Дождитесь окончания выполнения"
+
+#: src/ui/sql_text.rs
+msgid "Editor preview"
+msgstr "Предпросмотр редактора"
+
+#: src/ui/sql_text.rs
+msgid "Line numbers"
+msgstr "Номера строк"
+
+#: src/ui/sql_text.rs
+msgid "SQL"
+msgstr "SQL"
+
+#: src/ui/start.rs
+msgid "-- START --"
+msgstr "-- НАЧАЛО --"
+
+#: src/ui/start.rs
+msgid "Edit connection"
+msgstr "Изменить подключение"
+
+#: src/ui/start.rs
+msgid "Find a table or view"
+msgstr "Найти таблицу или представление"
+
+#: src/ui/start.rs
+msgid "Largest tables"
+msgstr "Самые большие таблицы"
+
+#: src/ui/start.rs
+msgid "New SQL query"
+msgstr "Новый SQL-запрос"
+
+#: src/ui/start.rs
+msgid "No matches"
+msgstr "Нет совпадений"
+
+#: src/ui/start.rs
+msgid "No table open"
+msgstr "Нет открытой таблицы"
+
+#: src/ui/start.rs
+msgid "Recent"
+msgstr "Недавние"
+
+#: src/ui/start.rs
+msgid "Recent on this connection"
+msgstr "Недавние в этом подключении"
+
+#: src/ui/start.rs
+msgid "Restart"
+msgstr "Перезапустить"
+
+#: src/ui/start.rs
+msgid "Start"
+msgstr "Начало"
+
+#: src/ui/start.rs
+msgid "Start typing to search"
+msgstr "Начните вводить для поиска"
+
+#: src/ui/start.rs
+msgid "Switch database"
+msgstr "Сменить базу данных"
+
+#: src/ui/start.rs
+msgid "Tables"
+msgstr "Таблицы"
+
+#: src/ui/start.rs
+msgid "This connection has no other database to switch to"
+msgstr "В этом подключении нет другой базы данных для переключения"
+
+#: src/ui/start.rs
+msgid "This connection is no longer saved"
+msgstr "Это подключение больше не сохранено"
+
+#: src/ui/start.rs
+msgid "from anywhere"
+msgstr "из любого места"
+
+#: src/ui/start.rs
+msgid "matches"
+msgstr "совпадения"
+
+#: src/ui/start.rs
+msgid "no table open"
+msgstr "нет открытой таблицы"
+
+#: src/ui/start.rs
+msgid "start"
+msgstr "начало"
+
+#: src/ui/start.rs
+#, rust-format
+msgid "{version} is ready"
+msgstr "Версия {version} готова"
+
+#: src/ui/start.rs
+#, rust-format
+msgid "≈ {n} rows"
+msgid_plural "≈ {n} rows"
+msgstr[0] "≈ {n} строка"
+msgstr[1] "≈ {n} строки"
+msgstr[2] "≈ {n} строк"
+
+#: src/ui/structure.rs
+msgid "Change…"
+msgstr "Изменить…"
+
+#: src/ui/structure.rs
+msgid "Copy name"
+msgstr "Копировать имя"
+
+#: src/ui/structure.rs
+msgid "File"
+msgstr "Файл"
+
+#: src/ui/structure.rs
+msgid "Foreign keys"
+msgstr "Внешние ключи"
+
+#: src/ui/structure.rs
+msgid "Indexes"
+msgstr "Индексы"
+
+#: src/ui/structure.rs
+msgid "Label for foreign keys"
+msgstr "Подпись для внешних ключей"
+
+#: src/ui/structure.rs
+#, rust-format
+msgid "Label for foreign keys: {label}"
+msgstr "Подпись для внешних ключей: {label}"
+
+#: src/ui/structure.rs
+msgid "Loading structure…"
+msgstr "Загрузка структуры…"
+
+#: src/ui/structure.rs
+#, rust-format
+msgid "No column {column} in {table}"
+msgstr "В {table} нет столбца {column}"
+
+#: src/ui/structure.rs
+msgid "No foreign keys"
+msgstr "Нет внешних ключей"
+
+#: src/ui/structure.rs
+msgid "No indexes"
+msgstr "Нет индексов"
+
+#: src/ui/structure.rs
+msgid "Use Automatic"
+msgstr "Выбирать автоматически"
+
+#: src/ui/structure.rs
+msgid "Use as label"
+msgstr "Использовать как подпись"
+
+#: src/ui/structure.rs
+msgid "back to automatic"
+msgstr "вернуть автоматический выбор"
+
+#: src/ui/structure.rs src/ui/workspace.rs
+msgid "choose"
+msgstr "выбрать"
+
+#: src/ui/structure.rs
+msgid "fk label"
+msgstr "подпись fk"
+
+#: src/ui/structure.rs src/ui/workspace.rs
+msgid "label"
+msgstr "подпись"
+
+#: src/ui/structure.rs
+msgid "no"
+msgstr "нет"
+
+#: src/ui/structure.rs
+msgid "use the column under the cursor"
+msgstr "взять столбец под курсором"
+
+#: src/ui/structure.rs
+msgid "yes"
+msgstr "да"
+
+#: src/ui/structure.rs
+#, rust-format
+msgid "{column} cannot be the label ({reason})"
+msgstr "{column} не может быть подписью ({reason})"
+
+#: src/ui/structure.rs
+#, rust-format
+msgid "{column}, label column"
+msgstr "{column}, столбец подписи"
+
+#: src/ui/workspace.rs
+msgid "-- INSERT --"
+msgstr "-- ВСТАВКА --"
+
+#: src/ui/workspace.rs
+msgid "-- VISUAL LINE --"
+msgstr "-- ВИЗУАЛЬНЫЙ ПО СТРОКАМ --"
+
+#: src/ui/workspace.rs
+msgid "Command"
+msgstr "Команда"
+
+#: src/ui/workspace.rs
+msgid "Database"
+msgstr "База данных"
+
+#: src/ui/workspace.rs
+msgid "Disconnect"
+msgstr "Отключиться"
+
+#: src/ui/workspace.rs
+#, rust-format
+msgid "Switch to {connection} · {environment}"
+msgstr "Переключиться на {connection} · {environment}"
+
+#: src/ui/workspace.rs
+msgid "activity"
+msgstr "активность"
+
+#: src/ui/workspace.rs
+msgid "allow agents"
+msgstr "разрешить агентам"
+
+#: src/ui/workspace.rs
+msgid "back"
+msgstr "назад"
+
+#: src/ui/workspace.rs
+msgid "calls"
+msgstr "вызовы"
+
+#: src/ui/workspace.rs
+msgid "conn"
+msgstr "подкл."
+
+#: src/ui/workspace.rs
+msgid "copy"
+msgstr "копировать"
+
+#: src/ui/workspace.rs
+msgid "copy as"
+msgstr "копировать как"
+
+#: src/ui/workspace.rs
+msgid "copy tsv"
+msgstr "копировать TSV"
+
+#: src/ui/workspace.rs
+msgid "delete"
+msgstr "удалить"
+
+#: src/ui/workspace.rs
+msgid "disconnect"
+msgstr "отключиться"
+
+#: src/ui/workspace.rs
+msgid "edit"
+msgstr "изменить"
+
+#: src/ui/workspace.rs
+msgid "error"
+msgid_plural "errors"
+msgstr[0] "ошибка"
+msgstr[1] "ошибки"
+msgstr[2] "ошибок"
+
+#: src/ui/workspace.rs
+msgid "export cancelled · nothing saved, the partial file was removed"
+msgstr "экспорт отменён · ничего не сохранено, неполный файл удалён"
+
+#: src/ui/workspace.rs
+#, rust-format
+msgid "export {name} [{bar}] {share}% · {done}/{total} · {cancel}"
+msgstr "экспорт {name} [{bar}] {share}% · {done}/{total} · {cancel}"
+
+#: src/ui/workspace.rs
+#, rust-format
+msgid "export {name} · {done} rows · {cancel}"
+msgstr "экспорт {name} · строк: {done} · {cancel}"
+
+#: src/ui/workspace.rs
+msgid "log"
+msgstr "журнал"
+
+#: src/ui/workspace.rs
+msgid "normal"
+msgstr "обычный режим"
+
+#: src/ui/workspace.rs
+msgctxt "key hint"
+msgid "open"
+msgstr "открыть"
+
+#: src/ui/workspace.rs
+msgid "review"
+msgstr "просмотр"
+
+#: src/ui/workspace.rs
+msgid "sessions"
+msgstr "сеансы"
+
+#: src/ui/workspace.rs
+msgid "set"
+msgstr "задать"
+
+#: src/ui/workspace.rs
+msgid "settings"
+msgstr "настройки"
+
+#: src/ui/workspace.rs
+msgid "stop agents here"
+msgstr "остановить агентов здесь"
+
+#: src/ui/workspace.rs
+msgid "turn on"
+msgstr "включить"
+
+#: src/ui/workspace.rs
+#, rust-format
+msgid "via SSH {host}"
+msgstr "через SSH {host}"
+
+#: src/ui/workspace.rs
+msgid "write"
+msgstr "записать"
+
+#: src/ui/workspace.rs
+#, rust-format
+msgid "{name} {n} row"
+msgid_plural "{name} {n} rows"
+msgstr[0] "{name}: {n} строка"
+msgstr[1] "{name}: {n} строки"
+msgstr[2] "{name}: {n} строк"
+
+#: src/ui/workspace.rs
+#, rust-format
+msgid "{n} export · {each} · {cancel}"
+msgid_plural "{n} exports · {each} · {cancel}"
+msgstr[0] "{n} экспорт · {each} · {cancel}"
+msgstr[1] "{n} экспорта · {each} · {cancel}"
+msgstr[2] "{n} экспортов · {each} · {cancel}"
+
+#: src/ui/workspace.rs
+#, rust-format
+msgid "{n} line selected"
+msgid_plural "{n} lines selected"
+msgstr[0] "Выбрана {n} строка"
+msgstr[1] "Выбраны {n} строки"
+msgstr[2] "Выбрано {n} строк"
+
+#: src/ui/workspace.rs
+#, rust-format
+msgid "✓ exported {rows} rows → {path} · {size} · {time} · {key} open folder"
+msgstr ""
+"✓ экспортировано строк: {rows} → {path} · {size} · {time} · {key}: открыть "
+"папку"
+
+#: src/ui/write_prompts.rs
+msgid "Discard"
+msgstr "Сбросить"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "Discard {changes} before changing the page?"
+msgstr "Сбросить {changes} перед сменой страницы?"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "Discard {changes} before closing the tab?"
+msgstr "Сбросить {changes} перед закрытием вкладки?"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "Discard {changes} before closing the window?"
+msgstr "Сбросить {changes} перед закрытием окна?"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "Discard {changes} before disconnecting?"
+msgstr "Сбросить {changes} перед отключением?"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "Discard {changes} before filtering?"
+msgstr "Сбросить {changes} перед фильтрацией?"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "Discard {changes} before going on?"
+msgstr "Сбросить {changes}, прежде чем продолжить?"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "Discard {changes} before reloading?"
+msgstr "Сбросить {changes} перед перезагрузкой?"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "Discard {changes} before sorting?"
+msgstr "Сбросить {changes} перед сортировкой?"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "Discard {changes} before switching database?"
+msgstr "Сбросить {changes} перед сменой базы данных?"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "Discard {changes} in {n} tab?"
+msgid_plural "Discard {changes} in {n} tabs?"
+msgstr[0] "Сбросить {changes} в {n} вкладке?"
+msgstr[1] "Сбросить {changes} в {n} вкладках?"
+msgstr[2] "Сбросить {changes} в {n} вкладках?"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "Discard {changes}?"
+msgstr "Сбросить {changes}?"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "It has not been written."
+msgid_plural "They have not been written."
+msgstr[0] "Оно ещё не записано."
+msgstr[1] "Они ещё не записаны."
+msgstr[2] "Они ещё не записаны."
+
+#: src/ui/write_prompts.rs
+msgid "One transaction"
+msgstr "Одна транзакция"
+
+#: src/ui/write_prompts.rs
+msgid "Save to production"
+msgstr "Сохранить в production"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "Save {changes} before changing the page?"
+msgstr "Сохранить {changes} перед сменой страницы?"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "Save {changes} before closing the tab?"
+msgstr "Сохранить {changes} перед закрытием вкладки?"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "Save {changes} before closing the window?"
+msgstr "Сохранить {changes} перед закрытием окна?"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "Save {changes} before disconnecting?"
+msgstr "Сохранить {changes} перед отключением?"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "Save {changes} before filtering?"
+msgstr "Сохранить {changes} перед фильтрацией?"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "Save {changes} before going on?"
+msgstr "Сохранить {changes}, прежде чем продолжить?"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "Save {changes} before reloading?"
+msgstr "Сохранить {changes} перед перезагрузкой?"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "Save {changes} before sorting?"
+msgstr "Сохранить {changes} перед сортировкой?"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "Save {changes} before switching database?"
+msgstr "Сохранить {changes} перед сменой базы данных?"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "Save {changes} to production?"
+msgstr "Сохранить в production: {changes}?"
+
+#: src/ui/write_prompts.rs
+msgid "Stay"
+msgstr "Остаться"
+
+#: src/ui/write_prompts.rs
+msgid "Write"
+msgstr "Записать"
+
+#: src/ui/write_prompts.rs
+msgid "deleted row"
+msgid_plural "deleted rows"
+msgstr[0] "удалённая строка"
+msgstr[1] "удалённые строки"
+msgstr[2] "удалённых строк"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "{list} and {last}"
+msgstr "{list} и {last}"
+
+#: src/ui/write_prompts.rs
+#, rust-format
+msgid "{n} row in {table}"
+msgid_plural "{n} rows in {table}"
+msgstr[0] "{n} строка в {table}"
+msgstr[1] "{n} строки в {table}"
+msgstr[2] "{n} строк в {table}"

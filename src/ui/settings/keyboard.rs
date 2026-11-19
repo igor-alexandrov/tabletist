@@ -138,10 +138,14 @@ pub(super) fn refusal(
         crate::keymap::key_written(layout, keys).as_str().to_owned()
     };
     let scope = look.label(&gettext(locale, row.scope.name(layout)));
-    gettext(locale, why.text(layout))
-        .replace("{keys}", &written)
-        .replace("{name}", &name(look, locale, about))
-        .replace("{scope}", &scope)
+    crate::i18n::fill(
+        &gettext(locale, why.text(layout)),
+        &[
+            ("{keys}", &written),
+            ("{name}", &name(look, locale, about)),
+            ("{scope}", &scope),
+        ],
+    )
 }
 
 /// The key the window sends a clipboard event in place of, held with the

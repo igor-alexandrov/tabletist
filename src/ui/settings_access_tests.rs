@@ -281,6 +281,7 @@ fn the_terminal_generals_rows_are_described_by_their_hints() {
         &mut harness,
         SettingsPane::General,
         &[
+            (OptionId::Language, Some(super::language_tests::SYSTEM_HINT)),
             (
                 OptionId::OnLaunch,
                 Some("or connections · a chosen connection"),

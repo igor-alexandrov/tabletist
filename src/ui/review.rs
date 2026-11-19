@@ -98,12 +98,16 @@ pub fn comment(line: &Line, locale: Locale) -> Option<String> {
         ),
         Line::NewRequired(columns) => {
             let plural = u32::try_from(columns.len()).unwrap_or(u32::MAX);
+            let blocked = ngettext(
+                locale,
+                "blocked: {columns} is required",
+                "blocked: {columns} are required",
+                plural,
+            );
             format!(
-                "-- {} · {} {} {}",
+                "-- {} · {}",
                 say("new row"),
-                say("blocked:"),
-                columns.join(", "),
-                ngettext(locale, "is required", "are required", plural)
+                blocked.replace("{columns}", &columns.join(", "))
             )
         }
         Line::NewRefused(reason) => {
@@ -125,35 +129,42 @@ pub fn comment(line: &Line, locale: Locale) -> Option<String> {
         Line::Also(Effect::Deletes { table, rows }) => {
             let what = match rows {
                 Some(rows) => {
-                    let rows = usize::try_from(*rows).unwrap_or(usize::MAX);
-                    counted(locale, rows, "row", "rows")
+                    let plural = u32::try_from(*rows).unwrap_or(u32::MAX);
+                    ngettext(
+                        locale,
+                        "also deletes {n} row in {table}",
+                        "also deletes {n} rows in {table}",
+                        plural,
+                    )
+                    .replace("{n}", &rows.to_string())
                 }
-                None => say("rows").into_owned(),
+                None => gettext(locale, "also deletes rows in {table}").into_owned(),
             };
-            format!(
-                "-- {} {what} {} {table} (ON DELETE CASCADE)",
-                say("also deletes"),
-                say("in")
-            )
+            format!("-- {} (ON DELETE CASCADE)", what.replace("{table}", table))
         }
         Line::Also(Effect::Clears {
             table,
             columns,
             rows,
         }) => {
-            let rows = match rows {
+            let what = match rows {
                 Some(rows) => {
                     let plural = u32::try_from(*rows).unwrap_or(u32::MAX);
-                    format!("{rows} {table} {}", ngettext(locale, "row", "rows", plural))
+                    ngettext(
+                        locale,
+                        "also clears {columns} in {n} {table} row",
+                        "also clears {columns} in {n} {table} rows",
+                        plural,
+                    )
+                    .replace("{n}", &rows.to_string())
                 }
-                None => format!("{table} {}", say("rows")),
+                None => gettext(locale, "also clears {columns} in {table} rows").into_owned(),
             };
-            format!(
-                "-- {} {} {} {rows} (ON DELETE SET NULL)",
-                say("also clears"),
-                columns.join(", "),
-                say("in")
-            )
+            let what = crate::i18n::fill(
+                &what,
+                &[("{table}", table), ("{columns}", &columns.join(", "))],
+            );
+            format!("-- {what} (ON DELETE SET NULL)")
         }
         Line::Sql(_) => return None,
     })

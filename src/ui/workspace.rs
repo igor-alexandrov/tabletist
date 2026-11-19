@@ -6,7 +6,7 @@ use tabletist_db::{Access, TlsMode};
 
 use crate::app::App;
 use crate::format::display_safe;
-use crate::i18n::gettext;
+use crate::i18n::{gettext, pgettext};
 use crate::keymap::Command;
 use crate::model::{Action, ConnTabId, ObjectView, SessionStatus, TabId};
 use crate::style::Icon;
@@ -1199,12 +1199,12 @@ fn link_color(link: Link, env: &crate::env::EnvColors, palette: &Palette) -> egu
 
 /// What a click on another connection's chip is announced as.
 fn switch_label(chip: &Chip, look: &Look, locale: crate::i18n::Locale) -> String {
-    format!(
-        "{} {} · {}",
-        gettext(locale, "Switch to"),
-        chip.name,
-        chip.env.label(crate::env::Platform::of(look))
-    )
+    gettext(locale, "Switch to {connection} · {environment}")
+        .replace(
+            "{environment}",
+            chip.env.label(crate::env::Platform::of(look)),
+        )
+        .replace("{connection}", &chip.name)
 }
 
 /// Announces the bar's own chip: the database switcher.
@@ -1491,7 +1491,7 @@ fn mac_bar(
     if let Some(host) = &info.ssh_host {
         pills.push((
             None,
-            format!("{} {host}", gettext(locale, "via SSH")),
+            gettext(locale, "via SSH {host}").replace("{host}", host),
             palette.secondary,
         ));
     }
@@ -1761,7 +1761,7 @@ fn terminal_bar(
     }
     if let Some(host) = &info.ssh_host {
         tags.push((
-            format!("{} {host}", gettext(locale, "via SSH")),
+            gettext(locale, "via SSH {host}").replace("{host}", host),
             palette.dim,
         ));
     }
@@ -2553,15 +2553,20 @@ pub fn export_line(app: &App) -> Option<(String, egui::Color32)> {
                 .map(|exporting| export_brief(exporting, locale))
                 .collect();
             let count = u32::try_from(several.len()).unwrap_or(u32::MAX);
-            let text = crate::i18n::ngettext(
+            let words = crate::i18n::ngettext(
                 locale,
                 "{n} export · {each} · {cancel}",
                 "{n} exports · {each} · {cancel}",
                 count,
-            )
-            .replace("{n}", &several.len().to_string())
-            .replace("{each}", &each.join(" · "))
-            .replace("{cancel}", cancel.as_str());
+            );
+            let text = crate::i18n::fill(
+                &words,
+                &[
+                    ("{n}", &several.len().to_string()),
+                    ("{each}", &each.join(" · ")),
+                    ("{cancel}", cancel.as_str()),
+                ],
+            );
             Some((text, app.palette.text))
         }
     }
@@ -2580,14 +2585,18 @@ pub fn export_brief(
     };
     match exporting.share() {
         Some(share) => format!("{} {}%", exporting.name(), (share * 100.0).round() as u32),
-        None => crate::i18n::ngettext(
-            locale,
-            "{name} {n} row",
-            "{name} {n} rows",
-            u32::try_from(rows).unwrap_or(u32::MAX),
-        )
-        .replace("{name}", exporting.name())
-        .replace("{n}", &crate::format::group_digits(rows)),
+        None => crate::i18n::fill(
+            &crate::i18n::ngettext(
+                locale,
+                "{name} {n} row",
+                "{name} {n} rows",
+                u32::try_from(rows).unwrap_or(u32::MAX),
+            ),
+            &[
+                ("{name}", exporting.name()),
+                ("{n}", &crate::format::group_digits(rows)),
+            ],
+        ),
     }
 }
 
@@ -2613,21 +2622,29 @@ fn one_export_line(
                 (Some(share), Some(total)) => {
                     let filled = ((share * 12.0).round() as usize).min(12);
                     let bar = format!("{}{}", "█".repeat(filled), "░".repeat(12 - filled));
-                    gettext(
-                        locale,
-                        "export {name} [{bar}] {share}% · {done}/{total} · {cancel}",
+                    crate::i18n::fill(
+                        &gettext(
+                            locale,
+                            "export {name} [{bar}] {share}% · {done}/{total} · {cancel}",
+                        ),
+                        &[
+                            ("{name}", &name),
+                            ("{bar}", &bar),
+                            ("{share}", &((share * 100.0).round() as u32).to_string()),
+                            ("{done}", &done),
+                            ("{total}", &count_words(total)),
+                            ("{cancel}", cancel.as_str()),
+                        ],
                     )
-                    .replace("{name}", &name)
-                    .replace("{bar}", &bar)
-                    .replace("{share}", &((share * 100.0).round() as u32).to_string())
-                    .replace("{done}", &done)
-                    .replace("{total}", &count_words(total))
-                    .replace("{cancel}", cancel.as_str())
                 }
-                _ => gettext(locale, "export {name} · {done} rows · {cancel}")
-                    .replace("{name}", &name)
-                    .replace("{done}", &done)
-                    .replace("{cancel}", cancel.as_str()),
+                _ => crate::i18n::fill(
+                    &gettext(locale, "export {name} · {done} rows · {cancel}"),
+                    &[
+                        ("{name}", &name),
+                        ("{done}", &done),
+                        ("{cancel}", cancel.as_str()),
+                    ],
+                ),
             };
             (text, palette.text)
         }
@@ -2636,15 +2653,19 @@ fn one_export_line(
         } => {
             let open = key(crate::keymap::Command::OpenExportFolder);
             let rows = crate::format::group_digits(*rows);
-            let text = gettext(
-                locale,
-                "✓ exported {rows} rows → {path} · {size} · {time} · {key} open folder",
-            )
-            .replace("{rows}", &rows)
-            .replace("{path}", &exporting.shown_path)
-            .replace("{size}", &size_words(*bytes, locale).to_lowercase())
-            .replace("{time}", &took_words(*took))
-            .replace("{key}", open.as_str());
+            let text = crate::i18n::fill(
+                &gettext(
+                    locale,
+                    "✓ exported {rows} rows → {path} · {size} · {time} · {key} open folder",
+                ),
+                &[
+                    ("{rows}", &rows),
+                    ("{path}", &exporting.shown_path),
+                    ("{size}", &size_words(*bytes, locale).to_lowercase()),
+                    ("{time}", &took_words(*took)),
+                    ("{key}", open.as_str()),
+                ],
+            );
             (text, palette.success)
         }
         ExportStatus::Cancelled { .. } => (
@@ -3075,7 +3096,7 @@ fn status_line(
                 table_hints.push((&edit_key, &*edit, true));
             }
             // A new row is opened, where the table takes one.
-            let new_row = gettext(locale, "new row");
+            let new_row = pgettext(locale, "label", "new row");
             if editing.can_add {
                 table_hints.push((&add_key, &*new_row, true));
             }
@@ -3257,9 +3278,9 @@ fn status_line(
                 gettext(locale, "calls"),
                 gettext(locale, "all connections"),
                 gettext(locale, "this connection"),
-                gettext(locale, "filter"),
+                pgettext(locale, "label", "filter"),
                 gettext(locale, "details"),
-                gettext(locale, "open"),
+                pgettext(locale, "key hint", "open"),
                 gettext(locale, "export"),
             ];
             match agents_log {

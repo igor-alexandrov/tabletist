@@ -486,13 +486,16 @@ fn key_row(
             skin.say("Reset to {keys}")
                 .replace("{keys}", &defaults.join(", "))
         };
-        let named = skin
-            .say("Reset {name} to {keys}")
-            .replace("{name}", &name)
-            .replace(
-                "{keys}",
-                &keyboard::spoken_defaults(layout, skin.locale, row),
-            );
+        let named = crate::i18n::fill(
+            &skin.say("Reset {name} to {keys}"),
+            &[
+                ("{name}", &name),
+                (
+                    "{keys}",
+                    &keyboard::spoken_defaults(layout, skin.locale, row),
+                ),
+            ],
+        );
         let place =
             Rect::from_center_size(pos2(keys_right - RESET / 2.0, middle), vec2(RESET, RESET));
         let reset = ui.interact(place, reset_id, Sense::click());
@@ -575,14 +578,14 @@ fn key_row(
     };
     let button = ui.interact(caps_rect, caps_id, sense);
     let named = match fixed {
-        Some(_) => skin
-            .say("Shortcut for {name}: {keys}. It cannot be changed.")
-            .replace("{name}", &name)
-            .replace("{keys}", &spoken),
-        None => skin
-            .say("Shortcut for {name}: {keys}. Press Return to record.")
-            .replace("{name}", &name)
-            .replace("{keys}", &spoken),
+        Some(_) => crate::i18n::fill(
+            &skin.say("Shortcut for {name}: {keys}. It cannot be changed."),
+            &[("{name}", &name), ("{keys}", &spoken)],
+        ),
+        None => crate::i18n::fill(
+            &skin.say("Shortcut for {name}: {keys}. Press Return to record."),
+            &[("{name}", &name), ("{keys}", &spoken)],
+        ),
     };
     button.widget_info(|| WidgetInfo::labeled(WidgetType::Button, fixed.is_none(), &named));
     focus::hint(
