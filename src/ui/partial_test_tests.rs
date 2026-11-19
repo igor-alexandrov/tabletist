@@ -444,6 +444,36 @@ fn a_fix_names_a_file_by_its_path_where_the_list_has_two_of_its_name() {
     );
 }
 
+/// An entry of the list with spaces round it is the file the Test read:
+/// another of its name, it names the failed file by its path.
+#[test]
+fn a_padded_entry_of_the_list_still_shares_the_failed_file_s_name() {
+    let mut harness = exports(Look::macos());
+    match &mut harness.app.dialog {
+        Some(Dialog::Connection(form)) => {
+            form.files_kind = crate::model::FilesKind::Files;
+            form.files_list = vec![
+                "/data/current/returns.csv".into(),
+                "/data/archive/returns.csv ".into(),
+            ];
+        }
+        _ => panic!("no dialog"),
+    }
+    let current = Failure {
+        path: PathBuf::from("/data/current/returns.csv"),
+        ..late_na()
+    };
+    tested(&mut harness, vec![current], &[]);
+    harness.click("Skip returns.csv");
+    assert_eq!(
+        form(&harness).files_csv.overrides,
+        [Override {
+            file: "/data/current/returns.csv".into(),
+            change: Change::Skip,
+        }]
+    );
+}
+
 /// A file listed by a relative path beside another of its name is named
 /// by that path, which no other file of its name matches.
 #[test]

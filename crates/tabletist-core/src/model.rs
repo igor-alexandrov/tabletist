@@ -2469,13 +2469,14 @@ impl ConnectionForm {
             (FileFix::Text | FileFix::Empty, _) => return false,
         };
         let name = tabletist_db::files::file_name(&failure.path);
-        let shared = self.files_kind == FilesKind::Files
-            && self
-                .files_list
+        // The list as the Test read it.
+        let shared = match self.files_source() {
+            Some(tabletist_db::files::Source::Files(listed)) => listed
                 .iter()
-                .map(|listed| tabletist_db::files::expanded(std::path::Path::new(listed)))
-                .filter(|listed| *listed != failure.path)
-                .any(|listed| tabletist_db::files::file_name(&listed) == name);
+                .filter(|listed| **listed != failure.path)
+                .any(|listed| tabletist_db::files::file_name(listed) == name),
+            Some(tabletist_db::files::Source::Folder(_)) | None => false,
+        };
         let file = match shared {
             // A path with no folder in it is written from the current one,
             // so that it is a path still, which no other file matches.

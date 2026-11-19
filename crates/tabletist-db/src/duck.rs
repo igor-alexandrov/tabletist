@@ -498,19 +498,34 @@ fn opened(files: &[Found], reading: &Reading, past: bool) -> Result<Made> {
             literal(&path_text(folder)?)
         ))?;
     }
+    // Why the Excel reader is not there, where a Test goes on without it.
+    let mut no_excel = None;
     if files.iter().any(|file| file.format == Format::Excel) {
         // Installed once, then found in the folder: offline, a second open
         // still reads Excel files.
-        run("INSTALL excel; LOAD excel").map_err(|error| {
-            Error::Connect(format!(
-                "Can't read Excel files: the Excel reader for DuckDB could not be installed \
-                 ({error})"
-            ))
-        })?;
+        if let Err(error) = run("INSTALL excel; LOAD excel") {
+            let why = format!(
+                "the Excel reader for DuckDB could not be installed ({})",
+                plain(&error)
+            );
+            match past {
+                true => no_excel = Some(why),
+                false => return Err(Error::Connect(format!("Can't read Excel files: {why}"))),
+            }
+        }
     }
     let mut opened = Vec::with_capacity(files.len());
     let mut failures = Vec::new();
     for file in &files {
+        if let (Some(why), Format::Excel) = (&no_excel, file.format) {
+            failures.push(crate::files::Failure {
+                file: file_label(file),
+                path: file.path.clone(),
+                format: file.format,
+                why: crate::files::Why::Other(why.clone()),
+            });
+            continue;
+        }
         let failed = |error: &Error| {
             Error::Connect(format!("Can't read {}: {}", file_label(file), plain(error)))
         };
