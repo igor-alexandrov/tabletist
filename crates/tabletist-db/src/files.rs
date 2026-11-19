@@ -345,6 +345,9 @@ pub struct Scan {
     pub files: Vec<Found>,
     /// Files of a list that are not there (or are no longer files).
     pub missing: Vec<PathBuf>,
+    /// Files that cannot be looked at, with why, when a Test scans past
+    /// them: else the first is the scan's error.
+    pub unreadable: Vec<(PathBuf, String)>,
 }
 
 impl Scan {
@@ -371,15 +374,24 @@ impl Scan {
 /// list's in its order. A folder that cannot be read is an error naming
 /// it; a file of a list that is gone is [`Scan::missing`].
 pub fn scan(source: &Source) -> Result<Scan> {
-    scan_past(source, |_| false)
+    scan_past(source, |_| false, false)
 }
 
 /// [`scan`], with the files `skipped` says left out before anything is
 /// asked of them: one that is gone, or that cannot be looked at, is no
-/// matter.
-pub fn scan_past(source: &Source, skipped: impl Fn(&Path) -> bool) -> Result<Scan> {
+/// matter. A Test goes `past` a file it cannot look at: it is one of
+/// [`Scan::unreadable`].
+pub fn scan_past(source: &Source, skipped: impl Fn(&Path) -> bool, past: bool) -> Result<Scan> {
     let mut entries: Vec<(PathBuf, Format, u64)> = Vec::new();
     let mut missing = Vec::new();
+    let mut unreadable = Vec::new();
+    let mut unlooked = |path: &Path, error: &std::io::Error| match past {
+        true => {
+            unreadable.push((path.to_owned(), file_why(error)));
+            Ok(())
+        }
+        false => Err(file_error(path, error)),
+    };
     match source {
         Source::Folder(folder) => {
             let read = std::fs::read_dir(folder).map_err(|error| folder_error(folder, &error))?;
@@ -402,14 +414,11 @@ pub fn scan_past(source: &Source, skipped: impl Fn(&Path) -> bool) -> Result<Sca
                     Ok(meta) if meta.is_file() => entries.push((path, format, meta.len())),
                     Ok(_) => {}
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(file_error(&path, &error)),
+                    Err(error) => unlooked(&path, &error)?,
                 }
             }
             // By name, in any case, as a person reads the folder.
-            entries.sort_by_cached_key(|(path, _, _)| {
-                let name = path.file_name().map(|n| n.to_string_lossy().to_lowercase());
-                (name, path.clone())
-            });
+            entries.sort_by_cached_key(|(path, _, _)| by_name(path));
         }
         Source::Files(files) => {
             for path in files.iter().filter(|path| !skipped(path)) {
@@ -425,10 +434,14 @@ pub fn scan_past(source: &Source, skipped: impl Fn(&Path) -> bool) -> Result<Sca
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                         missing.push(path.clone());
                     }
-                    Err(error) => return Err(file_error(path, &error)),
+                    Err(error) => unlooked(path, &error)?,
                 }
             }
         }
+    }
+    // A list's in its order, a folder's as its files are.
+    if let Source::Folder(_) = source {
+        unreadable.sort_by_cached_key(|(path, _)| by_name(path));
     }
     let names = names(
         entries
@@ -445,7 +458,18 @@ pub fn scan_past(source: &Source, skipped: impl Fn(&Path) -> bool) -> Result<Sca
             name,
         })
         .collect();
-    Ok(Scan { files, missing })
+    Ok(Scan {
+        files,
+        missing,
+        unreadable,
+    })
+}
+
+/// Where a file comes in a folder: by name, in any case, as a person reads
+/// it.
+pub fn by_name(path: &Path) -> (Option<String>, PathBuf) {
+    let name = path.file_name().map(|n| n.to_string_lossy().to_lowercase());
+    (name, path.to_owned())
 }
 
 /// Why a folder cannot be read, in the dialog's words.
@@ -462,11 +486,15 @@ fn folder_error(folder: &Path, error: &std::io::Error) -> Error {
 /// Why a file of the source cannot be looked at, other than its being
 /// gone.
 fn file_error(file: &Path, error: &std::io::Error) -> Error {
-    let why = match error.kind() {
+    Error::Connect(format!("Can't open {}: {}", shown(file), file_why(error)))
+}
+
+/// Why a file cannot be looked at, in the dialog's words.
+fn file_why(error: &std::io::Error) -> String {
+    match error.kind() {
         std::io::ErrorKind::PermissionDenied => "not allowed to read it".to_owned(),
         _ => error.to_string(),
-    };
-    Error::Connect(format!("Can't open {}: {why}", shown(file)))
+    }
 }
 
 /// The name a file's stem becomes: lowercased, with anything outside
@@ -740,6 +768,15 @@ mod tests {
         let looked = std::fs::metadata(shut.join("orders.csv"));
         let folder = scan(&Source::Folder(shut.clone()));
         let list = scan(&Source::Files(vec![shut.join("orders.csv")]));
+        // A Test goes past it.
+        let past = [
+            scan_past(&Source::Folder(shut.clone()), |_| false, true),
+            scan_past(
+                &Source::Files(vec![shut.join("orders.csv")]),
+                |_| false,
+                true,
+            ),
+        ];
         std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o700)).unwrap();
         if looked.is_ok() {
             // Run as root, which may look at anything.
@@ -752,6 +789,14 @@ mod tests {
                 }
                 other => panic!("{other:?}"),
             }
+        }
+        for scanned in past {
+            let scanned = scanned.unwrap();
+            assert!(scanned.files.is_empty() && scanned.missing.is_empty());
+            assert_eq!(
+                scanned.unreadable,
+                [(shut.join("orders.csv"), "not allowed to read it".to_owned())]
+            );
         }
     }
 

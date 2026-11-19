@@ -120,9 +120,10 @@ and DuckDB files (`.duckdb`). DuckDB reads them, inside Tabletist.
   not JSON, it offers to skip the file. In the Omarchy look `t`, `e` and
   `s` run them. Each fix is an override under Reading CSV, and the Test
   runs again; it is saved with the connection. A file that cannot be
-  opened at all, or a listed file that is gone, still stops the
-  connection from opening: Test shows it as partial, with its fixes. The Excel reader is downloaded the first time a connection opens
-  an Excel file.
+  opened at all, a file in a folder Tabletist is not allowed to read, or
+  a listed file that is gone, still stops the connection from opening:
+  Test shows it as partial, with its fixes. The Excel reader is
+  downloaded the first time a connection opens an Excel file.
 - The SQL editor runs DuckDB's SQL, and the Structure view shows each
   file's path, size and format beside its columns, and what it is read
   with.

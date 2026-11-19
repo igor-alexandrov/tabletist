@@ -292,3 +292,51 @@ async fn a_gone_file_keeps_its_place_in_the_list_among_the_failures() {
         ["archive.csv", "customers.parquet"]
     );
 }
+
+/// A listed file in a folder that may be listed but not searched cannot
+/// be looked at: a Test says so of that file and reads the others, and
+/// connecting still fails on it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_test_says_a_listed_file_it_cannot_look_at_and_reads_the_others() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = exports();
+    let shut = dir.path().join("shut");
+    std::fs::create_dir(&shut).unwrap();
+    std::fs::copy(dir.path().join("returns.csv"), shut.join("returns.csv")).unwrap();
+    let spec = ConnectSpec::files(Source::Files(vec![
+        shut.join("returns.csv"),
+        dir.path().join("orders.csv"),
+    ]));
+    // Read without search: the names are listed, the files not.
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let looked = std::fs::metadata(shut.join("returns.csv")).is_ok();
+    let connected = Connection::connect(&spec, &Secrets::default()).await.err();
+    let tested = Connection::open_files_to_test(&spec).await;
+    let read = match &tested {
+        Ok(connection) => Some(connection.read_files().await.unwrap().unwrap()),
+        Err(_) => None,
+    };
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if looked {
+        // Run as root, which may look at anything.
+        return;
+    }
+    let error = connected.unwrap();
+    assert!(
+        error.to_string().contains("not allowed to read it"),
+        "{error}"
+    );
+    let read = read.unwrap_or_else(|| panic!("{:?}", tested.err()));
+    assert_eq!(read.files, 2);
+    assert_eq!(
+        read.failed,
+        [Failure {
+            file: "returns.csv".into(),
+            path: shut.join("returns.csv"),
+            format: Format::Csv,
+            why: Why::Other("not allowed to read it".into()),
+        }]
+    );
+    assert_eq!(read.checks, ["orders"]);
+}

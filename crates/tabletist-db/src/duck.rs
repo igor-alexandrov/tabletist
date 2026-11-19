@@ -1339,14 +1339,14 @@ fn send_chunks(
 impl Conn {
     /// Opens `source`'s files, read-only: every one is read far enough to
     /// know its columns, and an error names the first that cannot be. A
-    /// Test goes on `past` them: those it cannot open, and a listed file
-    /// that is gone, are its failures.
+    /// Test goes on `past` them: those it cannot open or look at, and a
+    /// listed file that is gone, are its failures.
     pub(crate) async fn open(source: &Source, reading: &Reading, past: bool) -> Result<Self> {
         let (source, reading) = (source.clone(), reading.clone());
         let (connection, files, failed, version, order) = tokio::task::spawn_blocking(move || {
             // A skipped file is not looked at: one that is gone, or that
             // cannot be looked at, is no matter.
-            let scan = crate::files::scan_past(&source, |file| reading.skips(file))?;
+            let scan = crate::files::scan_past(&source, |file| reading.skips(file), past)?;
             // A skipped file that is gone is no matter. Another fails the
             // session, or, for a Test, is one of the files it cannot read.
             let gone: Vec<&std::path::PathBuf> = scan
@@ -1364,7 +1364,16 @@ impl Conn {
             // it was read.
             let order = match &source {
                 Source::Files(listed) => listed.clone(),
-                Source::Folder(_) => scan.files.iter().map(|file| file.path.clone()).collect(),
+                Source::Folder(_) => {
+                    let mut order: Vec<_> = scan
+                        .files
+                        .iter()
+                        .map(|file| file.path.clone())
+                        .chain(scan.unreadable.iter().map(|(path, _)| path.clone()))
+                        .collect();
+                    order.sort_by_cached_key(|path| crate::files::by_name(path));
+                    order
+                }
             };
             opened(&scan.files, &reading, past).map(|(connection, files, mut failed, version)| {
                 failed.extend(gone.iter().filter_map(|gone| {
@@ -1373,6 +1382,15 @@ impl Conn {
                         path: (*gone).clone(),
                         format: Format::of(gone)?,
                         why: crate::files::Why::Other("no such file".into()),
+                    })
+                }));
+                // Those it could not look at, with why.
+                failed.extend(scan.unreadable.iter().filter_map(|(path, why)| {
+                    Some(crate::files::Failure {
+                        file: crate::files::file_name(path),
+                        path: path.clone(),
+                        format: Format::of(path)?,
+                        why: crate::files::Why::Other(why.clone()),
                     })
                 }));
                 (connection, files, failed, version, order)

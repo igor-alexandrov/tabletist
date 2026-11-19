@@ -64,6 +64,7 @@ fn exports(look: Look) -> Harness {
                 found("returns.csv", Format::Csv),
             ],
             missing: Vec::new(),
+            unreadable: Vec::new(),
         }),
     }));
     harness.settle();

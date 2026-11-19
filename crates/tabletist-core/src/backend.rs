@@ -897,7 +897,7 @@ impl Backend {
         };
         let outbox = self.outbox.clone();
         runtime.spawn_blocking(move || {
-            let result = tabletist_db::files::scan_past(&source, |file| reading.skips(file));
+            let result = tabletist_db::files::scan_past(&source, |file| reading.skips(file), false);
             let result = result.map_err(|error| match error {
                 Error::Connect(message) | Error::InvalidSpec(message) => message,
                 other => other.to_string(),
