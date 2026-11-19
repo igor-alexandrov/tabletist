@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-19 15:55-0500\n"
+"POT-Creation-Date: 2026-11-19 16:11-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -2573,12 +2573,6 @@ msgid ""
 msgstr ""
 "Новые строки не экспортируются: экспорт читает то, что сохранено в базе "
 "данных. Сначала сохраните {key}"
-
-#: src/app/export.rs src/ui/history.rs src/ui/object_tabs.rs
-#: src/ui/row_panel.rs src/ui/sql_editor.rs
-#, rust-format
-msgid "Query {n}"
-msgstr "Запрос {n}"
 
 #: src/app/export.rs src/ui/agents.rs src/ui/export.rs src/ui/quick_open.rs
 #: src/ui/workspace.rs
@@ -6187,6 +6181,12 @@ msgstr ""
 #: src/ui/history.rs
 msgid "Open Settings › Editor"
 msgstr "Открыть Настройки › Редактор"
+
+#: src/ui/history.rs src/ui/object_tabs.rs src/ui/row_panel.rs
+#: src/ui/sql_editor.rs
+#, rust-format
+msgid "Query {n}"
+msgstr "Запрос {n}"
 
 #: src/ui/history.rs
 msgid "Reading the history…"

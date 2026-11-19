@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-19 15:55-0500\n"
+"POT-Creation-Date: 2026-11-19 16:11-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -2531,12 +2531,6 @@ msgstr ""
 
 #: src/app/export.rs
 msgid "Export rows"
-msgstr ""
-
-#: src/app/export.rs src/ui/history.rs src/ui/object_tabs.rs
-#: src/ui/row_panel.rs src/ui/sql_editor.rs
-#, rust-format
-msgid "Query {n}"
 msgstr ""
 
 #: src/app/export.rs
@@ -6173,6 +6167,12 @@ msgstr ""
 msgid ""
 "Writes are never run again from History. Open in SQL editor puts the "
 "statements in a new read-only tab; switch the tab to read-write to run them."
+msgstr ""
+
+#: src/ui/history.rs src/ui/object_tabs.rs src/ui/row_panel.rs
+#: src/ui/sql_editor.rs
+#, rust-format
+msgid "Query {n}"
 msgstr ""
 
 #: src/ui/history.rs
