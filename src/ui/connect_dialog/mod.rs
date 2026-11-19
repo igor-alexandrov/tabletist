@@ -1333,17 +1333,14 @@ fn status(form: &ConnectionForm, skin: &Skin) -> Option<Status> {
             let mut text = match read {
                 // What a Files connection's Test read: "Read 3 files ·
                 // 2.4 GB".
-                Some(read) => {
-                    let plural = u32::try_from(read.files).unwrap_or(u32::MAX);
-                    ngettext(
-                        skin.locale,
-                        "Read {n} file · {size}",
-                        "Read {n} files · {size}",
-                        plural,
-                    )
-                    .replace("{n}", &read.files.to_string())
-                    .replace("{size}", &tabletist_db::files::size_text(read.bytes))
-                }
+                Some(read) => ngettext(
+                    skin.locale,
+                    "Read {n} file · {size}",
+                    "Read {n} files · {size}",
+                    read.files,
+                )
+                .replace("{n}", &read.files.to_string())
+                .replace("{size}", &tabletist_db::files::size_text(read.bytes)),
                 None => format!("{} · {}", gettext(skin.locale, "Connected"), driver.label()),
             };
             if let Some(took) = form.test_took {

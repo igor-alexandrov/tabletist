@@ -1,18 +1,151 @@
 //! Bundled gettext catalogs. English is the source language; every other
 //! language the app ships has a catalog in `assets/i18n` (`ru.po`), which
-//! the build compiles. A string a catalog lacks shows in English. Not every
-//! user-facing string goes through `gettext` yet: one passed in a variable
-//! (a key's description, a settings pane's name) and a few written straight
-//! into the code (the window's title) stay English until they do.
+//! the build compiles. A string a catalog lacks shows in English. A message
+//! drawn later than it is written (a command's name, a settings pane's) is
+//! marked where it is written with [`msgid`] or [`pmsgid`], so the
+//! extractor finds it, and is a [`Msgid`] until it is drawn.
 
-pub use fastframe_i18n::{LanguageTag, gettext, ngettext, pgettext};
+use std::borrow::Cow;
+
+pub use fastframe_i18n::{LanguageTag, gettext, pgettext};
 
 include!(concat!(env!("OUT_DIR"), "/catalogs.rs"));
 
+/// An English message marked for the catalog where it is written, and said
+/// in a language where it is drawn. `assets/i18n/update.sh` extracts every
+/// `msgid("…")` and `pmsgid("context", "…")`. A function that translates
+/// what it is handed takes a `Msgid`, so a bare `&str` cannot reach it
+/// unextracted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Msgid {
+    context: Option<&'static str>,
+    text: &'static str,
+    /// Drawn as it is, never looked up: [`Msgid::as_is`].
+    verbatim: bool,
+}
+
+/// `text`, marked for the catalog.
+pub const fn msgid(text: &'static str) -> Msgid {
+    Msgid {
+        context: None,
+        text,
+        verbatim: false,
+    }
+}
+
+/// `text` in `context`, marked for the catalog: for a word spelled alike
+/// with two meanings, or one also used as a plural.
+pub const fn pmsgid(context: &'static str, text: &'static str) -> Msgid {
+    Msgid {
+        context: Some(context),
+        text,
+        verbatim: false,
+    }
+}
+
+impl Msgid {
+    /// No message: an item that draws no words (a separator), never said.
+    pub const EMPTY: Self = Self::as_is("");
+
+    /// `text` drawn as it is in every language, never extracted: a word
+    /// the settings file writes (a `[keys.<table>]` name), a product's.
+    pub const fn as_is(text: &'static str) -> Self {
+        Self {
+            context: None,
+            text,
+            verbatim: true,
+        }
+    }
+
+    /// The message as the code writes it: the settings file's and the
+    /// tests' word, never drawn in another language.
+    pub const fn english(self) -> &'static str {
+        self.text
+    }
+
+    /// The message in `locale`.
+    pub fn say(self, locale: Locale) -> Cow<'static, str> {
+        match self.context {
+            _ if self.verbatim => Cow::Borrowed(self.text),
+            Some(context) => pgettext(locale, context, self.text),
+            None => gettext(locale, self.text),
+        }
+    }
+}
+
+/// A message is its English where code compares it with text: a test's
+/// expected word, a command found by its name. It has no `Display`, so it
+/// is never written out unsaid.
+impl PartialEq<&str> for Msgid {
+    fn eq(&self, other: &&str) -> bool {
+        self.text == *other
+    }
+}
+
+impl PartialEq<Msgid> for &str {
+    fn eq(&self, other: &Msgid) -> bool {
+        *self == other.text
+    }
+}
+
+/// A count as the catalog's plural rules read it: any unsigned or signed
+/// integer, kept whole, so a count past `u32::MAX` keeps its form. A
+/// negative one (never a count) reads as many.
+pub trait Count: Copy {
+    /// The count as the catalog takes it.
+    fn as_u64(self) -> u64;
+}
+
+impl Count for u64 {
+    fn as_u64(self) -> u64 {
+        self
+    }
+}
+
+impl Count for u32 {
+    fn as_u64(self) -> u64 {
+        self.into()
+    }
+}
+
+impl Count for usize {
+    fn as_u64(self) -> u64 {
+        u64::try_from(self).unwrap_or(u64::MAX)
+    }
+}
+
+impl Count for i64 {
+    fn as_u64(self) -> u64 {
+        u64::try_from(self).unwrap_or(u64::MAX)
+    }
+}
+
+impl Count for i32 {
+    fn as_u64(self) -> u64 {
+        u64::try_from(self).unwrap_or(u64::MAX)
+    }
+}
+
+/// The whole phrase for `count`, by the catalog's plural rules; English's
+/// without a catalog (`one` for 1, `many` otherwise, 0 among them). The
+/// catalog is handed the count whole, as a `u64`.
+pub fn ngettext(
+    locale: Locale,
+    one: &'static str,
+    many: &'static str,
+    count: impl Count,
+) -> Cow<'static, str> {
+    use fastframe_i18n::Locale as _;
+    let count = count.as_u64();
+    match locale.catalog() {
+        Some(catalog) => catalog.ntranslate(count, one, many, None),
+        None => Cow::Borrowed(if count == 1 { one } else { many }),
+    }
+}
+
 /// `count` with its noun: "1 change", "3 changes".
 pub fn counted(locale: Locale, count: usize, one: &'static str, many: &'static str) -> String {
-    let plural = u32::try_from(count).unwrap_or(u32::MAX);
-    format!("{count} {}", ngettext(locale, one, many, plural))
+    format!("{count} {}", ngettext(locale, one, many, count))
 }
 
 /// `text` either side of its `placeholder`: what is before it and what is
@@ -199,6 +332,51 @@ mod tests {
     }
 
     #[test]
+    fn a_marked_message_is_said_in_the_language() {
+        const SETTINGS: Msgid = msgid("Settings");
+        assert_eq!(SETTINGS.english(), "Settings");
+        assert_eq!(SETTINGS.say(Locale::Russian), "Настройки");
+        assert_eq!(SETTINGS.say(Locale::English), "Settings");
+        // A context picks its own entry; without a catalog it is the English.
+        let filter = pmsgid("label", "filter");
+        assert_eq!(filter.english(), "filter");
+        assert_eq!(filter.say(Locale::English), "filter");
+        assert_eq!(filter.say(Locale::Russian), "фильтр");
+    }
+
+    #[test]
+    fn a_message_as_is_is_never_looked_up() {
+        // "Settings" has a Russian entry; a word the settings file writes
+        // stays as it is all the same.
+        assert_eq!(Msgid::as_is("Settings").say(Locale::Russian), "Settings");
+        assert_eq!(Msgid::EMPTY.say(Locale::Russian), "");
+    }
+
+    #[test]
+    fn a_count_past_u32_keeps_its_russian_form() {
+        let rows = |count: u64| ngettext(Locale::Russian, "{n} row", "{n} rows", count);
+        // 4,294,967,301 ends in 1: one. The old cap, u32::MAX, said many.
+        assert_eq!(rows(4_294_967_301), "{n} строка");
+        assert_eq!(rows(4_294_967_302), "{n} строки");
+        assert_eq!(
+            ngettext(Locale::Russian, "{n} row", "{n} rows", 21_usize),
+            "{n} строка"
+        );
+        assert_eq!(
+            ngettext(Locale::English, "{n} row", "{n} rows", 1_u32),
+            "{n} row"
+        );
+        assert_eq!(
+            ngettext(Locale::English, "{n} row", "{n} rows", 0_i64),
+            "{n} rows"
+        );
+        assert_eq!(
+            ngettext(Locale::English, "{n} row", "{n} rows", -1_i64),
+            "{n} rows"
+        );
+    }
+
+    #[test]
     fn russian_plurals_take_three_forms() {
         let rows = |count| ngettext(Locale::Russian, "{n} row", "{n} rows", count);
         assert_eq!(rows(1), "{n} строка");
@@ -271,7 +449,7 @@ mod tests {
     fn every_russian_translation_keeps_its_placeholders() {
         let text = include_str!("../../../assets/i18n/ru.po");
         let entries = entries(text);
-        assert!(entries.len() > 600, "{} entries", entries.len());
+        assert!(entries.len() > 1400, "{} entries", entries.len());
         for (ids, strs) in entries {
             let Some(id) = ids.first().filter(|id| !id.is_empty()) else {
                 continue;
@@ -279,6 +457,24 @@ mod tests {
             let wanted = placeholders(id);
             for translated in strs.iter().filter(|text| !text.is_empty()) {
                 assert_eq!(placeholders(translated), wanted, "{id:?} → {translated:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_russian_entry_is_translated_without_an_em_dash() {
+        let text = include_str!("../../../assets/i18n/ru.po");
+        assert!(!text.contains("#, fuzzy"), "a fuzzy entry shows in English");
+        for (ids, strs) in entries(text) {
+            let Some(id) = ids.first().filter(|id| !id.is_empty()) else {
+                continue;
+            };
+            assert!(
+                !strs.is_empty() && strs.iter().all(|text| !text.is_empty()),
+                "{id:?} is not translated"
+            );
+            for translated in &strs {
+                assert!(!translated.contains('—'), "{id:?} → {translated:?}");
             }
         }
     }

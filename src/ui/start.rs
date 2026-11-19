@@ -710,8 +710,7 @@ pub(crate) fn estimate_words(rows: u64, look: &Look, grouped: bool, locale: Loca
         } else {
             rows.to_string()
         };
-        let plural = u32::try_from(rows).unwrap_or(u32::MAX);
-        look.label(&ngettext(locale, "≈ {n} rows", "≈ {n} rows", plural))
+        look.label(&ngettext(locale, "≈ {n} rows", "≈ {n} rows", rows))
             .replace("{n}", &count)
     }
 }

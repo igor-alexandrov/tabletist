@@ -15,6 +15,7 @@ use crate::backend::export::{Destination, ExportFailure, ExportJob, ExportRows, 
 use crate::backend::{Command, Event, HistoryCommand};
 use crate::export::Format;
 use crate::export_sheet::{DestinationChoice, ExportChange, ExportSheet, RowsChoice};
+use crate::i18n::msgid;
 use crate::model::{Action, ConnTabId, Dialog, TabId};
 use crate::testing::Harness;
 use crate::theme::Look;
@@ -679,7 +680,7 @@ fn the_file_menu_has_export_and_a_greyed_import() {
     let export = crate::menu::Item::Command(crate::keymap::Command::Export);
     let import = crate::menu::Item::Import;
     assert!(harness.app.menu_state(export).enabled);
-    assert_eq!(harness.app.menu_state(export).title, "Export…");
+    assert_eq!(harness.app.menu_state(export).title, msgid("Export…"));
     assert!(!harness.app.menu_state(import).enabled);
     harness.app.choose(export);
     harness.settle();
@@ -823,7 +824,7 @@ fn the_export_key_opens_the_sheet_while_one_runs() {
     harness.settle();
     let export = crate::menu::Item::Command(crate::keymap::Command::Export);
     let state = harness.app.menu_state(export);
-    assert_eq!(state.title, "Export…");
+    assert_eq!(state.title, msgid("Export…"));
     assert!(state.enabled);
     export_chord(&mut harness);
     assert!(sheet(&harness).is_some(), "the sheet opens");

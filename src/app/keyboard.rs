@@ -292,21 +292,21 @@ pub fn cheat_sheet(keymap: &Keymap, layout: Layout) -> String {
         }
         out.push_str(&format!(
             "\n## {}\n\n| Command | Scope | Shortcut |\n| --- | --- | --- |\n",
-            group.name(layout)
+            group.name(layout).english()
         ));
         for row in listed {
             let mut keys = row_keys(keymap, layout, row);
             if keymap.changed(layout, row) {
                 keys.push_str(" (changed)");
             }
-            let mut name = row.command.info().name.to_owned();
+            let mut name = row.command.info().name.english().to_owned();
             if !row.command.info().built {
                 name.push_str(" (not built yet)");
             }
             out.push_str(&format!(
                 "| {} | {} | {} |\n",
                 cell(&name),
-                cell(row.scope.name(layout)),
+                cell(row.scope.name(layout).english()),
                 cell(&keys)
             ));
         }

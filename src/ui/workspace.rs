@@ -2552,12 +2552,11 @@ pub fn export_line(app: &App) -> Option<(String, egui::Color32)> {
                 .iter()
                 .map(|exporting| export_brief(exporting, locale))
                 .collect();
-            let count = u32::try_from(several.len()).unwrap_or(u32::MAX);
             let words = crate::i18n::ngettext(
                 locale,
                 "{n} export · {each} · {cancel}",
                 "{n} exports · {each} · {cancel}",
-                count,
+                several.len(),
             );
             let text = crate::i18n::fill(
                 &words,
@@ -2586,12 +2585,7 @@ pub fn export_brief(
     match exporting.share() {
         Some(share) => format!("{} {}%", exporting.name(), (share * 100.0).round() as u32),
         None => crate::i18n::fill(
-            &crate::i18n::ngettext(
-                locale,
-                "{name} {n} row",
-                "{name} {n} rows",
-                u32::try_from(rows).unwrap_or(u32::MAX),
-            ),
+            &crate::i18n::ngettext(locale, "{name} {n} row", "{name} {n} rows", rows),
             &[
                 ("{name}", exporting.name()),
                 ("{n}", &crate::format::group_digits(rows)),
@@ -2774,8 +2768,7 @@ fn tree_summary(
         .object_info(object)
         .and_then(|info| info.estimated_rows)
         .map(|rows| {
-            let plural = u32::try_from(rows).unwrap_or(u32::MAX);
-            crate::i18n::ngettext(locale, "{n} row", "{n} rows", plural)
+            crate::i18n::ngettext(locale, "{n} row", "{n} rows", rows)
                 .replace("{n}", &rows.to_string())
         });
     Some(match rows {
@@ -2950,10 +2943,13 @@ fn status_line(
         let at = format!("{}/{}", object.ddl_cursor + 1, object.ddl_lines());
         Some(match object.ddl_selected() {
             Some(selected) => {
-                let count = u32::try_from(selected.len()).unwrap_or(u32::MAX);
-                let said =
-                    crate::i18n::ngettext(locale, "{n} line selected", "{n} lines selected", count)
-                        .replace("{n}", &selected.len().to_string());
+                let said = crate::i18n::ngettext(
+                    locale,
+                    "{n} line selected",
+                    "{n} lines selected",
+                    selected.len(),
+                )
+                .replace("{n}", &selected.len().to_string());
                 format!("{said} · {at}")
             }
             None => at,
@@ -3062,7 +3058,8 @@ fn status_line(
     };
     let own = own(editing.can_edit, pending);
     // Ctrl+h/l, where it moves from the rows (a table's, or a result's).
-    let grid_panes = pane_hints::panes(ui.ctx(), keymap, layout, super::focus::Region::Grid);
+    let grid_panes =
+        pane_hints::panes(ui.ctx(), keymap, layout, locale, super::focus::Region::Grid);
     let panes_hint = grid_panes
         .as_ref()
         .map(|(key, word)| -> widgets::Hint<'_> { (key, word.as_str(), true) });
@@ -3332,9 +3329,9 @@ fn status_line(
                 // Why a key did nothing, or what was just done, at the
                 // line's end: this look floats no toast.
                 // Else how many it shows: ":history · 184 statements".
-                let count = u32::try_from(*shown).unwrap_or(u32::MAX);
-                let count = crate::i18n::ngettext(locale, "{n} statement", "{n} statements", count)
-                    .replace("{n}", &shown.to_string());
+                let count =
+                    crate::i18n::ngettext(locale, "{n} statement", "{n} statements", *shown)
+                        .replace("{n}", &shown.to_string());
                 let said = said
                     .as_ref()
                     .map(|said| (look.label(said), palette.warning))
@@ -3397,7 +3394,7 @@ fn status_line(
             // the pane keys, then the rest from the end.
             let gap = 18.0;
             let fit = |limit: f32| {
-                pane_hints::giving_way(hints, |shown| {
+                pane_hints::giving_way(hints, locale, |shown| {
                     rect.left() + 12.0 + widgets::key_hints_width(ui, shown, gap, &look, &palette)
                         <= limit
                 })

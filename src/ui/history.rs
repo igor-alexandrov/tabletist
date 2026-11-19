@@ -284,14 +284,13 @@ impl View<'_> {
         if self.keep == 0 {
             return self.say(OFF);
         }
-        let n = u32::try_from(shown).unwrap_or(u32::MAX);
         let statements = match self.history.filter.is_set() {
-            false => ngettext(self.locale, "{n} statement", "{n} statements", n),
+            false => ngettext(self.locale, "{n} statement", "{n} statements", shown),
             true => ngettext(
                 self.locale,
                 "{n} statement matches",
                 "{n} statements match",
-                n,
+                shown,
             ),
         }
         .replace("{n}", &crate::format::group_digits(shown as u64));
@@ -448,13 +447,8 @@ impl View<'_> {
             keep => format!(
                 "{} · {} · {}",
                 look.label(
-                    &ngettext(
-                        locale,
-                        "{n} kept",
-                        "{n} kept",
-                        u32::try_from(shown).unwrap_or(u32::MAX)
-                    )
-                    .replace("{n}", &shown.to_string())
+                    &ngettext(locale, "{n} kept", "{n} kept", shown)
+                        .replace("{n}", &shown.to_string())
                 ),
                 look.label(&gettext(locale, "last {n}").replace("{n}", &keep.to_string())),
                 self.database,
@@ -1187,13 +1181,8 @@ impl View<'_> {
                 let mut said = vec![entry.tool.clone().unwrap_or_default()];
                 if let Some(rows) = entry.rows {
                     said.push(
-                        ngettext(
-                            locale,
-                            "{n} row",
-                            "{n} rows",
-                            u32::try_from(rows).unwrap_or(u32::MAX),
-                        )
-                        .replace("{n}", &crate::format::group_digits(rows)),
+                        ngettext(locale, "{n} row", "{n} rows", rows)
+                            .replace("{n}", &crate::format::group_digits(rows)),
                     );
                 }
                 if let Some(took) = entry.took_ms {

@@ -114,9 +114,9 @@ fn choosing_russian_redraws_the_window_and_writes_the_file() {
     open_the_menu(&mut harness, "Language");
     harness.click("Language Русский");
     assert_eq!(harness.app.locale, Locale::Russian);
-    // The sheet's title, from the catalog. (The panes' names are handed to
-    // `gettext` in a variable, which no extractor reads yet.)
+    // The sheet's title and the nav's panes, from the catalog.
     assert!(painted(&harness, "Настройки"));
+    assert!(painted(&harness, "Основные"));
     // The English word stays beside the label: the way back.
     assert!(painted(&harness, "Язык · Language"));
     assert!(painted(&harness, "Русский"));
@@ -226,4 +226,97 @@ fn the_omarchy_row_says_a_system_language_is_not_translated() {
         harness.app.settings.language,
         Language::Fixed(Locale::English)
     );
+}
+
+/// Russian names every pane in the nav and the General pane's sections
+/// and rows, in both looks: the Omarchy look in its lower case.
+#[test]
+fn the_russian_settings_name_every_pane_and_row() {
+    let panes = [
+        "Основные",
+        "Оформление",
+        "Редактор",
+        "Клавиатура",
+        "Агенты",
+        "Обновления",
+    ];
+    for look in [Look::macos(), Look::omarchy()] {
+        let harness = general(look, Some("ru-RU"));
+        assert_eq!(harness.app.locale, Locale::Russian);
+        let said = |text: &str| match look.terminal {
+            true => text.to_lowercase(),
+            false => text.to_owned(),
+        };
+        for pane in panes {
+            assert!(painted(&harness, &said(pane)), "{}: {pane}", look.name);
+        }
+        for row in [
+            "При запуске",
+            "Восстанавливать вкладки и фильтры",
+            "Строк на странице",
+        ] {
+            assert!(
+                harness
+                    .painted
+                    .iter()
+                    .any(|(text, _)| text.contains(&said(row))),
+                "{}: {row}",
+                look.name
+            );
+        }
+    }
+}
+
+/// Quick open's path to a setting is said in Russian, pane and row.
+#[test]
+fn quick_open_says_a_setting_s_path_in_russian() {
+    let path = crate::app::setting_path(Locale::Russian, "run", OptionId::OnLaunch);
+    assert_eq!(path, "Настройки › Основные › При запуске");
+    let path = crate::app::setting_path(Locale::English, "run", OptionId::OnLaunch);
+    assert_eq!(path, "Settings › General › On launch");
+}
+
+/// The keyboard help lists the keymap's commands under Russian headings.
+#[test]
+fn the_keyboard_help_says_its_commands_in_russian() {
+    let mut harness = general(Look::macos(), Some("ru-RU"));
+    harness.app.apply(Action::CloseDialog);
+    harness.app.apply(Action::ShowHelp);
+    let names = crate::testing::labels(&harness.finish_animations());
+    for wanted in [
+        "Навигация",
+        "Найти любой объект",
+        "Новая вкладка редактора SQL",
+    ] {
+        assert!(
+            names.iter().any(|name| name.contains(wanted)),
+            "{wanted} is not in {names:?}"
+        );
+    }
+}
+
+#[test]
+fn the_russian_agents_note_stacks_its_wrapped_paragraphs() {
+    if !SettingsPane::listed().contains(&SettingsPane::Agents) {
+        return;
+    }
+    // A window narrow enough that the Russian first paragraph wraps.
+    let mut harness = general(Look::omarchy(), Some("ru-RU"));
+    harness.size = egui::vec2(700.0, 2400.0);
+    harness
+        .app
+        .apply(Action::ShowSettingsPane(SettingsPane::Agents));
+    harness.settle();
+    let rect = |start: &str| {
+        let found = harness
+            .text_rects
+            .iter()
+            .filter(|(text, _)| text.starts_with(start))
+            .map(|(_, rect)| *rect)
+            .reduce(|a, b| a.union(b));
+        found.unwrap_or_else(|| panic!("no {start:?} in {:?}", harness.painted))
+    };
+    let first = rect("чтение выполняется");
+    let second = rect("без ddl");
+    assert!(first.bottom() <= second.top(), "{first:?} over {second:?}");
 }

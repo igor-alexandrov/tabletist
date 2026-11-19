@@ -1176,8 +1176,7 @@ fn tree_row(
     let name = match &row.node {
         TreeNode::Group(..) => {
             let count = row.count.unwrap_or_default();
-            let plural = u32::try_from(count).unwrap_or(u32::MAX);
-            ngettext(locale, "{name}, {n} table", "{name}, {n} tables", plural)
+            ngettext(locale, "{name}, {n} table", "{name}, {n} tables", count)
                 .replace("{n}", &count.to_string())
                 .replace("{name}", &label)
         }

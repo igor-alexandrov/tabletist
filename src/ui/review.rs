@@ -97,12 +97,11 @@ pub fn comment(line: &Line, locale: Locale) -> Option<String> {
             say("first")
         ),
         Line::NewRequired(columns) => {
-            let plural = u32::try_from(columns.len()).unwrap_or(u32::MAX);
             let blocked = ngettext(
                 locale,
                 "blocked: {columns} is required",
                 "blocked: {columns} are required",
-                plural,
+                columns.len(),
             );
             format!(
                 "-- {} · {}",
@@ -128,16 +127,13 @@ pub fn comment(line: &Line, locale: Locale) -> Option<String> {
         // The action as SQL writes it: it is the key's, not the app's.
         Line::Also(Effect::Deletes { table, rows }) => {
             let what = match rows {
-                Some(rows) => {
-                    let plural = u32::try_from(*rows).unwrap_or(u32::MAX);
-                    ngettext(
-                        locale,
-                        "also deletes {n} row in {table}",
-                        "also deletes {n} rows in {table}",
-                        plural,
-                    )
-                    .replace("{n}", &rows.to_string())
-                }
+                Some(rows) => ngettext(
+                    locale,
+                    "also deletes {n} row in {table}",
+                    "also deletes {n} rows in {table}",
+                    *rows,
+                )
+                .replace("{n}", &rows.to_string()),
                 None => gettext(locale, "also deletes rows in {table}").into_owned(),
             };
             format!("-- {} (ON DELETE CASCADE)", what.replace("{table}", table))
@@ -148,16 +144,13 @@ pub fn comment(line: &Line, locale: Locale) -> Option<String> {
             rows,
         }) => {
             let what = match rows {
-                Some(rows) => {
-                    let plural = u32::try_from(*rows).unwrap_or(u32::MAX);
-                    ngettext(
-                        locale,
-                        "also clears {columns} in {n} {table} row",
-                        "also clears {columns} in {n} {table} rows",
-                        plural,
-                    )
-                    .replace("{n}", &rows.to_string())
-                }
+                Some(rows) => ngettext(
+                    locale,
+                    "also clears {columns} in {n} {table} row",
+                    "also clears {columns} in {n} {table} rows",
+                    *rows,
+                )
+                .replace("{n}", &rows.to_string()),
                 None => gettext(locale, "also clears {columns} in {table} rows").into_owned(),
             };
             let what = crate::i18n::fill(

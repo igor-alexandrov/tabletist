@@ -533,7 +533,6 @@ impl View<'_> {
     }
 
     fn noun(&self, count: usize, one: &'static str, many: &'static str) -> String {
-        let count = u32::try_from(count).unwrap_or(u32::MAX);
         ngettext(self.locale, one, many, count).into_owned()
     }
 

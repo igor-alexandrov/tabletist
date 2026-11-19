@@ -7,7 +7,7 @@
 use egui::{Frame, Id, Margin, Rect, pos2, vec2};
 
 use crate::connections::{SavedConnection, SavedConnections};
-use crate::i18n::{gettext, ngettext, pgettext};
+use crate::i18n::{Msgid, gettext, msgid, ngettext, pgettext};
 use crate::keymap::Keymap;
 use crate::model::{Action, AgentsHere, AgentsView, ConnTabId, Workspace};
 use crate::style::Icon;
@@ -16,7 +16,7 @@ use crate::typography::{Text, TextRole};
 use crate::ui::{Paint, states, widgets};
 
 /// What the app says once the command is on the clipboard.
-pub const COPIED_COMMAND: &str = "Copied the command";
+pub const COPIED_COMMAND: Msgid = msgid("Copied the command");
 
 /// Puts the command that connects an agent on the clipboard, and says so.
 /// Nothing while it is still being worked out, which takes a moment once,
@@ -24,7 +24,7 @@ pub const COPIED_COMMAND: &str = "Copied the command";
 pub fn copy_command(ctx: &egui::Context, locale: crate::i18n::Locale) {
     if let Some(command) = crate::endpoint::agent_command_ready() {
         ctx.copy_text(command.to_owned());
-        crate::ui::toast::say(ctx, &gettext(locale, COPIED_COMMAND));
+        crate::ui::toast::say(ctx, &COPIED_COMMAND.say(locale));
     }
 }
 
@@ -423,13 +423,8 @@ fn status_bar(
     };
     let people = match count {
         0 => gettext(locale, "No agents here").into_owned(),
-        count => ngettext(
-            locale,
-            "{n} agent here",
-            "{n} agents here",
-            u32::try_from(count).unwrap_or(u32::MAX),
-        )
-        .replace("{n}", &count.to_string()),
+        count => ngettext(locale, "{n} agent here", "{n} agents here", count)
+            .replace("{n}", &count.to_string()),
     };
     let server = match here {
         AgentsHere::ServerOff => gettext(locale, "Server: off"),
@@ -670,7 +665,7 @@ pub fn stop_here(
         locale,
         "Stopped {n} agent. Access is now Off for {name}.",
         "Stopped {n} agents. Access is now Off for {name}.",
-        u32::try_from(count).unwrap_or(u32::MAX),
+        count,
     )
     .replace("{n}", &count.to_string())
     .replace("{name}", connection);
@@ -706,13 +701,8 @@ fn also(
     let mut said = format!("{} {}", gettext(locale, "Also:"), first.said(locale));
     if more > 0 {
         said.push_str(
-            &ngettext(
-                locale,
-                " and {n} more",
-                " and {n} more",
-                u32::try_from(more).unwrap_or(u32::MAX),
-            )
-            .replace("{n}", &more.to_string()),
+            &ngettext(locale, " and {n} more", " and {n} more", more)
+                .replace("{n}", &more.to_string()),
         );
     }
     let laid = Text::one(look, widgets::secondary(look), &said, palette.secondary).layout(ui.ctx());
@@ -833,13 +823,8 @@ fn session_facts(session: &tabletist_mcp::SessionInfo, locale: crate::i18n::Loca
             .replace("{time}", &crate::clock::hour(session.connected_at)),
     );
     facts.push(
-        ngettext(
-            locale,
-            "{n} call",
-            "{n} calls",
-            u32::try_from(session.calls).unwrap_or(u32::MAX),
-        )
-        .replace("{n}", &session.calls.to_string()),
+        ngettext(locale, "{n} call", "{n} calls", session.calls)
+            .replace("{n}", &session.calls.to_string()),
     );
     facts.join(" · ")
 }
@@ -1108,11 +1093,10 @@ fn log_view(
         false => gettext(locale, "This connection"),
         true => gettext(locale, "All connections"),
     };
-    let calls = u32::try_from(log.total).unwrap_or(u32::MAX);
     // Of the calls a filter lets through, they match it.
     let count = match log.filtered() {
-        false => ngettext(locale, "{n} call", "{n} calls", calls),
-        true => ngettext(locale, "{n} call matches", "{n} calls match", calls),
+        false => ngettext(locale, "{n} call", "{n} calls", log.total),
+        true => ngettext(locale, "{n} call matches", "{n} calls match", log.total),
     }
     .replace("{n}", &log.total.to_string());
     let kept =
@@ -1638,8 +1622,7 @@ fn log_pane(
 /// for how long; or why it ended as it did; and the agent's project.
 fn log_facts(entry: &tabletist_mcp::Entry, locale: crate::i18n::Locale) -> Vec<(String, String)> {
     let count = |one: &'static str, many: &'static str, n: i64| {
-        ngettext(locale, one, many, u32::try_from(n).unwrap_or(u32::MAX))
-            .replace("{n}", &n.to_string())
+        ngettext(locale, one, many, n).replace("{n}", &n.to_string())
     };
     let say = |text: &'static str| gettext(locale, text).into_owned();
     let mut facts = Vec::new();
@@ -2113,8 +2096,7 @@ fn result_word(result: &str, locale: crate::i18n::Locale) -> String {
 fn log_detail(entry: &tabletist_mcp::Entry, locale: crate::i18n::Locale) -> String {
     let at = crate::clock::of_millis(entry.at_ms);
     let count = |one: &'static str, many: &'static str, n: i64| {
-        ngettext(locale, one, many, u32::try_from(n).unwrap_or(u32::MAX))
-            .replace("{n}", &n.to_string())
+        ngettext(locale, one, many, n).replace("{n}", &n.to_string())
     };
     let mut said = vec![entry.agent.clone(), crate::clock::moment(at)];
     if entry.result == "ok" {
@@ -2262,8 +2244,7 @@ fn ended(
     locale: crate::i18n::Locale,
 ) -> (String, egui::Color32) {
     let count = |one: &'static str, many: &'static str, n: u64| {
-        ngettext(locale, one, many, u32::try_from(n).unwrap_or(u32::MAX))
-            .replace("{n}", &n.to_string())
+        ngettext(locale, one, many, n).replace("{n}", &n.to_string())
     };
     if call.result == "ok" {
         let said = match (call.tool.as_str(), call.rows) {
