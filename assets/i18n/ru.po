@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-18 15:23-0500\n"
+"POT-Creation-Date: 2026-11-18 21:39-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -865,6 +865,21 @@ msgstr "Неизвестный ключ SSH-хоста {host}: {fingerprint}"
 #: src/ui/connect_dialog/mod.rs
 msgid "from ~/.ssh/config"
 msgstr "из ~/.ssh/config"
+
+#: src/ui/connect_dialog/reading.rs
+msgid "Reset"
+msgstr "Сбросить"
+
+#: src/ui/connect_dialog/reading.rs
+msgid "override"
+msgid_plural "overrides"
+msgstr[0] "исключение"
+msgstr[1] "исключения"
+msgstr[2] "исключений"
+
+#: src/ui/connect_dialog/reading.rs
+msgid "skipped"
+msgstr "пропущен"
 
 #: src/ui/connect_dialog/sheet.rs
 msgid "Authentication"
