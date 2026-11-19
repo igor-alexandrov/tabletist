@@ -86,7 +86,11 @@ jekyll_vitepress:
   footer:
     enabled: true
     show_on_docs: false
-    message: Released under the MIT License.
+    # The MacPip badge, MacPip's own code: the listing links to this page,
+    # and MacPip looks for the badge here.
+    message: >-
+      Released under the MIT License.
+      <span style="display: flex; justify-content: center; margin: 12px 0"><a href="https://macpip.com/apps/tabletist?ref=badge"><img src="https://macpip.com/badge/tabletist.svg" height="58" alt="Listed on MacPip"></a></span>
     copyright: >-
       Copyright © 2026 Igor Alexandrov. Docs built with
       <a href="https://jekyll-vitepress.dev" target="_blank" rel="noreferrer">Jekyll VitePress</a>.
