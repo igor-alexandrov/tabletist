@@ -47,8 +47,9 @@ jobs:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     # Windows builds the app a second time, without debug assertions, for
-    # the relay's step, so a cold cache compiles DuckDB twice.
-    timeout-minutes: 120
+    # the relay's step, so a cold cache compiles DuckDB twice: the tests
+    # alone have taken 79 minutes, and the relay's build was cut at 120.
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:

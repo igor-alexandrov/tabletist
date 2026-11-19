@@ -2670,17 +2670,20 @@ impl App {
                 limit,
             } => {
                 let limit = Settings::valid_sql_limit(limit);
-                if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
+                // A change refused leaves the tab as it was too.
+                if self.change_settings(|settings| settings.sql_limit = limit)
+                    && let Some(sql) = self.sql_tab_mut(tab, sql_tab)
+                {
                     sql.limit = limit;
                 }
-                self.change_settings(|settings| settings.sql_limit = limit);
             }
             Action::SetSqlTimeout { tab, sql_tab, secs } => {
                 let secs = Settings::valid_sql_timeout(secs);
-                if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
+                if self.change_settings(|settings| settings.sql_timeout_secs = secs)
+                    && let Some(sql) = self.sql_tab_mut(tab, sql_tab)
+                {
                     sql.timeout = Settings::timeout_of(secs);
                 }
-                self.change_settings(|settings| settings.sql_timeout_secs = secs);
             }
             Action::SetSqlMode { tab, sql_tab, mode } => {
                 self.set_sql_mode(tab, sql_tab, Some(mode))
@@ -2880,8 +2883,12 @@ impl App {
                 // person says to delete it.
                 let forgets = matches!(value, crate::settings::OptionValue::HistoryKeep(0))
                     && self.settings.history_keep > 0;
-                self.change_settings(|settings| value.set(settings));
-                if forgets && let Some(Dialog::Settings(dialog)) = &mut self.dialog {
+                // A change refused keeps what is kept: nothing to delete.
+                let taken = self.change_settings(|settings| value.set(settings));
+                if forgets
+                    && taken
+                    && let Some(Dialog::Settings(dialog)) = &mut self.dialog
+                {
                     dialog.history_question = Some(crate::model::HistoryQuestion::Forget);
                 }
             }
@@ -3784,6 +3791,12 @@ impl App {
             name: saved.name.clone(),
         };
         let text = renamed.write_into(&self.settings_file.text, &[crate::settings::Key::OnLaunch]);
+        // A name that would not fit is not taken: the settings stay as the
+        // file has them, and the next save of the connection tries again.
+        let Some(text) = text else {
+            self.settings_too_long();
+            return;
+        };
         self.settings.on_launch = renamed.on_launch;
         if text != self.settings_file.text {
             let loaded = Settings::from_toml_over(&text, &self.settings);
@@ -5954,8 +5967,9 @@ impl App {
     /// written into the file's text, where it changes the keys that changed
     /// and nothing else (`Settings::write_into`). The lines the reader had
     /// ignored stay, and are still ignored. A change that changes nothing
-    /// writes nothing.
-    pub fn change_settings(&mut self, change: impl FnOnce(&mut Settings)) {
+    /// writes nothing. False where the change is refused, the file being
+    /// too long with it to be read: nothing of it is taken.
+    pub fn change_settings(&mut self, change: impl FnOnce(&mut Settings)) -> bool {
         let mut changed = self.settings.clone();
         change(&mut changed);
         // What the look has anyway, set here, is not set: it is not
@@ -5969,13 +5983,27 @@ impl App {
         // The keymap's lines, which the keys' tables hold.
         let shortcuts = self.settings.keys != changed.keys;
         if keys.is_empty() && !shortcuts {
-            return;
+            return true;
         }
-        let mut text = changed.write_into(&self.settings_file.text, &keys);
-        if shortcuts {
-            text = changed.write_keys_into(&text);
-        }
+        let Some(text) = changed.write_change(&self.settings_file.text, &keys, shortcuts) else {
+            self.settings_too_long();
+            return false;
+        };
         self.take_written(text, changed);
+        true
+    }
+
+    /// A change that would make the settings file longer than it is read
+    /// to: saved, the next start would ignore the file whole, every other
+    /// setting in it with it. The file stays as it is, the settings too,
+    /// and the notice says the change could not be saved.
+    fn settings_too_long(&mut self) {
+        let (lines, bytes) = Settings::LIMITS;
+        self.notice = Some(format!(
+            "Could not save {}: it would be over {lines} lines or {} KB, and would not be read.",
+            self.dirs.settings_file().display(),
+            bytes / 1024,
+        ));
     }
 
     /// Every table of the keys taken out of the file, and nothing else of
@@ -8693,10 +8721,13 @@ impl App {
         let reset = self
             .keymap
             .key(self.layout(), crate::keymap::Command::DefaultTextSize);
+        // A change refused is said in the notice: no size to tell.
         if self.look.terminal {
-            self.change_settings(|settings| {
+            if !self.change_settings(|settings| {
                 settings.font_size = larger.map(|larger| settings.stepped_font_size(true, larger));
-            });
+            }) {
+                return;
+            }
             let size = self.settings.font_size_in(true).text();
             // A key that resets it is named; a `[keys]` line can leave none.
             let words = if reset.as_str().is_empty() {
@@ -8710,11 +8741,13 @@ impl App {
                     .replace("{key}", reset.as_str()),
             );
         } else {
-            self.change_settings(|settings| {
+            if !self.change_settings(|settings| {
                 settings.ui_scale = larger.map_or(crate::settings::UiScale::DEFAULT, |larger| {
                     settings.ui_scale.stepped(larger)
                 });
-            });
+            }) {
+                return;
+            }
             let scale = self.settings.ui_scale;
             let words = if reset.as_str().is_empty() {
                 "Interface {percent}% · {px} px text"
@@ -15773,6 +15806,47 @@ masked = ["orders.email"]
                 "{outcome:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_change_that_would_make_the_settings_file_too_long_is_not_saved() {
+        let mut harness = Harness::new();
+        // 998 lines, with no `[sidebar]` table: the table would make 1,001.
+        let text = format!("[data]\n{}", "# note\n".repeat(997));
+        harness.app.settings_file.text = text.clone();
+        let sent = harness.app.backend.sent.len();
+        harness
+            .app
+            .change_settings(|settings| settings.show_system_schemas = true);
+        assert_eq!(harness.app.backend.sent.len(), sent, "nothing saved");
+        assert_eq!(harness.app.settings_file.text, text);
+        assert!(!harness.app.settings.show_system_schemas);
+        let notice = harness.app.notice.take().unwrap_or_default();
+        assert!(notice.starts_with("Could not save "), "{notice}");
+        // One line more, in the table the file has, fits and is saved.
+        harness
+            .app
+            .change_settings(|settings| settings.page_size = 500);
+        assert!(matches!(
+            last_sent(&harness.app),
+            Command::Save { file: StateFile::Settings(text), .. }
+                if Settings::from_toml(text).settings.page_size == 500
+        ));
+        assert_eq!(harness.app.notice, None);
+        // The toolbar's limit, refused, leaves its tab as it was too.
+        let (tab, id) = new_sql(&mut harness);
+        let limit = harness.app.sql_tab_mut(tab, id).unwrap().limit;
+        let text = harness.app.settings_file.text.clone();
+        let sent = harness.app.backend.sent.len();
+        harness.app.apply(Action::SetSqlLimit {
+            tab,
+            sql_tab: id,
+            limit: limit + 100,
+        });
+        assert_eq!(harness.app.backend.sent.len(), sent, "nothing saved");
+        assert_eq!(harness.app.settings_file.text, text);
+        assert_eq!(harness.app.sql_tab_mut(tab, id).unwrap().limit, limit);
+        assert!(harness.app.notice.is_some());
     }
 
     #[test]
