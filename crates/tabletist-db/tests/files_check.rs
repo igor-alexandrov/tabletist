@@ -223,3 +223,52 @@ async fn a_quote_in_a_column_s_name_or_its_value_stays_in_it() {
     let (_, found) = test(&spec(dir.path(), vec![empty])).await;
     assert!(found.is_empty(), "{found:?}");
 }
+
+#[tokio::test]
+async fn a_file_that_fails_its_sample_leaves_the_next_one_read() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a_events.ndjson"), "{\"order_id\":1}\n").unwrap();
+    std::fs::write(dir.path().join("b_books.csv"), "id,title\n1,Dune\n2,Emma\n").unwrap();
+    let connection = Connection::open_files_to_test(&spec(dir.path(), Vec::new()))
+        .await
+        .unwrap();
+    // Read first, and no longer JSON once the session is open: its sample
+    // fails, and the next file is read all the same.
+    std::fs::write(dir.path().join("a_events.ndjson"), "{\"order_id\": oops}\n").unwrap();
+    let read = connection.read_files().await.unwrap().unwrap();
+    assert_eq!(
+        read.failed
+            .iter()
+            .map(|failure| failure.file.as_str())
+            .collect::<Vec<_>>(),
+        ["a_events.ndjson"],
+        "{:?}",
+        read.failed
+    );
+    assert_eq!(read.checks, ["b_books"]);
+}
+
+#[tokio::test]
+async fn a_test_says_a_listed_file_that_is_gone_and_reads_the_others() {
+    let dir = exports();
+    let gone = dir.path().join("archive.csv");
+    let mut spec = ConnectSpec::files(Source::Files(vec![
+        dir.path().join("orders.csv"),
+        gone.clone(),
+    ]));
+    spec.csv = Reading::default();
+    // Connecting still fails on it, as in run 1.
+    let error = Connection::connect(&spec, &Secrets::default())
+        .await
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("no such file"), "{error}");
+    let (read, _) = test(&spec).await;
+    assert_eq!(read.files, 2);
+    assert_eq!(read.failed.len(), 1, "{:?}", read.failed);
+    assert_eq!(read.failed[0].file, "archive.csv");
+    assert_eq!(read.failed[0].path, gone);
+    assert_eq!(read.failed[0].format, Format::Csv);
+    assert!(!read.failed[0].takes_column_fixes());
+    assert_eq!(read.checks, ["orders"]);
+}

@@ -35,6 +35,8 @@ const ICON_GAP: f32 = 10.0;
 const BUTTON: f32 = 28.0;
 const BUTTON_PAD: f32 = 10.0;
 const GAP: f32 = 8.0;
+/// The most rows the sentence takes.
+const ROWS: usize = 4;
 /// The terminal look's room between two actions: three spaces.
 const KEYS_GAP: &str = "   ";
 
@@ -78,12 +80,16 @@ impl Banner<'_> {
                 palette.text,
             ),
         };
-        Text::new(look)
+        let mut text = Text::new(look)
             .add(lead_role, self.lead, lead_color)
             .space(role, " ")
             .add(role, self.text, text_color)
-            .wrap(wrap)
-            .layout(ctx)
+            .wrap(wrap);
+        // A sentence past its rows ends in an ellipsis: a value of any
+        // length leaves the actions, and what is under the banner, in
+        // reach. A screen reader hears it all.
+        text.job_mut().wrap.max_rows = ROWS;
+        text.layout(ctx)
     }
 
     /// The terminal look's line of keys and words.

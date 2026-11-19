@@ -566,3 +566,90 @@ fn one_file_that_failed_reads_as_one_file() {
     }));
     assert!(shows(&mut harness, "Read 0 of 1 file · returns.csv failed"));
 }
+
+/// A value of any length leaves the fixes and the footer inside the
+/// window: the banner's sentence ends in an ellipsis past its rows, and a
+/// screen reader hears it all.
+#[test]
+fn a_very_long_value_leaves_the_fixes_and_the_footer_in_the_window() {
+    let value = "N/A ".repeat(2_500);
+    for look in looks() {
+        let mut harness = exports(look);
+        let long = Failure {
+            why: Why::Value {
+                row: 9,
+                column: "returned_at".into(),
+                value: value.clone(),
+                kind: "DATE".into(),
+            },
+            ..late_na()
+        };
+        tested(&mut harness, vec![long], &[]);
+        let tree = harness.settle();
+        let said = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == Role::Alert)
+            .and_then(|(_, node)| node.label())
+            .unwrap_or_default();
+        assert!(said.contains(value.trim_end()), "{}", look.name);
+        let bottom = |label: &str| {
+            let id = node(&tree, label, Role::Button)
+                .unwrap_or_else(|| panic!("{}: no {label:?}", look.name));
+            tree.nodes
+                .iter()
+                .find(|(each, _)| *each == id)
+                .and_then(|(_, node)| node.bounds())
+                .unwrap_or_else(|| panic!("{}: {label:?} has no bounds", look.name))
+                .y1
+        };
+        let window = f64::from(harness.size.y);
+        for label in [fixes(look)[2].as_str(), "Cancel", "Save"] {
+            assert!(bottom(label) <= window, "{}: {label:?}", look.name);
+        }
+    }
+}
+
+/// Delete stops the check, and Keep brings the form back without it: the
+/// Test it followed comes back idle, as a running Test does, and nothing
+/// says files are being checked.
+#[test]
+fn keep_after_delete_brings_back_no_check_that_is_not_running() {
+    use crate::connections::{ConnectionId, PasswordMode, SavedConnection};
+    let mut harness = Harness::new();
+    let saved = SavedConnection {
+        id: ConnectionId::new(),
+        name: "Bookshop exports".into(),
+        environment: crate::env::Environment::Local,
+        read_only: Some(true),
+        password: PasswordMode::None,
+        ssh_secret: PasswordMode::None,
+        spec: tabletist_db::ConnectSpec::files(tabletist_db::files::Source::Folder(FOLDER.into())),
+        agents: Default::default(),
+    };
+    let id = saved.id.clone();
+    harness.app.connections.upsert(saved);
+    harness.app.apply(Action::EditConnection(id.clone()));
+    harness.settle();
+    let request = tested(&mut harness, Vec::new(), &["orders", "returns"]);
+    assert!(form(&harness).files_check.is_some());
+    harness.app.apply(Action::AskDeleteConnection(id));
+    harness.settle();
+    assert!(harness.app.backend.sent.iter().any(
+        |command| matches!(command, Command::StopCheck { request: stop } if *stop == request),
+    ));
+    let tab = harness.app.active_tab_id();
+    harness
+        .app
+        .apply(Action::AnswerDeleteConnection { tab, delete: false });
+    let tree = harness.settle();
+    assert_eq!(form(&harness).files_check, None);
+    assert_eq!(form(&harness).test, TestState::Idle);
+    assert!(
+        !crate::testing::labels(&tree)
+            .iter()
+            .any(|label| label.contains("checking")),
+        "{:?}",
+        crate::testing::labels(&tree)
+    );
+}

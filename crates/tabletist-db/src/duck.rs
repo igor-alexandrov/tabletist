@@ -1323,22 +1323,43 @@ fn send_chunks(
 
 impl Conn {
     /// Opens `source`'s files, read-only: every one is read far enough to
-    /// know its columns, and an error names the first that cannot be.
+    /// know its columns, and an error names the first that cannot be. A
+    /// Test goes on `past` them: those it cannot open, and a listed file
+    /// that is gone, are its failures.
     pub(crate) async fn open(source: &Source, reading: &Reading, past: bool) -> Result<Self> {
         let (source, reading) = (source.clone(), reading.clone());
         let (connection, files, failed, version, order) = tokio::task::spawn_blocking(move || {
             // A skipped file is not looked at: one that is gone, or that
             // cannot be looked at, is no matter.
             let scan = crate::files::scan_past(&source, |file| reading.skips(file))?;
-            // A skipped file that is gone is no matter.
-            if let Some(gone) = scan.missing.iter().find(|gone| !reading.skips(gone)) {
+            // A skipped file that is gone is no matter. Another fails the
+            // session, or, for a Test, is one of the files it cannot read.
+            let gone: Vec<&std::path::PathBuf> = scan
+                .missing
+                .iter()
+                .filter(|gone| !reading.skips(gone))
+                .collect();
+            if let (Some(gone), false) = (gone.first(), past) {
                 return Err(Error::Connect(format!(
                     "Can't open {}: no such file",
                     crate::files::shown(gone)
                 )));
             }
-            let order = scan.files.iter().map(|file| file.path.clone()).collect();
-            opened(&scan.files, &reading, past).map(|(connection, files, failed, version)| {
+            let order = scan
+                .files
+                .iter()
+                .map(|file| file.path.clone())
+                .chain(gone.iter().map(|gone| (*gone).clone()))
+                .collect();
+            opened(&scan.files, &reading, past).map(|(connection, files, mut failed, version)| {
+                failed.extend(gone.iter().filter_map(|gone| {
+                    Some(crate::files::Failure {
+                        file: crate::files::file_name(gone),
+                        path: (*gone).clone(),
+                        format: Format::of(gone)?,
+                        why: crate::files::Why::Other("no such file".into()),
+                    })
+                }));
                 (connection, files, failed, version, order)
             })
         })
@@ -1418,20 +1439,21 @@ impl Conn {
         );
         self.run(move |connection| {
             let mut read = Vec::new();
-            read_only(connection, |connection| {
-                for file in files.iter().filter(|file| !file.found.format.is_database()) {
-                    let sql = format!(
-                        "SELECT * FROM {} LIMIT {SAMPLE_ROWS}",
-                        Dialect::DuckDb.quote_ident(&file.found.name)
-                    );
-                    match rows_of(connection, &sql, Vec::new(), SAMPLE_ROWS as usize) {
-                        Ok(_) => read.push(file),
-                        Err(Error::Cancelled) => return Err(Error::Cancelled),
-                        Err(error) => failed.push(failure(&file.found, &error)),
-                    }
+            // Each in a transaction of its own: one that fails ends its
+            // transaction, and the next file is read in a new one.
+            for file in files.iter().filter(|file| !file.found.format.is_database()) {
+                let sql = format!(
+                    "SELECT * FROM {} LIMIT {SAMPLE_ROWS}",
+                    Dialect::DuckDb.quote_ident(&file.found.name)
+                );
+                match read_only(connection, |connection| {
+                    rows_of(connection, &sql, Vec::new(), SAMPLE_ROWS as usize)
+                }) {
+                    Ok(_) => read.push(file),
+                    Err(Error::Cancelled) => return Err(Error::Cancelled),
+                    Err(error) => failed.push(failure(&file.found, &error)),
                 }
-                Ok(())
-            })?;
+            }
             // In the connection's order, those it could not open among them.
             failed.sort_by_key(|failure| {
                 order

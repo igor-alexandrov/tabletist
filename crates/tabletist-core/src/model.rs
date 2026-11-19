@@ -2380,8 +2380,12 @@ impl ConnectionForm {
     /// Set aside while the Connections list asks whether to delete its
     /// connection: an answer to what it waits for would find no form to
     /// fill, so it waits for nothing. A running Test stops, as if never
-    /// pressed, and comes back idle.
+    /// pressed, and comes back idle; so does a Files Test whose check in
+    /// full still runs, which the App stops.
     pub fn set_aside(&mut self) {
+        if self.files_check.is_some() {
+            self.forget_test();
+        }
         if let TestState::Running(_) = self.test {
             self.test = TestState::Idle;
             self.test_started = None;

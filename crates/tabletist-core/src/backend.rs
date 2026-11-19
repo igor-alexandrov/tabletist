@@ -4219,7 +4219,7 @@ mod tests {
 
     /// A Files Test says what it read, then reads its CSV, TSV and NDJSON
     /// files to their end, one at a time, saying each: here a value past
-    /// the sample in `returns.csv`. A stopped check says no more.
+    /// the sample in `returns.csv`.
     #[test]
     fn a_files_test_checks_its_files_in_full_after_it_answers() {
         let dir = tempfile::tempdir().unwrap();
@@ -4234,7 +4234,7 @@ mod tests {
         let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
         backend.send(Command::Test {
             request: RequestId(7),
-            spec: spec.clone(),
+            spec,
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
         });
@@ -4270,22 +4270,32 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["returns.csv"]
         );
-        // Stopped before it answers, the Test checks nothing. (This is the
-        // stop before the answer; a stop during a check drops the same
-        // task, and dropping its statement interrupts DuckDB.)
-        backend.send(Command::Test {
-            request: RequestId(8),
-            spec,
-            secrets: Secrets::default(),
-            host_keys: HostKeys::default(),
+    }
+
+    /// Stopped before it answers, a Files Test checks nothing. The worker
+    /// takes the Test and the stop on one thread before the Test's task
+    /// runs at all. (A stop during a check drops the same task, and
+    /// dropping its statement interrupts DuckDB.)
+    #[test]
+    fn a_files_test_stopped_before_it_answers_checks_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        tabletist_db::fixtures::write_bookshop_files(dir.path()).unwrap();
+        let spec = ConnectSpec::files(tabletist_db::files::Source::Folder(dir.path().to_owned()));
+        let (outbox, received) = quiet_outbox();
+        one_thread().block_on(async {
+            let (mut worker, _ready) = Worker::new(outbox, Keyring::memory());
+            worker.handle(Command::Test {
+                request: RequestId(8),
+                spec,
+                secrets: Secrets::default(),
+                host_keys: HostKeys::default(),
+            });
+            worker.handle(Command::StopCheck {
+                request: RequestId(8),
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         });
-        backend.send(Command::StopCheck {
-            request: RequestId(8),
-        });
-        let mut after = Vec::new();
-        while let Some(event) = backend.wait(std::time::Duration::from_millis(500)) {
-            after.push(event);
-        }
+        let after: Vec<Event> = received.try_iter().collect();
         assert!(
             after
                 .iter()
