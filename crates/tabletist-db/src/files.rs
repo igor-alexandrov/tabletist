@@ -56,6 +56,162 @@ impl Source {
     }
 }
 
+/// How a Files connection reads its CSV and TSV files: the defaults the
+/// dialog's Reading CSV section sets, and the overrides for one file.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Reading {
+    pub header: Header,
+    /// For `.csv` files: a `.tsv` is read with a tab whatever this says.
+    pub delimiter: Delimiter,
+    pub types: Types,
+    pub overrides: Vec<Override>,
+}
+
+impl Reading {
+    /// Whether it reads as a new connection does, with no override.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The overrides of the file at `path` (see [`Override::is_of`]).
+    pub fn overrides_of<'a>(&'a self, path: &'a Path) -> impl Iterator<Item = &'a Change> + 'a {
+        self.overrides
+            .iter()
+            .filter(move |each| each.is_of(path))
+            .map(|each| &each.change)
+    }
+
+    /// Whether the file at `path` is left out of the connection.
+    pub fn skips(&self, path: &Path) -> bool {
+        self.overrides_of(path)
+            .any(|change| matches!(change, Change::Skip))
+    }
+}
+
+/// Whether a CSV's first row names its columns.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Header {
+    /// As DuckDB's sniffer finds it.
+    #[default]
+    Detect,
+    Yes,
+    No,
+}
+
+impl Header {
+    pub const ALL: [Self; 3] = [Self::Detect, Self::Yes, Self::No];
+}
+
+/// What a CSV's values are parted by.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Delimiter {
+    /// As DuckDB's sniffer finds it.
+    #[default]
+    Detect,
+    Comma,
+    Semicolon,
+    Tab,
+    Pipe,
+}
+
+impl Delimiter {
+    pub const ALL: [Self; 5] = [
+        Self::Detect,
+        Self::Comma,
+        Self::Semicolon,
+        Self::Tab,
+        Self::Pipe,
+    ];
+
+    /// The character, where one is chosen.
+    pub fn char(self) -> Option<char> {
+        match self {
+            Self::Detect => None,
+            Self::Comma => Some(','),
+            Self::Semicolon => Some(';'),
+            Self::Tab => Some('\t'),
+            Self::Pipe => Some('|'),
+        }
+    }
+
+    /// The delimiter whose character is `char`.
+    pub fn of(char: char) -> Option<Self> {
+        Self::ALL.into_iter().find(|each| each.char() == Some(char))
+    }
+}
+
+/// How a CSV's column types are found.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Types {
+    /// From the first rows read ([`SAMPLE_ROWS`]).
+    #[default]
+    Sample,
+    /// From every row: slower, and nothing past the sample surprises it.
+    All,
+    /// None: every column is text.
+    Text,
+}
+
+impl Types {
+    pub const ALL: [Self; 3] = [Self::Sample, Self::All, Self::Text];
+}
+
+/// How many rows of a CSV DuckDB samples for its columns' types, and how
+/// many rows of each file a Test reads.
+pub const SAMPLE_ROWS: u32 = 20_000;
+
+/// A change to how one file is read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Override {
+    /// The file's name with its extension, `returns.csv`, or its path,
+    /// `~/Data/returns.csv`, which tells apart two files of one name in a
+    /// list of files.
+    pub file: String,
+    pub change: Change,
+}
+
+impl Override {
+    /// Whether it changes the file at `path`: a name is of every file of
+    /// that name, a path (one with a separator, `~` for the home folder)
+    /// of that file alone.
+    pub fn is_of(&self, path: &Path) -> bool {
+        let separated = self.file.contains('/') || self.file.contains(std::path::MAIN_SEPARATOR);
+        match separated {
+            true => expanded(Path::new(&self.file)) == path,
+            false => self.file == file_name(path),
+        }
+    }
+}
+
+/// What an override changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Change {
+    /// The column is read as text.
+    Text { column: String },
+    /// These values of the column are read as empty (NULL); the column
+    /// keeps the type found for it with them taken as empty. Several of
+    /// one column are one; with no values it changes nothing.
+    Empty { column: String, values: Vec<String> },
+    /// The file is left out of the connection.
+    Skip,
+}
+
+impl Change {
+    /// The column it is about, which matches the file's in any case;
+    /// `None` for a skip.
+    pub fn column(&self) -> Option<&str> {
+        match self {
+            Self::Text { column } | Self::Empty { column, .. } => Some(column),
+            Self::Skip => None,
+        }
+    }
+}
+
 /// How a file is read, from its extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Format {
@@ -168,6 +324,13 @@ impl Scan {
 /// list's in its order. A folder that cannot be read is an error naming
 /// it; a file of a list that is gone is [`Scan::missing`].
 pub fn scan(source: &Source) -> Result<Scan> {
+    scan_past(source, |_| false)
+}
+
+/// [`scan`], with the files `skipped` says left out before anything is
+/// asked of them: one that is gone, or that cannot be looked at, is no
+/// matter.
+pub fn scan_past(source: &Source, skipped: impl Fn(&Path) -> bool) -> Result<Scan> {
     let mut entries: Vec<(PathBuf, Format, u64)> = Vec::new();
     let mut missing = Vec::new();
     match source {
@@ -183,6 +346,9 @@ pub fn scan(source: &Source) -> Result<Scan> {
                 let Some(format) = Format::of(&path).filter(|_| !hidden) else {
                     continue;
                 };
+                if skipped(&path) {
+                    continue;
+                }
                 // A link to a file counts as the file; a folder never, nor
                 // a broken link. A file that cannot be looked at is said.
                 match std::fs::metadata(&path) {
@@ -199,7 +365,7 @@ pub fn scan(source: &Source) -> Result<Scan> {
             });
         }
         Source::Files(files) => {
-            for path in files {
+            for path in files.iter().filter(|path| !skipped(path)) {
                 let Some(format) = Format::of(path) else {
                     return Err(Error::InvalidSpec(format!(
                         "{} is not a CSV, TSV, Parquet, JSON, NDJSON, Excel or .duckdb file",
@@ -286,6 +452,17 @@ const RESERVED: [&str; 6] = [
     "temp",
 ];
 
+/// `files` named again as tables among themselves: what a scan names once
+/// some of its files are left out, as a connection names those it opens.
+pub fn renamed(files: Vec<Found>) -> Vec<Found> {
+    let names = names(files.iter().map(|file| (file.path.as_path(), file.format)));
+    files
+        .into_iter()
+        .zip(names)
+        .map(|(file, name)| Found { name, ..file })
+        .collect()
+}
+
 /// Each file's name, in order: its stem's [`table_name`], and where two
 /// files would share one, each of them that name with `_` and its
 /// extension (`orders_csv`, `orders_parquet`). A `.duckdb` file named as
@@ -348,8 +525,9 @@ fn names<'a>(files: impl Iterator<Item = (&'a Path, Format)>) -> Vec<String> {
         .collect()
 }
 
-/// A file's name, for a list of them.
-fn file_name(path: &Path) -> String {
+/// A file's name with its extension: for a list of them, and as an
+/// override names it.
+pub fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string())

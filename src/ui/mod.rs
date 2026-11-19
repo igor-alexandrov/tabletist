@@ -46,6 +46,7 @@ mod delete_many_tests;
 mod delete_tests;
 #[cfg(test)]
 mod dialog_focus_tests;
+pub mod disclosure;
 #[cfg(test)]
 mod duplicate_tests;
 #[cfg(test)]
@@ -121,6 +122,8 @@ mod preview_settings_tests;
 pub mod quick_open;
 #[cfg(test)]
 mod quick_open_tests;
+#[cfg(test)]
+mod reading_csv_tests;
 pub mod redis;
 #[cfg(test)]
 mod redis_tests;

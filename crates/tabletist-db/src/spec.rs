@@ -197,6 +197,9 @@ pub struct ConnectSpec {
     pub redis: Option<RedisSpec>,
     /// The files a Files connection opens; `None` for every other driver.
     pub files: Option<crate::files::Source>,
+    /// How a Files connection reads its CSV and TSV files.
+    #[serde(skip_serializing_if = "crate::files::Reading::is_default")]
+    pub csv: crate::files::Reading,
 }
 
 impl Default for ConnectSpec {
@@ -214,6 +217,7 @@ impl Default for ConnectSpec {
             ssh: None,
             redis: None,
             files: None,
+            csv: crate::files::Reading::default(),
         }
     }
 }
@@ -737,6 +741,33 @@ mod tests {
         assert_eq!(spec.summary(), "/data/bookshop");
         assert_eq!(spec.driver.label(), "Files");
         assert_eq!(spec.driver.default_port(), 0);
+    }
+
+    #[test]
+    fn a_files_spec_keeps_how_it_reads_csv_and_says_nothing_of_the_defaults() {
+        use crate::files::{Change, Delimiter, Override, Reading, Types};
+        let mut spec = ConnectSpec::files(crate::files::Source::Folder("/data/bookshop".into()));
+        let plain = serde_json::to_string(&spec).unwrap();
+        assert!(!plain.contains("csv"), "{plain}");
+        spec.csv = Reading {
+            delimiter: Delimiter::Semicolon,
+            types: Types::All,
+            overrides: vec![Override {
+                file: "returns.csv".into(),
+                change: Change::Empty {
+                    column: "returned_at".into(),
+                    values: vec!["N/A".into()],
+                },
+            }],
+            ..Reading::default()
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        assert_eq!(serde_json::from_str::<ConnectSpec>(&json).unwrap(), spec);
+        // A spec saved before Reading CSV reads with the defaults.
+        assert_eq!(
+            serde_json::from_str::<ConnectSpec>(&plain).unwrap().csv,
+            Reading::default()
+        );
     }
 
     #[test]

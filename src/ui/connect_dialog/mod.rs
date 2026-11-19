@@ -6,6 +6,7 @@
 mod agents;
 mod choice;
 mod files;
+mod reading;
 mod redis;
 mod sheet;
 mod terminal;
@@ -148,6 +149,13 @@ impl<'a> Skin<'a> {
     /// `text` translated, in the look's case.
     fn say(&self, text: &'static str) -> String {
         self.look.label(&gettext(self.locale, text))
+    }
+
+    /// What a closed section's terminal heading ends with: the key that
+    /// chooses, as the keymap has it, and "opens".
+    fn opens(&self, ctx: &egui::Context) -> String {
+        let key = crate::ui::keys::written(ctx, self.look, crate::keymap::Command::FormChoose);
+        format!("{key} {}", self.say("opens"))
     }
 
     /// `environment`'s colours in this look and palette.
@@ -443,6 +451,9 @@ pub fn show(
     }
     if modal.is_top_modal && !modal.any_popup_open {
         let typing = ctx.text_edit_focused();
+        // The override whose row has the keyboard, which `R` resets (the
+        // terminal look's key).
+        let mut reset = reading::focused_override(ctx, form);
         let toggle_url = ctx.input_mut(|input| {
             // The form's cancel closes the dialog, unless it is closing an
             // open list first.
@@ -459,6 +470,7 @@ pub fn show(
                         key,
                         pressed: true,
                         modifiers,
+                        repeat,
                         ..
                     } = event
                     else {
@@ -481,6 +493,14 @@ pub fn show(
                         }
                         Some(Command::FormAddFiles) if listed => {
                             actions.push(Action::PickDataFiles);
+                            false
+                        }
+                        Some(Command::FormResetOverride) if files => {
+                            // Once a press: a held `R` would take off the
+                            // override that moves up into its place, and on.
+                            if !*repeat && let Some(at) = reset.take() {
+                                actions.push(Action::SetCsv(crate::model::CsvChange::Reset(at)));
+                            }
                             false
                         }
                         Some(Command::FormRemoveFile) if listed => {
@@ -513,6 +533,10 @@ pub fn show(
             show_url(ctx, form, !form.url_mode);
         }
     }
+    resets_once(&mut actions);
+    // A save goes last: what the same frame changed in the form (a key's
+    // Reset, a choice) is saved with it, not dropped with the dialog.
+    actions.sort_by_key(|action| matches!(action, Action::SaveConnection { .. }));
     actions
 }
 
@@ -1114,6 +1138,30 @@ fn url_field(
     field
 }
 
+/// Each override is taken off once a frame (Enter on its row and `R` both
+/// ask), the last first, as taking one off moves up those after it; the
+/// Resets stay where the first was among the frame's actions, so a Test or
+/// a Delete asked after them still comes after.
+fn resets_once(actions: &mut Vec<Action>) {
+    let reset = |action: &Action| match action {
+        Action::SetCsv(crate::model::CsvChange::Reset(at)) => Some(*at),
+        _ => None,
+    };
+    let Some(first) = actions.iter().position(|action| reset(action).is_some()) else {
+        return;
+    };
+    let mut resets: Vec<usize> = actions.iter().filter_map(reset).collect();
+    resets.sort_unstable_by(|a, b| b.cmp(a));
+    resets.dedup();
+    actions.retain(|action| reset(action).is_none());
+    actions.splice(
+        first..first,
+        resets
+            .into_iter()
+            .map(|at| Action::SetCsv(crate::model::CsvChange::Reset(at))),
+    );
+}
+
 /// What went wrong: a field that does not describe a connection, a failed
 /// Test, or an SSH host key to trust first. It sits between the fields and
 /// the footer, outside what scrolls, so it is on screen wherever the
@@ -1410,4 +1458,35 @@ fn paint_check(painter: &egui::Painter, place: Rect, color: Color32) {
         vec![at(5.0, 12.0), at(10.0, 17.0), at(19.0, 7.0)],
         Stroke::new(2.6 * unit, color),
     );
+}
+
+#[cfg(test)]
+mod resets_tests {
+    use super::*;
+    use crate::model::CsvChange;
+
+    /// Resets stay before what the frame asked after them, each override
+    /// once, the last first.
+    #[test]
+    fn resets_keep_their_place_and_go_last_first() {
+        let reset = |at| Action::SetCsv(CsvChange::Reset(at));
+        let mut actions = vec![
+            reset(0),
+            Action::TestConnection,
+            reset(1),
+            reset(0),
+            Action::SaveConnection { connect: false },
+        ];
+        resets_once(&mut actions);
+        let said = |actions: &[Action]| format!("{actions:?}");
+        assert_eq!(
+            said(&actions),
+            said(&[
+                reset(1),
+                reset(0),
+                Action::TestConnection,
+                Action::SaveConnection { connect: false },
+            ])
+        );
+    }
 }

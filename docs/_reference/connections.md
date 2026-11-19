@@ -85,16 +85,32 @@ and DuckDB files (`.duckdb`). DuckDB reads them, inside Tabletist.
   with anything but letters, digits and `_` turned into `_`. Two files of
   the same name each take their extension: `orders_csv`,
   `orders_parquet`. A `.duckdb` file is a schema, its tables inside it.
+- **Reading CSV**, closed until you open it, says how the connection's
+  CSV and TSV files are read: **Header row** (Detect, Yes, No),
+  **Delimiter** (Detect, `,`, `;`, Tab, `|`; a `.tsv` file is always
+  read with a tab) and **Column types** (from the first 20,000 rows, from
+  all rows, which is slower, or everything as text). Closed, it says the
+  three on one line, and how many overrides there are. A change for one
+  file, such as a column read as text, shows under them with **Reset**
+  (`R` in the Omarchy look, on the override's row); for now an override
+  is written in `connections.toml` (see [Settings and
+  Files]({% link _reference/settings-and-files.md %}#the-connections-file)).
+  A connection that is open keeps reading its files as it did when it
+  opened, Reconnect included: close it and open it again from the
+  connections list to read them with the new settings.
 - A new Files connection is **local**, and lets agents read. Files open
   read-only: nothing writes to them, and a statement that would read
   another file on the computer, write a file or install anything is
   refused. Agents can query the files, never change them, and cannot
-  hide tables or mask columns on a Files connection.
+  hide tables or mask columns on a Files connection. Its **Agents**
+  section is closed, and says the access on one line.
 - **Test** reads each file's columns and its first rows, never a whole
-  file. The Excel reader is downloaded the first time a connection opens
+  file to the end. With **Column types** from all rows, DuckDB reads a
+  CSV in full to find its types, which takes longer on a large file. The Excel reader is downloaded the first time a connection opens
   an Excel file.
 - The SQL editor runs DuckDB's SQL, and the Structure view shows each
-  file's path, size and format beside its columns.
+  file's path, size and format beside its columns, and what it is read
+  with.
 - A connection has no URL: paste a folder's or a file's path into the
   **URL** field of a new connection instead, and it becomes a Files
   connection over it. A SQLite database's path (`.db`, `.sqlite`,

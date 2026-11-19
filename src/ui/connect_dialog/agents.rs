@@ -14,8 +14,10 @@ use super::{Skin, input};
 use tabletist_db::Driver;
 
 use crate::connections::AgentAccess;
+use crate::i18n::gettext;
 use crate::model::{Action, ConnectionForm, TableFocus, TablesMode};
 use crate::typography::{Text, TextRole};
+use crate::ui::disclosure::{self, Section};
 use crate::ui::widgets::{self, ButtonSpec};
 
 /// The levels, as the switch says them.
@@ -903,7 +905,9 @@ fn shown(ui: &Ui, form: &mut ConnectionForm, top: f32) {
     }
 }
 
-/// macOS: the "Agents" fieldset after Safety.
+/// macOS: the "Agents" fieldset after Safety; on a Files form, a section
+/// that opens and closes, closed until it is opened or the dialog is asked
+/// to show it.
 pub(super) fn sheet(
     ui: &mut Ui,
     form: &mut ConnectionForm,
@@ -912,82 +916,164 @@ pub(super) fn sheet(
 ) {
     let Skin { look, palette, .. } = *skin;
     let top = ui.cursor().top();
-    super::sheet::fieldset(ui, &skin.say("Agents"), skin, |ui| {
-        let small = TextRole::Secondary;
-        let heading = skin.say("Access through Tabletist (MCP)");
-        widgets::label(ui, small, &heading, palette.secondary, look);
-        ui.add_space(5.0);
-        access(ui, form, &heading, Group::Track(28.0), skin, actions);
-        if let Some(said) = runs_as(skin) {
-            ui.add_space(6.0);
-            sentence(ui, small, &said, skin);
-        }
-        ui.add_space(12.0);
-        // Tables and Masked columns side by side, as the board has them.
-        let columns = [super::Column::Fr(1.0), super::Column::Fr(1.0)];
-        let guards = guards_tables(form);
-        super::row(ui, 12.0, &columns, |ui, column| match column {
-            _ if !guards => {}
-            0 => {
-                let tables = skin.say("Tables");
-                widgets::label(ui, small, &tables, palette.secondary, look);
-                ui.add_space(5.0);
-                tables_mode(ui, form, &tables, Group::Track(28.0), skin);
-                if form.agents_tables.names().is_some() {
-                    ui.add_space(6.0);
-                    table_names(ui, form, skin);
-                    table_error(ui, form, skin);
-                    table_missing(ui, form, skin);
-                }
-                if let Some(hint) = tables_hint(form) {
-                    ui.add_space(6.0);
-                    sentence(ui, small, &skin.say(hint), skin);
-                }
-            }
-            _ => {
-                let masked = skin.say("Masked columns");
-                widgets::label(ui, small, &masked, palette.secondary, look);
-                ui.add_space(5.0);
-                column_names(ui, form, skin);
-                column_error(ui, form, skin);
-                column_missing(ui, form, skin);
-                ui.add_space(6.0);
-                sentence(ui, small, &skin.say(MASKED_HINT), skin);
-            }
+    let title = skin.say("Agents");
+    if guards_tables(form) {
+        super::sheet::fieldset(ui, &title, skin, |ui| {
+            sheet_rows(ui, form, skin, actions);
         });
-        if guards {
-            ui.add_space(12.0);
+    } else {
+        if form.show_agents {
+            form.agents_open = true;
         }
-        let (role, height) = (skin.value_role(), skin.field_height());
-        super::row(ui, 12.0, &columns, |ui, column| {
-            let (label, text) = match column {
-                0 => (skin.say("Rows per answer"), &mut form.agents_rows),
-                _ => (
-                    skin.say("Statement timeout, seconds"),
-                    &mut form.agents_timeout,
-                ),
-            };
-            let label = widgets::label(ui, small, &label, palette.secondary, look);
-            ui.add_space(5.0);
-            ui.add(input(ui, text, role, height, skin))
-                .labelled_by(label.id);
-        });
-        ui.add_space(8.0);
-        sentence(ui, small, &skin.say(note(form)), skin);
-    });
+        let summary = look.label(&gettext(skin.locale, closed_summary(form)));
+        let opens = skin.opens(ui.ctx());
+        let section = Section {
+            salt: "agents",
+            title: &title,
+            summary: &summary,
+            hint: "",
+            opens: &opens,
+        };
+        let mut open = form.agents_open;
+        disclosure::show(
+            ui,
+            &section,
+            &mut open,
+            look,
+            palette,
+            skin.fill,
+            skin.rule(),
+            |ui| {
+                sheet_rows(ui, form, skin, actions);
+            },
+        );
+        form.agents_open = open;
+    }
     shown(ui, form, top);
 }
 
-/// The terminal look: an "agents" section after Safety.
+/// What a Files form's closed Agents row says.
+fn closed_summary(form: &ConnectionForm) -> &'static str {
+    match form.agents.access {
+        AgentAccess::Read => "Read · agents can query the files, never change them",
+        AgentAccess::Off => "Off · agents can't reach this connection",
+    }
+}
+
+/// macOS: what the Agents part holds.
+fn sheet_rows(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut Vec<Action>) {
+    let Skin { look, palette, .. } = *skin;
+    let small = TextRole::Secondary;
+    let heading = skin.say("Access through Tabletist (MCP)");
+    widgets::label(ui, small, &heading, palette.secondary, look);
+    ui.add_space(5.0);
+    access(ui, form, &heading, Group::Track(28.0), skin, actions);
+    if let Some(said) = runs_as(skin) {
+        ui.add_space(6.0);
+        sentence(ui, small, &said, skin);
+    }
+    ui.add_space(12.0);
+    // Tables and Masked columns side by side, as the board has them.
+    let columns = [super::Column::Fr(1.0), super::Column::Fr(1.0)];
+    let guards = guards_tables(form);
+    super::row(ui, 12.0, &columns, |ui, column| match column {
+        _ if !guards => {}
+        0 => {
+            let tables = skin.say("Tables");
+            widgets::label(ui, small, &tables, palette.secondary, look);
+            ui.add_space(5.0);
+            tables_mode(ui, form, &tables, Group::Track(28.0), skin);
+            if form.agents_tables.names().is_some() {
+                ui.add_space(6.0);
+                table_names(ui, form, skin);
+                table_error(ui, form, skin);
+                table_missing(ui, form, skin);
+            }
+            if let Some(hint) = tables_hint(form) {
+                ui.add_space(6.0);
+                sentence(ui, small, &skin.say(hint), skin);
+            }
+        }
+        _ => {
+            let masked = skin.say("Masked columns");
+            widgets::label(ui, small, &masked, palette.secondary, look);
+            ui.add_space(5.0);
+            column_names(ui, form, skin);
+            column_error(ui, form, skin);
+            column_missing(ui, form, skin);
+            ui.add_space(6.0);
+            sentence(ui, small, &skin.say(MASKED_HINT), skin);
+        }
+    });
+    if guards {
+        ui.add_space(12.0);
+    }
+    let (role, height) = (skin.value_role(), skin.field_height());
+    super::row(ui, 12.0, &columns, |ui, column| {
+        let (label, text) = match column {
+            0 => (skin.say("Rows per answer"), &mut form.agents_rows),
+            _ => (
+                skin.say("Statement timeout, seconds"),
+                &mut form.agents_timeout,
+            ),
+        };
+        let label = widgets::label(ui, small, &label, palette.secondary, look);
+        ui.add_space(5.0);
+        ui.add(input(ui, text, role, height, skin))
+            .labelled_by(label.id);
+    });
+    ui.add_space(8.0);
+    sentence(ui, small, &skin.say(note(form)), skin);
+}
+
+/// The terminal look: an "agents" section after Safety; on a Files form,
+/// a heading that opens and closes it, as on macOS.
 pub(super) fn terminal(
     ui: &mut Ui,
     form: &mut ConnectionForm,
     skin: &Skin,
     actions: &mut Vec<Action>,
 ) {
-    let look = skin.look;
+    let Skin { look, palette, .. } = *skin;
     let top = ui.cursor().top();
-    super::terminal::terminal_section(ui, &skin.say("Agents"), skin);
+    let title = skin.say("Agents");
+    if guards_tables(form) {
+        super::terminal::terminal_section(ui, &title, skin);
+        terminal_rows(ui, form, skin, actions);
+    } else {
+        if form.show_agents {
+            form.agents_open = true;
+        }
+        let summary = look.label(&gettext(skin.locale, closed_summary(form)));
+        let opens = skin.opens(ui.ctx());
+        let section = Section {
+            salt: "agents",
+            title: &title,
+            summary: &summary,
+            hint: "",
+            opens: &opens,
+        };
+        let mut open = form.agents_open;
+        disclosure::show(
+            ui,
+            &section,
+            &mut open,
+            look,
+            palette,
+            skin.fill,
+            skin.rule(),
+            |ui| {
+                terminal_rows(ui, form, skin, actions);
+            },
+        );
+        form.agents_open = open;
+    }
+    shown(ui, form, top);
+}
+
+/// The terminal look: what the agents section holds.
+fn terminal_rows(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut Vec<Action>) {
+    let look = skin.look;
     let line = TextRole::OBody.row_height(ui.ctx(), look.faces);
     let heading = skin.say("Access");
     super::terminal::terminal_row_of(ui, &heading, line, skin, |ui, _| {
@@ -1011,7 +1097,6 @@ pub(super) fn terminal(
     }
     ui.add_space(4.0);
     sentence(ui, TextRole::OSecondary, &said, skin);
-    shown(ui, form, top);
 }
 
 /// The terminal look's Tables and Masked rows.

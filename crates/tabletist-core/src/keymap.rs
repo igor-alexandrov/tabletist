@@ -764,6 +764,7 @@ commands! {
     FormPick = "form_pick",
     FormAddFiles = "form_add_files",
     FormRemoveFile = "form_remove_file",
+    FormResetOverride = "form_reset_override",
     SettingsMove = "settings_move",
     SettingsChange = "settings_change",
     SettingsToggle = "settings_toggle",
@@ -1234,6 +1235,11 @@ impl Command {
             C::FormAddFiles => info("Add files to a Files connection", "", Prompts),
             C::FormRemoveFile => info(
                 "Take the file under the cursor off a Files connection",
+                "",
+                Prompts,
+            ),
+            C::FormResetOverride => info(
+                "Reset the CSV override under the cursor of a Files connection",
                 "",
                 Prompts,
             ),
@@ -2768,6 +2774,7 @@ pub const BINDINGS: &[Binding] = {
         bind(C::FormPick, PROMPT, NONE, keys(&[k("ctrl+o")])).when(When::ConnectionForm),
         bind(C::FormAddFiles, PROMPT, NONE, keys(&[k("a")])).when(When::ConnectionForm),
         bind(C::FormRemoveFile, PROMPT, NONE, keys(&[k("x")])).when(When::ConnectionForm),
+        bind(C::FormResetOverride, PROMPT, NONE, keys(&[k("R")])).when(When::ConnectionForm),
         bind(
             C::SettingsMove,
             PROMPT,

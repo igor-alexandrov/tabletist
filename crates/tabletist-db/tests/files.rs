@@ -231,8 +231,8 @@ async fn the_ddl_is_the_view_over_the_file() {
     assert_eq!(
         text,
         format!(
-            "CREATE VIEW orders AS SELECT * FROM read_csv('{}', header = true, \
-             auto_detect = true, sample_size = 20000);",
+            "CREATE VIEW orders AS SELECT * FROM read_csv('{}', auto_detect = true, \
+             sample_size = 20000);",
             path.display()
         )
     );

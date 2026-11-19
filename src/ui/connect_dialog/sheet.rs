@@ -281,6 +281,8 @@ pub(super) fn body(
                         fieldset(ui, &skin.say("Source"), skin, |ui| {
                             super::files::sheet(ui, form, skin, actions);
                         });
+                        ui.add_space(12.0);
+                        super::reading::section(ui, form, skin, actions);
                     }
                     Driver::Postgres | Driver::MySql => {
                         fieldset(ui, &skin.say("Server"), skin, |ui| {

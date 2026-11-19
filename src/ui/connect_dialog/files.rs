@@ -15,6 +15,9 @@ use crate::ui::{file_list, widgets};
 const FOLDER_HINT: &str = "Every CSV, Parquet, JSON, NDJSON, Excel and .duckdb file in the \
                            folder becomes a table. Files added later show up on the next open.";
 
+/// What the hint adds while an override skips a file.
+const SKIPPED_HINT: &str = "Skipped files are left out.";
+
 /// What the field says of a folder that is gone.
 const GONE: &str = "This folder isn't there any more. Choose it again, or pick another.";
 
@@ -163,6 +166,20 @@ fn folder_box(ui: &mut Ui, form: &ConnectionForm, skin: &Skin) -> egui::Response
     response
 }
 
+/// What the Source holds as the found line says it: a file the Reading
+/// CSV section skips is left out, and the others named as the connection
+/// names them without it (`orders`, not `orders_csv`, once `orders.tsv`
+/// is skipped).
+fn read(form: &ConnectionForm) -> FilesFound {
+    let mut found = form.files_found.clone();
+    if let FilesFound::Read(scan) = &mut found {
+        let reading = &form.files_csv;
+        scan.files.retain(|file| !reading.skips(&file.path));
+        scan.files = tabletist_db::files::renamed(std::mem::take(&mut scan.files));
+    }
+    found
+}
+
 /// macOS: the "Source" fieldset's inside.
 pub(super) fn sheet(
     ui: &mut Ui,
@@ -223,9 +240,10 @@ pub(super) fn sheet(
             super::note(ui, &why, palette.danger, skin);
         }
         None => {
-            if let Some(line) = found_line(&form.files_found, false) {
+            let found = read(form);
+            if let Some(line) = found_line(&found, false) {
                 widgets::label(ui, small, &line, palette.secondary, look);
-                if let FilesFound::Read(scan) = &form.files_found
+                if let FilesFound::Read(scan) = &found
                     && !scan.files.is_empty()
                 {
                     ui.add_space(6.0);
@@ -235,7 +253,18 @@ pub(super) fn sheet(
             match form.files_kind {
                 FilesKind::Folder => {
                     ui.add_space(6.0);
-                    super::note(ui, &skin.say(FOLDER_HINT), palette.dim, skin);
+                    // The boards' words, and that a skipped file is no
+                    // table while one is.
+                    let skips = form
+                        .files_csv
+                        .overrides
+                        .iter()
+                        .any(|each| matches!(each.change, tabletist_db::files::Change::Skip));
+                    let hint = match skips {
+                        true => format!("{} {}", skin.say(FOLDER_HINT), skin.say(SKIPPED_HINT)),
+                        false => skin.say(FOLDER_HINT),
+                    };
+                    super::note(ui, &hint, palette.dim, skin);
                 }
                 FilesKind::Files => {}
             }
@@ -333,7 +362,7 @@ pub(super) fn terminal(
     }
     let (text, color) = match trouble(&form.files_found, skin) {
         Some(why) => (Some(why), palette.danger),
-        None => (found_line(&form.files_found, true), palette.dim),
+        None => (found_line(&read(form), true), palette.dim),
     };
     if let Some(text) = text {
         super::terminal::terminal_row_of(ui, "", line, skin, |ui, _| {

@@ -205,3 +205,109 @@ Fixtures are written into a temporary folder by the tests themselves:
 TSV, a JSON array, a `.duckdb` file, a hidden file, a subfolder and a
 `.txt` file. No test reads an Excel file: its reader is downloaded at
 run time.
+
+## Run 2 split (asked and answered on 2026-11-17)
+
+Run 2 ships as four pull requests, each planned from what the one before
+merged:
+
+- **2a: Reading CSV** (below): the section, its three options, per-file
+  overrides with Reset, `connections.toml`, the collapsed section rows.
+- **2b: the partial Test**: the background check, the banner with its
+  three fixes in the dialog and on the table view; each fix saves a 2a
+  override.
+- **2c: macOS "not allowed"** and security-scoped bookmarks.
+- **2d: Omarchy path completions** under the folder field.
+
+## Run 2a: Reading CSV
+
+### Where 2a differs from the prompt and the boards
+
+| The prompt or a board asks | 2a builds | Why |
+| --- | --- | --- |
+| `[connections."Bookshop exports".csv]` and `[[connections."Bookshop exports".override]]` | `[connections.csv]` and `[[connections.override]]` under the connection's own `[[connections]]` entry; version 8, written only when some Files connection reads CSV other than by the defaults or has an override | Run 1's form of the file (a list keyed by `id`). An entry refuses keys it does not know, so a Tabletist that reads version 7 refuses the file rather than dropping the settings on its next save |
+| Read 'N/A' as empty: "that value becomes NULL for that column", stored as `null_values = ["N/A"]` | Stored so, and read by giving DuckDB that column as text and casting it back to the type DuckDB detects for it, with the values as NULL: `SELECT * REPLACE (CAST(NULLIF(returned_at, 'N/A') AS DATE) AS returned_at) FROM read_csv(…, types = {'returned_at': 'VARCHAR'})` | DuckDB's `nullstr` is the whole file's, every column (measured on 2.0.0); the cast keeps the column a date, and any other value that is no date still fails |
+| Overrides "made from Test" show under Reading CSV with Reset | The list, Reset and their reading are built; nothing in 2a makes an override (Test's fixes are 2b), so until then only a file edited by hand has one | 2b's fixes need the override's storage and reading; 2a's tests make overrides themselves |
+| Delimiter: "defaults for every CSV and TSV" | The Delimiter choice is for `.csv` files; a `.tsv` is read with a tab whatever it says. Header and Column types are for both | A TSV is tab-separated by its name; a `,` chosen for a folder's CSVs would break its TSVs |
+| Header row: Detect | Detect leaves `header` out of the call (DuckDB's sniffer decides); Yes is `header = true`, No `header = false`. Run 1's fixed `header = true` becomes Detect, so a saved connection's DDL view loses it | The prompt's default |
+| Collapsed sections: Reading CSV, Join, Agents | Reading CSV and, on a Files form only, Agents are collapsed rows, closed each time the dialog opens; Join is not shown (run 3). A request to show Agents (the list's menu, Allow agents…) opens its row. Other types keep their open Agents part | Run 1's spec put the collapsed row here, where it has two users; Join would promise what run 3 builds |
+| The closed row's summary | As the boards: macOS "Header detect · delimiter detect · types from the first 20,000 rows", Omarchy `header detect · delimiter detect · types first 20,000 rows`, each part following its choice ("Header yes", "delimiter ;", "delimiter tab", "types from all rows" / `types all rows`, "everything as text"), then "· 1 override" when there are any | The boards draw only the defaults; an override hidden under a closed row should still show |
+
+### The engine
+
+- `tabletist_db::files::Reading { header, delimiter, types, overrides }`,
+  carried as `ConnectSpec.csv` (serde default: the defaults, no
+  overrides). `Header { Detect, Yes, No }`, `Delimiter { Detect, Comma,
+  Semicolon, Tab, Pipe }`, `Types { Sample, All, Text }`.
+- `Override { file, change }`, `change` one of `Text { column }`,
+  `Empty { column, values }`, `Skip`. `file` is the file's name (as
+  `connections.toml` says it), matched against each found file's name.
+- Each CSV's and TSV's call is built from the reading:
+  - `header = true | false` or nothing; `auto_detect = true`;
+  - `sample_size = 20000`, `-1` (all rows), or `all_varchar = true`;
+  - `delim = ','`, `';'`, `'\t'`, `'|'` or nothing (a `.tsv` always
+    `'\t'`);
+  - the file's overrides: its text columns and empty columns in one
+    `types = {…}` map, each empty column cast back in the view's
+    `SELECT * REPLACE (…)` with its type from a `DESCRIBE` of the call
+    with those values read as empty (DuckDB's `nullstr`, beside its own
+    empty string), so a value inside the sample does not make the column
+    text; several of one column are one cast; a skipped file makes no view and is left out
+    of the found line's tables, the sidebar and Test.
+- An override for a column the file does not have, or a file the
+  connection does not open, is kept and does nothing.
+- The Structure view's "Read with" says the options of the file's own
+  call, overrides included, not the format's defaults: a column read as
+  empty shows there as read as text, and its cast back is in the DDL
+  view, which shows the statement as made.
+- Test reads with the form's reading, so a change shows on the next Test.
+  An open connection reads the saved settings the next time it connects
+  (Reload schema lists the session's views again, it does not make them
+  again).
+
+### The form
+
+- **Reading CSV**, after Source, a collapsed row (macOS: the Components
+  board's disclosure row, 40 high, corners of 8, `›` then the bold title
+  then the summary; Omarchy: `▸ reading csv  <summary> · enter opens`).
+  Open (macOS): a fieldset whose legend is `⌄ Reading CSV` and the hint
+  "Defaults for every CSV in this connection", then **Header row**
+  (Detect · Yes · No), **Delimiter** (Detect · , · ; · Tab · |) as
+  segmented choices, and **Column types** as a dropdown ("Detect from the
+  first 20,000 rows", "Detect from all rows (slower)", "Read everything
+  as text"). Omarchy: `▾ reading csv  defaults for every csv`, then
+  `header row`, `delimiter` and `column types` (`first 20,000 rows`,
+  `all rows`, `all text`) as choice rows.
+- Under the options, one row per override: macOS "returns.csv ·
+  returned_at read as text" with **Reset**; Omarchy `override
+  returns.csv · returned_at as text · R reset`, where `R` resets the
+  override whose row has the keyboard. The words for the others:
+  "· 'N/A' read as empty in returned_at", "· skipped".
+- **Agents** on a Files form: a collapsed row, "Read · agents can query
+  the files, never change them" (Off: "Off · agents can't reach this
+  connection"), opening to the run 1 part.
+- The row is a button with its expanded state, named with its title and
+  summary ("Reading CSV, Header detect, delimiter detect, types from the
+  first 20,000 rows"). Enter or Space opens and closes it (the focused
+  button; Omarchy's `enter choose`).
+- The options are saved with the connection and dropped with the dialog
+  on Cancel, as every field is.
+
+### Tests (headless, Bookshop data only)
+
+- Each option changes the call DuckDB is given (the DDL text), for CSV
+  and TSV; the defaults read as run 1 did, but for `header`.
+- `returns.csv` written with `N/A` in `returned_at` past the first 20,000
+  rows: the default reading fails on it; all rows, everything as text, a
+  text override and an empty override each read it (the last keeping the
+  column a `DATE`, with the value NULL); a skip override leaves the table
+  out.
+- `connections.toml` round trips the reading and each kind of override,
+  writes version 8 only when needed, and refuses a malformed override
+  (a text override without a column, a skip with one).
+- The section opens and closes by click and by Enter, on both looks,
+  with its expanded state and name; each option's click changes the
+  form; Reset (and Omarchy `R`) removes the override it is on; Cancel
+  keeps the saved reading.
+- Agents on a Files form is a closed row whose summary follows the
+  access; the list menu's Agents… opens it.
