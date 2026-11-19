@@ -1345,12 +1345,12 @@ impl Conn {
                     crate::files::shown(gone)
                 )));
             }
-            let order = scan
-                .files
-                .iter()
-                .map(|file| file.path.clone())
-                .chain(gone.iter().map(|gone| (*gone).clone()))
-                .collect();
+            // A list's own order, a gone file in its place; a folder's as
+            // it was read.
+            let order = match &source {
+                Source::Files(listed) => listed.clone(),
+                Source::Folder(_) => scan.files.iter().map(|file| file.path.clone()).collect(),
+            };
             opened(&scan.files, &reading, past).map(|(connection, files, mut failed, version)| {
                 failed.extend(gone.iter().filter_map(|gone| {
                     Some(crate::files::Failure {

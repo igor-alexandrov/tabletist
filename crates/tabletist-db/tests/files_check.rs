@@ -272,3 +272,23 @@ async fn a_test_says_a_listed_file_that_is_gone_and_reads_the_others() {
     assert!(!read.failed[0].takes_column_fixes());
     assert_eq!(read.checks, ["orders"]);
 }
+
+#[tokio::test]
+async fn a_gone_file_keeps_its_place_in_the_list_among_the_failures() {
+    let dir = exports();
+    // Not Parquet at all: it does not open.
+    std::fs::write(dir.path().join("customers.parquet"), "id,name\n1,Ada\n").unwrap();
+    let spec = ConnectSpec::files(Source::Files(vec![
+        dir.path().join("archive.csv"),
+        dir.path().join("customers.parquet"),
+        dir.path().join("orders.csv"),
+    ]));
+    let (read, _) = test(&spec).await;
+    assert_eq!(
+        read.failed
+            .iter()
+            .map(|failure| failure.file.as_str())
+            .collect::<Vec<_>>(),
+        ["archive.csv", "customers.parquet"]
+    );
+}

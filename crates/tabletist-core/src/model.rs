@@ -2446,7 +2446,8 @@ impl ConnectionForm {
     /// override under Reading CSV, which forgets the Test. False when there
     /// is no such file, or `fix` changes a column and the failure is not of
     /// a column's value. The override names the file by its name, or by
-    /// its path where the list holds another file of that name.
+    /// its path where the list holds another file of that name
+    /// (`./returns.csv` for one listed as `returns.csv`).
     pub fn fix_file(&mut self, fix: FileFix) -> bool {
         use tabletist_db::files::{Change, Override, Why};
         let Some(failure) = self.first_failure().cloned() else {
@@ -2476,7 +2477,14 @@ impl ConnectionForm {
                 .filter(|listed| *listed != failure.path)
                 .any(|listed| tabletist_db::files::file_name(&listed) == name);
         let file = match shared {
-            true => tabletist_db::files::shown(&failure.path),
+            // A path with no folder in it is written from the current one,
+            // so that it is a path still, which no other file matches.
+            true => match failure.path.parent() {
+                Some(folder) if folder.as_os_str().is_empty() => {
+                    format!(".{}{name}", std::path::MAIN_SEPARATOR)
+                }
+                _ => tabletist_db::files::shown(&failure.path),
+            },
             false => name,
         };
         self.files_csv.overrides.push(Override { file, change });

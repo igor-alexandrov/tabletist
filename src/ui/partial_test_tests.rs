@@ -444,6 +444,30 @@ fn a_fix_names_a_file_by_its_path_where_the_list_has_two_of_its_name() {
     );
 }
 
+/// A file listed by a relative path beside another of its name is named
+/// by that path, which no other file of its name matches.
+#[test]
+fn a_fix_names_a_relative_file_by_its_path_where_the_list_has_two_of_its_name() {
+    let mut harness = exports(Look::macos());
+    match &mut harness.app.dialog {
+        Some(Dialog::Connection(form)) => {
+            form.files_kind = crate::model::FilesKind::Files;
+            form.files_list = vec!["returns.csv".into(), "archive/returns.csv".into()];
+        }
+        _ => panic!("no dialog"),
+    }
+    let here = Failure {
+        path: PathBuf::from("returns.csv"),
+        ..late_na()
+    };
+    tested(&mut harness, vec![here], &[]);
+    harness.click("Skip returns.csv");
+    let overrides = &form(&harness).files_csv.overrides;
+    assert_eq!(overrides.len(), 1);
+    assert!(overrides[0].is_of(std::path::Path::new("returns.csv")));
+    assert!(!overrides[0].is_of(std::path::Path::new("archive/returns.csv")));
+}
+
 /// A long value and name are cut short on the buttons, the banner says
 /// them in full, and the actions stay inside the banner, wrapping to more
 /// rows where they must.

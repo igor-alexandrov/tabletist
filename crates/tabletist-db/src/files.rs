@@ -218,14 +218,20 @@ pub struct Override {
 impl Override {
     /// Whether it changes the file at `path`: a name is of every file of
     /// that name, a path (one with a separator, `~` for the home folder)
-    /// of that file alone.
+    /// of that file alone. `./returns.csv` is the file a list names
+    /// `returns.csv`, apart from others of its name.
     pub fn is_of(&self, path: &Path) -> bool {
         let separated = self.file.contains('/') || self.file.contains(std::path::MAIN_SEPARATOR);
         match separated {
-            true => expanded(Path::new(&self.file)) == path,
+            true => undotted(&expanded(Path::new(&self.file))) == undotted(path),
             false => self.file == file_name(path),
         }
     }
+}
+
+/// `path` without the `.` it may start with.
+fn undotted(path: &Path) -> &Path {
+    path.strip_prefix(".").unwrap_or(path)
 }
 
 /// What an override changes.
