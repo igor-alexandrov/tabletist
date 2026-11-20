@@ -1285,7 +1285,7 @@ fn footer(ui: &mut egui::Ui, shown: Footer, keys: &Keys, skin: &Skin<'_>) {
     };
     let (moves, open, editor, commands, pick, close) = (
         word(msgid("move")),
-        word(msgid("open")),
+        word(pmsgid("key hint", "open")),
         word(msgid("in SQL editor")),
         word(msgid("commands")),
         word(msgid("pick")),

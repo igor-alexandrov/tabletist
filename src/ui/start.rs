@@ -11,7 +11,7 @@ use tabletist_db::{Driver, ObjectKind, ObjectRef};
 
 use crate::env::{Platform, env_colors};
 use crate::format::display_safe;
-use crate::i18n::{Locale, Msgid, gettext, msgid, ngettext};
+use crate::i18n::{Locale, Msgid, gettext, msgid, ngettext, pmsgid};
 use crate::keymap::{Command, Keymap, Layout, Scope, Written};
 use crate::model::{Action, ConnTabId, Found, Pane, StartRecent, Workspace};
 use crate::style::Icon;
@@ -1354,7 +1354,7 @@ fn search_footer(ui: &mut egui::Ui, keys: &Keys, skin: Skin<'_>) {
     let (look, palette, locale) = (skin.look, skin.palette, skin.locale);
     let words = [
         msgid("move"),
-        msgid("open"),
+        pmsgid("key hint", "open"),
         msgid("open in SQL editor"),
         msgid("clear"),
     ]
@@ -1450,7 +1450,7 @@ pub fn status_line(
         msgid("tables"),
         msgid("all keys"),
         msgid("move"),
-        msgid("open"),
+        pmsgid("key hint", "open"),
         msgid("back"),
     ]
     .map(|word| word.say(locale));

@@ -1440,3 +1440,29 @@ fn the_footer_names_the_prefix_and_no_command_is_said() {
     ask(&mut harness, look, "> zzz");
     assert!(harness.painted_color("No commands match “zzz”").is_some());
 }
+
+/// In Portuguese the footer's Enter opens: the key hint's «abrir», never
+/// the picker's «aberta» for a connection that is open.
+#[test]
+fn a_portuguese_footer_says_open_as_what_enter_does() {
+    let portuguese = crate::settings::Language::Fixed(crate::i18n::Locale::BrazilianPortuguese);
+    for look in [Look::macos(), Look::omarchy()] {
+        let (mut harness, _tab) = bookshop(look);
+        harness
+            .app
+            .apply(Action::SetOption(crate::settings::OptionValue::Language(
+                portuguese,
+            )));
+        ask(&mut harness, look, "pub");
+        harness.settle();
+        // A footer hint is its key and one word: "↩ abrir", "enter abrir".
+        let hint = |word: &str| {
+            harness.painted.iter().any(|(text, _)| {
+                let parts: Vec<&str> = text.split_whitespace().collect();
+                parts.len() == 2 && parts[1] == word
+            })
+        };
+        assert!(hint("abrir"), "{}", look.name);
+        assert!(!hint("aberta"), "{}", look.name);
+    }
+}
