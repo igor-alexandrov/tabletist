@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-19 21:43-0500\n"
+"POT-Creation-Date: 2026-11-20 09:47-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -2831,7 +2831,7 @@ msgstr "Tabletist"
 msgid "Undo"
 msgstr "Отменить"
 
-#: src/menu.rs src/ui/data_view.rs src/ui/ddl.rs
+#: src/menu.rs src/ui/data_view.rs
 msgid "View"
 msgstr "Вид"
 
@@ -5332,6 +5332,11 @@ msgstr ""
 #: src/ui/ddl.rs
 msgid "Triggers"
 msgstr "Триггеры"
+
+#: src/ui/ddl.rs
+msgctxt "object kind"
+msgid "View"
+msgstr "Представление"
 
 #: src/ui/ddl.rs
 msgid "as stored in the database"
@@ -8255,6 +8260,10 @@ msgstr "Спрашивать перед закрытием с несохранё
 #: src/ui/settings/mod.rs
 msgid "Autocomplete"
 msgstr "Автодополнение"
+
+#: src/ui/settings/mod.rs
+msgid "Brazilian Portuguese"
+msgstr "Португальский (Бразилия)"
 
 #: src/ui/settings/mod.rs
 msgid "Caps results you browse. Show all and exports get every row."
