@@ -7,7 +7,7 @@ use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, WidgetInfo, WidgetType
 
 use crate::app::App;
 use crate::connections::{ConnectionId, SavedConnection, SavedConnections};
-use crate::i18n::gettext;
+use crate::i18n::{Msgid, fill, gettext, msgid, pmsgid};
 use crate::keymap::Command;
 use crate::model::{Action, ConnTabContent, PickerState};
 use crate::style::Icon;
@@ -165,11 +165,11 @@ fn ssh_label(connection: &SavedConnection) -> String {
 }
 
 /// The terminal look's note at the footer's right, where its passwords go.
-fn terminal_secrets(look: &Look) -> &'static str {
+fn terminal_secrets(look: &Look) -> Msgid {
     if look.keychain(Os::current()) {
-        "secrets: keychain"
+        msgid("secrets: keychain")
     } else {
-        "secrets: keyring"
+        msgid("secrets: keyring")
     }
 }
 
@@ -529,22 +529,34 @@ fn body(
             .flatten()
             .map(|said| look.label(&said));
         if look.terminal {
+            let words = [
+                msgid("move"),
+                msgid("connect / show"),
+                msgid("edit"),
+                msgid("new"),
+                msgid("duplicate"),
+                msgid("delete"),
+                pmsgid("key hint", "filter"),
+                msgid("agent access"),
+            ]
+            .map(|word| word.say(locale));
             let mut hints = vec![
-                (&moves, "move", true),
-                (&connect, "connect / show", true),
-                (&edit, "edit", true),
-                (&new_key, "new", true),
-                (&duplicate, "duplicate", true),
-                (&delete, "delete", true),
-                (&filter, "filter", true),
+                (&moves, &*words[0], true),
+                (&connect, &*words[1], true),
+                (&edit, &*words[2], true),
+                (&new_key, &*words[3], true),
+                (&duplicate, &*words[4], true),
+                (&delete, &*words[5], true),
+                (&filter, &*words[6], true),
             ];
             // Where agents can reach the app.
             if crate::endpoint::AVAILABLE {
-                hints.push((&agent_access, "agent access", true));
+                hints.push((&agent_access, &*words[7], true));
             }
             // What does not fit beside the keyring's note gives way, from the
             // end: the window may be as narrow as 720.
-            let note = said.as_deref().unwrap_or(terminal_secrets(&look));
+            let secrets = terminal_secrets(&look).say(locale);
+            let note = said.as_deref().unwrap_or(&secrets);
             let note = widgets::measure(ui, Text::one(&look, small, note, palette.dim));
             let room = footer.width() - 2.0 * footer_side - note - 24.0;
             while hints.len() > 1
@@ -577,7 +589,7 @@ fn body(
         let secrets = if let Some(said) = said.clone() {
             said
         } else if look.terminal {
-            terminal_secrets(&look).to_owned()
+            terminal_secrets(&look).say(locale).into_owned()
         } else if look.keychain(Os::current()) {
             gettext(locale, "Passwords are stored in the macOS Keychain").into_owned()
         } else {
@@ -863,7 +875,7 @@ pub(crate) fn target(connection: &SavedConnection) -> (String, String) {
 pub(crate) struct FileRowText {
     pub second: String,
     pub middle: (String, String),
-    pub right: Option<(&'static str, &'static str)>,
+    pub right: Option<(Msgid, Msgid)>,
 }
 
 /// [`FileRowText`] of `connection`, with what a scan of its files found
@@ -927,7 +939,7 @@ pub(crate) fn file_row_text(
                 second,
                 middle,
                 // Editing files is not built: every one reads only.
-                right: Some(("Read-only", "No joins")),
+                right: Some((msgid("Read-only"), msgid("No joins"))),
             })
         }
     }
@@ -994,29 +1006,29 @@ fn row_response(
     }
     let id = connection.id.clone();
     menu::context(&response, look, palette, |ui| {
-        let item = |ui: &mut egui::Ui, text: &'static str| {
-            menu::Item::action(&gettext(locale, text))
+        let item = |ui: &mut egui::Ui, text: Msgid| {
+            menu::Item::action(&text.say(locale))
                 .show(ui, look, palette)
                 .clicked()
         };
         // An open connection shows, and can be opened once more.
         if opening.open.is_some() {
-            if item(ui, "Show") {
+            if item(ui, msgid("Show")) {
                 actions.push(opening.choose(connection));
             }
-            if item(ui, "Connect again") {
+            if item(ui, msgid("Connect again")) {
                 actions.push(opening.connect(connection));
             }
-        } else if item(ui, "Connect") {
+        } else if item(ui, msgid("Connect")) {
             actions.push(opening.connect(connection));
         }
-        if item(ui, "Edit…") {
+        if item(ui, msgid("Edit…")) {
             actions.push(Action::EditConnection(id.clone()));
         }
-        if item(ui, "Duplicate") {
+        if item(ui, msgid("Duplicate")) {
             actions.push(Action::DuplicateConnection(id.clone()));
         }
-        if item(ui, "Delete") {
+        if item(ui, msgid("Delete")) {
             actions.push(Action::AskDeleteConnection(id.clone()));
         }
         if let Some(access) = opening.agents {
@@ -1048,13 +1060,13 @@ impl DeleteQuestion {
         (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
         width: f32,
     ) -> Self {
-        let say = |text: &'static str| look.label(&gettext(locale, text));
+        let say = |text: Msgid| look.label(&text.say(locale));
         let words = match saved_secrets(connection, say) {
-            Some(secrets) => {
-                say("Delete {connection} and its saved {secrets}? This can't be undone.")
-                    .replace("{secrets}", &secrets)
-            }
-            None => say("Delete {connection}? This can't be undone."),
+            Some(secrets) => say(msgid(
+                "Delete {connection} and its saved {secrets}? This can't be undone.",
+            ))
+            .replace("{secrets}", &secrets),
+            None => say(msgid("Delete {connection}? This can't be undone.")),
         };
         // The terminal look writes its words in lower case, and the name as
         // it was typed: two names apart only in case stay apart.
@@ -1065,10 +1077,10 @@ impl DeleteQuestion {
                 .add(body, &said, palette.warning)
                 .space(body, "  ")
                 .add(body, yes.as_str(), palette.accent)
-                .add(body, &format!(" {}", say("yes")), palette.secondary)
+                .add(body, &format!(" {}", say(msgid("yes"))), palette.secondary)
                 .space(body, "  ")
                 .add(body, no.as_str(), palette.accent)
-                .add(body, &format!(" {}", say("no")), palette.secondary);
+                .add(body, &format!(" {}", say(msgid("no"))), palette.secondary);
             let laid = text.wrap(width.max(40.0)).layout(ui.ctx());
             let buttons = Vec::new();
             return Self {
@@ -1077,7 +1089,7 @@ impl DeleteQuestion {
                 buttons,
             };
         }
-        let buttons = vec![(say("Cancel"), false), (say("Delete"), true)];
+        let buttons = vec![(say(msgid("Cancel")), false), (say(msgid("Delete")), true)];
         let taken: f32 = buttons
             .iter()
             .map(|(label, deletes)| question_button(label, *deletes, look).width(ui, look) + 8.0)
@@ -1128,25 +1140,25 @@ impl DeleteQuestion {
 
 /// What of `connection` the keyring holds, which goes with it: "password",
 /// "key's passphrase", "password and SSH password". `None` when nothing.
-fn saved_secrets(
-    connection: &SavedConnection,
-    say: impl Fn(&'static str) -> String,
-) -> Option<String> {
+fn saved_secrets(connection: &SavedConnection, say: impl Fn(Msgid) -> String) -> Option<String> {
     use crate::connections::PasswordMode;
     use tabletist_db::SshAuth;
     let password = connection.password == PasswordMode::Keyring;
     let ssh = (connection.ssh_secret == PasswordMode::Keyring).then(|| {
         match connection.spec.ssh.as_ref().map(|ssh| &ssh.auth) {
-            Some(SshAuth::Password) => say("SSH password"),
-            Some(SshAuth::KeyFile { .. }) => say("key's passphrase"),
-            Some(SshAuth::Agent) | None => say("SSH secret"),
+            Some(SshAuth::Password) => say(msgid("SSH password")),
+            Some(SshAuth::KeyFile { .. }) => say(msgid("key's passphrase")),
+            Some(SshAuth::Agent) | None => say(msgid("SSH secret")),
         }
     });
     match (password, ssh) {
         (false, None) => None,
-        (true, None) => Some(say("password")),
+        (true, None) => Some(say(msgid("password"))),
         (false, Some(ssh)) => Some(ssh),
-        (true, Some(ssh)) => Some(format!("{} {} {ssh}", say("password"), say("and"))),
+        (true, Some(ssh)) => Some(fill(
+            &say(msgid("password and {secret}")),
+            &[("{secret}", &ssh)],
+        )),
     }
 }
 
@@ -1167,9 +1179,12 @@ fn agents_part(
 ) {
     use crate::connections::AgentAccess;
     menu::heading(ui, &gettext(locale, "Agents"), look, palette);
-    for (level, word) in [(AgentAccess::Off, "Off"), (AgentAccess::Read, "Read")] {
-        let text = gettext(locale, word);
-        let name = format!("{} {text}", gettext(locale, "Agents"));
+    for (level, word) in [
+        (AgentAccess::Off, msgid("Off")),
+        (AgentAccess::Read, msgid("Read")),
+    ] {
+        let text = word.say(locale);
+        let name = gettext(locale, "Agents {level}").replace("{level}", &text);
         if menu::Item::choice(&text, access == level)
             .name(&name)
             .show(ui, look, palette)
@@ -1215,13 +1230,13 @@ fn choose_labels(
     locale: crate::i18n::Locale,
 ) -> (String, String) {
     let (text, label) = if opening.open.is_some() {
-        ("Show", "Show")
+        (msgid("Show"), msgid("Show {name}"))
     } else {
-        ("Connect", "Connect to")
+        (msgid("Connect"), msgid("Connect to {name}"))
     };
     (
-        gettext(locale, text).into_owned(),
-        format!("{} {}", gettext(locale, label), connection.name),
+        text.say(locale).into_owned(),
+        fill(&label.say(locale), &[("{name}", &connection.name)]),
     )
 }
 
@@ -1408,14 +1423,14 @@ fn mac_row(
     // A Files connection says whether it writes and what it joins where a
     // server says its TLS and its tunnel.
     if let Some((writes, joins)) = files.as_ref().and_then(|files| files.right) {
-        let writes = gettext(locale, writes);
+        let writes = writes.say(locale);
         widgets::paint_label(
             ui,
             security_x,
             top,
             Text::one(look, small, &writes, palette.secondary),
         );
-        let joins = gettext(locale, joins);
+        let joins = joins.say(locale);
         widgets::paint_label(
             ui,
             security_x,
@@ -1464,7 +1479,7 @@ fn mac_row(
         let place = Rect::from_min_max(pos2(agents_x, rect.top()), pos2(used_x, rect.bottom()));
         widgets::announce(ui, place, &format!("{word} {level}"));
     }
-    let when = crate::connections::when(store.last_used(&connection.id), now);
+    let when = crate::connections::when(locale, store.last_used(&connection.id), now);
     widgets::paint_label(
         ui,
         used_x,
@@ -1690,7 +1705,8 @@ fn terminal_row(
             .add(small, &format!("· {ssh}"), palette.dim),
     };
     widgets::paint_label(ui, text_x, bottom, said.add(small, &agents, agents_color));
-    let when = crate::connections::when(store.last_used(&connection.id), now).to_lowercase();
+    let when =
+        crate::connections::when(locale, store.last_used(&connection.id), now).to_lowercase();
     widgets::paint_text_right(
         ui,
         rect.right() - side,
@@ -1808,7 +1824,11 @@ mod tests {
                 "orders, customers, events, returns".to_owned()
             )
         );
-        assert_eq!(text.right, Some(("Read-only", "No joins")));
+        assert_eq!(
+            text.right
+                .map(|(writes, joins)| (writes.english(), joins.english())),
+            Some(("Read-only", "No joins"))
+        );
         assert_eq!(
             terminal_files_line(&folder, Some(&facts)).as_deref(),
             Some("files · /data/bookshop-exports · 4 files · 2.5 gb")

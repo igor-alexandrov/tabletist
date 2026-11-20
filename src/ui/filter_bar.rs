@@ -4,7 +4,7 @@
 use tabletist_db::FilterOp;
 
 use crate::format::display_safe;
-use crate::i18n::gettext;
+use crate::i18n::{Msgid, gettext, msgid};
 use crate::model::{Action, ConnTabId, ObjectTab};
 use crate::style::Icon;
 use crate::ui::Paint;
@@ -25,19 +25,20 @@ pub const FILTER_OPS: [FilterOp; 11] = [
     FilterOp::IsNotNull,
 ];
 
-pub fn op_label(op: FilterOp) -> &'static str {
+pub fn op_label(op: FilterOp) -> Msgid {
     match op {
-        FilterOp::Eq => "=",
-        FilterOp::Ne => "≠",
-        FilterOp::Lt => "<",
-        FilterOp::Gt => ">",
-        FilterOp::Le => "≤",
-        FilterOp::Ge => "≥",
-        FilterOp::Contains => "contains",
-        FilterOp::StartsWith => "starts with",
-        FilterOp::In => "in (a, b, …)",
-        FilterOp::IsNull => "is NULL",
-        FilterOp::IsNotNull => "is not NULL",
+        // Signs read alike in every language.
+        FilterOp::Eq => Msgid::as_is("="),
+        FilterOp::Ne => Msgid::as_is("≠"),
+        FilterOp::Lt => Msgid::as_is("<"),
+        FilterOp::Gt => Msgid::as_is(">"),
+        FilterOp::Le => Msgid::as_is("≤"),
+        FilterOp::Ge => Msgid::as_is("≥"),
+        FilterOp::Contains => msgid("contains"),
+        FilterOp::StartsWith => msgid("starts with"),
+        FilterOp::In => msgid("in (a, b, …)"),
+        FilterOp::IsNull => msgid("is NULL"),
+        FilterOp::IsNotNull => msgid("is not NULL"),
     }
 }
 
@@ -119,18 +120,18 @@ pub fn show(
             });
             let combo = menu::Dropdown::new(
                 ("filter-op", tab.0, object_tab.0, index),
-                &gettext(locale, op_label(row.op)),
+                &op_label(row.op).say(locale),
                 110.0,
             )
             .show(ui, &look, &palette, |ui| {
                 for op in FILTER_OPS {
-                    let label = gettext(locale, op_label(op));
+                    let label = op_label(op).say(locale);
                     menu::value(ui, &mut row.op, op, &label, &look, &palette);
                 }
             });
             // No visible label in the row: name it for screen readers,
             // keeping its selection as the value.
-            let selected = Some(gettext(locale, op_label(row.op)).into_owned());
+            let selected = Some(op_label(row.op).say(locale).into_owned());
             combo.response.widget_info(|| {
                 let mut info = egui::WidgetInfo::labeled(
                     egui::WidgetType::ComboBox,

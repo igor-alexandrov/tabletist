@@ -232,7 +232,7 @@ fn status(ui: &mut Ui, server: Server, skin: &Skin, actions: &mut Vec<Action>) {
             ),
             count => (
                 ngettext(locale, "{n} agent connected", "{n} agents connected", count)
-                    .replace("{n}", &count.to_string()),
+                    .replace("{n}", &crate::i18n::number(locale, count)),
                 palette.success,
             ),
         };

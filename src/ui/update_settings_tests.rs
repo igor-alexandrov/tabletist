@@ -289,7 +289,7 @@ fn an_update_available_shows_its_notes_and_a_dot_on_updates() {
         let day = match crate::clock::day_of(then, now) {
             crate::clock::Day::Today => "today".to_owned(),
             crate::clock::Day::Yesterday => "yesterday".to_owned(),
-            crate::clock::Day::On(day) => day,
+            day => day.words(crate::i18n::Locale::English),
         };
         let sub = format!(
             "You have {} · released {day} · {size}",

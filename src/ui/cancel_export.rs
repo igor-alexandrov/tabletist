@@ -90,7 +90,8 @@ pub fn show(
     }
     let lit = lit_row(picker, rows);
     let title = look.label(&gettext(locale, "Cancel export"));
-    let count = gettext(locale, "{n} running").replace("{n}", &rows.len().to_string());
+    let count =
+        gettext(locale, "{n} running").replace("{n}", &crate::i18n::number(locale, rows.len()));
     let area = Area::new(Id::new("cancel-export"))
         .order(Order::Foreground)
         .kind(egui::UiKind::Menu)

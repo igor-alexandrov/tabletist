@@ -8,7 +8,7 @@ use tabletist_db::{Driver, TlsMode};
 
 use crate::connections::PasswordMode;
 use crate::env::Environment;
-use crate::i18n::gettext;
+use crate::i18n::{Msgid, gettext, msgid};
 use crate::model::{Action, ConnectionForm, SshAuthKind};
 use crate::style::Icon;
 use crate::theme;
@@ -31,11 +31,11 @@ use super::{
 /// room stays, so nothing moves when an environment is chosen.
 const STRIPE: f32 = 5.0;
 
-fn tls_label(mode: TlsMode) -> &'static str {
+fn tls_label(mode: TlsMode) -> Msgid {
     TLS_MODES
         .iter()
         .find(|(m, _)| *m == mode)
-        .map_or("", |(_, label)| label)
+        .map_or(Msgid::EMPTY, |(_, label)| *label)
 }
 
 /// macOS: the environment's stripe (when there is one), the title over the
@@ -155,13 +155,7 @@ fn labelled(
 /// macOS: the "Keychain" check box beside a secret, on the field's line.
 /// Screen readers hear `name`, which says whose secret it keeps.
 /// `below_label` puts it beside a field that has its label above it.
-fn keyring_box(
-    ui: &mut Ui,
-    mode: &mut PasswordMode,
-    name: &'static str,
-    below_label: bool,
-    skin: &Skin,
-) {
+fn keyring_box(ui: &mut Ui, mode: &mut PasswordMode, name: Msgid, below_label: bool, skin: &Skin) {
     let Skin { look, palette, .. } = *skin;
     if below_label {
         let line = TextRole::Secondary.row_height(ui.ctx(), look.faces);
@@ -172,7 +166,7 @@ fn keyring_box(
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
             let mut keep = keeps(*mode);
-            let text = gettext(skin.locale, skin.keyring());
+            let text = skin.keyring().say(skin.locale);
             let hover = gettext(
                 skin.locale,
                 "Saved for the next connect. Off, it is asked for every time.",
@@ -268,28 +262,28 @@ pub(super) fn body(
                 ui.add_space(18.0);
                 match form.driver {
                     Driver::Sqlite => {
-                        fieldset(ui, &skin.say("Database"), skin, |ui| {
+                        fieldset(ui, &skin.say(msgid("Database")), skin, |ui| {
                             file_field(ui, form, skin, actions);
                         });
                     }
                     Driver::BigQuery => {
-                        fieldset(ui, &skin.say("BigQuery"), skin, |ui| {
+                        fieldset(ui, &skin.say(msgid("BigQuery")), skin, |ui| {
                             bigquery(ui, form, skin);
                         });
                     }
                     Driver::Files => {
-                        fieldset(ui, &skin.say("Source"), skin, |ui| {
+                        fieldset(ui, &skin.say(msgid("Source")), skin, |ui| {
                             super::files::sheet(ui, form, skin, actions);
                         });
                         ui.add_space(12.0);
                         super::reading::section(ui, form, skin, actions);
                     }
                     Driver::Postgres | Driver::MySql => {
-                        fieldset(ui, &skin.say("Server"), skin, |ui| {
+                        fieldset(ui, &skin.say(msgid("Server")), skin, |ui| {
                             server(ui, form, skin, actions);
                         });
                         ui.add_space(18.0);
-                        fieldset(ui, &skin.say("Security"), skin, |ui| {
+                        fieldset(ui, &skin.say(msgid("Security")), skin, |ui| {
                             security(ui, form, skin, actions);
                         });
                     }
@@ -315,7 +309,7 @@ fn identity(
     actions: &mut Vec<Action>,
 ) {
     let Skin { look, palette, .. } = *skin;
-    let heading = skin.say("Type");
+    let heading = skin.say(msgid("Type"));
     widgets::label(ui, TextRole::FormLabel, &heading, palette.secondary, look);
     ui.add_space(5.0);
     driver_choice(ui, form, &heading, skin, actions);
@@ -328,14 +322,18 @@ fn identity(
         look,
     );
     ui.add_space(18.0);
-    let name = labelled(ui, &skin.say("Name"), TextRole::FormLabel, skin, |ui| {
-        ui.add(input(ui, &mut form.name, TextRole::UiBody, 34.0, skin))
-    });
+    let name = labelled(
+        ui,
+        &skin.say(msgid("Name")),
+        TextRole::FormLabel,
+        skin,
+        |ui| ui.add(input(ui, &mut form.name, TextRole::UiBody, 34.0, skin)),
+    );
     if focus_name {
         name.request_focus();
     }
     ui.add_space(18.0);
-    let heading = skin.say("Environment");
+    let heading = skin.say(msgid("Environment"));
     widgets::label(ui, TextRole::FormLabel, &heading, palette.secondary, look);
     ui.add_space(6.0);
     ui.horizontal(|ui| {
@@ -344,7 +342,7 @@ fn identity(
         widgets::label(
             ui,
             TextRole::Secondary,
-            &skin.say("Sets the connection color"),
+            &skin.say(msgid("Sets the connection color")),
             palette.dim,
             look,
         );
@@ -358,12 +356,17 @@ fn bigquery(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
     let role = skin.value_role();
     let small = TextRole::Secondary;
     let height = skin.field_height();
-    labelled(ui, &skin.say("Project"), small, skin, |ui| {
+    labelled(ui, &skin.say(msgid("Project")), small, skin, |ui| {
         ui.add(input(ui, &mut form.database, role, height, skin))
     });
     ui.add_space(10.0);
-    labelled(ui, &skin.say("Key file"), small, skin, |ui| {
-        let hint = hint(ui, &skin.say("Default credentials when empty"), role, skin);
+    labelled(ui, &skin.say(msgid("Key file")), small, skin, |ui| {
+        let hint = hint(
+            ui,
+            &skin.say(msgid("Default credentials when empty")),
+            role,
+            skin,
+        );
         ui.add(input(ui, &mut form.bigquery_key, role, height, skin).hint_text(hint))
     });
 }
@@ -375,25 +378,25 @@ fn server(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut Vec
     let columns = [Column::Fr(1.0), Column::Px(96.0)];
     row(ui, 12.0, &columns, |ui, column| {
         if column == 0 {
-            labelled(ui, &skin.say("Host"), small, skin, |ui| {
+            labelled(ui, &skin.say(msgid("Host")), small, skin, |ui| {
                 ui.add(input(ui, &mut form.host, role, height, skin))
             });
         } else {
-            labelled(ui, &skin.say("Port"), small, skin, |ui| {
+            labelled(ui, &skin.say(msgid("Port")), small, skin, |ui| {
                 ui.add(input(ui, &mut form.port, role, height, skin))
             });
         }
     });
     ui.add_space(10.0);
-    let same = skin.say("Same as the user");
-    labelled(ui, &skin.say("Database"), small, skin, |ui| {
+    let same = skin.say(msgid("Same as the user"));
+    labelled(ui, &skin.say(msgid("Database")), small, skin, |ui| {
         let hint = hint(ui, &same, role, skin);
         ui.add(input(ui, &mut form.database, role, height, skin).hint_text(hint))
     });
     ui.add_space(10.0);
     row(ui, 12.0, &columns, |ui, column| {
         if column == 0 {
-            labelled(ui, &skin.say("User"), small, skin, |ui| {
+            labelled(ui, &skin.say(msgid("User")), small, skin, |ui| {
                 ui.add(input(ui, &mut form.user, role, height, skin))
             });
         }
@@ -408,14 +411,20 @@ fn server(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut Vec
     let mut field = None;
     row(ui, 12.0, &columns, |ui, column| {
         if column == 0 {
-            field = Some(labelled(ui, &skin.say("Password"), small, skin, |ui| {
-                let hint = hint(ui, &saved, TextRole::UiBody, skin);
-                ui.add(
-                    input(ui, &mut form.password, TextRole::UiBody, height, skin)
-                        .password(true)
-                        .hint_text(hint),
-                )
-            }));
+            field = Some(labelled(
+                ui,
+                &skin.say(msgid("Password")),
+                small,
+                skin,
+                |ui| {
+                    let hint = hint(ui, &saved, TextRole::UiBody, skin);
+                    ui.add(
+                        input(ui, &mut form.password, TextRole::UiBody, height, skin)
+                            .password(true)
+                            .hint_text(hint),
+                    )
+                },
+            ));
         } else {
             keyring_box(ui, &mut form.password_mode, skin.keyring(), true, skin);
         }
@@ -436,11 +445,18 @@ fn security(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut V
         |ui, column| {
             if column == 0 {
                 let width = ui.available_width();
-                labelled(ui, &skin.say("SSL mode"), small, skin, |ui| {
-                    select(ui, "tls-mode", tls_label(form.tls), width, skin)
+                labelled(ui, &skin.say(msgid("SSL mode")), small, skin, |ui| {
+                    select(ui, "tls-mode", tls_label(form.tls).english(), width, skin)
                         .show(ui, look, palette, |ui| {
                             for (mode, label) in TLS_MODES {
-                                menu::value(ui, &mut form.tls, mode, label, look, palette);
+                                menu::value(
+                                    ui,
+                                    &mut form.tls,
+                                    mode,
+                                    label.english(),
+                                    look,
+                                    palette,
+                                );
                             }
                         })
                         .response
@@ -449,7 +465,7 @@ fn security(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut V
                 let label = widgets::label(
                     ui,
                     small,
-                    &skin.say("CA certificate"),
+                    &skin.say(msgid("CA certificate")),
                     palette.secondary,
                     look,
                 );
@@ -470,7 +486,7 @@ fn security(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut V
         widgets::checkbox(
             ui,
             &mut form.ssh,
-            &skin.say("Connect through SSH tunnel"),
+            &skin.say(msgid("Connect through SSH tunnel")),
             look,
             palette,
         );
@@ -504,7 +520,7 @@ fn ssh_fields(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut
     // The field's name, where no user is known to show in its place.
     let user = Some(ssh_user_hint(&hints, skin))
         .filter(|user| !user.is_empty())
-        .unwrap_or_else(|| skin.say("User"));
+        .unwrap_or_else(|| skin.say(msgid("User")));
     let columns = [
         Column::Fr(1.2),
         Column::Px(64.0),
@@ -513,27 +529,27 @@ fn ssh_fields(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut
     ];
     row(ui, 10.0, &columns, |ui, column| match column {
         0 => {
-            let field = ssh_host_field(ui, form, role, &skin.say("SSH host"), skin, actions);
-            named(&field, "SSH host", skin);
+            let field = ssh_host_field(ui, form, role, &skin.say(msgid("SSH host")), skin, actions);
+            named(&field, msgid("SSH host"), skin);
         }
         1 => {
             let hint = hint(ui, &port, role, skin);
             let field = ui.add(input(ui, &mut form.ssh_port, role, height, skin).hint_text(hint));
-            named(&field, "SSH port", skin);
+            named(&field, msgid("SSH port"), skin);
         }
         2 => {
             let hint = hint(ui, &user, role, skin);
             let field = ui.add(input(ui, &mut form.ssh_user, role, height, skin).hint_text(hint));
-            named(&field, "SSH user", skin);
+            named(&field, msgid("SSH user"), skin);
         }
         _ => {
             let width = ui.available_width();
             let name = gettext(skin.locale, "Authentication");
-            let value = gettext(skin.locale, form.ssh_auth.label());
+            let value = form.ssh_auth.label().say(skin.locale);
             let response = select(ui, "ssh-auth", &value, width, skin)
                 .show(ui, skin.look, skin.palette, |ui| {
                     for kind in SshAuthKind::ALL {
-                        let label = gettext(skin.locale, kind.label());
+                        let label = kind.label().say(skin.locale);
                         menu::value(
                             ui,
                             &mut form.ssh_auth,
@@ -558,13 +574,18 @@ fn ssh_fields(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut
     }
     if form.ssh_auth == SshAuthKind::KeyFile {
         ui.add_space(10.0);
-        let key = ssh_key_hint(&hints, skin).unwrap_or_else(|| skin.say("Key file"));
-        let (field, clicked) =
-            field_with_button(ui, &skin.say("Choose…"), "Choose a key file", skin, |ui| {
+        let key = ssh_key_hint(&hints, skin).unwrap_or_else(|| skin.say(msgid("Key file")));
+        let (field, clicked) = field_with_button(
+            ui,
+            &skin.say(msgid("Choose…")),
+            msgid("Choose a key file"),
+            skin,
+            |ui| {
                 let hint = hint(ui, &key, role, skin);
                 ui.add(input(ui, &mut form.ssh_key_file, role, height, skin).hint_text(hint))
-            });
-        named(&field, "Key file", skin);
+            },
+        );
+        named(&field, msgid("Key file"), skin);
         if clicked {
             actions.push(Action::PickKeyFile);
         }
@@ -645,15 +666,15 @@ fn env_check(ui: &mut Ui, on: bool, name: &str, skin: &Skin) -> Response {
 }
 
 /// What the read-only promise says under its title.
-const READ_ONLY_NOTE: &str =
-    "Blocks every write from this app. On by default for production; turn off to edit.";
+const READ_ONLY_NOTE: Msgid =
+    msgid("Blocks every write from this app. On by default for production; turn off to edit.");
 
 /// macOS: the read-only promise, on the environment's tint. The box shows
 /// the environment's default until it is clicked, and is the user's
 /// choice from then on.
 fn safety(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
     let Skin { look, palette, .. } = *skin;
-    let title = skin.say("Open read-only");
+    let title = skin.say(msgid("Open read-only"));
     // Editing files is not built: their box is on, and stays so.
     let fixed = super::read_only_fixed(form);
     let note = match fixed {
@@ -701,14 +722,15 @@ fn url_pane(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut V
     let label = widgets::label(
         ui,
         TextRole::FormLabel,
-        &skin.say("Connection URL"),
+        &skin.say(msgid("Connection URL")),
         palette.secondary,
         look,
     );
     ui.add_space(5.0);
-    let (field, clicked) = field_with_button(ui, &skin.say("Fill"), "Fill", skin, |ui| {
-        url_field(ui, form, skin)
-    });
+    let (field, clicked) =
+        field_with_button(ui, &skin.say(msgid("Fill")), msgid("Fill"), skin, |ui| {
+            url_field(ui, form, skin)
+        });
     let field = field.labelled_by(label.id);
     let entered = field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
     if clicked || entered {
@@ -718,7 +740,9 @@ fn url_pane(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut V
     widgets::label(
         ui,
         TextRole::Secondary,
-        &skin.say("Fills the parameters. A password in the URL moves to the password field."),
+        &skin.say(msgid(
+            "Fills the parameters. A password in the URL moves to the password field.",
+        )),
         palette.dim,
         look,
     );

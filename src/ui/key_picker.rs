@@ -10,7 +10,7 @@ use egui::{CornerRadius, Id, Rect, Sense, Ui, UiBuilder, WidgetInfo, WidgetType,
 use tabletist_db::{LookupRow, Value};
 
 use crate::format::{display_safe, plain_text};
-use crate::i18n::{Locale, gettext, ngettext};
+use crate::i18n::{Locale, gettext, msgid, ngettext};
 use crate::key_picker::{Columns, LIMIT, Picker, SAID, VISIBLE, found_in};
 use crate::labels::Source;
 use crate::model::{Action, ConnTabId, TabId};
@@ -154,7 +154,8 @@ fn state_line(
     }
     // The list goes on past the rows drawn: the arrows reach the rest.
     (hidden > 0).then(|| {
-        let text = gettext(locale, "{count} more").replace("{count}", &hidden.to_string());
+        let text = gettext(locale, "{count} more")
+            .replace("{count}", &crate::i18n::number(locale, hidden));
         (text, false)
     })
 }
@@ -178,7 +179,7 @@ fn count_line(picker: &Picker, table: &str, locale: Locale) -> Option<String> {
             "{count} matches in {table}",
             count,
         )
-        .replace("{count}", &count.to_string())
+        .replace("{count}", &crate::i18n::number(locale, count))
         .replace("{table}", &table)
     })
 }
@@ -233,15 +234,15 @@ pub fn label_line(
         return None;
     };
     let words = match (&label.column, label.source) {
-        (_, Source::KeysOnly) => "Label keys only",
-        (Some(_), Source::Automatic) => "Label {column} · Automatic",
-        (Some(_), Source::User) => "Label {column} · Set by you",
+        (_, Source::KeysOnly) => msgid("Label keys only"),
+        (Some(_), Source::Automatic) => msgid("Label {column} · Automatic"),
+        (Some(_), Source::User) => msgid("Label {column} · Set by you"),
         // The app found no column to read a row by, and one can be
         // chosen; or the user chose none.
-        (None, Source::Automatic) => "Label keys only · Automatic",
-        (None, Source::User) => "Label keys only · Set by you",
+        (None, Source::Automatic) => msgid("Label keys only · Automatic"),
+        (None, Source::User) => msgid("Label keys only · Set by you"),
     };
-    let words = look.label(&gettext(locale, words));
+    let words = look.label(&words.say(locale));
     let Some((column, at)) = label.column.as_deref().zip(words.find("{column}")) else {
         return Some((words, None));
     };
@@ -267,13 +268,13 @@ pub fn label_name(label: &Columns, table: &str, locale: Locale) -> Option<String
                 gettext(locale, "Label: keys only.")
             ));
         }
-        (Some(_), Source::Automatic) => "Label column: {column}, Automatic",
-        (Some(_), Source::User) => "Label column: {column}, Set by you",
-        (None, Source::Automatic) => "Label column: keys only, Automatic",
-        (None, Source::User) => "Label column: keys only, Set by you",
+        (Some(_), Source::Automatic) => msgid("Label column: {column}, Automatic"),
+        (Some(_), Source::User) => msgid("Label column: {column}, Set by you"),
+        (None, Source::Automatic) => msgid("Label column: keys only, Automatic"),
+        (None, Source::User) => msgid("Label column: keys only, Set by you"),
     };
     let column = label.column.as_deref().unwrap_or_default();
-    Some(gettext(locale, words).replace("{column}", &display_safe(column)))
+    Some(words.say(locale).replace("{column}", &display_safe(column)))
 }
 
 /// What a picker says when its chooser is asked for and its table has
@@ -290,15 +291,15 @@ pub fn nothing_text(table: &str, look: &Look, locale: Locale) -> String {
 fn matches_text(picker: &Picker, terse: bool, locale: Locale) -> String {
     if picker.more {
         let words = if terse {
-            "{count}+ matches"
+            msgid("{count}+ matches")
         } else {
-            "{count} or more matches"
+            msgid("{count} or more matches")
         };
-        return gettext(locale, words).replace("{count}", &LIMIT.to_string());
+        return words.say(locale).replace("{count}", &LIMIT.to_string());
     }
     let count = picker.options.len();
     ngettext(locale, "{count} match", "{count} matches", count)
-        .replace("{count}", &count.to_string())
+        .replace("{count}", &crate::i18n::number(locale, count))
 }
 
 /// What a screen reader is told once the list is searched again by the
@@ -312,13 +313,13 @@ pub fn changed_text(picker: &Picker, locale: Locale) -> Option<String> {
         return None;
     }
     let words = match (&label.column, label.source) {
-        (None, _) => "Keys only. {matches}.",
-        (Some(_), Source::Automatic) => "Labelled by {column}, Automatic. {matches}.",
-        (Some(_), Source::User | Source::KeysOnly) => "Labelled by {column}. {matches}.",
+        (None, _) => msgid("Keys only. {matches}."),
+        (Some(_), Source::Automatic) => msgid("Labelled by {column}, Automatic. {matches}."),
+        (Some(_), Source::User | Source::KeysOnly) => msgid("Labelled by {column}. {matches}."),
     };
     let column = label.column.as_deref().unwrap_or_default();
     let said = crate::i18n::fill(
-        &gettext(locale, words),
+        &words.say(locale),
         &[
             ("{column}", &display_safe(column)),
             ("{matches}", &matches_text(picker, false, locale)),
@@ -338,12 +339,12 @@ pub fn changed_line(picker: &Picker, look: &Look, locale: Locale) -> Option<Stri
         return None;
     }
     let words = match &label.column {
-        Some(_) => "Label {column} · {matches}",
-        None => "Label keys only · {matches}",
+        Some(_) => msgid("Label {column} · {matches}"),
+        None => msgid("Label keys only · {matches}"),
     };
     let column = label.column.as_deref().unwrap_or_default();
     let said = crate::i18n::fill(
-        &look.label(&gettext(locale, words)),
+        &look.label(&words.say(locale)),
         &[
             ("{column}", &display_safe(column)),
             ("{matches}", &matches_text(picker, true, locale)),
@@ -370,13 +371,13 @@ pub fn gone_text(picker: &Picker, look: &Look, locale: Locale) -> Option<Gone> {
     let auto = label.automatic.as_deref().unwrap_or(&keys_only);
     let (gone, auto) = (display_safe(gone), display_safe(auto));
     let line = if look.terminal {
-        "{column} is gone · labels use Automatic ({auto})"
+        msgid("{column} is gone · labels use Automatic ({auto})")
     } else {
-        "{column} is gone, so labels use Automatic ({auto})."
+        msgid("{column} is gone, so labels use Automatic ({auto}).")
     };
     let fill = |words: String| crate::i18n::fill(&words, &[("{column}", &gone), ("{auto}", &auto)]);
     Some(Gone {
-        line: fill(look.label(&gettext(locale, line))),
+        line: fill(look.label(&line.say(locale))),
         told: fill(gettext(locale, "{column} is gone. Labels use Automatic, {auto}.").into_owned()),
     })
 }

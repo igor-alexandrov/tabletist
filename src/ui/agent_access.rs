@@ -6,14 +6,17 @@
 use egui::{Id, Key, Margin, Modifiers, Rect, Sense, vec2};
 
 use crate::connections::AgentAccess;
-use crate::i18n::gettext;
+use crate::i18n::{Msgid, gettext, msgid};
 use crate::keymap::{Command, Layout, When};
 use crate::model::{Action, AgentAccessBox};
 use crate::typography::{Text, TextRole};
 use crate::ui::{Paint, terminal_dialog, widgets};
 
 /// The levels, as the box lists them.
-const LEVELS: [(AgentAccess, &str); 2] = [(AgentAccess::Off, "off"), (AgentAccess::Read, "read")];
+const LEVELS: [(AgentAccess, Msgid); 2] = [
+    (AgentAccess::Off, msgid("off")),
+    (AgentAccess::Read, msgid("read")),
+];
 
 /// Draws the box over the window, and returns what it asks for.
 /// `current` is the level in force on its connection, `None` where the
@@ -89,14 +92,14 @@ pub fn show(
     }
     let frame = widgets::modal_frame(&look, &palette).inner_margin(Margin::ZERO);
     let radius = look.dialog_radius.saturating_sub(frame.stroke.width as u8);
-    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let say = |text: Msgid| look.label(&text.say(locale));
     widgets::modal(Id::new("agent-access"), &look, &palette)
         .frame(frame)
         .show(ctx, |ui| {
             ui.set_width(320.0);
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
             let head = terminal_dialog::head(ui, radius, palette.panel, &palette);
-            let title = format!("{} · {name}", say("Agents"));
+            let title = format!("{} · {name}", say(msgid("Agents")));
             widgets::paint_text(
                 ui,
                 head.left() + 18.0,
@@ -131,7 +134,11 @@ pub fn show(
                     rect.center().y,
                     Text::one(&look, TextRole::OBody, &say(word), palette.text),
                 );
-                widgets::announce(ui, rect, &format!("{} {}", say("Agents"), say(word)));
+                widgets::announce(
+                    ui,
+                    rect,
+                    &gettext(locale, "Agents {level}").replace("{level}", &say(word)),
+                );
                 if response.clicked() {
                     set(&mut actions, level);
                 }
@@ -143,8 +150,8 @@ pub fn show(
             let tab = crate::ui::keys::written(ui.ctx(), &look, Command::ShowAgentsFromBox);
             let words = format!(
                 "{opens} {} · {moves} · {tab} {}",
-                say("opens this"),
-                say("agents tab")
+                say(msgid("opens this")),
+                say(msgid("agents tab"))
             );
             widgets::paint_text(
                 ui,

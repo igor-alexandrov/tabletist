@@ -14,7 +14,7 @@ use crate::backend::{
 use crate::completion::Need;
 use crate::connections::{PasswordMode, SavedConnection};
 use crate::edit::EditorPlace;
-use crate::i18n::{Locale, gettext};
+use crate::i18n::Locale;
 use crate::model::{Action, ConnTab, ConnTabContent, ConnTabId, PickerState};
 use crate::model::{
     Advance, CellPos, Completion, ConnectionForm, Dialog, Fetch, FilterBar, FilterRow, Found, Held,
@@ -5236,7 +5236,6 @@ impl App {
             } => {
                 // An answer for a closed tab or a replaced run finds no
                 // editor waiting for it.
-                let locale = self.locale;
                 let Some(workspace) = self
                     .tab_for_session(session)
                     .and_then(|tab| self.workspace_mut(tab))
@@ -5255,8 +5254,10 @@ impl App {
                 // takes the statements over.
                 let ran = sql.in_flight.as_ref().map(|run| {
                     let base = crate::history::Entry {
-                        detail: gettext(locale, "Query {n}")
-                            .replace("{n}", &sql.number.to_string()),
+                        // Recorded in English, whatever the window's
+                        // language: History says it in its own as it draws
+                        // (`history::detail_words`).
+                        detail: format!("Query {}", sql.number),
                         read_only: run.mode == tabletist_db::ScriptMode::ReadOnly,
                         at_ms: base.at_ms.saturating_sub(
                             i64::try_from(run.started.elapsed().as_millis()).unwrap_or_default(),
@@ -8742,7 +8743,7 @@ impl App {
     /// point or back to 13. Saved at once, and told for 4 s in the toast
     /// or the status line. The Settings window changes them unsaid.
     fn resize(&mut self, larger: Option<bool>) {
-        use crate::i18n::gettext;
+        use crate::i18n::msgid;
         let reset = self
             .keymap
             .key(self.layout(), crate::keymap::Command::DefaultTextSize);
@@ -8756,12 +8757,13 @@ impl App {
             let size = self.settings.font_size_in(true).text();
             // A key that resets it is named; a `[keys]` line can leave none.
             let words = if reset.as_str().is_empty() {
-                "font size {size}"
+                msgid("font size {size}")
             } else {
-                "font size {size} · {key} resets"
+                msgid("font size {size} · {key} resets")
             };
             self.said = Some(
-                gettext(self.locale, words)
+                words
+                    .say(self.locale)
                     .replace("{size}", &size)
                     .replace("{key}", reset.as_str()),
             );
@@ -8775,12 +8777,13 @@ impl App {
             }
             let scale = self.settings.ui_scale;
             let words = if reset.as_str().is_empty() {
-                "Interface {percent}% · {px} px text"
+                msgid("Interface {percent}% · {px} px text")
             } else {
-                "Interface {percent}% · {px} px text · {key} resets"
+                msgid("Interface {percent}% · {px} px text · {key} resets")
             };
             self.said = Some(
-                gettext(self.locale, words)
+                words
+                    .say(self.locale)
                     .replace("{percent}", &scale.percent().to_string())
                     .replace("{px}", &scale.text_px().to_string())
                     .replace("{key}", reset.as_str()),
@@ -9576,7 +9579,7 @@ pub fn copy_said(locale: crate::i18n::Locale, copying: &Copying, how: How) -> St
     use crate::i18n::{counted, gettext};
     match &copying.copied {
         Copied::TooManyRows(rows) => gettext(locale, "That's {rows} rows. Export to a file?")
-            .replace("{rows}", &crate::format::group_digits(*rows as u64)),
+            .replace("{rows}", &crate::i18n::number(locale, *rows as u64)),
         Copied::TooLarge => gettext(locale, "That's over 20 MB. Export to a file?").into_owned(),
         Copied::Text { statements, .. } => {
             let size = (copying.rows, copying.cols);
