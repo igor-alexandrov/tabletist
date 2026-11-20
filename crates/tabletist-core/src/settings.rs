@@ -54,7 +54,7 @@ pub enum Language {
 }
 
 impl Language {
-    /// As the file says it: `system`, `en`, `ru`.
+    /// As the file says it: `system`, `en`, `pt-BR`, `ru`.
     pub fn name(self) -> &'static str {
         match self {
             Self::System => "system",
@@ -1099,7 +1099,7 @@ impl Key {
     /// value: see [`Settings::note`].
     fn note(self) -> Option<&'static str> {
         match self {
-            Self::Language => Some("system | \"en\" | \"ru\""),
+            Self::Language => Some("system | \"en\" | \"pt-BR\" | \"ru\""),
             Self::OnLaunch => Some("restore | connections | \"conn:<id>\""),
             Self::Timestamps => Some("second | full"),
             Self::Tz => Some("system | utc | \"Area/City\""),
@@ -3955,7 +3955,7 @@ mod tests {
                 "\
 # written by tabletist, safe to edit by hand
 [interface]
-language = \"ru\"  # system | \"en\" | \"ru\"
+language = \"ru\"  # system | \"en\" | \"pt-BR\" | \"ru\"
 
 [startup]
 on_launch = \"conn:6a0c1f0e-5a52-4b7b-9c56-3f0c8f2f7a11\"  # Bookshop

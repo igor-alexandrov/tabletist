@@ -682,25 +682,14 @@ Title: "Add Brazilian Portuguese, run 3a: the language, Settings and menus (#344
 Branch `claude/translations-3b-portuguese` from main once 3a is merged.
 
 - [ ] **Step 1: Cut, translate, merge, check.** Same as Task 4 Steps 1 to 4, with `-N 'src/ui/[a-e]*'` (about 670 entries). Use the same glossary, and read 3a's catalog for terms already chosen.
-- [ ] **Step 2: Add a pt-BR assertion** to a view test that already checks Russian words, where the slice covers them: `src/ui/date_line.rs:736-752` (`day_words`, `calendar`) once `date_line.rs` and `calendar.rs` are translated:
-
-```rust
-assert_eq!(day_words(day, Locale::BrazilianPortuguese), "qui. 15 de jan. de 2026");
-assert_eq!(
-    calendar(Locale::BrazilianPortuguese),
-    ("Janeiro de 2026".into(), "quinta-feira, 15 de janeiro de 2026".into())
-);
-```
-
-- [ ] **Step 3: Commit, verify as Task 7, open the PR** ("run 3b"), with its unsure list.
+- [ ] **Step 2: Commit, verify as Task 7, open the PR** ("run 3b"), with its unsure list. The date line and calendar assertions wait for 3d (Task 11): their month and weekday names come from `crates/tabletist-core/src/i18n/numbers.rs`, which 3b does not translate.
 
 ## PR 3c: views, `file_list.rs` to `write_prompts.rs`
 
 ### Task 9: Translate the 3c slice
 
 - [ ] **Step 1: Cut, translate, merge, check.** As Task 4, with `-N 'src/*'` on what is still untranslated (about 660 entries).
-- [ ] **Step 2: Add a pt-BR assertion** beside `src/ui/history.rs:1581`'s Russian durations: `duration_words(1_200, Locale::BrazilianPortuguese)` is «1,2 s».
-- [ ] **Step 3: Commit, verify, open the PR** ("run 3c").
+- [ ] **Step 2: Commit, verify, open the PR** ("run 3c"). The history duration assertion waits for 3d (Task 11), since its units come from `numbers.rs`.
 
 ## PR 3d: the crates, and nothing left untranslated
 
@@ -733,6 +722,18 @@ assert_eq!(
 ```
 
 and in `clock.rs` beside line 147: `before.words(Locale::BrazilianPortuguese)` is «11 de out.», and `last_year`'s is «17 de dez. de 2025».
+
+In `src/ui/date_line.rs:736-752`, beside the Russian `day_words` and `calendar` checks:
+
+```rust
+assert_eq!(day_words(day, Locale::BrazilianPortuguese), "qui. 15 de jan. de 2026");
+assert_eq!(
+    calendar(Locale::BrazilianPortuguese),
+    ("Janeiro de 2026".into(), "quinta-feira, 15 de janeiro de 2026".into())
+);
+```
+
+And beside `src/ui/history.rs:1583`'s Russian durations: `duration_words(1_500, Locale::BrazilianPortuguese)` is «1 s». `duration_words` divides by 1,000 before it formats, so seconds are whole.
 
 - [ ] **Step 3: Run them**
 
