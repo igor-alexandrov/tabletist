@@ -1581,5 +1581,8 @@ mod tests {
         let russian = |ms| super::duration_words(ms, crate::i18n::Locale::Russian);
         assert_eq!(russian(65_000), "1 мин 5 с");
         assert_eq!(russian(1_500), "1 с");
+        let portuguese = |ms| super::duration_words(ms, crate::i18n::Locale::BrazilianPortuguese);
+        assert_eq!(portuguese(65_000), "1 min 5 s");
+        assert_eq!(portuguese(1_500), "1 s");
     }
 }

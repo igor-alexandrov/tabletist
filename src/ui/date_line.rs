@@ -735,6 +735,10 @@ mod tests {
         let day = date(2026, 1, 15);
         assert_eq!(day_words(day, Locale::English), "Thu 15 Jan 2026");
         assert_eq!(day_words(day, Locale::Russian), "чт 15 янв. 2026");
+        assert_eq!(
+            day_words(day, Locale::BrazilianPortuguese),
+            "qui. 15 de jan. de 2026"
+        );
         assert_eq!(short_day(date(2026, 5, 1), Locale::Russian), "1 мая");
         assert_eq!(dated_day(day, Locale::English), "15 Jan 2026");
         let calendar = |locale| {
@@ -750,6 +754,13 @@ mod tests {
         assert_eq!(
             calendar(Locale::Russian),
             ("Январь 2026".into(), "четверг, 15 января 2026".into())
+        );
+        assert_eq!(
+            calendar(Locale::BrazilianPortuguese),
+            (
+                "Janeiro de 2026".into(),
+                "quinta-feira, 15 de janeiro de 2026".into()
+            )
         );
     }
 

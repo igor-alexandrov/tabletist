@@ -145,9 +145,14 @@ mod tests {
         let before = day_in(now - hours(48), now, &berlin);
         assert_eq!(before.words(Locale::English), "Oct 11");
         assert_eq!(before.words(Locale::Russian), "11 окт.");
+        assert_eq!(before.words(Locale::BrazilianPortuguese), "11 de out.");
         let last_year = day_in(now - hours(24 * 300), now, &berlin);
         assert_eq!(last_year.words(Locale::English), "Dec 17, 2025");
         assert_eq!(last_year.words(Locale::Russian), "17 дек. 2025 г.");
+        assert_eq!(
+            last_year.words(Locale::BrazilianPortuguese),
+            "17 de dez. de 2025"
+        );
         assert_eq!(Day::Today.words(Locale::English), "");
     }
 }
