@@ -121,7 +121,18 @@ fn choosing_russian_redraws_the_window_and_writes_the_file() {
     assert!(painted(&harness, "Язык · Language"));
     assert!(painted(&harness, "Русский"));
     // Sent to be saved, not only kept in memory.
-    let saved = harness
+    let saved = saved_settings(&harness);
+    assert!(saved.contains("[interface]\nlanguage = \"ru\""), "{saved}");
+    // And back to English, through the menu its label now names.
+    open_the_menu(&mut harness, "Язык");
+    harness.click("Язык English");
+    assert_eq!(harness.app.locale, Locale::English);
+    assert!(painted(&harness, "Settings"));
+}
+
+/// The settings file's text as the window last sent it to be saved.
+fn saved_settings(harness: &Harness) -> String {
+    harness
         .app
         .backend
         .sent
@@ -134,13 +145,49 @@ fn choosing_russian_redraws_the_window_and_writes_the_file() {
             } => Some(text.clone()),
             _ => None,
         })
-        .unwrap_or_default();
-    assert!(saved.contains("[interface]\nlanguage = \"ru\""), "{saved}");
-    // And back to English, through the menu its label now names.
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_portuguese_system_reads_brazilian_portuguese() {
+    for system in ["pt_BR.UTF-8", "pt-PT"] {
+        let harness = general(Look::macos(), Some(system));
+        assert_eq!(harness.app.locale, Locale::BrazilianPortuguese, "{system}");
+        assert_eq!(harness.app.settings.language, Language::System);
+        assert!(
+            painted(&harness, "Sistema (Português (Brasil))"),
+            "{system}"
+        );
+        // The English word stays beside the label: the way back.
+        assert!(painted(&harness, "Idioma · Language"), "{system}");
+    }
+}
+
+#[test]
+fn choosing_portuguese_writes_its_tag_and_names_the_others_in_portuguese() {
+    let mut harness = general(Look::macos(), Some("en-US"));
+    open_the_menu(&mut harness, "Language");
+    harness.click("Language Português (Brasil)");
+    assert_eq!(harness.app.locale, Locale::BrazilianPortuguese);
+    assert!(painted(&harness, "Configurações"));
+    assert!(painted(&harness, "Geral"));
+    let saved = saved_settings(&harness);
+    assert!(
+        saved.contains("[interface]\nlanguage = \"pt-BR\""),
+        "{saved}"
+    );
+    // The menu names each other language in Portuguese beside its own.
+    open_the_menu(&mut harness, "Idioma");
+    assert!(painted(&harness, "Inglês"));
+    assert!(painted(&harness, "Russo"));
+}
+
+#[test]
+fn a_russian_window_names_portuguese_in_russian() {
+    let mut harness = general(Look::macos(), Some("ru-RU"));
     open_the_menu(&mut harness, "Язык");
-    harness.click("Язык English");
-    assert_eq!(harness.app.locale, Locale::English);
-    assert!(painted(&harness, "Settings"));
+    assert!(painted(&harness, "Português (Brasil)"));
+    assert!(painted(&harness, "Португальский (Бразилия)"));
 }
 
 #[test]
@@ -187,6 +234,13 @@ fn the_omarchy_row_steps_through_the_languages_and_r_puts_back_system() {
     harness.press(Key::L, Modifiers::NONE);
     assert_eq!(
         harness.app.settings.language,
+        Language::Fixed(Locale::BrazilianPortuguese)
+    );
+    assert_eq!(harness.app.locale, Locale::BrazilianPortuguese);
+    assert!(painted(&harness, "‹ português (brasil) ›"));
+    harness.press(Key::L, Modifiers::NONE);
+    assert_eq!(
+        harness.app.settings.language,
         Language::Fixed(Locale::Russian)
     );
     assert_eq!(harness.app.locale, Locale::Russian);
@@ -196,6 +250,11 @@ fn the_omarchy_row_steps_through_the_languages_and_r_puts_back_system() {
     assert_eq!(
         harness.app.settings.language,
         Language::Fixed(Locale::Russian)
+    );
+    harness.press(Key::H, Modifiers::NONE);
+    assert_eq!(
+        harness.app.settings.language,
+        Language::Fixed(Locale::BrazilianPortuguese)
     );
     harness.press(Key::H, Modifiers::NONE);
     assert_eq!(
@@ -214,12 +273,12 @@ fn the_omarchy_row_says_a_system_language_is_not_translated() {
         &harness,
         "français is not translated yet · help translate: assets/i18n"
     ));
-    // Shown as English, System steps on to Russian; back from there is
-    // English, written.
+    // Shown as English, System steps on to the next language; back from
+    // there is English, written.
     harness.press(Key::L, Modifiers::NONE);
     assert_eq!(
         harness.app.settings.language,
-        Language::Fixed(Locale::Russian)
+        Language::Fixed(Locale::BrazilianPortuguese)
     );
     harness.press(Key::H, Modifiers::NONE);
     assert_eq!(

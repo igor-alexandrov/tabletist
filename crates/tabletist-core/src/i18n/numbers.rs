@@ -11,12 +11,14 @@ use super::{Count, Locale, Msgid, fill, msgid, pgettext, pmsgid};
 pub fn marks(locale: Locale) -> (char, char) {
     match locale {
         Locale::English => (',', '.'),
+        // CLDR's `pt`: a point between groups, a decimal comma.
+        Locale::BrazilianPortuguese => ('.', ','),
         // CLDR's: a no-break space, so a wrap never splits a number.
         Locale::Russian => ('\u{a0}', ','),
     }
 }
 
-/// A count as the interface writes it: `12,480`, «12 480».
+/// A count as the interface writes it: `12,480`, «12.480», «12 480».
 pub fn number(locale: Locale, count: impl Count) -> String {
     grouped(&count.as_u64().to_string(), marks(locale).0)
 }
@@ -425,7 +427,19 @@ pub fn day_and_time(locale: Locale, day: &str, time: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::i18n::Locale::{English, Russian};
+    use crate::i18n::Locale::{BrazilianPortuguese as Brazilian, English, Russian};
+
+    #[test]
+    fn brazilian_portuguese_groups_by_points_with_a_decimal_comma() {
+        assert_eq!(marks(Brazilian), ('.', ','));
+        assert_eq!(number(Brazilian, 12_480_u64), "12.480");
+        assert_eq!(number(Brazilian, 999_u64), "999");
+        assert_eq!(group_number(Brazilian, "1240.50"), "1.240,50");
+        assert_eq!(group_number(Brazilian, "-1234567"), "-1.234.567");
+        // A decimal number takes its comma even with nothing to group.
+        assert_eq!(group_number(Brazilian, "12.5"), "12,5");
+        assert_eq!(group_number(Brazilian, "1e5"), "1e5");
+    }
 
     #[test]
     fn a_number_is_grouped_by_its_language() {

@@ -301,6 +301,7 @@ pub(super) fn language_text(
 pub(super) fn language_aside(locale: Locale, of: Locale) -> Option<String> {
     let name = match of {
         Locale::English => gettext(locale, "English"),
+        Locale::BrazilianPortuguese => gettext(locale, "Brazilian Portuguese"),
         Locale::Russian => gettext(locale, "Russian"),
     };
     (of != locale).then(|| name.into_owned())

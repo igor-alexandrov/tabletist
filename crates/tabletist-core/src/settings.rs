@@ -3580,6 +3580,21 @@ mod tests {
         };
         assert!(russian.to_toml().contains("[interface]\nlanguage = \"ru\""));
         assert!(!Settings::default().to_toml().contains("language"));
+        // Brazilian Portuguese by its tag in any case, and by any
+        // Portuguese: the only one shipped. Written back as pt-BR.
+        let brazilian = Language::Fixed(Locale::BrazilianPortuguese);
+        for name in ["pt-BR", "pt_BR", "PT-BR", "pt_BR.UTF-8", "pt", "pt-PT"] {
+            assert_eq!(read(name).settings.language, brazilian, "{name:?}");
+        }
+        let written = Settings {
+            language: brazilian,
+            ..Settings::default()
+        };
+        assert!(
+            written
+                .to_toml()
+                .contains("[interface]\nlanguage = \"pt-BR\"")
+        );
     }
 
     #[test]
@@ -3588,6 +3603,14 @@ mod tests {
         assert_eq!(system.resolve(Some(&tag("ru-RU"))), Locale::Russian);
         assert_eq!(system.resolve(Some(&tag("en_GB.UTF-8"))), Locale::English);
         assert_eq!(system.resolve(Some(&tag("fr-FR"))), Locale::English);
+        assert_eq!(
+            system.resolve(Some(&tag("pt_BR.UTF-8"))),
+            Locale::BrazilianPortuguese
+        );
+        assert_eq!(
+            system.resolve(Some(&tag("pt-PT"))),
+            Locale::BrazilianPortuguese
+        );
         assert_eq!(system.resolve(None), Locale::English);
         let fixed = Language::Fixed(Locale::Russian);
         assert_eq!(fixed.resolve(Some(&tag("fr-FR"))), Locale::Russian);
@@ -3598,16 +3621,20 @@ mod tests {
     fn the_menu_lists_system_only_where_its_language_has_a_catalog() {
         let english = Language::Fixed(Locale::English);
         let russian = Language::Fixed(Locale::Russian);
+        let brazilian = Language::Fixed(Locale::BrazilianPortuguese);
+        // By their own names, Latin script first.
+        for system in ["ru-RU", "en-US", "pt-BR"] {
+            assert_eq!(
+                Language::choices(Some(&tag(system))),
+                [Language::System, english, brazilian, russian],
+                "{system}"
+            );
+        }
         assert_eq!(
-            Language::choices(Some(&tag("ru-RU"))),
-            [Language::System, english, russian]
+            Language::choices(Some(&tag("fr-FR"))),
+            [english, brazilian, russian]
         );
-        assert_eq!(
-            Language::choices(Some(&tag("en-US"))),
-            [Language::System, english, russian]
-        );
-        assert_eq!(Language::choices(Some(&tag("fr-FR"))), [english, russian]);
-        assert_eq!(Language::choices(None), [english, russian]);
+        assert_eq!(Language::choices(None), [english, brazilian, russian]);
         // Where System is no entry, it is shown as English.
         assert_eq!(Language::System.shown(Some(&tag("fr-FR"))), english);
         assert_eq!(Language::System.shown(Some(&tag("ru"))), Language::System);
@@ -3622,6 +3649,7 @@ mod tests {
         };
         let english = Language::Fixed(Locale::English);
         let russian = Language::Fixed(Locale::Russian);
+        let brazilian = Language::Fixed(Locale::BrazilianPortuguese);
         let step = |language, system: Option<&LanguageTag>, forward| {
             at(language).stepped_language(system, forward)
         };
@@ -3632,11 +3660,19 @@ mod tests {
         );
         assert_eq!(
             step(english, Some(&ru), true),
+            OptionValue::Language(brazilian)
+        );
+        assert_eq!(
+            step(brazilian, Some(&ru), true),
             OptionValue::Language(russian)
         );
         assert_eq!(
             step(russian, Some(&ru), true),
             OptionValue::Language(russian)
+        );
+        assert_eq!(
+            step(russian, Some(&ru), false),
+            OptionValue::Language(brazilian)
         );
         assert_eq!(
             step(english, Some(&ru), false),
@@ -3646,19 +3682,19 @@ mod tests {
             step(Language::System, Some(&ru), false),
             OptionValue::Language(Language::System)
         );
-        // Shown as English, System steps on to Russian, and back stays
-        // System rather than writing English in its place.
+        // Shown as English, System steps on to the next language, and back
+        // stays System rather than writing English in its place.
         let fr = tag("fr-FR");
         assert_eq!(
             step(Language::System, Some(&fr), true),
-            OptionValue::Language(russian)
+            OptionValue::Language(brazilian)
         );
         assert_eq!(
             step(Language::System, Some(&fr), false),
             OptionValue::Language(Language::System)
         );
         assert_eq!(
-            step(russian, Some(&fr), false),
+            step(brazilian, Some(&fr), false),
             OptionValue::Language(english)
         );
     }

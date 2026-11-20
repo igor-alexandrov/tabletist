@@ -16,7 +16,7 @@ use tabletist_db::ddl::{PartKind, Source};
 use tabletist_db::{Ddl, Driver, ObjectKind};
 
 use crate::format;
-use crate::i18n::{Locale, gettext, msgid, ngettext};
+use crate::i18n::{Locale, gettext, msgid, ngettext, pmsgid};
 use crate::keymap::Command;
 use crate::model::{Action, ConnTabId, ObjectTab, TabId};
 use crate::style::Icon;
@@ -40,7 +40,8 @@ fn part_name(kind: PartKind, object: ObjectKind, locale: Locale) -> Cow<'static,
     let name = match kind {
         PartKind::Object => match object {
             ObjectKind::Table => msgid("Table"),
-            ObjectKind::View => msgid("View"),
+            // The object, not the menu: a word of its own in Russian.
+            ObjectKind::View => pmsgid("object kind", "View"),
             ObjectKind::MaterializedView => msgid("Materialized view"),
         },
         PartKind::Indexes => msgid("Indexes"),
