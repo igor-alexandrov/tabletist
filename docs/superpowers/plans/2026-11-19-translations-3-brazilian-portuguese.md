@@ -25,7 +25,7 @@ The template, `tabletist.pot`, has 2,377 entries and about 8,400 English words. 
 | Area | Entries | Words |
 |---|---|---|
 | `src/ui/settings/**` | 419 | 1,427 |
-| keymap, menus, command palette, `src/app*` | 90 | 270 |
+| keymap (`crates/tabletist-core/src/keymap*`), menus, command palette, `src/app*` | 90 by first reference; 3a's slice takes every entry any of these files uses, 929 in all | 270 |
 | `src/ui` views, `about.rs` to `export_toast.rs` (alphabetical) | 671 | ~2,400 |
 | `src/ui` views, `file_list.rs` to `write_prompts.rs` | 660 | ~2,270 |
 | `crates/**` (format, clock, numbers, export, connections, MCP) | 537 | 2,020 |
@@ -54,7 +54,7 @@ Nothing else matches on a `Locale` variant. The calendar's first weekday is a se
 | **Grid values and dates** | As the database wrote them; dates stay ISO | Decided in run 1 |
 | **Register** | Buttons and menu items take the infinitive («Salvar», «Excluir linha»). Instructions take the imperative («Escolha uma tabela»). The person is «você», used only where a sentence needs it | Apple's and Microsoft's pt-BR style |
 | **Kept English** | What the guide keeps: keys, `:` commands, SQL, names, product names, environment names, placeholders, `NULL`, `DEFAULT`. Also the loanwords Brazilian developers use as they are: `commit`, `rollback`, `log`, `view` | `translating.md`; a native reviewer may prefer «registro» for log |
-| **One PR or four** | **Igor chose four PRs, one plan.** 3a: the code, docs, the catalog's start, and Settings, menus and palette (~510 entries). 3b: views A to E (~670). 3c: views F to W (~660). 3d: the crates (~540) and the "nothing untranslated" test | ~2,400 entries is too many to read at once. Each PR is mergeable alone: an untranslated entry shows in English, and 3a already makes the language choosable, as run 1 did for Russian |
+| **One PR or four** | **Igor chose four PRs, one plan.** 3a: the code, docs, the catalog's start, and Settings, the keymap, menus and palette (929 entries: an entry any of their files uses). 3b: views A to E (~670). 3c: views F to W (~660). 3d: the crates (~540) and the "nothing untranslated" test | ~2,400 entries is too many to read at once. Each PR is mergeable alone: an untranslated entry shows in English, and 3a already makes the language choosable, as run 1 did for Russian |
 
 Each PR's description says that the Portuguese needs a native speaker's review, and lists the wording I was least sure of.
 
@@ -84,13 +84,39 @@ Each PR's description says that the Portuguese needs a native speaker's review, 
 | agent / access | agente / acesso |
 | update / install / go back (an update) | atualização / instalar / voltar à versão anterior |
 
+### Terms 3a settled (3b to 3d keep them)
+
+| English | pt-BR |
+|---|---|
+| grid | grade |
+| statement (SQL) | instrução |
+| label (a foreign key's) / label chooser | rótulo / seletor de rótulo |
+| toast | notificação |
+| prompt (a question the app asks) / the `:` prompt | pergunta / linha de comando |
+| Keybindings (vim or standard) | Modo de teclado |
+| Autocomplete (the setting) / a completion | Preenchimento automático / sugestão |
+| reset | redefinir |
+| skip / overwrite / timeout | ignorar / sobrescrever / tempo limite |
+| switch (database, tab) | trocar de |
+| fold / open (a group) | recolher / expandir |
+| cheat sheet | referência rápida |
+| Agents Log | Log de agentes |
+| Files connection | conexão de arquivos |
+| Off / Read (an agent's access) | Desativado / Leitura |
+| All (feminine) / Show all | Todas / Mostrar tudo |
+| record (a shortcut) / keyboard row | gravar / linha de atalho |
+| release / build / release notes | versão / compilação / notas da versão |
+| Commit cell (an edit, not SQL's) | Confirmar a célula |
+| View (the object kind, context `object kind`) / View (the menu) | View / Visualizar |
+| Keychain / keyring / Credential Manager | Acesso às Chaves / chaveiro / Gerenciador de Credenciais |
+
 ## The PR split
 
 An entry belongs to the slice of its first `#:` reference. A slice is cut from what is still untranslated, so an entry shared between areas is translated once, by the first slice that reaches it.
 
 | PR | Slice (msggrep `-N` patterns) |
 |---|---|
-| 3a | `src/ui/settings/*`, `src/keymap*`, `src/menu*`, `src/app*` |
+| 3a | `src/ui/settings/*`, `crates/tabletist-core/src/keymap*`, `crates/tabletist-core/src/keymap/*`, `src/menu.rs`, `src/app.rs`, `src/app/*` |
 | 3b | `src/ui/[a-e]*` (`about.rs` to `export_toast.rs`, `connect_dialog/` among them) |
 | 3c | `src/ui/[f-z]*` and anything else left in `src/` |
 | 3d | `crates/*`, and whatever is still empty |
