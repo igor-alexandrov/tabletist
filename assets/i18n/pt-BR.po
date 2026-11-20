@@ -2206,7 +2206,7 @@ msgstr "Pasta"
 #: crates/tabletist-core/src/model.rs
 #, rust-format
 msgid "Format · {format}"
-msgstr "Formatar · {format}"
+msgstr "Formatação · {format}"
 
 #: crates/tabletist-core/src/model.rs src/ui/settings/sheet.rs
 msgid "General"
@@ -8830,7 +8830,7 @@ msgstr "Cursor, outros"
 #: src/ui/settings/terminal.rs
 #, rust-format
 msgid "Format · {format} in normal mode"
-msgstr "Formatar · {format} no modo normal"
+msgstr "Formatação · {format} no modo normal"
 
 #: src/ui/settings/terminal.rs
 msgid "Install and restart"
