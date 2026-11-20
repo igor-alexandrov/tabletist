@@ -6,7 +6,7 @@
 
 use egui::{Area, Id, Order, Rect, Ui, pos2, vec2};
 
-use crate::i18n::gettext;
+use crate::i18n::{Msgid, gettext, msgid};
 use crate::keymap::{Command, Layout, Scope, When};
 use crate::model::{Action, CopyAsMenu, CopyHow, CopyPick};
 use crate::typography::{Text, TextRole};
@@ -136,9 +136,9 @@ pub fn show(ctx: &egui::Context, paint: Paint, open: &CopyAsMenu, size: &str) ->
     let lit = open.lit.min(rows.len() - 1);
     // Over the row panel's row it is the row's.
     let name = if pick == CopyPick::CursorRow {
-        "Copy row as"
+        msgid("Copy row as")
     } else {
-        "Copy as"
+        msgid("Copy as")
     };
     let mut actions = Vec::new();
     let anchor = ctx
@@ -153,7 +153,7 @@ pub fn show(ctx: &egui::Context, paint: Paint, open: &CopyAsMenu, size: &str) ->
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                 ui.set_min_width(if look.terminal { 300.0 } else { 222.0 });
                 if look.terminal {
-                    let title = look.label(&gettext(locale, name));
+                    let title = look.label(&name.say(locale));
                     title_line(ui, paint, &title, size);
                 }
                 for (index, (how, letter)) in rows.iter().enumerate() {
@@ -185,7 +185,7 @@ pub fn show(ctx: &egui::Context, paint: Paint, open: &CopyAsMenu, size: &str) ->
                 }
             });
             let place = ui.min_rect();
-            widgets::announce(ui, place, &gettext(locale, name));
+            widgets::announce(ui, place, &name.say(locale));
         });
     if area.response.clicked_elsewhere() && actions.is_empty() {
         actions.push(Action::CloseDialog);
@@ -291,9 +291,9 @@ pub fn context_rows(ui: &mut Ui, paint: Paint, export: bool) -> Option<Chosen> {
     } = paint;
     let ctx = ui.ctx().clone();
     let mut chosen = None;
-    let label = |text: &'static str| look.label(&gettext(locale, text));
+    let label = |text: Msgid| look.label(&text.say(locale));
     let copy_key = crate::ui::keys::written_in(&ctx, &look, Command::CopyCells, Scope::Grid);
-    let copy = label("Copy");
+    let copy = label(msgid("Copy"));
     let mut item = menu::Item::action(&copy);
     if !look.terminal {
         item = item.detail(copy_key.as_str());
@@ -301,7 +301,7 @@ pub fn context_rows(ui: &mut Ui, paint: Paint, export: bool) -> Option<Chosen> {
     if item.show(ui, &look, &palette).clicked() {
         chosen = Some(Chosen::Copy);
     }
-    let copy_as = label("Copy as");
+    let copy_as = label(msgid("Copy as"));
     let button = menu::Item::action(&copy_as)
         .detail("›")
         .show(ui, &look, &palette);
@@ -323,7 +323,7 @@ pub fn context_rows(ui: &mut Ui, paint: Paint, export: bool) -> Option<Chosen> {
             }
         }
     });
-    let rows = label("Copy rows as TSV");
+    let rows = label(msgid("Copy rows as TSV"));
     let rows_key = crate::ui::keys::written_in(&ctx, &look, Command::CopyRow, Scope::Grid);
     let mut item = menu::Item::action(&rows);
     if !rows_key.as_str().is_empty() {
@@ -334,7 +334,7 @@ pub fn context_rows(ui: &mut Ui, paint: Paint, export: bool) -> Option<Chosen> {
     }
     if export {
         menu::separator(ui, &palette);
-        let words = label("Export selection…");
+        let words = label(msgid("Export selection…"));
         let key = crate::ui::keys::written_in(&ctx, &look, Command::Export, Scope::Grid);
         let mut item = menu::Item::action(&words);
         if !look.terminal && !key.as_str().is_empty() {

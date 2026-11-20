@@ -18,7 +18,7 @@ use tabletist_db::ObjectKind;
 use crate::app::{QuickHeading, QuickList, QuickRow};
 use crate::env::{Environment, Platform, env_colors};
 use crate::format::display_safe;
-use crate::i18n::{Locale, gettext};
+use crate::i18n::{Locale, Msgid, gettext, msgid, ngettext, pmsgid};
 use crate::keymap::{Command, Keymap, Layout, Scope, Written};
 use crate::model::{
     About, Action, AgentsHere, ConnTabId, Found, QuickCaret, QuickCommand, QuickGroup, QuickItem,
@@ -127,8 +127,8 @@ struct Skin<'a> {
 }
 
 impl Skin<'_> {
-    fn say(&self, text: &'static str) -> String {
-        self.look.label(&gettext(self.locale, text))
+    fn say(&self, text: Msgid) -> String {
+        self.look.label(&text.say(self.locale))
     }
 
     /// A window's connection as the chip and the headings name it: its
@@ -444,11 +444,18 @@ fn field(
         let mut said = if count == 0 {
             "0".to_owned()
         } else {
-            let words = if count == 1 { "match" } else { "matches" };
-            format!("{count} {}", skin.say(words))
+            let words = ngettext(skin.locale, "{count} match", "{count} matches", count);
+            skin.look
+                .label(&words.replace("{count}", &crate::i18n::number(skin.locale, count)))
         };
         if hidden > 0 {
-            said = format!("{said} · {hidden} {}", skin.say("hidden"));
+            let words = ngettext(skin.locale, "{n} hidden", "{n} hidden", hidden);
+            said = format!(
+                "{said} · {}",
+                skin.look
+                    .label(&words)
+                    .replace("{n}", &crate::i18n::number(skin.locale, hidden))
+            );
         }
         let text = Text::one(look, TextRole::OBody, &said, palette.dim);
         right -= widgets::paint_text_right(ui, right, y, text) + 10.0;
@@ -473,11 +480,11 @@ fn field(
     // What the field finds, and no more: tables, views and (macOS) the
     // commands. Omarchy's prompt shows no placeholder, as its board.
     let hint = if open.exporting {
-        skin.say("Pick a table to export")
+        skin.say(msgid("Pick a table to export"))
     } else if look.terminal {
-        skin.say("Find a table or view")
+        skin.say(msgid("Find a table or view"))
     } else {
-        skin.say("Find a table, view or command")
+        skin.say(msgid("Find a table, view or command"))
     };
     let placeholder = if look.terminal && !open.exporting {
         String::new()
@@ -537,7 +544,7 @@ fn chip(ui: &egui::Ui, (x, y): (f32, f32), everywhere: bool, skin: &Skin<'_>) ->
         .map_or(Environment::None, |window| window.env);
     let role = TextRole::Secondary;
     let (words, fill, border, ink, dot) = if everywhere {
-        let words = skin.say("All open connections");
+        let words = skin.say(msgid("All open connections"));
         let border = palette.accent.gamma_multiply(0.35);
         (words, palette.selection, border, palette.accent_hover, None)
     } else if env.is_production() {
@@ -620,9 +627,9 @@ struct Shown {
 
 fn kind_word(kind: ObjectKind, skin: &Skin<'_>) -> String {
     skin.say(match kind {
-        ObjectKind::Table => "table",
-        ObjectKind::View => "view",
-        ObjectKind::MaterializedView => "materialized view",
+        ObjectKind::Table => msgid("table"),
+        ObjectKind::View => msgid("view"),
+        ObjectKind::MaterializedView => msgid("materialized view"),
     })
 }
 
@@ -678,14 +685,11 @@ fn shown(item: &QuickItem, skin: &Skin<'_>) -> Shown {
             let (icon, detail) = match (&found.group, &found.kind) {
                 (Some(count), _) => (
                     Icon::ListTree,
-                    format!(
-                        "{} {}",
-                        crate::format::group_digits(*count as u64),
-                        skin.say("keys")
-                    ),
+                    crate::keyspace::keys_words(skin.locale, *count as u64),
                 ),
                 (None, Some(kind)) => (Icon::KeyRound, kind.tag().to_owned()),
-                (None, None) => (Icon::KeyRound, skin.say("key")),
+                // A key whose type is not read yet.
+                (None, None) => (Icon::KeyRound, skin.say(pmsgid("redis", "key"))),
             };
             let label = format!("{}, {detail}", display_safe(&name));
             Shown {
@@ -719,7 +723,8 @@ fn shown(item: &QuickItem, skin: &Skin<'_>) -> Shown {
                     kind,
                     opened,
                 }) => {
-                    let when = look.label(&crate::recents::when(*opened, skin.now, &zone));
+                    let when =
+                        look.label(&crate::recents::when(skin.locale, *opened, skin.now, &zone));
                     object_shown(object, *kind, Vec::new(), when, skin)
                 }
                 StartRow::Recent(StartRecent::Sql {
@@ -728,11 +733,12 @@ fn shown(item: &QuickItem, skin: &Skin<'_>) -> Shown {
                     opened,
                     ..
                 }) => {
-                    let when = look.label(&crate::recents::when(*opened, skin.now, &zone));
-                    let name = format!("{} {number}", skin.say("Query"));
-                    let editor = skin.say("SQL editor");
+                    let when =
+                        look.label(&crate::recents::when(skin.locale, *opened, skin.now, &zone));
+                    let name = format!("{} {number}", skin.say(msgid("Query")));
+                    let editor = skin.say(msgid("SQL editor"));
                     let detail = if look.terminal {
-                        skin.say("sql")
+                        skin.say(msgid("sql"))
                     } else {
                         comment.clone().unwrap_or_else(|| editor.clone())
                     };
@@ -771,18 +777,23 @@ fn shown(item: &QuickItem, skin: &Skin<'_>) -> Shown {
                         Command::Settings => Icon::Settings,
                         _ => Icon::SquareTerminal,
                     };
-                    (name, icon, about(&runnable.about, skin), "command")
+                    (name, icon, about(&runnable.about, skin), msgid("command"))
                 }
                 QuickCommand::Setting(option) => {
                     let name =
                         crate::app::setting_path(skin.locale, skin.run_key.as_str(), *option);
-                    let detail = skin.say("jumps to the setting");
-                    (name, Icon::Settings, detail, "setting")
+                    let detail = skin.say(msgid("jumps to the setting"));
+                    (name, Icon::Settings, detail, msgid("setting"))
                 }
                 // An export running (spec 4, F7).
                 QuickCommand::CancelExport { .. } => {
                     let name = crate::app::command_words(skin.locale, command);
-                    (name, Icon::X, skin.say("export running"), "command")
+                    (
+                        name,
+                        Icon::X,
+                        skin.say(msgid("export running")),
+                        msgid("command"),
+                    )
                 }
             };
             let mut label = format!("{name}, {}", skin.say(what));
@@ -802,21 +813,34 @@ fn shown(item: &QuickItem, skin: &Skin<'_>) -> Shown {
             }
         }
         QuickItem::More { group, hidden } => {
-            let name = match group {
-                QuickGroup::Tables if *hidden == 1 => skin.say("1 more table"),
-                QuickGroup::Tables => format!("{hidden} {}", skin.say("more tables")),
-                QuickGroup::Views if *hidden == 1 => skin.say("1 more view"),
-                QuickGroup::Views => format!("{hidden} {}", skin.say("more views")),
-                QuickGroup::Keys if *hidden == 1 => skin.say("1 more key"),
-                QuickGroup::Keys => format!("{hidden} {}", skin.say("more keys")),
-                QuickGroup::Commands if *hidden == 1 => skin.say("1 more command"),
-                QuickGroup::Commands => format!("{hidden} {}", skin.say("more commands")),
-                QuickGroup::Connection(tab) => format!(
-                    "{hidden} {} {}",
-                    skin.say("more in"),
-                    skin.window_name(*tab)
+            let locale = skin.locale;
+            let words = match group {
+                QuickGroup::Tables => {
+                    ngettext(locale, "{n} more table", "{n} more tables", *hidden)
+                }
+                QuickGroup::Views => ngettext(locale, "{n} more view", "{n} more views", *hidden),
+                QuickGroup::Keys => ngettext(locale, "{n} more key", "{n} more keys", *hidden),
+                QuickGroup::Commands => {
+                    ngettext(locale, "{n} more command", "{n} more commands", *hidden)
+                }
+                QuickGroup::Connection(_) => ngettext(
+                    locale,
+                    "{n} more in {window}",
+                    "{n} more in {window}",
+                    *hidden,
                 ),
             };
+            let window = match group {
+                QuickGroup::Connection(tab) => skin.window_name(*tab),
+                _ => String::new(),
+            };
+            let name = crate::i18n::fill(
+                &skin.look.label(&words),
+                &[
+                    ("{n}", &crate::i18n::number(locale, hidden)),
+                    ("{window}", &window),
+                ],
+            );
             Shown {
                 icon: Icon::Ellipsis,
                 label: name.clone(),
@@ -834,7 +858,7 @@ fn shown(item: &QuickItem, skin: &Skin<'_>) -> Shown {
 fn about(about: &About, skin: &Skin<'_>) -> String {
     match about {
         About::Nothing => String::new(),
-        About::OpensReadOnly => skin.say("opens read-only"),
+        About::OpensReadOnly => skin.say(msgid("opens read-only")),
         About::Connection => skin.window_name(skin.here),
         About::Agents => {
             let mut detail = skin.window_name(skin.here);
@@ -844,12 +868,12 @@ fn about(about: &About, skin: &Skin<'_>) -> String {
             detail
         }
         About::Tab(TabName::Object(name)) => display_safe(name).into_owned(),
-        About::Tab(TabName::Query(number)) => format!("{} {number}", skin.say("Query")),
-        About::Tab(TabName::Agents) => skin.say("Agents"),
-        About::Tab(TabName::History) => skin.say("History"),
-        About::CurrentTable(_) => skin.say("current table"),
-        About::CurrentResult(_) => skin.say("SQL editor"),
-        About::PickNext => skin.say("pick one next"),
+        About::Tab(TabName::Query(number)) => format!("{} {number}", skin.say(msgid("Query"))),
+        About::Tab(TabName::Agents) => skin.say(msgid("Agents")),
+        About::Tab(TabName::History) => skin.say(msgid("History")),
+        About::CurrentTable(_) => skin.say(msgid("current table")),
+        About::CurrentResult(_) => skin.say(msgid("SQL editor")),
+        About::PickNext => skin.say(msgid("pick one next")),
     }
 }
 
@@ -949,14 +973,14 @@ fn rows(
 /// production). A label, never a result.
 fn heading_row(ui: &mut egui::Ui, rect: Rect, title: QuickHeading, skin: &Skin<'_>) {
     let (look, palette) = (skin.look, skin.palette);
-    let words = |text: &'static str| gettext(skin.locale, text).into_owned();
+    let words = |text: Msgid| text.say(skin.locale).into_owned();
     let (text, env) = match title {
-        QuickHeading::Recent => (words("Recent"), Environment::None),
-        QuickHeading::Largest => (words("Largest tables"), Environment::None),
-        QuickHeading::Tables => (words("Tables"), Environment::None),
-        QuickHeading::Views => (words("Views"), Environment::None),
-        QuickHeading::Keys => (words("Keys"), Environment::None),
-        QuickHeading::Commands => (words("Commands"), Environment::None),
+        QuickHeading::Recent => (words(msgid("Recent")), Environment::None),
+        QuickHeading::Largest => (words(msgid("Largest tables")), Environment::None),
+        QuickHeading::Tables => (words(msgid("Tables")), Environment::None),
+        QuickHeading::Views => (words(msgid("Views")), Environment::None),
+        QuickHeading::Keys => (words(msgid("Keys")), Environment::None),
+        QuickHeading::Commands => (words(msgid("Commands")), Environment::None),
         QuickHeading::Connection(tab) => skin.windows.get(&tab).map_or_else(
             || (String::new(), Environment::None),
             |window| (display_safe(&window.name).into_owned(), window.env),
@@ -1253,21 +1277,21 @@ fn footer(ui: &mut egui::Ui, shown: Footer, keys: &Keys, skin: &Skin<'_>) {
         ui.painter().rect_filled(rect, corner, palette.panel);
     }
     widgets::hline(ui, rect.x_range(), rect.top() + 0.5, palette.outline);
-    let word = |text: &'static str| look.label(&gettext(locale, text));
+    let word = |text: Msgid| look.label(&text.say(locale));
     let scope = if everywhere {
-        word("This connection")
+        word(msgid("This connection"))
     } else {
-        word("All connections")
+        word(msgid("All connections"))
     };
     let (moves, open, editor, commands, pick, close) = (
-        word("move"),
-        word("open"),
-        word("in SQL editor"),
-        word("commands"),
-        word("pick"),
-        word("close"),
+        word(msgid("move")),
+        word(msgid("open")),
+        word(msgid("in SQL editor")),
+        word(msgid("commands")),
+        word(msgid("pick")),
+        word(msgid("close")),
     );
-    let export_words = word("export");
+    let export_words = word(msgid("export"));
     let open = if picking { &export_words } else { &open };
     let mut hints: Vec<widgets::Hint<'_>> =
         vec![(&keys.moves, &moves, true), (&keys.open, open, true)];
@@ -1275,8 +1299,8 @@ fn footer(ui: &mut egui::Ui, shown: Footer, keys: &Keys, skin: &Skin<'_>) {
         hints.push((&keys.editor, &editor, true));
     }
     let export = match look.terminal {
-        true => word("export the picked table"),
-        false => word("export"),
+        true => word(msgid("export the picked table")),
+        false => word(msgid("export")),
     };
     if on_table && !picking && !keys.export.as_str().is_empty() {
         hints.push((&keys.export, &export, true));

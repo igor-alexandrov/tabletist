@@ -10,7 +10,7 @@ use egui::{CornerRadius, Frame, Rect, Sense, Stroke, WidgetInfo, WidgetType, vec
 use tabletist_db::Driver;
 
 use crate::format::{NAME_MAX_CHARS, display_safe, for_display, one_line};
-use crate::i18n::{Locale, gettext};
+use crate::i18n::{Locale, Msgid, gettext, msgid};
 use crate::keymap::{Command, Keymap, Scope};
 use crate::labels::{self, Refused, Resolved, Source};
 use crate::model::{Action, ConnTabId, ObjectTab, Pane, Workspace};
@@ -77,12 +77,12 @@ pub fn label_words(
         (_, Source::KeysOnly) => {
             return (super::key_picker::nothing_text(table, look, locale), None);
         }
-        (Some(_), Source::Automatic) => "{column} · Automatic",
-        (Some(_), Source::User) => "{column} · Set by you",
-        (None, Source::Automatic) => "Keys only · Automatic",
-        (None, Source::User) => "Keys only · Set by you",
+        (Some(_), Source::Automatic) => msgid("{column} · Automatic"),
+        (Some(_), Source::User) => msgid("{column} · Set by you"),
+        (None, Source::Automatic) => msgid("Keys only · Automatic"),
+        (None, Source::User) => msgid("Keys only · Set by you"),
     };
-    let words = look.label(&gettext(locale, words));
+    let words = look.label(&words.say(locale));
     let Some((column, at)) = label.column.as_deref().zip(words.find("{column}")) else {
         return (words, None);
     };
@@ -120,6 +120,16 @@ const BUTTON: f32 = 26.0;
 /// table's comment wraps at it in every look.
 const HELP: f32 = 640.0;
 const NARROW: f32 = 240.0;
+
+/// The columns grid's titles; the last only where a column has a comment.
+const COLUMN_TITLES: &[Msgid] = &[
+    msgid("Name"),
+    msgid("Type"),
+    msgid("Nullable"),
+    msgid("Default"),
+    msgid("Key"),
+    msgid("Comment"),
+];
 
 /// The value tags' slot the label's tag is drawn in: their blue.
 const TAG: usize = 1;
@@ -312,12 +322,12 @@ fn label_part(
                 });
                 let (help, wrap) = if look.terminal {
                     (
-                        "Fields that point at {table} show and search the label column · on this computer only, nothing is written to the database",
+                        msgid("Fields that point at {table} show and search the label column · on this computer only, nothing is written to the database"),
                         HELP,
                     )
                 } else {
                     (
-                        "Fields that point at {table} show and search this column. On this computer only; nothing is written to the database.",
+                        msgid("Fields that point at {table} show and search this column. On this computer only; nothing is written to the database."),
                         room.max(NARROW),
                     )
                 };
@@ -328,7 +338,7 @@ fn label_part(
                     ui.spacing_mut().item_spacing.y = 2.0;
                 }
                 let help = look
-                    .label(&gettext(locale, help))
+                    .label(&help.say(locale))
                     .replace("{table}", &display_safe(table));
                 Text::one(look, small, &help, palette.secondary)
                     .wrap(wrap)
@@ -430,10 +440,13 @@ fn file_part(
     heading(ui, &gettext(locale, "File"), look, palette);
     let mono = crate::ui::grid::data_role(look);
     let rows = [
-        ("Path", tabletist_db::files::shown(&file.path)),
-        ("Size", tabletist_db::files::size_text(file.size)),
-        ("Format", file.format.label().to_owned()),
-        ("Read with", file.options.clone()),
+        (msgid("Path"), tabletist_db::files::shown(&file.path)),
+        (
+            msgid("Size"),
+            crate::i18n::numbers::files_size(locale, file.size),
+        ),
+        (msgid("Format"), file.format.label().to_owned()),
+        (msgid("Read with"), file.options.clone()),
     ];
     egui::Grid::new("structure-file")
         .spacing([16.0, 6.0])
@@ -442,7 +455,7 @@ fn file_part(
                 if value.is_empty() {
                     continue;
                 }
-                quiet(ui, &gettext(locale, name), look, palette);
+                quiet(ui, &name.say(locale), look, palette);
                 widgets::label(ui, mono, &value, palette.text, look);
                 ui.end_row();
             }
@@ -551,13 +564,13 @@ pub fn show(
                             .striped(true)
                             .spacing([16.0, 6.0])
                             .show(ui, |ui| {
-                                let titles: &[&str] = if comments {
-                                    &["Name", "Type", "Nullable", "Default", "Key", "Comment"]
+                                let titles = if comments {
+                                    COLUMN_TITLES
                                 } else {
-                                    &["Name", "Type", "Nullable", "Default", "Key"]
+                                    &COLUMN_TITLES[..5]
                                 };
                                 for title in titles {
-                                    quiet(ui, &gettext(locale, title), &look, &palette);
+                                    quiet(ui, &title.say(locale), &look, &palette);
                                 }
                                 ui.end_row();
                                 for (line, column) in structure.columns.iter().enumerate() {
@@ -740,8 +753,13 @@ pub fn show(
                                 .striped(true)
                                 .spacing([16.0, 6.0])
                                 .show(ui, |ui| {
-                                    for title in ["Name", "Columns", "Unique", "Method"] {
-                                        quiet(ui, &gettext(locale, title), &look, &palette);
+                                    for title in [
+                                        msgid("Name"),
+                                        msgid("Columns"),
+                                        msgid("Unique"),
+                                        msgid("Method"),
+                                    ] {
+                                        quiet(ui, &title.say(locale), &look, &palette);
                                     }
                                     ui.end_row();
                                     for index in &structure.indexes {
@@ -779,10 +797,14 @@ pub fn show(
                                 .striped(true)
                                 .spacing([16.0, 6.0])
                                 .show(ui, |ui| {
-                                    for title in
-                                        ["Name", "Columns", "References", "On update", "On delete"]
-                                    {
-                                        quiet(ui, &gettext(locale, title), &look, &palette);
+                                    for title in [
+                                        msgid("Name"),
+                                        msgid("Columns"),
+                                        msgid("References"),
+                                        msgid("On update"),
+                                        msgid("On delete"),
+                                    ] {
+                                        quiet(ui, &title.say(locale), &look, &palette);
                                     }
                                     ui.end_row();
                                     for key in &structure.foreign_keys {

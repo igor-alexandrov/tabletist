@@ -761,15 +761,21 @@ pub struct Browser {
 /// thousand. The larger, so Scan all's warning does not say too little.
 pub const BYTES_PER_KEY: u64 = 64;
 
+/// A Redis database's keys in words: "1,204 keys", "1 key", "empty".
+pub fn keys_words(locale: crate::i18n::Locale, keys: u64) -> String {
+    use crate::i18n::{gettext, ngettext};
+    match keys {
+        0 => gettext(locale, "empty").into_owned(),
+        keys => ngettext(locale, "{count} key", "{count} keys", keys)
+            .replace("{count}", &crate::i18n::number(locale, keys)),
+    }
+}
+
 /// The label of database `number` where its keys are known: its number
 /// and its keys ("0 · 1,204 keys", "2 · empty"), as the database menus
 /// list them.
-pub fn database_label(number: u32, keys: u64) -> String {
-    match keys {
-        0 => format!("{number} · empty"),
-        1 => format!("{number} · 1 key"),
-        keys => format!("{number} · {} keys", crate::format::group_digits(keys)),
-    }
+pub fn database_label(locale: crate::i18n::Locale, number: u32, keys: u64) -> String {
+    format!("{number} · {}", keys_words(locale, keys))
 }
 
 /// Why a Test of a Redis server failed, in words, with the server's own
@@ -779,19 +785,20 @@ pub fn test_failure(
     spec: &tabletist_db::ConnectSpec,
     locale: crate::i18n::Locale,
 ) -> String {
+    use crate::i18n::{Msgid, msgid};
     use tabletist_db::redis::{CLOSED_IN_HANDSHAKE, CONNECT_TIMEOUT, REFUSED, code};
-    let say = |text: &'static str| crate::i18n::gettext(locale, text).into_owned();
+    let say = |text: Msgid| text.say(locale).into_owned();
     let at = format!("{}:{}", spec.host, spec.port);
     match (error, code(error)) {
-        (Error::Auth(_), Some("WRONGPASS")) => say("Wrong username or password (WRONGPASS)"),
-        (Error::Auth(_), Some("NOAUTH")) => say("This server needs a password (NOAUTH)"),
-        (Error::Connect(said), _) if said == CLOSED_IN_HANDSHAKE => {
-            say("The server closed the connection. It may need TLS: turn on Use TLS.")
-        }
+        (Error::Auth(_), Some("WRONGPASS")) => say(msgid("Wrong username or password (WRONGPASS)")),
+        (Error::Auth(_), Some("NOAUTH")) => say(msgid("This server needs a password (NOAUTH)")),
+        (Error::Connect(said), _) if said == CLOSED_IN_HANDSHAKE => say(msgid(
+            "The server closed the connection. It may need TLS: turn on Use TLS.",
+        )),
         (Error::Connect(said), _) if said == REFUSED => {
-            say("Nothing is listening on {at} (connection refused)").replace("{at}", &at)
+            say(msgid("Nothing is listening on {at} (connection refused)")).replace("{at}", &at)
         }
-        (Error::Timeout, _) => say("No answer from {at} after {secs} s")
+        (Error::Timeout, _) => say(msgid("No answer from {at} after {secs} s"))
             .replace("{at}", &at)
             .replace("{secs}", &CONNECT_TIMEOUT.as_secs().to_string()),
         // The server's words already start with its code.
@@ -810,30 +817,27 @@ pub fn test_passed(
     took: Option<Duration>,
     locale: crate::i18n::Locale,
 ) -> Result<String, String> {
-    let say = |text: &'static str| crate::i18n::gettext(locale, text).into_owned();
+    use crate::i18n::{Msgid, msgid};
+    let say = |text: Msgid| text.say(locale).into_owned();
     if let Some(command) = &probe.refused {
         let _ = command;
-        return Err(say(
+        return Err(say(msgid(
             "Connected, but this user can't run INFO or SCAN, so keys can't be listed (NOPERM)",
-        ));
+        )));
     }
     let mut server = probe.server.label();
     if probe.server.compatible() {
-        server = format!("{server}, {}", say("Redis-compatible"));
+        server = format!("{server}, {}", say(msgid("Redis-compatible")));
     }
     let keys = probe.keys.unwrap_or_else(|| probe.keys_in(probe.database));
-    let keys = match keys {
-        0 => say("empty"),
-        1 => say("1 key"),
-        keys => format!("{} {}", crate::format::group_digits(keys), say("keys")),
-    };
+    let keys = keys_words(locale, keys);
     let mut text = format!(
         "{} · {server} · db {} · {keys}",
-        say("Connected"),
+        say(msgid("Connected")),
         probe.database
     );
     if let Some(took) = took {
-        text = format!("{text} · {}", crate::format::elapsed(took));
+        text = format!("{text} · {}", crate::format::elapsed(locale, took));
     }
     Ok(text)
 }

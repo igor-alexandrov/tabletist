@@ -8,7 +8,7 @@ use egui::{
 };
 use tabletist_db::redis::{KeyInfo, KeyType};
 
-use crate::i18n::{gettext, ngettext};
+use crate::i18n::{Msgid, gettext, msgid, ngettext};
 use crate::keymap::{Command, Keymap, Scope};
 use crate::keyspace::{Browser, KeyTab, Place, RedisAction, Row, ScanState, Shown, lossy};
 use crate::model::{Action, ConnTabId};
@@ -205,17 +205,13 @@ fn database_line(ui: &mut Ui, paint: Paint, browser: &Browser, full: Rect) {
 
 /// "1,204 keys", "1 key", "empty": a Redis database's keys.
 pub(crate) fn keys_words(keys: u64, locale: crate::i18n::Locale) -> String {
-    match keys {
-        0 => gettext(locale, "empty").into_owned(),
-        keys => ngettext(locale, "{count} key", "{count} keys", keys)
-            .replace("{count}", &crate::format::group_digits(keys)),
-    }
+    crate::keyspace::keys_words(locale, keys)
 }
 
 /// A group's count as the tree shows it: growing (`31+`) while the scan
 /// runs, from a sample (`≈13`) when it stopped short.
-fn count_words(count: usize, browser: &Browser) -> String {
-    let count = crate::format::group_digits(count as u64);
+fn count_words(count: usize, browser: &Browser, locale: crate::i18n::Locale) -> String {
+    let count = crate::i18n::number(locale, count);
     match browser.scan.state {
         ScanState::Running { .. } => format!("{count}+"),
         ScanState::Limited | ScanState::Stopped | ScanState::Failed(_) => format!("≈{count}"),
@@ -394,7 +390,7 @@ fn tree_row(
                 y,
                 Text::one(&look, mono, &name, palette.text),
             );
-            let counted = count_words(*count, browser);
+            let counted = count_words(*count, browser, locale);
             widgets::paint_text_right(
                 ui,
                 rect.right() - 8.0,
@@ -410,7 +406,7 @@ fn tree_row(
                 ),
                 &[
                     ("{name}", &name),
-                    ("{count}", &crate::format::group_digits(*count as u64)),
+                    ("{count}", &crate::i18n::number(locale, *count)),
                 ],
             );
             response.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, &said));
@@ -454,11 +450,8 @@ fn tree_row(
         }
         Row::More { prefix, left, .. } => {
             let x = rect.left() + 8.0 + indent + 16.0;
-            let said = format!(
-                "{} {}",
-                crate::format::group_digits(*left as u64),
-                gettext(locale, "more")
-            );
+            let said = ngettext(locale, "{n} more", "{n} more", *left)
+                .replace("{n}", &crate::i18n::number(locale, *left));
             let color = if response.hovered() {
                 palette.accent
             } else {
@@ -525,7 +518,7 @@ fn footer_of(
         palette,
         look,
     } = paint;
-    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let say = |text: Msgid| look.label(&text.say(locale));
     let height = footer_height(browser, &look);
     let rect = Rect::from_min_max(pos2(full.left(), full.bottom() - height), full.max);
     widgets::hline(ui, rect.x_range(), rect.top() + 0.5, palette.outline);
@@ -538,8 +531,8 @@ fn footer_of(
     let role = widgets::secondary(&look);
     let held = browser.tree.len() as u64;
     let total = browser.scan.total;
-    let of = |count: u64| crate::format::group_digits(count);
-    let took = crate::format::elapsed(browser.scan.took);
+    let of = |count: u64| crate::i18n::number(locale, count);
+    let took = crate::format::elapsed(locale, browser.scan.took);
     // "Scanned 300+ of 1,204 keys": whole phrases, so a language can put
     // the numbers where its words need them; the noun agrees with the
     // total, or with what is held while the total is not known.
@@ -552,7 +545,7 @@ fn footer_of(
     };
     let unknown = || "?".to_owned();
     let (said, button): (String, Option<(String, RedisAction)>) = match &browser.scan.state {
-        ScanState::Idle => (say("Scanning…"), None),
+        ScanState::Idle => (say(msgid("Scanning…")), None),
         ScanState::Running { .. } => (
             phrase(
                 ngettext(
@@ -563,7 +556,7 @@ fn footer_of(
                 ),
                 total.map_or_else(unknown, of),
             ),
-            Some((say("Stop"), RedisAction::Stop)),
+            Some((say(msgid("Stop")), RedisAction::Stop)),
         ),
         ScanState::Done => (
             format!(
@@ -600,13 +593,15 @@ fn footer_of(
                     "Showing groups from the first {held} of {total} keys",
                     count,
                 ),
-                total.map_or_else(unknown, crate::format::compact_count),
+                total.map_or_else(unknown, |total| {
+                    crate::i18n::numbers::compact_count(locale, total)
+                }),
             ),
-            Some((say("Scan all"), RedisAction::ScanAll)),
+            Some((say(msgid("Scan all")), RedisAction::ScanAll)),
         ),
         ScanState::Failed(error) => (
             error.to_string(),
-            Some((say("Reload"), RedisAction::Reload)),
+            Some((say(msgid("Reload")), RedisAction::Reload)),
         ),
     };
     let tooltip = gettext(
@@ -651,7 +646,7 @@ fn footer_of(
         widgets::label(
             ui,
             role,
-            &say("or filter with a pattern"),
+            &say(msgid("or filter with a pattern")),
             palette.dim,
             &look,
         );
@@ -663,10 +658,10 @@ fn footer_of(
             locale,
             "Scanning {keys} keys may take a while and hold about {size} in Tabletist.",
         )
-        .replace("{keys}", &crate::format::compact_count(keys))
+        .replace("{keys}", &crate::i18n::numbers::compact_count(locale, keys))
         .replace(
             "{size}",
-            &crate::format::human_size(usize::try_from(bytes).unwrap_or(usize::MAX)),
+            &crate::i18n::numbers::file_size(locale, usize::try_from(bytes).unwrap_or(usize::MAX)),
         );
         ui.add_space(6.0);
         Text::one(&look, role, &warning, palette.warning)
@@ -676,14 +671,14 @@ fn footer_of(
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            if ButtonSpec::new(&say("Scan all"))
+            if ButtonSpec::new(&say(msgid("Scan all")))
                 .primary()
                 .show(ui, 26.0, &look, &palette)
                 .clicked()
             {
                 actions.push(Action::Redis(tab, RedisAction::ConfirmScanAll(true)));
             }
-            if ButtonSpec::new(&say("Cancel"))
+            if ButtonSpec::new(&say(msgid("Cancel")))
                 .show(ui, 26.0, &look, &palette)
                 .clicked()
             {
@@ -809,29 +804,20 @@ fn main(ui: &mut Ui, paint: Paint, tab: ConnTabId, browser: &Browser, actions: &
 /// "6 fields · 412 B · listpack" and the expiry: what the header says
 /// under the key's name.
 fn facts(info: &KeyInfo, locale: crate::i18n::Locale) -> (String, String) {
-    let say = |text: &'static str| gettext(locale, text).into_owned();
+    let say = |text: Msgid| text.say(locale).into_owned();
     let mut parts = Vec::new();
     if let Some(length) = info.length {
-        let unit = match (&info.kind, length) {
-            (KeyType::Hash, 1) => say("field"),
-            (KeyType::Hash, _) => say("fields"),
-            (KeyType::List, 1) | (KeyType::Set, 1) => say("item"),
-            (KeyType::List, _) => say("items"),
-            (KeyType::Set, _) | (KeyType::ZSet, _) => say("members"),
-            (KeyType::Stream, 1) => say("entry"),
-            (KeyType::Stream, _) => say("entries"),
-            (KeyType::String, _) => "B".to_owned(),
-            (KeyType::Json | KeyType::Other(_) | KeyType::Missing, _) => String::new(),
-        };
         match info.kind {
-            KeyType::String => parts.push(crate::format::human_size(
+            KeyType::String => parts.push(crate::i18n::numbers::file_size(
+                locale,
                 usize::try_from(length).unwrap_or(usize::MAX),
             )),
-            _ => parts.push(format!("{} {unit}", crate::format::group_digits(length))),
+            _ => parts.extend(length_words(locale, Some(&info.kind), length)),
         }
     }
     if let Some(memory) = info.memory {
-        parts.push(crate::format::human_size(
+        parts.push(crate::i18n::numbers::file_size(
+            locale,
             usize::try_from(memory).unwrap_or(usize::MAX),
         ));
     }
@@ -839,7 +825,7 @@ fn facts(info: &KeyInfo, locale: crate::i18n::Locale) -> (String, String) {
         parts.push(encoding.clone());
     }
     let expiry = match info.ttl_ms {
-        None => say("No expiry"),
+        None => say(msgid("No expiry")),
         Some(ms) => {
             let seconds = (ms / 1000).max(0);
             let span = match seconds {
@@ -848,7 +834,7 @@ fn facts(info: &KeyInfo, locale: crate::i18n::Locale) -> (String, String) {
                 3600..=86_399 => format!("{} h", seconds / 3600),
                 _ => format!("{} d", seconds / 86_400),
             };
-            format!("{} {span}", say("Expires in"))
+            format!("{} {span}", say(msgid("Expires in")))
         }
     };
     (parts.join(" · "), expiry)
@@ -862,7 +848,7 @@ fn header(ui: &mut Ui, paint: Paint, tab: ConnTabId, open: &KeyTab, actions: &mu
         palette,
         look,
     } = paint;
-    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let say = |text: Msgid| look.label(&text.say(locale));
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 4.0;
@@ -892,7 +878,7 @@ fn header(ui: &mut Ui, paint: Paint, tab: ConnTabId, open: &KeyTab, actions: &mu
                 widgets::label(
                     ui,
                     widgets::secondary(&look),
-                    &say("Reading…"),
+                    &say(msgid("Reading…")),
                     palette.dim,
                     &look,
                 );
@@ -900,7 +886,7 @@ fn header(ui: &mut Ui, paint: Paint, tab: ConnTabId, open: &KeyTab, actions: &mu
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            if ButtonSpec::new(&say("Copy key"))
+            if ButtonSpec::new(&say(msgid("Copy key")))
                 .show(ui, 30.0, &look, &palette)
                 .clicked()
             {
@@ -908,7 +894,7 @@ fn header(ui: &mut Ui, paint: Paint, tab: ConnTabId, open: &KeyTab, actions: &mu
             }
             let can_copy = open.copied().is_some();
             ui.add_enabled_ui(can_copy, |ui| {
-                if ButtonSpec::new(&say("Copy value"))
+                if ButtonSpec::new(&say(msgid("Copy value")))
                     .show(ui, 30.0, &look, &palette)
                     .clicked()
                 {
@@ -927,7 +913,7 @@ fn value(ui: &mut Ui, paint: Paint, tab: ConnTabId, open: &KeyTab, actions: &mut
         palette,
         look,
     } = paint;
-    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let say = |text: Msgid| look.label(&text.say(locale));
     if let Some(error) = &open.error {
         let width = ui.available_width();
         Text::one(
@@ -1000,14 +986,17 @@ fn value(ui: &mut Ui, paint: Paint, tab: ConnTabId, open: &KeyTab, actions: &mut
         if open.next.is_some() {
             let total = open.info.value.as_ref().and_then(|info| info.length);
             let more = match total {
-                Some(total) => format!(
-                    "{} ({} {} {})",
-                    say("Load more"),
-                    crate::format::group_digits(open.rows.cells.len() as u64),
-                    say("of"),
-                    crate::format::group_digits(total)
+                Some(total) => crate::i18n::fill(
+                    &say(msgid("Load more ({shown} of {total})")),
+                    &[
+                        (
+                            "{shown}",
+                            &crate::i18n::number(locale, open.rows.cells.len()),
+                        ),
+                        ("{total}", &crate::i18n::number(locale, total)),
+                    ],
                 ),
-                None => say("Load more"),
+                None => say(msgid("Load more")),
             };
             let busy = open.loading.is_some();
             ui.add_enabled_ui(!busy, |ui| {
@@ -1025,22 +1014,31 @@ fn value(ui: &mut Ui, paint: Paint, tab: ConnTabId, open: &KeyTab, actions: &mut
 /// "HGETALL · 6 fields · 1 ms": how the value shown was read.
 fn read_line(open: &KeyTab, paint: Paint) -> Option<String> {
     let (command, took) = open.command?;
-    let say = |text: &'static str| gettext(paint.locale, text).into_owned();
     let rows = open.rows.cells.len() as u64;
-    let unit = match open.info.value.as_ref().map(|info| &info.kind) {
-        Some(KeyType::Hash) => say("fields"),
-        Some(KeyType::Stream) => say("entries"),
-        Some(KeyType::List | KeyType::Set | KeyType::ZSet) => say("items"),
-        Some(KeyType::String | KeyType::Json | KeyType::Other(_) | KeyType::Missing) | None => {
-            String::new()
-        }
-    };
+    let kind = open.info.value.as_ref().map(|info| &info.kind);
     let mut line = command.to_owned();
-    if !unit.is_empty() {
-        line = format!("{line} · {} {unit}", crate::format::group_digits(rows));
+    if let Some(length) = length_words(paint.locale, kind, rows) {
+        line = format!("{line} · {length}");
     }
-    line = format!("{line} · {}", crate::format::elapsed(took));
+    line = format!("{line} · {}", crate::format::elapsed(paint.locale, took));
     Some(paint.look.label(&line))
+}
+
+/// A collection's length with its noun, "6 fields", "1 entry": `None` for
+/// a string and the types whose length is no count of things.
+pub(super) fn length_words(
+    locale: crate::i18n::Locale,
+    kind: Option<&KeyType>,
+    length: u64,
+) -> Option<String> {
+    let words = match kind? {
+        KeyType::Hash => ngettext(locale, "{n} field", "{n} fields", length),
+        KeyType::List => ngettext(locale, "{n} item", "{n} items", length),
+        KeyType::Set | KeyType::ZSet => ngettext(locale, "{n} member", "{n} members", length),
+        KeyType::Stream => ngettext(locale, "{n} entry", "{n} entries", length),
+        KeyType::String | KeyType::Json | KeyType::Other(_) | KeyType::Missing => return None,
+    };
+    Some(words.replace("{n}", &crate::i18n::number(locale, length)))
 }
 
 /// The rows of a hash, list, set, sorted set or stream, under their

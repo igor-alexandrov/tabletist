@@ -19,7 +19,7 @@ use tabletist_db::{Driver, TlsMode};
 
 use crate::connections::PasswordMode;
 use crate::env::{EnvColors, Environment, Platform, env_colors};
-use crate::i18n::{Locale, gettext, ngettext};
+use crate::i18n::{Locale, Msgid, gettext, msgid, ngettext};
 use crate::keymap::{Command, Keymap, Scope};
 use crate::model::{
     Action, ConnectionForm, FilesKind, LoadedTables, SshAuthKind, SshHints, TestState,
@@ -33,23 +33,24 @@ use crate::ui::{Paint, menu};
 use sheet::{body, footer, header};
 use terminal::{terminal_body, terminal_footer, terminal_header, terminal_row};
 
-/// The TLS modes by their libpq names, as the picker says them.
-const TLS_MODES: [(TlsMode, &str); 5] = [
-    (TlsMode::Disable, "disable"),
-    (TlsMode::Prefer, "prefer"),
-    (TlsMode::Require, "require"),
-    (TlsMode::VerifyCa, "verify-ca"),
-    (TlsMode::VerifyFull, "verify-full"),
+/// The TLS modes by their libpq names, as the picker says them: the same
+/// in every language.
+const TLS_MODES: [(TlsMode, Msgid); 5] = [
+    (TlsMode::Disable, Msgid::as_is("disable")),
+    (TlsMode::Prefer, Msgid::as_is("prefer")),
+    (TlsMode::Require, Msgid::as_is("require")),
+    (TlsMode::VerifyCa, Msgid::as_is("verify-ca")),
+    (TlsMode::VerifyFull, Msgid::as_is("verify-full")),
 ];
 
 /// What the Type row says beside its choices: what a choice changes, and
 /// what the file types are.
-fn type_hint(driver: Driver) -> &'static str {
+fn type_hint(driver: Driver) -> Msgid {
     match driver {
-        Driver::Sqlite => "One database file on this computer",
-        Driver::Files => "Opens CSV, Parquet, JSON, Excel and .duckdb files as tables",
+        Driver::Sqlite => msgid("One database file on this computer"),
+        Driver::Files => msgid("Opens CSV, Parquet, JSON, Excel and .duckdb files as tables"),
         Driver::Postgres | Driver::MySql | Driver::BigQuery | Driver::Redis => {
-            "Changes the fields below"
+            msgid("Changes the fields below")
         }
     }
 }
@@ -72,14 +73,17 @@ fn read_only_fixed(form: &ConnectionForm) -> bool {
 }
 
 /// What a Files connection's read-only box says.
-const FILES_READ_ONLY_NOTE: &str = "Files open read-only.";
+const FILES_READ_ONLY_NOTE: Msgid = msgid("Files open read-only.");
 
 /// Why a Files connection's URL tab is off, as its tooltip says it.
-const NO_URL: &str = "Files connections have no URL. Choose a folder or files under Source.";
+const NO_URL: Msgid =
+    msgid("Files connections have no URL. Choose a folder or files under Source.");
 
-const INTERCEPT_WARNING: &str = "The password can be intercepted on the network. \
+const INTERCEPT_WARNING: Msgid = msgid(
+    "The password can be intercepted on the network. \
                                  To prevent it, verify the certificate and host, \
-                                 or use an SSH tunnel.";
+                                 or use an SSH tunnel.",
+);
 
 /// Where the dialog's top edge settled once it opened (see [`Placement`]).
 fn placement_id() -> egui::Id {
@@ -147,15 +151,15 @@ impl<'a> Skin<'a> {
     }
 
     /// `text` translated, in the look's case.
-    fn say(&self, text: &'static str) -> String {
-        self.look.label(&gettext(self.locale, text))
+    fn say(&self, text: Msgid) -> String {
+        self.look.label(&text.say(self.locale))
     }
 
     /// What a closed section's terminal heading ends with: the key that
     /// chooses, as the keymap has it, and "opens".
     fn opens(&self, ctx: &egui::Context) -> String {
         let key = crate::ui::keys::written(ctx, self.look, crate::keymap::Command::FormChoose);
-        format!("{key} {}", self.say("opens"))
+        format!("{key} {}", self.say(msgid("opens")))
     }
 
     /// `environment`'s colours in this look and palette.
@@ -233,29 +237,29 @@ impl<'a> Skin<'a> {
 
     /// Where saved passwords go, as this platform calls it
     /// ([`Look::keychain`]).
-    fn keyring(&self) -> &'static str {
+    fn keyring(&self) -> Msgid {
         if self.look.keychain(crate::update::release::Os::current()) {
-            "Keychain"
+            msgid("Keychain")
         } else {
-            "Keyring"
+            msgid("Keyring")
         }
     }
 
     /// The name of the box that keeps the SSH secret: the database
     /// password's has the same text beside it.
-    fn ssh_keyring(&self) -> &'static str {
+    fn ssh_keyring(&self) -> Msgid {
         if self.look.keychain(crate::update::release::Os::current()) {
-            "Keychain for the SSH secret"
+            msgid("Keychain for the SSH secret")
         } else {
-            "Keyring for the SSH secret"
+            msgid("Keyring for the SSH secret")
         }
     }
 
-    fn saved_hint(&self) -> &'static str {
+    fn saved_hint(&self) -> Msgid {
         if self.look.keychain(crate::update::release::Os::current()) {
-            "Saved in the keychain"
+            msgid("Saved in the keychain")
         } else {
-            "Saved in the keyring"
+            msgid("Saved in the keyring")
         }
     }
 
@@ -635,11 +639,11 @@ fn style_controls(ui: &mut Ui, skin: &Skin) {
     ui.spacing_mut().interact_size.y = skin.field_height();
 }
 
-fn title(form: &ConnectionForm) -> &'static str {
+fn title(form: &ConnectionForm) -> Msgid {
     if form.editing.is_some() {
-        "Edit connection"
+        msgid("Edit connection")
     } else {
-        "New connection"
+        msgid("New connection")
     }
 }
 
@@ -654,7 +658,8 @@ fn subtitle(form: &ConnectionForm, skin: &Skin) -> String {
     }
     if skin.environment != Environment::None {
         // As its badge says it on the sheet, in the look's case.
-        parts.push(skin.say(skin.environment.label(Platform::Native)));
+        // The environment's name stays English in every language.
+        parts.push(skin.look.label(skin.environment.label(Platform::Native)));
     }
     if parts.is_empty() {
         parts.push(skin.look.label(form.driver.label()));
@@ -784,13 +789,13 @@ fn side_gap(skin: &Skin) -> f32 {
 fn field_with_button(
     ui: &mut Ui,
     button: &str,
-    name: &'static str,
+    name: Msgid,
     skin: &Skin,
     field: impl FnOnce(&mut Ui) -> Response,
 ) -> (Response, bool) {
     let Skin { look, palette, .. } = *skin;
     let height = skin.field_height();
-    let name = gettext(skin.locale, name);
+    let name = name.say(skin.locale);
     let spec = || side_button(button, &name, skin);
     let gap = side_gap(skin);
     let width = spec().width(ui, look);
@@ -818,8 +823,8 @@ fn field_with_button(
 /// Names `response` for screen readers, where no label beside it does.
 /// Only the name is set: the node keeps the role and the state egui gave
 /// it, so a password field stays one and a check box keeps its mark.
-fn named(response: &Response, name: &'static str, skin: &Skin) {
-    let name = gettext(skin.locale, name);
+fn named(response: &Response, name: Msgid, skin: &Skin) {
+    let name = name.say(skin.locale);
     response
         .ctx
         .accesskit_node_builder(response.id, |node| node.set_label(&*name));
@@ -870,10 +875,10 @@ fn set_keeps(mode: &mut PasswordMode, keep: bool) {
 fn file_field(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut Vec<Action>) {
     let role = skin.value_role();
     let height = skin.field_height();
-    let choose = skin.say("Choose…");
+    let choose = skin.say(msgid("Choose…"));
     let mut pick = |ui: &mut Ui, label: egui::Id| {
         let (field, clicked) =
-            field_with_button(ui, &choose, "Choose a database file", skin, |ui| {
+            field_with_button(ui, &choose, msgid("Choose a database file"), skin, |ui| {
                 ui.add(input(ui, &mut form.sqlite_path, role, height, skin))
             });
         field.labelled_by(label);
@@ -882,14 +887,14 @@ fn file_field(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut
         }
     };
     if skin.look.terminal {
-        terminal_row(ui, &skin.say("File"), skin, |ui, label| {
+        terminal_row(ui, &skin.say(msgid("File")), skin, |ui, label| {
             pick(ui, label);
         });
     } else {
         let label = widgets::label(
             ui,
             TextRole::Secondary,
-            &skin.say("File"),
+            &skin.say(msgid("File")),
             skin.palette.secondary,
             skin.look,
         );
@@ -909,12 +914,12 @@ fn uses_ca_file(mode: TlsMode) -> bool {
 
 /// What an empty CA file means in each mode. verify-ca refuses the system
 /// roots: they vouch for any public certificate.
-fn ca_hint(mode: TlsMode) -> &'static str {
+fn ca_hint(mode: TlsMode) -> Msgid {
     match mode {
-        TlsMode::Require => "None (not checked)",
-        TlsMode::VerifyCa => "Required",
-        TlsMode::VerifyFull => "System certificates",
-        TlsMode::Disable | TlsMode::Prefer => "Not used",
+        TlsMode::Require => msgid("None (not checked)"),
+        TlsMode::VerifyCa => msgid("Required"),
+        TlsMode::VerifyFull => msgid("System certificates"),
+        TlsMode::Disable | TlsMode::Prefer => msgid("Not used"),
     }
 }
 
@@ -933,8 +938,8 @@ fn ca_field(
     ui.add_enabled_ui(uses_ca_file(form.tls), |ui| {
         let (field, clicked) = field_with_button(
             ui,
-            &skin.say("Choose…"),
-            "Choose a CA certificate",
+            &skin.say(msgid("Choose…")),
+            msgid("Choose a CA certificate"),
             skin,
             |ui| {
                 let hint = hint(ui, &placeholder, role, skin);
@@ -950,16 +955,16 @@ fn ca_field(
 
 /// The warning under the TLS mode when it leaves the password readable.
 fn intercept_warning(ui: &mut Ui, skin: &Skin) {
-    let text = gettext(skin.locale, INTERCEPT_WARNING);
+    let text = INTERCEPT_WARNING.say(skin.locale);
     note(ui, &text, skin.palette.warning, skin);
 }
 
 /// What the SSH secret is, for the chosen login.
-fn ssh_secret_name(auth: SshAuthKind) -> &'static str {
+fn ssh_secret_name(auth: SshAuthKind) -> Msgid {
     if auth == SshAuthKind::Password {
-        "SSH password"
+        msgid("SSH password")
     } else {
-        "Passphrase"
+        msgid("Passphrase")
     }
 }
 
@@ -1061,12 +1066,16 @@ fn ssh_host_note(hints: &SshHints, skin: &Skin) -> Option<(String, Color32)> {
     // Whole sentences, so a translation can put the host and the hops where
     // its language wants them.
     let sentence = match (&hints.host_name, &hints.proxy) {
-        (Some(_), Some(Proxy::Jump(_))) => "{name} through ProxyJump {hops} from ~/.ssh/config",
-        (Some(_), Some(Proxy::Command(_))) => "{name} through a ProxyCommand from ~/.ssh/config",
-        (None, Some(Proxy::Jump(_))) => "Through ProxyJump {hops} from ~/.ssh/config",
-        (None, Some(Proxy::Command(_))) => "Through a ProxyCommand from ~/.ssh/config",
+        (Some(_), Some(Proxy::Jump(_))) => {
+            msgid("{name} through ProxyJump {hops} from ~/.ssh/config")
+        }
+        (Some(_), Some(Proxy::Command(_))) => {
+            msgid("{name} through a ProxyCommand from ~/.ssh/config")
+        }
+        (None, Some(Proxy::Jump(_))) => msgid("Through ProxyJump {hops} from ~/.ssh/config"),
+        (None, Some(Proxy::Command(_))) => msgid("Through a ProxyCommand from ~/.ssh/config"),
         (Some(name), Some(Proxy::Off) | None) => {
-            let text = format!("{name} {}", gettext(locale, "from ~/.ssh/config"));
+            let text = gettext(locale, "{name} from ~/.ssh/config").replace("{name}", name);
             return Some((text, skin.palette.dim));
         }
         (None, Some(Proxy::Off) | None) => return None,
@@ -1076,10 +1085,7 @@ fn ssh_host_note(hints: &SshHints, skin: &Skin) -> Option<(String, Color32)> {
         _ => "",
     };
     let name = hints.host_name.as_deref().unwrap_or("");
-    let text = crate::i18n::fill(
-        &gettext(locale, sentence),
-        &[("{hops}", hops), ("{name}", name)],
-    );
+    let text = crate::i18n::fill(&sentence.say(locale), &[("{hops}", hops), ("{name}", name)]);
     Some((text, skin.palette.dim))
 }
 
@@ -1326,7 +1332,7 @@ impl Messages {
                 // long the text above it is.
                 if self.untrusted {
                     ui.add_space(Self::GAP);
-                    let trust = skin.say("Trust and test");
+                    let trust = skin.say(msgid("Trust and test"));
                     if ButtonSpec::new(&trust)
                         .label(&gettext(skin.locale, "Trust and test"))
                         .show(ui, skin.field_height(), look, palette)
@@ -1350,7 +1356,7 @@ enum Status {
 
 fn status(form: &ConnectionForm, skin: &Skin) -> Option<Status> {
     match form.test {
-        TestState::Running(_) => Some(Status::Running(skin.say("Testing…"))),
+        TestState::Running(_) => Some(Status::Running(skin.say(msgid("Testing…")))),
         TestState::Passed if form.redis_probe.is_some() => {
             let probe = form.redis_probe.as_ref()?;
             Some(
@@ -1384,12 +1390,12 @@ fn status(form: &ConnectionForm, skin: &Skin) -> Option<Status> {
                     "Read {n} files · {size}",
                     read.files,
                 )
-                .replace("{n}", &read.files.to_string())
+                .replace("{n}", &crate::i18n::number(skin.locale, read.files))
                 .replace("{size}", &tabletist_db::files::size_text(read.bytes)),
                 None => format!("{} · {}", gettext(skin.locale, "Connected"), driver.label()),
             };
             if let Some(took) = form.test_took {
-                text = format!("{text} · {}", crate::format::elapsed(took));
+                text = format!("{text} · {}", crate::format::elapsed(skin.locale, took));
             }
             Some(Status::Passed(skin.look.label(&text)))
         }

@@ -384,6 +384,8 @@ impl App {
         request: RequestId,
         answer: RedisAnswer,
     ) {
+        // The database menu's words, in the window's language.
+        let locale = self.locale;
         let Some(tab) = self.tab_for_session(session) else {
             return;
         };
@@ -401,7 +403,7 @@ impl App {
                 // The menu of databases, with their keys.
                 let labels = browser.probe.value.as_ref().map(|probe| {
                     (0..probe.databases.max(1))
-                        .map(|number| database_label(number, probe.keys_in(number)))
+                        .map(|number| database_label(locale, number, probe.keys_in(number)))
                         .collect::<Vec<_>>()
                 });
                 let version = browser
@@ -515,13 +517,17 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::Locale;
 
     #[test]
     fn the_database_menu_names_each_with_its_keys() {
-        assert_eq!(database_label(0, 1204), "0 · 1,204 keys");
-        assert_eq!(database_label(2, 0), "2 · empty");
-        assert_eq!(database_label(3, 1), "3 · 1 key");
-        assert_eq!(database_of(&database_label(12, 4)), Some(12));
+        assert_eq!(database_label(Locale::English, 0, 1204), "0 · 1,204 keys");
+        assert_eq!(database_label(Locale::English, 2, 0), "2 · empty");
+        assert_eq!(database_label(Locale::English, 3, 1), "3 · 1 key");
+        assert_eq!(
+            database_of(&database_label(Locale::English, 12, 4)),
+            Some(12)
+        );
         assert_eq!(database_of("x"), None);
     }
 }

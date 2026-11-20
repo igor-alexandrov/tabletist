@@ -236,12 +236,15 @@ pub struct Attachment {
     pub filename: String,
     /// `image/jpeg · 103 × 102 · 5.9 KB · store`.
     pub details: String,
+    /// Its dimensions and size alone, `103 × 102 · 5.9 KB`: what the
+    /// terminal look's card shows, whatever words the size is said in.
+    pub measures: String,
     pub image: bool,
 }
 
 /// The file `doc` describes, when it names one: a `filename` at its top
-/// level or in its `metadata`.
-pub fn attachment(doc: &Doc) -> Option<Attachment> {
+/// level or in its `metadata`. Its size is said in `locale`.
+pub fn attachment(doc: &Doc, locale: crate::i18n::Locale) -> Option<Attachment> {
     let Json::Object(entries) = &doc.root else {
         return None;
     };
@@ -262,25 +265,26 @@ pub fn attachment(doc: &Doc) -> Option<Attachment> {
     };
     let filename = text(get(metadata, "filename"))?;
     let mime = text(get(metadata, "mime_type").or_else(|| get(metadata, "content_type")));
-    let mut details = Vec::new();
-    if let Some(mime) = &mime {
-        details.push(mime.clone());
-    }
+    let mut measures = Vec::new();
     if let (Some(width), Some(height)) =
         (text(get(metadata, "width")), text(get(metadata, "height")))
     {
-        details.push(format!("{width} × {height}"));
+        measures.push(format!("{width} × {height}"));
     }
     if let Some(size) = text(get(metadata, "size")).and_then(|size| size.parse::<usize>().ok()) {
-        details.push(crate::format::human_size(size));
+        measures.push(crate::i18n::numbers::file_size(locale, size));
     }
-    if let Some(storage) = text(get(entries, "storage")) {
-        details.push(storage);
-    }
+    let details: Vec<String> = mime
+        .iter()
+        .cloned()
+        .chain(measures.iter().cloned())
+        .chain(text(get(entries, "storage")))
+        .collect();
     Some(Attachment {
         image: mime.is_some_and(|mime| mime.starts_with("image/")),
         filename,
         details: details.join(" · "),
+        measures: measures.join(" · "),
     })
 }
 
@@ -451,14 +455,22 @@ impl View<'_> {
             self.push(&mut job, key, self.keys);
             self.push(&mut job, ": ", self.palette.text);
         }
-        let (open_bracket, close_bracket, count, noun) = match value {
+        let (open_bracket, close_bracket, noun) = match value {
             Json::Array(items) if !items.is_empty() => {
                 let count = items.len();
-                ("[", "]", count, self.noun(count, "item", "items"))
+                (
+                    "[",
+                    "]",
+                    self.with_count(ngettext(self.locale, "{n} item", "{n} items", count), count),
+                )
             }
             Json::Object(entries) if !entries.is_empty() => {
                 let count = entries.len();
-                ("{", "}", count, self.noun(count, "key", "keys"))
+                (
+                    "{",
+                    "}",
+                    self.with_count(ngettext(self.locale, "{n} key", "{n} keys", count), count),
+                )
             }
             leaf => {
                 let (text, color) = match leaf {
@@ -484,14 +496,18 @@ impl View<'_> {
         self.push(&mut job, open_bracket, self.palette.text);
         if !open {
             self.folded += 1;
-            self.push(&mut job, &format!(" {count} {noun} "), self.palette.dim);
+            self.push(&mut job, &format!(" {noun} "), self.palette.dim);
             self.push(&mut job, close_bracket, self.palette.text);
             if comma {
                 self.push(&mut job, ",", self.palette.text);
             }
         }
-        let verb = if open { "Collapse" } else { "Expand" };
-        let toggle = format!("{} {name}", gettext(self.locale, verb));
+        let verb = if open {
+            gettext(self.locale, "Collapse {name}")
+        } else {
+            gettext(self.locale, "Expand {name}")
+        };
+        let toggle = crate::i18n::fill(&verb, &[("{name}", name)]);
         if self.row(ui, depth, Some((open, &toggle, id)), job) {
             ui.data_mut(|data| data.insert_temp(id, !open));
         }
@@ -532,8 +548,9 @@ impl View<'_> {
         }
     }
 
-    fn noun(&self, count: usize, one: &'static str, many: &'static str) -> String {
-        ngettext(self.locale, one, many, count).into_owned()
+    /// `phrase` with its `{n}` put in: "3 items".
+    fn with_count(&self, phrase: std::borrow::Cow<'static, str>, count: usize) -> String {
+        phrase.replace("{n}", &crate::i18n::number(self.locale, count))
     }
 
     /// The next line's text, empty.
@@ -675,15 +692,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            attachment(&doc),
+            attachment(&doc, crate::i18n::Locale::English),
             Some(Attachment {
                 filename: "gold.jpg".into(),
                 details: "image/jpeg · 103 × 102 · 5.9 KB · store".into(),
+                measures: "103 × 102 · 5.9 KB".into(),
                 image: true,
             })
         );
+        // In Russian the size's unit is not a B, and the card still has it.
+        let russian = attachment(&doc, crate::i18n::Locale::Russian).unwrap();
+        assert_eq!(russian.measures, "103 × 102 · 5,9 КБ");
         assert_eq!(summary(&doc), (3, vec!["a/b.jpg".into(), "store".into()]));
-        assert_eq!(attachment(&parse(r#"{"plan": "pro"}"#).unwrap()), None);
+        assert_eq!(
+            attachment(
+                &parse(r#"{"plan": "pro"}"#).unwrap(),
+                crate::i18n::Locale::English
+            ),
+            None
+        );
     }
 
     #[test]

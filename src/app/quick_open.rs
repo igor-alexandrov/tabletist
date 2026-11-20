@@ -210,10 +210,10 @@ fn name_of(locale: crate::i18n::Locale, run: &str, command: &QuickCommand) -> St
         QuickCommand::Setting(option) => setting_path(locale, run, *option),
         QuickCommand::CancelExport { name, copying, .. } => {
             let words = match copying {
-                true => "Cancel copying {name}",
-                false => "Cancel exporting {name}",
+                true => crate::i18n::msgid("Cancel copying {name}"),
+                false => crate::i18n::msgid("Cancel exporting {name}"),
             };
-            crate::i18n::gettext(locale, words).replace("{name}", name)
+            words.say(locale).replace("{name}", name)
         }
     }
 }

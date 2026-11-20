@@ -600,44 +600,34 @@ impl Exporting {
 pub fn left_words(seconds: f64, locale: Locale) -> String {
     if seconds < 60.0 {
         let five = ((seconds / 5.0).round() * 5.0).max(5.0) as u64;
-        gettext(locale, "about {n} s left").replace("{n}", &five.to_string())
+        gettext(locale, "about {n} s left").replace("{n}", &crate::i18n::number(locale, five))
     } else {
         let minutes = (seconds / 60.0).round() as u64;
-        gettext(locale, "about {n} min left").replace("{n}", &minutes.to_string())
+        gettext(locale, "about {n} min left").replace("{n}", &crate::i18n::number(locale, minutes))
     }
 }
 
 /// A size as the toasts say it: "7.8 MB", "312 KB", "640 bytes".
 pub fn size_words(bytes: u64, locale: Locale) -> String {
-    const KB: f64 = 1_000.0;
-    const MB: f64 = 1_000_000.0;
-    const GB: f64 = 1_000_000_000.0;
-    let bytes_f = bytes as f64;
-    if bytes_f >= GB {
-        format!("{:.1} GB", bytes_f / GB)
-    } else if bytes_f >= MB {
-        format!("{:.1} MB", bytes_f / MB)
-    } else if bytes_f >= KB {
-        format!("{:.0} KB", bytes_f / KB)
-    } else {
-        ngettext(locale, "{n} byte", "{n} bytes", bytes).replace("{n}", &bytes.to_string())
-    }
+    crate::i18n::numbers::decimal_size(locale, bytes).unwrap_or_else(|| {
+        ngettext(locale, "{n} byte", "{n} bytes", bytes)
+            .replace("{n}", &crate::i18n::number(locale, bytes))
+    })
 }
 
 /// A time as the toasts say it: "18 s", "2 min 5 s".
-pub fn took_words(took: Duration) -> String {
+pub fn took_words(took: Duration, locale: Locale) -> String {
     let seconds = took.as_secs();
     match seconds {
         // "after 60 s", as the boards write a minute.
-        0..120 => format!("{seconds} s"),
-        _ if seconds.is_multiple_of(60) => format!("{} min", seconds / 60),
-        _ => format!("{} min {} s", seconds / 60, seconds % 60),
+        0..120 => crate::i18n::numbers::seconds(locale, seconds as f64, false),
+        _ => crate::i18n::numbers::minutes(locale, seconds),
     }
 }
 
 /// A count as the sheet and the toasts write it: "31,400", "≈ 31,400".
-pub fn count_words(count: Count) -> String {
-    let rows = crate::format::group_digits(count.rows);
+pub fn count_words(count: Count, locale: Locale) -> String {
+    let rows = crate::i18n::number(locale, count.rows);
     match count.exact {
         true => rows,
         false => format!("≈ {rows}"),
@@ -646,11 +636,11 @@ pub fn count_words(count: Count) -> String {
 
 /// The rows, of the total where it is known: "18,200 of ≈ 31,400 rows".
 pub fn of_total(rows: u64, total: Option<Count>, locale: Locale) -> String {
-    let done = crate::format::group_digits(rows);
+    let done = crate::i18n::number(locale, rows);
     match total {
         Some(total) => gettext(locale, "{done} of {total} rows")
             .replace("{done}", &done)
-            .replace("{total}", &count_words(total)),
+            .replace("{total}", &count_words(total, locale)),
         None => ngettext(locale, "{n} row", "{n} rows", rows).replace("{n}", &done),
     }
 }
@@ -701,7 +691,7 @@ pub fn failure_words(
                 locale,
                 "The server stopped the query after {time} (statement_timeout on {connection}).",
             )
-            .replace("{time}", &took_words(*after))
+            .replace("{time}", &took_words(*after, locale))
             .replace("{connection}", &exporting.connection),
             Some(gettext(locale, "Review SQL").into_owned()),
         ),
@@ -744,7 +734,12 @@ fn written_of(bytes: u64, exporting: &Exporting, locale: Locale) -> String {
             let unit = shown.rsplit(' ').next().unwrap_or_default().to_owned();
             let part = size_words(bytes, locale);
             let part = part.strip_suffix(&format!(" {unit}")).unwrap_or(&part);
-            format!("{part} of ≈ {shown}")
+            crate::i18n::fill(
+                // Translators: what a failed export wrote, of about how much
+                // it would have: "2.1 of ≈ 7.8 MB".
+                &gettext(locale, "{part} of ≈ {shown}"),
+                &[("{part}", part), ("{shown}", &shown)],
+            )
         }
         _ => size_words(bytes, locale),
     }
@@ -784,7 +779,7 @@ pub fn failure_line(
             locale,
             "✗ server stopped the query after {time} (statement_timeout) · :export review sql",
         )
-        .replace("{time}", &took_words(*after)),
+        .replace("{time}", &took_words(*after, locale)),
         ExportFailure::Exists { path } => {
             gettext(locale, "! {path} exists · :w! to replace, or another name")
                 .replace("{path}", &shown_path(path, home))
@@ -1112,8 +1107,11 @@ mod tests {
         assert_eq!(size_words(7_800_000, en), "7.8 MB");
         assert_eq!(size_words(312_400, en), "312 KB");
         assert_eq!(size_words(640, en), "640 bytes");
-        assert_eq!(took_words(Duration::from_secs(18)), "18 s");
-        assert_eq!(took_words(Duration::from_secs(125)), "2 min 5 s");
+        assert_eq!(took_words(Duration::from_secs(18), Locale::English), "18 s");
+        assert_eq!(
+            took_words(Duration::from_secs(125), Locale::English),
+            "2 min 5 s"
+        );
         assert_eq!(left_words(19.0, en), "about 20 s left");
         assert_eq!(left_words(130.0, en), "about 2 min left");
         let estimate = Count {

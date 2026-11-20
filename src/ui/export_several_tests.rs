@@ -173,7 +173,10 @@ fn two_exports_run_and_cancel_alone() {
     click_nth(&mut harness, "Cancel", 0);
     assert_eq!(cancels(&harness), [one]);
     tell(&mut harness, one, ExportState::Cancelled);
-    assert!(painted(&harness, crate::ui::export_toast::CANCELLED));
+    assert!(painted(
+        &harness,
+        crate::ui::export_toast::CANCELLED.english()
+    ));
     assert!(
         painted(&harness, "Exporting events.jsonl"),
         "the other runs"

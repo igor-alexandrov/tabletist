@@ -785,104 +785,17 @@ pub fn binary_label(type_name: &str, bytes: usize, terminal: bool) -> String {
     }
 }
 
-/// [`human_size`] as the terminal writes it: `0B`, `48.2K`, `2.1M`.
+/// [`human_size`] as the terminal writes it: `0B`, `48.2K`, `2.1M`. The
+/// grid's words, which stay English; the interface says a size with
+/// [`crate::i18n::numbers::terse_size`].
 pub fn terse_size(bytes: usize) -> String {
-    human_size(bytes)
-        .replace(" KB", "K")
-        .replace(" MB", "M")
-        .replace(" B", "B")
+    crate::i18n::numbers::terse_size(crate::i18n::Locale::English, bytes)
 }
 
+/// `512 B`, `2.0 KB`, `5.0 MB`: the grid's words, which stay English; the
+/// interface says a size with [`crate::i18n::numbers::file_size`].
 pub fn human_size(bytes: usize) -> String {
-    const KB: f64 = 1024.0;
-    let size = bytes as f64;
-    if size < KB {
-        format!("{bytes} B")
-    } else if size < KB * KB {
-        format!("{:.1} KB", size / KB)
-    } else {
-        format!("{:.1} MB", size / (KB * KB))
-    }
-}
-
-/// `1.2K`, `3.4M`, `7B`, dropping a trailing `.0`.
-pub fn compact_count(n: u64) -> String {
-    let (value, suffix) = match n {
-        0..=999 => return n.to_string(),
-        1_000..=999_999 => (n as f64 / 1e3, "K"),
-        1_000_000..=999_999_999 => (n as f64 / 1e6, "M"),
-        _ => (n as f64 / 1e9, "B"),
-    };
-    // Round half away from zero first: `{:.1}` alone rounds 1.25 to 1.2.
-    let text = format!("{:.1}", (value * 10.0).round() / 10.0);
-    format!("{}{suffix}", text.trim_end_matches(".0"))
-}
-
-/// `1–300 of ~1.2M`, or `None` when the page is empty.
-pub fn range_label(
-    offset: u64,
-    shown: usize,
-    has_more: bool,
-    estimate: Option<u64>,
-    exact: Option<u64>,
-) -> Option<String> {
-    if shown == 0 {
-        return None;
-    }
-    let first = offset + 1;
-    let last = offset + shown as u64;
-    let total = if let Some(exact) = exact {
-        format!(" of {}", group_digits(exact))
-    } else if !has_more {
-        format!(" of {last}")
-    } else if let Some(estimate) = estimate.filter(|estimate| *estimate >= last) {
-        format!(" of ~{}", compact_count(estimate))
-    } else {
-        String::new()
-    };
-    Some(format!("{first}–{last}{total}"))
-}
-
-/// `1234567` as `1,234,567`.
-pub fn group_digits(number: u64) -> String {
-    grouped(&number.to_string())
-}
-
-/// A run of digits with a comma between every three, counted from the end.
-fn grouped(digits: &str) -> String {
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(digit);
-    }
-    out
-}
-
-/// A plain decimal number with its integer digits in threes: `1240.50` as
-/// `1,240.50`. Anything else (an exponent, `NaN`, a currency sign) comes
-/// back as it is, and so does a number with nothing to group. The fraction
-/// is never touched.
-pub fn group_number(text: &str) -> Cow<'_, str> {
-    let (sign, rest) = match text.strip_prefix('-') {
-        Some(rest) => ("-", rest),
-        None => ("", text),
-    };
-    let (whole, fraction) = match rest.split_once('.') {
-        Some((whole, fraction)) => (whole, Some(fraction)),
-        None => (rest, None),
-    };
-    let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
-    if !digits(whole) || fraction.is_some_and(|fraction| !digits(fraction)) || whole.len() <= 3 {
-        return Cow::Borrowed(text);
-    }
-    let mut out = format!("{sign}{}", grouped(whole));
-    if let Some(fraction) = fraction {
-        out.push('.');
-        out.push_str(fraction);
-    }
-    Cow::Owned(out)
+    crate::i18n::numbers::file_size(crate::i18n::Locale::English, bytes)
 }
 
 /// What went wrong, in words for someone who is not reading driver
@@ -962,11 +875,15 @@ pub fn refuses_writes(error: &tabletist_db::Error, driver: tabletist_db::Driver)
     }
 }
 
-pub fn elapsed(duration: Duration) -> String {
+pub fn elapsed(locale: crate::i18n::Locale, duration: Duration) -> String {
+    use crate::i18n::numbers;
     if duration < Duration::from_secs(1) {
-        format!("{} ms", duration.as_millis())
+        numbers::millis(
+            locale,
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
+        )
     } else {
-        format!("{:.1} s", duration.as_secs_f64())
+        numbers::seconds(locale, duration.as_secs_f64(), true)
     }
 }
 
@@ -1498,42 +1415,19 @@ mod tests {
     }
 
     #[test]
-    fn sizes_and_counts_are_compact() {
+    fn sizes_are_compact() {
         assert_eq!(human_size(512), "512 B");
         assert_eq!(human_size(2048), "2.0 KB");
         assert_eq!(human_size(5 * 1024 * 1024), "5.0 MB");
-        assert_eq!(compact_count(999), "999");
-        assert_eq!(compact_count(1_234), "1.2K");
-        assert_eq!(compact_count(1_000), "1K");
-        assert_eq!(compact_count(1_250_000), "1.3M");
-        assert_eq!(compact_count(7_000_000_000), "7B");
-    }
-
-    #[test]
-    fn range_labels_describe_the_page() {
-        assert_eq!(
-            range_label(0, 300, true, Some(1_200_000), None).as_deref(),
-            Some("1–300 of ~1.2M")
-        );
-        assert_eq!(
-            range_label(0, 300, true, None, None).as_deref(),
-            Some("1–300")
-        );
-        assert_eq!(
-            range_label(300, 50, false, Some(10), None).as_deref(),
-            Some("301–350 of 350")
-        );
-        assert_eq!(
-            range_label(0, 5, false, None, None).as_deref(),
-            Some("1–5 of 5")
-        );
-        assert_eq!(range_label(0, 0, false, None, None), None);
     }
 
     #[test]
     fn elapsed_times_read_naturally() {
-        assert_eq!(elapsed(Duration::from_millis(84)), "84 ms");
-        assert_eq!(elapsed(Duration::from_millis(1234)), "1.2 s");
+        let english = crate::i18n::Locale::English;
+        assert_eq!(elapsed(english, Duration::from_millis(84)), "84 ms");
+        assert_eq!(elapsed(english, Duration::from_millis(1234)), "1.2 s");
+        let russian = crate::i18n::Locale::Russian;
+        assert_eq!(elapsed(russian, Duration::from_millis(1234)), "1,2 с");
     }
 
     #[test]
@@ -1651,21 +1545,6 @@ mod tests {
         assert_eq!(plain_text(&value), "users_\u{202E}atad");
     }
 
-    #[test]
-    fn an_exact_total_replaces_the_estimate() {
-        assert_eq!(
-            range_label(0, 300, true, Some(90_000), Some(123_456)).as_deref(),
-            Some("1–300 of 123,456")
-        );
-        assert_eq!(
-            range_label(0, 300, true, Some(90_000), None).as_deref(),
-            Some("1–300 of ~90K")
-        );
-        assert_eq!(group_digits(0), "0");
-        assert_eq!(group_digits(999), "999");
-        assert_eq!(group_digits(1_234_567), "1,234,567");
-    }
-
     /// A language whose catalog marks every message it translates.
     #[derive(Clone, Copy)]
     struct Marked;
@@ -1728,49 +1607,5 @@ mod tests {
             describe_error(Marked, &Error::query("syntax error at \"x\"")),
             "syntax error at \"x\""
         );
-    }
-
-    #[test]
-    fn a_number_groups_its_integer_digits_in_threes() {
-        use super::group_number;
-        assert_eq!(group_number("1240.50"), "1,240.50");
-        assert_eq!(group_number("-9100000"), "-9,100,000");
-        assert_eq!(group_number("1234567.891011"), "1,234,567.891011");
-        // More digits than any integer type holds: it is text all the way.
-        assert_eq!(
-            group_number("123456789012345678901234567890"),
-            "123,456,789,012,345,678,901,234,567,890"
-        );
-    }
-
-    #[test]
-    fn what_is_not_a_plain_number_is_left_as_it_is() {
-        use super::group_number;
-        use std::borrow::Cow;
-        for text in [
-            "999",
-            "-999",
-            "0.5",
-            "1e21",
-            "NaN",
-            "inf",
-            "-inf",
-            "$1240.50",
-            "1,240",
-            "1240.",
-            ".5",
-            "",
-            "-",
-            "1.2.3",
-            "1240.5e3",
-            "1240.5.6",
-            "１２３４",
-            " 1240",
-        ] {
-            assert!(
-                matches!(group_number(text), Cow::Borrowed(same) if same == text),
-                "{text:?}"
-            );
-        }
     }
 }

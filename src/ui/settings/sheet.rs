@@ -7,7 +7,6 @@
 use egui::{CornerRadius, Rect, Sense, Stroke, Ui, WidgetInfo, WidgetType, pos2, vec2};
 
 use crate::app::Work;
-use crate::format::group_digits;
 use crate::i18n::{Locale, Msgid, msgid, ngettext};
 use crate::keymap::{Command, Keymap, Layout};
 use crate::model::{Action, SettingsDialog, SettingsPane};
@@ -1104,7 +1103,12 @@ fn control(
     skin: &Skin,
     actions: &mut Vec<Action>,
 ) {
-    let Skin { look, palette, .. } = *skin;
+    let Skin {
+        look,
+        palette,
+        locale,
+        ..
+    } = *skin;
     let name = said(ui.ctx(), look, skin.locale, label(option));
     // Two or three words of segments, picked into a value.
     let mut segmented = |words: &[Msgid], selected: usize| {
@@ -1234,9 +1238,14 @@ fn control(
         OptionId::HistoryKeep => {
             let words = |keep: u32| match keep {
                 0 => skin.say(msgid("Don't keep")),
-                keep => skin
-                    .say(msgid("Last {n} queries"))
-                    .replace("{n}", &group_digits(u64::from(keep))),
+                keep => look
+                    .label(&ngettext(
+                        skin.locale,
+                        "Last {n} query",
+                        "Last {n} queries",
+                        keep,
+                    ))
+                    .replace("{n}", &crate::i18n::number(skin.locale, u64::from(keep))),
             };
             let current = settings.history_keep;
             let choices = Settings::history_keeps_with(current)
@@ -1266,7 +1275,7 @@ fn control(
             }
         }
         OptionId::PageSize => {
-            let written = |size: u32| group_digits(u64::from(size));
+            let written = |size: u32| crate::i18n::number(locale, u64::from(size));
             let size = written(settings.page_size);
             let dropdown = menu::Dropdown::new("page-size", &size, MENU).description(description);
             let menu = dropdown.show(ui, look, palette, |ui| {
@@ -1289,7 +1298,7 @@ fn control(
             });
             // The row's label is beside it, not its own: named for screen
             // readers, with the size as its value.
-            let value = group_digits(u64::from(settings.page_size));
+            let value = crate::i18n::number(locale, u64::from(settings.page_size));
             menu.response.widget_info(|| {
                 let mut info = WidgetInfo::labeled(WidgetType::ComboBox, true, &name);
                 info.current_text_value = Some(value.clone());
@@ -1333,8 +1342,12 @@ fn control(
             }
         }
         OptionId::GroupDigits => {
-            // A number as each value writes it: no language has others.
-            let words = ["1,240.50".to_owned(), "1240.50".to_owned()];
+            // A number as each value writes it, grouped in the language's
+            // marks.
+            let words = [
+                crate::i18n::numbers::group_number(skin.locale, "1240.50").into_owned(),
+                "1240.50".to_owned(),
+            ];
             let selected = usize::from(!settings.group_digits.unwrap_or_default());
             if let Some(picked) = segments(ui, (&name, description), &words, selected, skin) {
                 actions.push(Action::SetOption(OptionValue::GroupDigits(Some(
@@ -2080,7 +2093,7 @@ fn ignored_lines(ui: &Ui, ignored: &[usize], width: f32, skin: &Skin) -> Option<
         count,
     );
     let said = said
-        .replace("{n}", &count.to_string())
+        .replace("{n}", &crate::i18n::number(skin.locale, count))
         .replace("{lines}", &line_numbers(skin.locale, ignored));
     let text = Text::one(skin.look, TextRole::Secondary, &said, skin.palette.warning);
     Some(text.wrap(width).layout(ui.ctx()))
@@ -2321,7 +2334,12 @@ fn keyboard_footer(
     skin: &Skin,
     actions: &mut Vec<Action>,
 ) {
-    let Skin { look, palette, .. } = *skin;
+    let Skin {
+        look,
+        palette,
+        locale,
+        ..
+    } = *skin;
     let role = TextRole::Secondary;
     let resetting = dialog.keyboard.resetting;
     let changed = super::keyboard::changed_count(keymap, Layout::of(look));
@@ -2332,7 +2350,7 @@ fn keyboard_footer(
             "Reset all keyboard shortcuts? Your {n} changes will be removed.",
             changed,
         )
-        .replace("{n}", &changed.to_string());
+        .replace("{n}", &crate::i18n::number(locale, changed));
         vec![
             (asks, None),
             (

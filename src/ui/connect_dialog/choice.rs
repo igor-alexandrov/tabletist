@@ -534,7 +534,8 @@ pub(super) fn environment_choice(
     skin: &Skin,
     actions: &mut Vec<Action>,
 ) {
-    let labels = ENVIRONMENT_NAMES.map(|name| skin.say(name));
+    // Environment names stay English in every language.
+    let labels = ENVIRONMENT_NAMES.map(|name| skin.look.label(name));
     let options: Vec<(Environment, Choice<'_>)> = Environment::ALL
         .iter()
         .zip(&labels)

@@ -12,7 +12,7 @@ use tabletist_db::{NewValue, SortDir, Value, ValueKind};
 
 use crate::edit::{EditorPlace, Pending, RowMark, State, Table, Told, Unset};
 use crate::format;
-use crate::i18n::{gettext, ngettext};
+use crate::i18n::{Msgid, gettext, msgid, ngettext};
 use crate::keymap::Keymap;
 use crate::model::{
     Action, CellPos, ConnTabId, EditStart, ObjectTab, ObjectView, TabId, Workspace,
@@ -77,7 +77,7 @@ fn selection_note(
     let rows = object.selected_rows().len();
     if rows > 1 {
         let said = ngettext(locale, "{n} row selected", "{n} rows selected", rows);
-        return Some(said.replace("{n}", &rows.to_string()));
+        return Some(said.replace("{n}", &crate::i18n::number(locale, rows)));
     }
     let Some(id) = crate::edit::new_id(cell.row) else {
         return Some(gettext(locale, "1 row selected").into_owned());
@@ -91,7 +91,7 @@ fn selection_note(
     let fields = ngettext(locale, "{n} required field", "{n} required fields", missing);
     Some(format!(
         "{new} · {}",
-        fields.replace("{n}", &missing.to_string())
+        fields.replace("{n}", &crate::i18n::number(locale, missing))
     ))
 }
 
@@ -111,14 +111,16 @@ fn subtitle(object: &ObjectTab, look: &Look, locale: crate::i18n::Locale) -> Vec
         let count = format!(
             "{}{}",
             if exact.is_some() { "" } else { "~" },
-            format::group_digits(rows)
+            crate::i18n::number(locale, rows)
         );
         ngettext(locale, "{n} row", "{n} rows", rows).replace("{n}", &count)
     });
     // The rows to add, beside the table's own: "13 rows + 1 new".
     let added = object.edits.added.len();
-    let new = (added > 0)
-        .then(|| ngettext(locale, "{n} new", "{n} new", added).replace("{n}", &added.to_string()));
+    let new = (added > 0).then(|| {
+        ngettext(locale, "{n} new", "{n} new", added)
+            .replace("{n}", &crate::i18n::number(locale, added))
+    });
     match (rows, new) {
         (Some(rows), Some(new)) => parts.push(format!("{rows} + {new}")),
         (Some(one), None) | (None, Some(one)) => parts.push(one),
@@ -128,7 +130,7 @@ fn subtitle(object: &ObjectTab, look: &Look, locale: crate::i18n::Locale) -> Vec
     let deleted = object.edits.deleted.len();
     if deleted > 0 {
         let to_delete = ngettext(locale, "{n} to delete", "{n} to delete", deleted);
-        parts.push(to_delete.replace("{n}", &deleted.to_string()));
+        parts.push(to_delete.replace("{n}", &crate::i18n::number(locale, deleted)));
     }
     if let Some(page) = page {
         let count = page.columns.len();
@@ -136,7 +138,7 @@ fn subtitle(object: &ObjectTab, look: &Look, locale: crate::i18n::Locale) -> Vec
             true => ngettext(locale, "{n} col", "{n} cols", count),
             false => ngettext(locale, "{n} column", "{n} columns", count),
         };
-        parts.push(said.replace("{n}", &count.to_string()));
+        parts.push(said.replace("{n}", &crate::i18n::number(locale, count)));
     }
     if !look.terminal {
         parts.push(format::display_safe(&object.object.schema).into_owned());
@@ -719,13 +721,13 @@ fn sort_chip(
 
 /// The applied filters as the toolbar's chips write them, the raw WHERE
 /// last.
-fn filter_texts(object: &ObjectTab) -> Vec<String> {
+fn filter_texts(object: &ObjectTab, locale: crate::i18n::Locale) -> Vec<String> {
     object
         .query
         .filters
         .iter()
         .map(|filter| {
-            let op = crate::ui::filter_bar::op_label(filter.op);
+            let op = crate::ui::filter_bar::op_label(filter.op).say(locale);
             if matches!(
                 filter.op,
                 tabletist_db::FilterOp::IsNull | tabletist_db::FilterOp::IsNotNull
@@ -759,7 +761,7 @@ pub fn toolbar(
     let Some(object) = workspace.object_tab(object_tab) else {
         return Vec::new();
     };
-    let filters = filter_texts(object);
+    let filters = filter_texts(object, locale);
     let sort = object
         .query
         .sort
@@ -1141,22 +1143,28 @@ pub fn columns_note(
 ) -> Option<String> {
     let id = grid_id(tab, object.id, fit);
     let shown = grid::columns_shown(ctx, id).filter(grid::ColumnsShown::partial)?;
-    let say = |text: &'static str| look.label(&gettext(locale, text));
-    let noun = if look.terminal { "cols" } else { "Columns" };
-    let mut note = format!(
-        "{} {}–{} {} {}",
-        say(noun),
-        shown.first + 1,
-        shown.last + 1,
-        say("of"),
-        shown.total
+    let say = |text: Msgid| look.label(&text.say(locale));
+    let words = if look.terminal {
+        msgid("cols {first}–{last} of {total}")
+    } else {
+        msgid("Columns {first}–{last} of {total}")
+    };
+    let mut note = crate::i18n::fill(
+        &say(words),
+        &[
+            ("{first}", &(shown.first + 1).to_string()),
+            ("{last}", &(shown.last + 1).to_string()),
+            ("{total}", &crate::i18n::number(locale, shown.total)),
+        ],
     );
     let first = object.page().and_then(|page| page.columns.first());
     if let (true, Some(column)) = (shown.pinned, first) {
         note.push_str(&format!(
-            " · {} {}",
-            format::display_safe(&column.name),
-            say("pinned")
+            " · {}",
+            crate::i18n::fill(
+                &say(msgid("{column} pinned")),
+                &[("{column}", &format::display_safe(&column.name))],
+            )
         ));
     }
     Some(note)
@@ -1192,7 +1200,8 @@ pub fn footer(
     let page = object.page();
     let filtered = !object.query.filters.is_empty() || object.query.raw_where.is_some();
     let range = page.and_then(|page| {
-        format::range_label(
+        crate::i18n::numbers::range_label(
+            locale,
             object.query.offset,
             page.rows.len(),
             page.has_more,
@@ -1213,7 +1222,8 @@ pub fn footer(
         .map(|saved| super::pending_bar::written_text(saved, locale));
     let timing = written.or_else(|| {
         page.map(|page| {
-            gettext(locale, "Query {elapsed}").replace("{elapsed}", &format::elapsed(page.elapsed))
+            gettext(locale, "Query {elapsed}")
+                .replace("{elapsed}", &format::elapsed(locale, page.elapsed))
         })
     });
     let unordered = page.is_some_and(|page| !page.ordered_by_key) && object.query.sort.is_empty();
@@ -1263,19 +1273,18 @@ pub fn footer(
                         (
                             can_prev,
                             Icon::ChevronLeft,
-                            "Previous page",
+                            msgid("Previous page"),
                             Action::PrevPage { tab, object_tab },
                         ),
                         (
                             can_next,
                             Icon::ChevronRight,
-                            "Next page",
+                            msgid("Next page"),
                             Action::NextPage { tab, object_tab },
                         ),
                     ] {
                         ui.add_enabled_ui(enabled, |ui| {
-                            if pager(ui, icon, &gettext(locale, label), enabled, &palette).clicked()
-                            {
+                            if pager(ui, icon, &label.say(locale), enabled, &palette).clicked() {
                                 actions.push(action);
                             }
                         });
@@ -1661,7 +1670,7 @@ pub fn show(
                 *deleted,
             );
             Some(
-                said.replace("{n}", &deleted.to_string())
+                said.replace("{n}", &crate::i18n::number(locale, deleted))
                     .replace("{row}", row),
             )
         }
@@ -1681,7 +1690,7 @@ pub fn show(
             if *marked > 0 {
                 parts.push(super::pending_bar::marked_text(*marked, *skipped, locale));
                 let to_delete = ngettext(locale, "{n} to delete.", "{n} to delete.", *deleted);
-                parts.push(to_delete.replace("{n}", &deleted.to_string()));
+                parts.push(to_delete.replace("{n}", &crate::i18n::number(locale, deleted)));
             }
             if *dropped > 0 {
                 let rows = super::pending_bar::counted(
@@ -1782,6 +1791,7 @@ pub fn show(
             .map(|column| Shown {
                 full_precision: fit.full_precision,
                 grouped: fit.grouped && !is_key(&column.name, structure),
+                locale,
                 zone: zone.as_ref(),
             })
             .collect();
@@ -2592,7 +2602,7 @@ impl Changes<'_> {
         look: &Look,
         locale: crate::i18n::Locale,
     ) -> Cell<'c> {
-        let say = |text: &'static str| gettext(locale, text).into_owned();
+        let say = |text: Msgid| text.say(locale).into_owned();
         let mut cell = match self.cells.get(&at) {
             Some(pending) => {
                 let mut cell = pending_cell(&pending.new, &value);
@@ -2602,7 +2612,7 @@ impl Changes<'_> {
             }
             None => match self.unset.get(at.1) {
                 Some(Unset::Assigned) if self.marker == Some(at.1) => {
-                    let new = say("new");
+                    let new = say(msgid("new"));
                     Cell {
                         text: if look.terminal {
                             new
@@ -2616,7 +2626,7 @@ impl Changes<'_> {
                 }
                 Some(Unset::Assigned) | None => Cell {
                     mark: Mark::Unset,
-                    hint: Some(say("Assigned by the database on save")),
+                    hint: Some(say(msgid("Assigned by the database on save"))),
                     ..Cell::default()
                 },
                 Some(Unset::Default(text)) => {
@@ -2634,7 +2644,7 @@ impl Changes<'_> {
                     };
                     Cell {
                         mark: Mark::Unset,
-                        hint: Some(say("from DEFAULT")),
+                        hint: Some(say(msgid("from DEFAULT"))),
                         ..cell
                     }
                 }
@@ -2644,7 +2654,7 @@ impl Changes<'_> {
                         .into(),
                     mark: Mark::Unset,
                     slanted: true,
-                    hint: Some(say("from DEFAULT")),
+                    hint: Some(say(msgid("from DEFAULT"))),
                     ..Cell::default()
                 },
                 Some(Unset::Null) => Cell {
@@ -2656,7 +2666,7 @@ impl Changes<'_> {
                 Some(Unset::Required) => Cell {
                     text: format::required_word(self.unique.contains(&at), locale).into(),
                     mark: Mark::Trouble,
-                    hint: Some(say("A save needs a value here")),
+                    hint: Some(say(msgid("A save needs a value here"))),
                     ..Cell::default()
                 },
             },
@@ -2711,35 +2721,33 @@ fn empty_rows(
     (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
     actions: &mut Vec<Action>,
 ) {
-    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let say = |text: Msgid| look.label(&text.say(locale));
     let name = format::display_safe(&object.object.name);
     let object_tab = object.id;
-    let filters = filter_texts(object);
+    let filters = filter_texts(object, locale);
     // Past the first page there are rows, whatever the filters: they end
     // before this page, and the way out is the page before.
     let past = object.query.offset > 0;
     if past || filters.is_empty() {
-        let title = format!(
-            "{} {name}",
-            say(if past {
-                "No more rows in"
-            } else {
-                "No rows in"
-            })
-        );
-        let text = if past {
-            say("This page is past the last row.")
-        } else if object.kind == tabletist_db::ObjectKind::Table {
-            say("The table exists and is empty.")
+        let words = if past {
+            msgid("No more rows in {table}")
         } else {
-            say("It returned no rows.")
+            msgid("No rows in {table}")
+        };
+        let title = crate::i18n::fill(&say(words), &[("{table}", &name)]);
+        let text = if past {
+            say(msgid("This page is past the last row."))
+        } else if object.kind == tabletist_db::ObjectKind::Table {
+            say(msgid("The table exists and is empty."))
+        } else {
+            say(msgid("It returned no rows."))
         };
         let notice = states::Notice {
             icon: Icon::Table,
             title: &title,
             text: &text,
         };
-        let (reload, previous) = (say("Reload"), say("Previous page"));
+        let (reload, previous) = (say(msgid("Reload")), say(msgid("Previous page")));
         let button = if past {
             states::button(&previous, look).label("Previous page")
         } else {
@@ -2762,29 +2770,44 @@ fn empty_rows(
         return;
     }
     let title = if filters.len() == 1 {
-        say("No rows match the filter")
+        say(msgid("No rows match the filter"))
     } else {
-        format!(
-            "{} {} {}",
-            say("No rows match"),
-            filters.len(),
-            say("filters")
+        look.label(
+            &ngettext(
+                locale,
+                "No rows match {n} filter",
+                "No rows match {n} filters",
+                filters.len(),
+            )
+            .replace("{n}", &crate::i18n::number(locale, filters.len())),
         )
     };
-    let none = format!(
-        "{} {}.",
-        say("None matches"),
-        filters.join(&format!(" {} ", say("and")))
+    // Translators: what joins the filters a page matches none of:
+    // "None matches title = A and price > 2.".
+    let and = crate::i18n::pgettext(locale, "list join", " and ");
+    let none = crate::i18n::fill(
+        &say(msgid("None matches {filters}.")),
+        &[("{filters}", &filters.join(&and))],
     );
     // The catalog's estimate of the whole table, when it has one. None is
     // an estimate of 0: older PostgreSQL says so of a table never analysed.
     let text = match object.estimated_rows.filter(|rows| *rows > 0) {
-        Some(rows) => format!(
-            "{name} {} {} {}. {none}",
-            say("has about"),
-            format::group_digits(rows),
-            say(if rows == 1 { "row" } else { "rows" })
-        ),
+        Some(rows) => {
+            let about = ngettext(
+                locale,
+                "{table} has about {n} row.",
+                "{table} has about {n} rows.",
+                rows,
+            );
+            let about = crate::i18n::fill(
+                &look.label(&about),
+                &[
+                    ("{table}", &name),
+                    ("{n}", &crate::i18n::number(locale, rows)),
+                ],
+            );
+            format!("{about} {none}")
+        }
         None => none,
     };
     let notice = states::Notice {
@@ -2792,7 +2815,10 @@ fn empty_rows(
         title: &title,
         text: &text,
     };
-    let (clear, last) = (say("Clear filters"), say("Remove last filter"));
+    let (clear, last) = (
+        say(msgid("Clear filters")),
+        say(msgid("Remove last filter")),
+    );
     let mut buttons = vec![states::button(&clear, look).label("Clear filters")];
     if filters.len() > 1 {
         buttons.push(
@@ -2820,6 +2846,8 @@ pub struct Shown<'z> {
     pub full_precision: bool,
     /// A number's integer digits in threes.
     pub grouped: bool,
+    /// The language whose marks a grouped number takes: «1 240,50».
+    pub locale: crate::i18n::Locale,
     /// The zone a value with an offset is shown in. None shows it as the
     /// server sent it.
     pub zone: Option<&'z jiff::tz::TimeZone>,
@@ -2928,7 +2956,8 @@ pub fn plain_cell<'a>(
             }
             // A number is grouped before it is cut to a cell's length: one
             // cut first ends in an ellipsis, which is no number to group.
-            let line = match grouped.then(|| format::group_number(text)) {
+            let line = match grouped.then(|| crate::i18n::numbers::group_number(shown.locale, text))
+            {
                 Some(std::borrow::Cow::Owned(number)) => {
                     format::cell_line(&number, marks).into_owned().into()
                 }
@@ -2946,7 +2975,7 @@ pub fn plain_cell<'a>(
         }
         other => {
             let text = format::cell_text(other);
-            match grouped.then(|| format::group_number(&text)) {
+            match grouped.then(|| crate::i18n::numbers::group_number(shown.locale, &text)) {
                 Some(std::borrow::Cow::Owned(number)) => number.into(),
                 _ => text,
             }
@@ -2991,7 +3020,7 @@ pub fn error_box(
     locale: crate::i18n::Locale,
     mut retry: impl FnMut(),
 ) {
-    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let say = |text: Msgid| look.label(&text.say(locale));
     // What the card shows, cut without a copy of all of it first: a
     // database's message can hold megabytes.
     let shown = match error {
@@ -3004,9 +3033,13 @@ pub fn error_box(
         code, detail, hint, ..
     } = error
     {
-        for (label, said) in [("Code", code), ("Detail", detail), ("Hint", hint)] {
+        for (label, said) in [
+            (msgid("Code"), code),
+            (msgid("Detail"), detail),
+            (msgid("Hint"), hint),
+        ] {
             if let Some(said) = said {
-                more.push((gettext(locale, label), said.as_str()));
+                more.push((label.say(locale), said.as_str()));
             }
         }
     }
@@ -3039,7 +3072,7 @@ pub fn error_box(
                 }
             });
         ui.horizontal(|ui| {
-            let (again, copy) = (say("Retry"), say("Copy details"));
+            let (again, copy) = (say(msgid("Retry")), say(msgid("Copy details")));
             let again = states::button(&again, look).label("Retry");
             if again.show(ui, height, look, palette).clicked() {
                 retry();
@@ -3378,6 +3411,13 @@ mod tests {
             "1,234,567"
         );
         assert_eq!(text(&amount, ValueKind::Numeric, grouped), "1,240.50");
+        // In Russian, its marks: drawn only, so a copy is the value.
+        let russian = Shown {
+            locale: crate::i18n::Locale::Russian,
+            ..grouped
+        };
+        assert_eq!(text(&amount, ValueKind::Numeric, russian), "1\u{a0}240,50");
+        assert_eq!(format::full_text(&amount), "1240.50");
         assert_eq!(
             text(&Value::Int(1_234_567), ValueKind::Numeric, Shown::default()),
             "1234567"

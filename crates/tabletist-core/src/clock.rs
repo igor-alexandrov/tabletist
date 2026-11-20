@@ -4,7 +4,10 @@
 use std::time::SystemTime;
 
 use jiff::Timestamp;
+use jiff::civil::Date;
 use jiff::tz::TimeZone;
+
+use crate::i18n::{Locale, numbers};
 
 /// "10:43:02": a call of the feed, which came today.
 pub fn time(at: SystemTime) -> String {
@@ -16,24 +19,59 @@ pub fn hour(at: SystemTime) -> String {
     format(at, &TimeZone::system(), "%H:%M")
 }
 
-/// "Oct 13 10:43": a call of the log, which keeps a month and more.
-pub fn day(at: SystemTime) -> String {
-    format(at, &TimeZone::system(), "%b %-d %H:%M")
+/// "Oct 13 10:43", «13 окт. 10:43»: a call of the log, which keeps a
+/// month and more.
+pub fn day(locale: Locale, at: SystemTime) -> String {
+    day_at(locale, at, &TimeZone::system(), "%H:%M")
 }
 
-/// "Oct 13 10:43:40": a call of the log on its own line.
-pub fn moment(at: SystemTime) -> String {
-    format(at, &TimeZone::system(), "%b %-d %H:%M:%S")
+/// "Oct 13 10:43:40", «13 окт. 10:43:40»: a call of the log on its own
+/// line.
+pub fn moment(locale: Locale, at: SystemTime) -> String {
+    day_at(locale, at, &TimeZone::system(), "%H:%M:%S")
+}
+
+/// `at`'s day of the year in `locale`, and its time as `time` writes it.
+fn day_at(locale: Locale, at: SystemTime, zone: &TimeZone, time: &str) -> String {
+    let Some(date) = date_in(at, zone) else {
+        return String::new();
+    };
+    numbers::day_and_time(
+        locale,
+        &numbers::short_day(locale, date.month(), date.day()),
+        &format(at, zone, time),
+    )
 }
 
 /// The day `at` fell on, as the history's list heads its entries: today,
-/// yesterday, or its date ("Oct 13", and its year where that is not this
-/// year's), by the person's clock as it is `now`.
+/// yesterday, or its date, by the person's clock as it is `now`. The date
+/// is said where it is drawn, in the window's language, by [`Day::words`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Day {
     Today,
     Yesterday,
-    On(String),
+    /// A day before yesterday; `this_year` when it fell in `now`'s year.
+    On {
+        date: Date,
+        this_year: bool,
+    },
+    /// A time no clock shows.
+    Never,
+}
+
+impl Day {
+    /// The date of an `On` day in `locale`: "Oct 13", and its year where
+    /// that is not this year's: "Oct 13, 2025", «13 окт. 2025 г.». Nothing
+    /// for the others, which each caller says in words of its own.
+    pub fn words(&self, locale: Locale) -> String {
+        match self {
+            Self::On { date, this_year } => match this_year {
+                true => numbers::short_day(locale, date.month(), date.day()),
+                false => numbers::dated_day(locale, date.year(), date.month(), date.day()),
+            },
+            Self::Today | Self::Yesterday | Self::Never => String::new(),
+        }
+    }
 }
 
 pub fn day_of(at: SystemTime, now: SystemTime) -> Day {
@@ -41,13 +79,8 @@ pub fn day_of(at: SystemTime, now: SystemTime) -> Day {
 }
 
 fn day_in(at: SystemTime, now: SystemTime, zone: &TimeZone) -> Day {
-    let date = |time: SystemTime| {
-        Timestamp::try_from(time)
-            .ok()
-            .map(|time| time.to_zoned(zone.clone()).date())
-    };
-    let (Some(day), Some(today)) = (date(at), date(now)) else {
-        return Day::On(String::new());
+    let (Some(day), Some(today)) = (date_in(at, zone), date_in(now, zone)) else {
+        return Day::Never;
     };
     if day == today {
         return Day::Today;
@@ -55,11 +88,17 @@ fn day_in(at: SystemTime, now: SystemTime, zone: &TimeZone) -> Day {
     if today.yesterday().is_ok_and(|yesterday| yesterday == day) {
         return Day::Yesterday;
     }
-    let pattern = match day.year() == today.year() {
-        true => "%b %-d",
-        false => "%b %-d, %Y",
-    };
-    Day::On(format(at, zone, pattern))
+    Day::On {
+        date: day,
+        this_year: day.year() == today.year(),
+    }
+}
+
+/// The date `at` falls on in `zone`, where a clock shows it.
+fn date_in(at: SystemTime, zone: &TimeZone) -> Option<Date> {
+    Timestamp::try_from(at)
+        .ok()
+        .map(|at| at.to_zoned(zone.clone()).date())
 }
 
 /// `at` in `zone`, as `pattern` writes it. Nothing for a time no clock
@@ -87,9 +126,12 @@ mod tests {
         let berlin = TimeZone::fixed(jiff::tz::offset(2));
         assert_eq!(format(at, &berlin, "%H:%M:%S"), "10:43:02");
         assert_eq!(format(at, &berlin, "%H:%M"), "10:43");
-        assert_eq!(format(at, &berlin, "%b %-d %H:%M"), "Oct 13 10:43");
-        assert_eq!(format(at, &berlin, "%b %-d %H:%M:%S"), "Oct 13 10:43:02");
-        assert_eq!(format(at, &TimeZone::UTC, "%b %-d %H:%M"), "Oct 13 08:43");
+        let english = Locale::English;
+        assert_eq!(day_at(english, at, &berlin, "%H:%M"), "Oct 13 10:43");
+        assert_eq!(day_at(english, at, &berlin, "%H:%M:%S"), "Oct 13 10:43:02");
+        assert_eq!(day_at(english, at, &TimeZone::UTC, "%H:%M"), "Oct 13 08:43");
+        let russian = Locale::Russian;
+        assert_eq!(day_at(russian, at, &berlin, "%H:%M:%S"), "13 окт. 10:43:02");
     }
 
     #[test]
@@ -100,13 +142,12 @@ mod tests {
         let hours = |n: u64| std::time::Duration::from_secs(n * 3600);
         assert_eq!(day_in(now - hours(20), now, &berlin), Day::Today);
         assert_eq!(day_in(now - hours(24), now, &berlin), Day::Yesterday);
-        assert_eq!(
-            day_in(now - hours(48), now, &berlin),
-            Day::On("Oct 11".into())
-        );
-        assert_eq!(
-            day_in(now - hours(24 * 300), now, &berlin),
-            Day::On("Dec 17, 2025".into())
-        );
+        let before = day_in(now - hours(48), now, &berlin);
+        assert_eq!(before.words(Locale::English), "Oct 11");
+        assert_eq!(before.words(Locale::Russian), "11 окт.");
+        let last_year = day_in(now - hours(24 * 300), now, &berlin);
+        assert_eq!(last_year.words(Locale::English), "Dec 17, 2025");
+        assert_eq!(last_year.words(Locale::Russian), "17 дек. 2025 г.");
+        assert_eq!(Day::Today.words(Locale::English), "");
     }
 }

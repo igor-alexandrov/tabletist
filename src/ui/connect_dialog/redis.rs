@@ -2,6 +2,7 @@
 //! and its database, signing in, TLS, and how the keys are browsed. The
 //! SSH tunnel and the safety box are the other servers'.
 
+use crate::i18n::{Msgid, msgid};
 use egui::{Response, Ui};
 
 use crate::i18n::gettext;
@@ -20,16 +21,20 @@ use super::{
 };
 
 /// What Sign in says under its fields.
-const SIGN_IN_HINT: &str = "Leave Username empty to sign in as the default user with a \
-                            password only. Leave both empty for a server without a password.";
+const SIGN_IN_HINT: Msgid = msgid(
+    "Leave Username empty to sign in as the default user with a \
+     password only. Leave both empty for a server without a password.",
+);
 
 /// What Browsing says under its fields.
-const BROWSING_HINT: &str =
-    "Keys are listed with SCAN, never KEYS, so a large database doesn't block the server.";
+const BROWSING_HINT: Msgid =
+    msgid("Keys are listed with SCAN, never KEYS, so a large database doesn't block the server.");
 
 /// What the safety box says of the server's side.
-const ACL_NOTE: &str = "Tabletist sends only read commands to Redis. For the server to refuse \
-                        writes too, sign in as an ACL user without write permission.";
+const ACL_NOTE: Msgid = msgid(
+    "Tabletist sends only read commands to Redis. For the server to refuse \
+     writes too, sign in as an ACL user without write permission.",
+);
 
 /// The databases the dropdown lists: the last Test's count, else Redis's
 /// 16.
@@ -41,9 +46,9 @@ fn databases(form: &ConnectionForm) -> u32 {
 
 /// A database as the dropdown names it: its number, and its keys after a
 /// Test ("0 · 1,204 keys", "2 · empty").
-fn database_label(form: &ConnectionForm, number: u32) -> String {
+fn database_label(form: &ConnectionForm, number: u32, skin: &Skin) -> String {
     match &form.redis_probe {
-        Some(probe) => crate::keyspace::database_label(number, probe.keys_in(number)),
+        Some(probe) => crate::keyspace::database_label(skin.locale, number, probe.keys_in(number)),
         None => number.to_string(),
     }
 }
@@ -53,20 +58,20 @@ fn database_label(form: &ConnectionForm, number: u32) -> String {
 fn browsing_summary(form: &ConnectionForm, skin: &Skin) -> String {
     let by = format!(
         "{} {}",
-        skin.say("Group keys by"),
+        skin.say(msgid("Group keys by")),
         match form.redis_separator.as_str() {
-            "" => skin.say("nothing"),
+            "" => skin.say(msgid("nothing")),
             separator => format!("`{separator}`"),
         }
     );
     let page = format!(
         "{} {}",
-        crate::format::group_digits(u64::from(form.redis_page)),
-        skin.say("keys at a time")
+        crate::i18n::number(skin.locale, form.redis_page),
+        skin.say(msgid("keys at a time"))
     );
     let which = match form.redis_pattern.trim() {
-        "" | "*" => skin.say("all keys"),
-        pattern => format!("{} {pattern}", skin.say("keys matching")),
+        "" | "*" => skin.say(msgid("all keys")),
+        pattern => format!("{} {pattern}", skin.say(msgid("keys matching"))),
     };
     format!("{by} · {page} · {which}")
 }
@@ -79,11 +84,11 @@ pub(super) fn server(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
     let columns = [Column::Fr(1.0), Column::Px(96.0)];
     row(ui, 12.0, &columns, |ui, column| {
         if column == 0 {
-            labelled(ui, &skin.say("Host"), small, skin, |ui| {
+            labelled(ui, &skin.say(msgid("Host")), small, skin, |ui| {
                 ui.add(input(ui, &mut form.host, role, height, skin))
             });
         } else {
-            labelled(ui, &skin.say("Port"), small, skin, |ui| {
+            labelled(ui, &skin.say(msgid("Port")), small, skin, |ui| {
                 ui.add(input(ui, &mut form.port, role, height, skin))
             });
         }
@@ -96,7 +101,7 @@ pub(super) fn server(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
         |ui, column| {
             if column == 0 {
                 let width = ui.available_width();
-                labelled(ui, &skin.say("Database"), small, skin, |ui| {
+                labelled(ui, &skin.say(msgid("Database")), small, skin, |ui| {
                     database_dropdown(ui, form, width, skin)
                 });
             }
@@ -108,9 +113,9 @@ pub(super) fn server(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
 /// a Test.
 fn database_dropdown(ui: &mut Ui, form: &mut ConnectionForm, width: f32, skin: &Skin) -> Response {
     let Skin { look, palette, .. } = *skin;
-    let current = database_label(form, form.redis_database);
+    let current = database_label(form, form.redis_database, skin);
     let count = databases(form);
-    let labels: Vec<String> = (0..count).map(|n| database_label(form, n)).collect();
+    let labels: Vec<String> = (0..count).map(|n| database_label(form, n, skin)).collect();
     let response = select(ui, "redis-database", &current, width, skin)
         .show(ui, look, palette, |ui| {
             ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
@@ -145,7 +150,7 @@ pub(super) fn sign_in(
     let columns = [Column::Fr(1.0), Column::Px(96.0)];
     row(ui, 12.0, &columns, |ui, column| {
         if column == 0 {
-            labelled(ui, &skin.say("Username"), small, skin, |ui| {
+            labelled(ui, &skin.say(msgid("Username")), small, skin, |ui| {
                 let hint = hint(ui, "default", role, skin);
                 ui.add(input(ui, &mut form.user, role, height, skin).hint_text(hint))
             });
@@ -161,14 +166,20 @@ pub(super) fn sign_in(
     let mut field = None;
     row(ui, 12.0, &columns, |ui, column| {
         if column == 0 {
-            field = Some(labelled(ui, &skin.say("Password"), small, skin, |ui| {
-                let hint = hint(ui, &saved, TextRole::UiBody, skin);
-                ui.add(
-                    input(ui, &mut form.password, TextRole::UiBody, height, skin)
-                        .password(true)
-                        .hint_text(hint),
-                )
-            }));
+            field = Some(labelled(
+                ui,
+                &skin.say(msgid("Password")),
+                small,
+                skin,
+                |ui| {
+                    let hint = hint(ui, &saved, TextRole::UiBody, skin);
+                    ui.add(
+                        input(ui, &mut form.password, TextRole::UiBody, height, skin)
+                            .password(true)
+                            .hint_text(hint),
+                    )
+                },
+            ));
         } else {
             keyring_box(ui, &mut form.password_mode, skin.keyring(), true, skin);
         }
@@ -194,7 +205,7 @@ pub(super) fn security(
         widgets::checkbox(
             ui,
             &mut form.redis_tls,
-            &skin.say("Use TLS (rediss://)"),
+            &skin.say(msgid("Use TLS (rediss://)")),
             look,
             palette,
         );
@@ -223,7 +234,7 @@ fn tls_fields(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut
     let label = widgets::label(
         ui,
         small,
-        &skin.say("CA certificate"),
+        &skin.say(msgid("CA certificate")),
         palette.secondary,
         look,
     );
@@ -236,9 +247,9 @@ fn tls_fields(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut
         &[Column::Fr(1.0), Column::Fr(1.0)],
         |ui, column| {
             let (text, which) = if column == 0 {
-                ("Client certificate", false)
+                (msgid("Client certificate"), false)
             } else {
-                ("Client key", true)
+                (msgid("Client key"), true)
             };
             let label = widgets::label(ui, small, &skin.say(text), palette.secondary, look);
             ui.add_space(5.0);
@@ -251,7 +262,7 @@ fn tls_fields(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut
         widgets::checkbox(
             ui,
             &mut form.redis_verify_host,
-            &skin.say("Verify the server's hostname"),
+            &skin.say(msgid("Verify the server's hostname")),
             look,
             palette,
         );
@@ -269,13 +280,13 @@ fn client_file(
 ) {
     let role = TextRole::pick(skin.look, TextRole::MonoSecondary, TextRole::OBody);
     let height = skin.field_height();
-    let (name, placeholder): (&'static str, &'static str) = if key {
-        ("Choose the client key", "Optional")
+    let (name, placeholder) = if key {
+        (msgid("Choose the client key"), msgid("Optional"))
     } else {
-        ("Choose a client certificate", "Optional")
+        (msgid("Choose a client certificate"), msgid("Optional"))
     };
     let placeholder = skin.say(placeholder);
-    let (field, clicked) = field_with_button(ui, &skin.say("Choose…"), name, skin, |ui| {
+    let (field, clicked) = field_with_button(ui, &skin.say(msgid("Choose…")), name, skin, |ui| {
         let hint = hint(ui, &placeholder, role, skin);
         let text = if key {
             &mut form.redis_key
@@ -295,7 +306,7 @@ fn client_file(
 pub(super) fn browsing(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
     let Skin { look, palette, .. } = *skin;
     let summary = browsing_summary(form, skin);
-    let title = skin.say("Browsing");
+    let title = skin.say(msgid("Browsing"));
     let open = form.redis_browsing_open;
     let frame = egui::Frame::new()
         .stroke(egui::Stroke::new(widgets::hairline(ui), skin.rule()))
@@ -350,11 +361,11 @@ fn browsing_fields(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
         &[Column::Px(96.0), Column::Fr(1.0)],
         |ui, column| {
             if column == 0 {
-                labelled(ui, &skin.say("Key separator"), small, skin, |ui| {
+                labelled(ui, &skin.say(msgid("Key separator")), small, skin, |ui| {
                     ui.add(input(ui, &mut form.redis_separator, role, height, skin))
                 });
             } else {
-                let heading = skin.say("Keys at a time");
+                let heading = skin.say(msgid("Keys at a time"));
                 widgets::label(ui, small, &heading, palette.secondary, look);
                 ui.add_space(5.0);
                 page_choice(ui, form, &heading, skin);
@@ -368,14 +379,20 @@ fn browsing_fields(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
         &[Column::Fr(1.0), Column::Px(140.0)],
         |ui, column| {
             if column == 0 {
-                labelled(ui, &skin.say("Only keys matching"), small, skin, |ui| {
-                    ui.add(
-                        input(ui, &mut form.redis_pattern, role, height, skin)
-                            .hint_text(hint(ui, "*", role, skin)),
-                    )
-                });
+                labelled(
+                    ui,
+                    &skin.say(msgid("Only keys matching")),
+                    small,
+                    skin,
+                    |ui| {
+                        ui.add(
+                            input(ui, &mut form.redis_pattern, role, height, skin)
+                                .hint_text(hint(ui, "*", role, skin)),
+                        )
+                    },
+                );
             } else {
-                labelled(ui, &skin.say("Key limit"), small, skin, |ui| {
+                labelled(ui, &skin.say(msgid("Key limit")), small, skin, |ui| {
                     ui.add(input(ui, &mut form.redis_key_limit, role, height, skin))
                 });
             }
@@ -387,7 +404,7 @@ fn browsing_fields(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
 
 /// Keys at a time: 500, 1,000 or 5,000.
 fn page_choice(ui: &mut Ui, form: &mut ConnectionForm, heading: &str, skin: &Skin) {
-    let labels = tabletist_db::KEY_PAGES.map(|page| crate::format::group_digits(u64::from(page)));
+    let labels = tabletist_db::KEY_PAGES.map(|page| crate::i18n::number(skin.locale, page));
     let options: Vec<(u32, Choice<'_>)> = tabletist_db::KEY_PAGES
         .iter()
         .zip(&labels)
@@ -420,12 +437,12 @@ pub(super) fn acl_note(ui: &mut Ui, skin: &Skin) {
 /// row that cannot be opened, in the agents' place.
 pub(super) fn agents(ui: &mut Ui, skin: &Skin) {
     let Skin { look, palette, .. } = *skin;
-    let title = skin.say("Agents");
-    let later = skin.say("Agents for Redis come later");
+    let title = skin.say(msgid("Agents"));
+    let later = skin.say(msgid("Agents for Redis come later"));
     if look.terminal {
         super::terminal::terminal_section(ui, &title, skin);
         let line = TextRole::OBody.row_height(ui.ctx(), look.faces);
-        terminal_row_of(ui, &skin.say("Access"), line, skin, |ui, _| {
+        terminal_row_of(ui, &skin.say(msgid("Access")), line, skin, |ui, _| {
             widgets::label(ui, TextRole::OBody, &later, palette.dim, look);
         });
         return;
@@ -446,7 +463,13 @@ pub(super) fn agents(ui: &mut Ui, skin: &Skin) {
                         palette.dim,
                         look,
                     );
-                    widgets::label(ui, TextRole::Secondary, &skin.say("Off"), palette.dim, look);
+                    widgets::label(
+                        ui,
+                        TextRole::Secondary,
+                        &skin.say(msgid("Off")),
+                        palette.dim,
+                        look,
+                    );
                     widgets::label(ui, TextRole::Secondary, &later, palette.dim, look);
                 });
             });
@@ -463,23 +486,23 @@ pub(super) fn terminal_server(
 ) {
     let role = TextRole::OBody;
     let height = skin.field_height();
-    terminal_row(ui, &skin.say("Host : Port"), skin, |ui, _| {
+    terminal_row(ui, &skin.say(msgid("Host : Port")), skin, |ui, _| {
         let host = ui.available_width() - 88.0;
         let field = cell(ui, host, skin, |ui| {
             ui.add(input(ui, &mut form.host, role, height, skin))
         });
-        named(&field, "Host", skin);
+        named(&field, msgid("Host"), skin);
         let field = cell(ui, 80.0, skin, |ui| {
             ui.add(input(ui, &mut form.port, role, height, skin))
         });
-        named(&field, "Port", skin);
+        named(&field, msgid("Port"), skin);
     });
-    terminal_row(ui, &skin.say("Database"), skin, |ui, label| {
+    terminal_row(ui, &skin.say(msgid("Database")), skin, |ui, label| {
         let width = ui.available_width();
         database_dropdown(ui, form, width, skin).labelled_by(label);
     });
-    super::terminal::terminal_section(ui, &skin.say("Sign in"), skin);
-    terminal_row(ui, &skin.say("Username"), skin, |ui, label| {
+    super::terminal::terminal_section(ui, &skin.say(msgid("Sign in")), skin);
+    terminal_row(ui, &skin.say(msgid("Username")), skin, |ui, label| {
         let hint = hint(ui, "default", role, skin);
         ui.add(input(ui, &mut form.user, role, height, skin).hint_text(hint))
             .labelled_by(label);
@@ -490,7 +513,7 @@ pub(super) fn terminal_server(
     } else {
         String::new()
     };
-    terminal_row(ui, &skin.say("Password"), skin, |ui, label| {
+    terminal_row(ui, &skin.say(msgid("Password")), skin, |ui, label| {
         let field = ui.available_width() - terminal_keyring_width(ui, skin) - 10.0;
         ui.spacing_mut().item_spacing.x = 10.0;
         let field = cell(ui, field, skin, |ui| {
@@ -529,7 +552,7 @@ pub(super) fn terminal_security(
     actions: &mut Vec<Action>,
 ) {
     let line = TextRole::OBody.row_height(ui.ctx(), skin.look.faces);
-    terminal_row_of(ui, &skin.say("TLS"), line, skin, |ui, _| {
+    terminal_row_of(ui, &skin.say(msgid("TLS")), line, skin, |ui, _| {
         let name = gettext(skin.locale, "Use TLS (rediss://)");
         terminal_check(
             ui,
@@ -541,20 +564,20 @@ pub(super) fn terminal_security(
         );
     });
     if form.redis_tls {
-        terminal_row(ui, &skin.say("CA cert"), skin, |ui, label| {
+        terminal_row(ui, &skin.say(msgid("CA cert")), skin, |ui, label| {
             ca_field(ui, form, label, skin, actions);
         });
-        for (text, key) in [("Client cert", false), ("Client key", true)] {
+        for (text, key) in [(msgid("Client cert"), false), (msgid("Client key"), true)] {
             terminal_row(ui, &skin.say(text), skin, |ui, label| {
                 client_file(ui, form, key, label, skin, actions);
             });
         }
-        terminal_row_of(ui, &skin.say("Verify host"), line, skin, |ui, _| {
+        terminal_row_of(ui, &skin.say(msgid("Verify host")), line, skin, |ui, _| {
             let name = gettext(skin.locale, "Verify the server's hostname");
             terminal_check(
                 ui,
                 &mut form.redis_verify_host,
-                &skin.say("Check the name in the certificate"),
+                &skin.say(msgid("Check the name in the certificate")),
                 &name,
                 skin.palette.success,
                 skin,
@@ -574,7 +597,7 @@ pub(super) fn terminal_browsing(ui: &mut Ui, form: &mut ConnectionForm, skin: &S
     let role = TextRole::OBody;
     let height = skin.field_height();
     let open = form.redis_browsing_open;
-    let title = skin.say("Browsing");
+    let title = skin.say(msgid("Browsing"));
     ui.add_space(8.0);
     let line = ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
@@ -614,24 +637,24 @@ pub(super) fn terminal_browsing(ui: &mut Ui, form: &mut ConnectionForm, skin: &S
     if !open {
         return;
     }
-    terminal_row(ui, &skin.say("Key separator"), skin, |ui, label| {
+    terminal_row(ui, &skin.say(msgid("Key separator")), skin, |ui, label| {
         cell(ui, 60.0, skin, |ui| {
             ui.add(input(ui, &mut form.redis_separator, role, height, skin))
         })
         .labelled_by(label);
     });
-    let heading = skin.say("Keys at a time");
+    let heading = skin.say(msgid("Keys at a time"));
     terminal_row_of(ui, &heading, Group::Words.height(), skin, |ui, _| {
         page_choice(ui, form, &heading, skin);
     });
-    terminal_row(ui, &skin.say("Only matching"), skin, |ui, label| {
+    terminal_row(ui, &skin.say(msgid("Only matching")), skin, |ui, label| {
         cell(ui, 220.0, skin, |ui| {
             let hint = hint(ui, "*", role, skin);
             ui.add(input(ui, &mut form.redis_pattern, role, height, skin).hint_text(hint))
         })
         .labelled_by(label);
     });
-    terminal_row(ui, &skin.say("Key limit"), skin, |ui, label| {
+    terminal_row(ui, &skin.say(msgid("Key limit")), skin, |ui, label| {
         cell(ui, 120.0, skin, |ui| {
             ui.add(input(ui, &mut form.redis_key_limit, role, height, skin))
         })

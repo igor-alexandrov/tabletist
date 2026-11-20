@@ -2382,7 +2382,7 @@ fn history_command(
         Command::CopyHistorySql => {
             if let Some(sql) = &entry.sql {
                 ctx.copy_text(sql.clone());
-                let said = crate::i18n::gettext(locale, crate::ui::review::COPIED_SQL);
+                let said = crate::ui::review::COPIED_SQL.say(locale);
                 crate::ui::toast::say(ctx, &said);
             }
         }
@@ -3660,7 +3660,7 @@ fn letters(
             (Some(Command::CopyReviewSql), Some(id)) => {
                 if let Some(review) = app.review_whole(tab, id) {
                     ctx.copy_text(crate::ui::review::text(&review, app.locale));
-                    let said = crate::i18n::gettext(app.locale, crate::ui::review::COPIED_SQL);
+                    let said = crate::ui::review::COPIED_SQL.say(app.locale);
                     crate::ui::toast::say(ctx, &said);
                 }
             }

@@ -1229,3 +1229,36 @@ fn a_databases_keys_are_counted_in_the_words_of_the_language() {
     assert_eq!(words(5), "5 ключей");
     assert_eq!(words(21), "21 ключ");
 }
+
+#[test]
+fn a_keys_length_is_counted_with_its_types_noun() {
+    use super::redis::length_words;
+    use crate::i18n::Locale;
+    let words = |locale, kind, n| length_words(locale, Some(&kind), n);
+    assert_eq!(
+        words(Locale::English, KeyType::Hash, 6).as_deref(),
+        Some("6 fields")
+    );
+    assert_eq!(
+        words(Locale::English, KeyType::Stream, 1).as_deref(),
+        Some("1 entry")
+    );
+    assert_eq!(
+        words(Locale::English, KeyType::Set, 2).as_deref(),
+        Some("2 members")
+    );
+    // A string's length is its size, said elsewhere.
+    assert_eq!(words(Locale::English, KeyType::String, 12), None);
+    assert_eq!(
+        words(Locale::Russian, KeyType::Hash, 6).as_deref(),
+        Some("6 полей")
+    );
+    assert_eq!(
+        words(Locale::Russian, KeyType::Hash, 2).as_deref(),
+        Some("2 поля")
+    );
+    assert_eq!(
+        words(Locale::Russian, KeyType::Stream, 21).as_deref(),
+        Some("21 запись")
+    );
+}

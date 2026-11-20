@@ -487,7 +487,10 @@ fn a_failure_stays_until_dismissed_and_try_again_sends_it_again() {
     assert_eq!(jobs(&harness)[0].destination, jobs(&harness)[1].destination);
     assert_ne!(jobs(&harness)[0].id, jobs(&harness)[1].id);
     tell(&mut harness, ExportState::Cancelled);
-    assert!(painted(&harness, crate::ui::export_toast::CANCELLED));
+    assert!(painted(
+        &harness,
+        crate::ui::export_toast::CANCELLED.english()
+    ));
     tell(
         &mut harness,
         ExportState::Failed(ExportFailure::ConnectionLost { rows: 2 }),

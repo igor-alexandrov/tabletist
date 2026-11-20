@@ -16,7 +16,7 @@ use tabletist_db::ddl::{PartKind, Source};
 use tabletist_db::{Ddl, Driver, ObjectKind};
 
 use crate::format;
-use crate::i18n::{Locale, gettext, ngettext};
+use crate::i18n::{Locale, gettext, msgid, ngettext};
 use crate::keymap::Command;
 use crate::model::{Action, ConnTabId, ObjectTab, TabId};
 use crate::style::Icon;
@@ -39,15 +39,15 @@ pub fn text_id(tab: ConnTabId, id: TabId) -> Id {
 fn part_name(kind: PartKind, object: ObjectKind, locale: Locale) -> Cow<'static, str> {
     let name = match kind {
         PartKind::Object => match object {
-            ObjectKind::Table => "Table",
-            ObjectKind::View => "View",
-            ObjectKind::MaterializedView => "Materialized view",
+            ObjectKind::Table => msgid("Table"),
+            ObjectKind::View => msgid("View"),
+            ObjectKind::MaterializedView => msgid("Materialized view"),
         },
-        PartKind::Indexes => "Indexes",
-        PartKind::Triggers => "Triggers",
-        PartKind::Comments => "Comments",
+        PartKind::Indexes => msgid("Indexes"),
+        PartKind::Triggers => msgid("Triggers"),
+        PartKind::Comments => msgid("Comments"),
     };
-    gettext(locale, name)
+    name.say(locale)
 }
 
 /// How much a part holds, where the view counts it: the statements of
@@ -98,7 +98,7 @@ pub fn copy(ctx: &egui::Context, paint: Paint, tab: ConnTabId, object: &ObjectTa
         Some(part) => {
             let lines = part.lines().count().max(1);
             crate::i18n::ngettext(locale, "Copied {n} line", "Copied {n} lines", lines)
-                .replace("{n}", &lines.to_string())
+                .replace("{n}", &crate::i18n::number(locale, lines))
         }
         None => gettext(locale, "Copied DDL").into_owned(),
     };
@@ -267,7 +267,7 @@ pub fn read_ago(waited: Duration, locale: Locale) -> String {
             (hours, said)
         }
     };
-    said.replace("{n}", &count.to_string())
+    said.replace("{n}", &crate::i18n::number(locale, count))
 }
 
 /// The terminal header's summary in the DDL view: "ddl · read-only ·
@@ -869,18 +869,21 @@ impl Outline<'_> {
         y += pitch;
         let (copy, lines) = (key(Command::CopyDdl), key(Command::SelectDdlLines));
         let keys = [
-            (copy.to_string(), "copy all"),
-            (format!("{} {}", &*lines, &*copy), "copy lines"),
+            (copy.to_string(), msgid("copy all")),
+            (format!("{} {}", &*lines, &*copy), msgid("copy lines")),
             (
                 key(Command::OpenDdlInEditor).to_string(),
-                "open in sql editor",
+                msgid("open in sql editor"),
             ),
             (
                 format!("{} {}", &*key(Command::DdlTop), &*key(Command::DdlBottom)),
-                "top · bottom",
+                msgid("top · bottom"),
             ),
-            (key(Command::OpenDdl).to_string(), "open from anywhere"),
-            (key(Command::Reload).to_string(), "read again"),
+            (
+                key(Command::OpenDdl).to_string(),
+                msgid("open from anywhere"),
+            ),
+            (key(Command::Reload).to_string(), msgid("read again")),
         ];
         let column = keys
             .iter()
@@ -891,7 +894,7 @@ impl Outline<'_> {
             if keys.trim().is_empty() {
                 continue;
             }
-            let word = gettext(locale, word);
+            let word = word.say(locale);
             let said = Text::new(look).add(TextRole::OGroup, &keys, palette.accent);
             widgets::paint_text(ui, left, y, said);
             let width = widgets::paint_text(
@@ -949,7 +952,7 @@ pub fn footer(ui: &mut egui::Ui, paint: Paint, tab: ConnTabId, object: &ObjectTa
             let center = rect.center().y;
             let role = widgets::secondary(&look);
             let count = crate::i18n::ngettext(locale, "{n} line", "{n} lines", lines)
-                .replace("{n}", &lines.to_string());
+                .replace("{n}", &crate::i18n::number(locale, lines));
             let count = format!("{count} · {}", engine(driver));
             let mut x = rect.left() + 24.0;
             x += widgets::paint_label(ui, x, center, Text::one(&look, role, &count, palette.dim));
@@ -1030,12 +1033,12 @@ impl Failed<'_> {
             return None;
         }
         let words = match (self.driver, self.kind) {
-            (Driver::MySql, ObjectKind::View) => {
-                "The connection's user can't run SHOW CREATE VIEW here. Rows and Structure still work."
-            }
-            (Driver::MySql, ObjectKind::Table | ObjectKind::MaterializedView) => {
-                "The connection's user can't run SHOW CREATE TABLE here. Rows and Structure still work."
-            }
+            (Driver::MySql, ObjectKind::View) => msgid(
+                "The connection's user can't run SHOW CREATE VIEW here. Rows and Structure still work.",
+            ),
+            (Driver::MySql, ObjectKind::Table | ObjectKind::MaterializedView) => msgid(
+                "The connection's user can't run SHOW CREATE TABLE here. Rows and Structure still work.",
+            ),
             (
                 Driver::Postgres
                 | Driver::Sqlite
@@ -1043,11 +1046,11 @@ impl Failed<'_> {
                 | Driver::Redis
                 | Driver::Files,
                 _,
-            ) => {
-                "The connection's user can't read this part of the catalog. Rows and Structure still work."
-            }
+            ) => msgid(
+                "The connection's user can't read this part of the catalog. Rows and Structure still work.",
+            ),
         };
-        Some(gettext(locale, words).into_owned())
+        Some(words.say(locale).into_owned())
     }
 
     /// All of it, for the clipboard: the code and the words, and what
@@ -1055,9 +1058,9 @@ impl Failed<'_> {
     fn details(&self, locale: Locale) -> String {
         let mut details = self.said();
         if let tabletist_db::Error::Query { detail, hint, .. } = self.error {
-            for (label, said) in [("Detail", detail), ("Hint", hint)] {
+            for (label, said) in [(msgid("Detail"), detail), (msgid("Hint"), hint)] {
                 if let Some(said) = said {
-                    details.push_str(&format!("\n{}: {said}", gettext(locale, label)));
+                    details.push_str(&format!("\n{}: {said}", label.say(locale)));
                 }
             }
         }

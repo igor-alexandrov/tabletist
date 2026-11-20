@@ -11,7 +11,7 @@ use std::time::Instant;
 use egui::{Align2, Area, Frame, Id, Margin, Order, Rect, Sense, vec2};
 
 use crate::export_sheet::{ExportStatus, Exporting, of_total, size_words, took_words};
-use crate::i18n::gettext;
+use crate::i18n::{Msgid, gettext, msgid};
 use crate::model::Action;
 use crate::typography::{Text, TextRole};
 use crate::ui::widgets::{self, ButtonSpec};
@@ -29,11 +29,11 @@ fn lift(ctx: &egui::Context) -> f32 {
 /// Show in Finder on macOS, Show in folder elsewhere (spec, D9).
 pub fn reveal_words(locale: crate::i18n::Locale) -> String {
     let words = if cfg!(target_os = "macos") {
-        "Show in Finder"
+        msgid("Show in Finder")
     } else {
-        "Show in folder"
+        msgid("Show in folder")
     };
-    gettext(locale, words).into_owned()
+    words.say(locale).into_owned()
 }
 
 /// "Exporting reviews.csv", or "Copying to the clipboard".
@@ -61,15 +61,16 @@ pub fn done_words(exporting: &Exporting, locale: crate::i18n::Locale) -> Option<
     Some(crate::i18n::fill(
         &words,
         &[
-            ("{n}", &crate::format::group_digits(rows)),
+            ("{n}", &crate::i18n::number(locale, rows)),
             ("{file}", &exporting.file),
             ("{size}", &size_words(bytes, locale)),
-            ("{time}", &took_words(took)),
+            ("{time}", &took_words(took, locale)),
         ],
     ))
 }
 
-pub const CANCELLED: &str = "Export cancelled. Nothing was saved: the partial file was removed.";
+pub const CANCELLED: Msgid =
+    msgid("Export cancelled. Nothing was saved: the partial file was removed.");
 
 /// What a screen reader is told of a running export, at most every 2 s:
 /// "Exporting reviews, 58 percent".
@@ -356,7 +357,7 @@ fn one_toast(
             });
         }
         ExportStatus::Cancelled { .. } => {
-            let said = widgets::label(ui, body, &gettext(locale, CANCELLED), ink, &look);
+            let said = widgets::label(ui, body, &CANCELLED.say(locale), ink, &look);
             ui.ctx().accesskit_node_builder(said.id, |node| {
                 node.set_live(egui::accesskit::Live::Polite);
             });

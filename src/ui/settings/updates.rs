@@ -210,7 +210,9 @@ pub(super) fn downloading_said(downloading: &Downloading, locale: Locale) -> Str
     match downloading.time_left() {
         Some(left) => {
             let (words, count) = download::left_words(left);
-            let left = words.say(locale).replace("{n}", &count.to_string());
+            let left = words
+                .say(locale)
+                .replace("{n}", &crate::i18n::number(locale, count));
             format!("{amount} · {left}")
         }
         None => amount,
@@ -246,7 +248,7 @@ pub(super) fn work_said(work: &Work, locale: Locale) -> String {
             "{n} unsaved edits in {table}",
             *count,
         )
-        .replace("{n}", &count.to_string())
+        .replace("{n}", &crate::i18n::number(locale, count))
         .replace("{table}", table),
         Pending::Saving { table } => gettext(locale, "saving {table}").replace("{table}", table),
         Pending::Writing { query } => {
@@ -315,7 +317,7 @@ pub(super) fn when(locale: Locale, at: u64, now: u64) -> String {
     let (words, day) = match crate::clock::day_of(at, now) {
         Day::Today => (msgid("today at {time}"), String::new()),
         Day::Yesterday => (msgid("yesterday at {time}"), String::new()),
-        Day::On(day) => (msgid("on {day} at {time}"), day),
+        day @ (Day::On { .. } | Day::Never) => (msgid("on {day} at {time}"), day.words(locale)),
     };
     words
         .say(locale)
@@ -328,7 +330,7 @@ pub(super) fn released(locale: Locale, at: u64, now: u64) -> String {
     let (words, day) = match crate::clock::day_of(time_of(at), time_of(now)) {
         Day::Today => (msgid("released today"), String::new()),
         Day::Yesterday => (msgid("released yesterday"), String::new()),
-        Day::On(day) => (msgid("released {day}"), day),
+        day @ (Day::On { .. } | Day::Never) => (msgid("released {day}"), day.words(locale)),
     };
     words.say(locale).replace("{day}", &day)
 }
@@ -356,7 +358,7 @@ pub(crate) fn checked_text(
         let at = time_of(at);
         let time = match crate::clock::day_of(at, time_of(now)) {
             Day::Today => crate::clock::hour(at),
-            Day::Yesterday | Day::On(_) => crate::clock::day(at),
+            Day::Yesterday | Day::On { .. } | Day::Never => crate::clock::day(locale, at),
         };
         let said = gettext(locale, "last checked {time}").replace("{time}", &time);
         return Some(look.label(&said));

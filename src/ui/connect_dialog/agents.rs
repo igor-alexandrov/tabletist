@@ -14,47 +14,56 @@ use super::{Skin, input};
 use tabletist_db::Driver;
 
 use crate::connections::AgentAccess;
-use crate::i18n::gettext;
+use crate::i18n::{Msgid, msgid};
 use crate::model::{Action, ConnectionForm, TableFocus, TablesMode};
 use crate::typography::{Text, TextRole};
 use crate::ui::disclosure::{self, Section};
 use crate::ui::widgets::{self, ButtonSpec};
 
 /// The levels, as the switch says them.
-const LEVELS: [(AgentAccess, &str); 2] = [(AgentAccess::Off, "Off"), (AgentAccess::Read, "Read")];
+const LEVELS: [(AgentAccess, Msgid); 2] = [
+    (AgentAccess::Off, msgid("Off")),
+    (AgentAccess::Read, msgid("Read")),
+];
 
 /// The Tables control's modes, as it says them.
-const MODES: [(TablesMode, &str); 3] = [
-    (TablesMode::All, "All"),
-    (TablesMode::AllExcept, "All except"),
-    (TablesMode::Only, "Only"),
+const MODES: [(TablesMode, Msgid); 3] = [
+    (TablesMode::All, msgid("All")),
+    (TablesMode::AllExcept, msgid("All except")),
+    (TablesMode::Only, msgid("Only")),
 ];
 
 /// What the Tables control says under it, of a list that hides: what
 /// agents are and are not told, and what a check in the app cannot stop
 /// (the MCP plan's B.3). Not the board's "Hidden tables don't exist for the
 /// agent": agents are told the names (question 8). Agreed on 2026-10-16.
-const HIDDEN_HINT: &str = "Agents are told these names, never what is in them: the rows, the \
+const HIDDEN_HINT: Msgid = msgid(
+    "Agents are told these names, never what is in them: the rows, the \
                            columns, and the views over them. A function from an extension can \
                            still read them. For strict isolation, use a database user without \
-                           access.";
+                           access.",
+);
 
 /// The same of an "Only" list, whose names are the ones agents may read.
-const ONLY_HINT: &str = "Agents may read these tables and no others, the ones made later \
+const ONLY_HINT: Msgid = msgid(
+    "Agents may read these tables and no others, the ones made later \
                          included. A function from an extension can still read the others. For \
-                         strict isolation, use a database user without access.";
+                         strict isolation, use a database user without access.",
+);
 
 /// What the Masked columns control says under it: what agents get of a
 /// masked column, and what they may not do with one (the MCP plan's B.4).
 /// Not the board's "The agent sees the name and type; values come back as
 /// •••." alone: a statement that uses one otherwise is refused, wherever a
 /// column of its name is. Agreed on 2026-10-18.
-const MASKED_HINT: &str = "Agents see the name and type; values come back as •••. A query that \
+const MASKED_HINT: Msgid = msgid(
+    "Agents see the name and type; values come back as •••. A query that \
                            filters, joins, sorts or computes with one is refused, in any table \
-                           with a column of that name.";
+                           with a column of that name.",
+);
 
 /// The hint for the mode chosen: none for "All", which hides nothing.
-fn tables_hint(form: &ConnectionForm) -> Option<&'static str> {
+fn tables_hint(form: &ConnectionForm) -> Option<Msgid> {
     match form.agents_tables.mode {
         TablesMode::All => None,
         TablesMode::AllExcept => Some(HIDDEN_HINT),
@@ -63,12 +72,14 @@ fn tables_hint(form: &ConnectionForm) -> Option<&'static str> {
 }
 
 /// What the part says under its rows, from the board.
-const NOTE: &str = "When Open read-only is on, agents get Read at most. A new connection starts with agents Off, \
-     a Files one with Read.";
+const NOTE: Msgid = msgid(
+    "When Open read-only is on, agents get Read at most. A new connection starts with agents Off, \
+     a Files one with Read.",
+);
 
 /// What a Files connection's part says under its rows: agents read, and
 /// the files are never theirs to change.
-const FILES_NOTE: &str = "Agents can query the files, never change them.";
+const FILES_NOTE: Msgid = msgid("Agents can query the files, never change them.");
 
 /// Whether the connection keeps the Tables and Masked columns controls:
 /// a Files connection has no catalog that would hold them to a statement.
@@ -82,7 +93,7 @@ fn guards_tables(form: &ConnectionForm) -> bool {
 }
 
 /// The note under the part's rows.
-fn note(form: &ConnectionForm) -> &'static str {
+fn note(form: &ConnectionForm) -> Msgid {
     match guards_tables(form) {
         true => NOTE,
         false => FILES_NOTE,
@@ -213,7 +224,8 @@ fn table_names(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
                         });
                     }
                 }
-                let placeholder = super::hint(ui, &skin.say("table, or schema.table"), role, skin);
+                let placeholder =
+                    super::hint(ui, &skin.say(msgid("table, or schema.table")), role, skin);
                 let Some(typed) = form.agents_table_typed.as_mut() else {
                     return;
                 };
@@ -248,13 +260,13 @@ fn table_names(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
                     true => None,
                     false => {
                         let rows: Vec<String> = offered.iter().map(ToString::to_string).collect();
-                        let note = skin.say("Tables loaded in the sidebar");
+                        let note = skin.say(msgid("Tables loaded in the sidebar"));
                         let pick = form.agents_table_pick;
                         offered_list(ui, list, field.rect, &rows, pick, &note, skin)
                     }
                 };
                 // Screen readers hear the table the keyboard is on.
-                let name = skin.say("Table to add");
+                let name = skin.say(msgid("Table to add"));
                 let chosen = form
                     .agents_table_pick
                     .map(|at| list.with(at).accesskit_id());
@@ -300,7 +312,7 @@ fn table_names(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
                 }
             }
             None => {
-                let add = skin.say("Add table…");
+                let add = skin.say(msgid("Add table…"));
                 let button = ButtonSpec::new(&add).padding(8.0).role(TextRole::pick(
                     skin.look,
                     TextRole::Secondary,
@@ -351,7 +363,7 @@ fn column_names(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
             }
         }
         let Some(before) = form.agents_column_typed.clone() else {
-            let add = skin.say("Add column…");
+            let add = skin.say(msgid("Add column…"));
             let button = ButtonSpec::new(&add).padding(8.0).role(TextRole::pick(
                 skin.look,
                 TextRole::Secondary,
@@ -384,7 +396,7 @@ fn column_names(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
                 });
             }
         }
-        let placeholder = super::hint(ui, &skin.say("table.column"), role, skin);
+        let placeholder = super::hint(ui, &skin.say(msgid("table.column")), role, skin);
         let Some(typed) = form.agents_column_typed.as_mut() else {
             return;
         };
@@ -429,14 +441,14 @@ fn column_names(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
             })
             .unwrap_or_default();
         let note = match &offered.of {
-            None => skin.say("Tables loaded in the sidebar"),
+            None => skin.say(msgid("Tables loaded in the sidebar")),
             Some(table) => {
                 let said = match (loading, failed) {
-                    (true, _) => skin.say("Loading the columns of {table}…"),
+                    (true, _) => skin.say(msgid("Loading the columns of {table}…")),
                     (false, true) if offered.rows.is_empty() => {
-                        skin.say("The columns of {table} could not be read")
+                        skin.say(msgid("The columns of {table} could not be read"))
                     }
-                    _ => skin.say("Columns of {table}"),
+                    _ => skin.say(msgid("Columns of {table}")),
                 };
                 said.replace("{table}", &table.to_string())
             }
@@ -452,7 +464,7 @@ fn column_names(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
             }
         };
         // Screen readers hear the row the keyboard is on.
-        let name = skin.say("Column to mask");
+        let name = skin.say(msgid("Column to mask"));
         let chosen = form
             .agents_column_pick
             .map(|at| list.with(at).accesskit_id());
@@ -538,10 +550,10 @@ fn column_missing(ui: &mut Ui, form: &ConnectionForm, skin: &Skin) {
     {
         return;
     }
-    let said = skin.say(
+    let said = skin.say(msgid(
         "Agents may not use this connection while a masked column is not in its database. Take \
          the name out, or add the column's new name.",
-    );
+    ));
     ui.add_space(4.0);
     let room = ui.available_width();
     Text::one(
@@ -558,7 +570,9 @@ fn column_missing(ui: &mut Ui, form: &ConnectionForm, skin: &Skin) {
 /// Why the column's name typed does not read, under the names.
 fn column_error(ui: &mut Ui, form: &ConnectionForm, skin: &Skin) {
     if let Some(why) = &form.agents_column_error {
-        let said = skin.say("The column's name {why}.").replace("{why}", why);
+        let said = skin
+            .say(msgid("The column's name {why}."))
+            .replace("{why}", why);
         ui.add_space(4.0);
         let room = ui.available_width();
         Text::one(
@@ -740,10 +754,10 @@ fn table_missing(ui: &mut Ui, form: &ConnectionForm, skin: &Skin) {
     if !gone {
         return;
     }
-    let said = skin.say(
+    let said = skin.say(msgid(
         "Agents may not use this connection while a hidden table is not in its database. Take \
          the name out, or add the table's new name.",
-    );
+    ));
     ui.add_space(4.0);
     let room = ui.available_width();
     Text::one(
@@ -761,7 +775,9 @@ fn table_missing(ui: &mut Ui, form: &ConnectionForm, skin: &Skin) {
 /// after the row that holds them.
 fn table_error(ui: &mut Ui, form: &ConnectionForm, skin: &Skin) {
     if let Some(why) = &form.agents_table_error {
-        let said = skin.say("The table's name {why}.").replace("{why}", why);
+        let said = skin
+            .say(msgid("The table's name {why}."))
+            .replace("{why}", why);
         ui.add_space(4.0);
         let room = ui.available_width();
         Text::one(
@@ -793,7 +809,7 @@ fn chip(
     let name_width = role.width(ui.ctx(), look.faces, name);
     let cross_width = role.width(ui.ctx(), look.faces, cross);
     // A name in no table of the database says so after itself.
-    let mark = skin.say("not in this database");
+    let mark = skin.say(msgid("not in this database"));
     let mark_role = TextRole::pick(look, TextRole::Secondary, TextRole::OSecondary);
     let mark_width = match missing {
         true => 8.0 + mark_role.width(ui.ctx(), look.faces, &mark),
@@ -845,7 +861,7 @@ fn chip(
         ui.id().with((kind, "remove", at, name)),
         Sense::click(),
     );
-    let label = skin.say("Remove {name}").replace("{name}", name);
+    let label = skin.say(msgid("Remove {name}")).replace("{name}", name);
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), &label));
     let ink = if response.hovered() || response.has_focus() {
         palette.text
@@ -867,7 +883,7 @@ fn chip(
 fn runs_as(skin: &Skin) -> Option<String> {
     let named = skin.environment.named(crate::env::Platform::Native)?;
     Some(
-        skin.say("Agents use this connection as {env}.")
+        skin.say(msgid("Agents use this connection as {env}."))
             .replace("{env}", &named),
     )
 }
@@ -916,7 +932,7 @@ pub(super) fn sheet(
 ) {
     let Skin { look, palette, .. } = *skin;
     let top = ui.cursor().top();
-    let title = skin.say("Agents");
+    let title = skin.say(msgid("Agents"));
     if guards_tables(form) {
         super::sheet::fieldset(ui, &title, skin, |ui| {
             sheet_rows(ui, form, skin, actions);
@@ -925,7 +941,7 @@ pub(super) fn sheet(
         if form.show_agents {
             form.agents_open = true;
         }
-        let summary = look.label(&gettext(skin.locale, closed_summary(form)));
+        let summary = look.label(&closed_summary(form).say(skin.locale));
         let opens = skin.opens(ui.ctx());
         let section = Section {
             salt: "agents",
@@ -953,10 +969,10 @@ pub(super) fn sheet(
 }
 
 /// What a Files form's closed Agents row says.
-fn closed_summary(form: &ConnectionForm) -> &'static str {
+fn closed_summary(form: &ConnectionForm) -> Msgid {
     match form.agents.access {
-        AgentAccess::Read => "Read · agents can query the files, never change them",
-        AgentAccess::Off => "Off · agents can't reach this connection",
+        AgentAccess::Read => msgid("Read · agents can query the files, never change them"),
+        AgentAccess::Off => msgid("Off · agents can't reach this connection"),
     }
 }
 
@@ -964,7 +980,7 @@ fn closed_summary(form: &ConnectionForm) -> &'static str {
 fn sheet_rows(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut Vec<Action>) {
     let Skin { look, palette, .. } = *skin;
     let small = TextRole::Secondary;
-    let heading = skin.say("Access through Tabletist (MCP)");
+    let heading = skin.say(msgid("Access through Tabletist (MCP)"));
     widgets::label(ui, small, &heading, palette.secondary, look);
     ui.add_space(5.0);
     access(ui, form, &heading, Group::Track(28.0), skin, actions);
@@ -979,7 +995,7 @@ fn sheet_rows(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut
     super::row(ui, 12.0, &columns, |ui, column| match column {
         _ if !guards => {}
         0 => {
-            let tables = skin.say("Tables");
+            let tables = skin.say(msgid("Tables"));
             widgets::label(ui, small, &tables, palette.secondary, look);
             ui.add_space(5.0);
             tables_mode(ui, form, &tables, Group::Track(28.0), skin);
@@ -995,7 +1011,7 @@ fn sheet_rows(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut
             }
         }
         _ => {
-            let masked = skin.say("Masked columns");
+            let masked = skin.say(msgid("Masked columns"));
             widgets::label(ui, small, &masked, palette.secondary, look);
             ui.add_space(5.0);
             column_names(ui, form, skin);
@@ -1011,9 +1027,9 @@ fn sheet_rows(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut
     let (role, height) = (skin.value_role(), skin.field_height());
     super::row(ui, 12.0, &columns, |ui, column| {
         let (label, text) = match column {
-            0 => (skin.say("Rows per answer"), &mut form.agents_rows),
+            0 => (skin.say(msgid("Rows per answer")), &mut form.agents_rows),
             _ => (
-                skin.say("Statement timeout, seconds"),
+                skin.say(msgid("Statement timeout, seconds")),
                 &mut form.agents_timeout,
             ),
         };
@@ -1036,7 +1052,7 @@ pub(super) fn terminal(
 ) {
     let Skin { look, palette, .. } = *skin;
     let top = ui.cursor().top();
-    let title = skin.say("Agents");
+    let title = skin.say(msgid("Agents"));
     if guards_tables(form) {
         super::terminal::terminal_section(ui, &title, skin);
         terminal_rows(ui, form, skin, actions);
@@ -1044,7 +1060,7 @@ pub(super) fn terminal(
         if form.show_agents {
             form.agents_open = true;
         }
-        let summary = look.label(&gettext(skin.locale, closed_summary(form)));
+        let summary = look.label(&closed_summary(form).say(skin.locale));
         let opens = skin.opens(ui.ctx());
         let section = Section {
             salt: "agents",
@@ -1075,7 +1091,7 @@ pub(super) fn terminal(
 fn terminal_rows(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut Vec<Action>) {
     let look = skin.look;
     let line = TextRole::OBody.row_height(ui.ctx(), look.faces);
-    let heading = skin.say("Access");
+    let heading = skin.say(msgid("Access"));
     super::terminal::terminal_row_of(ui, &heading, line, skin, |ui, _| {
         access(ui, form, &heading, Group::Words, skin, actions);
     });
@@ -1083,14 +1099,24 @@ fn terminal_rows(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &
         terminal_guards(ui, form, line, skin);
     }
     let (role, height) = (TextRole::OBody, skin.field_height());
-    super::terminal::terminal_row(ui, &skin.say("Rows per answer"), skin, |ui, label| {
-        ui.add(input(ui, &mut form.agents_rows, role, height, skin))
-            .labelled_by(label);
-    });
-    super::terminal::terminal_row(ui, &skin.say("Timeout, seconds"), skin, |ui, label| {
-        ui.add(input(ui, &mut form.agents_timeout, role, height, skin))
-            .labelled_by(label);
-    });
+    super::terminal::terminal_row(
+        ui,
+        &skin.say(msgid("Rows per answer")),
+        skin,
+        |ui, label| {
+            ui.add(input(ui, &mut form.agents_rows, role, height, skin))
+                .labelled_by(label);
+        },
+    );
+    super::terminal::terminal_row(
+        ui,
+        &skin.say(msgid("Timeout, seconds")),
+        skin,
+        |ui, label| {
+            ui.add(input(ui, &mut form.agents_timeout, role, height, skin))
+                .labelled_by(label);
+        },
+    );
     let mut said = skin.say(note(form));
     if let Some(runs_as) = runs_as(skin) {
         said = format!("{runs_as} {said}");
@@ -1101,7 +1127,7 @@ fn terminal_rows(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &
 
 /// The terminal look's Tables and Masked rows.
 fn terminal_guards(ui: &mut Ui, form: &mut ConnectionForm, line: f32, skin: &Skin) {
-    let tables = skin.say("Tables");
+    let tables = skin.say(msgid("Tables"));
     super::terminal::terminal_row_of(ui, &tables, line, skin, |ui, _| {
         tables_mode(ui, form, &tables, Group::Words, skin);
     });
@@ -1116,7 +1142,7 @@ fn terminal_guards(ui: &mut Ui, form: &mut ConnectionForm, line: f32, skin: &Ski
         sentence(ui, TextRole::OSecondary, &skin.say(hint), skin);
         ui.add_space(4.0);
     }
-    let masked = skin.say("Masked");
+    let masked = skin.say(msgid("Masked"));
     super::terminal::terminal_row_of(ui, &masked, line + 4.0, skin, |ui, _| {
         column_names(ui, form, skin);
     });

@@ -6,7 +6,7 @@ use egui::{CornerRadius, Id, Rect, Sense, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::{ObjectKind, ObjectRef};
 
 use crate::format::display_safe;
-use crate::i18n::{Locale, gettext, ngettext};
+use crate::i18n::{Locale, Msgid, gettext, msgid, ngettext};
 use crate::keymap::{Command, Keymap, Scope, Written};
 use crate::model::{Action, AgentsHere, ConnTabId, TreeNode, TreeRow, Workspace};
 use crate::style::Icon;
@@ -185,7 +185,12 @@ pub fn show(
     } = paint;
     // The keys under the tree, as the keymap writes them for the look.
     let layout = paint.layout();
-    let hints = HINTS.map(|(command, label)| (keymap.key(layout, command), label));
+    let hints = HINTS.map(|(command, label)| {
+        (
+            keymap.key(layout, command),
+            label.say(paint.locale).into_owned(),
+        )
+    });
     let sql_key = keymap.key(layout, Command::NewSqlTab);
     let history_key = keymap.key(layout, Command::History);
     // The Agents entry, where agents can reach the app: what it says, and
@@ -523,11 +528,11 @@ pub fn filter_focused(ctx: &egui::Context, tab: ConnTabId) -> bool {
 
 /// The terminal look's key hints under the tree: what each key does, and
 /// the command whose key it is.
-const HINTS: [(Command, &str); 4] = [
-    (Command::ToggleSidebar, "hide"),
-    (Command::ToggleTree, "tree"),
-    (Command::OpenObject, "open"),
-    (Command::Export, "export table"),
+const HINTS: [(Command, Msgid); 4] = [
+    (Command::ToggleSidebar, msgid("hide")),
+    (Command::ToggleTree, msgid("tree")),
+    (Command::OpenObject, msgid("open")),
+    (Command::Export, msgid("export table")),
 ];
 
 /// The terminal footer's padding (8 above and below, 12 at the sides), and
@@ -539,7 +544,7 @@ const FOOTER: f32 = 8.0 + 2.0 * 15.0 + 8.0 + 1.0;
 fn terminal_footer(
     ui: &mut egui::Ui,
     full: Rect,
-    hints: &[(Written, &str); 4],
+    hints: &[(Written, String); 4],
     look: &Look,
     palette: &Palette,
 ) {
@@ -555,7 +560,7 @@ fn terminal_footer(
         let label = if index + 1 < hints.len() {
             format!("{label} ·")
         } else {
-            (*label).to_owned()
+            label.clone()
         };
         text = text
             .add(role, key, palette.text)
@@ -1177,7 +1182,7 @@ fn tree_row(
         TreeNode::Group(..) => {
             let count = row.count.unwrap_or_default();
             ngettext(locale, "{name}, {n} table", "{name}, {n} tables", count)
-                .replace("{n}", &count.to_string())
+                .replace("{n}", &crate::i18n::number(locale, count))
                 .replace("{name}", &label)
         }
         TreeNode::Object(_, kind) => format!("{full_name}, {}", kind_name(locale, *kind)),
@@ -1265,7 +1270,10 @@ fn tree_row(
     let right = rect.right() - tree_inset(look) - 8.0;
     // What sits at the right: a group's count or an object's kind.
     let (trailing, trailing_color) = match &row.node {
-        TreeNode::Group(..) => (row.count.map(|count| count.to_string()), palette.dim),
+        TreeNode::Group(..) => (
+            row.count.map(|count| crate::i18n::number(locale, count)),
+            palette.dim,
+        ),
         TreeNode::Object(_, kind) => (
             kind_tag(locale, *kind),
             if look.terminal {
@@ -1385,12 +1393,20 @@ fn object_menu(
     let Skin { look, palette } = skin;
     menu::context(response, look, palette, |ui| {
         let ctx = ui.ctx().clone();
-        let word = |text: &'static str| look.label(&gettext(locale, text));
+        let word = |text: Msgid| look.label(&text.say(locale));
         let key = |command| crate::ui::keys::written_in(&ctx, look, command, Scope::Sidebar);
         let rows = [
-            (TreePick::Open, word("Open"), key(Command::OpenObject)),
-            (TreePick::Structure, word("Structure"), Written::default()),
-            (TreePick::Ddl, word("DDL"), Written::default()),
+            (
+                TreePick::Open,
+                word(msgid("Open")),
+                key(Command::OpenObject),
+            ),
+            (
+                TreePick::Structure,
+                word(msgid("Structure")),
+                Written::default(),
+            ),
+            (TreePick::Ddl, word(msgid("DDL")), Written::default()),
         ];
         let mut picked = None;
         let row = |ui: &mut egui::Ui, words: &str, key: &Written| {
@@ -1405,17 +1421,17 @@ fn object_menu(
                 picked = Some(*pick);
             }
         }
-        let copy = word("Copy name");
+        let copy = word(msgid("Copy name"));
         if row(ui, &copy, &Written::default()) {
             picked = Some(TreePick::CopyName);
         }
         menu::separator(ui, palette);
-        let export = word("Export…");
+        let export = word(msgid("Export…"));
         if row(ui, &export, &key(Command::Export)) {
             picked = Some(TreePick::Export);
         }
-        let import = word("Import…");
-        let later = word("later");
+        let import = word(msgid("Import…"));
+        let later = word(msgid("later"));
         let why = gettext(locale, "Import comes after Export");
         menu::Item::action(&import)
             .detail(&later)

@@ -606,30 +606,32 @@ impl SavedConnections {
 }
 
 /// When something last happened, as the picker says it: `2 min ago`,
-/// `yesterday`, `Sep 12`, or `never`. `now` and `then` are seconds since the
-/// Unix epoch; days count in UTC.
-pub fn when(then: Option<u64>, now: u64) -> String {
+/// `yesterday`, `Sep 12`, or `never`, in `locale`. `now` and `then` are
+/// seconds since the Unix epoch; days count in UTC.
+pub fn when(locale: crate::i18n::Locale, then: Option<u64>, now: u64) -> String {
+    use crate::i18n::{fill, gettext, numbers, pgettext};
     let Some(then) = then else {
-        return "never".into();
+        // Translators: a connection never used, as "Last used {when}" says it.
+        return pgettext(locale, "last used", "never").into_owned();
     };
     let ago = now.saturating_sub(then);
     let days = now / 86_400 - then / 86_400;
+    let count = |words: &str, n: u64| fill(words, &[("{n}", &numbers::number(locale, n))]);
     match ago {
-        0..60 => "just now".into(),
-        60..3_600 => format!("{} min ago", ago / 60),
-        _ if days == 0 => format!("{} h ago", ago / 3_600),
-        _ if days == 1 => "yesterday".into(),
+        0..60 => pgettext(locale, "last used", "just now").into_owned(),
+        60..3_600 => count(&gettext(locale, "{n} min ago"), ago / 60),
+        _ if days == 0 => count(&gettext(locale, "{n} h ago"), ago / 3_600),
+        _ if days == 1 => pgettext(locale, "last used", "yesterday").into_owned(),
         _ => {
-            const MONTHS: [&str; 12] = [
-                "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-            ];
             let (year, month, day) = civil(then / 86_400);
             let (this_year, _, _) = civil(now / 86_400);
-            let date = format!("{} {day}", MONTHS[month as usize - 1]);
+            let month = i8::try_from(month).unwrap_or(1);
+            let day = i8::try_from(day).unwrap_or(1);
             if year == this_year {
-                date
+                numbers::short_day(locale, month, day)
             } else {
-                format!("{date}, {year}")
+                let year = i16::try_from(year).unwrap_or(i16::MAX);
+                numbers::dated_day(locale, year, month, day)
             }
         }
     }
@@ -659,12 +661,18 @@ mod tests {
     fn last_use_reads_as_the_picker_says_it() {
         // 2026-09-29 12:00 UTC.
         let now = 1_790_683_200;
-        assert_eq!(when(None, now), "never");
-        assert_eq!(when(Some(now - 120), now), "2 min ago");
-        assert_eq!(when(Some(now - 86_400), now), "yesterday");
+        let english = |then| when(crate::i18n::Locale::English, then, now);
+        assert_eq!(english(None), "never");
+        assert_eq!(english(Some(now - 120)), "2 min ago");
+        assert_eq!(english(Some(now - 86_400)), "yesterday");
         // 2026-09-12.
-        assert_eq!(when(Some(now - 17 * 86_400), now), "Sep 12");
-        assert_eq!(when(Some(now - 400 * 86_400), now), "Aug 25, 2025");
+        assert_eq!(english(Some(now - 17 * 86_400)), "Sep 12");
+        assert_eq!(english(Some(now - 400 * 86_400)), "Aug 25, 2025");
+        let russian = |then| when(crate::i18n::Locale::Russian, then, now);
+        assert_eq!(russian(None), "никогда");
+        assert_eq!(russian(Some(now - 120)), "2 мин назад");
+        assert_eq!(russian(Some(now - 86_400)), "вчера");
+        assert_eq!(russian(Some(now - 400 * 86_400)), "25 авг. 2025 г.");
     }
 
     #[test]

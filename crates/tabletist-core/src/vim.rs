@@ -16,6 +16,7 @@
 //! editor. Not: text objects, `.`, registers other than the one, search,
 //! marks, macros.
 
+use crate::i18n::msgid;
 use std::ops::Range;
 
 /// Where the keys go.
@@ -36,12 +37,12 @@ pub enum Mode {
 
 impl Mode {
     /// What the status line says, as vim's: nothing in normal mode.
-    pub fn label(self) -> Option<&'static str> {
+    pub fn label(self) -> Option<crate::i18n::Msgid> {
         match self {
             Mode::Normal => None,
-            Mode::Insert => Some("-- INSERT --"),
-            Mode::Visual => Some("-- VISUAL --"),
-            Mode::VisualLine => Some("-- VISUAL LINE --"),
+            Mode::Insert => Some(msgid("-- INSERT --")),
+            Mode::Visual => Some(msgid("-- VISUAL --")),
+            Mode::VisualLine => Some(msgid("-- VISUAL LINE --")),
         }
     }
 

@@ -1468,3 +1468,112 @@ fn an_agents_name_is_read_from_the_agents_log_and_not_kept() {
         assert!(harness.history_written().is_empty());
     }
 }
+
+/// A query's label is recorded in English and said in the window's
+/// language as History draws it, a run 1 entry recorded in Russian too;
+/// a day of another year heads its entries in the language's order.
+#[test]
+fn history_says_a_query_and_its_day_in_the_window_s_language() {
+    // Noon on 2025-10-13 where the tests run, a day of another year: History
+    // says days in the system's zone, so a fixed instant would be the 14th
+    // east of UTC+12.
+    let last_year = jiff::civil::date(2025, 10, 13)
+        .at(12, 0, 0, 0)
+        .to_zoned(jiff::tz::TimeZone::system())
+        .expect("noon is in every zone")
+        .timestamp()
+        .as_millisecond();
+    for look in looks() {
+        let (mut harness, tab, _) = covers(look);
+        super::language_tests::in_russian(&mut harness);
+        run(&mut harness, tab, READ);
+        harness.answer_sql(Ok(script_outcome(vec![rows_outcome(6)])), None);
+        assert_eq!(last_written(&harness).detail, "Query 1", "{}", look.name);
+        let mut old = entry(&harness, tab, Source::Sql, Some(READ));
+        old.detail = "Запрос 2".into();
+        old.at_ms = last_year;
+        let entries = vec![entry(&harness, tab, Source::Sql, Some(READ)), old.clone()];
+        shown_with(&mut harness, tab, entries.clone());
+        select(&mut harness, tab, 1);
+        harness.settle();
+        let said = |harness: &Harness, text: &str| {
+            harness
+                .painted
+                .iter()
+                .any(|(painted, _)| painted.contains(text))
+        };
+        let query = harness.app.look.label("Запрос 2");
+        assert!(
+            said(&harness, &query),
+            "{}: {:?}",
+            look.name,
+            harness.painted
+        );
+        let day = match look.terminal {
+            true => "13 окт. 2025 г.",
+            false => "13 ОКТ. 2025 Г.",
+        };
+        assert!(said(&harness, day), "{}: {:?}", look.name, harness.painted);
+        // In English the same entries read as English.
+        let (mut english, tab, _) = covers(look);
+        let entries: Vec<Entry> = entries
+            .into_iter()
+            .map(|mut entry| {
+                entry.connection = conn(&english, tab);
+                entry
+            })
+            .collect();
+        shown_with(&mut english, tab, entries);
+        select(&mut english, tab, 1);
+        english.settle();
+        let query = english.app.look.label("Query 2");
+        assert!(
+            said(&english, &query),
+            "{}: {:?}",
+            look.name,
+            english.painted
+        );
+        let day = match look.terminal {
+            true => "oct 13, 2025",
+            false => "OCT 13, 2025",
+        };
+        assert!(said(&english, day), "{}: {:?}", look.name, english.painted);
+    }
+}
+
+#[test]
+fn a_table_named_like_a_query_keeps_its_name_in_any_language() {
+    for look in looks() {
+        let (mut harness, tab, _) = covers(look);
+        super::language_tests::in_russian(&mut harness);
+        let mut save = entry(&harness, tab, Source::Save, Some(READ));
+        save.detail = "Query 7".into();
+        let entries = vec![entry(&harness, tab, Source::Sql, Some(READ)), save];
+        shown_with(&mut harness, tab, entries);
+        let said = |harness: &Harness, text: &str| {
+            let text = harness.app.look.label(text);
+            harness
+                .painted
+                .iter()
+                .any(|(painted, _)| painted.contains(&text))
+        };
+        // A query's label is said in Russian; a grid save's table is not.
+        select(&mut harness, tab, 0);
+        harness.settle();
+        assert!(
+            said(&harness, "Запрос 1"),
+            "{}: {:?}",
+            look.name,
+            harness.painted
+        );
+        select(&mut harness, tab, 1);
+        harness.settle();
+        assert!(
+            said(&harness, "Query 7"),
+            "{}: {:?}",
+            look.name,
+            harness.painted
+        );
+        assert!(!said(&harness, "Запрос 7"), "{}", look.name);
+    }
+}
