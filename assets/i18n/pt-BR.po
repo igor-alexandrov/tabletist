@@ -6753,7 +6753,8 @@ msgstr "grade"
 msgid "move"
 msgstr "mover"
 
-#: src/ui/pane_hints.rs src/ui/workspace.rs
+#: src/ui/pane_hints.rs src/ui/quick_open.rs src/ui/sidebar.rs src/ui/start.rs
+#: src/ui/workspace.rs
 msgctxt "key hint"
 msgid "open"
 msgstr "abrir"
@@ -7109,7 +7110,7 @@ msgstr "filtrar conexões"
 msgid "key's passphrase"
 msgstr "frase secreta da chave"
 
-#: src/ui/picker.rs src/ui/quick_open.rs src/ui/sidebar.rs src/ui/start.rs
+#: src/ui/picker.rs
 msgid "open"
 msgstr "aberta"
 
