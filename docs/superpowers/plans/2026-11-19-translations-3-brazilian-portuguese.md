@@ -708,12 +708,9 @@ fn every_brazilian_portuguese_entry_is_translated() {
 }
 ```
 
-- [ ] **Step 2: The units**, in `numbers.rs`'s tests:
+- [ ] **Step 2: The units**, in `numbers.rs`'s tests. 3a already translated the short counts («1,2 mil», «3,4 mi», «7 bi») and checks them in `brazilian_portuguese_groups_by_points_with_a_decimal_comma`, so the translating guide's example holds. The rest:
 
 ```rust
-assert_eq!(compact_count(Brazilian, 1_240), "1,2 mil");
-assert_eq!(compact_count(Brazilian, 3_400_000), "3,4 mi");
-assert_eq!(compact_count(Brazilian, 7_000_000_000), "7 bi");
 assert_eq!(file_size(Brazilian, 5 * 1024 * 1024), "5,0 MB");
 assert_eq!(
     range_label(Brazilian, 0, 300, false, None, Some(1_234_567)).as_deref(),

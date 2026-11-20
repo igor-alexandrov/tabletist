@@ -639,7 +639,7 @@ msgstr ""
 #, rust-format
 msgctxt "billions"
 msgid "{n}B"
-msgstr ""
+msgstr "{n} bi"
 
 #. Translators: a size as the terminal look writes it: "48.2K".
 #: crates/tabletist-core/src/i18n/numbers.rs
@@ -659,14 +659,14 @@ msgstr ""
 #, rust-format
 msgctxt "thousands"
 msgid "{n}K"
-msgstr ""
+msgstr "{n} mil"
 
 #. Translators: a count shortened to millions: "3.4M".
 #: crates/tabletist-core/src/i18n/numbers.rs
 #, rust-format
 msgctxt "millions"
 msgid "{n}M"
-msgstr ""
+msgstr "{n} mi"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 #, rust-format

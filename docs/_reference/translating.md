@@ -7,11 +7,12 @@ nav_order: 4
 Tabletist's interface is in English, Português (Brasil) and Русский. Each
 language is one plain text file, a gettext catalog, in
 [`assets/i18n`](https://github.com/igor-alexandrov/tabletist/tree/main/assets/i18n):
-`pt-BR.po` for Brazilian Portuguese, `ru.po` for Russian. The interface looks its strings up there, and one the
-catalog lacks shows in English, so a catalog can be finished a part at a
-time. If you find a word of the interface that stays English whatever the
-catalog says, it needs a change to the code, not to the catalog: tell us
-in an [issue](https://github.com/igor-alexandrov/tabletist/issues).
+`pt-BR.po` for Brazilian Portuguese, `ru.po` for Russian. The interface
+looks its strings up there, and one the catalog lacks shows in English, so
+a catalog can be finished a part at a time. If you find a word of the
+interface that stays English whatever the catalog says, it needs a change
+to the code, not to the catalog: tell us in an
+[issue](https://github.com/igor-alexandrov/tabletist/issues).
 
 Only the app is translated. This website and its guide stay in English.
 
@@ -98,7 +99,8 @@ Brazilian Portuguese has two, and counts 0 as one: «0 linha», «1 linha»,
 
 The app writes the number with the language's own marks: «12 480 строк»,
 with a no-break space between the thousands, and «1,2 тыс.» with a decimal
-comma; «12.480 linhas» and «1,2 mil» in Brazilian Portuguese. These marks are set in the code, not in the catalog.
+comma; «12.480 linhas» and «1,2 mil» in Brazilian Portuguese. These marks
+are set in the code, not in the catalog.
 
 ## Dates
 

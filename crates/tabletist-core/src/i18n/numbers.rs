@@ -439,6 +439,9 @@ mod tests {
         // A decimal number takes its comma even with nothing to group.
         assert_eq!(group_number(Brazilian, "12.5"), "12,5");
         assert_eq!(group_number(Brazilian, "1e5"), "1e5");
+        assert_eq!(compact_count(Brazilian, 1_240), "1,2 mil");
+        assert_eq!(compact_count(Brazilian, 3_400_000), "3,4 mi");
+        assert_eq!(compact_count(Brazilian, 7_000_000_000), "7 bi");
     }
 
     #[test]
