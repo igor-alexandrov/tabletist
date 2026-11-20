@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-19 21:49-0500\n"
+"POT-Creation-Date: 2026-11-20 09:48-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -2691,7 +2691,7 @@ msgstr ""
 msgid "Edit"
 msgstr ""
 
-#: src/menu.rs src/ui/data_view.rs src/ui/ddl.rs
+#: src/menu.rs src/ui/data_view.rs
 msgid "View"
 msgstr ""
 
@@ -5251,6 +5251,11 @@ msgstr ""
 #: src/ui/date_line.rs
 #, rust-format
 msgid "Use {time}"
+msgstr ""
+
+#: src/ui/ddl.rs
+msgctxt "object kind"
+msgid "View"
 msgstr ""
 
 #: src/ui/ddl.rs
@@ -8562,6 +8567,10 @@ msgstr ""
 
 #: src/ui/settings/mod.rs
 msgid "English"
+msgstr ""
+
+#: src/ui/settings/mod.rs
+msgid "Brazilian Portuguese"
 msgstr ""
 
 #: src/ui/settings/mod.rs

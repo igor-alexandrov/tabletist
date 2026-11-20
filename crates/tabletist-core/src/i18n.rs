@@ -1,5 +1,6 @@
 //! Bundled gettext catalogs. English is the source language; every other
-//! language the app ships has a catalog in `assets/i18n` (`ru.po`), which
+//! language the app ships has a catalog in `assets/i18n` (`ru.po`,
+//! `pt-BR.po`), which
 //! the build compiles. A string a catalog lacks shows in English. A message
 //! drawn later than it is written (a command's name, a settings pane's) is
 //! marked where it is written with [`msgid`] or [`pmsgid`], so the
@@ -214,18 +215,29 @@ pub fn fill(text: &str, values: &[(&str, &str)]) -> String {
 pub enum Locale {
     #[default]
     English,
+    BrazilianPortuguese,
     Russian,
 }
 
 impl Locale {
     /// Every language the app ships, in the order the language menu lists
-    /// them.
-    pub const ALL: [Locale; 2] = [Self::English, Self::Russian];
+    /// them: by their own names, Latin script first.
+    pub const ALL: [Locale; 3] = [Self::English, Self::BrazilianPortuguese, Self::Russian];
 
-    /// The tag the settings file writes: `en`, `ru`.
+    /// The tag the settings file writes: `en`, `pt-BR`, `ru`.
     pub fn tag(self) -> &'static str {
         match self {
             Self::English => "en",
+            Self::BrazilianPortuguese => "pt-BR",
+            Self::Russian => "ru",
+        }
+    }
+
+    /// The language subtag that chooses it: `en`, `pt`, `ru`.
+    fn language(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            Self::BrazilianPortuguese => "pt",
             Self::Russian => "ru",
         }
     }
@@ -235,16 +247,18 @@ impl Locale {
     pub fn native_name(self) -> &'static str {
         match self {
             Self::English => "English",
+            Self::BrazilianPortuguese => "Português (Brasil)",
             Self::Russian => "Русский",
         }
     }
 
     /// The language `tag` names, where the app ships it: its language
-    /// subtag alone decides (`ru-RU`, `ru_UA.UTF-8` are Russian).
+    /// subtag alone decides (`ru-RU`, `ru_UA.UTF-8` are Russian; `pt-PT`
+    /// is Brazilian Portuguese, the only Portuguese shipped).
     pub fn from_tag(tag: &LanguageTag) -> Option<Self> {
         Self::ALL
             .into_iter()
-            .find(|locale| locale.tag() == tag.language)
+            .find(|locale| locale.language() == tag.language)
     }
 }
 
@@ -252,6 +266,7 @@ impl fastframe_i18n::Locale for Locale {
     fn catalog(self) -> Option<&'static dyn fastframe_i18n::Translator> {
         match self {
             Self::English => None,
+            Self::BrazilianPortuguese => Some(&pt_br::Translator),
             Self::Russian => Some(&ru::Translator),
         }
     }
@@ -345,8 +360,40 @@ mod tests {
         assert_eq!(Locale::from_tag(&tag("ru-RU")), Some(Locale::Russian));
         assert_eq!(Locale::from_tag(&tag("ru_UA.UTF-8")), Some(Locale::Russian));
         assert_eq!(Locale::from_tag(&tag("en_GB.UTF-8")), Some(Locale::English));
+        let brazilian = Some(Locale::BrazilianPortuguese);
+        assert_eq!(Locale::from_tag(&tag("pt-BR")), brazilian);
+        assert_eq!(Locale::from_tag(&tag("pt_BR.UTF-8")), brazilian);
+        assert_eq!(Locale::from_tag(&tag("PT-br")), brazilian);
+        // Every Portuguese reads Brazilian: the only Portuguese shipped.
+        assert_eq!(Locale::from_tag(&tag("pt")), brazilian);
+        assert_eq!(Locale::from_tag(&tag("pt-PT")), brazilian);
+        assert_eq!(Locale::from_tag(&tag("pt_AO.UTF-8")), brazilian);
         assert_eq!(Locale::from_tag(&tag("fr-FR")), None);
         assert_eq!(Locale::from_tag(&tag("C")), None);
+    }
+
+    #[test]
+    fn every_shipped_language_reads_back_from_its_tag() {
+        for locale in Locale::ALL {
+            assert_eq!(
+                Locale::from_tag(&tag(locale.tag())),
+                Some(locale),
+                "{locale:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn brazilian_portuguese_has_a_catalog_with_two_forms() {
+        use fastframe_i18n::Locale as _;
+        let pt = Locale::BrazilianPortuguese;
+        assert!(pt.catalog().is_some());
+        assert_eq!(gettext(pt, "Settings"), "Configurações");
+        let rows = |count: u64| ngettext(pt, "{n} row", "{n} rows", count);
+        // Zero is singular in Brazilian Portuguese.
+        assert_eq!(rows(0), "{n} linha");
+        assert_eq!(rows(1), "{n} linha");
+        assert_eq!(rows(2), "{n} linhas");
     }
 
     #[test]
@@ -472,38 +519,67 @@ mod tests {
         found
     }
 
+    /// Every catalog the app ships, by file.
+    const CATALOGS: [(&str, &str); 2] = [
+        ("ru.po", include_str!("../../../assets/i18n/ru.po")),
+        ("pt-BR.po", include_str!("../../../assets/i18n/pt-BR.po")),
+    ];
+
     #[test]
-    fn every_russian_translation_keeps_its_placeholders() {
-        let text = include_str!("../../../assets/i18n/ru.po");
-        let entries = entries(text);
-        assert!(entries.len() > 1400, "{} entries", entries.len());
-        for (ids, strs) in entries {
-            let Some(id) = ids.first().filter(|id| !id.is_empty()) else {
-                continue;
-            };
-            let wanted = placeholders(id);
-            for translated in strs.iter().filter(|text| !text.is_empty()) {
-                assert_eq!(placeholders(translated), wanted, "{id:?} → {translated:?}");
+    fn every_translation_keeps_its_placeholders() {
+        for (file, text) in CATALOGS {
+            let entries = entries(text);
+            assert!(entries.len() > 1400, "{file}: {} entries", entries.len());
+            for (ids, strs) in entries {
+                let Some(id) = ids.first().filter(|id| !id.is_empty()) else {
+                    continue;
+                };
+                let wanted = placeholders(id);
+                for translated in strs.iter().filter(|text| !text.is_empty()) {
+                    assert_eq!(
+                        placeholders(translated),
+                        wanted,
+                        "{file}: {id:?} → {translated:?}"
+                    );
+                }
             }
         }
     }
 
     #[test]
-    fn every_russian_entry_is_translated_without_an_em_dash() {
-        let text = include_str!("../../../assets/i18n/ru.po");
-        assert!(!text.contains("#, fuzzy"), "a fuzzy entry shows in English");
+    fn no_translation_is_fuzzy_or_has_an_em_dash() {
+        for (file, text) in CATALOGS {
+            assert!(
+                !text.contains("#, fuzzy"),
+                "{file}: a fuzzy entry shows in English"
+            );
+            for (ids, strs) in entries(text) {
+                let Some(id) = ids.first().filter(|id| !id.is_empty()) else {
+                    continue;
+                };
+                for translated in &strs {
+                    assert!(!translated.contains('—'), "{file}: {id:?} → {translated:?}");
+                }
+            }
+        }
+    }
+
+    /// Every entry of `text` has every form translated.
+    fn assert_every_entry_is_translated((file, text): (&str, &str)) {
         for (ids, strs) in entries(text) {
             let Some(id) = ids.first().filter(|id| !id.is_empty()) else {
                 continue;
             };
             assert!(
                 !strs.is_empty() && strs.iter().all(|text| !text.is_empty()),
-                "{id:?} is not translated"
+                "{file}: {id:?} is not translated"
             );
-            for translated in &strs {
-                assert!(!translated.contains('—'), "{id:?} → {translated:?}");
-            }
         }
+    }
+
+    #[test]
+    fn every_russian_entry_is_translated() {
+        assert_every_entry_is_translated(CATALOGS[0]);
     }
 
     #[test]
