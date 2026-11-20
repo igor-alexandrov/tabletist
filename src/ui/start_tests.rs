@@ -977,3 +977,62 @@ fn the_screen_and_its_field_take_the_boards_colours() {
         );
     }
 }
+
+/// A Bookshop window in `look`, read in Brazilian Portuguese.
+fn in_portuguese(look: Look) -> (Harness, ConnTabId) {
+    let (mut harness, tab) = bookshop(look);
+    let portuguese = crate::settings::Language::Fixed(crate::i18n::Locale::BrazilianPortuguese);
+    harness
+        .app
+        .apply(Action::SetOption(crate::settings::OptionValue::Language(
+            portuguese,
+        )));
+    harness.settle();
+    (harness, tab)
+}
+
+/// In Portuguese the macOS search footer's Enter opens: the key hint's
+/// «abrir», never the picker's «aberta» for an open connection.
+#[test]
+fn a_portuguese_search_footer_says_open_as_what_enter_does() {
+    let (mut harness, _tab) = in_portuguese(Look::macos());
+    for (key, text) in [(Key::C, "c"), (Key::O, "o"), (Key::V, "v")] {
+        type_key(&mut harness, key, text);
+    }
+    harness.settle();
+    assert!(painted(&harness, "↩ abrir"));
+    assert!(!painted(&harness, "↩ aberta"));
+}
+
+/// The terminal status line while the search has the keyboard says Enter
+/// opens, «abrir», beside Esc's «voltar».
+#[test]
+fn a_portuguese_terminal_search_line_says_open_as_what_enter_does() {
+    let (mut harness, _tab) = in_portuguese(Look::omarchy());
+    harness.press(Key::L, Modifiers::CTRL);
+    for (key, text) in [
+        (Key::Slash, "/"),
+        (Key::C, "c"),
+        (Key::O, "o"),
+        (Key::V, "v"),
+    ] {
+        type_key(&mut harness, key, text);
+    }
+    harness.settle();
+    assert!(painted(&harness, "esc voltar"));
+    assert!(painted(&harness, "enter abrir"));
+    assert!(!painted(&harness, "enter aberta"));
+}
+
+/// The terminal sidebar's hints under the tree say Enter opens, «abrir».
+#[test]
+fn a_portuguese_sidebar_says_open_as_what_enter_does() {
+    let (harness, _tab) = in_portuguese(Look::omarchy());
+    let hints = harness
+        .painted
+        .iter()
+        .find(|(text, _)| text.starts_with("ctrl+b ocultar"))
+        .map(|(text, _)| text.clone())
+        .expect("the sidebar's hints");
+    assert!(hints.contains(" · enter abrir · "), "{hints}");
+}
