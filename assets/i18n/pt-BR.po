@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-19 23:02-0500\n"
+"POT-Creation-Date: 2026-11-20 15:03-0500\n"
 "PO-Revision-Date: 2026-11-19 16:11-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -720,9 +720,9 @@ msgstr "Adicionar linha após a última"
 
 #: crates/tabletist-core/src/keymap.rs crates/tabletist-core/src/model.rs
 #: src/app/commands.rs src/menu.rs src/ui/agent_access.rs
-#: src/ui/connect_dialog/agents.rs src/ui/history.rs src/ui/object_tabs.rs
-#: src/ui/picker.rs src/ui/quick_open.rs src/ui/settings/agents.rs
-#: src/ui/sidebar.rs
+#: src/ui/connect_dialog/agents.rs src/ui/connect_dialog/redis.rs
+#: src/ui/history.rs src/ui/object_tabs.rs src/ui/picker.rs
+#: src/ui/quick_open.rs src/ui/settings/agents.rs src/ui/sidebar.rs
 msgid "Agents"
 msgstr "Agentes"
 
@@ -759,7 +759,7 @@ msgstr "Fim do DDL"
 #: src/ui/data_view.rs src/ui/every_row_prompt.rs src/ui/export.rs
 #: src/ui/export_toast.rs src/ui/history.rs src/ui/host_key_prompt.rs
 #: src/ui/password_prompt.rs src/ui/pending_bar.rs src/ui/picker.rs
-#: src/ui/settings/keyboard_sheet.rs src/ui/settings/sheet.rs
+#: src/ui/redis.rs src/ui/settings/keyboard_sheet.rs src/ui/settings/sheet.rs
 #: src/ui/settings/terminal.rs src/ui/settings/updates.rs src/ui/sql_results.rs
 #: src/ui/structure.rs src/ui/workspace.rs src/ui/write_prompts.rs
 msgid "Cancel"
@@ -1013,6 +1013,14 @@ msgstr ""
 "atualização"
 
 #: crates/tabletist-core/src/keymap.rs
+msgid "Copy the key's name"
+msgstr ""
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Copy the key's value"
+msgstr ""
+
+#: crates/tabletist-core/src/keymap.rs
 msgid "Copy the pending SQL"
 msgstr "Copiar o SQL pendente"
 
@@ -1180,6 +1188,10 @@ msgid "Filter the keyboard rows by name"
 msgstr "Filtrar as linhas de atalhos pelo nome"
 
 #: crates/tabletist-core/src/keymap.rs
+msgid "Filter the keys by a pattern"
+msgstr ""
+
+#: crates/tabletist-core/src/keymap.rs
 msgid "Filter the log by agent, result or request"
 msgstr "Filtrar o log por agente, resultado ou solicitação"
 
@@ -1210,6 +1222,10 @@ msgstr "Recolher todos os grupos"
 #: crates/tabletist-core/src/keymap.rs
 msgid "Fold or open the group"
 msgstr "Recolher ou expandir o grupo"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Fold or unfold the key's group"
+msgstr ""
 
 #: crates/tabletist-core/src/keymap.rs
 msgid "Fold the documents"
@@ -1397,6 +1413,10 @@ msgid "Move in the history"
 msgstr "Mover-se no histórico"
 
 #: crates/tabletist-core/src/keymap.rs
+msgid "Move in the keys"
+msgstr ""
+
+#: crates/tabletist-core/src/keymap.rs
 msgid "Move in the settings"
 msgstr "Mover-se nas configurações"
 
@@ -1544,6 +1564,10 @@ msgstr "Reabrir a conexão"
 #: crates/tabletist-core/src/keymap.rs
 msgid "Open the exported file's folder"
 msgstr "Abrir a pasta do arquivo exportado"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open the key, or fold its group"
+msgstr ""
 
 #: crates/tabletist-core/src/keymap.rs
 msgid "Open the large editor"
@@ -1730,6 +1754,10 @@ msgid "Reapply the selected filter"
 msgstr "Reaplicar o filtro selecionado"
 
 #: crates/tabletist-core/src/keymap.rs
+msgid "Redis keys"
+msgstr ""
+
+#: crates/tabletist-core/src/keymap.rs
 msgid "Redo (vim's normal mode)"
 msgstr "Refazer (modo normal do vim)"
 
@@ -1738,7 +1766,7 @@ msgid "Redo one cell"
 msgstr "Refazer uma célula"
 
 #: crates/tabletist-core/src/keymap.rs src/ui/data_view.rs src/ui/ddl.rs
-#: src/ui/sidebar.rs
+#: src/ui/redis.rs src/ui/sidebar.rs
 msgid "Reload"
 msgstr "Recarregar"
 
@@ -1807,6 +1835,10 @@ msgstr "Salvar alterações"
 #: crates/tabletist-core/src/keymap.rs
 msgid "Save the connection"
 msgstr "Salvar a conexão"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Scan the keys again"
+msgstr ""
 
 #: crates/tabletist-core/src/keymap.rs
 msgid "Scroll the statements"
@@ -2164,6 +2196,54 @@ msgstr "{name} aceita outras teclas"
 msgid "{name} takes typed keys"
 msgstr "{name} aceita teclas digitadas"
 
+#: crates/tabletist-core/src/keyspace.rs src/ui/connect_dialog/mod.rs
+#: src/ui/workspace.rs
+msgid "Connected"
+msgstr "Conectado"
+
+#: crates/tabletist-core/src/keyspace.rs
+msgid ""
+"Connected, but this user can't run INFO or SCAN, so keys can't be listed "
+"(NOPERM)"
+msgstr ""
+
+#: crates/tabletist-core/src/keyspace.rs
+#, rust-format
+msgid "No answer from {at} after {secs} s"
+msgstr ""
+
+#: crates/tabletist-core/src/keyspace.rs
+#, rust-format
+msgid "Nothing is listening on {at} (connection refused)"
+msgstr ""
+
+#: crates/tabletist-core/src/keyspace.rs
+msgid "Redis-compatible"
+msgstr ""
+
+#: crates/tabletist-core/src/keyspace.rs
+msgid "The server closed the connection. It may need TLS: turn on Use TLS."
+msgstr ""
+
+#: crates/tabletist-core/src/keyspace.rs
+msgid "This server needs a password (NOAUTH)"
+msgstr ""
+
+#: crates/tabletist-core/src/keyspace.rs
+msgid "Wrong username or password (WRONGPASS)"
+msgstr ""
+
+#: crates/tabletist-core/src/keyspace.rs
+msgid "empty"
+msgstr ""
+
+#: crates/tabletist-core/src/keyspace.rs
+#, rust-format
+msgid "{count} key"
+msgid_plural "{count} keys"
+msgstr[0] ""
+msgstr[1] ""
+
 #: crates/tabletist-core/src/model.rs src/ui/agents.rs src/ui/history.rs
 msgid "Agent"
 msgstr "Agente"
@@ -2217,8 +2297,8 @@ msgstr "Teclado"
 msgid "Language"
 msgstr "Idioma"
 
-#: crates/tabletist-core/src/model.rs src/ui/connect_dialog/sheet.rs
-#: src/ui/connect_dialog/terminal.rs
+#: crates/tabletist-core/src/model.rs src/ui/connect_dialog/redis.rs
+#: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Password"
 msgstr "Senha"
 
@@ -2592,6 +2672,14 @@ msgstr "Cancelar a cópia de {name}"
 msgid "Cancel exporting {name}"
 msgstr "Cancelar a exportação de {name}"
 
+#: src/app/redis.rs
+msgid "Key copied"
+msgstr ""
+
+#: src/app/redis.rs
+msgid "Value copied"
+msgstr ""
+
 #: src/app/updates.rs src/ui/settings/updates_terminal.rs
 #, rust-format
 msgid "{version} available"
@@ -2810,7 +2898,7 @@ msgid "Zoom"
 msgstr "Zoom"
 
 #: src/ui/about.rs src/ui/connect_dialog/sheet.rs src/ui/help.rs
-#: src/ui/object_tabs.rs src/ui/settings/terminal.rs
+#: src/ui/object_tabs.rs src/ui/redis.rs src/ui/settings/terminal.rs
 msgid "Close"
 msgstr "Fechar"
 
@@ -2858,7 +2946,8 @@ msgid_plural " and {n} more"
 msgstr[0] " e mais {n}"
 msgstr[1] " e mais {n}"
 
-#: src/ui/agents.rs src/ui/connect_dialog/agents.rs src/ui/settings/agents.rs
+#: src/ui/agents.rs src/ui/connect_dialog/agents.rs
+#: src/ui/connect_dialog/redis.rs src/ui/settings/agents.rs
 #: src/ui/settings/terminal.rs
 msgid "Access"
 msgstr "Acesso"
@@ -2979,9 +3068,9 @@ msgstr "Nenhuma chamada nesta conexão ainda."
 msgid "No calls to export."
 msgstr "Nenhuma chamada para exportar."
 
-#: src/ui/agents.rs src/ui/connect_dialog/agents.rs src/ui/picker.rs
-#: src/ui/settings/agents.rs src/ui/settings/sheet.rs
-#: src/ui/settings/terminal.rs src/ui/sql_editor.rs
+#: src/ui/agents.rs src/ui/connect_dialog/agents.rs
+#: src/ui/connect_dialog/redis.rs src/ui/picker.rs src/ui/settings/agents.rs
+#: src/ui/settings/sheet.rs src/ui/settings/terminal.rs src/ui/sql_editor.rs
 msgid "Off"
 msgstr "Desativado"
 
@@ -3925,7 +4014,8 @@ msgid "Choose a folder"
 msgstr "Escolher uma pasta"
 
 #: src/ui/connect_dialog/files.rs src/ui/connect_dialog/mod.rs
-#: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
+#: src/ui/connect_dialog/redis.rs src/ui/connect_dialog/sheet.rs
+#: src/ui/connect_dialog/terminal.rs
 msgid "Choose…"
 msgstr "Escolher…"
 
@@ -3979,10 +4069,6 @@ msgstr "Escolher um certificado de CA"
 #: src/ui/connect_dialog/mod.rs
 msgid "Choose a database file"
 msgstr "Escolher um arquivo de banco de dados"
-
-#: src/ui/connect_dialog/mod.rs src/ui/workspace.rs
-msgid "Connected"
-msgstr "Conectado"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Files connections have no URL. Choose a folder or files under Source."
@@ -4273,6 +4359,151 @@ msgstr "{values} como vazio em {column}"
 msgid "{values} read as empty in {column}"
 msgstr "{values} lido como vazio em {column}"
 
+#: src/ui/connect_dialog/redis.rs
+msgid "Agents for Redis come later"
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Browsing"
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs src/ui/connect_dialog/terminal.rs
+msgid "CA cert"
+msgstr "Certificado de CA"
+
+#: src/ui/connect_dialog/redis.rs src/ui/connect_dialog/sheet.rs
+msgid "CA certificate"
+msgstr "Certificado de CA"
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Check the name in the certificate"
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Choose a client certificate"
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Choose the client key"
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Client cert"
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Client certificate"
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Client key"
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs src/ui/connect_dialog/sheet.rs
+#: src/ui/connect_dialog/terminal.rs src/ui/history.rs src/ui/workspace.rs
+msgid "Database"
+msgstr "Banco de dados"
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Group keys by"
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs src/ui/connect_dialog/sheet.rs
+#: src/ui/connect_dialog/terminal.rs src/ui/workspace.rs
+msgid "Host"
+msgstr "Host"
+
+#: src/ui/connect_dialog/redis.rs src/ui/connect_dialog/terminal.rs
+msgid "Host : Port"
+msgstr "Host : Porta"
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Key limit"
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Key separator"
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs
+msgid ""
+"Keys are listed with SCAN, never KEYS, so a large database doesn't block the "
+"server."
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Keys at a time"
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs
+msgid ""
+"Leave Username empty to sign in as the default user with a password only. "
+"Leave both empty for a server without a password."
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Only keys matching"
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Only matching"
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Optional"
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs src/ui/connect_dialog/sheet.rs
+#: src/ui/connect_dialog/terminal.rs
+msgid "Port"
+msgstr "Porta"
+
+#: src/ui/connect_dialog/redis.rs src/ui/connect_dialog/sheet.rs
+msgid "Sign in"
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs
+msgid "TLS"
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs
+msgid ""
+"Tabletist sends only read commands to Redis. For the server to refuse writes "
+"too, sign in as an ACL user without write permission."
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Use TLS (rediss://)"
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Username"
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Verify host"
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Verify the server's hostname"
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs src/ui/start.rs
+msgid "all keys"
+msgstr "todas as teclas"
+
+#: src/ui/connect_dialog/redis.rs
+msgid "keys at a time"
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs
+msgid "keys matching"
+msgstr ""
+
+#: src/ui/connect_dialog/redis.rs
+msgid "nothing"
+msgstr ""
+
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Authentication"
 msgstr "Autenticação"
@@ -4289,10 +4520,6 @@ msgstr ""
 "Bloqueia toda gravação a partir deste app. Ativado por padrão em production; "
 "desative para editar."
 
-#: src/ui/connect_dialog/sheet.rs
-msgid "CA certificate"
-msgstr "Certificado de CA"
-
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Choose a key file"
 msgstr "Escolher um arquivo de chave"
@@ -4304,11 +4531,6 @@ msgstr "Conectar por túnel SSH"
 #: src/ui/connect_dialog/sheet.rs
 msgid "Connection URL"
 msgstr "URL de conexão"
-
-#: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
-#: src/ui/history.rs src/ui/workspace.rs
-msgid "Database"
-msgstr "Banco de dados"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Default credentials when empty"
@@ -4334,14 +4556,15 @@ msgid ""
 msgstr "Preenche os parâmetros. Uma senha na URL vai para o campo de senha."
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
-#: src/ui/workspace.rs
-msgid "Host"
-msgstr "Host"
-
-#: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/structure.rs
 msgid "Name"
 msgstr "Nome"
+
+#: src/ui/connect_dialog/sheet.rs
+msgid ""
+"Only read commands run: GET, HGETALL, LRANGE, SSCAN, ZRANGE, XRANGE, SCAN, "
+"TYPE, PTTL."
+msgstr ""
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Open read-only"
@@ -4350,10 +4573,6 @@ msgstr "Abrir em somente leitura"
 #: src/ui/connect_dialog/sheet.rs
 msgid "Parameters"
 msgstr "Parâmetros"
-
-#: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
-msgid "Port"
-msgstr "Porta"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "SSH host"
@@ -4425,10 +4644,6 @@ msgid "Block every write from this app"
 msgstr "Bloquear toda gravação a partir deste app"
 
 #: src/ui/connect_dialog/terminal.rs
-msgid "CA cert"
-msgstr "Certificado de CA"
-
-#: src/ui/connect_dialog/terminal.rs
 msgid "Connect through SSH"
 msgstr "Conectar por SSH"
 
@@ -4441,12 +4656,12 @@ msgid "Files open read-only"
 msgstr "Os arquivos abrem em somente leitura"
 
 #: src/ui/connect_dialog/terminal.rs
-msgid "Host : Port"
-msgstr "Host : Porta"
-
-#: src/ui/connect_dialog/terminal.rs
 msgid "No URL for files"
 msgstr "Sem URL para arquivos"
+
+#: src/ui/connect_dialog/terminal.rs
+msgid "Only read commands run"
+msgstr ""
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "Paste URL"
@@ -5935,7 +6150,7 @@ msgstr "WHERE manual"
 msgid "Remove condition"
 msgstr "Remover condição"
 
-#: src/ui/filter_bar.rs
+#: src/ui/filter_bar.rs src/ui/redis.rs
 msgid "Value"
 msgstr "Valor"
 
@@ -6382,7 +6597,7 @@ msgstr "Expandir tudo"
 msgid "Expand {name}"
 msgstr "Expandir {name}"
 
-#: src/ui/json_view.rs
+#: src/ui/json_view.rs src/ui/redis.rs
 #, rust-format
 msgid "{n} item"
 msgid_plural "{n} items"
@@ -7093,6 +7308,10 @@ msgstr "conectar / mostrar"
 msgid "connections"
 msgstr "conexões"
 
+#: src/ui/picker.rs src/ui/workspace.rs
+msgid "default user"
+msgstr ""
+
 #: src/ui/picker.rs src/ui/row_panel.rs src/ui/settings/terminal.rs
 #: src/ui/workspace.rs
 msgid "delete"
@@ -7150,6 +7369,10 @@ msgstr "Localizar uma tabela, view ou comando"
 #: src/ui/quick_open.rs
 msgid "Find object"
 msgstr "Localizar objeto"
+
+#: src/ui/quick_open.rs src/ui/redis.rs
+msgid "Keys"
+msgstr ""
 
 #: src/ui/quick_open.rs src/ui/start.rs
 msgid "Largest tables"
@@ -7218,6 +7441,11 @@ msgstr "no editor SQL"
 msgid "jumps to the setting"
 msgstr "vai para a configuração"
 
+#: src/ui/quick_open.rs
+msgctxt "redis"
+msgid "key"
+msgstr ""
+
 #: src/ui/quick_open.rs src/ui/sidebar.rs src/ui/sql_complete.rs
 #: src/ui/start.rs
 msgid "materialized view"
@@ -7280,6 +7508,13 @@ msgstr[1] "mais {n} em {window}"
 
 #: src/ui/quick_open.rs
 #, rust-format
+msgid "{n} more key"
+msgid_plural "{n} more keys"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/quick_open.rs
+#, rust-format
 msgid "{n} more table"
 msgid_plural "{n} more tables"
 msgstr[0] "mais {n} tabela"
@@ -7291,6 +7526,163 @@ msgid "{n} more view"
 msgid_plural "{n} more views"
 msgstr[0] "mais {n} view"
 msgstr[1] "mais {n} views"
+
+#: src/ui/redis.rs
+msgid "Binary"
+msgstr ""
+
+#: src/ui/redis.rs
+msgid "Choose a key to see its value."
+msgstr ""
+
+#: src/ui/redis.rs
+msgid "Copy key"
+msgstr ""
+
+#: src/ui/redis.rs
+msgid "Copy value"
+msgstr ""
+
+#: src/ui/redis.rs
+msgid "Expires in"
+msgstr ""
+
+#: src/ui/redis.rs
+msgid "Filter keys"
+msgstr ""
+
+#: src/ui/redis.rs
+msgid "Filter keys…"
+msgstr ""
+
+#: src/ui/redis.rs
+msgid ""
+"Keys added or removed while the scan runs may or may not appear until the "
+"next reload."
+msgstr ""
+
+#: src/ui/redis.rs
+msgid "Load more"
+msgstr ""
+
+#: src/ui/redis.rs
+#, rust-format
+msgid "Load more ({shown} of {total})"
+msgstr ""
+
+#: src/ui/redis.rs
+msgid "No expiry"
+msgstr ""
+
+#: src/ui/redis.rs
+msgid "No keys match."
+msgstr ""
+
+#: src/ui/redis.rs
+msgid "Reading…"
+msgstr ""
+
+#: src/ui/redis.rs
+msgid "Scan all"
+msgstr ""
+
+#: src/ui/redis.rs
+#, rust-format
+msgid "Scanned {held} of {total} key"
+msgid_plural "Scanned {held} of {total} keys"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/redis.rs
+#, rust-format
+msgid "Scanned {held}+ of {total} key"
+msgid_plural "Scanned {held}+ of {total} keys"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/redis.rs
+#, rust-format
+msgid ""
+"Scanning {keys} keys may take a while and hold about {size} in Tabletist."
+msgstr ""
+
+#: src/ui/redis.rs
+msgid "Scanning…"
+msgstr ""
+
+#: src/ui/redis.rs
+#, rust-format
+msgid "Showing groups from the first {held} of {total} key"
+msgid_plural "Showing groups from the first {held} of {total} keys"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/redis.rs
+msgid "Showing the first 256 KiB"
+msgstr ""
+
+#: src/ui/redis.rs
+msgid "Stop"
+msgstr ""
+
+#: src/ui/redis.rs
+#, rust-format
+msgid "Stopped at {held} of {total} key"
+msgid_plural "Stopped at {held} of {total} keys"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/redis.rs
+msgid "This type isn't shown yet"
+msgstr ""
+
+#: src/ui/redis.rs
+#, rust-format
+msgid "Value of {key}"
+msgstr ""
+
+#: src/ui/redis.rs
+msgid "filter keys · book:*"
+msgstr ""
+
+#: src/ui/redis.rs
+msgid "or filter with a pattern"
+msgstr ""
+
+#: src/ui/redis.rs
+#, rust-format
+msgid "{name}, {count} key"
+msgid_plural "{name}, {count} keys"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/redis.rs
+#, rust-format
+msgid "{n} entry"
+msgid_plural "{n} entries"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/redis.rs
+#, rust-format
+msgid "{n} field"
+msgid_plural "{n} fields"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/redis.rs
+#, rust-format
+msgid "{n} member"
+msgid_plural "{n} members"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/redis.rs
+#, rust-format
+msgid "{n} more"
+msgid_plural "{n} more"
+msgstr[0] ""
+msgstr[1] ""
 
 #: src/ui/review.rs
 msgid "Copied SQL"
@@ -10054,10 +10446,6 @@ msgstr "Esta conexão não está mais salva"
 #: src/ui/start.rs
 msgid "agents"
 msgstr "agentes"
-
-#: src/ui/start.rs
-msgid "all keys"
-msgstr "todas as teclas"
 
 #: src/ui/start.rs
 msgid "database"

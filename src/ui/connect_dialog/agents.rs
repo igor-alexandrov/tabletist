@@ -85,7 +85,9 @@ const FILES_NOTE: Msgid = msgid("Agents can query the files, never change them."
 /// a Files connection has no catalog that would hold them to a statement.
 fn guards_tables(form: &ConnectionForm) -> bool {
     match form.driver {
-        Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => true,
+        Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery | Driver::Redis => {
+            true
+        }
         Driver::Files => false,
     }
 }

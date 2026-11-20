@@ -817,7 +817,8 @@ impl App {
             return Self::result_facts(workspace, sheet, result);
         }
         let object = workspace.object_tab(sheet.id)?;
-        let dialect = workspace.driver.dialect();
+        // Nothing of it without SQL (Redis).
+        let dialect = workspace.driver.dialect()?;
         let query = &object.query;
         let filtered = !query.filters.is_empty() || query.raw_where.is_some();
         let counted = object.count.value.map(|rows| Count { rows, exact: true });
@@ -902,6 +903,7 @@ impl App {
         sheet: &ExportSheet,
         result: ResultOf,
     ) -> Option<ExportFacts> {
+        let dialect = workspace.driver.dialect()?;
         let sql = workspace.sql_tab(sheet.id)?;
         let (index, _) = sql.shown()?;
         // Another statement's rows, or another run's (one in flight will
@@ -945,7 +947,7 @@ impl App {
             rows,
             clipboard_refused: rows
                 .is_some_and(|rows| rows.rows > crate::export::CLIPBOARD_ROWS as u64),
-            dialect: workspace.driver.dialect(),
+            dialect,
             result: Some(ResultFacts {
                 query: result.query,
                 statement: result.statement + 1,
@@ -1028,7 +1030,8 @@ impl App {
             return self.result_job(workspace, sheet, result, destination);
         }
         let object = workspace.object_tab(sheet.id)?;
-        let dialect = workspace.driver.dialect();
+        // Nothing of it without SQL (Redis).
+        let dialect = workspace.driver.dialect()?;
         let chosen = sheet.chosen();
         if chosen.is_empty() {
             return None;
@@ -1199,7 +1202,7 @@ impl App {
             options: sheet.options.clone(),
             // A result's columns name no table (spec 4, F9 and S4).
             object: None,
-            dialect: workspace.driver.dialect(),
+            dialect: workspace.driver.dialect()?,
             destination: destination.clone(),
         };
         let (file, shown_path) = self.export_file(&destination);

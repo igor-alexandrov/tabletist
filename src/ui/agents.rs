@@ -138,7 +138,7 @@ pub fn show(
                 .and_then(|id| saved.get(&crate::connections::ConnectionId(id.clone())));
             LogCall {
                 open: logged.entry.sql.as_ref().map(|_| saved.is_some()),
-                dialect: saved.map(|saved| saved.spec.driver.dialect()),
+                dialect: saved.and_then(|saved| saved.spec.driver.dialect()),
             }
         })
         .unwrap_or_default();

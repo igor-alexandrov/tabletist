@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-19 23:02-0500\n"
+"POT-Creation-Date: 2026-11-20 15:03-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -734,9 +734,9 @@ msgstr "Добавить строку после последней"
 
 #: crates/tabletist-core/src/keymap.rs crates/tabletist-core/src/model.rs
 #: src/app/commands.rs src/menu.rs src/ui/agent_access.rs
-#: src/ui/connect_dialog/agents.rs src/ui/history.rs src/ui/object_tabs.rs
-#: src/ui/picker.rs src/ui/quick_open.rs src/ui/settings/agents.rs
-#: src/ui/sidebar.rs
+#: src/ui/connect_dialog/agents.rs src/ui/connect_dialog/redis.rs
+#: src/ui/history.rs src/ui/object_tabs.rs src/ui/picker.rs
+#: src/ui/quick_open.rs src/ui/settings/agents.rs src/ui/sidebar.rs
 msgid "Agents"
 msgstr "Агенты"
 
@@ -773,7 +773,7 @@ msgstr "В конец DDL"
 #: src/ui/data_view.rs src/ui/every_row_prompt.rs src/ui/export.rs
 #: src/ui/export_toast.rs src/ui/history.rs src/ui/host_key_prompt.rs
 #: src/ui/password_prompt.rs src/ui/pending_bar.rs src/ui/picker.rs
-#: src/ui/settings/keyboard_sheet.rs src/ui/settings/sheet.rs
+#: src/ui/redis.rs src/ui/settings/keyboard_sheet.rs src/ui/settings/sheet.rs
 #: src/ui/settings/terminal.rs src/ui/settings/updates.rs src/ui/sql_results.rs
 #: src/ui/structure.rs src/ui/workspace.rs src/ui/write_prompts.rs
 msgid "Cancel"
@@ -1025,6 +1025,14 @@ msgid "Copy the command the settings show: an agent's, or the update's"
 msgstr "Копировать команду из настроек: агента или обновления"
 
 #: crates/tabletist-core/src/keymap.rs
+msgid "Copy the key's name"
+msgstr "Скопировать имя ключа"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Copy the key's value"
+msgstr "Скопировать значение ключа"
+
+#: crates/tabletist-core/src/keymap.rs
 msgid "Copy the pending SQL"
 msgstr "Копировать ожидающий SQL"
 
@@ -1191,6 +1199,10 @@ msgid "Filter the keyboard rows by name"
 msgstr "Фильтровать строки клавиш по имени"
 
 #: crates/tabletist-core/src/keymap.rs
+msgid "Filter the keys by a pattern"
+msgstr "Отфильтровать ключи по шаблону"
+
+#: crates/tabletist-core/src/keymap.rs
 msgid "Filter the log by agent, result or request"
 msgstr "Фильтровать журнал по агенту, результату или запросу"
 
@@ -1221,6 +1233,10 @@ msgstr "Свернуть все группы"
 #: crates/tabletist-core/src/keymap.rs
 msgid "Fold or open the group"
 msgstr "Свернуть или раскрыть группу"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Fold or unfold the key's group"
+msgstr "Свернуть или развернуть группу ключа"
 
 #: crates/tabletist-core/src/keymap.rs
 msgid "Fold the documents"
@@ -1408,6 +1424,10 @@ msgid "Move in the history"
 msgstr "Перемещаться по истории"
 
 #: crates/tabletist-core/src/keymap.rs
+msgid "Move in the keys"
+msgstr "Перемещаться по ключам"
+
+#: crates/tabletist-core/src/keymap.rs
 msgid "Move in the settings"
 msgstr "Перемещаться по настройкам"
 
@@ -1555,6 +1575,10 @@ msgstr "Открыть подключение снова"
 #: crates/tabletist-core/src/keymap.rs
 msgid "Open the exported file's folder"
 msgstr "Открыть папку экспортированного файла"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open the key, or fold its group"
+msgstr "Открыть ключ или свернуть его группу"
 
 #: crates/tabletist-core/src/keymap.rs
 msgid "Open the large editor"
@@ -1741,6 +1765,10 @@ msgid "Reapply the selected filter"
 msgstr "Применить выбранный фильтр снова"
 
 #: crates/tabletist-core/src/keymap.rs
+msgid "Redis keys"
+msgstr "Ключи Redis"
+
+#: crates/tabletist-core/src/keymap.rs
 msgid "Redo (vim's normal mode)"
 msgstr "Повторить (обычный режим vim)"
 
@@ -1749,7 +1777,7 @@ msgid "Redo one cell"
 msgstr "Повторить одну ячейку"
 
 #: crates/tabletist-core/src/keymap.rs src/ui/data_view.rs src/ui/ddl.rs
-#: src/ui/sidebar.rs
+#: src/ui/redis.rs src/ui/sidebar.rs
 msgid "Reload"
 msgstr "Обновить"
 
@@ -1817,6 +1845,10 @@ msgstr "Сохранить изменения"
 #: crates/tabletist-core/src/keymap.rs
 msgid "Save the connection"
 msgstr "Сохранить подключение"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Scan the keys again"
+msgstr "Просканировать ключи заново"
 
 #: crates/tabletist-core/src/keymap.rs
 msgid "Scroll the statements"
@@ -2174,6 +2206,59 @@ msgstr "«{name}» принимает другие клавиши"
 msgid "{name} takes typed keys"
 msgstr "«{name}» принимает вводимые клавиши"
 
+#: crates/tabletist-core/src/keyspace.rs src/ui/connect_dialog/mod.rs
+#: src/ui/workspace.rs
+msgid "Connected"
+msgstr "Подключено"
+
+#: crates/tabletist-core/src/keyspace.rs
+msgid ""
+"Connected, but this user can't run INFO or SCAN, so keys can't be listed "
+"(NOPERM)"
+msgstr ""
+"Подключено, но этот пользователь не может выполнять INFO и SCAN, поэтому "
+"ключи не перечислить (NOPERM)"
+
+#: crates/tabletist-core/src/keyspace.rs
+#, rust-format
+msgid "No answer from {at} after {secs} s"
+msgstr "Нет ответа от {at} за {secs} с"
+
+#: crates/tabletist-core/src/keyspace.rs
+#, rust-format
+msgid "Nothing is listening on {at} (connection refused)"
+msgstr "На {at} никто не отвечает (соединение отклонено)"
+
+#: crates/tabletist-core/src/keyspace.rs
+msgid "Redis-compatible"
+msgstr "совместим с Redis"
+
+#: crates/tabletist-core/src/keyspace.rs
+msgid "The server closed the connection. It may need TLS: turn on Use TLS."
+msgstr ""
+"Сервер закрыл соединение. Возможно, ему нужен TLS: включите «Использовать "
+"TLS»."
+
+#: crates/tabletist-core/src/keyspace.rs
+msgid "This server needs a password (NOAUTH)"
+msgstr "Этому серверу нужен пароль (NOAUTH)"
+
+#: crates/tabletist-core/src/keyspace.rs
+msgid "Wrong username or password (WRONGPASS)"
+msgstr "Неверное имя пользователя или пароль (WRONGPASS)"
+
+#: crates/tabletist-core/src/keyspace.rs
+msgid "empty"
+msgstr "пусто"
+
+#: crates/tabletist-core/src/keyspace.rs
+#, rust-format
+msgid "{count} key"
+msgid_plural "{count} keys"
+msgstr[0] "{count} ключ"
+msgstr[1] "{count} ключа"
+msgstr[2] "{count} ключей"
+
 #: crates/tabletist-core/src/model.rs src/ui/agents.rs src/ui/history.rs
 msgid "Agent"
 msgstr "Агент"
@@ -2227,8 +2312,8 @@ msgstr "Клавиатура"
 msgid "Language"
 msgstr "Язык"
 
-#: crates/tabletist-core/src/model.rs src/ui/connect_dialog/sheet.rs
-#: src/ui/connect_dialog/terminal.rs
+#: crates/tabletist-core/src/model.rs src/ui/connect_dialog/redis.rs
+#: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Password"
 msgstr "Пароль"
 
@@ -2612,6 +2697,14 @@ msgstr "Отменить копирование {name}"
 msgid "Cancel exporting {name}"
 msgstr "Отменить экспорт {name}"
 
+#: src/app/redis.rs
+msgid "Key copied"
+msgstr "Ключ скопирован"
+
+#: src/app/redis.rs
+msgid "Value copied"
+msgstr "Значение скопировано"
+
 #: src/app/updates.rs src/ui/settings/updates_terminal.rs
 #, rust-format
 msgid "{version} available"
@@ -2830,7 +2923,7 @@ msgid "Zoom"
 msgstr "Масштаб"
 
 #: src/ui/about.rs src/ui/connect_dialog/sheet.rs src/ui/help.rs
-#: src/ui/object_tabs.rs src/ui/settings/terminal.rs
+#: src/ui/object_tabs.rs src/ui/redis.rs src/ui/settings/terminal.rs
 msgid "Close"
 msgstr "Закрыть"
 
@@ -2879,7 +2972,8 @@ msgstr[0] " и ещё {n}"
 msgstr[1] " и ещё {n}"
 msgstr[2] " и ещё {n}"
 
-#: src/ui/agents.rs src/ui/connect_dialog/agents.rs src/ui/settings/agents.rs
+#: src/ui/agents.rs src/ui/connect_dialog/agents.rs
+#: src/ui/connect_dialog/redis.rs src/ui/settings/agents.rs
 #: src/ui/settings/terminal.rs
 msgid "Access"
 msgstr "Доступ"
@@ -3001,9 +3095,9 @@ msgstr "На этом подключении пока нет вызовов."
 msgid "No calls to export."
 msgstr "Нет вызовов для экспорта."
 
-#: src/ui/agents.rs src/ui/connect_dialog/agents.rs src/ui/picker.rs
-#: src/ui/settings/agents.rs src/ui/settings/sheet.rs
-#: src/ui/settings/terminal.rs src/ui/sql_editor.rs
+#: src/ui/agents.rs src/ui/connect_dialog/agents.rs
+#: src/ui/connect_dialog/redis.rs src/ui/picker.rs src/ui/settings/agents.rs
+#: src/ui/settings/sheet.rs src/ui/settings/terminal.rs src/ui/sql_editor.rs
 msgid "Off"
 msgstr "Выкл."
 
@@ -3960,7 +4054,8 @@ msgid "Choose a folder"
 msgstr "Выбрать папку"
 
 #: src/ui/connect_dialog/files.rs src/ui/connect_dialog/mod.rs
-#: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
+#: src/ui/connect_dialog/redis.rs src/ui/connect_dialog/sheet.rs
+#: src/ui/connect_dialog/terminal.rs
 msgid "Choose…"
 msgstr "Выбрать…"
 
@@ -4014,10 +4109,6 @@ msgstr "Выбрать сертификат CA"
 #: src/ui/connect_dialog/mod.rs
 msgid "Choose a database file"
 msgstr "Выбрать файл базы данных"
-
-#: src/ui/connect_dialog/mod.rs src/ui/workspace.rs
-msgid "Connected"
-msgstr "Подключено"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Files connections have no URL. Choose a folder or files under Source."
@@ -4311,6 +4402,157 @@ msgstr "{values} как пустое в {column}"
 msgid "{values} read as empty in {column}"
 msgstr "{values} читается как пустое в {column}"
 
+#: src/ui/connect_dialog/redis.rs
+msgid "Agents for Redis come later"
+msgstr "Агенты для Redis появятся позже"
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Browsing"
+msgstr "Просмотр"
+
+#: src/ui/connect_dialog/redis.rs src/ui/connect_dialog/terminal.rs
+msgid "CA cert"
+msgstr "Сертификат CA"
+
+#: src/ui/connect_dialog/redis.rs src/ui/connect_dialog/sheet.rs
+msgid "CA certificate"
+msgstr "Сертификат CA"
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Check the name in the certificate"
+msgstr "Проверять имя в сертификате"
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Choose a client certificate"
+msgstr "Выберите сертификат клиента"
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Choose the client key"
+msgstr "Выберите ключ клиента"
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Client cert"
+msgstr "Сертификат клиента"
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Client certificate"
+msgstr "Сертификат клиента"
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Client key"
+msgstr "Ключ клиента"
+
+#: src/ui/connect_dialog/redis.rs src/ui/connect_dialog/sheet.rs
+#: src/ui/connect_dialog/terminal.rs src/ui/history.rs src/ui/workspace.rs
+msgid "Database"
+msgstr "База данных"
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Group keys by"
+msgstr "Группировать ключи по"
+
+#: src/ui/connect_dialog/redis.rs src/ui/connect_dialog/sheet.rs
+#: src/ui/connect_dialog/terminal.rs src/ui/workspace.rs
+msgid "Host"
+msgstr "Хост"
+
+#: src/ui/connect_dialog/redis.rs src/ui/connect_dialog/terminal.rs
+msgid "Host : Port"
+msgstr "Хост : Порт"
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Key limit"
+msgstr "Предел ключей"
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Key separator"
+msgstr "Разделитель ключей"
+
+#: src/ui/connect_dialog/redis.rs
+msgid ""
+"Keys are listed with SCAN, never KEYS, so a large database doesn't block the "
+"server."
+msgstr ""
+"Ключи перечисляются через SCAN, никогда через KEYS, поэтому большая база не "
+"блокирует сервер."
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Keys at a time"
+msgstr "Ключей за раз"
+
+#: src/ui/connect_dialog/redis.rs
+msgid ""
+"Leave Username empty to sign in as the default user with a password only. "
+"Leave both empty for a server without a password."
+msgstr ""
+"Оставьте имя пользователя пустым, чтобы войти как пользователь по умолчанию "
+"только с паролем. Оставьте оба поля пустыми для сервера без пароля."
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Only keys matching"
+msgstr "Только ключи по шаблону"
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Only matching"
+msgstr "Только по шаблону"
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Optional"
+msgstr "Необязательно"
+
+#: src/ui/connect_dialog/redis.rs src/ui/connect_dialog/sheet.rs
+#: src/ui/connect_dialog/terminal.rs
+msgid "Port"
+msgstr "Порт"
+
+#: src/ui/connect_dialog/redis.rs src/ui/connect_dialog/sheet.rs
+msgid "Sign in"
+msgstr "Вход"
+
+#: src/ui/connect_dialog/redis.rs
+msgid "TLS"
+msgstr "TLS"
+
+#: src/ui/connect_dialog/redis.rs
+msgid ""
+"Tabletist sends only read commands to Redis. For the server to refuse writes "
+"too, sign in as an ACL user without write permission."
+msgstr ""
+"Tabletist отправляет в Redis только команды чтения. Чтобы и сервер отказывал "
+"в записи, войдите как пользователь ACL без права записи."
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Use TLS (rediss://)"
+msgstr "Использовать TLS (rediss://)"
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Username"
+msgstr "Имя пользователя"
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Verify host"
+msgstr "Проверять хост"
+
+#: src/ui/connect_dialog/redis.rs
+msgid "Verify the server's hostname"
+msgstr "Проверять имя хоста сервера"
+
+#: src/ui/connect_dialog/redis.rs src/ui/start.rs
+msgid "all keys"
+msgstr "все клавиши"
+
+#: src/ui/connect_dialog/redis.rs
+msgid "keys at a time"
+msgstr "ключей за раз"
+
+#: src/ui/connect_dialog/redis.rs
+msgid "keys matching"
+msgstr "ключи по шаблону"
+
+#: src/ui/connect_dialog/redis.rs
+msgid "nothing"
+msgstr "ничего"
+
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Authentication"
 msgstr "Аутентификация"
@@ -4327,10 +4569,6 @@ msgstr ""
 "Запрещает любую запись из этого приложения. Для production включено по "
 "умолчанию; выключите, чтобы изменять данные."
 
-#: src/ui/connect_dialog/sheet.rs
-msgid "CA certificate"
-msgstr "Сертификат CA"
-
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Choose a key file"
 msgstr "Выбрать файл ключа"
@@ -4342,11 +4580,6 @@ msgstr "Подключаться через SSH-туннель"
 #: src/ui/connect_dialog/sheet.rs
 msgid "Connection URL"
 msgstr "URL подключения"
-
-#: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
-#: src/ui/history.rs src/ui/workspace.rs
-msgid "Database"
-msgstr "База данных"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Default credentials when empty"
@@ -4372,14 +4605,17 @@ msgid ""
 msgstr "Заполняет параметры. Пароль из URL переносится в поле пароля."
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
-#: src/ui/workspace.rs
-msgid "Host"
-msgstr "Хост"
-
-#: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/structure.rs
 msgid "Name"
 msgstr "Имя"
+
+#: src/ui/connect_dialog/sheet.rs
+msgid ""
+"Only read commands run: GET, HGETALL, LRANGE, SSCAN, ZRANGE, XRANGE, SCAN, "
+"TYPE, PTTL."
+msgstr ""
+"Выполняются только команды чтения: GET, HGETALL, LRANGE, SSCAN, ZRANGE, "
+"XRANGE, SCAN, TYPE, PTTL."
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Open read-only"
@@ -4388,10 +4624,6 @@ msgstr "Открывать только для чтения"
 #: src/ui/connect_dialog/sheet.rs
 msgid "Parameters"
 msgstr "Параметры"
-
-#: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
-msgid "Port"
-msgstr "Порт"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "SSH host"
@@ -4465,10 +4697,6 @@ msgid "Block every write from this app"
 msgstr "Запрещать любую запись из этого приложения"
 
 #: src/ui/connect_dialog/terminal.rs
-msgid "CA cert"
-msgstr "Сертификат CA"
-
-#: src/ui/connect_dialog/terminal.rs
 msgid "Connect through SSH"
 msgstr "Подключаться через SSH"
 
@@ -4481,12 +4709,12 @@ msgid "Files open read-only"
 msgstr "Файлы открываются только для чтения"
 
 #: src/ui/connect_dialog/terminal.rs
-msgid "Host : Port"
-msgstr "Хост : Порт"
-
-#: src/ui/connect_dialog/terminal.rs
 msgid "No URL for files"
 msgstr "У файлов нет URL"
+
+#: src/ui/connect_dialog/terminal.rs
+msgid "Only read commands run"
+msgstr "Выполняются только команды чтения"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "Paste URL"
@@ -6000,7 +6228,7 @@ msgstr "WHERE вручную"
 msgid "Remove condition"
 msgstr "Убрать условие"
 
-#: src/ui/filter_bar.rs
+#: src/ui/filter_bar.rs src/ui/redis.rs
 msgid "Value"
 msgstr "Значение"
 
@@ -6450,7 +6678,7 @@ msgstr "Развернуть все"
 msgid "Expand {name}"
 msgstr "Развернуть {name}"
 
-#: src/ui/json_view.rs
+#: src/ui/json_view.rs src/ui/redis.rs
 #, rust-format
 msgid "{n} item"
 msgid_plural "{n} items"
@@ -7179,6 +7407,10 @@ msgstr "подключиться / показать"
 msgid "connections"
 msgstr "подключения"
 
+#: src/ui/picker.rs src/ui/workspace.rs
+msgid "default user"
+msgstr "пользователь по умолчанию"
+
 #: src/ui/picker.rs src/ui/row_panel.rs src/ui/settings/terminal.rs
 #: src/ui/workspace.rs
 msgid "delete"
@@ -7236,6 +7468,10 @@ msgstr "Найти таблицу, представление или коман�
 #: src/ui/quick_open.rs
 msgid "Find object"
 msgstr "Найти объект"
+
+#: src/ui/quick_open.rs src/ui/redis.rs
+msgid "Keys"
+msgstr "Ключи"
 
 #: src/ui/quick_open.rs src/ui/start.rs
 msgid "Largest tables"
@@ -7304,6 +7540,11 @@ msgstr "в редакторе SQL"
 msgid "jumps to the setting"
 msgstr "переходит к настройке"
 
+#: src/ui/quick_open.rs
+msgctxt "redis"
+msgid "key"
+msgstr "ключ"
+
 #: src/ui/quick_open.rs src/ui/sidebar.rs src/ui/sql_complete.rs
 #: src/ui/start.rs
 msgid "materialized view"
@@ -7369,6 +7610,14 @@ msgstr[2] "ещё {n} в {window}"
 
 #: src/ui/quick_open.rs
 #, rust-format
+msgid "{n} more key"
+msgid_plural "{n} more keys"
+msgstr[0] "ещё {n} ключ"
+msgstr[1] "ещё {n} ключа"
+msgstr[2] "ещё {n} ключей"
+
+#: src/ui/quick_open.rs
+#, rust-format
 msgid "{n} more table"
 msgid_plural "{n} more tables"
 msgstr[0] "ещё {n} таблица"
@@ -7382,6 +7631,176 @@ msgid_plural "{n} more views"
 msgstr[0] "ещё {n} представление"
 msgstr[1] "ещё {n} представления"
 msgstr[2] "ещё {n} представлений"
+
+#: src/ui/redis.rs
+msgid "Binary"
+msgstr "Двоичные данные"
+
+#: src/ui/redis.rs
+msgid "Choose a key to see its value."
+msgstr "Выберите ключ, чтобы увидеть его значение."
+
+#: src/ui/redis.rs
+msgid "Copy key"
+msgstr "Скопировать ключ"
+
+#: src/ui/redis.rs
+msgid "Copy value"
+msgstr "Скопировать значение"
+
+#: src/ui/redis.rs
+msgid "Expires in"
+msgstr "Истекает через"
+
+#: src/ui/redis.rs
+msgid "Filter keys"
+msgstr "Фильтр ключей"
+
+#: src/ui/redis.rs
+msgid "Filter keys…"
+msgstr "Фильтр ключей…"
+
+#: src/ui/redis.rs
+msgid ""
+"Keys added or removed while the scan runs may or may not appear until the "
+"next reload."
+msgstr ""
+"Ключи, добавленные или удалённые во время сканирования, могут появиться или "
+"не появиться до следующей перезагрузки."
+
+#: src/ui/redis.rs
+msgid "Load more"
+msgstr "Загрузить ещё"
+
+#: src/ui/redis.rs
+#, rust-format
+msgid "Load more ({shown} of {total})"
+msgstr "Загрузить ещё ({shown} из {total})"
+
+#: src/ui/redis.rs
+msgid "No expiry"
+msgstr "Без срока"
+
+#: src/ui/redis.rs
+msgid "No keys match."
+msgstr "Подходящих ключей нет."
+
+#: src/ui/redis.rs
+msgid "Reading…"
+msgstr "Чтение…"
+
+#: src/ui/redis.rs
+msgid "Scan all"
+msgstr "Просканировать все"
+
+#: src/ui/redis.rs
+#, rust-format
+msgid "Scanned {held} of {total} key"
+msgid_plural "Scanned {held} of {total} keys"
+msgstr[0] "Просканировано {held} из {total} ключа"
+msgstr[1] "Просканировано {held} из {total} ключей"
+msgstr[2] "Просканировано {held} из {total} ключей"
+
+#: src/ui/redis.rs
+#, rust-format
+msgid "Scanned {held}+ of {total} key"
+msgid_plural "Scanned {held}+ of {total} keys"
+msgstr[0] "Просканировано {held}+ из {total} ключа"
+msgstr[1] "Просканировано {held}+ из {total} ключей"
+msgstr[2] "Просканировано {held}+ из {total} ключей"
+
+#: src/ui/redis.rs
+#, rust-format
+msgid ""
+"Scanning {keys} keys may take a while and hold about {size} in Tabletist."
+msgstr ""
+"Сканирование всех ключей ({keys}) может занять время, и Tabletist будет "
+"держать в памяти около {size}."
+
+#: src/ui/redis.rs
+msgid "Scanning…"
+msgstr "Сканирование…"
+
+#: src/ui/redis.rs
+#, rust-format
+msgid "Showing groups from the first {held} of {total} key"
+msgid_plural "Showing groups from the first {held} of {total} keys"
+msgstr[0] "Показаны группы по первым {held} из {total} ключа"
+msgstr[1] "Показаны группы по первым {held} из {total} ключей"
+msgstr[2] "Показаны группы по первым {held} из {total} ключей"
+
+#: src/ui/redis.rs
+msgid "Showing the first 256 KiB"
+msgstr "Показаны первые 256 КиБ"
+
+#: src/ui/redis.rs
+msgid "Stop"
+msgstr "Остановить"
+
+#: src/ui/redis.rs
+#, rust-format
+msgid "Stopped at {held} of {total} key"
+msgid_plural "Stopped at {held} of {total} keys"
+msgstr[0] "Остановлено на {held} из {total} ключа"
+msgstr[1] "Остановлено на {held} из {total} ключей"
+msgstr[2] "Остановлено на {held} из {total} ключей"
+
+#: src/ui/redis.rs
+msgid "This type isn't shown yet"
+msgstr "Этот тип пока не показывается"
+
+#: src/ui/redis.rs
+#, rust-format
+msgid "Value of {key}"
+msgstr "Значение {key}"
+
+#: src/ui/redis.rs
+msgid "filter keys · book:*"
+msgstr "фильтр ключей · book:*"
+
+#: src/ui/redis.rs
+msgid "or filter with a pattern"
+msgstr "или отфильтруйте по шаблону"
+
+#: src/ui/redis.rs
+#, rust-format
+msgid "{name}, {count} key"
+msgid_plural "{name}, {count} keys"
+msgstr[0] "{name}, {count} ключ"
+msgstr[1] "{name}, {count} ключа"
+msgstr[2] "{name}, {count} ключей"
+
+#: src/ui/redis.rs
+#, rust-format
+msgid "{n} entry"
+msgid_plural "{n} entries"
+msgstr[0] "{n} запись"
+msgstr[1] "{n} записи"
+msgstr[2] "{n} записей"
+
+#: src/ui/redis.rs
+#, rust-format
+msgid "{n} field"
+msgid_plural "{n} fields"
+msgstr[0] "{n} поле"
+msgstr[1] "{n} поля"
+msgstr[2] "{n} полей"
+
+#: src/ui/redis.rs
+#, rust-format
+msgid "{n} member"
+msgid_plural "{n} members"
+msgstr[0] "{n} элемент"
+msgstr[1] "{n} элемента"
+msgstr[2] "{n} элементов"
+
+#: src/ui/redis.rs
+#, rust-format
+msgid "{n} more"
+msgid_plural "{n} more"
+msgstr[0] "ещё {n}"
+msgstr[1] "ещё {n}"
+msgstr[2] "ещё {n}"
 
 #: src/ui/review.rs
 msgid "Copied SQL"
@@ -10161,10 +10580,6 @@ msgstr "Это подключение больше не сохранено"
 #: src/ui/start.rs
 msgid "agents"
 msgstr "агенты"
-
-#: src/ui/start.rs
-msgid "all keys"
-msgstr "все клавиши"
 
 #: src/ui/start.rs
 msgid "database"

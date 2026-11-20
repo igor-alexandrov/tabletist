@@ -7,8 +7,8 @@ nav_order: 0
 ## Why Tabletist
 
 **A fast, native database client.** Tabletist connects to PostgreSQL, MySQL
-(and MariaDB), SQLite and BigQuery. It is written in Rust and draws its own
-window, so there is no browser inside. It runs on Linux (Omarchy and
+(and MariaDB), SQLite, BigQuery and Redis. It is written in Rust and draws its
+own window, so there is no browser inside. It runs on Linux (Omarchy and
 Hyprland first), macOS and Windows.
 
 {% include shot.html file="macos-table" alt="Tabletist with a table's data grid, the sidebar of tables on the left and the row panel on the right" %}
@@ -87,6 +87,9 @@ Tabletist is young. These are the limits you are most likely to meet:
 - A BigQuery connection is read-only: BigQuery has no transactions to
   edit rows with. It has no DDL view, and agents cannot read it once it
   hides a table or masks a column.
+- A Redis connection is read-only, to a standalone server: no Sentinel,
+  Cluster or Unix socket, no editing of values or expiries, no command
+  console, and no agents yet.
 - The app is in English only.
 
 ## Open source

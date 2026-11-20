@@ -680,6 +680,28 @@ fn shown(item: &QuickItem, skin: &Skin<'_>) -> Shown {
         })
     };
     match item {
+        QuickItem::Key { found, .. } => {
+            let name = crate::keyspace::lossy(&found.name);
+            let (icon, detail) = match (&found.group, &found.kind) {
+                (Some(count), _) => (
+                    Icon::ListTree,
+                    crate::keyspace::keys_words(skin.locale, *count as u64),
+                ),
+                (None, Some(kind)) => (Icon::KeyRound, kind.tag().to_owned()),
+                // A key whose type is not read yet.
+                (None, None) => (Icon::KeyRound, skin.say(pmsgid("redis", "key"))),
+            };
+            let label = format!("{}, {detail}", display_safe(&name));
+            Shown {
+                icon,
+                name,
+                spans: found.spans.clone(),
+                detail,
+                meta: String::new(),
+                label,
+                more: false,
+            }
+        }
         QuickItem::Object { found, .. } => {
             let Found {
                 object,
@@ -797,6 +819,7 @@ fn shown(item: &QuickItem, skin: &Skin<'_>) -> Shown {
                     ngettext(locale, "{n} more table", "{n} more tables", *hidden)
                 }
                 QuickGroup::Views => ngettext(locale, "{n} more view", "{n} more views", *hidden),
+                QuickGroup::Keys => ngettext(locale, "{n} more key", "{n} more keys", *hidden),
                 QuickGroup::Commands => {
                     ngettext(locale, "{n} more command", "{n} more commands", *hidden)
                 }
@@ -956,6 +979,7 @@ fn heading_row(ui: &mut egui::Ui, rect: Rect, title: QuickHeading, skin: &Skin<'
         QuickHeading::Largest => (words(msgid("Largest tables")), Environment::None),
         QuickHeading::Tables => (words(msgid("Tables")), Environment::None),
         QuickHeading::Views => (words(msgid("Views")), Environment::None),
+        QuickHeading::Keys => (words(msgid("Keys")), Environment::None),
         QuickHeading::Commands => (words(msgid("Commands")), Environment::None),
         QuickHeading::Connection(tab) => skin.windows.get(&tab).map_or_else(
             || (String::new(), Environment::None),

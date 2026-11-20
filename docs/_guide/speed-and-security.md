@@ -90,7 +90,8 @@ PostgreSQL and MySQL, and a SQLite file is opened read-only. A run in the
 SQL editor's Read-only mode happens in a read-only transaction that is
 rolled back. BigQuery has no transactions, so a BigQuery connection is
 always read-only and runs only the statements Tabletist can tell are
-reads.
+reads. A Redis connection is always read-only too: Tabletist sends only
+the read commands on its own list and refuses every other.
 
 Production is careful by default:
 
@@ -98,7 +99,7 @@ Production is careful by default:
 - With it off, a save asks first, with its statements on screen, and the
   SQL editor still runs read-only.
 
-On every connection, a save is one transaction, and when someone else
+On every connection that can write, a save is one transaction, and when someone else
 changed the same row it writes nothing and asks you what to do. In the
 SQL editor, a run that would change every row of a table (an `UPDATE` or
 `DELETE` with no `WHERE`, or a `TRUNCATE`) asks before it runs.
@@ -110,7 +111,7 @@ SQL editor, a run that would change every row of a table (an `UPDATE` or
 Agents read only the connections you allow, within the rows and the
 time you set: on PostgreSQL, MySQL and SQLite in a read-only transaction
 that is rolled back, and on BigQuery only the statements Tabletist can
-tell are reads. They never get
+tell are reads. They never reach a Redis connection, and never get
 a connection's password. Tables you hide and the values of columns you
 mask are kept from them, and so are views that would read what they may
 not. Every call goes into a log you can read, which keeps what was asked

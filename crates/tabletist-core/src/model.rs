@@ -65,6 +65,8 @@ pub enum Action {
     CycleConnTab(isize),
     /// A result from the backend.
     Backend(Event),
+    /// What a Redis window asks of its keys.
+    Redis(ConnTabId, crate::keyspace::RedisAction),
     /// Select a saved connection in the picker (`None` clears it).
     SelectConnection {
         tab: ConnTabId,
@@ -104,6 +106,12 @@ pub enum Action {
     PickKeyFile,
     /// Open the native file dialog for the CA certificate.
     PickCaFile,
+    /// The Redis URL field was typed in: what it says fills the fields.
+    RedisUrlTyped,
+    /// The Redis TLS client's certificate, or its key (`key`).
+    PickRedisFile {
+        key: bool,
+    },
     /// Open the native folder dialog for a Files connection's folder.
     PickFolder,
     /// Open the native file dialog to add files to a Files connection's
@@ -1499,6 +1507,9 @@ pub struct Workspace {
     /// reconnect that trusting a new host key makes. True only until the
     /// session is up.
     pub keep_access: bool,
+    /// A Redis connection's keys and values, once it has connected: what
+    /// its window shows in place of the tree and the tables.
+    pub redis: Option<Box<crate::keyspace::Browser>>,
 }
 
 #[derive(Debug)]
@@ -1556,14 +1567,14 @@ pub fn first_schema(schemas: &[String], database: &str) -> Option<String> {
 /// database on MySQL (its databases are its schemas), `public` on
 /// PostgreSQL, `main` on SQLite and Files. None where there is no good guess: a
 /// MySQL connection named no database, and BigQuery, whose datasets go by
-/// no default name.
+/// no default name, and Redis, which has keys and no schemas.
 pub fn guessed_schema(driver: Driver, database: &str) -> Option<String> {
     match driver {
         Driver::MySql if database.is_empty() => None,
         Driver::MySql => Some(database.to_owned()),
         Driver::Postgres => Some("public".to_owned()),
         Driver::Sqlite | Driver::Files => Some("main".to_owned()),
-        Driver::BigQuery => None,
+        Driver::BigQuery | Driver::Redis => None,
     }
 }
 
@@ -1744,7 +1755,8 @@ impl LoadedTables {
     /// a `pg_` name without a schema), which hiding never stops agents for.
     fn system_table(&self, name: &tabletist_db::agent::TableName) -> bool {
         self.driver
-            .is_some_and(|driver| name.is_system(driver.dialect()))
+            .and_then(Driver::dialect)
+            .is_some_and(|dialect| name.is_system(dialect))
     }
 
     /// The loaded tables whose names match `typed`, best first, at most
@@ -2028,6 +2040,9 @@ pub enum TableFocus {
     Add,
 }
 
+/// What the URL tab shows in place of a Redis password.
+pub const REDIS_URL_DOTS: &str = "••••";
+
 /// The connection dialog's fields while it is open.
 pub struct ConnectionForm {
     /// `Some` when editing a saved connection, `None` for a new one.
@@ -2147,6 +2162,29 @@ pub struct ConnectionForm {
     pub ssh_hosts: Vec<ConfigHost>,
     /// The request whose answer fills `ssh_hosts`.
     pub ssh_hosts_request: Option<RequestId>,
+    /// Redis: the database the connection opens on.
+    pub redis_database: u32,
+    /// Redis: TLS on (`rediss://`). Its CA file is `ca_file`.
+    pub redis_tls: bool,
+    /// Redis: the client certificate and its key, as typed; both or
+    /// neither.
+    pub redis_cert: String,
+    pub redis_key: String,
+    /// Redis: check the server's name against its certificate.
+    pub redis_verify_host: bool,
+    /// Redis: the separator keys are grouped by.
+    pub redis_separator: String,
+    /// Redis: keys at a time, one of [`tabletist_db::KEY_PAGES`].
+    pub redis_page: u32,
+    /// Redis: the SCAN MATCH pattern of the keys listed.
+    pub redis_pattern: String,
+    /// Redis: the most keys held, as typed; checked on save.
+    pub redis_key_limit: String,
+    /// Redis: whether the Browsing group is open.
+    pub redis_browsing_open: bool,
+    /// What the last Test learned of a Redis server: the database
+    /// dropdown's key counts, and the footer's status.
+    pub redis_probe: Option<tabletist_db::redis::Probe>,
     /// Files: whether the Source is a folder or a list of files.
     pub files_kind: FilesKind,
     /// Files: the folder, as chosen or typed (`~` for the home folder).
@@ -2189,6 +2227,8 @@ pub enum PickTarget {
     Sqlite,
     KeyFile,
     CaFile,
+    RedisCert,
+    RedisKey,
     /// A Files connection's folder.
     Folder,
     /// Files added to a Files connection's list.
@@ -2333,6 +2373,17 @@ impl Default for ConnectionForm {
             saved_ssh_auth: None,
             ssh_hosts: Vec::new(),
             ssh_hosts_request: None,
+            redis_database: 0,
+            redis_tls: false,
+            redis_cert: String::new(),
+            redis_key: String::new(),
+            redis_verify_host: true,
+            redis_separator: tabletist_db::Browsing::default().separator,
+            redis_page: tabletist_db::Browsing::default().page,
+            redis_pattern: tabletist_db::Browsing::default().pattern,
+            redis_key_limit: tabletist_db::Browsing::default().key_limit.to_string(),
+            redis_browsing_open: false,
+            redis_probe: None,
             files_kind: FilesKind::Folder,
             files_folder: String::new(),
             files_list: Vec::new(),
@@ -2471,6 +2522,8 @@ impl ConnectionForm {
         let unchecked = match self.driver {
             // No password crosses: the API is HTTPS to Google.
             Driver::Sqlite | Driver::BigQuery | Driver::Files => false,
+            // Redis's TLS always checks the chain.
+            Driver::Redis => !self.redis_tls,
             Driver::Postgres => match self.tls {
                 TlsMode::Disable | TlsMode::Prefer => true,
                 TlsMode::Require => self.ca_file.trim().is_empty(),
@@ -2496,9 +2549,10 @@ impl ConnectionForm {
     /// environment's default, which for production is
     /// [`Self::production_read_only`].
     pub fn read_only(&self) -> bool {
-        // Editing files is not built: a Files connection opens read-only.
+        // Editing files and keys is not built: a Files or Redis
+        // connection opens read-only.
         match self.driver {
-            Driver::Files => return true,
+            Driver::Files | Driver::Redis => return true,
             Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => {}
         }
         self.read_only.unwrap_or_else(|| {
@@ -2512,9 +2566,9 @@ impl ConnectionForm {
     /// settings said when it was made; else not set, and the environment's
     /// rule applies.
     fn saved_read_only(&self) -> Option<bool> {
-        // A Files connection is saved read-only, as its box shows.
+        // A Files or Redis connection is saved read-only, as its box shows.
         match self.driver {
-            Driver::Files => return Some(true),
+            Driver::Files | Driver::Redis => return Some(true),
             Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => {}
         }
         let new_production = self.editing.is_none() && self.environment().read_only_by_default();
@@ -2639,6 +2693,150 @@ impl ConnectionForm {
             agents_chosen: true,
             ..Self::default()
         }
+        .with_redis(spec)
+    }
+
+    /// The Redis fields of `spec`, where it is a Redis connection's; its
+    /// CA file is the form's `ca_file`.
+    fn with_redis(mut self, spec: &ConnectSpec) -> Self {
+        let Some(redis) = &spec.redis else {
+            return self;
+        };
+        let path = |path: &Option<std::path::PathBuf>| {
+            path.as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default()
+        };
+        self.redis_database = redis.database;
+        self.redis_tls = redis.tls.enabled;
+        self.ca_file = path(&redis.tls.ca);
+        self.redis_cert = path(&redis.tls.cert);
+        self.redis_key = path(&redis.tls.key);
+        self.redis_verify_host = redis.tls.verify_host;
+        self.redis_separator = redis.browsing.separator.clone();
+        self.redis_page = redis.browsing.page;
+        self.redis_pattern = redis.browsing.pattern.clone();
+        self.redis_key_limit = redis.browsing.key_limit.to_string();
+        self
+    }
+
+    /// The fields of a parsed Redis URL or redis-cli line, over the
+    /// form's: what it does not name stays.
+    pub fn take_redis(&mut self, spec: &ConnectSpec) {
+        let redis = spec.redis_spec();
+        self.driver = Driver::Redis;
+        self.host = spec.host.clone();
+        self.port = spec.port.to_string();
+        self.user = spec.user.clone();
+        self.redis_database = redis.database;
+        self.redis_tls = redis.tls.enabled;
+        let path = |path: &Option<std::path::PathBuf>| {
+            path.as_ref().map(|path| path.display().to_string())
+        };
+        if let Some(ca) = path(&redis.tls.ca) {
+            self.ca_file = ca;
+        }
+        if let Some(cert) = path(&redis.tls.cert) {
+            self.redis_cert = cert;
+        }
+        if let Some(key) = path(&redis.tls.key) {
+            self.redis_key = key;
+        }
+    }
+
+    /// The URL the URL tab shows for the Redis fields: never the
+    /// password, which is shown as dots where one is typed or saved.
+    pub fn redis_url(&self) -> String {
+        let mut spec = ConnectSpec::redis(self.host.trim(), self.port.trim().parse().unwrap_or(0));
+        let hidden = !self.password.is_empty() || self.password_is_saved();
+        spec.user = match self.user.trim() {
+            "" if hidden => "default".to_owned(),
+            user => user.to_owned(),
+        };
+        if let Some(redis) = spec.redis.as_mut() {
+            redis.database = self.redis_database;
+            redis.tls.enabled = self.redis_tls;
+        }
+        let url = spec.redis_url();
+        if !hidden {
+            return url;
+        }
+        url.replacen('@', &format!(":{REDIS_URL_DOTS}@"), 1)
+    }
+
+    /// The Redis part of the spec: the database, TLS and browsing as
+    /// typed, or why they do not read.
+    fn redis_spec(&self) -> Result<tabletist_db::RedisSpec, String> {
+        let typed = |text: &str| {
+            let text = text.trim();
+            (!text.is_empty()).then(|| std::path::PathBuf::from(text))
+        };
+        let mut cert = typed(&self.redis_cert);
+        let mut key = typed(&self.redis_key);
+        if cert.is_some() != key.is_some() {
+            if self.redis_tls {
+                return Err("Choose both the client certificate and its key, or neither.".into());
+            }
+            // With TLS off the half of a pair is hidden, and the file
+            // takes a pair whole or not at all: it is dropped.
+            (cert, key) = (None, None);
+        }
+        let key_limit: u64 = self
+            .redis_key_limit
+            .trim()
+            .replace([',', '_', ' '], "")
+            .parse()
+            .ok()
+            .filter(|limit| *limit > 0)
+            .ok_or_else(|| "Enter a key limit of at least 1.".to_owned())?;
+        let pattern = match self.redis_pattern.trim() {
+            "" => "*".to_owned(),
+            pattern => pattern.to_owned(),
+        };
+        Ok(tabletist_db::RedisSpec {
+            database: self.redis_database,
+            tls: tabletist_db::RedisTls {
+                enabled: self.redis_tls,
+                ca: typed(&self.ca_file),
+                cert,
+                key,
+                verify_host: self.redis_verify_host,
+            },
+            browsing: tabletist_db::Browsing {
+                separator: self.redis_separator.clone(),
+                page: self.redis_page,
+                pattern,
+                key_limit,
+            },
+        })
+    }
+
+    /// The SSH tunnel as typed, where it is on, or why it does not read.
+    fn ssh_spec(&self) -> Result<Option<SshSpec>, String> {
+        if !self.ssh {
+            return Ok(None);
+        }
+        let host = self.ssh_host.trim();
+        if host.is_empty() {
+            return Err("Enter the SSH host.".into());
+        }
+        // Empty port, user and key file are left to ~/.ssh/config.
+        let port = self
+            .typed_ssh_port()
+            .map_err(|_| "Enter the SSH port number.".to_owned())?;
+        let auth = match self.ssh_auth {
+            SshAuthKind::Password => SshAuth::Password,
+            SshAuthKind::Agent => SshAuth::Agent,
+            SshAuthKind::KeyFile => SshAuth::KeyFile {
+                path: self.ssh_key_file.trim().into(),
+            },
+        };
+        Ok(Some(SshSpec {
+            host: host.to_owned(),
+            port,
+            user: self.ssh_user.trim().to_owned(),
+            auth,
+        }))
     }
 
     /// What a Files connection's Source names, as the backend reads it:
@@ -2670,7 +2868,11 @@ impl ConnectionForm {
         }
         let read = match self.driver {
             Driver::Files => self.environment() != crate::env::Environment::Production,
-            Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => false,
+            Driver::Postgres
+            | Driver::MySql
+            | Driver::Sqlite
+            | Driver::BigQuery
+            | Driver::Redis => false,
         };
         self.agents.access = match read {
             true => crate::connections::AgentAccess::Read,
@@ -2688,22 +2890,28 @@ impl ConnectionForm {
             (Driver::Postgres | Driver::MySql, Driver::Postgres | Driver::MySql)
             | (Driver::Sqlite, Driver::Sqlite)
             | (Driver::BigQuery, Driver::BigQuery)
-            | (Driver::Files, Driver::Files) => false,
+            | (Driver::Files, Driver::Files)
+            | (Driver::Redis, Driver::Redis) => false,
             (
                 Driver::Postgres | Driver::MySql,
-                Driver::Sqlite | Driver::BigQuery | Driver::Files,
+                Driver::Sqlite | Driver::BigQuery | Driver::Files | Driver::Redis,
             )
             | (
                 Driver::Sqlite,
-                Driver::Postgres | Driver::MySql | Driver::BigQuery | Driver::Files,
+                Driver::Postgres | Driver::MySql | Driver::BigQuery | Driver::Files | Driver::Redis,
             )
             | (
                 Driver::BigQuery,
-                Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::Files,
+                Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::Files | Driver::Redis,
             )
             | (
                 Driver::Files,
-                Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery,
+                Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery | Driver::Redis,
+            )
+            // A Redis connection's database, TLS and browsing are its own.
+            | (
+                Driver::Redis,
+                Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery | Driver::Files,
             ) => true,
         };
         drops.then_some(saved)
@@ -2729,6 +2937,23 @@ impl ConnectionForm {
                     return Err("Choose a SQLite file.".into());
                 }
                 Ok(ConnectSpec::sqlite(path))
+            }
+            Driver::Redis => {
+                let host = self.host.trim();
+                if host.is_empty() {
+                    return Err("Enter a host.".into());
+                }
+                let port: u16 = self
+                    .port
+                    .trim()
+                    .parse()
+                    .map_err(|_| "Enter a port number.".to_owned())?;
+                let mut spec = ConnectSpec::redis(host, port);
+                // Empty: the default user.
+                spec.user = self.user.trim().to_owned();
+                spec.redis = Some(self.redis_spec()?);
+                spec.ssh = self.ssh_spec()?;
+                Ok(spec)
             }
             Driver::Files => match self.files_source() {
                 Some(source) => Ok(ConnectSpec {
@@ -2764,31 +2989,7 @@ impl ConnectionForm {
                             .into(),
                     );
                 }
-                let ssh = if self.ssh {
-                    let host = self.ssh_host.trim();
-                    if host.is_empty() {
-                        return Err("Enter the SSH host.".into());
-                    }
-                    // Empty port, user and key file are left to ~/.ssh/config.
-                    let port = self
-                        .typed_ssh_port()
-                        .map_err(|_| "Enter the SSH port number.".to_owned())?;
-                    let auth = match self.ssh_auth {
-                        SshAuthKind::Password => SshAuth::Password,
-                        SshAuthKind::Agent => SshAuth::Agent,
-                        SshAuthKind::KeyFile => SshAuth::KeyFile {
-                            path: self.ssh_key_file.trim().into(),
-                        },
-                    };
-                    Some(SshSpec {
-                        host: host.to_owned(),
-                        port,
-                        user: self.ssh_user.trim().to_owned(),
-                        auth,
-                    })
-                } else {
-                    None
-                };
+                let ssh = self.ssh_spec()?;
                 Ok(ConnectSpec {
                     driver: self.driver,
                     host: host.to_owned(),
@@ -2800,6 +3001,7 @@ impl ConnectionForm {
                     tls: self.tls,
                     ca_file: (!ca_file.is_empty()).then(|| ca_file.into()),
                     ssh,
+                    redis: None,
                     files: None,
                     csv: tabletist_db::files::Reading::default(),
                 })
@@ -2888,14 +3090,14 @@ impl ConnectionForm {
             // Nothing typed and nothing saved (or the saved one forgotten):
             // a server that needs no password (trust or peer
             // authentication).
-            Driver::Postgres | Driver::MySql
+            Driver::Postgres | Driver::MySql | Driver::Redis
                 if self.password_mode == PasswordMode::Keyring
                     && self.password.is_empty()
                     && !self.has_saved_password =>
             {
                 PasswordMode::None
             }
-            Driver::Postgres | Driver::MySql => self.password_mode,
+            Driver::Postgres | Driver::MySql | Driver::Redis => self.password_mode,
         };
         let ssh_secret = match (&spec.ssh, self.ssh_auth) {
             (None, _) | (Some(_), SshAuthKind::Agent) => PasswordMode::None,
@@ -2909,7 +3111,16 @@ impl ConnectionForm {
             }
             _ => self.ssh_secret_mode,
         };
-        let agents = self.agents_to_saved()?;
+        // A Redis connection keeps no agents' settings: agents get none of
+        // it, and its file entry has no table for them.
+        let agents = match spec.driver {
+            Driver::Redis => crate::connections::Agents::default(),
+            Driver::Postgres
+            | Driver::MySql
+            | Driver::Sqlite
+            | Driver::BigQuery
+            | Driver::Files => self.agents_to_saved()?,
+        };
         Ok(crate::connections::SavedConnection {
             id: self.editing.clone().unwrap_or_else(ConnectionId::new),
             name: name.to_owned(),
@@ -3041,15 +3252,19 @@ impl ConnectionForm {
             // which nothing there could take off again.
             tables: match self.driver {
                 Driver::Files => tabletist_db::agent::Tables::All,
-                Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => {
-                    self.agents_tables.tables()
-                }
+                Driver::Postgres
+                | Driver::MySql
+                | Driver::Sqlite
+                | Driver::BigQuery
+                | Driver::Redis => self.agents_tables.tables(),
             },
             masked: match self.driver {
                 Driver::Files => Vec::new(),
-                Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => {
-                    self.agents_masked.clone()
-                }
+                Driver::Postgres
+                | Driver::MySql
+                | Driver::Sqlite
+                | Driver::BigQuery
+                | Driver::Redis => self.agents_masked.clone(),
             },
         })
     }
@@ -3449,6 +3664,21 @@ pub enum QuickGroup {
     Connection(ConnTabId),
     /// The commands and the settings' rows whose names match.
     Commands,
+    /// A Redis window's keys and groups whose names match.
+    Keys,
+}
+
+/// A Redis key, or a group of keys, whose name matches what is typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FoundKey {
+    /// The key's name, or the group's prefix (`book:`).
+    pub name: Vec<u8>,
+    /// For a group, the keys it holds.
+    pub group: Option<usize>,
+    /// A key's type, where it was read.
+    pub kind: Option<tabletist_db::redis::KeyType>,
+    /// The runs of the name that matched, as byte ranges of its text.
+    pub spans: Vec<std::ops::Range<usize>>,
 }
 
 /// A table or view that matches what is typed.
@@ -3575,6 +3805,8 @@ impl QuickCommand {
 pub enum QuickItem {
     /// A table or view of the window `tab`'s connection.
     Object { tab: ConnTabId, found: Found },
+    /// A key or a group of the Redis window `tab`.
+    Key { tab: ConnTabId, found: FoundKey },
     /// The row of `tab`'s start screen list numbered `index` there.
     Start {
         tab: ConnTabId,
@@ -3639,6 +3871,17 @@ impl QuickItem {
                 }
             }
             (Self::More { group, .. }, Self::More { group: other, .. }) => group == other,
+            (
+                Self::Key { tab, found },
+                Self::Key {
+                    tab: at,
+                    found: other,
+                },
+            ) => {
+                tab == at
+                    && found.name == other.name
+                    && found.group.is_some() == other.group.is_some()
+            }
             _ => false,
         }
     }
@@ -4337,8 +4580,9 @@ pub fn is_system_schema(driver: Driver, name: &str) -> bool {
         ),
         Driver::Sqlite => false,
         // BigQuery lists dataset IDs here; a dataset's INFORMATION_SCHEMA
-        // is views inside it, never a dataset of its own.
-        Driver::BigQuery => false,
+        // is views inside it, never a dataset of its own. Redis has no
+        // schemas.
+        Driver::BigQuery | Driver::Redis => false,
         // A `.duckdb` file's schema is the person's.
         Driver::Files => false,
     }
@@ -6386,7 +6630,11 @@ impl Workspace {
     /// engine sends one (`edit::shows_in_zone`): elsewhere none, and values
     /// are shown as stored.
     pub fn zone_shown(&self) -> Option<&jiff::tz::TimeZone> {
-        if crate::edit::shows_in_zone(self.driver.dialect()) {
+        if self
+            .driver
+            .dialect()
+            .is_some_and(crate::edit::shows_in_zone)
+        {
             self.zone.as_ref()
         } else {
             None
@@ -6421,7 +6669,25 @@ impl Workspace {
     /// of database starts the tree over, so a tab in use can go back to
     /// not opened.
     pub fn opened(&self) -> bool {
-        self.tree.schemas.value.is_some() || self.tree.schemas.error.is_some()
+        match self.driver {
+            // Its keys show as soon as it is up, while they are scanned.
+            Driver::Redis => self.redis.is_some(),
+            Driver::Postgres
+            | Driver::MySql
+            | Driver::Sqlite
+            | Driver::BigQuery
+            | Driver::Files => {
+                self.tree.schemas.value.is_some() || self.tree.schemas.error.is_some()
+            }
+        }
+    }
+
+    /// The database a Redis window is on: the one switched to, else the
+    /// connection's.
+    pub fn redis_database(&self) -> u32 {
+        self.redis
+            .as_ref()
+            .map_or_else(|| self.spec.redis_spec().database, |redis| redis.database)
     }
 
     /// Whether giving up the connect loses nothing: the tab has not opened,
@@ -6507,13 +6773,15 @@ impl Workspace {
             used: std::time::Instant::now(),
             woken: false,
             keep_access: false,
+            redis: None,
         }
     }
 
     /// Whether the window shows the start screen: its schema listing has
     /// answered (listed, or failed), and no tab is open.
     pub fn on_start(&self) -> bool {
-        self.opened() && self.active_tab.is_none()
+        // A Redis window draws its keys in that place.
+        self.opened() && self.active_tab.is_none() && self.redis.is_none()
     }
 
     pub fn tab(&self, id: TabId) -> Option<&Tab> {
@@ -6540,7 +6808,11 @@ impl Workspace {
     pub fn label_lines(&self, table: &ObjectRef, keys: &[&str]) -> Vec<crate::labels::Line> {
         let known = self.columns.get(table);
         let columns = known.and_then(|kept| kept.value.as_deref());
-        crate::labels::lines(self.driver.dialect(), columns, keys)
+        match self.driver.dialect() {
+            Some(dialect) => crate::labels::lines(dialect, columns, keys),
+            // No tables to label (Redis).
+            None => Vec::new(),
+        }
     }
 
     pub fn object_tab(&self, id: TabId) -> Option<&ObjectTab> {
@@ -6768,8 +7040,9 @@ impl Workspace {
             Driver::Postgres => "public",
             Driver::MySql => self.spec.database.as_str(),
             Driver::Sqlite | Driver::Files => "main",
-            // BigQuery names resolve dataset-less in no dataset.
-            Driver::BigQuery => return None,
+            // BigQuery names resolve dataset-less in no dataset; Redis
+            // has no SQL.
+            Driver::BigQuery | Driver::Redis => return None,
         };
         let schemas = self.tree.schemas.value.as_ref()?;
         let found = schemas.iter().find(|schema| *schema == name);
@@ -6929,8 +7202,7 @@ mod tests {
     ) -> SqlTab {
         let mut sql = SqlTab::new(TabId(1), 1, 1_000, Some(Duration::from_secs(30)));
         sql.text = text.into();
-        let statements =
-            tabletist_db::sql::statements(tabletist_db::Driver::Sqlite.dialect(), text);
+        let statements = tabletist_db::sql::statements(tabletist_db::Dialect::Sqlite, text);
         let request = crate::backend::RequestId(9);
         let on = Some(RanOn(here()));
         let chosen = match mode {
@@ -7547,7 +7819,7 @@ mod tests {
     }
 
     fn script(text: &str) -> Vec<tabletist_db::sql::Statement> {
-        tabletist_db::sql::statements(Driver::Sqlite.dialect(), text)
+        tabletist_db::sql::statements(tabletist_db::Dialect::Sqlite, text)
     }
 
     /// The transaction every run was sent in before an editor could write.

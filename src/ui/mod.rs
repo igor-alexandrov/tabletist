@@ -126,6 +126,9 @@ pub mod quick_open;
 mod quick_open_tests;
 #[cfg(test)]
 mod reading_csv_tests;
+pub mod redis;
+#[cfg(test)]
+mod redis_tests;
 pub mod review;
 pub mod row_form;
 pub mod row_panel;
@@ -3704,7 +3707,7 @@ value_tags   = true
             .app
             .apply(Action::Backend(crate::backend::Event::Tested {
                 request,
-                result: Ok(()),
+                result: Ok(None),
             }));
         let tab = harness.app.active_tab_id();
         harness
@@ -9484,7 +9487,7 @@ value_tags   = true
         harness.app.apply(crate::model::Action::Backend(
             crate::backend::Event::Tested {
                 request,
-                result: Ok(()),
+                result: Ok(None),
             },
         ));
         let tree = harness.settle();

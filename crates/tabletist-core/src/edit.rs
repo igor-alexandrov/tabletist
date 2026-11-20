@@ -140,7 +140,7 @@ impl<'a> Table<'a> {
         Some(Self {
             access: workspace.access,
             kind: object.kind,
-            dialect: workspace.driver.dialect(),
+            dialect: workspace.driver.dialect()?,
             structure: object.structure.value.as_ref(),
             page: object.page()?,
             // The structure too: what a describe in flight brings may have

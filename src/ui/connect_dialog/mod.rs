@@ -7,6 +7,7 @@ mod agents;
 mod choice;
 mod files;
 mod reading;
+mod redis;
 mod sheet;
 mod terminal;
 
@@ -48,7 +49,9 @@ fn type_hint(driver: Driver) -> Msgid {
     match driver {
         Driver::Sqlite => msgid("One database file on this computer"),
         Driver::Files => msgid("Opens CSV, Parquet, JSON, Excel and .duckdb files as tables"),
-        Driver::Postgres | Driver::MySql | Driver::BigQuery => msgid("Changes the fields below"),
+        Driver::Postgres | Driver::MySql | Driver::BigQuery | Driver::Redis => {
+            msgid("Changes the fields below")
+        }
     }
 }
 
@@ -57,14 +60,20 @@ fn type_hint(driver: Driver) -> Msgid {
 fn is_files(form: &ConnectionForm) -> bool {
     match form.driver {
         Driver::Files => true,
-        Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => false,
+        Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery | Driver::Redis => {
+            false
+        }
     }
 }
 
 /// Whether the read-only box is on and cannot be turned off: a Files
-/// connection's, until editing files is built.
+/// connection's, until editing files is built, and a Redis one's, which
+/// sends only the read commands on `redis::READS`.
 fn read_only_fixed(form: &ConnectionForm) -> bool {
-    is_files(form)
+    match form.driver {
+        Driver::Files | Driver::Redis => true,
+        Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => false,
+    }
 }
 
 /// What a Files connection's read-only box says.
@@ -1094,7 +1103,12 @@ fn note(ui: &mut Ui, text: &str, color: Color32, skin: &Skin) {
 
 /// The URL field, with the chosen driver's URL as its placeholder. It
 /// takes the keyboard on the frame it appears.
-fn url_field(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) -> Response {
+fn url_field(
+    ui: &mut Ui,
+    form: &mut ConnectionForm,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) -> Response {
     let role = skin.value_role();
     let example = match form.driver {
         Driver::Sqlite => "sqlite:///path/to/file.db",
@@ -1102,9 +1116,29 @@ fn url_field(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) -> Response {
         Driver::Postgres => "postgres://user@host/db",
         Driver::BigQuery => "bigquery:project-id?credentials=/path/key.json",
         Driver::Files => "~/Data/exports",
+        Driver::Redis => "redis://user@host:6379/0",
     };
     let hint = hint(ui, example, role, skin);
-    let field = ui.add(input(ui, &mut form.url, role, skin.field_height(), skin).hint_text(hint));
+    // Redis's URL is live: it shows the fields' while it is not being
+    // typed in, and what is typed fills them (`Action::RedisUrlTyped`).
+    let live = match form.driver {
+        Driver::Redis => true,
+        Driver::Sqlite | Driver::Postgres | Driver::MySql | Driver::BigQuery | Driver::Files => {
+            false
+        }
+    };
+    let id = ui.make_persistent_id("connection-url");
+    if live && !ui.memory(|memory| memory.has_focus(id)) {
+        form.url = form.redis_url();
+    }
+    let field = ui.add(
+        input(ui, &mut form.url, role, skin.field_height(), skin)
+            .id(id)
+            .hint_text(hint),
+    );
+    if live && field.changed() {
+        actions.push(Action::RedisUrlTyped);
+    }
     let focus = ui
         .ctx()
         .data_mut(|data| data.remove_temp::<bool>(focus_url_id()))
@@ -1320,11 +1354,22 @@ impl Messages {
 enum Status {
     Running(String),
     Passed(String),
+    /// Connected, with a warning: a Redis user that can't list keys.
+    Warned(String),
 }
 
 fn status(form: &ConnectionForm, skin: &Skin) -> Option<Status> {
     match form.test {
         TestState::Running(_) => Some(Status::Running(skin.say(msgid("Testing…")))),
+        TestState::Passed if form.redis_probe.is_some() => {
+            let probe = form.redis_probe.as_ref()?;
+            Some(
+                match crate::keyspace::test_passed(probe, form.test_took, skin.locale) {
+                    Ok(text) => Status::Passed(skin.look.label(&text)),
+                    Err(text) => Status::Warned(skin.look.label(&text)),
+                },
+            )
+        }
         TestState::Passed => {
             let driver = form
                 .test_spec
@@ -1334,7 +1379,11 @@ fn status(form: &ConnectionForm, skin: &Skin) -> Option<Status> {
             // form when the type changes.
             let read = match driver {
                 Driver::Files => form.files_tested.as_ref(),
-                Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => None,
+                Driver::Postgres
+                | Driver::MySql
+                | Driver::Sqlite
+                | Driver::BigQuery
+                | Driver::Redis => None,
             };
             let mut text = match read {
                 // What a Files connection's Test read: "Read 3 files ·
@@ -1377,6 +1426,7 @@ fn paint_status(ui: &mut Ui, form: &ConnectionForm, x: StatusAt, y: f32, skin: &
     let (text, color) = match &status {
         Status::Running(text) => (text, palette.dim),
         Status::Passed(text) => (text, palette.success),
+        Status::Warned(text) => (text, palette.warning),
     };
     let laid = Text::one(look, role, text, color).layout(ui.ctx());
     // The mark and the gap after it. The terminal look's are smaller:
@@ -1397,6 +1447,10 @@ fn paint_status(ui: &mut Ui, form: &ConnectionForm, x: StatusAt, y: f32, skin: &
             ui.put(place, egui::Spinner::new().size(mark).color(color));
         }
         Status::Passed(_) => paint_check(ui.painter(), place, color),
+        Status::Warned(_) => {
+            let bang = Text::one(look, role, "!", color).layout(ui.ctx());
+            bang.paint_left(ui.painter(), place.left(), y);
+        }
     }
     let x = left + mark + gap;
     laid.paint_left(ui.painter(), x, y);

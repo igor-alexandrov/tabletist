@@ -110,7 +110,7 @@ fn is_local(connection: &SavedConnection) -> bool {
     let spec = &connection.spec;
     match spec.driver {
         Driver::Sqlite | Driver::Files => true,
-        Driver::Postgres | Driver::MySql => {
+        Driver::Postgres | Driver::MySql | Driver::Redis => {
             spec.ssh.is_none() && crate::model::is_local_host(&spec.host)
         }
         Driver::BigQuery => false,
@@ -130,14 +130,22 @@ pub fn visible(connections: &SavedConnections, search: &str) -> Vec<ConnectionId
 /// How a connection's TLS reads in the list, and whether it is fine.
 fn tls_label(connection: &SavedConnection) -> (String, Option<bool>) {
     use tabletist_db::{Driver, TlsMode};
-    if is_local(connection) {
-        return ("Local".into(), None);
-    }
-    match connection.spec.driver {
+    let local = is_local(connection);
+    match (connection.spec.driver, local) {
+        // TLS or none, as the boards write a Redis connection's, on this
+        // machine too; it warns only off it.
+        (Driver::Redis, local) => match connection.spec.redis_spec().tls.enabled {
+            true => ("TLS".into(), Some(true)),
+            false => ("No TLS".into(), (!local).then_some(false)),
+        },
+        (
+            Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery | Driver::Files,
+            true,
+        ) => ("Local".into(), None),
         // HTTPS to Google's API, verified against the system roots: the
         // database TLS modes are not its to set.
-        Driver::BigQuery => ("HTTPS".into(), Some(true)),
-        Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::Files => {
+        (Driver::BigQuery, false) => ("HTTPS".into(), Some(true)),
+        (Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::Files, false) => {
             let text = match connection.spec.tls {
                 TlsMode::Disable => "no TLS",
                 TlsMode::Prefer => "prefer",
@@ -193,6 +201,7 @@ impl Asked {
                 tab: self.tab,
                 open: None,
                 agents: None,
+                keys: None,
             })
     }
 }
@@ -210,6 +219,7 @@ fn asked(app: &App) -> Asked {
                 tab,
                 open: app.tab_showing(&connection.id),
                 agents: crate::endpoint::AVAILABLE.then(|| app.agents_access(connection)),
+                keys: app.redis_keys.get(&connection.id).copied(),
             };
             (connection.id.clone(), opening)
         })
@@ -830,6 +840,25 @@ struct Opening {
     /// What agents may do on it, as in force; `None` where agents cannot
     /// reach the app, which then shows nothing of them.
     agents: Option<crate::connections::AgentAccess>,
+    /// A Redis connection's database and its keys, as last probed.
+    keys: Option<(u32, u64)>,
+}
+
+/// "db 0 · 1,204 keys": a Redis connection's database, with its keys
+/// where they were counted on it.
+fn redis_database(
+    connection: &SavedConnection,
+    keys: Option<(u32, u64)>,
+    locale: crate::i18n::Locale,
+) -> String {
+    let database = connection.spec.redis_spec().database;
+    match keys {
+        Some((counted, keys)) if counted == database => {
+            let said = crate::ui::redis::keys_words(keys, locale);
+            format!("db {database} · {said}")
+        }
+        _ => format!("db {database}"),
+    }
 }
 
 impl Opening {
@@ -864,6 +893,10 @@ pub(crate) fn target(connection: &SavedConnection) -> (String, String) {
             format!("{}:{}", spec.host, spec.port),
             format!("/{}", spec.database),
         ),
+        Driver::Redis => (
+            format!("{}:{}", spec.host, spec.port),
+            format!("/{}", spec.redis_spec().database),
+        ),
     }
 }
 
@@ -889,7 +922,7 @@ pub(crate) fn file_row_text(
     use tabletist_db::files::{Source, shown, size_text};
     let spec = &connection.spec;
     match spec.driver {
-        Driver::Postgres | Driver::MySql | Driver::BigQuery => None,
+        Driver::Postgres | Driver::MySql | Driver::BigQuery | Driver::Redis => None,
         Driver::Sqlite => {
             let path = spec.sqlite_path.as_deref()?;
             let second = match facts {
@@ -954,7 +987,9 @@ pub(crate) fn terminal_files_line(
     use tabletist_db::Driver;
     match connection.spec.driver {
         Driver::Files => {}
-        Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => return None,
+        Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery | Driver::Redis => {
+            return None;
+        }
     }
     let text = file_row_text(connection, facts)?;
     let source = match &connection.spec.files {
@@ -1382,10 +1417,32 @@ fn mac_row(
     }
     let files = file_row_text(connection, facts);
     let user = &connection.spec.user;
+    let label = connection.spec.driver.label();
     let second = match &files {
         Some(files) => files.second.clone(),
-        None if user.is_empty() => connection.spec.driver.label().to_owned(),
-        None => format!("{} · {user}", connection.spec.driver.label()),
+        None => match (connection.spec.driver, user.is_empty()) {
+            // Redis's default user has no name of its own.
+            (tabletist_db::Driver::Redis, true) => {
+                format!("{label} · {}", gettext(locale, "default user"))
+            }
+            (
+                tabletist_db::Driver::Sqlite
+                | tabletist_db::Driver::Postgres
+                | tabletist_db::Driver::MySql
+                | tabletist_db::Driver::BigQuery
+                | tabletist_db::Driver::Files,
+                true,
+            ) => label.to_owned(),
+            (
+                tabletist_db::Driver::Redis
+                | tabletist_db::Driver::Sqlite
+                | tabletist_db::Driver::Postgres
+                | tabletist_db::Driver::MySql
+                | tabletist_db::Driver::BigQuery
+                | tabletist_db::Driver::Files,
+                false,
+            ) => format!("{label} · {user}"),
+        },
     };
     let small = TextRole::Secondary;
     widgets::paint_label(
@@ -1396,7 +1453,17 @@ fn mac_row(
     );
     let (host, database) = match &files {
         Some(files) => files.middle.clone(),
-        None => target(connection),
+        None => match connection.spec.driver {
+            tabletist_db::Driver::Redis => (
+                format!("{}:{}", connection.spec.host, connection.spec.port),
+                redis_database(connection, opening.keys, locale),
+            ),
+            tabletist_db::Driver::Sqlite
+            | tabletist_db::Driver::Postgres
+            | tabletist_db::Driver::MySql
+            | tabletist_db::Driver::BigQuery
+            | tabletist_db::Driver::Files => target(connection),
+        },
     };
     let host_role = TextRole::GridCell;
     let shown = crate::ui::grid::ellipsize(&host, host_width - 24.0, false, |text| {
@@ -1657,16 +1724,50 @@ fn terminal_row(
         );
     }
     let spec = &connection.spec;
-    let mut line = spec.summary();
+    let mut line = match spec.driver {
+        // "redis · default@localhost:6379 · db 0 · 1,204 keys".
+        tabletist_db::Driver::Redis => {
+            let user = match spec.user.as_str() {
+                "" => "default",
+                user => user,
+            };
+            format!(
+                "redis · {user}@{}:{} · {}",
+                spec.host,
+                spec.port,
+                redis_database(connection, opening.keys, locale)
+            )
+        }
+        tabletist_db::Driver::Sqlite
+        | tabletist_db::Driver::Postgres
+        | tabletist_db::Driver::MySql
+        | tabletist_db::Driver::BigQuery
+        | tabletist_db::Driver::Files => spec.summary(),
+    };
     if let Some(at) = line.find(" via ") {
         line.truncate(at);
     }
     let small = TextRole::OSecondary;
     let (tls, verified) = tls_label(connection);
-    let tls = if verified.is_some() {
-        format!("tls {tls}")
-    } else {
-        tls.to_lowercase()
+    let tls = match (spec.driver, verified) {
+        // "tls", "no tls": the words say it already.
+        (tabletist_db::Driver::Redis, _) => tls.to_lowercase(),
+        (
+            tabletist_db::Driver::Sqlite
+            | tabletist_db::Driver::Postgres
+            | tabletist_db::Driver::MySql
+            | tabletist_db::Driver::BigQuery
+            | tabletist_db::Driver::Files,
+            Some(_),
+        ) => format!("tls {tls}"),
+        (
+            tabletist_db::Driver::Sqlite
+            | tabletist_db::Driver::Postgres
+            | tabletist_db::Driver::MySql
+            | tabletist_db::Driver::BigQuery
+            | tabletist_db::Driver::Files,
+            None,
+        ) => tls.to_lowercase(),
     };
     let tls_color = match verified {
         Some(true) => palette.success,
@@ -1755,6 +1856,7 @@ mod tests {
             tab: picker,
             open: None,
             agents: None,
+            keys: None,
         };
         assert!(connects(closed.choose(&connection)));
         // Open: choosing it shows that tab, and it can still connect again
@@ -1763,6 +1865,7 @@ mod tests {
             tab: picker,
             open: Some(open),
             agents: None,
+            keys: None,
         };
         assert!(matches!(
             opened.choose(&connection),

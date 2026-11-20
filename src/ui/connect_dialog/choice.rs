@@ -15,12 +15,13 @@ use crate::ui::widgets;
 
 use super::Skin;
 
-const DRIVERS: [Driver; 5] = [
+const DRIVERS: [Driver; 6] = [
     Driver::Sqlite,
     Driver::Postgres,
     Driver::MySql,
     Driver::BigQuery,
     Driver::Files,
+    Driver::Redis,
 ];
 
 /// One choice of a [`radio_group`] or a [`radio_grid`], as it is drawn.

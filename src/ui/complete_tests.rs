@@ -1663,7 +1663,7 @@ fn a_list_with_no_place_closes_once_the_caret_is_in_the_pane() {
     // again, yet hanging under a word that is out of the pane.
     let (_, id) = ids(&harness, tab);
     let workspace = harness.app.workspace_mut(tab).unwrap();
-    let dialect = workspace.driver.dialect();
+    let dialect = workspace.driver.dialect().unwrap();
     let generation = workspace.catalog_generation;
     let sql_tab = workspace.sql_tab_mut(id).unwrap();
     let tokens = tabletist_db::sql::tokenize(dialect, &sql_tab.text);

@@ -220,7 +220,12 @@ pub(super) fn terminal_row_of(
 /// A cell `width` wide on a terminal row, for a field that would take the
 /// whole line otherwise. It is as tall as the field in it: the row centres
 /// what it holds, and a cell of no height would hang from the row's middle.
-fn cell(ui: &mut Ui, width: f32, skin: &Skin, add: impl FnOnce(&mut Ui) -> Response) -> Response {
+pub(super) fn cell(
+    ui: &mut Ui,
+    width: f32,
+    skin: &Skin,
+    add: impl FnOnce(&mut Ui) -> Response,
+) -> Response {
     ui.allocate_ui_with_layout(
         vec2(width, skin.field_height()),
         egui::Layout::top_down(egui::Align::Min),
@@ -245,7 +250,7 @@ pub(super) fn terminal_section(ui: &mut Ui, text: &str, skin: &Skin) {
 
 /// The terminal look's check box: `[x]` and what it turns on. `mark` is
 /// the colour of a set mark.
-fn terminal_check(
+pub(super) fn terminal_check(
     ui: &mut Ui,
     checked: &mut bool,
     text: &str,
@@ -278,14 +283,14 @@ fn terminal_check(
 }
 
 /// The terminal look's "keyring" check after a secret; returns its width.
-fn terminal_keyring_width(ui: &Ui, skin: &Skin) -> f32 {
+pub(super) fn terminal_keyring_width(ui: &Ui, skin: &Skin) -> f32 {
     let text = format!("[x] {}", skin.say(skin.keyring()));
     TextRole::OBody.width(ui.ctx(), skin.look.faces, &text)
 }
 
 /// The terminal look's "keyring" check; screen readers hear `name`, which
 /// says whose secret it keeps.
-fn terminal_keyring(ui: &mut Ui, mode: &mut PasswordMode, name: Msgid, skin: &Skin) {
+pub(super) fn terminal_keyring(ui: &mut Ui, mode: &mut PasswordMode, name: Msgid, skin: &Skin) {
     let mut keep = keeps(*mode);
     let text = skin.say(skin.keyring());
     let name = name.say(skin.locale);
@@ -317,7 +322,7 @@ pub(super) fn terminal_body(
             ui.set_width(ui.available_width());
             if form.url_mode {
                 terminal_row(ui, &skin.say(msgid("URL")), skin, |ui, label| {
-                    let field = url_field(ui, form, skin).labelled_by(label);
+                    let field = url_field(ui, form, skin, actions).labelled_by(label);
                     // The fields are in view under the URL, so they must
                     // show what will be saved: a URL fills them when the
                     // keyboard leaves it, by Enter or to edit a field.
@@ -364,6 +369,14 @@ pub(super) fn terminal_body(
                     terminal_section(ui, &skin.say(msgid("Security")), skin);
                     terminal_security(ui, form, skin, actions);
                 }
+                Driver::Redis => {
+                    terminal_section(ui, &skin.say(msgid("Server")), skin);
+                    super::redis::terminal_server(ui, form, skin, actions);
+                    terminal_section(ui, &skin.say(msgid("Security")), skin);
+                    super::redis::terminal_security(ui, form, skin, actions);
+                    terminal_ssh(ui, form, skin, actions);
+                    super::redis::terminal_browsing(ui, form, skin);
+                }
             }
             terminal_section(ui, &skin.say(msgid("Safety")), skin);
             // A line of text, as tall as the text.
@@ -371,12 +384,21 @@ pub(super) fn terminal_body(
             terminal_row_of(ui, &skin.say(msgid("Read-only")), line, skin, |ui, _| {
                 let name = gettext(skin.locale, "Open read-only");
                 let fixed = super::read_only_fixed(form);
-                let (promise, note) = match fixed {
-                    true => (skin.say(msgid("Files open read-only")), String::new()),
-                    false => (
-                        skin.say(msgid("Block every write from this app")),
-                        format!("· {}", skin.say(msgid("Default for production"))),
-                    ),
+                let production = format!("· {}", skin.say(msgid("Default for production")));
+                let (promise, note) = match form.driver {
+                    // Fixed on: this version sends only reads.
+                    Driver::Redis => (skin.say(msgid("Only read commands run")), String::new()),
+                    Driver::Sqlite
+                    | Driver::Postgres
+                    | Driver::MySql
+                    | Driver::BigQuery
+                    | Driver::Files => match fixed {
+                        true => (skin.say(msgid("Files open read-only")), String::new()),
+                        false => (
+                            skin.say(msgid("Block every write from this app")),
+                            production,
+                        ),
+                    },
                 };
                 // The note goes under the promise where one line has no
                 // room for both: no row may widen the dialog.
@@ -403,9 +425,19 @@ pub(super) fn terminal_body(
                     ui.vertical(draw);
                 }
             });
-            // What agents may do on it, where they can reach the app.
+            // What agents may do on it, where they can reach the app:
+            // nothing yet on Redis, which says so.
             if crate::endpoint::AVAILABLE {
-                super::agents::terminal(ui, form, skin, actions);
+                match form.driver {
+                    Driver::Redis => super::redis::agents(ui, skin),
+                    Driver::Sqlite
+                    | Driver::Postgres
+                    | Driver::MySql
+                    | Driver::BigQuery
+                    | Driver::Files => {
+                        super::agents::terminal(ui, form, skin, actions);
+                    }
+                }
             }
         });
 }
@@ -485,8 +517,6 @@ fn terminal_security(
     skin: &Skin,
     actions: &mut Vec<Action>,
 ) {
-    let role = TextRole::OBody;
-    let height = skin.field_height();
     let heading = skin.say(msgid("SSL mode"));
     terminal_row_of(ui, &heading, Group::Words.height(), skin, |ui, _| {
         let options = TLS_MODES.map(|(mode, label)| (mode, Choice::plain(label.english())));
@@ -510,6 +540,13 @@ fn terminal_security(
         intercept_warning(ui, skin);
         ui.add_space(8.0);
     }
+    terminal_ssh(ui, form, skin, actions);
+}
+
+/// The terminal look: the box that turns the SSH tunnel on, and its rows.
+fn terminal_ssh(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut Vec<Action>) {
+    let role = TextRole::OBody;
+    let height = skin.field_height();
     terminal_row(ui, &skin.say(msgid("SSH tunnel")), skin, |ui, _| {
         let name = gettext(skin.locale, "Connect through SSH tunnel");
         terminal_check(
