@@ -20,44 +20,44 @@ msgstr ""
 #: crates/tabletist-core/src/connections.rs
 msgctxt "last used"
 msgid "just now"
-msgstr ""
+msgstr "agora mesmo"
 
 #. Translators: a connection never used, as "Last used {when}" says it.
 #: crates/tabletist-core/src/connections.rs
 msgctxt "last used"
 msgid "never"
-msgstr ""
+msgstr "nunca"
 
 #: crates/tabletist-core/src/connections.rs
 msgctxt "last used"
 msgid "yesterday"
-msgstr ""
+msgstr "ontem"
 
 #: crates/tabletist-core/src/connections.rs
 #: crates/tabletist-core/src/recents.rs
 #, rust-format
 msgid "{n} h ago"
-msgstr ""
+msgstr "há {n} h"
 
 #: crates/tabletist-core/src/connections.rs
 #: crates/tabletist-core/src/recents.rs
 #, rust-format
 msgid "{n} min ago"
-msgstr ""
+msgstr "há {n} min"
 
 #: crates/tabletist-core/src/export_sheet.rs
 #, rust-format
 msgid "! {path} exists · :w! to replace, or another name"
-msgstr ""
+msgstr "! {path} já existe · :w! para substituir, ou outro nome"
 
 #: crates/tabletist-core/src/export_sheet.rs
 #, rust-format
 msgid "Can't write to {folder}. Permission denied."
-msgstr ""
+msgstr "Não é possível gravar em {folder}. Permissão negada."
 
 #: crates/tabletist-core/src/export_sheet.rs
 msgid "Choose folder…"
-msgstr ""
+msgstr "Escolher pasta…"
 
 #: crates/tabletist-core/src/export_sheet.rs
 #, rust-format
@@ -65,11 +65,13 @@ msgid ""
 "Connection to {connection} was lost after {rows}. The partial file was "
 "removed."
 msgstr ""
+"A conexão com {connection} caiu depois de {rows}. O arquivo parcial foi "
+"removido."
 
 #: crates/tabletist-core/src/export_sheet.rs
 #, rust-format
 msgid "Couldn't export {table}: {why}."
-msgstr ""
+msgstr "Não foi possível exportar {table}: {why}."
 
 #: crates/tabletist-core/src/export_sheet.rs
 #: crates/tabletist-core/src/keymap.rs src/menu.rs src/ui/agents.rs
@@ -86,7 +88,7 @@ msgstr "Revisar SQL"
 
 #: crates/tabletist-core/src/export_sheet.rs
 msgid "That's more than 10,000 rows. Export to a file?"
-msgstr ""
+msgstr "São mais de 10.000 linhas. Exportar para um arquivo?"
 
 #: crates/tabletist-core/src/export_sheet.rs src/app.rs
 msgid "That's over 20 MB. Export to a file?"
@@ -96,6 +98,7 @@ msgstr "Isso passa de 20 MB. Exportar para um arquivo?"
 #, rust-format
 msgid "The disk is full. {written} written. The partial file was removed."
 msgstr ""
+"O disco está cheio. Gravados: {written}. O arquivo parcial foi removido."
 
 #: crates/tabletist-core/src/export_sheet.rs
 #, rust-format
@@ -103,6 +106,7 @@ msgid ""
 "The server stopped the query after {time} (statement_timeout on "
 "{connection})."
 msgstr ""
+"O servidor parou a consulta após {time} (statement_timeout em {connection})."
 
 #: crates/tabletist-core/src/export_sheet.rs src/ui/ddl.rs
 #: src/ui/settings/updates.rs
@@ -113,35 +117,35 @@ msgstr "Tentar novamente"
 #: crates/tabletist-core/src/update/download.rs
 #, rust-format
 msgid "about {n} min left"
-msgstr ""
+msgstr "cerca de {n} min restantes"
 
 #: crates/tabletist-core/src/export_sheet.rs
 #: crates/tabletist-core/src/update/download.rs
 #, rust-format
 msgid "about {n} s left"
-msgstr ""
+msgstr "cerca de {n} s restantes"
 
 #: crates/tabletist-core/src/export_sheet.rs
 #, rust-format
 msgid "{column} moved to position {n}"
-msgstr ""
+msgstr "{column} movida para a posição {n}"
 
 #: crates/tabletist-core/src/export_sheet.rs
 #, rust-format
 msgid "{done} of {total} rows"
-msgstr ""
+msgstr "{done} de {total} linhas"
 
 #: crates/tabletist-core/src/export_sheet.rs
 #, rust-format
 msgid "{file} already exists. Nothing was replaced."
-msgstr ""
+msgstr "{file} já existe. Nada foi substituído."
 
 #: crates/tabletist-core/src/export_sheet.rs
 #, rust-format
 msgid "{n} byte"
 msgid_plural "{n} bytes"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "{n} byte"
+msgstr[1] "{n} bytes"
 
 #: crates/tabletist-core/src/export_sheet.rs crates/tabletist-core/src/i18n.rs
 #: src/ui/agents.rs src/ui/data_view.rs src/ui/history.rs src/ui/sql_results.rs
@@ -157,28 +161,32 @@ msgstr[1] "{n} linhas"
 #: crates/tabletist-core/src/export_sheet.rs
 #, rust-format
 msgid "{part} of ≈ {shown}"
-msgstr ""
+msgstr "{part} de ≈ {shown}"
 
 #: crates/tabletist-core/src/export_sheet.rs
 #, rust-format
 msgid "✗ can't write {path}: permission denied · :w another path"
-msgstr ""
+msgstr "✗ não é possível gravar {path}: permissão negada · :w outro caminho"
 
 #: crates/tabletist-core/src/export_sheet.rs
 #, rust-format
 msgid ""
 "✗ connection lost after {rows} · partial file removed · :export to retry"
 msgstr ""
+"✗ a conexão caiu depois de {rows} · arquivo parcial removido · :export tenta "
+"de novo"
 
 #: crates/tabletist-core/src/export_sheet.rs
 #, rust-format
 msgid "✗ couldn't export {table}: {why} · :export to retry"
-msgstr ""
+msgstr "✗ não foi possível exportar {table}: {why} · :export tenta de novo"
 
 #: crates/tabletist-core/src/export_sheet.rs
 #, rust-format
 msgid "✗ disk full after {written} · partial file removed · :export to retry"
 msgstr ""
+"✗ disco cheio depois de {written} · arquivo parcial removido · :export tenta "
+"de novo"
 
 #: crates/tabletist-core/src/export_sheet.rs
 #, rust-format
@@ -186,53 +194,58 @@ msgid ""
 "✗ server stopped the query after {time} (statement_timeout) · :export review "
 "sql"
 msgstr ""
+"✗ o servidor parou a consulta após {time} (statement_timeout) · :export "
+"revisa o sql"
 
 #: crates/tabletist-core/src/export_sheet.rs
 msgid "✗ that's more than 10,000 rows · :export to a file"
-msgstr ""
+msgstr "✗ são mais de 10.000 linhas · :export para um arquivo"
 
 #: crates/tabletist-core/src/export_sheet.rs
 msgid "✗ that's over 20 mb · :export to a file"
-msgstr ""
+msgstr "✗ passa de 20 mb · :export para um arquivo"
 
 #: crates/tabletist-core/src/format.rs
 msgid ""
 "Could not reach the server. Check the host and port, and that the server is "
 "running."
 msgstr ""
+"Não foi possível alcançar o servidor. Verifique o host e a porta, e se o "
+"servidor está em execução."
 
 #: crates/tabletist-core/src/format.rs
 msgid "The SSH login failed."
-msgstr ""
+msgstr "O login SSH falhou."
 
 #: crates/tabletist-core/src/format.rs
 msgid "The SSH server could not be reached."
-msgstr ""
+msgstr "Não foi possível alcançar o servidor SSH."
 
 #: crates/tabletist-core/src/format.rs
 msgid "The SSH server could not reach the database."
-msgstr ""
+msgstr "O servidor SSH não conseguiu alcançar o banco de dados."
 
 #: crates/tabletist-core/src/format.rs
 msgid "The connection was lost."
-msgstr ""
+msgstr "A conexão caiu."
 
 #: crates/tabletist-core/src/format.rs
 msgid ""
 "The secure connection failed. Try another TLS mode, or check the certificate."
 msgstr ""
+"A conexão segura falhou. Tente outro modo TLS ou verifique o certificado."
 
 #: crates/tabletist-core/src/format.rs
 msgid "The server did not answer in time."
-msgstr ""
+msgstr "O servidor não respondeu a tempo."
 
 #: crates/tabletist-core/src/format.rs
 msgid "The server refused the login. Check the user and password."
-msgstr ""
+msgstr "O servidor recusou o login. Verifique o usuário e a senha."
 
 #: crates/tabletist-core/src/format.rs
 msgid "required"
-msgstr ""
+msgstr "obrigatório"
 
 #: crates/tabletist-core/src/format.rs src/ui/row_panel.rs
 msgid "unique"
@@ -253,386 +266,386 @@ msgstr "filtro"
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "short month in a date"
 msgid "Apr"
-msgstr ""
+msgstr "abr."
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month"
 msgid "April"
-msgstr ""
+msgstr "Abril"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month in a date"
 msgid "April"
-msgstr ""
+msgstr "abril"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "short month in a date"
 msgid "Aug"
-msgstr ""
+msgstr "ago."
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month"
 msgid "August"
-msgstr ""
+msgstr "Agosto"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month in a date"
 msgid "August"
-msgstr ""
+msgstr "agosto"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "short month in a date"
 msgid "Dec"
-msgstr ""
+msgstr "dez."
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month"
 msgid "December"
-msgstr ""
+msgstr "Dezembro"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month in a date"
 msgid "December"
-msgstr ""
+msgstr "dezembro"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "short month in a date"
 msgid "Feb"
-msgstr ""
+msgstr "fev."
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month"
 msgid "February"
-msgstr ""
+msgstr "Fevereiro"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month in a date"
 msgid "February"
-msgstr ""
+msgstr "fevereiro"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "weekday initials"
 msgid "Fr"
-msgstr ""
+msgstr "S"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "short weekday"
 msgid "Fri"
-msgstr ""
+msgstr "sex."
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "weekday"
 msgid "Friday"
-msgstr ""
+msgstr "sexta-feira"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "short month in a date"
 msgid "Jan"
-msgstr ""
+msgstr "jan."
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month"
 msgid "January"
-msgstr ""
+msgstr "Janeiro"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month in a date"
 msgid "January"
-msgstr ""
+msgstr "janeiro"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "short month in a date"
 msgid "Jul"
-msgstr ""
+msgstr "jul."
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month"
 msgid "July"
-msgstr ""
+msgstr "Julho"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month in a date"
 msgid "July"
-msgstr ""
+msgstr "julho"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "short month in a date"
 msgid "Jun"
-msgstr ""
+msgstr "jun."
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month"
 msgid "June"
-msgstr ""
+msgstr "Junho"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month in a date"
 msgid "June"
-msgstr ""
+msgstr "junho"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "short month in a date"
 msgid "Mar"
-msgstr ""
+msgstr "mar."
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month"
 msgid "March"
-msgstr ""
+msgstr "Março"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month in a date"
 msgid "March"
-msgstr ""
+msgstr "março"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month"
 msgid "May"
-msgstr ""
+msgstr "Maio"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month in a date"
 msgid "May"
-msgstr ""
+msgstr "maio"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "short month in a date"
 msgid "May"
-msgstr ""
+msgstr "mai."
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "weekday initials"
 msgid "Mo"
-msgstr ""
+msgstr "S"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "short weekday"
 msgid "Mon"
-msgstr ""
+msgstr "seg."
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "weekday"
 msgid "Monday"
-msgstr ""
+msgstr "segunda-feira"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "short month in a date"
 msgid "Nov"
-msgstr ""
+msgstr "nov."
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month"
 msgid "November"
-msgstr ""
+msgstr "Novembro"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month in a date"
 msgid "November"
-msgstr ""
+msgstr "novembro"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "short month in a date"
 msgid "Oct"
-msgstr ""
+msgstr "out."
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month"
 msgid "October"
-msgstr ""
+msgstr "Outubro"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month in a date"
 msgid "October"
-msgstr ""
+msgstr "outubro"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "weekday initials"
 msgid "Sa"
-msgstr ""
+msgstr "S"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "short weekday"
 msgid "Sat"
-msgstr ""
+msgstr "sáb."
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "weekday"
 msgid "Saturday"
-msgstr ""
+msgstr "sábado"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "short month in a date"
 msgid "Sep"
-msgstr ""
+msgstr "set."
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month"
 msgid "September"
-msgstr ""
+msgstr "Setembro"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "month in a date"
 msgid "September"
-msgstr ""
+msgstr "setembro"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "weekday initials"
 msgid "Su"
-msgstr ""
+msgstr "D"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "short weekday"
 msgid "Sun"
-msgstr ""
+msgstr "dom."
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "weekday"
 msgid "Sunday"
-msgstr ""
+msgstr "domingo"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "weekday initials"
 msgid "Th"
-msgstr ""
+msgstr "Q"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "short weekday"
 msgid "Thu"
-msgstr ""
+msgstr "qui."
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "weekday"
 msgid "Thursday"
-msgstr ""
+msgstr "quinta-feira"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "weekday initials"
 msgid "Tu"
-msgstr ""
+msgstr "T"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "short weekday"
 msgid "Tue"
-msgstr ""
+msgstr "ter."
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "weekday"
 msgid "Tuesday"
-msgstr ""
+msgstr "terça-feira"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "weekday initials"
 msgid "We"
-msgstr ""
+msgstr "Q"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "short weekday"
 msgid "Wed"
-msgstr ""
+msgstr "qua."
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "weekday"
 msgid "Wednesday"
-msgstr ""
+msgstr "quarta-feira"
 
 #. Translators: a day ("Oct 13", "Today") and the time on it.
 #: crates/tabletist-core/src/i18n/numbers.rs
 #, rust-format
 msgctxt "day and time"
 msgid "{day} {time}"
-msgstr ""
+msgstr "{day} às {time}"
 
 #. Translators: the rows a page shows, the total not known.
 #: crates/tabletist-core/src/i18n/numbers.rs
 #, rust-format
 msgid "{first}–{last}"
-msgstr ""
+msgstr "{first}–{last}"
 
 #. Translators: the rows a page shows, of all the table's.
 #: crates/tabletist-core/src/i18n/numbers.rs
 #, rust-format
 msgid "{first}–{last} of {total}"
-msgstr ""
+msgstr "{first}–{last} de {total}"
 
 #. Translators: the rows a page shows, of about this many.
 #: crates/tabletist-core/src/i18n/numbers.rs
 #, rust-format
 msgid "{first}–{last} of ~{total}"
-msgstr ""
+msgstr "{first}–{last} de ~{total}"
 
 #. Translators: a day of this year, as History heads its entries.
 #: crates/tabletist-core/src/i18n/numbers.rs
 #, rust-format
 msgctxt "day of this year"
 msgid "{month} {day}"
-msgstr ""
+msgstr "{day} de {month}"
 
 #. Translators: a day of another year, as History heads its entries.
 #: crates/tabletist-core/src/i18n/numbers.rs
 #, rust-format
 msgctxt "day of another year"
 msgid "{month} {day}, {year}"
-msgstr ""
+msgstr "{day} de {month} de {year}"
 
 #. Translators: a size in bytes, kilobytes or megabytes.
 #: crates/tabletist-core/src/i18n/numbers.rs
 #, rust-format
 msgctxt "file size"
 msgid "{n} B"
-msgstr ""
+msgstr "{n} B"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 #, rust-format
 msgctxt "file size"
 msgid "{n} GB"
-msgstr ""
+msgstr "{n} GB"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 #, rust-format
 msgctxt "file size"
 msgid "{n} KB"
-msgstr ""
+msgstr "{n} KB"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 #, rust-format
 msgctxt "file size"
 msgid "{n} MB"
-msgstr ""
+msgstr "{n} MB"
 
 #. Translators: a size in terabytes.
 #: crates/tabletist-core/src/i18n/numbers.rs
 #, rust-format
 msgctxt "file size"
 msgid "{n} TB"
-msgstr ""
+msgstr "{n} TB"
 
 #. Translators: a time in whole minutes.
 #: crates/tabletist-core/src/i18n/numbers.rs
 #, rust-format
 msgctxt "duration"
 msgid "{n} min"
-msgstr ""
+msgstr "{n} min"
 
 #. Translators: a time in minutes and seconds.
 #: crates/tabletist-core/src/i18n/numbers.rs
 #, rust-format
 msgctxt "duration"
 msgid "{n} min {s} s"
-msgstr ""
+msgstr "{n} min {s} s"
 
 #. Translators: a time in milliseconds.
 #: crates/tabletist-core/src/i18n/numbers.rs
 #, rust-format
 msgctxt "duration"
 msgid "{n} ms"
-msgstr ""
+msgstr "{n} ms"
 
 #. Translators: a time in seconds.
 #: crates/tabletist-core/src/i18n/numbers.rs
 #, rust-format
 msgctxt "duration"
 msgid "{n} s"
-msgstr ""
+msgstr "{n} s"
 
 #. Translators: a count shortened to billions: "7B".
 #: crates/tabletist-core/src/i18n/numbers.rs
@@ -646,13 +659,13 @@ msgstr "{n} bi"
 #, rust-format
 msgctxt "short file size"
 msgid "{n}B"
-msgstr ""
+msgstr "{n}B"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 #, rust-format
 msgctxt "short file size"
 msgid "{n}K"
-msgstr ""
+msgstr "{n}K"
 
 #. Translators: a count shortened to thousands: "1.2K".
 #: crates/tabletist-core/src/i18n/numbers.rs
@@ -672,7 +685,7 @@ msgstr "{n} mi"
 #, rust-format
 msgctxt "short file size"
 msgid "{n}M"
-msgstr ""
+msgstr "{n}M"
 
 #: crates/tabletist-core/src/keymap.rs
 msgid "A page down in a foreign key's list"
@@ -2178,7 +2191,7 @@ msgstr "Dados"
 
 #: crates/tabletist-core/src/model.rs
 msgid "Environment color"
-msgstr ""
+msgstr "Cor do ambiente"
 
 #: crates/tabletist-core/src/model.rs src/ui/connect_dialog/files.rs
 #: src/ui/workspace.rs
@@ -2193,7 +2206,7 @@ msgstr "Pasta"
 #: crates/tabletist-core/src/model.rs
 #, rust-format
 msgid "Format · {format}"
-msgstr ""
+msgstr "Formatação · {format}"
 
 #: crates/tabletist-core/src/model.rs src/ui/settings/sheet.rs
 msgid "General"
@@ -2255,7 +2268,7 @@ msgstr "Atualizações"
 
 #: crates/tabletist-core/src/recents.rs
 msgid "Just now"
-msgstr ""
+msgstr "Agora mesmo"
 
 #: crates/tabletist-core/src/recents.rs src/ui/history.rs
 msgid "Yesterday"
@@ -2263,11 +2276,11 @@ msgstr "Ontem"
 
 #: crates/tabletist-core/src/selection.rs crates/tabletist-core/src/vim.rs
 msgid "-- VISUAL --"
-msgstr ""
+msgstr "-- VISUAL --"
 
 #: crates/tabletist-core/src/selection.rs
 msgid "-- VISUAL BLOCK --"
-msgstr ""
+msgstr "-- VISUAL DE BLOCO --"
 
 #: crates/tabletist-core/src/selection.rs crates/tabletist-core/src/vim.rs
 #: src/ui/workspace.rs
@@ -2297,90 +2310,97 @@ msgstr[1] "{n} linhas selecionadas"
 #: crates/tabletist-core/src/selection.rs
 #, rust-format
 msgid "{rows} by {cols} selected"
-msgstr ""
+msgstr "Seleção: {rows} por {cols}"
 
 #: crates/tabletist-core/src/update/check.rs
 #: crates/tabletist-core/src/update/download.rs
 msgid "Couldn't reach github.com. Check the connection to the internet."
 msgstr ""
+"Não foi possível alcançar github.com. Verifique a conexão com a internet."
 
 #: crates/tabletist-core/src/update/check.rs
 #, rust-format
 msgid "Couldn't reach github.com: the connection timed out after {secs} s."
 msgstr ""
+"Não foi possível alcançar github.com: o tempo limite da conexão se esgotou "
+"após {secs} s."
 
 #: crates/tabletist-core/src/update/check.rs
 #: crates/tabletist-core/src/update/download.rs
 #, rust-format
 msgid "GitHub answered with an error ({status})."
-msgstr ""
+msgstr "O GitHub respondeu com um erro ({status})."
 
 #: crates/tabletist-core/src/update/check.rs
 msgid "GitHub is limiting checks from this network. Try again later."
 msgstr ""
+"O GitHub está limitando as verificações desta rede. Tente de novo mais tarde."
 
 #: crates/tabletist-core/src/update/check.rs
 msgid "GitHub's answer wasn't a release."
-msgstr ""
+msgstr "A resposta do GitHub não era uma versão publicada."
 
 #: crates/tabletist-core/src/update/download.rs
 msgid "Tabletist can't write to the folder it is in."
-msgstr ""
+msgstr "O Tabletist não consegue gravar na pasta em que está."
 
 #: crates/tabletist-core/src/update/download.rs
 msgid "Tabletist couldn't quit in time, so the installer stopped waiting."
-msgstr ""
+msgstr "O Tabletist não fechou a tempo, então o instalador parou de esperar."
 
 #: crates/tabletist-core/src/update/download.rs
 msgid "The app was signed by another developer."
-msgstr ""
+msgstr "O app foi assinado por outro desenvolvedor."
 
 #: crates/tabletist-core/src/update/download.rs
 msgid "The connection was lost and didn't come back."
-msgstr ""
+msgstr "A conexão caiu e não voltou."
 
 #: crates/tabletist-core/src/update/download.rs
 msgid "The download isn't a Tabletist app."
-msgstr ""
+msgstr "O download não é um app do Tabletist."
 
 #: crates/tabletist-core/src/update/download.rs
 msgid "The file doesn't match its checksum in the release."
 msgstr ""
+"O arquivo não corresponde à soma de verificação dele na versão publicada."
 
 #: crates/tabletist-core/src/update/download.rs
 msgid "The file holds another version than the release."
-msgstr ""
+msgstr "O arquivo traz uma versão diferente da publicada."
 
 #: crates/tabletist-core/src/update/download.rs
 #, rust-format
 msgid "The installer didn't start: {error}"
-msgstr ""
+msgstr "O instalador não foi iniciado: {error}"
 
 #: crates/tabletist-core/src/update/download.rs
 msgid "The new version didn't pass its startup check."
-msgstr ""
+msgstr "A nova versão não passou na verificação de inicialização."
 
 #: crates/tabletist-core/src/update/download.rs
 msgid "The release changed. Check for updates again."
-msgstr ""
+msgstr "A versão publicada mudou. Verifique as atualizações de novo."
 
 #: crates/tabletist-core/src/update/download.rs
 msgid "The release's checksums couldn't be read."
-msgstr ""
+msgstr "Não foi possível ler as somas de verificação da versão publicada."
 
 #: crates/tabletist-core/src/update/download.rs
 msgid "The signature doesn't match Tabletist's release key."
-msgstr ""
+msgstr "A assinatura não corresponde à chave de versões do Tabletist."
 
 #: crates/tabletist-core/src/update/download.rs
 msgid ""
 "Work was still open when the installer stopped waiting, so Tabletist didn't "
 "restart."
 msgstr ""
+"Ainda havia trabalho aberto quando o instalador parou de esperar, então o "
+"Tabletist não reiniciou."
 
 #: crates/tabletist-core/src/update/download.rs
 msgid "macOS couldn't check the app's signature."
-msgstr ""
+msgstr "O macOS não conseguiu verificar a assinatura do app."
 
 #: crates/tabletist-core/src/update/installed.rs src/app/updates.rs
 #: src/ui/update_settings_tests.rs
@@ -2389,11 +2409,11 @@ msgstr "Instalado com o Homebrew, então o Homebrew o atualiza"
 
 #: crates/tabletist-core/src/update/installed.rs
 msgid "Installed with cargo, so cargo updates it"
-msgstr ""
+msgstr "Instalado com cargo, então o cargo o atualiza"
 
 #: crates/tabletist-core/src/update/installed.rs
 msgid "Move Tabletist to Applications, then open it from there to update it"
-msgstr ""
+msgstr "Mova o Tabletist para Aplicativos e abra-o de lá para atualizá-lo"
 
 #: crates/tabletist-core/src/update/installed.rs
 #: src/ui/update_settings_tests.rs
@@ -2402,7 +2422,7 @@ msgstr "O Tabletist não pode se substituir aqui"
 
 #: crates/tabletist-core/src/update/installed.rs
 msgid "Your package manager updates Tabletist"
-msgstr ""
+msgstr "O seu gerenciador de pacotes atualiza o Tabletist"
 
 #: crates/tabletist-core/src/vim.rs src/ui/workspace.rs
 msgid "-- INSERT --"
@@ -7024,7 +7044,7 @@ msgstr "Localizar conexão…"
 #: src/ui/picker.rs
 #, rust-format
 msgid "Last used {when}"
-msgstr "Usada {when}"
+msgstr "Último uso: {when}"
 
 #: src/ui/picker.rs
 #, rust-format
@@ -8810,7 +8830,7 @@ msgstr "Cursor, outros"
 #: src/ui/settings/terminal.rs
 #, rust-format
 msgid "Format · {format} in normal mode"
-msgstr "Formatar · {format} no modo normal"
+msgstr "Formatação · {format} no modo normal"
 
 #: src/ui/settings/terminal.rs
 msgid "Install and restart"

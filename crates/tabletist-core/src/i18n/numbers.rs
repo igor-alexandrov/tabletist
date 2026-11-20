@@ -493,6 +493,7 @@ mod tests {
         assert_eq!(file_size(English, 5 * 1024 * 1024), "5.0 MB");
         assert_eq!(file_size(Russian, 512), "512 Б");
         assert_eq!(file_size(Russian, 5 * 1024 * 1024 + 104_858), "5,1 МБ");
+        assert_eq!(file_size(Brazilian, 5 * 1024 * 1024), "5,0 MB");
         assert_eq!(terse_size(English, 0), "0B");
         assert_eq!(terse_size(English, 49_357), "48.2K");
         assert_eq!(terse_size(English, 5 * 1024 * 1024), "5.0M");
@@ -522,6 +523,10 @@ mod tests {
         );
         let russian = range_label(Russian, 0, 300, true, Some(1_234_567), None);
         assert_eq!(russian.as_deref(), Some("1–300 из ~1,2 млн"));
+        assert_eq!(
+            range_label(Brazilian, 0, 300, false, None, Some(1_234_567)).as_deref(),
+            Some("1–300 de 1.234.567")
+        );
     }
 
     #[test]
