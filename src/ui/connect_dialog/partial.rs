@@ -8,7 +8,6 @@
 use tabletist_db::files::{Failure, Why};
 
 use super::Skin;
-use crate::format::group_digits;
 use crate::i18n::gettext;
 use crate::keymap::Command;
 use crate::model::{ConnectionForm, FileFix};
@@ -169,7 +168,7 @@ fn sentence(failure: &Failure, skin: &Skin) -> String {
             skin,
             &gettext(skin.locale, "Row {row} has '{value}' in {column}, {kind}."),
             &[
-                ("row", &group_digits(*row)),
+                ("row", &crate::i18n::number(skin.locale, *row)),
                 ("value", value),
                 ("column", column),
                 ("kind", &kind_word(kind, skin)),
@@ -186,9 +185,9 @@ fn sentence(failure: &Failure, skin: &Skin) -> String {
                 "Row {row} has {found} values, where the file's rows have {expected}.",
             ),
             &[
-                ("row", &group_digits(*row)),
-                ("found", &found.to_string()),
-                ("expected", &expected.to_string()),
+                ("row", &crate::i18n::number(skin.locale, *row)),
+                ("found", &crate::i18n::number(skin.locale, *found)),
+                ("expected", &crate::i18n::number(skin.locale, *expected)),
             ],
         ),
         Why::Json {
@@ -197,7 +196,7 @@ fn sentence(failure: &Failure, skin: &Skin) -> String {
         } => put(
             skin,
             &gettext(skin.locale, "Line {line} isn't JSON."),
-            &[("line", &group_digits(*line))],
+            &[("line", &crate::i18n::number(skin.locale, *line))],
         ),
         Why::Json {
             line,
@@ -208,7 +207,7 @@ fn sentence(failure: &Failure, skin: &Skin) -> String {
                 skin.locale,
                 "Line {line} has a value of another type than the lines before it.",
             ),
-            &[("line", &group_digits(*line))],
+            &[("line", &crate::i18n::number(skin.locale, *line))],
         ),
         Why::Other(message) => message.clone(),
     }

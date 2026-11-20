@@ -860,7 +860,7 @@ fn the_log_lists_the_calls_and_says_what_the_selected_one_came_to() {
         let at = crate::clock::of_millis(1_791_880_982_000);
         let row = format!(
             "{} · {} · run_query · SELECT id FROM books · 3 · 4 · ok",
-            look.label(&crate::clock::day(at)),
+            look.label(&crate::clock::day(crate::i18n::Locale::English, at)),
             look.label("Claude Code"),
         );
         assert!(harness.has(&row), "{}", look.name);
@@ -878,7 +878,7 @@ fn the_log_lists_the_calls_and_says_what_the_selected_one_came_to() {
         harness.settle();
         let detail = look.label(&format!(
             "Claude Code · {} · 3 rows, 2 columns returned · 4 ms · rows themselves are not logged",
-            crate::clock::moment(at),
+            crate::clock::moment(crate::i18n::Locale::English, at),
         ));
         assert_eq!(harness.has(&detail), look.terminal, "{}", look.name);
         assert_eq!(

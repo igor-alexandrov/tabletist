@@ -9,11 +9,9 @@ text file, a gettext catalog, in
 [`assets/i18n`](https://github.com/igor-alexandrov/tabletist/tree/main/assets/i18n):
 `ru.po` for Russian. The interface looks its strings up there, and one the
 catalog lacks shows in English, so a catalog can be finished a part at a
-time. A few strings are not in the catalog yet, such as the window's title
-and some of the words in the grid and the SQL editor, and stay English
-whatever it says: they need a change to the code, not to the catalog, so
-tell us in an
-[issue](https://github.com/igor-alexandrov/tabletist/issues).
+time. If you find a word of the interface that stays English whatever the
+catalog says, it needs a change to the code, not to the catalog: tell us
+in an [issue](https://github.com/igor-alexandrov/tabletist/issues).
 
 Only the app is translated. This website and its guide stay in English.
 
@@ -68,6 +66,11 @@ msginit --no-translator --locale=pt_BR.UTF-8 \
   the app puts a number or a name in their place. Their order in your
   sentence is yours to choose.
 - A leading or trailing space, and a trailing colon or `…`.
+- What the grid shows of the data: its values and its dates, which stay
+  as the database wrote them (dates in ISO, `2026-01-12`), and the type
+  and size it writes for a binary value (`bytea · 48.2 KB`).
+- The window's title, which names the connection, its environment and its
+  database.
 
 The Omarchy look writes every label in lower case, so write ordinary
 sentence case.
@@ -89,6 +92,19 @@ msgstr[0] "{n} строка"
 msgstr[1] "{n} строки"
 msgstr[2] "{n} строк"
 ```
+
+The app writes the number with the language's own marks: «12 480 строк»,
+with a no-break space between the thousands, and «1,2 тыс.» with a decimal
+comma. These marks are set in the code, not in the catalog.
+
+## Dates
+
+Months and weekdays are messages of their own, each with a context that
+says how it is used: `month` is a name on its own («Январь»), `month in a
+date` is how a date says it («13 января»), and `short month in a date` is
+its short form («окт.»). A whole date is one message, such as `{month}
+{day}, {year}`, so you choose the order and add what the language writes
+around it: «{day} {month} {year} г.».
 
 ## After a change to the code
 

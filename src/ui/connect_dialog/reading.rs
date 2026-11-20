@@ -8,7 +8,7 @@ use tabletist_db::files::{Change, Delimiter, Header, Override, Reading, Types};
 
 use super::Skin;
 use super::choice::{Choice, Group, choose};
-use crate::i18n::{Locale, counted, gettext};
+use crate::i18n::{Locale, Msgid, counted, gettext, msgid};
 use crate::model::{Action, ConnectionForm, CsvChange};
 use crate::typography::{Text, TextRole};
 use crate::ui::disclosure::{self, Section};
@@ -16,8 +16,8 @@ use crate::ui::{focus, menu, widgets};
 
 /// What the open section says under its title: macOS, then the terminal
 /// look's shorter words, as its board writes them.
-const HINT: &str = "Defaults for every CSV in this connection";
-const TERMINAL_HINT: &str = "Defaults for every CSV";
+const HINT: Msgid = msgid("Defaults for every CSV in this connection");
+const TERMINAL_HINT: Msgid = msgid("Defaults for every CSV");
 
 /// The width of the macOS options' labels.
 const LABEL: f32 = 110.0;
@@ -39,26 +39,26 @@ pub(super) fn focused_override(ctx: &egui::Context, form: &ConnectionForm) -> Op
 /// choices do.
 pub(super) fn summary(reading: &Reading, locale: Locale, terminal: bool) -> String {
     let header = match reading.header {
-        Header::Detect => "Header detect",
-        Header::Yes => "Header yes",
-        Header::No => "Header no",
+        Header::Detect => msgid("Header detect"),
+        Header::Yes => msgid("Header yes"),
+        Header::No => msgid("Header no"),
     };
     let delimiter = match reading.delimiter {
-        Delimiter::Detect => "delimiter detect",
-        Delimiter::Comma => "delimiter ,",
-        Delimiter::Semicolon => "delimiter ;",
-        Delimiter::Tab => "delimiter tab",
-        Delimiter::Pipe => "delimiter |",
+        Delimiter::Detect => msgid("delimiter detect"),
+        Delimiter::Comma => msgid("delimiter ,"),
+        Delimiter::Semicolon => msgid("delimiter ;"),
+        Delimiter::Tab => msgid("delimiter tab"),
+        Delimiter::Pipe => msgid("delimiter |"),
     };
     let types = match (reading.types, terminal) {
-        (Types::Sample, false) => "types from the first 20,000 rows",
-        (Types::Sample, true) => "types first 20,000 rows",
-        (Types::All, false) => "types from all rows",
-        (Types::All, true) => "types all rows",
-        (Types::Text, _) => "everything as text",
+        (Types::Sample, false) => msgid("types from the first 20,000 rows"),
+        (Types::Sample, true) => msgid("types first 20,000 rows"),
+        (Types::All, false) => msgid("types from all rows"),
+        (Types::All, true) => msgid("types all rows"),
+        (Types::Text, _) => msgid("everything as text"),
     };
     let mut said = [header, delimiter, types]
-        .map(|words| gettext(locale, words))
+        .map(|words| words.say(locale))
         .join(" · ");
     match reading.overrides.len() {
         0 => {}
@@ -79,19 +79,19 @@ pub(super) fn override_words(change: &Change, locale: Locale, terminal: bool) ->
     match change {
         Change::Text { column } => {
             let words = match terminal {
-                true => "{column} as text",
-                false => "{column} read as text",
+                true => msgid("{column} as text"),
+                false => msgid("{column} read as text"),
             };
-            gettext(locale, words).replace("{column}", column)
+            words.say(locale).replace("{column}", column)
         }
         Change::Empty { column, values } => {
             let values: Vec<String> = values.iter().map(|value| format!("'{value}'")).collect();
             let words = match terminal {
-                true => "{values} as empty in {column}",
-                false => "{values} read as empty in {column}",
+                true => msgid("{values} as empty in {column}"),
+                false => msgid("{values} read as empty in {column}"),
             };
             // One pass: a value that reads "{column}" stays as it is.
-            let words = gettext(locale, words);
+            let words = words.say(locale);
             let (before, after) = words.split_once("{values}").unwrap_or((&words, ""));
             let put = |part: &str| part.replace("{column}", column);
             format!("{}{}{}", put(before), values.join(", "), put(after))
@@ -102,7 +102,7 @@ pub(super) fn override_words(change: &Change, locale: Locale, terminal: bool) ->
 
 /// The header row's choices.
 fn headers(skin: &Skin) -> Vec<(Header, String)> {
-    let words = ["Detect", "Yes", "No"];
+    let words = [msgid("Detect"), msgid("Yes"), msgid("No")];
     Header::ALL
         .into_iter()
         .zip(words)
@@ -116,8 +116,8 @@ fn delimiters(skin: &Skin) -> Vec<(Delimiter, String)> {
         .into_iter()
         .map(|delimiter| {
             let word = match delimiter {
-                Delimiter::Detect => skin.say("Detect"),
-                Delimiter::Tab => skin.say("Tab"),
+                Delimiter::Detect => skin.say(msgid("Detect")),
+                Delimiter::Tab => skin.say(msgid("Tab")),
                 Delimiter::Comma | Delimiter::Semicolon | Delimiter::Pipe => {
                     delimiter.char().map(String::from).unwrap_or_default()
                 }
@@ -130,12 +130,16 @@ fn delimiters(skin: &Skin) -> Vec<(Delimiter, String)> {
 /// The column types' choices: the dropdown's words on macOS, the choice
 /// row's in the terminal look.
 fn types(skin: &Skin) -> Vec<(Types, String)> {
-    let words: [&'static str; 3] = match skin.look.terminal {
-        true => ["First 20,000 rows", "All rows", "All text"],
+    let words: [Msgid; 3] = match skin.look.terminal {
+        true => [
+            msgid("First 20,000 rows"),
+            msgid("All rows"),
+            msgid("All text"),
+        ],
         false => [
-            "Detect from the first 20,000 rows",
-            "Detect from all rows (slower)",
-            "Read everything as text",
+            msgid("Detect from the first 20,000 rows"),
+            msgid("Detect from all rows (slower)"),
+            msgid("Read everything as text"),
         ],
     };
     Types::ALL
@@ -170,7 +174,7 @@ pub(super) fn section(
     actions: &mut Vec<Action>,
 ) {
     let Skin { look, palette, .. } = *skin;
-    let title = skin.say("Reading CSV");
+    let title = skin.say(msgid("Reading CSV"));
     let summary = look.label(&summary(&form.files_csv, skin.locale, look.terminal));
     let hint = skin.say(match look.terminal {
         true => TERMINAL_HINT,
@@ -218,7 +222,7 @@ fn option_row(ui: &mut Ui, label: &str, height: f32, skin: &Skin, add: impl FnOn
 fn sheet_rows(ui: &mut Ui, form: &ConnectionForm, skin: &Skin, actions: &mut Vec<Action>) {
     let reading = &form.files_csv;
     let group = Group::Track(24.0);
-    let header = skin.say("Header row");
+    let header = skin.say(msgid("Header row"));
     option_row(ui, &header, group.height(), skin, |ui| {
         if let Some(chosen) = choice(
             ui,
@@ -233,7 +237,7 @@ fn sheet_rows(ui: &mut Ui, form: &ConnectionForm, skin: &Skin, actions: &mut Vec
         }
     });
     ui.add_space(8.0);
-    let delimiter = skin.say("Delimiter");
+    let delimiter = skin.say(msgid("Delimiter"));
     option_row(ui, &delimiter, group.height(), skin, |ui| {
         if let Some(chosen) = choice(
             ui,
@@ -248,7 +252,7 @@ fn sheet_rows(ui: &mut Ui, form: &ConnectionForm, skin: &Skin, actions: &mut Vec
         }
     });
     ui.add_space(8.0);
-    let label = skin.say("Column types");
+    let label = skin.say(msgid("Column types"));
     option_row(ui, &label, skin.field_height(), skin, |ui| {
         let options = types(skin);
         let shown = options
@@ -315,7 +319,7 @@ fn sheet_override(ui: &mut Ui, at: usize, each: &Override, skin: &Skin, actions:
                         each.file,
                         override_words(&each.change, skin.locale, false)
                     );
-                    let reset = reset_link(ui, at, &skin.say("Reset"), &name, skin);
+                    let reset = reset_link(ui, at, &skin.say(msgid("Reset")), &name, skin);
                     // Once a press: a held Enter would take off the next
                     // override too.
                     if crate::ui::disclosure::pressed(ui, &reset) {
@@ -344,7 +348,7 @@ fn terminal_rows(ui: &mut Ui, form: &ConnectionForm, skin: &Skin, actions: &mut 
     let Skin { look, palette, .. } = *skin;
     let reading = &form.files_csv;
     let group = Group::Words;
-    let header = skin.say("Header row");
+    let header = skin.say(msgid("Header row"));
     super::terminal::terminal_row_of(ui, &header, group.height(), skin, |ui, _| {
         if let Some(chosen) = choice(
             ui,
@@ -358,7 +362,7 @@ fn terminal_rows(ui: &mut Ui, form: &ConnectionForm, skin: &Skin, actions: &mut 
             actions.push(Action::SetCsv(CsvChange::Header(chosen)));
         }
     });
-    let delimiter = skin.say("Delimiter");
+    let delimiter = skin.say(msgid("Delimiter"));
     super::terminal::terminal_row_of(ui, &delimiter, group.height(), skin, |ui, _| {
         if let Some(chosen) = choice(
             ui,
@@ -372,7 +376,7 @@ fn terminal_rows(ui: &mut Ui, form: &ConnectionForm, skin: &Skin, actions: &mut 
             actions.push(Action::SetCsv(CsvChange::Delimiter(chosen)));
         }
     });
-    let label = skin.say("Column types");
+    let label = skin.say(msgid("Column types"));
     super::terminal::terminal_row_of(ui, &label, group.height(), skin, |ui, _| {
         if let Some(chosen) = choice(
             ui,
@@ -394,9 +398,9 @@ fn terminal_rows(ui: &mut Ui, form: &ConnectionForm, skin: &Skin, actions: &mut 
             each.file,
             override_words(&each.change, skin.locale, true),
             reset.as_str(),
-            skin.say("reset")
+            skin.say(msgid("reset"))
         );
-        super::terminal::terminal_row_of(ui, &skin.say("Override"), line, skin, |ui, _| {
+        super::terminal::terminal_row_of(ui, &skin.say(msgid("Override")), line, skin, |ui, _| {
             let laid = Text::one(look, TextRole::OBody, &said, palette.dim).layout(ui.ctx());
             let (rect, _) =
                 ui.allocate_exact_size(vec2(ui.available_width(), line), Sense::hover());
@@ -404,7 +408,7 @@ fn terminal_rows(ui: &mut Ui, form: &ConnectionForm, skin: &Skin, actions: &mut 
             // Named for what a press of it does, as the sheet's link is.
             let name = format!(
                 "{} {}, {}",
-                skin.say("Reset"),
+                skin.say(msgid("Reset")),
                 each.file,
                 override_words(&each.change, skin.locale, true)
             );

@@ -7,7 +7,7 @@ use egui::{CornerRadius, Id, Margin, Rect, Stroke, StrokeKind, Ui, pos2, vec2};
 
 use crate::edit::{Editor, Lock, MAX_EDIT_BYTES, Problem};
 use crate::format::display_safe;
-use crate::i18n::{Locale, gettext, ngettext};
+use crate::i18n::{Locale, Msgid, fill, gettext, msgid, ngettext};
 use crate::keymap::{Command, Keymap, Layout, Scope, Written};
 use crate::model::{Advance, ConnTabId, TabId};
 use crate::theme::{Look, Palette};
@@ -1298,21 +1298,14 @@ fn band(
             palette.danger,
         ),
         None => {
-            let count = |count: usize, one: &'static str, many: &'static str| {
-                let noun = ngettext(locale, one, many, count);
-                let count = crate::format::group_digits(count as u64);
-                format!("{count} {noun}")
-            };
+            let grouped = |count: usize| crate::i18n::number(locale, count as u64);
             let chars = editor.text.chars().count();
             let lines = editor.text.matches('\n').count() + 1;
-            (
-                format!(
-                    "{} · {}",
-                    count(chars, "char", "chars"),
-                    count(lines, "line", "lines")
-                ),
-                palette.dim,
-            )
+            let chars =
+                ngettext(locale, "{n} char", "{n} chars", chars).replace("{n}", &grouped(chars));
+            let lines =
+                ngettext(locale, "{n} line", "{n} lines", lines).replace("{n}", &grouped(lines));
+            (format!("{chars} · {lines}"), palette.dim)
         }
     };
     let width = |text: &str| role.width(ui.ctx(), look.faces, text);
@@ -1407,41 +1400,60 @@ pub fn problem_text(
     typed: Option<&str>,
     locale: Locale,
 ) -> String {
-    let say = |text: &'static str| gettext(locale, text);
-    let counted = |count: u32, one: &'static str, many: &'static str| {
-        format!("{count} {}", ngettext(locale, one, many, count))
+    let say = |text: Msgid| text.say(locale);
+    // A message of the column's type: "int4 expects a number".
+    let of_type = |text: Msgid| fill(&text.say(locale), &[("{type}", type_name)]);
+    // A message whose `{n}` is a count: "At most 3 digits before the point".
+    let counted = |text: std::borrow::Cow<'static, str>, count: u32| {
+        fill(&text, &[("{n}", &crate::i18n::number(locale, count))])
     };
     // As the check read it: without the spaces a database overlooks.
     let typed = typed.map(str::trim_ascii).filter(|typed| !typed.is_empty());
     // What the database would have kept in place of the typed number.
     let stored_as = |stored: &str| match typed {
-        Some(typed) => format!("{typed} {} {stored}", say("would be stored as")),
-        None => format!("{} {stored}", say("Would be stored as")),
+        Some(typed) => fill(
+            &gettext(locale, "{typed} would be stored as {stored}"),
+            &[("{typed}", typed), ("{stored}", stored)],
+        ),
+        None => fill(
+            &gettext(locale, "Would be stored as {stored}"),
+            &[("{stored}", stored)],
+        ),
     };
     match problem {
-        Problem::WholeNumber => format!("{type_name} {}", say("expects a whole number")),
-        Problem::OutOfRange { min, max } => {
-            format!("{type_name} {} {min} {} {max}", say("holds"), say("to"))
-        }
-        Problem::Number => format!("{type_name} {}", say("expects a number")),
+        Problem::WholeNumber => of_type(msgid("{type} expects a whole number")),
+        Problem::OutOfRange { min, max } => fill(
+            &gettext(locale, "{type} holds {min} to {max}"),
+            &[
+                ("{type}", type_name),
+                ("{min}", &min.to_string()),
+                ("{max}", &max.to_string()),
+            ],
+        ),
+        Problem::Number => of_type(msgid("{type} expects a number")),
         Problem::Decimals { scale, stored } => {
             // What the type keeps: so many decimals, none, or, for a scale
             // below zero, zeros in the last places before the point.
             let limit = match (u32::try_from(*scale), scale) {
-                (Ok(0), _) => format!("{}.", say("No decimals")),
-                (Ok(decimals), _) => format!(
-                    "{} {}.",
-                    say("Up to"),
-                    counted(decimals, "decimal", "decimals")
+                (Ok(0), _) => say(msgid("No decimals.")).into_owned(),
+                (Ok(decimals), _) => counted(
+                    ngettext(
+                        locale,
+                        "Up to {n} decimal.",
+                        "Up to {n} decimals.",
+                        decimals,
+                    ),
+                    decimals,
                 ),
-                (Err(_), -1) => format!("{}.", say("Whole tens only")),
-                (Err(_), -2) => format!("{}.", say("Whole hundreds only")),
-                (Err(_), -3) => format!("{}.", say("Whole thousands only")),
-                (Err(_), _) => format!(
-                    "{} 1{} {}.",
-                    say("Whole multiples of"),
-                    "0".repeat(scale.unsigned_abs() as usize),
-                    say("only")
+                (Err(_), -1) => say(msgid("Whole tens only.")).into_owned(),
+                (Err(_), -2) => say(msgid("Whole hundreds only.")).into_owned(),
+                (Err(_), -3) => say(msgid("Whole thousands only.")).into_owned(),
+                (Err(_), _) => fill(
+                    &gettext(locale, "Whole multiples of {power} only."),
+                    &[(
+                        "{power}",
+                        &format!("1{}", "0".repeat(scale.unsigned_abs() as usize)),
+                    )],
                 ),
             };
             match typed {
@@ -1449,25 +1461,30 @@ pub fn problem_text(
                 None => limit,
             }
         }
-        Problem::Digits { whole } => format!(
-            "{} {} {}",
-            say("At most"),
-            counted(*whole, "digit", "digits"),
-            say("before the point")
+        Problem::Digits { whole } => counted(
+            ngettext(
+                locale,
+                "At most {n} digit before the point",
+                "At most {n} digits before the point",
+                *whole,
+            ),
+            *whole,
         ),
         // Both ways from zero, so it reads right of a value below it.
         // Neither end is a value the type holds.
-        Problem::Under { limit } => format!(
-            "{type_name} {} -{limit} {} {limit}",
-            say("holds values between"),
-            say("and")
+        Problem::Under { limit } => fill(
+            &gettext(locale, "{type} holds values between -{limit} and {limit}"),
+            &[("{type}", type_name), ("{limit}", limit)],
         ),
         Problem::Inexact { stored } => stored_as(stored),
-        Problem::Boolean => format!("{type_name} {}", say("expects true or false")),
+        Problem::Boolean => of_type(msgid("{type} expects true or false")),
         Problem::NotOneOf(allowed) => {
             // The values come from the server: nothing hidden in them.
             let values: Vec<_> = allowed.iter().map(|value| display_safe(value)).collect();
-            format!("{} {}", say("Not one of:"), values.join(", "))
+            fill(
+                &gettext(locale, "Not one of: {values}"),
+                &[("{values}", &values.join(", "))],
+            )
         }
         Problem::Json {
             message,
@@ -1480,16 +1497,28 @@ pub fn problem_text(
                 Some(first) => first.to_uppercase().chain(letters).collect(),
                 None => String::new(),
             };
-            format!("{message} {} {line}:{column}", say("at"))
+            fill(
+                &gettext(locale, "{message} at {line}:{column}"),
+                &[
+                    ("{message}", &message),
+                    ("{line}", &line.to_string()),
+                    ("{column}", &column.to_string()),
+                ],
+            )
         }
-        Problem::TooLong { max } => format!(
-            "{} {}",
-            say("At most"),
-            counted(*max, "character", "characters")
+        Problem::TooLong { max } => counted(
+            ngettext(
+                locale,
+                "At most {n} character",
+                "At most {n} characters",
+                *max,
+            ),
+            *max,
         ),
-        Problem::TooLarge => {
-            say("Over 256 KiB: values this large cannot be edited yet").into_owned()
-        }
+        Problem::TooLarge => say(msgid(
+            "Over 256 KiB: values this large cannot be edited yet",
+        ))
+        .into_owned(),
         Problem::Moment(refusal) => crate::ui::date_line::refusal_text(refusal, type_name, locale),
     }
 }
@@ -1497,32 +1526,38 @@ pub fn problem_text(
 /// Why a cell cannot be edited. `table` is the table's name as it is
 /// shown. A cell that is not there has no reason to give.
 pub fn lock_text(lock: Lock, table: &str, locale: Locale) -> String {
-    let say = |text: &'static str| gettext(locale, text).into_owned();
+    let say = |text: Msgid| text.say(locale).into_owned();
     match lock {
-        Lock::ReadOnly => say("This connection opens read-only"),
-        Lock::NotATable => say("Views cannot be edited"),
-        Lock::StructureLoading => say("The table's structure is still loading"),
-        Lock::NoKey => format!(
-            "{table} {}",
-            say("has no primary key or unique index, so a row can't be targeted safely")
+        Lock::ReadOnly => say(msgid("This connection opens read-only")),
+        Lock::NotATable => say(msgid("Views cannot be edited")),
+        Lock::StructureLoading => say(msgid("The table's structure is still loading")),
+        Lock::NoKey => fill(
+            &gettext(
+                locale,
+                "{table} has no primary key or unique index, so a row can't be targeted safely",
+            ),
+            &[("{table}", table)],
         ),
-        Lock::KeyType => format!(
-            "{table}{}",
-            say("'s key cannot be matched exactly, so a row can't be targeted safely")
+        Lock::KeyType => fill(
+            &gettext(
+                locale,
+                "{table}'s key cannot be matched exactly, so a row can't be targeted safely",
+            ),
+            &[("{table}", table)],
         ),
-        Lock::Saving => say("A save is running"),
-        Lock::Refreshing => say("The page is loading"),
-        Lock::Gone => say("This row no longer exists on the server"),
-        Lock::Deleting => say("Restore the row to edit it."),
-        Lock::KeyIsNull => say("This row's key is NULL"),
-        Lock::KeyInexact => say("This row's key holds text that was not read exactly"),
-        Lock::UnknownColumn => say("This column cannot be told apart in the table"),
-        Lock::Generated => say("Computed by the database"),
-        Lock::Assigned => say("Assigned by the database on save"),
-        Lock::KeyColumn => say("Part of the row's key"),
-        Lock::Binary => say("Binary values cannot be edited yet"),
-        Lock::TooLarge => say("Values over 256 KiB cannot be edited yet"),
-        Lock::NotNull => say("This column cannot be NULL"),
+        Lock::Saving => say(msgid("A save is running")),
+        Lock::Refreshing => say(msgid("The page is loading")),
+        Lock::Gone => say(msgid("This row no longer exists on the server")),
+        Lock::Deleting => say(msgid("Restore the row to edit it.")),
+        Lock::KeyIsNull => say(msgid("This row's key is NULL")),
+        Lock::KeyInexact => say(msgid("This row's key holds text that was not read exactly")),
+        Lock::UnknownColumn => say(msgid("This column cannot be told apart in the table")),
+        Lock::Generated => say(msgid("Computed by the database")),
+        Lock::Assigned => say(msgid("Assigned by the database on save")),
+        Lock::KeyColumn => say(msgid("Part of the row's key")),
+        Lock::Binary => say(msgid("Binary values cannot be edited yet")),
+        Lock::TooLarge => say(msgid("Values over 256 KiB cannot be edited yet")),
+        Lock::NotNull => say(msgid("This column cannot be NULL")),
         Lock::NoSuchCell => String::new(),
     }
 }
@@ -1531,13 +1566,19 @@ pub fn lock_text(lock: Lock, table: &str, locale: Locale) -> String {
 /// the table's name as it is shown. What holds only for a while, or for
 /// the one row, is said as an edit's reason is.
 pub fn delete_text(lock: Lock, table: &str, locale: Locale) -> String {
-    let say = |text: &'static str| gettext(locale, text).into_owned();
+    let say = |text: Msgid| text.say(locale).into_owned();
     match lock {
-        Lock::ReadOnly => say("Read-only connection"),
-        Lock::NotATable => format!("{table} {}", say("can't be deleted from")),
-        Lock::NoKey => format!(
-            "{table} {}",
-            say("has no primary key, so rows can't be deleted here")
+        Lock::ReadOnly => say(msgid("Read-only connection")),
+        Lock::NotATable => fill(
+            &gettext(locale, "{table} can't be deleted from"),
+            &[("{table}", table)],
+        ),
+        Lock::NoKey => fill(
+            &gettext(
+                locale,
+                "{table} has no primary key, so rows can't be deleted here",
+            ),
+            &[("{table}", table)],
         ),
         Lock::StructureLoading
         | Lock::KeyType

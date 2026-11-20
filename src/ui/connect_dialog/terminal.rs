@@ -5,7 +5,7 @@ use egui::{Color32, Rect, Response, Sense, Ui, WidgetInfo, WidgetType, pos2, vec
 use tabletist_db::Driver;
 
 use crate::connections::PasswordMode;
-use crate::i18n::gettext;
+use crate::i18n::{Msgid, gettext, msgid};
 use crate::keymap::Command;
 use crate::model::{Action, ConnectionForm, SshAuthKind};
 use crate::typography::{Text, TextRole};
@@ -28,13 +28,13 @@ pub(super) fn terminal_header(ui: &mut Ui, form: &mut ConnectionForm, skin: &Ski
     let y = terminal_dialog::head_line(rect);
     // A Files connection has no URL: the hint says so, and is no key.
     let files = super::is_files(form);
-    let label = skin.say("Paste URL");
+    let label = skin.say(msgid("Paste URL"));
     let key = crate::ui::keys::written(ui.ctx(), look, Command::FormPasteUrl);
     let hint = [(&key, label.as_str(), true)];
     let none = Text::one(
         look,
         TextRole::OSecondary,
-        &skin.say("No URL for files"),
+        &skin.say(msgid("No URL for files")),
         palette.dim,
     )
     .layout(ui.ctx());
@@ -82,7 +82,7 @@ pub(super) fn terminal_header(ui: &mut Ui, form: &mut ConnectionForm, skin: &Ski
 
 /// A key of the footer: its command, what it does, and the button it
 /// stands for with what that does.
-type FooterKey<'a> = (Command, &'a str, Option<(&'a str, Action)>);
+type FooterKey = (Command, Msgid, Option<(Msgid, Action)>);
 
 /// The terminal look: the Test's status at the left, the keys at the
 /// right. Each key's hint is its button too. The status comes first: the
@@ -103,52 +103,60 @@ pub(super) fn terminal_footer(
     let key = |command| crate::ui::keys::written(ui.ctx(), look, command);
     let test = (
         Command::FormTest,
-        "test",
-        Some(("Test", Action::TestConnection)),
+        msgid("test"),
+        Some((msgid("Test"), Action::TestConnection)),
     );
     let save = (
         Command::FormSave,
-        "save",
-        Some(("Save", Action::SaveConnection { connect: false })),
+        msgid("save"),
+        Some((msgid("Save"), Action::SaveConnection { connect: false })),
     );
     let cancel = (
         Command::FormCancel,
-        "cancel",
-        Some(("Cancel", Action::CloseDialog)),
+        msgid("cancel"),
+        Some((msgid("Cancel"), Action::CloseDialog)),
     );
     // A Files connection's: Enter chooses among its choices, and its
     // files are picked.
-    let keys: Vec<FooterKey<'_>> = match super::is_files(form) {
+    let keys: Vec<FooterKey> = match super::is_files(form) {
         true => vec![
-            (Command::FormNextField, "next", None),
-            (Command::FormChoose, "choose", None),
-            (Command::FormPick, "pick", None),
+            (Command::FormNextField, msgid("next"), None),
+            (Command::FormChoose, msgid("choose"), None),
+            (Command::FormPick, msgid("pick"), None),
             test,
             save,
             cancel,
         ],
         false => vec![
-            (Command::FormNextField, "next", None),
+            (Command::FormNextField, msgid("next"), None),
             test,
             save,
             (
                 Command::FormSaveAndConnect,
-                "connect",
-                Some(("Save & Connect", Action::SaveConnection { connect: true })),
+                msgid("connect"),
+                Some((
+                    msgid("Save & Connect"),
+                    Action::SaveConnection { connect: true },
+                )),
             ),
             cancel,
         ],
     };
     let written: Vec<_> = keys.iter().map(|(command, ..)| key(*command)).collect();
+    let labels: Vec<_> = keys
+        .iter()
+        .map(|(_, label, _)| label.say(skin.locale))
+        .collect();
     let names: Vec<_> = keys
         .iter()
-        .map(|(_, _, button)| button.as_ref().map(|(name, _)| gettext(skin.locale, name)))
+        .map(|(_, _, button)| button.as_ref().map(|(name, _)| name.say(skin.locale)))
         .collect();
     let hints: Vec<Key<'_>> = keys
         .iter()
         .zip(&names)
         .zip(&written)
-        .map(|(((command, label, _), name), key)| Key {
+        .zip(&labels)
+        .map(|((((command, _, _), name), key), label)| Key {
             key,
             label,
             button: name.as_deref(),
@@ -277,10 +285,10 @@ fn terminal_keyring_width(ui: &Ui, skin: &Skin) -> f32 {
 
 /// The terminal look's "keyring" check; screen readers hear `name`, which
 /// says whose secret it keeps.
-fn terminal_keyring(ui: &mut Ui, mode: &mut PasswordMode, name: &'static str, skin: &Skin) {
+fn terminal_keyring(ui: &mut Ui, mode: &mut PasswordMode, name: Msgid, skin: &Skin) {
     let mut keep = keeps(*mode);
     let text = skin.say(skin.keyring());
-    let name = gettext(skin.locale, name);
+    let name = name.say(skin.locale);
     if terminal_check(ui, &mut keep, &text, &name, skin.palette.success, skin).changed() {
         set_keeps(mode, keep);
     }
@@ -308,7 +316,7 @@ pub(super) fn terminal_body(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             if form.url_mode {
-                terminal_row(ui, &skin.say("URL"), skin, |ui, label| {
+                terminal_row(ui, &skin.say(msgid("URL")), skin, |ui, label| {
                     let field = url_field(ui, form, skin).labelled_by(label);
                     // The fields are in view under the URL, so they must
                     // show what will be saved: a URL fills them when the
@@ -320,12 +328,12 @@ pub(super) fn terminal_body(
             }
             // The type first: it changes every row after the name. Its
             // grid is as tall as its rows, in the value column's width.
-            let heading = skin.say("Type");
+            let heading = skin.say(msgid("Type"));
             let grid = driver_height(ui.available_width() - 164.0, skin);
             terminal_row_of(ui, &heading, grid, skin, |ui, _| {
                 driver_choice(ui, form, &heading, skin, actions);
             });
-            terminal_row(ui, &skin.say("Name"), skin, |ui, label| {
+            terminal_row(ui, &skin.say(msgid("Name")), skin, |ui, label| {
                 let name = ui
                     .add(input(ui, &mut form.name, role, height, skin))
                     .labelled_by(label);
@@ -333,17 +341,17 @@ pub(super) fn terminal_body(
                     name.request_focus();
                 }
             });
-            let heading = skin.say("Environment");
+            let heading = skin.say(msgid("Environment"));
             terminal_row_of(ui, &heading, Group::Buttons.height(), skin, |ui, _| {
                 environment_choice(ui, &heading, skin, actions);
             });
             match form.driver {
                 Driver::Sqlite => {
-                    terminal_section(ui, &skin.say("Database"), skin);
+                    terminal_section(ui, &skin.say(msgid("Database")), skin);
                     file_field(ui, form, skin, actions);
                 }
                 Driver::BigQuery => {
-                    terminal_section(ui, &skin.say("BigQuery"), skin);
+                    terminal_section(ui, &skin.say(msgid("BigQuery")), skin);
                     terminal_bigquery(ui, form, skin);
                 }
                 Driver::Files => {
@@ -351,23 +359,23 @@ pub(super) fn terminal_body(
                     super::reading::section(ui, form, skin, actions);
                 }
                 Driver::Postgres | Driver::MySql => {
-                    terminal_section(ui, &skin.say("Server"), skin);
+                    terminal_section(ui, &skin.say(msgid("Server")), skin);
                     terminal_server(ui, form, skin, actions);
-                    terminal_section(ui, &skin.say("Security"), skin);
+                    terminal_section(ui, &skin.say(msgid("Security")), skin);
                     terminal_security(ui, form, skin, actions);
                 }
             }
-            terminal_section(ui, &skin.say("Safety"), skin);
+            terminal_section(ui, &skin.say(msgid("Safety")), skin);
             // A line of text, as tall as the text.
             let line = role.row_height(ui.ctx(), look.faces);
-            terminal_row_of(ui, &skin.say("Read-only"), line, skin, |ui, _| {
+            terminal_row_of(ui, &skin.say(msgid("Read-only")), line, skin, |ui, _| {
                 let name = gettext(skin.locale, "Open read-only");
                 let fixed = super::read_only_fixed(form);
                 let (promise, note) = match fixed {
-                    true => (skin.say("Files open read-only"), String::new()),
+                    true => (skin.say(msgid("Files open read-only")), String::new()),
                     false => (
-                        skin.say("Block every write from this app"),
-                        format!("· {}", skin.say("Default for production")),
+                        skin.say(msgid("Block every write from this app")),
+                        format!("· {}", skin.say(msgid("Default for production"))),
                     ),
                 };
                 // The note goes under the promise where one line has no
@@ -408,12 +416,17 @@ pub(super) fn terminal_body(
 fn terminal_bigquery(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
     let role = TextRole::OBody;
     let height = skin.field_height();
-    terminal_row(ui, &skin.say("Project"), skin, |ui, label| {
+    terminal_row(ui, &skin.say(msgid("Project")), skin, |ui, label| {
         ui.add(input(ui, &mut form.database, role, height, skin))
             .labelled_by(label);
     });
-    terminal_row(ui, &skin.say("Key file"), skin, |ui, label| {
-        let hint = hint(ui, &skin.say("Default credentials when empty"), role, skin);
+    terminal_row(ui, &skin.say(msgid("Key file")), skin, |ui, label| {
+        let hint = hint(
+            ui,
+            &skin.say(msgid("Default credentials when empty")),
+            role,
+            skin,
+        );
         ui.add(input(ui, &mut form.bigquery_key, role, height, skin).hint_text(hint))
             .labelled_by(label);
     });
@@ -422,23 +435,23 @@ fn terminal_bigquery(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
 fn terminal_server(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut Vec<Action>) {
     let role = TextRole::OBody;
     let height = skin.field_height();
-    terminal_row(ui, &skin.say("Host : Port"), skin, |ui, _| {
+    terminal_row(ui, &skin.say(msgid("Host : Port")), skin, |ui, _| {
         let host = ui.available_width() - 88.0;
         let field = cell(ui, host, skin, |ui| {
             ui.add(input(ui, &mut form.host, role, height, skin))
         });
-        named(&field, "Host", skin);
+        named(&field, msgid("Host"), skin);
         let field = cell(ui, 80.0, skin, |ui| {
             ui.add(input(ui, &mut form.port, role, height, skin))
         });
-        named(&field, "Port", skin);
+        named(&field, msgid("Port"), skin);
     });
-    terminal_row(ui, &skin.say("Database"), skin, |ui, label| {
-        let hint = hint(ui, &skin.say("Same as the user"), role, skin);
+    terminal_row(ui, &skin.say(msgid("Database")), skin, |ui, label| {
+        let hint = hint(ui, &skin.say(msgid("Same as the user")), role, skin);
         ui.add(input(ui, &mut form.database, role, height, skin).hint_text(hint))
             .labelled_by(label);
     });
-    terminal_row(ui, &skin.say("User"), skin, |ui, label| {
+    terminal_row(ui, &skin.say(msgid("User")), skin, |ui, label| {
         ui.add(input(ui, &mut form.user, role, height, skin))
             .labelled_by(label);
     });
@@ -448,7 +461,7 @@ fn terminal_server(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions:
     } else {
         String::new()
     };
-    terminal_row(ui, &skin.say("Password"), skin, |ui, label| {
+    terminal_row(ui, &skin.say(msgid("Password")), skin, |ui, label| {
         let field = ui.available_width() - terminal_keyring_width(ui, skin) - 10.0;
         ui.spacing_mut().item_spacing.x = 10.0;
         let field = cell(ui, field, skin, |ui| {
@@ -474,9 +487,9 @@ fn terminal_security(
 ) {
     let role = TextRole::OBody;
     let height = skin.field_height();
-    let heading = skin.say("SSL mode");
+    let heading = skin.say(msgid("SSL mode"));
     terminal_row_of(ui, &heading, Group::Words.height(), skin, |ui, _| {
-        let options = TLS_MODES.map(|(mode, label)| (mode, Choice::plain(label)));
+        let options = TLS_MODES.map(|(mode, label)| (mode, Choice::plain(label.english())));
         let clicked = choose(
             ui,
             "tls-mode",
@@ -490,19 +503,19 @@ fn terminal_security(
             form.tls = mode;
         }
     });
-    terminal_row(ui, &skin.say("CA cert"), skin, |ui, label| {
+    terminal_row(ui, &skin.say(msgid("CA cert")), skin, |ui, label| {
         ca_field(ui, form, label, skin, actions);
     });
     if form.password_can_be_intercepted() {
         intercept_warning(ui, skin);
         ui.add_space(8.0);
     }
-    terminal_row(ui, &skin.say("SSH tunnel"), skin, |ui, _| {
+    terminal_row(ui, &skin.say(msgid("SSH tunnel")), skin, |ui, _| {
         let name = gettext(skin.locale, "Connect through SSH tunnel");
         terminal_check(
             ui,
             &mut form.ssh,
-            &skin.say("Connect through SSH"),
+            &skin.say(msgid("Connect through SSH")),
             &name,
             skin.palette.success,
             skin,
@@ -514,18 +527,18 @@ fn terminal_security(
     // What an empty port, user and key file mean: the typed host's values
     // from ~/.ssh/config, else 22 and the login name.
     let hints = form.ssh_hints();
-    terminal_row(ui, &skin.say("SSH host : Port"), skin, |ui, _| {
+    terminal_row(ui, &skin.say(msgid("SSH host : Port")), skin, |ui, _| {
         let host = ui.available_width() - 88.0;
         // The button that lists the config's hosts follows the field.
         let field = cell(ui, host, skin, |ui| {
             ssh_host_field(ui, form, role, "", skin, actions)
         });
-        named(&field, "SSH host", skin);
+        named(&field, msgid("SSH host"), skin);
         let field = cell(ui, 80.0, skin, |ui| {
             let hint = hint(ui, &ssh_port_hint(&hints), role, skin);
             ui.add(input(ui, &mut form.ssh_port, role, height, skin).hint_text(hint))
         });
-        named(&field, "SSH port", skin);
+        named(&field, msgid("SSH port"), skin);
     });
     // What the config resolves the host to, in the fields' column.
     if let Some((text, color)) = ssh_host_note(&hints, skin) {
@@ -534,12 +547,12 @@ fn terminal_security(
             note(ui, &text, color, skin);
         });
     }
-    terminal_row(ui, &skin.say("SSH user"), skin, |ui, label| {
+    terminal_row(ui, &skin.say(msgid("SSH user")), skin, |ui, label| {
         let hint = hint(ui, &ssh_user_hint(&hints, skin), role, skin);
         ui.add(input(ui, &mut form.ssh_user, role, height, skin).hint_text(hint))
             .labelled_by(label);
     });
-    let heading = skin.say("Authentication");
+    let heading = skin.say(msgid("Authentication"));
     terminal_row_of(ui, &heading, Group::Words.height(), skin, |ui, _| {
         let labels = SshAuthKind::ALL.map(|kind| skin.say(kind.label()));
         let options: Vec<(SshAuthKind, Choice<'_>)> = SshAuthKind::ALL
@@ -561,13 +574,18 @@ fn terminal_security(
         }
     });
     if form.ssh_auth == SshAuthKind::KeyFile {
-        terminal_row(ui, &skin.say("Key file"), skin, |ui, label| {
+        terminal_row(ui, &skin.say(msgid("Key file")), skin, |ui, label| {
             let key = ssh_key_hint(&hints, skin).unwrap_or_default();
-            let (field, clicked) =
-                field_with_button(ui, &skin.say("Choose…"), "Choose a key file", skin, |ui| {
+            let (field, clicked) = field_with_button(
+                ui,
+                &skin.say(msgid("Choose…")),
+                msgid("Choose a key file"),
+                skin,
+                |ui| {
                     let hint = hint(ui, &key, role, skin);
                     ui.add(input(ui, &mut form.ssh_key_file, role, height, skin).hint_text(hint))
-                });
+                },
+            );
             field.labelled_by(label);
             if clicked {
                 actions.push(Action::PickKeyFile);

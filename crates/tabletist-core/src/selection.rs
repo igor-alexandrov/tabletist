@@ -8,6 +8,7 @@
 //! read in places, so a range drawn over a new row covers it where it
 //! stands.
 
+use crate::i18n::msgid;
 use std::collections::BTreeSet;
 
 use crate::edit::Order;
@@ -51,11 +52,11 @@ pub enum Visual {
 
 impl Visual {
     /// The mode as the status line writes it.
-    pub fn mode(self) -> &'static str {
+    pub fn mode(self) -> crate::i18n::Msgid {
         match self {
-            Self::Cells => "-- VISUAL --",
-            Self::Block => "-- VISUAL BLOCK --",
-            Self::Rows => "-- VISUAL LINE --",
+            Self::Cells => msgid("-- VISUAL --"),
+            Self::Block => msgid("-- VISUAL BLOCK --"),
+            Self::Rows => msgid("-- VISUAL LINE --"),
         }
     }
 }
@@ -439,7 +440,7 @@ pub fn size_words(
 pub fn said(locale: crate::i18n::Locale, (rows, cols): (usize, usize), whole_rows: bool) -> String {
     if whole_rows {
         return crate::i18n::ngettext(locale, "{n} row selected", "{n} rows selected", rows)
-            .replace("{n}", &rows.to_string());
+            .replace("{n}", &crate::i18n::number(locale, rows));
     }
     let rows = crate::i18n::counted(locale, rows, "row", "rows");
     let cols = crate::i18n::counted(locale, cols, "column", "columns");

@@ -394,7 +394,7 @@ pub(super) fn idle_text(locale: Locale, choice: Idle) -> String {
         Idle::Hour1 => hours(1),
         Idle::Hours4 => hours(4),
     };
-    phrase.replace("{n}", &count.to_string())
+    phrase.replace("{n}", &crate::i18n::number(locale, count))
 }
 
 /// How often a check for updates runs, as the window writes it.
@@ -409,7 +409,7 @@ pub(super) fn check_text(locale: Locale, choice: UpdateCheck) -> String {
 
 /// The days the log keeps a call, as the window writes them.
 pub(super) fn days(locale: Locale, days: u32) -> String {
-    ngettext(locale, "{n} day", "{n} days", days).replace("{n}", &days.to_string())
+    ngettext(locale, "{n} day", "{n} days", days).replace("{n}", &crate::i18n::number(locale, days))
 }
 
 /// Whether an option of on and off is on.
@@ -620,6 +620,9 @@ pub(super) enum Said {
     /// A value as the app shows one, the same in every language: put into
     /// another, it would say something the app does not show.
     Sample(&'static str),
+    /// A number as the grid groups it in the window's language:
+    /// "1,240.50", «1 240,50».
+    Grouped(&'static str),
     /// A command's first key, as the keymap writes it for the look.
     Key(Command),
 }
@@ -635,6 +638,7 @@ impl Said {
         match self {
             Self::Word(word) => word.say(locale),
             Self::Sample(sample) => Cow::Borrowed(sample),
+            Self::Grouped(number) => crate::i18n::numbers::group_number(locale, number),
             Self::Key(command) => Cow::Owned(
                 crate::ui::keys::written(ctx, look, command)
                     .as_str()
@@ -655,7 +659,7 @@ pub(super) fn choices(
     (named, language): (Option<&str>, Option<&LanguageTag>),
     launches: &[Launch],
 ) -> Vec<(Said, OptionValue)> {
-    use Said::{Key, Sample, Word};
+    use Said::{Grouped, Key, Sample, Word};
     match option {
         OptionId::Language => vec![
             (
@@ -695,7 +699,7 @@ pub(super) fn choices(
         ],
         // A number as each value writes it.
         OptionId::GroupDigits => vec![
-            (Sample("1,240.50"), OptionValue::GroupDigits(Some(true))),
+            (Grouped("1240.50"), OptionValue::GroupDigits(Some(true))),
             (Sample("1240.50"), OptionValue::GroupDigits(Some(false))),
         ],
         OptionId::ValueTags => vec![

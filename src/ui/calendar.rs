@@ -10,11 +10,11 @@ use egui::{CornerRadius, Id, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use jiff::civil::{Date, Time, Weekday};
 
 use crate::dates::{Column, Kind, Moment, Refusal};
-use crate::i18n::Locale;
+use crate::i18n::{Locale, Msgid, msgid, numbers, pgettext};
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::cell_editor::Calendar;
-use crate::ui::date_line::{full_month_name, tr, year_words};
+use crate::ui::date_line::{tr, year_words};
 use crate::ui::widgets;
 
 /// What the calendar shows of the editor's text, made each frame.
@@ -79,8 +79,8 @@ impl Zone {
     fn words(&self, locale: Locale) -> String {
         match self {
             Self::Place(place) | Self::Offset(place) => place.clone(),
-            Self::None => tr(locale, "no zone"),
-            Self::Server => tr(locale, "the server's zone"),
+            Self::None => tr(locale, msgid("no zone")),
+            Self::Server => tr(locale, msgid("the server's zone")),
         }
     }
 }
@@ -88,7 +88,7 @@ impl Zone {
 /// One of the time fields: what it is, what it shows, and its range.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Part {
-    pub name: &'static str,
+    pub name: Msgid,
     /// The fraction of a second, after a point: the others are after a
     /// colon.
     pub fraction: bool,
@@ -110,9 +110,24 @@ fn parts(time: Option<Time>, column: &Column) -> Vec<Part> {
         most,
     };
     let mut parts = vec![
-        part("Hour", time.map(|time| i64::from(time.hour())), 23.0, 2),
-        part("Minute", time.map(|time| i64::from(time.minute())), 59.0, 2),
-        part("Second", time.map(|time| i64::from(time.second())), 59.0, 2),
+        part(
+            msgid("Hour"),
+            time.map(|time| i64::from(time.hour())),
+            23.0,
+            2,
+        ),
+        part(
+            msgid("Minute"),
+            time.map(|time| i64::from(time.minute())),
+            59.0,
+            2,
+        ),
+        part(
+            msgid("Second"),
+            time.map(|time| i64::from(time.second())),
+            59.0,
+            2,
+        ),
     ];
     let digits = usize::from(column.digits.min(9));
     let fraction = time.is_some_and(|time| time.subsec_nanosecond() != 0);
@@ -124,7 +139,7 @@ fn parts(time: Option<Time>, column: &Column) -> Vec<Part> {
         let most = 10_f64.powi(digits as i32) - 1.0;
         parts.push(Part {
             fraction: true,
-            ..part("Fraction of a second", value, most, digits)
+            ..part(msgid("Fraction of a second"), value, most, digits)
         });
     }
     parts
@@ -332,17 +347,6 @@ fn moved(month: Date, by: i64) -> Option<Date> {
     month.checked_add(jiff::Span::new().months(by)).ok()
 }
 
-const INITIALS: [&str; 7] = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
-const WEEKDAY_NAMES: [&str; 7] = [
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-    "Sunday",
-];
-
 /// The weekdays in the order the weeks run, from `first`.
 fn weekdays(first: Weekday) -> [Weekday; 7] {
     std::array::from_fn(|at| first.wrapping_add(at as i64))
@@ -350,27 +354,34 @@ fn weekdays(first: Weekday) -> [Weekday; 7] {
 
 fn initial(day: Weekday, locale: Locale) -> String {
     let at = usize::try_from(day.to_monday_zero_offset()).unwrap_or_default();
-    tr(locale, INITIALS[at % 7])
+    numbers::weekday_initial(locale, at).into_owned()
 }
 
-/// "January 2026", "March 44 BC".
+/// "January 2026", "March 44 BC", «Январь 2026».
 pub fn month_words(month: Date, locale: Locale) -> String {
-    format!(
-        "{} {}",
-        full_month_name(month.month(), locale),
-        year_words(month.year(), locale)
+    crate::i18n::fill(
+        // Translators: the calendar's heading: "January 2026".
+        &pgettext(locale, "calendar", "{month} {year}"),
+        &[
+            ("{month}", &numbers::month_name(locale, month.month())),
+            ("{year}", &year_words(month.year(), locale)),
+        ],
     )
 }
 
-/// "Thursday 15 January 2026": a day as a screen reader says it.
+/// "Thursday 15 January 2026", «четверг, 15 января 2026»: a day as a
+/// screen reader says it.
 pub fn day_name(date: Date, locale: Locale) -> String {
     let at = usize::try_from(date.weekday().to_monday_zero_offset()).unwrap_or_default();
-    format!(
-        "{} {} {} {}",
-        tr(locale, WEEKDAY_NAMES[at % 7]),
-        date.day(),
-        full_month_name(date.month(), locale),
-        year_words(date.year(), locale)
+    crate::i18n::fill(
+        // Translators: a calendar's day as a screen reader says it.
+        &pgettext(locale, "calendar", "{weekday} {day} {month} {year}"),
+        &[
+            ("{weekday}", &numbers::weekday_name(locale, at)),
+            ("{day}", &date.day().to_string()),
+            ("{month}", &numbers::month_of_a_date(locale, date.month())),
+            ("{year}", &year_words(date.year(), locale)),
+        ],
     )
 }
 
@@ -456,7 +467,7 @@ fn month(
     let laid = Text::one(look, TextRole::UiBodySemibold, &title, palette.text).layout(ui.ctx());
     laid.paint_left(ui.painter(), left + PAD, middle);
     // ‹ › and Today, at the right.
-    let today_label = tr(locale, "Today");
+    let today_label = tr(locale, msgid("Today"));
     let today = widgets::ButtonSpec::new(&today_label)
         .link()
         .padding(6.0)
@@ -477,14 +488,14 @@ fn month(
         (
             1,
             "›",
-            tr(locale, "Next month"),
-            tr(locale, "No date comes later"),
+            tr(locale, msgid("Next month")),
+            tr(locale, msgid("No date comes later")),
         ),
         (
             -1,
             "‹",
-            tr(locale, "Previous month"),
-            tr(locale, "No date comes earlier"),
+            tr(locale, msgid("Previous month")),
+            tr(locale, msgid("No date comes earlier")),
         ),
     ] {
         let place = Rect::from_min_size(pos2(x - 24.0, middle - 12.0), vec2(24.0, 24.0));
@@ -580,7 +591,7 @@ fn day_cell(
     let response = ui.interact(cell, id, sense);
     let name = day_name(day, locale);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, holds, &name));
-    let said: Vec<String> = [(today, "today"), (was, "current value")]
+    let said: Vec<String> = [(today, msgid("today")), (was, msgid("current value"))]
         .into_iter()
         .filter(|(on, _)| *on)
         .map(|(_, words)| tr(locale, words))
@@ -699,7 +710,7 @@ fn time_row(
     }
     let mut right = left + width - PAD;
     if let Some(now) = &model.now {
-        let label = tr(locale, "Now");
+        let label = tr(locale, msgid("Now"));
         let spec = widgets::ButtonSpec::new(&label)
             .padding(8.0)
             .role(widgets::secondary(look));
@@ -769,8 +780,8 @@ fn footer(
         // The keys' hints give way to the infinities, as the board has it.
         let mut x = left + PAD;
         for (text, written, name) in [
-            ("−∞", "-infinity", tr(locale, "Minus infinity")),
-            ("∞", "infinity", tr(locale, "Infinity")),
+            ("−∞", "-infinity", tr(locale, msgid("Minus infinity"))),
+            ("∞", "infinity", tr(locale, msgid("Infinity"))),
         ] {
             let (clicked, place) = button(ui, x, text, &name, false);
             if clicked {
@@ -791,7 +802,7 @@ fn footer(
             crate::keymap::Command::CancelEdit,
             crate::keymap::Scope::CellEditor,
         );
-        let (apply_words, cancel_words) = (tr(locale, "Apply"), tr(locale, "Cancel"));
+        let (apply_words, cancel_words) = (tr(locale, msgid("Apply")), tr(locale, msgid("Cancel")));
         let hints = [
             (&apply, apply_words.as_str(), true),
             (&cancel, cancel_words.as_str(), true),
@@ -930,7 +941,7 @@ fn terminal_time(
     };
     let mut x = left + PAD;
     for (text, color) in [
-        (look.label(&tr(locale, "time")), palette.dim),
+        (look.label(&tr(locale, msgid("time"))), palette.dim),
         (time, palette.text),
         (look.label(&zone), palette.dim),
     ] {

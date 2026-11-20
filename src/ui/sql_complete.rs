@@ -505,7 +505,10 @@ fn footer(ui: &Ui, rect: Rect, rows: usize, list: &Completion, style: &Style<'_>
         Some(gettext(locale, "Loading").into_owned())
     } else if hidden > 0 {
         // A placeholder: a translation puts the number where it reads.
-        Some(gettext(locale, "{count} more").replace("{count}", &hidden.to_string()))
+        Some(
+            gettext(locale, "{count} more")
+                .replace("{count}", &crate::i18n::number(locale, hidden)),
+        )
     } else {
         None
     };

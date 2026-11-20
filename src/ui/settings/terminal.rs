@@ -147,6 +147,9 @@ impl Skin<'_> {
         match choice {
             Said::Word(word) => self.say(word),
             Said::Sample(sample) => sample.to_owned(),
+            Said::Grouped(number) => {
+                crate::i18n::numbers::group_number(self.locale, number).into_owned()
+            }
             Said::Key(command) => crate::ui::keys::written(ctx, self.look, command)
                 .as_str()
                 .to_owned(),
@@ -1022,7 +1025,8 @@ fn status_text(on: bool, count: usize, skin: &Skin) -> (Text, Text) {
     let agents = match count {
         0 => skin.say(msgid("no agents")),
         count => look.label(
-            &ngettext(locale, "{n} agent", "{n} agents", count).replace("{n}", &count.to_string()),
+            &ngettext(locale, "{n} agent", "{n} agents", count)
+                .replace("{n}", &crate::i18n::number(locale, count)),
         ),
     };
     let value = Text::new(look)
@@ -1343,7 +1347,7 @@ fn stepped_text(option: OptionId, settings: &Settings, skin: &Skin) -> String {
             0 => skin.say(msgid("Don't keep")),
             keep => skin
                 .say(msgid("{n} per connection"))
-                .replace("{n}", &keep.to_string()),
+                .replace("{n}", &crate::i18n::number(skin.locale, keep)),
         },
         // As the file writes it: `daily`.
         OptionId::UpdatesCheck => settings.update_check.name().to_owned(),

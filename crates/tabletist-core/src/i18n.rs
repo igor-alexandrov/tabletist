@@ -11,6 +11,10 @@ pub use fastframe_i18n::{LanguageTag, gettext, pgettext};
 
 include!(concat!(env!("OUT_DIR"), "/catalogs.rs"));
 
+pub mod numbers;
+
+pub use numbers::number;
+
 /// An English message marked for the catalog where it is written, and said
 /// in a language where it is drawn. `assets/i18n/update.sh` extracts every
 /// `msgid("…")` and `pmsgid("context", "…")`. A function that translates
@@ -108,6 +112,18 @@ impl Count for u32 {
     }
 }
 
+impl Count for u16 {
+    fn as_u64(self) -> u64 {
+        self.into()
+    }
+}
+
+impl Count for u8 {
+    fn as_u64(self) -> u64 {
+        self.into()
+    }
+}
+
 impl Count for usize {
     fn as_u64(self) -> u64 {
         u64::try_from(self).unwrap_or(u64::MAX)
@@ -117,6 +133,12 @@ impl Count for usize {
 impl Count for i64 {
     fn as_u64(self) -> u64 {
         u64::try_from(self).unwrap_or(u64::MAX)
+    }
+}
+
+impl<T: Count> Count for &T {
+    fn as_u64(self) -> u64 {
+        (*self).as_u64()
     }
 }
 
@@ -143,9 +165,14 @@ pub fn ngettext(
     }
 }
 
-/// `count` with its noun: "1 change", "3 changes".
+/// `count` with its noun, the count in the language's marks: "1 change",
+/// "12,480 changes".
 pub fn counted(locale: Locale, count: usize, one: &'static str, many: &'static str) -> String {
-    format!("{count} {}", ngettext(locale, one, many, count))
+    format!(
+        "{} {}",
+        number(locale, count),
+        ngettext(locale, one, many, count)
+    )
 }
 
 /// `text` either side of its `placeholder`: what is before it and what is

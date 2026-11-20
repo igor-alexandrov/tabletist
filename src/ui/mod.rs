@@ -13384,7 +13384,7 @@ value_tags   = true
 
     /// A writable table with its structure and five rows, the grid holding
     /// the keyboard, in `look`.
-    fn editable_in(look: Look) -> (Harness, ConnTabId, TabId) {
+    pub(super) fn editable_in(look: Look) -> (Harness, ConnTabId, TabId) {
         let mut harness = Harness::new();
         harness.set_look(look);
         let (tab, id) = harness.editable();
@@ -14481,7 +14481,7 @@ value_tags   = true
     }
 
     /// Makes the cell at `row`, `col` of the table pending as `text`.
-    fn make_pending(
+    pub(super) fn make_pending(
         harness: &mut Harness,
         tab: ConnTabId,
         id: TabId,
@@ -14875,7 +14875,12 @@ value_tags   = true
 
     /// Opens the editor on the cell at `at` (row, column) as asking for it
     /// does, and lets its field take the keyboard.
-    fn open_editor(harness: &mut Harness, tab: ConnTabId, id: TabId, at: (usize, usize)) {
+    pub(super) fn open_editor(
+        harness: &mut Harness,
+        tab: ConnTabId,
+        id: TabId,
+        at: (usize, usize),
+    ) {
         let cell = CellPos {
             row: at.0,
             col: at.1,
@@ -17469,6 +17474,17 @@ value_tags   = true
             line(crate::edit::Lock::ReadOnly),
             "this connection opens read-only"
         );
+        // Where a language puts words before the name, it keeps its case.
+        let russian = crate::ui::workspace::lock_line(
+            crate::edit::Lock::NoKey,
+            "OrderItems",
+            &look,
+            crate::i18n::Locale::Russian,
+        );
+        assert!(
+            russian.starts_with("у OrderItems нет первичного ключа"),
+            "{russian}"
+        );
     }
 
     #[test]
@@ -18431,7 +18447,7 @@ value_tags   = true
     }
 
     /// A writable table with a whole number to edit: `id`, `email`, `qty`.
-    fn with_quantities(look: Look) -> (Harness, ConnTabId, TabId) {
+    pub(super) fn with_quantities(look: Look) -> (Harness, ConnTabId, TabId) {
         let mut harness = Harness::new();
         harness.set_look(look);
         let tab = harness.connect_fake_as(false);
@@ -19100,7 +19116,7 @@ value_tags   = true
     /// Makes `text` the pending value of the cell at `at`, as an editor
     /// that was typed into and left does: a text its column does not take
     /// stays, as a cell to fix.
-    fn leave_pending(
+    pub(super) fn leave_pending(
         harness: &mut Harness,
         tab: ConnTabId,
         id: TabId,
@@ -21086,7 +21102,7 @@ value_tags   = true
     }
 
     /// Shows the tab's Review SQL, as its button, its chord or `:diff` does.
-    fn review(harness: &mut Harness, tab: ConnTabId, id: TabId) {
+    pub(super) fn review(harness: &mut Harness, tab: ConnTabId, id: TabId) {
         let show = true;
         harness.app.apply(Action::ReviewEdits { tab, id, show });
         harness.settle();

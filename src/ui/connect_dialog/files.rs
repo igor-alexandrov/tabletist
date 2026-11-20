@@ -2,6 +2,7 @@
 //! found there, in either look. The backend reads the folder (or each
 //! file's size) after every change; this draws what it last read.
 
+use crate::i18n::{Msgid, msgid};
 use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 
 use super::choice::{Choice, Group, choose};
@@ -12,14 +13,16 @@ use crate::typography::{Text, TextRole};
 use crate::ui::{file_list, widgets};
 
 /// What the Folder choice says under its field.
-const FOLDER_HINT: &str = "Every CSV, Parquet, JSON, NDJSON, Excel and .duckdb file in the \
-                           folder becomes a table. Files added later show up on the next open.";
+const FOLDER_HINT: Msgid = msgid(
+    "Every CSV, Parquet, JSON, NDJSON, Excel and .duckdb file in the \
+                           folder becomes a table. Files added later show up on the next open.",
+);
 
 /// What the hint adds while an override skips a file.
-const SKIPPED_HINT: &str = "Skipped files are left out.";
+const SKIPPED_HINT: Msgid = msgid("Skipped files are left out.");
 
 /// What the field says of a folder that is gone.
-const GONE: &str = "This folder isn't there any more. Choose it again, or pick another.";
+const GONE: Msgid = msgid("This folder isn't there any more. Choose it again, or pick another.");
 
 /// The found line: how many files, their size and their formats, and in
 /// the terminal look the tables they become after an arrow. `None` until
@@ -148,7 +151,7 @@ fn folder_box(ui: &mut Ui, form: &ConnectionForm, skin: &Skin) -> egui::Response
         Rect::from_center_size(pos2(rect.left() + 17.0, center), vec2(14.0, 14.0)),
     );
     let (text, color) = match form.files_folder.trim() {
-        "" => (skin.say("No folder chosen"), palette.dim),
+        "" => (skin.say(msgid("No folder chosen")), palette.dim),
         folder => (folder.to_owned(), palette.text),
     };
     let role = TextRole::MonoSecondary;
@@ -162,7 +165,7 @@ fn folder_box(ui: &mut Ui, form: &ConnectionForm, skin: &Skin) -> egui::Response
         center,
         Text::one(look, role, &shown, color),
     );
-    widgets::announce(ui, rect, &format!("{} {text}", skin.say("Folder")));
+    widgets::announce(ui, rect, &format!("{} {text}", skin.say(msgid("Folder"))));
     response
 }
 
@@ -192,7 +195,7 @@ pub(super) fn sheet(
     kind(
         ui,
         form,
-        &skin.say("Source"),
+        &skin.say(msgid("Source")),
         Group::Track(24.0),
         skin,
         actions,
@@ -200,10 +203,13 @@ pub(super) fn sheet(
     ui.add_space(10.0);
     match form.files_kind {
         FilesKind::Folder => {
-            let (_, clicked) =
-                field_with_button(ui, &skin.say("Choose…"), "Choose a folder", skin, |ui| {
-                    folder_box(ui, form, skin)
-                });
+            let (_, clicked) = field_with_button(
+                ui,
+                &skin.say(msgid("Choose…")),
+                msgid("Choose a folder"),
+                skin,
+                |ui| folder_box(ui, form, skin),
+            );
             if clicked {
                 actions.push(Action::PickFolder);
             }
@@ -213,7 +219,7 @@ pub(super) fn sheet(
             if !rows.is_empty() {
                 let asked = file_list::show(
                     ui,
-                    &skin.say("Files"),
+                    &skin.say(msgid("Files")),
                     &rows,
                     form.files_cursor,
                     (look, palette, skin.locale),
@@ -227,7 +233,7 @@ pub(super) fn sheet(
                 ui.add_space(8.0);
             }
             let name = crate::i18n::gettext(skin.locale, "Add files");
-            let text = skin.say("Add files…");
+            let text = skin.say(msgid("Add files…"));
             let spec = super::side_button(&text, &name, skin);
             if spec.show(ui, skin.field_height(), look, palette).clicked() {
                 actions.push(Action::PickDataFiles);
@@ -284,13 +290,13 @@ pub(super) fn terminal(
     let Skin { look, palette, .. } = *skin;
     let role = TextRole::OBody;
     let line = role.row_height(ui.ctx(), look.faces);
-    super::terminal::terminal_section(ui, &skin.say("Source"), skin);
+    super::terminal::terminal_section(ui, &skin.say(msgid("Source")), skin);
     // The row says `kind`, as the board writes it; a screen reader hears
     // the choice as "Source", as on macOS.
-    let source = skin.say("Source");
+    let source = skin.say(msgid("Source"));
     super::terminal::terminal_row_of(
         ui,
-        &skin.say("Kind"),
+        &skin.say(msgid("Kind")),
         Group::Words.height(),
         skin,
         |ui, _| {
@@ -300,10 +306,10 @@ pub(super) fn terminal(
     match form.files_kind {
         FilesKind::Folder => {
             let pick = crate::ui::keys::written(ui.ctx(), look, crate::keymap::Command::FormPick);
-            super::terminal::terminal_row(ui, &skin.say("Folder"), skin, |ui, label| {
+            super::terminal::terminal_row(ui, &skin.say(msgid("Folder")), skin, |ui, label| {
                 let hint = super::hint(
                     ui,
-                    &format!("{} {}", pick.as_str(), skin.say("pick")),
+                    &format!("{} {}", pick.as_str(), skin.say(msgid("pick"))),
                     role,
                     skin,
                 );
@@ -321,42 +327,51 @@ pub(super) fn terminal(
         FilesKind::Files => {
             let rows = rows(form);
             if rows.is_empty() {
-                super::terminal::terminal_row_of(ui, &skin.say("Files"), line, skin, |ui, _| {
-                    let add = crate::ui::keys::written(
-                        ui.ctx(),
-                        look,
-                        crate::keymap::Command::FormAddFiles,
-                    );
-                    widgets::label(
-                        ui,
-                        TextRole::OSecondary,
-                        &format!(
-                            "{} {} {}",
-                            skin.say("none ·"),
-                            add.as_str(),
-                            skin.say("adds files")
-                        ),
-                        palette.dim,
-                        look,
-                    );
-                });
+                super::terminal::terminal_row_of(
+                    ui,
+                    &skin.say(msgid("Files")),
+                    line,
+                    skin,
+                    |ui, _| {
+                        let add = crate::ui::keys::written(
+                            ui.ctx(),
+                            look,
+                            crate::keymap::Command::FormAddFiles,
+                        );
+                        widgets::label(
+                            ui,
+                            TextRole::OSecondary,
+                            &skin
+                                .say(msgid("none · {key} adds files"))
+                                .replace("{key}", add.as_str()),
+                            palette.dim,
+                            look,
+                        );
+                    },
+                );
             } else {
                 let height = rows.len() as f32 * 26.0 + 2.0;
-                super::terminal::terminal_row_of(ui, &skin.say("Files"), height, skin, |ui, _| {
-                    let asked = file_list::show(
-                        ui,
-                        &skin.say("Files"),
-                        &rows,
-                        form.files_cursor.or(Some(0)),
-                        (look, palette, skin.locale),
-                    );
-                    if let Some(at) = asked.removed {
-                        actions.push(Action::RemoveFile(at));
-                    }
-                    if let Some(at) = asked.chosen {
-                        form.files_cursor = Some(at);
-                    }
-                });
+                super::terminal::terminal_row_of(
+                    ui,
+                    &skin.say(msgid("Files")),
+                    height,
+                    skin,
+                    |ui, _| {
+                        let asked = file_list::show(
+                            ui,
+                            &skin.say(msgid("Files")),
+                            &rows,
+                            form.files_cursor.or(Some(0)),
+                            (look, palette, skin.locale),
+                        );
+                        if let Some(at) = asked.removed {
+                            actions.push(Action::RemoveFile(at));
+                        }
+                        if let Some(at) = asked.chosen {
+                            form.files_cursor = Some(at);
+                        }
+                    },
+                );
             }
         }
     }
@@ -427,7 +442,7 @@ mod tests {
             crate::env::Environment::Local,
         );
         let gone = FilesFound::Failed("Can't open ~/Data/bookshop-exports: no such folder".into());
-        assert_eq!(trouble(&gone, &skin).as_deref(), Some(GONE));
+        assert_eq!(trouble(&gone, &skin).as_deref(), Some(GONE.english()));
         let other = FilesFound::Failed("Can't open ~/x: not allowed to read it".into());
         assert_eq!(
             trouble(&other, &skin).as_deref(),

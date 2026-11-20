@@ -9,7 +9,7 @@ use egui::{Id, Rect, Sense, Ui, UiBuilder, WidgetInfo, WidgetType, pos2, vec2};
 
 use crate::env::{Environment, Platform};
 use crate::format::display_safe;
-use crate::i18n::{Locale, gettext};
+use crate::i18n::{Locale, Msgid, gettext, msgid};
 use crate::keymap::{Command, Scope};
 use crate::labels::{Excluded, LabelChoice, Line};
 use crate::theme::{Look, Palette};
@@ -102,13 +102,13 @@ fn connection_name((name, environment): &(String, Environment), look: &Look) -> 
 /// Whom the choice is for, and that it stays on this computer.
 fn foot_text(open: &Open, look: &Look, locale: Locale) -> String {
     let words = if look.terminal {
-        "For {table} in {connection}, on this computer · nothing is written to the database"
+        msgid("For {table} in {connection}, on this computer · nothing is written to the database")
     } else {
-        "For {table} in {connection}, on this computer. Nothing is written to the database."
+        msgid("For {table} in {connection}, on this computer. Nothing is written to the database.")
     };
     // The app's own words are the look's; the names are as they are.
     crate::i18n::fill(
-        &look.label(&gettext(locale, words)),
+        &look.label(&words.say(locale)),
         &[
             ("{table}", &display_safe(&open.table)),
             ("{connection}", &connection_name(&open.connection, look)),
@@ -139,10 +139,10 @@ fn keys_line(ui: &Ui, look: &Look) -> String {
 /// Why a column cannot be chosen, in the look's words.
 pub fn reason(excluded: Excluded, look: &Look, locale: Locale) -> String {
     let words = match excluded {
-        Excluded::Key => "the key",
-        Excluded::Binary => "binary",
+        Excluded::Key => msgid("the key"),
+        Excluded::Binary => msgid("binary"),
     };
-    look.label(&gettext(locale, words))
+    look.label(&words.say(locale))
 }
 
 /// One line's words.
@@ -160,19 +160,19 @@ struct Row {
 }
 
 fn row(line: &Line, open: &Open, look: &Look, locale: Locale) -> Row {
-    let say = |words: &'static str| look.label(&gettext(locale, words));
+    let say = |words: Msgid| look.label(&words.say(locale));
     // The other looks set what a choice comes to off with a dot.
     let lead = if look.terminal { "" } else { "· " };
     match line {
         Line::Automatic => {
             let comes_to = match (&open.automatic, open.loading) {
-                (_, true) => say("checking…"),
+                (_, true) => say(msgid("checking…")),
                 (Some(column), false) => {
-                    say("uses {column}").replace("{column}", &display_safe(column))
+                    say(msgid("uses {column}")).replace("{column}", &display_safe(column))
                 }
-                (None, false) => say("keys only"),
+                (None, false) => say(msgid("keys only")),
             };
-            let text = say("Automatic");
+            let text = say(msgid("Automatic"));
             Row {
                 name: format!("{text}, {comes_to}"),
                 note: Some(format!("{lead}{comes_to}")),
@@ -182,7 +182,7 @@ fn row(line: &Line, open: &Open, look: &Look, locale: Locale) -> Row {
             }
         }
         Line::NoLabel => {
-            let (text, comes_to) = (say("No label"), say("keys only"));
+            let (text, comes_to) = (say(msgid("No label")), say(msgid("keys only")));
             Row {
                 name: format!("{text}, {comes_to}"),
                 note: Some(format!("{lead}{comes_to}")),
@@ -209,12 +209,12 @@ fn row(line: &Line, open: &Open, look: &Look, locale: Locale) -> Row {
                     let why = reason(*excluded, look, locale);
                     // The Omarchy look says first that it is not on offer.
                     let said = if look.terminal {
-                        format!("{}, {why}", say("n/a"))
+                        format!("{}, {why}", say(msgid("n/a")))
                     } else {
                         why.clone()
                     };
                     Row {
-                        name: format!("{text}, {kind}, {why}, {}", say("unavailable")),
+                        name: format!("{text}, {kind}, {why}, {}", say(msgid("unavailable"))),
                         detail: Some(format!("{kind} · {said}")),
                         text: text.into_owned(),
                         note: None,
@@ -429,7 +429,7 @@ fn loading(
     muted: egui::Color32,
     (look, palette, locale): (&Look, &Palette, Locale),
 ) {
-    let say = |words: &'static str| look.label(&gettext(locale, words));
+    let say = |words: Msgid| look.label(&words.say(locale));
     const SPINNER: f32 = 12.0;
     ui.horizontal(|ui| {
         ui.add_space(inset);
@@ -439,14 +439,14 @@ fn loading(
         widgets::label(
             ui,
             widgets::body(look),
-            &say("Loading columns…"),
+            &say(msgid("Loading columns…")),
             muted,
             look,
         );
     });
     ui.horizontal(|ui| {
         ui.add_space(inset);
-        let text = say("Automatic and No label work now");
+        let text = say(msgid("Automatic and No label work now"));
         widgets::label(ui, widgets::body(look), &text, palette.dim, look);
     });
 }
