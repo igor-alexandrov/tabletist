@@ -2183,12 +2183,12 @@ msgstr ""
 #: crates/tabletist-core/src/model.rs src/ui/connect_dialog/files.rs
 #: src/ui/workspace.rs
 msgid "Files"
-msgstr ""
+msgstr "Arquivos"
 
 #: crates/tabletist-core/src/model.rs src/ui/connect_dialog/files.rs
 #: src/ui/workspace.rs
 msgid "Folder"
-msgstr ""
+msgstr "Pasta"
 
 #: crates/tabletist-core/src/model.rs
 #, rust-format
@@ -2206,7 +2206,7 @@ msgstr "Grade"
 #: crates/tabletist-core/src/model.rs src/ui/connect_dialog/sheet.rs
 #: src/ui/connect_dialog/terminal.rs src/ui/workspace.rs
 msgid "Key file"
-msgstr ""
+msgstr "Arquivo de chave"
 
 #: crates/tabletist-core/src/model.rs src/ui/settings/keyboard_sheet.rs
 msgid "Keyboard"
@@ -2220,7 +2220,7 @@ msgstr "Idioma"
 #: crates/tabletist-core/src/model.rs src/ui/connect_dialog/sheet.rs
 #: src/ui/connect_dialog/terminal.rs
 msgid "Password"
-msgstr ""
+msgstr "Senha"
 
 #: crates/tabletist-core/src/model.rs src/ui/settings/terminal.rs
 msgid "Running queries"
@@ -3451,8 +3451,8 @@ msgstr[1] "No máximo {n} caracteres"
 #, rust-format
 msgid "At most {n} digit before the point"
 msgid_plural "At most {n} digits before the point"
-msgstr[0] "No máximo {n} dígito antes da vírgula"
-msgstr[1] "No máximo {n} dígitos antes da vírgula"
+msgstr[0] "No máximo {n} dígito antes do ponto decimal"
+msgstr[1] "No máximo {n} dígitos antes do ponto decimal"
 
 #: src/ui/cell_editor.rs
 msgid "Binary values cannot be edited yet"
@@ -3745,15 +3745,15 @@ msgstr "{at} de {count}"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Access through Tabletist (MCP)"
-msgstr ""
+msgstr "Acesso pelo Tabletist (MCP)"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Add column…"
-msgstr ""
+msgstr "Adicionar coluna…"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Add table…"
-msgstr ""
+msgstr "Adicionar tabela…"
 
 #: src/ui/connect_dialog/agents.rs
 msgid ""
@@ -3761,22 +3761,31 @@ msgid ""
 "and the views over them. A function from an extension can still read them. "
 "For strict isolation, use a database user without access."
 msgstr ""
+"Os agentes recebem estes nomes, nunca o que há neles: as linhas, as colunas "
+"e as views sobre elas. Uma função de uma extensão ainda pode lê-las. Para um "
+"isolamento rigoroso, use um usuário do banco de dados sem acesso."
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Agents can query the files, never change them."
-msgstr ""
+msgstr "Os agentes podem consultar os arquivos, nunca alterá-los."
 
 #: src/ui/connect_dialog/agents.rs
 msgid ""
 "Agents may not use this connection while a hidden table is not in its "
 "database. Take the name out, or add the table's new name."
 msgstr ""
+"Os agentes não podem usar esta conexão enquanto uma tabela oculta não "
+"estiver no banco de dados dela. Retire o nome ou adicione o novo nome da "
+"tabela."
 
 #: src/ui/connect_dialog/agents.rs
 msgid ""
 "Agents may not use this connection while a masked column is not in its "
 "database. Take the name out, or add the column's new name."
 msgstr ""
+"Os agentes não podem usar esta conexão enquanto uma coluna mascarada não "
+"estiver no banco de dados dela. Retire o nome ou adicione o novo nome da "
+"coluna."
 
 #: src/ui/connect_dialog/agents.rs
 msgid ""
@@ -3784,6 +3793,9 @@ msgid ""
 "function from an extension can still read the others. For strict isolation, "
 "use a database user without access."
 msgstr ""
+"Os agentes podem ler estas tabelas e nenhuma outra, inclusive as criadas "
+"depois. Uma função de uma extensão ainda pode ler as outras. Para um "
+"isolamento rigoroso, use um usuário do banco de dados sem acesso."
 
 #: src/ui/connect_dialog/agents.rs
 msgid ""
@@ -3791,11 +3803,14 @@ msgid ""
 "joins, sorts or computes with one is refused, in any table with a column of "
 "that name."
 msgstr ""
+"Os agentes veem o nome e o tipo; os valores voltam como •••. Uma consulta "
+"que filtra, faz join, ordena ou calcula com uma delas é recusada, em "
+"qualquer tabela com uma coluna desse nome."
 
 #: src/ui/connect_dialog/agents.rs
 #, rust-format
 msgid "Agents use this connection as {env}."
-msgstr ""
+msgstr "Os agentes usam esta conexão como {env}."
 
 #: src/ui/connect_dialog/agents.rs src/ui/export.rs
 #: src/ui/settings/keyboard_sheet.rs
@@ -3804,144 +3819,149 @@ msgstr "Todas"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "All except"
-msgstr ""
+msgstr "Todas exceto"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Column to mask"
-msgstr ""
+msgstr "Coluna a mascarar"
 
 #: src/ui/connect_dialog/agents.rs
 #, rust-format
 msgid "Columns of {table}"
-msgstr ""
+msgstr "Colunas de {table}"
 
 #: src/ui/connect_dialog/agents.rs
 #, rust-format
 msgid "Loading the columns of {table}…"
-msgstr ""
+msgstr "Carregando as colunas de {table}…"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Masked columns"
-msgstr ""
+msgstr "Colunas mascaradas"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Off · agents can't reach this connection"
-msgstr ""
+msgstr "Desativado · os agentes não alcançam esta conexão"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Only"
-msgstr ""
+msgstr "Somente"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Read · agents can query the files, never change them"
-msgstr ""
+msgstr "Leitura · os agentes podem consultar os arquivos, nunca alterá-los"
 
 #: src/ui/connect_dialog/agents.rs
 #, rust-format
 msgid "Remove {name}"
-msgstr ""
+msgstr "Remover {name}"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Rows per answer"
-msgstr ""
+msgstr "Linhas por resposta"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Statement timeout, seconds"
-msgstr ""
+msgstr "Tempo limite da instrução, em segundos"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Table to add"
-msgstr ""
+msgstr "Tabela a adicionar"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Tables loaded in the sidebar"
-msgstr ""
+msgstr "Tabelas carregadas na barra lateral"
 
 #: src/ui/connect_dialog/agents.rs
 #, rust-format
 msgid "The column's name {why}."
-msgstr ""
+msgstr "O nome da coluna não serve: {why}."
 
 #: src/ui/connect_dialog/agents.rs
 #, rust-format
 msgid "The columns of {table} could not be read"
-msgstr ""
+msgstr "Não foi possível ler as colunas de {table}"
 
 #: src/ui/connect_dialog/agents.rs
 #, rust-format
 msgid "The table's name {why}."
-msgstr ""
+msgstr "O nome da tabela não serve: {why}."
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Timeout, seconds"
-msgstr ""
+msgstr "Tempo limite, em segundos"
 
 #: src/ui/connect_dialog/agents.rs
 msgid ""
 "When Open read-only is on, agents get Read at most. A new connection starts "
 "with agents Off, a Files one with Read."
 msgstr ""
+"Quando Abrir em somente leitura está ativado, os agentes recebem no máximo "
+"Leitura. Uma conexão nova começa com os agentes em Desativado, e uma de "
+"arquivos em Leitura."
 
 #: src/ui/connect_dialog/agents.rs
 msgid "not in this database"
-msgstr ""
+msgstr "não está neste banco de dados"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "table, or schema.table"
-msgstr ""
+msgstr "tabela ou esquema.tabela"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "table.column"
-msgstr ""
+msgstr "tabela.coluna"
 
 #: src/ui/connect_dialog/files.rs
 msgid "Add files"
-msgstr ""
+msgstr "Adicionar arquivos"
 
 #: src/ui/connect_dialog/files.rs
 msgid "Add files…"
-msgstr ""
+msgstr "Adicionar arquivos…"
 
 #: src/ui/connect_dialog/files.rs
 msgid "Choose a folder"
-msgstr ""
+msgstr "Escolher uma pasta"
 
 #: src/ui/connect_dialog/files.rs src/ui/connect_dialog/mod.rs
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Choose…"
-msgstr ""
+msgstr "Escolher…"
 
 #: src/ui/connect_dialog/files.rs
 msgid ""
 "Every CSV, Parquet, JSON, NDJSON, Excel and .duckdb file in the folder "
 "becomes a table. Files added later show up on the next open."
 msgstr ""
+"Todo arquivo CSV, Parquet, JSON, NDJSON, Excel e .duckdb da pasta vira uma "
+"tabela. Arquivos adicionados depois aparecem na próxima abertura."
 
 #: src/ui/connect_dialog/files.rs
 msgid "Kind"
-msgstr ""
+msgstr "Tipo"
 
 #: src/ui/connect_dialog/files.rs
 msgid "No folder chosen"
-msgstr ""
+msgstr "Nenhuma pasta escolhida"
 
 #: src/ui/connect_dialog/files.rs
 msgid "Skipped files are left out."
-msgstr ""
+msgstr "Os arquivos ignorados ficam de fora."
 
 #: src/ui/connect_dialog/files.rs src/ui/connect_dialog/sheet.rs
 #: src/ui/history.rs
 msgid "Source"
-msgstr ""
+msgstr "Origem"
 
 #: src/ui/connect_dialog/files.rs
 msgid "This folder isn't there any more. Choose it again, or pick another."
-msgstr ""
+msgstr "Esta pasta não existe mais. Escolha-a de novo ou escolha outra."
 
 #: src/ui/connect_dialog/files.rs
 #, rust-format
 msgid "none · {key} adds files"
-msgstr ""
+msgstr "nenhum · {key} adiciona arquivos"
 
 #: src/ui/connect_dialog/files.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/export.rs src/ui/quick_open.rs
@@ -3950,153 +3970,156 @@ msgstr "escolher"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Changes the fields below"
-msgstr ""
+msgstr "Altera os campos abaixo"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Choose a CA certificate"
-msgstr ""
+msgstr "Escolher um certificado de CA"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Choose a database file"
-msgstr ""
+msgstr "Escolher um arquivo de banco de dados"
 
 #: src/ui/connect_dialog/mod.rs src/ui/workspace.rs
 msgid "Connected"
-msgstr ""
+msgstr "Conectado"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Files connections have no URL. Choose a folder or files under Source."
 msgstr ""
+"Conexões de arquivos não têm URL. Escolha uma pasta ou arquivos em Origem."
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Files open read-only."
-msgstr ""
+msgstr "Os arquivos abrem em somente leitura."
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Hosts from ~/.ssh/config"
-msgstr ""
+msgstr "Hosts do ~/.ssh/config"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Keychain"
-msgstr ""
+msgstr "Acesso às Chaves"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Keychain for the SSH secret"
-msgstr ""
+msgstr "Acesso às Chaves para o segredo SSH"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Keyring"
-msgstr ""
+msgstr "Chaveiro"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Keyring for the SSH secret"
-msgstr ""
+msgstr "Chaveiro para o segredo SSH"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "None (not checked)"
-msgstr ""
+msgstr "Nenhum (não verificado)"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Not used"
-msgstr ""
+msgstr "Não usado"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "One database file on this computer"
-msgstr ""
+msgstr "Um arquivo de banco de dados neste computador"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Opens CSV, Parquet, JSON, Excel and .duckdb files as tables"
-msgstr ""
+msgstr "Abre arquivos CSV, Parquet, JSON, Excel e .duckdb como tabelas"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Passphrase"
-msgstr ""
+msgstr "Frase secreta"
 
 #: src/ui/connect_dialog/mod.rs
 #, rust-format
 msgid "Read {n} file · {size}"
 msgid_plural "Read {n} files · {size}"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "{n} arquivo lido · {size}"
+msgstr[1] "{n} arquivos lidos · {size}"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Required"
-msgstr ""
+msgstr "Obrigatório"
 
 #: src/ui/connect_dialog/mod.rs src/ui/picker.rs
 msgid "SSH password"
-msgstr ""
+msgstr "Senha SSH"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Saved in the keychain"
-msgstr ""
+msgstr "Salvo no Acesso às Chaves"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Saved in the keyring"
-msgstr ""
+msgstr "Salvo no chaveiro"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "System certificates"
-msgstr ""
+msgstr "Certificados do sistema"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Testing…"
-msgstr ""
+msgstr "Testando…"
 
 #: src/ui/connect_dialog/mod.rs
 msgid ""
 "The password can be intercepted on the network. To prevent it, verify the "
 "certificate and host, or use an SSH tunnel."
 msgstr ""
+"A senha pode ser interceptada na rede. Para evitar isso, verifique o "
+"certificado e o host ou use um túnel SSH."
 
 #: src/ui/connect_dialog/mod.rs
 #, rust-format
 msgid "Through ProxyJump {hops} from ~/.ssh/config"
-msgstr ""
+msgstr "Via ProxyJump {hops} do ~/.ssh/config"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Through a ProxyCommand from ~/.ssh/config"
-msgstr ""
+msgstr "Via um ProxyCommand do ~/.ssh/config"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Trust and test"
-msgstr ""
+msgstr "Confiar e testar"
 
 #: src/ui/connect_dialog/mod.rs
 #, rust-format
 msgid "Unknown SSH host key for {host}: {fingerprint}"
-msgstr ""
+msgstr "Chave de host SSH desconhecida para {host}: {fingerprint}"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "from ~/.ssh/config"
-msgstr ""
+msgstr "do ~/.ssh/config"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "opens"
-msgstr ""
+msgstr "abre"
 
 #: src/ui/connect_dialog/mod.rs
 #, rust-format
 msgid "{name} from ~/.ssh/config"
-msgstr ""
+msgstr "{name} do ~/.ssh/config"
 
 #: src/ui/connect_dialog/mod.rs
 #, rust-format
 msgid "{name} through ProxyJump {hops} from ~/.ssh/config"
-msgstr ""
+msgstr "{name} via ProxyJump {hops} do ~/.ssh/config"
 
 #: src/ui/connect_dialog/mod.rs
 #, rust-format
 msgid "{name} through a ProxyCommand from ~/.ssh/config"
-msgstr ""
+msgstr "{name} via um ProxyCommand do ~/.ssh/config"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "All rows"
-msgstr ""
+msgstr "Todas as linhas"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "All text"
-msgstr ""
+msgstr "Todo o texto"
 
 #: src/ui/connect_dialog/reading.rs src/ui/settings/mod.rs
 msgid "Column types"
@@ -4104,11 +4127,11 @@ msgstr "Tipos de coluna"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Defaults for every CSV"
-msgstr ""
+msgstr "Padrões para todo CSV"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Defaults for every CSV in this connection"
-msgstr ""
+msgstr "Padrões para todo CSV desta conexão"
 
 #: src/ui/connect_dialog/reading.rs src/ui/export.rs
 msgid "Delimiter"
@@ -4116,27 +4139,27 @@ msgstr "Delimitador"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Detect"
-msgstr ""
+msgstr "Detectar"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Detect from all rows (slower)"
-msgstr ""
+msgstr "Detectar em todas as linhas (mais lento)"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Detect from the first 20,000 rows"
-msgstr ""
+msgstr "Detectar nas primeiras 20.000 linhas"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "First 20,000 rows"
-msgstr ""
+msgstr "Primeiras 20.000 linhas"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Header detect"
-msgstr ""
+msgstr "Cabeçalho: detectar"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Header no"
-msgstr ""
+msgstr "Cabeçalho: não"
 
 #: src/ui/connect_dialog/reading.rs src/ui/export.rs
 msgid "Header row"
@@ -4144,23 +4167,23 @@ msgstr "Linha de cabeçalho"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Header yes"
-msgstr ""
+msgstr "Cabeçalho: sim"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "No"
-msgstr ""
+msgstr "Não"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Override"
-msgstr ""
+msgstr "Exceção"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Read everything as text"
-msgstr ""
+msgstr "Ler tudo como texto"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Reading CSV"
-msgstr ""
+msgstr "Leitura de CSV"
 
 #: src/ui/connect_dialog/reading.rs src/ui/settings/sheet.rs
 #: src/ui/settings/terminal.rs
@@ -4174,37 +4197,37 @@ msgstr "Tabulação"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Yes"
-msgstr ""
+msgstr "Sim"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "delimiter ,"
-msgstr ""
+msgstr "delimitador ,"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "delimiter ;"
-msgstr ""
+msgstr "delimitador ;"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "delimiter detect"
-msgstr ""
+msgstr "delimitador: detectar"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "delimiter tab"
-msgstr ""
+msgstr "delimitador: tabulação"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "delimiter |"
-msgstr ""
+msgstr "delimitador |"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "everything as text"
-msgstr ""
+msgstr "tudo como texto"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "override"
 msgid_plural "overrides"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "exceção"
+msgstr[1] "exceções"
 
 #: src/ui/connect_dialog/reading.rs src/ui/settings/terminal.rs
 msgid "reset"
@@ -4212,82 +4235,84 @@ msgstr "redefinir"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "skipped"
-msgstr ""
+msgstr "ignorado"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "types all rows"
-msgstr ""
+msgstr "tipos: todas as linhas"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "types first 20,000 rows"
-msgstr ""
+msgstr "tipos: primeiras 20.000 linhas"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "types from all rows"
-msgstr ""
+msgstr "tipos a partir de todas as linhas"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "types from the first 20,000 rows"
-msgstr ""
+msgstr "tipos a partir das primeiras 20.000 linhas"
 
 #: src/ui/connect_dialog/reading.rs
 #, rust-format
 msgid "{column} as text"
-msgstr ""
+msgstr "{column} como texto"
 
 #: src/ui/connect_dialog/reading.rs
 #, rust-format
 msgid "{column} read as text"
-msgstr ""
+msgstr "{column} lida como texto"
 
 #: src/ui/connect_dialog/reading.rs
 #, rust-format
 msgid "{values} as empty in {column}"
-msgstr ""
+msgstr "{values} como vazio em {column}"
 
 #: src/ui/connect_dialog/reading.rs
 #, rust-format
 msgid "{values} read as empty in {column}"
-msgstr ""
+msgstr "{values} lido como vazio em {column}"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Authentication"
-msgstr ""
+msgstr "Autenticação"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "BigQuery"
-msgstr ""
+msgstr "BigQuery"
 
 #: src/ui/connect_dialog/sheet.rs
 msgid ""
 "Blocks every write from this app. On by default for production; turn off to "
 "edit."
 msgstr ""
+"Bloqueia toda gravação a partir deste app. Ativado por padrão em production; "
+"desative para editar."
 
 #: src/ui/connect_dialog/sheet.rs
 msgid "CA certificate"
-msgstr ""
+msgstr "Certificado de CA"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Choose a key file"
-msgstr ""
+msgstr "Escolher um arquivo de chave"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Connect through SSH tunnel"
-msgstr ""
+msgstr "Conectar por túnel SSH"
 
 #: src/ui/connect_dialog/sheet.rs
 msgid "Connection URL"
-msgstr ""
+msgstr "URL de conexão"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/history.rs src/ui/workspace.rs
 msgid "Database"
-msgstr ""
+msgstr "Banco de dados"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Default credentials when empty"
-msgstr ""
+msgstr "Credenciais padrão quando vazio"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/picker.rs src/ui/row_panel.rs
 #: src/ui/settings/sheet.rs
@@ -4301,131 +4326,131 @@ msgstr "Ambiente"
 
 #: src/ui/connect_dialog/sheet.rs
 msgid "Fill"
-msgstr ""
+msgstr "Preencher"
 
 #: src/ui/connect_dialog/sheet.rs
 msgid ""
 "Fills the parameters. A password in the URL moves to the password field."
-msgstr ""
+msgstr "Preenche os parâmetros. Uma senha na URL vai para o campo de senha."
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/workspace.rs
 msgid "Host"
-msgstr ""
+msgstr "Host"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/structure.rs
 msgid "Name"
-msgstr ""
+msgstr "Nome"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Open read-only"
-msgstr ""
+msgstr "Abrir em somente leitura"
 
 #: src/ui/connect_dialog/sheet.rs
 msgid "Parameters"
-msgstr ""
+msgstr "Parâmetros"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Port"
-msgstr ""
+msgstr "Porta"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "SSH host"
-msgstr ""
+msgstr "Host SSH"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "SSH port"
-msgstr ""
+msgstr "Porta SSH"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "SSH user"
-msgstr ""
+msgstr "Usuário SSH"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "SSL mode"
-msgstr ""
+msgstr "Modo SSL"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Same as the user"
-msgstr ""
+msgstr "O mesmo do usuário"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/pending_bar.rs src/ui/write_prompts.rs
 msgid "Save"
-msgstr ""
+msgstr "Salvar"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Save & Connect"
-msgstr ""
+msgstr "Salvar e conectar"
 
 #: src/ui/connect_dialog/sheet.rs
 msgid "Saved for the next connect. Off, it is asked for every time."
-msgstr ""
+msgstr "Salva para a próxima conexão. Desativado, é pedido toda vez."
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/workspace.rs
 msgid "Security"
-msgstr ""
+msgstr "Segurança"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/workspace.rs
 msgid "Server"
-msgstr ""
+msgstr "Servidor"
 
 #: src/ui/connect_dialog/sheet.rs
 msgid "Sets the connection color"
-msgstr ""
+msgstr "Define a cor da conexão"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Test"
-msgstr ""
+msgstr "Testar"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/structure.rs
 msgid "Type"
-msgstr ""
+msgstr "Tipo"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "URL"
-msgstr ""
+msgstr "URL"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/workspace.rs
 msgid "User"
-msgstr ""
+msgstr "Usuário"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "Block every write from this app"
-msgstr ""
+msgstr "Bloquear toda gravação a partir deste app"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "CA cert"
-msgstr ""
+msgstr "Certificado de CA"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "Connect through SSH"
-msgstr ""
+msgstr "Conectar por SSH"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "Default for production"
-msgstr ""
+msgstr "Padrão para production"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "Files open read-only"
-msgstr ""
+msgstr "Os arquivos abrem em somente leitura"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "Host : Port"
-msgstr ""
+msgstr "Host : Porta"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "No URL for files"
-msgstr ""
+msgstr "Sem URL para arquivos"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "Paste URL"
-msgstr ""
+msgstr "Colar URL"
 
 #: src/ui/connect_dialog/terminal.rs src/ui/ddl.rs src/ui/picker.rs
 #: src/ui/sql_editor.rs src/ui/start.rs src/ui/workspace.rs
@@ -4434,11 +4459,11 @@ msgstr "Somente leitura"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "SSH host : Port"
-msgstr ""
+msgstr "Host SSH : Porta"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "SSH tunnel"
-msgstr ""
+msgstr "Túnel SSH"
 
 #: src/ui/connect_dialog/terminal.rs src/ui/export.rs src/ui/structure.rs
 #: src/ui/workspace.rs
@@ -4447,7 +4472,7 @@ msgstr "selecionar"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "connect"
-msgstr ""
+msgstr "conectar"
 
 #: src/ui/connect_dialog/terminal.rs src/ui/export.rs
 msgid "next"
@@ -4455,11 +4480,11 @@ msgstr "próximo"
 
 #: src/ui/connect_dialog/terminal.rs src/ui/history.rs
 msgid "save"
-msgstr ""
+msgstr "salvar"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "test"
-msgstr ""
+msgstr "testar"
 
 #: src/ui/copy_as.rs
 msgid "Column names"
