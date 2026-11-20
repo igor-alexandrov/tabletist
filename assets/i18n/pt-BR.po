@@ -82,7 +82,7 @@ msgstr "Exportar…"
 #: crates/tabletist-core/src/export_sheet.rs src/ui/export.rs
 #: src/ui/pending_bar.rs
 msgid "Review SQL"
-msgstr ""
+msgstr "Revisar SQL"
 
 #: crates/tabletist-core/src/export_sheet.rs
 msgid "That's more than 10,000 rows. Export to a file?"
@@ -248,7 +248,7 @@ msgstr "Configurações"
 #: src/ui/workspace.rs
 msgctxt "label"
 msgid "filter"
-msgstr ""
+msgstr "filtro"
 
 #: crates/tabletist-core/src/i18n/numbers.rs
 msgctxt "short month in a date"
@@ -2166,7 +2166,7 @@ msgstr "{name} aceita teclas digitadas"
 
 #: crates/tabletist-core/src/model.rs src/ui/agents.rs src/ui/history.rs
 msgid "Agent"
-msgstr ""
+msgstr "Agente"
 
 #: crates/tabletist-core/src/model.rs src/ui/settings/sheet.rs
 msgid "Appearance"
@@ -2183,12 +2183,12 @@ msgstr ""
 #: crates/tabletist-core/src/model.rs src/ui/connect_dialog/files.rs
 #: src/ui/workspace.rs
 msgid "Files"
-msgstr ""
+msgstr "Arquivos"
 
 #: crates/tabletist-core/src/model.rs src/ui/connect_dialog/files.rs
 #: src/ui/workspace.rs
 msgid "Folder"
-msgstr ""
+msgstr "Pasta"
 
 #: crates/tabletist-core/src/model.rs
 #, rust-format
@@ -2206,7 +2206,7 @@ msgstr "Grade"
 #: crates/tabletist-core/src/model.rs src/ui/connect_dialog/sheet.rs
 #: src/ui/connect_dialog/terminal.rs src/ui/workspace.rs
 msgid "Key file"
-msgstr ""
+msgstr "Arquivo de chave"
 
 #: crates/tabletist-core/src/model.rs src/ui/settings/keyboard_sheet.rs
 msgid "Keyboard"
@@ -2220,7 +2220,7 @@ msgstr "Idioma"
 #: crates/tabletist-core/src/model.rs src/ui/connect_dialog/sheet.rs
 #: src/ui/connect_dialog/terminal.rs
 msgid "Password"
-msgstr ""
+msgstr "Senha"
 
 #: crates/tabletist-core/src/model.rs src/ui/settings/terminal.rs
 msgid "Running queries"
@@ -2277,8 +2277,8 @@ msgstr ""
 #: crates/tabletist-core/src/selection.rs src/ui/export.rs
 msgid "column"
 msgid_plural "columns"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "coluna"
+msgstr[1] "colunas"
 
 #: crates/tabletist-core/src/selection.rs src/ui/pending_bar.rs
 #: src/ui/review.rs src/ui/workspace.rs
@@ -2291,8 +2291,8 @@ msgstr[1] ""
 #, rust-format
 msgid "{n} row selected"
 msgid_plural "{n} rows selected"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "{n} linha selecionada"
+msgstr[1] "{n} linhas selecionadas"
 
 #: crates/tabletist-core/src/selection.rs
 #, rust-format
@@ -2816,28 +2816,28 @@ msgstr "Fechar"
 
 #: src/ui/about.rs
 msgid "Font licenses"
-msgstr ""
+msgstr "Licenças das fontes"
 
 #: src/ui/about.rs
 msgid "License"
-msgstr ""
+msgstr "Licença"
 
 #: src/ui/about.rs
 msgid "Tabletist icon"
-msgstr ""
+msgstr "Ícone do Tabletist"
 
 #: src/ui/about.rs
 msgid "Version"
-msgstr ""
+msgstr "Versão"
 
 #: src/ui/agent_access.rs src/ui/picker.rs
 #, rust-format
 msgid "Agents {level}"
-msgstr ""
+msgstr "Agentes: {level}"
 
 #: src/ui/agent_access.rs
 msgid "agents tab"
-msgstr ""
+msgstr "aba de agentes"
 
 #: src/ui/agent_access.rs src/ui/settings/mod.rs src/ui/settings/terminal.rs
 msgid "off"
@@ -2849,14 +2849,14 @@ msgstr "abre isto"
 
 #: src/ui/agent_access.rs
 msgid "read"
-msgstr ""
+msgstr "leitura"
 
 #: src/ui/agents.rs
 #, rust-format
 msgid " and {n} more"
 msgid_plural " and {n} more"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] " e mais {n}"
+msgstr[1] " e mais {n}"
 
 #: src/ui/agents.rs src/ui/connect_dialog/agents.rs src/ui/settings/agents.rs
 #: src/ui/settings/terminal.rs
@@ -2865,16 +2865,16 @@ msgstr "Acesso"
 
 #: src/ui/agents.rs
 msgid "Access is Off for this connection, so agents don't see it at all."
-msgstr ""
+msgstr "O acesso está Desativado nesta conexão, então os agentes nem a veem."
 
 #: src/ui/agents.rs
 msgid "Activity"
-msgstr ""
+msgstr "Atividade"
 
 #: src/ui/agents.rs
 #, rust-format
 msgid "Agents can't use {connection}"
-msgstr ""
+msgstr "Os agentes não podem usar {connection}"
 
 #: src/ui/agents.rs
 #, rust-format
@@ -2882,43 +2882,45 @@ msgid ""
 "Agents like Claude Code can read this database. Connect one with this "
 "command, then ask it about {name}."
 msgstr ""
+"Agentes como o Claude Code podem ler este banco de dados. Conecte um com "
+"este comando e pergunte a ele sobre {name}."
 
 #: src/ui/agents.rs
 #, rust-format
 msgid "Agents on {connection}"
-msgstr ""
+msgstr "Agentes em {connection}"
 
 #: src/ui/agents.rs
 msgid "All agents"
-msgstr ""
+msgstr "Todos os agentes"
 
 #: src/ui/agents.rs src/ui/quick_open.rs
 msgid "All connections"
-msgstr ""
+msgstr "Todas as conexões"
 
 #: src/ui/agents.rs src/ui/history.rs
 msgid "All results"
-msgstr ""
+msgstr "Todos os resultados"
 
 #: src/ui/agents.rs
 msgid "Allow agents…"
-msgstr ""
+msgstr "Permitir agentes…"
 
 #: src/ui/agents.rs
 msgid "Also:"
-msgstr ""
+msgstr "Também:"
 
 #: src/ui/agents.rs
 msgid "Calls on"
-msgstr ""
+msgstr "Chamadas em"
 
 #: src/ui/agents.rs src/ui/data_view.rs src/ui/sql_results.rs
 msgid "Code"
-msgstr ""
+msgstr "Código"
 
 #: src/ui/agents.rs
 msgid "Connection"
-msgstr ""
+msgstr "Conexão"
 
 #: src/ui/agents.rs src/ui/settings/updates.rs
 msgid "Copied the command"
@@ -2926,19 +2928,19 @@ msgstr "Comando copiado"
 
 #: src/ui/agents.rs
 msgid "Described"
-msgstr ""
+msgstr "Descreveu"
 
 #: src/ui/agents.rs
 msgid "Elsewhere"
-msgstr ""
+msgstr "Em outras conexões"
 
 #: src/ui/agents.rs
 msgid "Its connection was deleted."
-msgstr ""
+msgstr "A conexão foi excluída."
 
 #: src/ui/agents.rs
 msgid "Listed"
-msgstr ""
+msgstr "Listou"
 
 #: src/ui/agents.rs src/ui/settings/agents.rs src/ui/settings/terminal.rs
 msgid "Log"
@@ -2946,36 +2948,36 @@ msgstr "Log"
 
 #: src/ui/agents.rs src/ui/connect_dialog/agents.rs
 msgid "Masked"
-msgstr ""
+msgstr "Mascaradas"
 
 #: src/ui/agents.rs
 #, rust-format
 msgid "No agents connected to {connection}"
-msgstr ""
+msgstr "Nenhum agente conectado a {connection}"
 
 #: src/ui/agents.rs
 msgid "No agents here"
-msgstr ""
+msgstr "Nenhum agente aqui"
 
 #: src/ui/agents.rs
 msgid "No calls in the log match these filters."
-msgstr ""
+msgstr "Nenhuma chamada no log corresponde a estes filtros."
 
 #: src/ui/agents.rs
 msgid "No calls in the log."
-msgstr ""
+msgstr "Nenhuma chamada no log."
 
 #: src/ui/agents.rs
 msgid "No calls on this connection in the log."
-msgstr ""
+msgstr "Nenhuma chamada desta conexão no log."
 
 #: src/ui/agents.rs
 msgid "No calls on this connection yet."
-msgstr ""
+msgstr "Nenhuma chamada nesta conexão ainda."
 
 #: src/ui/agents.rs
 msgid "No calls to export."
-msgstr ""
+msgstr "Nenhuma chamada para exportar."
 
 #: src/ui/agents.rs src/ui/connect_dialog/agents.rs src/ui/picker.rs
 #: src/ui/settings/agents.rs src/ui/settings/sheet.rs
@@ -2985,77 +2987,77 @@ msgstr "Desativado"
 
 #: src/ui/agents.rs
 msgid "On this connection"
-msgstr ""
+msgstr "Nesta conexão"
 
 #: src/ui/agents.rs src/ui/ddl.rs src/ui/history.rs
 msgid "Open in SQL editor"
-msgstr ""
+msgstr "Abrir no editor SQL"
 
 #: src/ui/agents.rs
 msgid "Other agents…"
-msgstr ""
+msgstr "Outros agentes…"
 
 #: src/ui/agents.rs
 msgid "Params"
-msgstr ""
+msgstr "Parâmetros"
 
 #: src/ui/agents.rs src/ui/connect_dialog/sheet.rs
 #: src/ui/connect_dialog/terminal.rs src/ui/workspace.rs
 msgid "Project"
-msgstr ""
+msgstr "Projeto"
 
 #: src/ui/agents.rs
 msgid "Ran as"
-msgstr ""
+msgstr "Executada como"
 
 #: src/ui/agents.rs src/ui/connect_dialog/agents.rs src/ui/picker.rs
 msgid "Read"
-msgstr ""
+msgstr "Leitura"
 
 #: src/ui/agents.rs
 msgid "Reading the log…"
-msgstr ""
+msgstr "Lendo o log…"
 
 #: src/ui/agents.rs
 msgid "Request"
-msgstr ""
+msgstr "Solicitação"
 
 #: src/ui/agents.rs src/ui/history.rs
 msgid "Result"
-msgstr ""
+msgstr "Resultado"
 
 #: src/ui/agents.rs
 msgid "Returned"
-msgstr ""
+msgstr "Retornou"
 
 #: src/ui/agents.rs src/ui/data_view.rs src/ui/export.rs src/ui/history.rs
 msgid "Rows"
-msgstr ""
+msgstr "Linhas"
 
 #: src/ui/agents.rs
 msgid "Rows themselves are not logged."
-msgstr ""
+msgstr "As linhas em si não são registradas no log."
 
 #: src/ui/agents.rs
 #, rust-format
 msgid "Runs as {environment}"
-msgstr ""
+msgstr "Executa como {environment}"
 
 #: src/ui/agents.rs
 msgid "Search requests…"
-msgstr ""
+msgstr "Pesquisar solicitações…"
 
 #: src/ui/agents.rs
 msgid "Server: off"
-msgstr ""
+msgstr "Servidor: desativado"
 
 #: src/ui/agents.rs
 msgid "Server: stdio"
-msgstr ""
+msgstr "Servidor: stdio"
 
 #: src/ui/agents.rs src/ui/picker.rs
 msgid "Show"
-msgstr ""
+msgstr "Mostrar"
 
 #: src/ui/agents.rs src/ui/settings/agents.rs src/ui/settings/terminal.rs
 msgid "Show log"
@@ -3063,141 +3065,143 @@ msgstr "Mostrar log"
 
 #: src/ui/agents.rs
 msgid "Show more"
-msgstr ""
+msgstr "Mostrar mais"
 
 #: src/ui/agents.rs
 msgid "Stop agents here"
-msgstr ""
+msgstr "Parar os agentes aqui"
 
 #: src/ui/agents.rs
 msgid "Stop session"
-msgstr ""
+msgstr "Encerrar sessão"
 
 #: src/ui/agents.rs
 #, rust-format
 msgid "Stopped {n} agent. Access is now Off for {name}."
 msgid_plural "Stopped {n} agents. Access is now Off for {name}."
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "{n} agente parado. O acesso agora está Desativado para {name}."
+msgstr[1] "{n} agentes parados. O acesso agora está Desativado para {name}."
 
 #: src/ui/agents.rs src/ui/connect_dialog/agents.rs src/ui/quick_open.rs
 #: src/ui/start.rs
 msgid "Tables"
-msgstr ""
+msgstr "Tabelas"
 
 #: src/ui/agents.rs
 msgid "The agent server is off"
-msgstr ""
+msgstr "O servidor de agentes está desativado"
 
 #: src/ui/agents.rs
 msgid "The log could not be read:"
-msgstr ""
+msgstr "Não foi possível ler o log:"
 
 #: src/ui/agents.rs src/ui/quick_open.rs
 msgid "This connection"
-msgstr ""
+msgstr "Esta conexão"
 
 #: src/ui/agents.rs src/ui/history.rs
 msgid "Time"
-msgstr ""
+msgstr "Hora"
 
 #: src/ui/agents.rs src/ui/history.rs
 msgid "Took"
-msgstr ""
+msgstr "Duração"
 
 #: src/ui/agents.rs
 msgid "Tool"
-msgstr ""
+msgstr "Ferramenta"
 
 #: src/ui/agents.rs
 msgid ""
 "Turn it on to let agents like Claude Code use the connections you allow. It "
 "runs only while Tabletist is open, on this computer."
 msgstr ""
+"Ative-o para que agentes como o Claude Code usem as conexões que você "
+"permitir. Ele só funciona enquanto o Tabletist está aberto, neste computador."
 
 #: src/ui/agents.rs
 msgid "Turn on"
-msgstr ""
+msgstr "Ativar"
 
 #: src/ui/agents.rs
 msgid "Why"
-msgstr ""
+msgstr "Motivo"
 
 #: src/ui/agents.rs
 msgid "agent"
-msgstr ""
+msgstr "agente"
 
 #: src/ui/agents.rs
 #, rust-format
 msgid "agent {name}"
-msgstr ""
+msgstr "agente {name}"
 
 #: src/ui/agents.rs src/ui/export.rs
 msgid "all"
-msgstr ""
+msgstr "tudo"
 
 #: src/ui/agents.rs src/ui/workspace.rs
 msgid "all connections"
-msgstr ""
+msgstr "todas as conexões"
 
 #: src/ui/agents.rs
 msgid "cancelled"
-msgstr ""
+msgstr "cancelada"
 
 #: src/ui/agents.rs
 msgid "closes, and keeps them"
-msgstr ""
+msgstr "fecha e os mantém"
 
 #: src/ui/agents.rs
 #, rust-format
 msgid "connected {time}"
-msgstr ""
+msgstr "conectado às {time}"
 
 #: src/ui/agents.rs
 msgid "cut in the log"
-msgstr ""
+msgstr "cortado no log"
 
 #: src/ui/agents.rs
 #, rust-format
 msgid "cut in the log, of {n} byte"
 msgid_plural "cut in the log, of {n} bytes"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "cortado no log, de {n} byte"
+msgstr[1] "cortado no log, de {n} bytes"
 
 #: src/ui/agents.rs src/ui/workspace.rs
 msgid "details"
-msgstr ""
+msgstr "detalhes"
 
 #: src/ui/agents.rs src/ui/workspace.rs
 msgid "failed"
-msgstr ""
+msgstr "falhou"
 
 #: src/ui/agents.rs
 msgid "filters"
-msgstr ""
+msgstr "filtros"
 
 #: src/ui/agents.rs
 #, rust-format
 msgid "last {n} day"
 msgid_plural "last {n} days"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "último {n} dia"
+msgstr[1] "últimos {n} dias"
 
 #: src/ui/agents.rs src/ui/history.rs
 msgid "ms"
-msgstr ""
+msgstr "ms"
 
 #: src/ui/agents.rs
 msgid "no connection yet"
-msgstr ""
+msgstr "ainda sem conexão"
 
 #: src/ui/agents.rs
 msgid "not readable in the log"
-msgstr ""
+msgstr "ilegível no log"
 
 #: src/ui/agents.rs
 msgid "ok"
-msgstr ""
+msgstr "ok"
 
 #: src/ui/agents.rs src/ui/history.rs src/ui/settings/terminal.rs
 msgid "on this computer"
@@ -3205,213 +3209,213 @@ msgstr "neste computador"
 
 #: src/ui/agents.rs
 msgid "open in sql tab"
-msgstr ""
+msgstr "abrir na aba sql"
 
 #: src/ui/agents.rs
 msgid "refused"
-msgstr ""
+msgstr "recusada"
 
 #: src/ui/agents.rs
 msgid "result"
-msgstr ""
+msgstr "resultado"
 
 #: src/ui/agents.rs
 #, rust-format
 msgid "result {result}"
-msgstr ""
+msgstr "resultado {result}"
 
 #: src/ui/agents.rs
 msgid "rows themselves are not logged"
-msgstr ""
+msgstr "as linhas em si não são registradas no log"
 
 #: src/ui/agents.rs
 #, rust-format
 msgid "runs as {environment}"
-msgstr ""
+msgstr "executa como {environment}"
 
 #: src/ui/agents.rs src/ui/start.rs
 msgid "search"
-msgstr ""
+msgstr "pesquisar"
 
 #: src/ui/agents.rs
 #, rust-format
 msgid "search “{text}”"
-msgstr ""
+msgstr "pesquisar “{text}”"
 
 #: src/ui/agents.rs src/ui/workspace.rs
 msgid "stop session"
-msgstr ""
+msgstr "encerrar sessão"
 
 #: src/ui/agents.rs
 msgid "stopped"
-msgstr ""
+msgstr "interrompida"
 
 #: src/ui/agents.rs src/ui/workspace.rs
 msgid "this connection"
-msgstr ""
+msgstr "esta conexão"
 
 #: src/ui/agents.rs
 msgid "timed out"
-msgstr ""
+msgstr "tempo esgotado"
 
 #: src/ui/agents.rs
 #, rust-format
 msgid "{agent} on {connection}"
-msgstr ""
+msgstr "{agent} em {connection}"
 
 #: src/ui/agents.rs
 #, rust-format
 msgid "{key} shows"
-msgstr ""
+msgstr "{key} mostra"
 
 #: src/ui/agents.rs
 #, rust-format
 msgid "{key} shows this tab"
-msgstr ""
+msgstr "{key} mostra esta aba"
 
 #: src/ui/agents.rs
 #, rust-format
 msgid "{n} agent here"
 msgid_plural "{n} agents here"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "{n} agente aqui"
+msgstr[1] "{n} agentes aqui"
 
 #: src/ui/agents.rs
 #, rust-format
 msgid "{n} call"
 msgid_plural "{n} calls"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "{n} chamada"
+msgstr[1] "{n} chamadas"
 
 #: src/ui/agents.rs
 #, rust-format
 msgid "{n} call matches"
 msgid_plural "{n} calls match"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "{n} chamada corresponde"
+msgstr[1] "{n} chamadas correspondem"
 
 #: src/ui/agents.rs src/ui/data_view.rs
 #, rust-format
 msgid "{n} column"
 msgid_plural "{n} columns"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "{n} coluna"
+msgstr[1] "{n} colunas"
 
 #: src/ui/agents.rs
 #, rust-format
 msgid "{n} connection"
 msgid_plural "{n} connections"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "{n} conexão"
+msgstr[1] "{n} conexões"
 
 #: src/ui/agents.rs
 #, rust-format
 msgid "{n} table"
 msgid_plural "{n} tables"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "{n} tabela"
+msgstr[1] "{n} tabelas"
 
 #: src/ui/agents.rs
 #, rust-format
 msgid "{n} table described"
 msgid_plural "{n} tables described"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "{n} tabela descrita"
+msgstr[1] "{n} tabelas descritas"
 
 #: src/ui/agents.rs
 #, rust-format
 msgid "{what} returned"
-msgstr ""
+msgstr "retornou {what}"
 
 #: src/ui/calendar.rs src/ui/filter_bar.rs
 msgid "Apply"
-msgstr ""
+msgstr "Aplicar"
 
 #: src/ui/calendar.rs
 msgid "Fraction of a second"
-msgstr ""
+msgstr "Fração de segundo"
 
 #: src/ui/calendar.rs
 msgid "Hour"
-msgstr ""
+msgstr "Hora"
 
 #: src/ui/calendar.rs
 msgid "Infinity"
-msgstr ""
+msgstr "Infinito"
 
 #: src/ui/calendar.rs
 msgid "Minus infinity"
-msgstr ""
+msgstr "Menos infinito"
 
 #: src/ui/calendar.rs
 msgid "Minute"
-msgstr ""
+msgstr "Minuto"
 
 #: src/ui/calendar.rs
 msgid "Next month"
-msgstr ""
+msgstr "Próximo mês"
 
 #: src/ui/calendar.rs
 msgid "No date comes earlier"
-msgstr ""
+msgstr "Não há data anterior"
 
 #: src/ui/calendar.rs
 msgid "No date comes later"
-msgstr ""
+msgstr "Não há data posterior"
 
 #: src/ui/calendar.rs
 msgid "Now"
-msgstr ""
+msgstr "Agora"
 
 #: src/ui/calendar.rs
 msgid "Previous month"
-msgstr ""
+msgstr "Mês anterior"
 
 #: src/ui/calendar.rs
 msgid "Second"
-msgstr ""
+msgstr "Segundo"
 
 #: src/ui/calendar.rs src/ui/history.rs
 msgid "Today"
-msgstr ""
+msgstr "Hoje"
 
 #: src/ui/calendar.rs
 msgid "current value"
-msgstr ""
+msgstr "valor atual"
 
 #: src/ui/calendar.rs src/ui/date_line.rs
 msgid "no zone"
-msgstr ""
+msgstr "sem fuso"
 
 #: src/ui/calendar.rs
 msgid "the server's zone"
-msgstr ""
+msgstr "o fuso do servidor"
 
 #: src/ui/calendar.rs src/ui/date_line.rs
 msgid "time"
-msgstr ""
+msgstr "hora"
 
 #: src/ui/calendar.rs src/ui/date_line.rs
 msgid "today"
-msgstr ""
+msgstr "hoje"
 
 #. Translators: the calendar's heading: "January 2026".
 #: src/ui/calendar.rs
 #, rust-format
 msgctxt "calendar"
 msgid "{month} {year}"
-msgstr ""
+msgstr "{month} de {year}"
 
 #. Translators: a calendar's day as a screen reader says it.
 #: src/ui/calendar.rs
 #, rust-format
 msgctxt "calendar"
 msgid "{weekday} {day} {month} {year}"
-msgstr ""
+msgstr "{weekday}, {day} de {month} de {year}"
 
 #: src/ui/cancel_export.rs
 msgid "Cancel export"
-msgstr ""
+msgstr "Cancelar exportação"
 
 #: src/ui/cancel_export.rs src/ui/copy_as.rs src/ui/help.rs
 #: src/ui/quick_open.rs src/ui/review.rs src/ui/settings/terminal.rs
@@ -3421,157 +3425,157 @@ msgstr "fechar"
 
 #: src/ui/cancel_export.rs src/ui/copy_as.rs
 msgid "one key picks"
-msgstr ""
+msgstr "uma tecla escolhe"
 
 #: src/ui/cancel_export.rs
 #, rust-format
 msgid "{n} running"
-msgstr ""
+msgstr "{n} em andamento"
 
 #: src/ui/cell_editor.rs
 msgid "A save is running"
-msgstr ""
+msgstr "Um salvamento está em andamento"
 
 #: src/ui/cell_editor.rs src/ui/data_view.rs src/ui/row_panel.rs
 msgid "Assigned by the database on save"
-msgstr ""
+msgstr "Atribuído pelo banco de dados ao salvar"
 
 #: src/ui/cell_editor.rs
 #, rust-format
 msgid "At most {n} character"
 msgid_plural "At most {n} characters"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "No máximo {n} caractere"
+msgstr[1] "No máximo {n} caracteres"
 
 #: src/ui/cell_editor.rs
 #, rust-format
 msgid "At most {n} digit before the point"
 msgid_plural "At most {n} digits before the point"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "No máximo {n} dígito antes do ponto decimal"
+msgstr[1] "No máximo {n} dígitos antes do ponto decimal"
 
 #: src/ui/cell_editor.rs
 msgid "Binary values cannot be edited yet"
-msgstr ""
+msgstr "Valores binários ainda não podem ser editados"
 
 #: src/ui/cell_editor.rs
 msgid "Computed by the database"
-msgstr ""
+msgstr "Calculado pelo banco de dados"
 
 #: src/ui/cell_editor.rs
 msgid "No decimals."
-msgstr ""
+msgstr "Sem casas decimais."
 
 #: src/ui/cell_editor.rs
 #, rust-format
 msgid "Not one of: {values}"
-msgstr ""
+msgstr "Não é um destes: {values}"
 
 #: src/ui/cell_editor.rs
 msgid "Over 256 KiB: values this large cannot be edited yet"
-msgstr ""
+msgstr "Acima de 256 KiB: valores tão grandes ainda não podem ser editados"
 
 #: src/ui/cell_editor.rs
 msgid "Part of the row's key"
-msgstr ""
+msgstr "Parte da chave da linha"
 
 #: src/ui/cell_editor.rs src/ui/row_panel.rs
 msgid "Read-only connection"
-msgstr ""
+msgstr "Conexão somente leitura"
 
 #: src/ui/cell_editor.rs
 msgid "Restore the row to edit it."
-msgstr ""
+msgstr "Restaure a linha para editá-la."
 
 #: src/ui/cell_editor.rs
 #, rust-format
 msgid "Search {table} for {column}"
-msgstr ""
+msgstr "Pesquisar {column} em {table}"
 
 #: src/ui/cell_editor.rs
 msgid "Select fewer rows, or delete in the SQL editor."
-msgstr ""
+msgstr "Selecione menos linhas ou exclua no editor SQL."
 
 #: src/ui/cell_editor.rs
 msgid "The page is loading"
-msgstr ""
+msgstr "A página está carregando"
 
 #: src/ui/cell_editor.rs
 msgid "The table's structure is still loading"
-msgstr ""
+msgstr "A estrutura da tabela ainda está carregando"
 
 #: src/ui/cell_editor.rs
 msgid "The time of the save, by the database's clock"
-msgstr ""
+msgstr "A hora do salvamento, pelo relógio do banco de dados"
 
 #: src/ui/cell_editor.rs
 msgid "This column cannot be NULL"
-msgstr ""
+msgstr "Esta coluna não pode ser NULL"
 
 #: src/ui/cell_editor.rs
 msgid "This column cannot be told apart in the table"
-msgstr ""
+msgstr "Esta coluna não pode ser distinguida na tabela"
 
 #: src/ui/cell_editor.rs src/ui/pending_bar.rs src/ui/sql_results.rs
 msgid "This connection opens read-only"
-msgstr ""
+msgstr "Esta conexão abre em modo somente leitura"
 
 #: src/ui/cell_editor.rs
 msgid "This row no longer exists on the server"
-msgstr ""
+msgstr "Esta linha não existe mais no servidor"
 
 #: src/ui/cell_editor.rs
 msgid "This row's key holds text that was not read exactly"
-msgstr ""
+msgstr "A chave desta linha contém texto que não foi lido com exatidão"
 
 #: src/ui/cell_editor.rs
 msgid "This row's key is NULL"
-msgstr ""
+msgstr "A chave desta linha é NULL"
 
 #: src/ui/cell_editor.rs
 #, rust-format
 msgid "Up to {n} decimal."
 msgid_plural "Up to {n} decimals."
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "Até {n} casa decimal."
+msgstr[1] "Até {n} casas decimais."
 
 #: src/ui/cell_editor.rs
 msgid "Valid JSON"
-msgstr ""
+msgstr "JSON válido"
 
 #: src/ui/cell_editor.rs
 msgid "Values over 256 KiB cannot be edited yet"
-msgstr ""
+msgstr "Valores acima de 256 KiB ainda não podem ser editados"
 
 #: src/ui/cell_editor.rs
 msgid "Views cannot be edited"
-msgstr ""
+msgstr "Views não podem ser editadas"
 
 #: src/ui/cell_editor.rs
 msgid "Whole hundreds only."
-msgstr ""
+msgstr "Somente centenas inteiras."
 
 #: src/ui/cell_editor.rs
 #, rust-format
 msgid "Whole multiples of {power} only."
-msgstr ""
+msgstr "Somente múltiplos inteiros de {power}."
 
 #: src/ui/cell_editor.rs
 msgid "Whole tens only."
-msgstr ""
+msgstr "Somente dezenas inteiras."
 
 #: src/ui/cell_editor.rs
 msgid "Whole thousands only."
-msgstr ""
+msgstr "Somente milhares inteiros."
 
 #: src/ui/cell_editor.rs
 #, rust-format
 msgid "Would be stored as {stored}"
-msgstr ""
+msgstr "Seria armazenado como {stored}"
 
 #: src/ui/cell_editor.rs
 msgid "apply"
-msgstr ""
+msgstr "aplicar"
 
 #: src/ui/cell_editor.rs src/ui/connect_dialog/terminal.rs src/ui/export.rs
 #: src/ui/settings/keyboard_terminal.rs src/ui/settings/terminal.rs
@@ -3586,165 +3590,170 @@ msgstr "manter"
 
 #: src/ui/cell_editor.rs
 msgid "now"
-msgstr ""
+msgstr "agora"
 
 #: src/ui/cell_editor.rs
 #, rust-format
 msgid "{message} at {line}:{column}"
-msgstr ""
+msgstr "{message} em {line}:{column}"
 
 #: src/ui/cell_editor.rs src/ui/row_panel.rs
 #, rust-format
 msgid "{n} char"
 msgid_plural "{n} chars"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "{n} caractere"
+msgstr[1] "{n} caracteres"
 
 #: src/ui/cell_editor.rs src/ui/ddl.rs
 #, rust-format
 msgid "{n} line"
 msgid_plural "{n} lines"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "{n} linha"
+msgstr[1] "{n} linhas"
 
 #: src/ui/cell_editor.rs
 #, rust-format
 msgid "{table} can't be deleted from"
-msgstr ""
+msgstr "Não é possível excluir linhas de {table}"
 
 #: src/ui/cell_editor.rs
 #, rust-format
 msgid ""
 "{table} has no primary key or unique index, so a row can't be targeted safely"
 msgstr ""
+"{table} não tem chave primária nem índice único, então não é possível "
+"apontar uma linha com segurança"
 
 #: src/ui/cell_editor.rs
 #, rust-format
 msgid "{table} has no primary key, so rows can't be deleted here"
 msgstr ""
+"{table} não tem chave primária, então as linhas não podem ser excluídas aqui"
 
 #: src/ui/cell_editor.rs
 #, rust-format
 msgid ""
 "{table}'s key cannot be matched exactly, so a row can't be targeted safely"
 msgstr ""
+"A chave de {table} não pode ser comparada com exatidão, então não é possível "
+"apontar uma linha com segurança"
 
 #: src/ui/cell_editor.rs
 #, rust-format
 msgid "{typed} would be stored as {stored}"
-msgstr ""
+msgstr "{typed} seria armazenado como {stored}"
 
 #: src/ui/cell_editor.rs
 #, rust-format
 msgid "{type} expects a number"
-msgstr ""
+msgstr "{type} espera um número"
 
 #: src/ui/cell_editor.rs
 #, rust-format
 msgid "{type} expects a whole number"
-msgstr ""
+msgstr "{type} espera um número inteiro"
 
 #: src/ui/cell_editor.rs
 #, rust-format
 msgid "{type} expects true or false"
-msgstr ""
+msgstr "{type} espera true ou false"
 
 #: src/ui/cell_editor.rs
 #, rust-format
 msgid "{type} holds values between -{limit} and {limit}"
-msgstr ""
+msgstr "{type} aceita valores entre -{limit} e {limit}"
 
 #: src/ui/cell_editor.rs
 #, rust-format
 msgid "{type} holds {min} to {max}"
-msgstr ""
+msgstr "{type} aceita de {min} a {max}"
 
 #: src/ui/conflict_prompt.rs
 msgid "Keep mine, reload row"
-msgstr ""
+msgstr "Manter os meus, recarregar a linha"
 
 #: src/ui/conflict_prompt.rs
 #, rust-format
 msgid "Row {row} changed on the server"
-msgstr ""
+msgstr "A linha {row} mudou no servidor"
 
 #: src/ui/conflict_prompt.rs
 #, rust-format
 msgid "Row {row} no longer exists on the server"
-msgstr ""
+msgstr "A linha {row} não existe mais no servidor"
 
 #: src/ui/conflict_prompt.rs
 msgid "Someone deleted it after you loaded it. Nothing was written."
-msgstr ""
+msgstr "Alguém a excluiu depois que você a carregou. Nada foi gravado."
 
 #: src/ui/conflict_prompt.rs
 msgid "Someone saved it after you loaded it. Nothing was written."
-msgstr ""
+msgstr "Alguém a salvou depois que você a carregou. Nada foi gravado."
 
 #: src/ui/conflict_prompt.rs
 msgid "Use server values"
-msgstr ""
+msgstr "Usar os valores do servidor"
 
 #: src/ui/conflict_prompt.rs
 msgid "changed on the server"
-msgstr ""
+msgstr "alterada no servidor"
 
 #: src/ui/conflict_prompt.rs src/ui/workspace.rs
 msgid "conflict"
-msgstr ""
+msgstr "conflito"
 
 #: src/ui/conflict_prompt.rs
 msgid "discard my changes"
-msgstr ""
+msgstr "descartar minhas alterações"
 
 #: src/ui/conflict_prompt.rs
 msgid "keep mine, reload"
-msgstr ""
+msgstr "manter os meus, recarregar"
 
 #: src/ui/conflict_prompt.rs
 msgid "loaded"
-msgstr ""
+msgstr "carregado"
 
 #: src/ui/conflict_prompt.rs
 msgid "now on server"
-msgstr ""
+msgstr "agora no servidor"
 
 #: src/ui/conflict_prompt.rs
 msgid "overwrite"
-msgstr ""
+msgstr "sobrescrever"
 
 #: src/ui/conflict_prompt.rs
 msgid "scroll"
-msgstr ""
+msgstr "rolar"
 
 #: src/ui/conflict_prompt.rs
 msgid "server"
-msgstr ""
+msgstr "servidor"
 
 #: src/ui/conflict_prompt.rs
 msgid "use server"
-msgstr ""
+msgstr "usar o servidor"
 
 #: src/ui/conflict_prompt.rs
 msgid "yours"
-msgstr ""
+msgstr "seu"
 
 #: src/ui/conflict_prompt.rs
 #, rust-format
 msgid "{at} of {count}"
-msgstr ""
+msgstr "{at} de {count}"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Access through Tabletist (MCP)"
-msgstr ""
+msgstr "Acesso pelo Tabletist (MCP)"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Add column…"
-msgstr ""
+msgstr "Adicionar coluna…"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Add table…"
-msgstr ""
+msgstr "Adicionar tabela…"
 
 #: src/ui/connect_dialog/agents.rs
 msgid ""
@@ -3752,22 +3761,31 @@ msgid ""
 "and the views over them. A function from an extension can still read them. "
 "For strict isolation, use a database user without access."
 msgstr ""
+"Os agentes recebem estes nomes, nunca o que há neles: as linhas, as colunas "
+"e as views sobre elas. Uma função de uma extensão ainda pode lê-las. Para um "
+"isolamento rigoroso, use um usuário do banco de dados sem acesso."
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Agents can query the files, never change them."
-msgstr ""
+msgstr "Os agentes podem consultar os arquivos, nunca alterá-los."
 
 #: src/ui/connect_dialog/agents.rs
 msgid ""
 "Agents may not use this connection while a hidden table is not in its "
 "database. Take the name out, or add the table's new name."
 msgstr ""
+"Os agentes não podem usar esta conexão enquanto uma tabela oculta não "
+"estiver no banco de dados dela. Retire o nome ou adicione o novo nome da "
+"tabela."
 
 #: src/ui/connect_dialog/agents.rs
 msgid ""
 "Agents may not use this connection while a masked column is not in its "
 "database. Take the name out, or add the column's new name."
 msgstr ""
+"Os agentes não podem usar esta conexão enquanto uma coluna mascarada não "
+"estiver no banco de dados dela. Retire o nome ou adicione o novo nome da "
+"coluna."
 
 #: src/ui/connect_dialog/agents.rs
 msgid ""
@@ -3775,6 +3793,9 @@ msgid ""
 "function from an extension can still read the others. For strict isolation, "
 "use a database user without access."
 msgstr ""
+"Os agentes podem ler estas tabelas e nenhuma outra, inclusive as criadas "
+"depois. Uma função de uma extensão ainda pode ler as outras. Para um "
+"isolamento rigoroso, use um usuário do banco de dados sem acesso."
 
 #: src/ui/connect_dialog/agents.rs
 msgid ""
@@ -3782,11 +3803,14 @@ msgid ""
 "joins, sorts or computes with one is refused, in any table with a column of "
 "that name."
 msgstr ""
+"Os agentes veem o nome e o tipo; os valores voltam como •••. Uma consulta "
+"que filtra, faz join, ordena ou calcula com uma delas é recusada, em "
+"qualquer tabela com uma coluna desse nome."
 
 #: src/ui/connect_dialog/agents.rs
 #, rust-format
 msgid "Agents use this connection as {env}."
-msgstr ""
+msgstr "Os agentes usam esta conexão como {env}."
 
 #: src/ui/connect_dialog/agents.rs src/ui/export.rs
 #: src/ui/settings/keyboard_sheet.rs
@@ -3795,299 +3819,307 @@ msgstr "Todas"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "All except"
-msgstr ""
+msgstr "Todas exceto"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Column to mask"
-msgstr ""
+msgstr "Coluna a mascarar"
 
 #: src/ui/connect_dialog/agents.rs
 #, rust-format
 msgid "Columns of {table}"
-msgstr ""
+msgstr "Colunas de {table}"
 
 #: src/ui/connect_dialog/agents.rs
 #, rust-format
 msgid "Loading the columns of {table}…"
-msgstr ""
+msgstr "Carregando as colunas de {table}…"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Masked columns"
-msgstr ""
+msgstr "Colunas mascaradas"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Off · agents can't reach this connection"
-msgstr ""
+msgstr "Desativado · os agentes não alcançam esta conexão"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Only"
-msgstr ""
+msgstr "Somente"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Read · agents can query the files, never change them"
-msgstr ""
+msgstr "Leitura · os agentes podem consultar os arquivos, nunca alterá-los"
 
 #: src/ui/connect_dialog/agents.rs
 #, rust-format
 msgid "Remove {name}"
-msgstr ""
+msgstr "Remover {name}"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Rows per answer"
-msgstr ""
+msgstr "Linhas por resposta"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Statement timeout, seconds"
-msgstr ""
+msgstr "Tempo limite da instrução, em segundos"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Table to add"
-msgstr ""
+msgstr "Tabela a adicionar"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Tables loaded in the sidebar"
-msgstr ""
+msgstr "Tabelas carregadas na barra lateral"
 
 #: src/ui/connect_dialog/agents.rs
 #, rust-format
 msgid "The column's name {why}."
-msgstr ""
+msgstr "O nome da coluna não serve: {why}."
 
 #: src/ui/connect_dialog/agents.rs
 #, rust-format
 msgid "The columns of {table} could not be read"
-msgstr ""
+msgstr "Não foi possível ler as colunas de {table}"
 
 #: src/ui/connect_dialog/agents.rs
 #, rust-format
 msgid "The table's name {why}."
-msgstr ""
+msgstr "O nome da tabela não serve: {why}."
 
 #: src/ui/connect_dialog/agents.rs
 msgid "Timeout, seconds"
-msgstr ""
+msgstr "Tempo limite, em segundos"
 
 #: src/ui/connect_dialog/agents.rs
 msgid ""
 "When Open read-only is on, agents get Read at most. A new connection starts "
 "with agents Off, a Files one with Read."
 msgstr ""
+"Quando Abrir em somente leitura está ativado, os agentes recebem no máximo "
+"Leitura. Uma conexão nova começa com os agentes em Desativado, e uma de "
+"arquivos em Leitura."
 
 #: src/ui/connect_dialog/agents.rs
 msgid "not in this database"
-msgstr ""
+msgstr "não está neste banco de dados"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "table, or schema.table"
-msgstr ""
+msgstr "tabela ou esquema.tabela"
 
 #: src/ui/connect_dialog/agents.rs
 msgid "table.column"
-msgstr ""
+msgstr "tabela.coluna"
 
 #: src/ui/connect_dialog/files.rs
 msgid "Add files"
-msgstr ""
+msgstr "Adicionar arquivos"
 
 #: src/ui/connect_dialog/files.rs
 msgid "Add files…"
-msgstr ""
+msgstr "Adicionar arquivos…"
 
 #: src/ui/connect_dialog/files.rs
 msgid "Choose a folder"
-msgstr ""
+msgstr "Escolher uma pasta"
 
 #: src/ui/connect_dialog/files.rs src/ui/connect_dialog/mod.rs
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Choose…"
-msgstr ""
+msgstr "Escolher…"
 
 #: src/ui/connect_dialog/files.rs
 msgid ""
 "Every CSV, Parquet, JSON, NDJSON, Excel and .duckdb file in the folder "
 "becomes a table. Files added later show up on the next open."
 msgstr ""
+"Todo arquivo CSV, Parquet, JSON, NDJSON, Excel e .duckdb da pasta vira uma "
+"tabela. Arquivos adicionados depois aparecem na próxima abertura."
 
 #: src/ui/connect_dialog/files.rs
 msgid "Kind"
-msgstr ""
+msgstr "Tipo"
 
 #: src/ui/connect_dialog/files.rs
 msgid "No folder chosen"
-msgstr ""
+msgstr "Nenhuma pasta escolhida"
 
 #: src/ui/connect_dialog/files.rs
 msgid "Skipped files are left out."
-msgstr ""
+msgstr "Os arquivos ignorados ficam de fora."
 
 #: src/ui/connect_dialog/files.rs src/ui/connect_dialog/sheet.rs
 #: src/ui/history.rs
 msgid "Source"
-msgstr ""
+msgstr "Origem"
 
 #: src/ui/connect_dialog/files.rs
 msgid "This folder isn't there any more. Choose it again, or pick another."
-msgstr ""
+msgstr "Esta pasta não existe mais. Escolha-a de novo ou escolha outra."
 
 #: src/ui/connect_dialog/files.rs
 #, rust-format
 msgid "none · {key} adds files"
-msgstr ""
+msgstr "nenhum · {key} adiciona arquivos"
 
 #: src/ui/connect_dialog/files.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/export.rs src/ui/quick_open.rs
 msgid "pick"
-msgstr ""
+msgstr "escolher"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Changes the fields below"
-msgstr ""
+msgstr "Altera os campos abaixo"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Choose a CA certificate"
-msgstr ""
+msgstr "Escolher um certificado de CA"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Choose a database file"
-msgstr ""
+msgstr "Escolher um arquivo de banco de dados"
 
 #: src/ui/connect_dialog/mod.rs src/ui/workspace.rs
 msgid "Connected"
-msgstr ""
+msgstr "Conectado"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Files connections have no URL. Choose a folder or files under Source."
 msgstr ""
+"Conexões de arquivos não têm URL. Escolha uma pasta ou arquivos em Origem."
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Files open read-only."
-msgstr ""
+msgstr "Os arquivos abrem em somente leitura."
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Hosts from ~/.ssh/config"
-msgstr ""
+msgstr "Hosts do ~/.ssh/config"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Keychain"
-msgstr ""
+msgstr "Acesso às Chaves"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Keychain for the SSH secret"
-msgstr ""
+msgstr "Acesso às Chaves para o segredo SSH"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Keyring"
-msgstr ""
+msgstr "Chaveiro"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Keyring for the SSH secret"
-msgstr ""
+msgstr "Chaveiro para o segredo SSH"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "None (not checked)"
-msgstr ""
+msgstr "Nenhum (não verificado)"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Not used"
-msgstr ""
+msgstr "Não usado"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "One database file on this computer"
-msgstr ""
+msgstr "Um arquivo de banco de dados neste computador"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Opens CSV, Parquet, JSON, Excel and .duckdb files as tables"
-msgstr ""
+msgstr "Abre arquivos CSV, Parquet, JSON, Excel e .duckdb como tabelas"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Passphrase"
-msgstr ""
+msgstr "Frase secreta"
 
 #: src/ui/connect_dialog/mod.rs
 #, rust-format
 msgid "Read {n} file · {size}"
 msgid_plural "Read {n} files · {size}"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "{n} arquivo lido · {size}"
+msgstr[1] "{n} arquivos lidos · {size}"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Required"
-msgstr ""
+msgstr "Obrigatório"
 
 #: src/ui/connect_dialog/mod.rs src/ui/picker.rs
 msgid "SSH password"
-msgstr ""
+msgstr "Senha SSH"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Saved in the keychain"
-msgstr ""
+msgstr "Salvo no Acesso às Chaves"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Saved in the keyring"
-msgstr ""
+msgstr "Salvo no chaveiro"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "System certificates"
-msgstr ""
+msgstr "Certificados do sistema"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Testing…"
-msgstr ""
+msgstr "Testando…"
 
 #: src/ui/connect_dialog/mod.rs
 msgid ""
 "The password can be intercepted on the network. To prevent it, verify the "
 "certificate and host, or use an SSH tunnel."
 msgstr ""
+"A senha pode ser interceptada na rede. Para evitar isso, verifique o "
+"certificado e o host ou use um túnel SSH."
 
 #: src/ui/connect_dialog/mod.rs
 #, rust-format
 msgid "Through ProxyJump {hops} from ~/.ssh/config"
-msgstr ""
+msgstr "Via ProxyJump {hops} do ~/.ssh/config"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Through a ProxyCommand from ~/.ssh/config"
-msgstr ""
+msgstr "Via um ProxyCommand do ~/.ssh/config"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Trust and test"
-msgstr ""
+msgstr "Confiar e testar"
 
 #: src/ui/connect_dialog/mod.rs
 #, rust-format
 msgid "Unknown SSH host key for {host}: {fingerprint}"
-msgstr ""
+msgstr "Chave de host SSH desconhecida para {host}: {fingerprint}"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "from ~/.ssh/config"
-msgstr ""
+msgstr "do ~/.ssh/config"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "opens"
-msgstr ""
+msgstr "abre"
 
 #: src/ui/connect_dialog/mod.rs
 #, rust-format
 msgid "{name} from ~/.ssh/config"
-msgstr ""
+msgstr "{name} do ~/.ssh/config"
 
 #: src/ui/connect_dialog/mod.rs
 #, rust-format
 msgid "{name} through ProxyJump {hops} from ~/.ssh/config"
-msgstr ""
+msgstr "{name} via ProxyJump {hops} do ~/.ssh/config"
 
 #: src/ui/connect_dialog/mod.rs
 #, rust-format
 msgid "{name} through a ProxyCommand from ~/.ssh/config"
-msgstr ""
+msgstr "{name} via um ProxyCommand do ~/.ssh/config"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "All rows"
-msgstr ""
+msgstr "Todas as linhas"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "All text"
-msgstr ""
+msgstr "Todo o texto"
 
 #: src/ui/connect_dialog/reading.rs src/ui/settings/mod.rs
 msgid "Column types"
@@ -4095,63 +4127,63 @@ msgstr "Tipos de coluna"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Defaults for every CSV"
-msgstr ""
+msgstr "Padrões para todo CSV"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Defaults for every CSV in this connection"
-msgstr ""
+msgstr "Padrões para todo CSV desta conexão"
 
 #: src/ui/connect_dialog/reading.rs src/ui/export.rs
 msgid "Delimiter"
-msgstr ""
+msgstr "Delimitador"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Detect"
-msgstr ""
+msgstr "Detectar"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Detect from all rows (slower)"
-msgstr ""
+msgstr "Detectar em todas as linhas (mais lento)"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Detect from the first 20,000 rows"
-msgstr ""
+msgstr "Detectar nas primeiras 20.000 linhas"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "First 20,000 rows"
-msgstr ""
+msgstr "Primeiras 20.000 linhas"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Header detect"
-msgstr ""
+msgstr "Cabeçalho: detectar"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Header no"
-msgstr ""
+msgstr "Cabeçalho: não"
 
 #: src/ui/connect_dialog/reading.rs src/ui/export.rs
 msgid "Header row"
-msgstr ""
+msgstr "Linha de cabeçalho"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Header yes"
-msgstr ""
+msgstr "Cabeçalho: sim"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "No"
-msgstr ""
+msgstr "Não"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Override"
-msgstr ""
+msgstr "Exceção"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Read everything as text"
-msgstr ""
+msgstr "Ler tudo como texto"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Reading CSV"
-msgstr ""
+msgstr "Leitura de CSV"
 
 #: src/ui/connect_dialog/reading.rs src/ui/settings/sheet.rs
 #: src/ui/settings/terminal.rs
@@ -4165,37 +4197,37 @@ msgstr "Tabulação"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Yes"
-msgstr ""
+msgstr "Sim"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "delimiter ,"
-msgstr ""
+msgstr "delimitador ,"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "delimiter ;"
-msgstr ""
+msgstr "delimitador ;"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "delimiter detect"
-msgstr ""
+msgstr "delimitador: detectar"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "delimiter tab"
-msgstr ""
+msgstr "delimitador: tabulação"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "delimiter |"
-msgstr ""
+msgstr "delimitador |"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "everything as text"
-msgstr ""
+msgstr "tudo como texto"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "override"
 msgid_plural "overrides"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "exceção"
+msgstr[1] "exceções"
 
 #: src/ui/connect_dialog/reading.rs src/ui/settings/terminal.rs
 msgid "reset"
@@ -4203,82 +4235,84 @@ msgstr "redefinir"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "skipped"
-msgstr ""
+msgstr "ignorado"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "types all rows"
-msgstr ""
+msgstr "tipos: todas as linhas"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "types first 20,000 rows"
-msgstr ""
+msgstr "tipos: primeiras 20.000 linhas"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "types from all rows"
-msgstr ""
+msgstr "tipos a partir de todas as linhas"
 
 #: src/ui/connect_dialog/reading.rs
 msgid "types from the first 20,000 rows"
-msgstr ""
+msgstr "tipos a partir das primeiras 20.000 linhas"
 
 #: src/ui/connect_dialog/reading.rs
 #, rust-format
 msgid "{column} as text"
-msgstr ""
+msgstr "{column} como texto"
 
 #: src/ui/connect_dialog/reading.rs
 #, rust-format
 msgid "{column} read as text"
-msgstr ""
+msgstr "{column} lida como texto"
 
 #: src/ui/connect_dialog/reading.rs
 #, rust-format
 msgid "{values} as empty in {column}"
-msgstr ""
+msgstr "{values} como vazio em {column}"
 
 #: src/ui/connect_dialog/reading.rs
 #, rust-format
 msgid "{values} read as empty in {column}"
-msgstr ""
+msgstr "{values} lido como vazio em {column}"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Authentication"
-msgstr ""
+msgstr "Autenticação"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "BigQuery"
-msgstr ""
+msgstr "BigQuery"
 
 #: src/ui/connect_dialog/sheet.rs
 msgid ""
 "Blocks every write from this app. On by default for production; turn off to "
 "edit."
 msgstr ""
+"Bloqueia toda gravação a partir deste app. Ativado por padrão em production; "
+"desative para editar."
 
 #: src/ui/connect_dialog/sheet.rs
 msgid "CA certificate"
-msgstr ""
+msgstr "Certificado de CA"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Choose a key file"
-msgstr ""
+msgstr "Escolher um arquivo de chave"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Connect through SSH tunnel"
-msgstr ""
+msgstr "Conectar por túnel SSH"
 
 #: src/ui/connect_dialog/sheet.rs
 msgid "Connection URL"
-msgstr ""
+msgstr "URL de conexão"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/history.rs src/ui/workspace.rs
 msgid "Database"
-msgstr ""
+msgstr "Banco de dados"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Default credentials when empty"
-msgstr ""
+msgstr "Credenciais padrão quando vazio"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/picker.rs src/ui/row_panel.rs
 #: src/ui/settings/sheet.rs
@@ -4292,190 +4326,190 @@ msgstr "Ambiente"
 
 #: src/ui/connect_dialog/sheet.rs
 msgid "Fill"
-msgstr ""
+msgstr "Preencher"
 
 #: src/ui/connect_dialog/sheet.rs
 msgid ""
 "Fills the parameters. A password in the URL moves to the password field."
-msgstr ""
+msgstr "Preenche os parâmetros. Uma senha na URL vai para o campo de senha."
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/workspace.rs
 msgid "Host"
-msgstr ""
+msgstr "Host"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/structure.rs
 msgid "Name"
-msgstr ""
+msgstr "Nome"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Open read-only"
-msgstr ""
+msgstr "Abrir em somente leitura"
 
 #: src/ui/connect_dialog/sheet.rs
 msgid "Parameters"
-msgstr ""
+msgstr "Parâmetros"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Port"
-msgstr ""
+msgstr "Porta"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "SSH host"
-msgstr ""
+msgstr "Host SSH"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "SSH port"
-msgstr ""
+msgstr "Porta SSH"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "SSH user"
-msgstr ""
+msgstr "Usuário SSH"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "SSL mode"
-msgstr ""
+msgstr "Modo SSL"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Same as the user"
-msgstr ""
+msgstr "O mesmo do usuário"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/pending_bar.rs src/ui/write_prompts.rs
 msgid "Save"
-msgstr ""
+msgstr "Salvar"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Save & Connect"
-msgstr ""
+msgstr "Salvar e conectar"
 
 #: src/ui/connect_dialog/sheet.rs
 msgid "Saved for the next connect. Off, it is asked for every time."
-msgstr ""
+msgstr "Salva para a próxima conexão. Desativado, é pedido toda vez."
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/workspace.rs
 msgid "Security"
-msgstr ""
+msgstr "Segurança"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/workspace.rs
 msgid "Server"
-msgstr ""
+msgstr "Servidor"
 
 #: src/ui/connect_dialog/sheet.rs
 msgid "Sets the connection color"
-msgstr ""
+msgstr "Define a cor da conexão"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Test"
-msgstr ""
+msgstr "Testar"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/structure.rs
 msgid "Type"
-msgstr ""
+msgstr "Tipo"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "URL"
-msgstr ""
+msgstr "URL"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/workspace.rs
 msgid "User"
-msgstr ""
+msgstr "Usuário"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "Block every write from this app"
-msgstr ""
+msgstr "Bloquear toda gravação a partir deste app"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "CA cert"
-msgstr ""
+msgstr "Certificado de CA"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "Connect through SSH"
-msgstr ""
+msgstr "Conectar por SSH"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "Default for production"
-msgstr ""
+msgstr "Padrão para production"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "Files open read-only"
-msgstr ""
+msgstr "Os arquivos abrem em somente leitura"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "Host : Port"
-msgstr ""
+msgstr "Host : Porta"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "No URL for files"
-msgstr ""
+msgstr "Sem URL para arquivos"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "Paste URL"
-msgstr ""
+msgstr "Colar URL"
 
 #: src/ui/connect_dialog/terminal.rs src/ui/ddl.rs src/ui/picker.rs
 #: src/ui/sql_editor.rs src/ui/start.rs src/ui/workspace.rs
 msgid "Read-only"
-msgstr ""
+msgstr "Somente leitura"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "SSH host : Port"
-msgstr ""
+msgstr "Host SSH : Porta"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "SSH tunnel"
-msgstr ""
+msgstr "Túnel SSH"
 
 #: src/ui/connect_dialog/terminal.rs src/ui/export.rs src/ui/structure.rs
 #: src/ui/workspace.rs
 msgid "choose"
-msgstr ""
+msgstr "selecionar"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "connect"
-msgstr ""
+msgstr "conectar"
 
 #: src/ui/connect_dialog/terminal.rs src/ui/export.rs
 msgid "next"
-msgstr ""
+msgstr "próximo"
 
 #: src/ui/connect_dialog/terminal.rs src/ui/history.rs
 msgid "save"
-msgstr ""
+msgstr "salvar"
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "test"
-msgstr ""
+msgstr "testar"
 
 #: src/ui/copy_as.rs
 msgid "Column names"
-msgstr ""
+msgstr "Nomes das colunas"
 
 #: src/ui/copy_as.rs src/ui/sql_results.rs
 msgid "Copy as"
-msgstr ""
+msgstr "Copiar como"
 
 #: src/ui/copy_as.rs
 msgid "Copy row as"
-msgstr ""
+msgstr "Copiar linha como"
 
 #: src/ui/copy_as.rs
 #, rust-format
 msgid "Copy row as {format}"
-msgstr ""
+msgstr "Copiar linha como {format}"
 
 #: src/ui/copy_as.rs
 msgid "Copy rows as TSV"
-msgstr ""
+msgstr "Copiar linhas como TSV"
 
 #: src/ui/copy_as.rs
 msgid "Export selection…"
-msgstr ""
+msgstr "Exportar seleção…"
 
 #. Translators: what joins the filters a page matches none of:
 #. "None matches title = A and price > 2.".
@@ -4486,68 +4520,68 @@ msgstr ""
 #: src/ui/data_view.rs src/ui/every_row_prompt.rs src/ui/review.rs
 msgctxt "list join"
 msgid " and "
-msgstr ""
+msgstr " e "
 
 #: src/ui/data_view.rs
 msgid "1 row selected"
-msgstr ""
+msgstr "1 linha selecionada"
 
 #: src/ui/data_view.rs
 msgid "A save needs a value here"
-msgstr ""
+msgstr "Para salvar, é preciso um valor aqui"
 
 #: src/ui/data_view.rs
 msgid "Add filter"
-msgstr ""
+msgstr "Adicionar filtro"
 
 #: src/ui/data_view.rs src/ui/sql_results.rs
 msgid "Cancel query"
-msgstr ""
+msgstr "Cancelar consulta"
 
 #: src/ui/data_view.rs
 msgid "Checked before saving"
-msgstr ""
+msgstr "Verificado antes de salvar"
 
 #: src/ui/data_view.rs
 msgid "Clear filters"
-msgstr ""
+msgstr "Limpar filtros"
 
 #: src/ui/data_view.rs
 msgid "Clear sort"
-msgstr ""
+msgstr "Limpar ordenação"
 
 #: src/ui/data_view.rs
 #, rust-format
 msgid "Columns {first}–{last} of {total}"
-msgstr ""
+msgstr "Colunas {first}–{last} de {total}"
 
 #: src/ui/data_view.rs src/ui/workspace.rs
 msgid "Copy details"
-msgstr ""
+msgstr "Copiar detalhes"
 
 #: src/ui/data_view.rs
 msgid "Count"
-msgstr ""
+msgstr "Contar"
 
 #: src/ui/data_view.rs src/ui/export.rs
 msgid "Count the rows exactly"
-msgstr ""
+msgstr "Contar as linhas com exatidão"
 
 #: src/ui/data_view.rs src/ui/export.rs
 msgid "Counting…"
-msgstr ""
+msgstr "Contando…"
 
 #: src/ui/data_view.rs src/ui/sidebar.rs
 msgid "DDL"
-msgstr ""
+msgstr "DDL"
 
 #: src/ui/data_view.rs src/ui/ddl.rs src/ui/sql_results.rs
 msgid "Detail"
-msgstr ""
+msgstr "Detalhe"
 
 #: src/ui/data_view.rs
 msgid "Filtered"
-msgstr ""
+msgstr "Filtrado"
 
 #: src/ui/data_view.rs src/ui/settings/sheet.rs
 msgid "Full precision"
@@ -4555,106 +4589,107 @@ msgstr "Precisão total"
 
 #: src/ui/data_view.rs src/ui/ddl.rs src/ui/sql_results.rs
 msgid "Hint"
-msgstr ""
+msgstr "Dica"
 
 #: src/ui/data_view.rs
 msgid "It returned no rows."
-msgstr ""
+msgstr "A consulta não retornou linhas."
 
 #: src/ui/data_view.rs src/ui/row_panel.rs
 msgid "New row"
-msgstr ""
+msgstr "Nova linha"
 
 #: src/ui/data_view.rs
 #, rust-format
 msgid "No more rows in {table}"
-msgstr ""
+msgstr "Não há mais linhas em {table}"
 
 #: src/ui/data_view.rs src/ui/sql_results.rs
 msgid "No rows"
-msgstr ""
+msgstr "Nenhuma linha"
 
 #: src/ui/data_view.rs
 #, rust-format
 msgid "No rows in {table}"
-msgstr ""
+msgstr "Nenhuma linha em {table}"
 
 #: src/ui/data_view.rs
 msgid "No rows match the filter"
-msgstr ""
+msgstr "Nenhuma linha corresponde ao filtro"
 
 #: src/ui/data_view.rs
 #, rust-format
 msgid "No rows match {n} filter"
 msgid_plural "No rows match {n} filters"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "Nenhuma linha corresponde a {n} filtro"
+msgstr[1] "Nenhuma linha corresponde aos {n} filtros"
 
 #: src/ui/data_view.rs
 #, rust-format
 msgid "None matches {filters}."
-msgstr ""
+msgstr "Nenhuma corresponde a {filters}."
 
 #: src/ui/data_view.rs
 #, rust-format
 msgid "Query {elapsed}"
-msgstr ""
+msgstr "Consulta: {elapsed}"
 
 #: src/ui/data_view.rs
 msgid "Remove filter"
-msgstr ""
+msgstr "Remover filtro"
 
 #: src/ui/data_view.rs
 msgid "Remove last filter"
-msgstr ""
+msgstr "Remover o último filtro"
 
 #: src/ui/data_view.rs src/ui/sidebar.rs src/ui/workspace.rs
 msgid "Retry"
-msgstr ""
+msgstr "Tentar novamente"
 
 #: src/ui/data_view.rs
 #, rust-format
 msgid "Row {row} marked for deletion. {n} to delete."
 msgid_plural "Row {row} marked for deletion. {n} to delete."
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "Linha {row} marcada para exclusão. {n} a excluir."
+msgstr[1] "Linha {row} marcada para exclusão. {n} a excluir."
 
 #: src/ui/data_view.rs
 #, rust-format
 msgid "Row {row} restored."
-msgstr ""
+msgstr "Linha {row} restaurada."
 
 #: src/ui/data_view.rs
 msgid "Running query…"
-msgstr ""
+msgstr "Executando a consulta…"
 
 #: src/ui/data_view.rs
 msgid "Sort"
-msgstr ""
+msgstr "Ordenação"
 
 #: src/ui/data_view.rs src/ui/sidebar.rs
 msgid "Structure"
-msgstr ""
+msgstr "Estrutura"
 
 #: src/ui/data_view.rs
 msgid "The table exists and is empty."
-msgstr ""
+msgstr "A tabela existe e está vazia."
 
 #: src/ui/data_view.rs
 msgid "This object has no primary key, so rows may move between pages."
 msgstr ""
+"Este objeto não tem chave primária, então as linhas podem mudar de página."
 
 #: src/ui/data_view.rs
 msgid "This page is past the last row."
-msgstr ""
+msgstr "Esta página está depois da última linha."
 
 #: src/ui/data_view.rs
 msgid "Timestamps shown in full"
-msgstr ""
+msgstr "Carimbos de data/hora mostrados por completo"
 
 #: src/ui/data_view.rs
 msgid "Timestamps shown to the second"
-msgstr ""
+msgstr "Carimbos de data/hora mostrados até os segundos"
 
 #: src/ui/data_view.rs src/ui/settings/sheet.rs
 msgid "To the second"
@@ -4662,43 +4697,43 @@ msgstr "Até os segundos"
 
 #: src/ui/data_view.rs
 msgid "Unordered"
-msgstr ""
+msgstr "Sem ordem"
 
 #: src/ui/data_view.rs
 #, rust-format
 msgid "Visual. {selection}."
-msgstr ""
+msgstr "Modo visual. {selection}."
 
 #: src/ui/data_view.rs
 msgid "Waiting for server"
-msgstr ""
+msgstr "Aguardando o servidor"
 
 #: src/ui/data_view.rs
 msgid "a condition, then Enter"
-msgstr ""
+msgstr "uma condição e depois Enter"
 
 #: src/ui/data_view.rs
 #, rust-format
 msgid "cols {first}–{last} of {total}"
-msgstr ""
+msgstr "cols {first}–{last} de {total}"
 
 #: src/ui/data_view.rs src/ui/row_panel.rs
 msgid "from DEFAULT"
-msgstr ""
+msgstr "do DEFAULT"
 
 #: src/ui/data_view.rs src/ui/picker.rs
 msgid "new"
-msgstr ""
+msgstr "nova"
 
 #: src/ui/data_view.rs
 msgid "new row dropped"
 msgid_plural "new rows dropped"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "linha nova descartada"
+msgstr[1] "linhas novas descartadas"
 
 #: src/ui/data_view.rs
 msgid "open rows"
-msgstr ""
+msgstr "abrir linhas"
 
 #: src/ui/data_view.rs src/ui/ddl.rs src/ui/export.rs src/ui/row_panel.rs
 #: src/ui/settings/mod.rs src/ui/workspace.rs
@@ -4708,409 +4743,423 @@ msgstr "somente leitura"
 #: src/ui/data_view.rs src/ui/pending_bar.rs
 msgid "row deleted"
 msgid_plural "rows deleted"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "linha excluída"
+msgstr[1] "linhas excluídas"
 
 #: src/ui/data_view.rs
 msgid "row restored"
 msgid_plural "rows restored"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "linha restaurada"
+msgstr[1] "linhas restauradas"
 
 #: src/ui/data_view.rs
 #, rust-format
 msgid "sort {column}"
-msgstr ""
+msgstr "ordenação: {column}"
 
 #: src/ui/data_view.rs src/ui/row_panel.rs
 #, rust-format
 msgid "was {value}"
-msgstr ""
+msgstr "era {value}"
 
 #: src/ui/data_view.rs
 #, rust-format
 msgid "{column} pinned"
-msgstr ""
+msgstr "{column} fixada"
 
 #: src/ui/data_view.rs
 #, rust-format
 msgid "{expression} from DEFAULT"
-msgstr ""
+msgstr "{expression} do DEFAULT"
 
 #: src/ui/data_view.rs
 #, rust-format
 msgid "{key} edits the filter"
-msgstr ""
+msgstr "{key} edita o filtro"
 
 #: src/ui/data_view.rs
 #, rust-format
 msgid "{key} reverts"
-msgstr ""
+msgstr "{key} reverte"
 
 #: src/ui/data_view.rs
 #, rust-format
 msgid "{n} col"
 msgid_plural "{n} cols"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "{n} col"
+msgstr[1] "{n} cols"
 
 #: src/ui/data_view.rs
 #, rust-format
 msgid "{n} new"
 msgid_plural "{n} new"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "{n} nova"
+msgstr[1] "{n} novas"
 
 #: src/ui/data_view.rs
 #, rust-format
 msgid "{n} required field"
 msgid_plural "{n} required fields"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "{n} campo obrigatório"
+msgstr[1] "{n} campos obrigatórios"
 
 #: src/ui/data_view.rs src/ui/pending_bar.rs src/ui/review.rs
 #, rust-format
 msgid "{n} to delete"
 msgid_plural "{n} to delete"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "{n} a excluir"
+msgstr[1] "{n} a excluir"
 
 #: src/ui/data_view.rs
 #, rust-format
 msgid "{n} to delete."
 msgid_plural "{n} to delete."
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "{n} a excluir."
+msgstr[1] "{n} a excluir."
 
 #: src/ui/data_view.rs
 #, rust-format
 msgid "{size} selected"
-msgstr ""
+msgstr "Seleção: {size}"
 
 #: src/ui/data_view.rs
 #, rust-format
 msgid "{table} has about {n} row."
 msgid_plural "{table} has about {n} rows."
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "{table} tem cerca de {n} linha."
+msgstr[1] "{table} tem cerca de {n} linhas."
 
 #: src/ui/date_line.rs
 msgid "24:00:00 · the end of the day"
-msgstr ""
+msgstr "24:00:00 · o fim do dia"
 
 #: src/ui/date_line.rs
 msgid "A date keeps no time of day."
-msgstr ""
+msgstr "Uma data não guarda a hora do dia."
 
 #: src/ui/date_line.rs
 msgid "A time keeps no day."
-msgstr ""
+msgstr "Uma hora não guarda o dia."
 
 #: src/ui/date_line.rs
 msgid "BigQuery DATE and DATETIME hold 0001-01-01 to 9999-12-31."
-msgstr ""
+msgstr "BigQuery DATE e DATETIME aceitam de 0001-01-01 a 9999-12-31."
 
 #: src/ui/date_line.rs
 msgid "BigQuery TIME holds 00:00:00 to 23:59:59."
-msgstr ""
+msgstr "BigQuery TIME aceita de 00:00:00 a 23:59:59."
 
 #: src/ui/date_line.rs
 msgid "BigQuery TIMESTAMP holds 0001-01-01 to 9999-12-31 UTC."
-msgstr ""
+msgstr "BigQuery TIMESTAMP aceita de 0001-01-01 a 9999-12-31 UTC."
 
 #: src/ui/date_line.rs
 msgid "MySQL DATE holds 1000-01-01 to 9999-12-31."
-msgstr ""
+msgstr "MySQL DATE aceita de 1000-01-01 a 9999-12-31."
 
 #: src/ui/date_line.rs
 msgid "MySQL DATETIME holds 1000-01-01 to 9999-12-31."
-msgstr ""
+msgstr "MySQL DATETIME aceita de 1000-01-01 a 9999-12-31."
 
 #: src/ui/date_line.rs
 msgid "MySQL TIME holds -838:59:59 to 838:59:59."
-msgstr ""
+msgstr "MySQL TIME aceita de -838:59:59 a 838:59:59."
 
 #: src/ui/date_line.rs
 msgid "MySQL TIMESTAMP holds 1970-01-01 to 2038-01-19 UTC."
-msgstr ""
+msgstr "MySQL TIMESTAMP aceita de 1970-01-01 a 2038-01-19 UTC."
 
 #: src/ui/date_line.rs
 msgid "MySQL zero date · pick a date or set NULL"
-msgstr ""
+msgstr "Data zero do MySQL · escolha uma data ou defina NULL"
 
 #: src/ui/date_line.rs
 msgid "No end date · stored as infinity"
-msgstr ""
+msgstr "Sem data de término · armazenada como infinity"
 
 #: src/ui/date_line.rs
 msgid "No start date · stored as -infinity"
-msgstr ""
+msgstr "Sem data de início · armazenada como -infinity"
 
 #: src/ui/date_line.rs
 msgid "Not a date and time. Try 2026-01-15 9:30 or tomorrow 9am."
-msgstr ""
+msgstr "Não é uma data e hora. Tente 2026-01-15 9:30 ou tomorrow 9am."
 
 #: src/ui/date_line.rs
 msgid "Not a date. Try 2026-01-15, 15 Jan 2026 or tomorrow."
-msgstr ""
+msgstr "Não é uma data. Tente 2026-01-15, 15 Jan 2026 ou tomorrow."
 
 #: src/ui/date_line.rs
 msgid "Not a time. Try 9:30, 9am or 21:30."
-msgstr ""
+msgstr "Não é uma hora. Tente 9:30, 9am ou 21:30."
 
 #: src/ui/date_line.rs
 msgid "PostgreSQL date holds 4714-11-24 BC to 5874897 AD."
-msgstr ""
+msgstr "PostgreSQL date aceita de 4714-11-24 BC a 5874897 AD."
 
 #: src/ui/date_line.rs
 msgid "PostgreSQL keeps offsets from -15:59:59 to +15:59:59."
-msgstr ""
+msgstr "O PostgreSQL guarda deslocamentos de -15:59:59 a +15:59:59."
 
 #: src/ui/date_line.rs
 msgid "PostgreSQL timestamp holds 4714-11-24 BC to 294276 AD."
-msgstr ""
+msgstr "PostgreSQL timestamp aceita de 4714-11-24 BC a 294276 AD."
 
 #: src/ui/date_line.rs
 msgid "Tabletist reads years up to 9999."
-msgstr ""
+msgstr "O Tabletist lê anos até 9999."
 
 #: src/ui/date_line.rs
 msgid ""
 "The server's zone is not known: type the day and the time as the server "
 "keeps them, with no offset."
 msgstr ""
+"O fuso do servidor não é conhecido: digite o dia e a hora como o servidor os "
+"guarda, sem deslocamento."
 
 #: src/ui/date_line.rs
 #, rust-format
 msgid "There is no month {month}."
-msgstr ""
+msgstr "Não existe o mês {month}."
 
 #: src/ui/date_line.rs
 msgid "There is no year 0: 1 BC comes just before 1 AD."
-msgstr ""
+msgstr "Não existe o ano 0: 1 BC vem logo antes de 1 AD."
 
 #: src/ui/date_line.rs
 #, rust-format
 msgid "There is no {day} {month}."
-msgstr ""
+msgstr "Não existe {day} de {month}."
 
 #: src/ui/date_line.rs
 msgid "Type a date and time: 2026-01-15 9:30 or tomorrow 9am."
-msgstr ""
+msgstr "Digite uma data e hora: 2026-01-15 9:30 ou tomorrow 9am."
 
 #: src/ui/date_line.rs
 msgid "Type a date: 2026-01-15, 15 Jan 2026 or tomorrow."
-msgstr ""
+msgstr "Digite uma data: 2026-01-15, 15 Jan 2026 ou tomorrow."
 
 #: src/ui/date_line.rs
 msgid "Type a time: 9:30, 9am or 21:30."
-msgstr ""
+msgstr "Digite uma hora: 9:30, 9am ou 21:30."
 
 #: src/ui/date_line.rs
 #, rust-format
 msgid "Use {time}"
-msgstr ""
+msgstr "Usar {time}"
 
 #: src/ui/date_line.rs
 msgid "date"
-msgstr ""
+msgstr "data"
 
 #: src/ui/date_line.rs
 msgid "date and time"
-msgstr ""
+msgstr "data e hora"
 
 #: src/ui/date_line.rs
 #, rust-format
 msgid "in {count} day"
 msgid_plural "in {count} days"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "em {count} dia"
+msgstr[1] "em {count} dias"
 
 #: src/ui/date_line.rs
 #, rust-format
 msgid "sent as {literal}"
-msgstr ""
+msgstr "enviado como {literal}"
 
 #: src/ui/date_line.rs
 msgid "stored as a Julian day, like the other rows"
-msgstr ""
+msgstr "armazenado como dia juliano, como nas outras linhas"
 
 #: src/ui/date_line.rs
 msgid "stored as a number such as 20260115, like the other rows"
-msgstr ""
+msgstr "armazenado como número, por exemplo 20260115, como nas outras linhas"
 
 #: src/ui/date_line.rs
 msgid "stored as milliseconds since 1970, like the other rows"
-msgstr ""
+msgstr "armazenado como milissegundos desde 1970, como nas outras linhas"
 
 #: src/ui/date_line.rs
 msgid "stored as seconds since 1970, like the other rows"
-msgstr ""
+msgstr "armazenado como segundos desde 1970, como nas outras linhas"
 
 #: src/ui/date_line.rs
 msgid "stored as text"
-msgstr ""
+msgstr "armazenado como texto"
 
 #: src/ui/date_line.rs
 msgid "stored as text, like the other rows"
-msgstr ""
+msgstr "armazenado como texto, como nas outras linhas"
 
 #: src/ui/date_line.rs
 msgid "stored as text: the other rows hold numbers of a form not known here"
 msgstr ""
+"armazenado como texto: as outras linhas guardam números de um formato "
+"desconhecido aqui"
 
 #: src/ui/date_line.rs
 msgid "tomorrow"
-msgstr ""
+msgstr "amanhã"
 
 #: src/ui/date_line.rs
 #, rust-format
 msgid "was {day}"
-msgstr ""
+msgstr "era {day}"
 
 #: src/ui/date_line.rs
 msgid "yesterday"
-msgstr ""
+msgstr "ontem"
 
 #: src/ui/date_line.rs
 #, rust-format
 msgid "{count} day ago"
 msgid_plural "{count} days ago"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "há {count} dia"
+msgstr[1] "há {count} dias"
 
 #. Translators: a day of the year the date line is about: "15 Jan".
 #: src/ui/date_line.rs
 #, rust-format
 msgctxt "date line"
 msgid "{day} {month}"
-msgstr ""
+msgstr "{day} de {month}"
 
 #. Translators: a day of another year, as the date line says it.
 #: src/ui/date_line.rs
 #, rust-format
 msgctxt "date line"
 msgid "{day} {month} {year}"
-msgstr ""
+msgstr "{day} de {month} de {year}"
 
 #: src/ui/date_line.rs
 #, rust-format
 msgid "{span} · a span of time, not a time of day"
-msgstr ""
+msgstr "{span} · um intervalo de tempo, não uma hora do dia"
 
 #: src/ui/date_line.rs
 #, rust-format
 msgid "{time} doesn't exist on {day} in this zone; clocks go forward."
-msgstr ""
+msgstr "{time} não existe em {day} neste fuso; os relógios são adiantados."
 
 #: src/ui/date_line.rs
 #, rust-format
 msgid "{time} doesn't exist on {day} in {place}; clocks go forward."
-msgstr ""
+msgstr "{time} não existe em {day} em {place}; os relógios são adiantados."
 
 #: src/ui/date_line.rs
 #, rust-format
 msgid "{time} happens twice on {day} in this zone; clocks go back."
 msgstr ""
+"{time} acontece duas vezes em {day} neste fuso; os relógios são atrasados."
 
 #: src/ui/date_line.rs
 #, rust-format
 msgid "{time} happens twice on {day} in {place}; clocks go back."
 msgstr ""
+"{time} acontece duas vezes em {day} em {place}; os relógios são atrasados."
 
 #: src/ui/date_line.rs
 #, rust-format
 msgid "{time} is not a time of day."
-msgstr ""
+msgstr "{time} não é uma hora do dia."
 
 #: src/ui/date_line.rs
 #, rust-format
 msgid "{type} keeps no zone: leave the offset out."
-msgstr ""
+msgstr "{type} não guarda fuso: deixe o deslocamento de fora."
 
 #. Translators: a date as the date line says it: "Thu 15 Jan 2026".
 #: src/ui/date_line.rs
 #, rust-format
 msgctxt "date line"
 msgid "{weekday} {day} {month} {year}"
-msgstr ""
+msgstr "{weekday} {day} de {month} de {year}"
 
 #: src/ui/date_line.rs
 #, rust-format
 msgid "{year} BC"
-msgstr ""
+msgstr "{year} a.C."
 
 #: src/ui/ddl.rs
 msgid "Comments"
-msgstr ""
+msgstr "Comentários"
 
 #: src/ui/ddl.rs
 msgid "Copied DDL"
-msgstr ""
+msgstr "DDL copiado"
 
 #: src/ui/ddl.rs
 #, rust-format
 msgid "Copied {n} line"
 msgid_plural "Copied {n} lines"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "{n} linha copiada"
+msgstr[1] "{n} linhas copiadas"
 
 #: src/ui/ddl.rs
 msgid "Copy error"
-msgstr ""
+msgstr "Copiar erro"
 
 #: src/ui/ddl.rs
 #, rust-format
 msgid "Couldn't read the definition of {name}"
-msgstr ""
+msgstr "Não foi possível ler a definição de {name}"
 
 #: src/ui/ddl.rs
 #, rust-format
 msgid "DDL of {name}"
-msgstr ""
+msgstr "DDL de {name}"
 
 #: src/ui/ddl.rs src/ui/structure.rs
 msgid "Indexes"
-msgstr ""
+msgstr "Índices"
 
 #: src/ui/ddl.rs
 msgid "Materialized view"
-msgstr ""
+msgstr "View materializada"
 
 #: src/ui/ddl.rs
 msgid ""
 "Not included: owner, grants, sequences owned by the table, row-level policies"
 msgstr ""
+"Não incluído: proprietário, permissões, sequências pertencentes à tabela, "
+"políticas em nível de linha"
 
 #: src/ui/ddl.rs
 msgid "Reading the definition…"
-msgstr ""
+msgstr "Lendo a definição…"
 
 #: src/ui/ddl.rs
 msgid "Select text to copy part of it"
-msgstr ""
+msgstr "Selecione um texto para copiar parte dele"
 
 #: src/ui/ddl.rs
 msgid ""
 "The connection's user can't read this part of the catalog. Rows and "
 "Structure still work."
 msgstr ""
+"O usuário da conexão não pode ler esta parte do catálogo. Linhas e Estrutura "
+"continuam funcionando."
 
 #: src/ui/ddl.rs
 msgid ""
 "The connection's user can't run SHOW CREATE TABLE here. Rows and Structure "
 "still work."
 msgstr ""
+"O usuário da conexão não pode executar SHOW CREATE TABLE aqui. Linhas e "
+"Estrutura continuam funcionando."
 
 #: src/ui/ddl.rs
 msgid ""
 "The connection's user can't run SHOW CREATE VIEW here. Rows and Structure "
 "still work."
 msgstr ""
+"O usuário da conexão não pode executar SHOW CREATE VIEW aqui. Linhas e "
+"Estrutura continuam funcionando."
 
 #: src/ui/ddl.rs
 msgid "Triggers"
-msgstr ""
+msgstr "Triggers"
 
 #: src/ui/ddl.rs
 msgctxt "object kind"
@@ -5119,23 +5168,23 @@ msgstr "View"
 
 #: src/ui/ddl.rs
 msgid "as stored in the database"
-msgstr ""
+msgstr "como está armazenado no banco de dados"
 
 #: src/ui/ddl.rs
 msgid "built from the catalog"
-msgstr ""
+msgstr "montado a partir do catálogo"
 
 #: src/ui/ddl.rs
 msgid "copy all"
-msgstr ""
+msgstr "copiar tudo"
 
 #: src/ui/ddl.rs
 msgid "copy lines"
-msgstr ""
+msgstr "copiar linhas"
 
 #: src/ui/ddl.rs
 msgid "ddl"
-msgstr ""
+msgstr "ddl"
 
 #: src/ui/ddl.rs src/ui/settings/keyboard_terminal.rs
 msgid "keys"
@@ -5143,138 +5192,138 @@ msgstr "teclas"
 
 #: src/ui/ddl.rs
 msgid "not included"
-msgstr ""
+msgstr "não incluído"
 
 #: src/ui/ddl.rs
 msgid "open from anywhere"
-msgstr ""
+msgstr "abrir de qualquer lugar"
 
 #: src/ui/ddl.rs
 msgid "open in sql editor"
-msgstr ""
+msgstr "abrir no editor sql"
 
 #: src/ui/ddl.rs
 msgid "owner · grants · owned sequences"
-msgstr ""
+msgstr "proprietário · permissões · sequências próprias"
 
 #: src/ui/ddl.rs
 msgid "read again"
-msgstr ""
+msgstr "ler novamente"
 
 #: src/ui/ddl.rs
 msgid "read just now"
-msgstr ""
+msgstr "lido agora mesmo"
 
 #: src/ui/ddl.rs
 #, rust-format
 msgid "read {n} h ago"
 msgid_plural "read {n} h ago"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "lido há {n} h"
+msgstr[1] "lido há {n} h"
 
 #: src/ui/ddl.rs
 #, rust-format
 msgid "read {n} min ago"
 msgid_plural "read {n} min ago"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "lido há {n} min"
+msgstr[1] "lido há {n} min"
 
 #: src/ui/ddl.rs
 #, rust-format
 msgid "read {n} s ago"
 msgid_plural "read {n} s ago"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "lido há {n} s"
+msgstr[1] "lido há {n} s"
 
 #: src/ui/ddl.rs
 msgid "row-level policies"
-msgstr ""
+msgstr "políticas em nível de linha"
 
 #: src/ui/ddl.rs
 #, rust-format
 msgid "sections · {next} next  {previous} prev"
-msgstr ""
+msgstr "seções · {next} próxima  {previous} anterior"
 
 #: src/ui/ddl.rs
 msgid "top · bottom"
-msgstr ""
+msgstr "início · fim"
 
 #: src/ui/every_row_prompt.rs
 #, rust-format
 msgid "About {n} row, by the database's statistics."
 msgid_plural "About {n} rows, by the database's statistics."
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "Cerca de {n} linha, pelas estatísticas do banco de dados."
+msgstr[1] "Cerca de {n} linhas, pelas estatísticas do banco de dados."
 
 #: src/ui/every_row_prompt.rs
 #, rust-format
 msgid "Delete every row in {tables}?"
-msgstr ""
+msgstr "Excluir todas as linhas de {tables}?"
 
 #: src/ui/every_row_prompt.rs
 msgid "Delete every row of its table?"
-msgstr ""
+msgstr "Excluir todas as linhas da tabela?"
 
 #: src/ui/every_row_prompt.rs
 #, rust-format
 msgid "Line {n}"
-msgstr ""
+msgstr "Linha {n}"
 
 #: src/ui/every_row_prompt.rs
 #, rust-format
 msgid "Line {n} has no WHERE."
-msgstr ""
+msgstr "A instrução da linha {n} não tem WHERE."
 
 #: src/ui/every_row_prompt.rs
 #, rust-format
 msgid "Line {n} takes out every row."
-msgstr ""
+msgstr "A instrução da linha {n} remove todas as linhas."
 
 #: src/ui/every_row_prompt.rs
 msgid "Run anyway"
-msgstr ""
+msgstr "Executar mesmo assim"
 
 #: src/ui/every_row_prompt.rs
 #, rust-format
 msgid "Run {n} statement that changes every row?"
 msgid_plural "Run {n} statements that change every row?"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "Executar {n} instrução que altera todas as linhas?"
+msgstr[1] "Executar {n} instruções que alteram todas as linhas?"
 
 #: src/ui/every_row_prompt.rs
 msgid "Truncate its tables?"
-msgstr ""
+msgstr "Truncar as tabelas?"
 
 #: src/ui/every_row_prompt.rs
 #, rust-format
 msgid "Truncate {tables}?"
-msgstr ""
+msgstr "Truncar {tables}?"
 
 #: src/ui/every_row_prompt.rs
 #, rust-format
 msgid "Update every row in {tables}?"
-msgstr ""
+msgstr "Atualizar todas as linhas de {tables}?"
 
 #: src/ui/every_row_prompt.rs
 msgid "Update every row of its table?"
-msgstr ""
+msgstr "Atualizar todas as linhas da tabela?"
 
 #: src/ui/every_row_prompt.rs
 #, rust-format
 msgid "about {n} row"
 msgid_plural "about {n} rows"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "cerca de {n} linha"
+msgstr[1] "cerca de {n} linhas"
 
 #: src/ui/every_row_prompt.rs
 #, rust-format
 msgid "line {n}"
-msgstr ""
+msgstr "linha {n}"
 
 #: src/ui/every_row_prompt.rs
 #, rust-format
 msgid "lines {n}"
-msgstr ""
+msgstr "linhas {n}"
 
 #: src/ui/every_row_prompt.rs src/ui/history.rs src/ui/picker.rs
 #: src/ui/settings/terminal.rs src/ui/structure.rs
@@ -5288,298 +5337,303 @@ msgstr "sim"
 
 #: src/ui/export.rs
 msgid "! exists · enter again replaces it"
-msgstr ""
+msgstr "! já existe · enter de novo o substitui"
 
 #: src/ui/export.rs
 #, rust-format
 msgid "! {pending} in {table} aren't exported · :w first to include them"
-msgstr ""
+msgstr "! {pending} em {table} não são exportadas · :w antes para incluí-las"
 
 #: src/ui/export.rs
 #, rust-format
 msgid "! {pending} in {table} isn't exported · :w first to include it"
-msgstr ""
+msgstr "! {pending} em {table} não é exportada · :w antes para incluí-la"
 
 #: src/ui/export.rs
 msgid "Add a UTF-8 BOM"
-msgstr ""
+msgstr "Adicionar BOM UTF-8"
 
 #: src/ui/export.rs
 msgid "All columns"
-msgstr ""
+msgstr "Todas as colunas"
 
 #: src/ui/export.rs
 msgid "All rows matching the filter"
-msgstr ""
+msgstr "Todas as linhas que correspondem ao filtro"
 
 #: src/ui/export.rs
 msgid "As strings"
-msgstr ""
+msgstr "Como strings"
 
 #: src/ui/export.rs
 msgid "Back"
-msgstr ""
+msgstr "Voltar"
 
 #: src/ui/export.rs
 msgid "Base64"
-msgstr ""
+msgstr "Base64"
 
 #: src/ui/export.rs
 msgid "Binary values"
-msgstr ""
+msgstr "Valores binários"
 
 #: src/ui/export.rs
 msgid "CRLF"
-msgstr ""
+msgstr "CRLF"
 
 #: src/ui/export.rs
 msgid "Choose"
-msgstr ""
+msgstr "Escolher"
 
 #: src/ui/export.rs
 msgid "Choose at least one column"
-msgstr ""
+msgstr "Escolha pelo menos uma coluna"
 
 #: src/ui/export.rs
 msgid "Choose the name and folder next. Saved readable by your account only."
 msgstr ""
+"Você escolhe o nome e a pasta em seguida. O arquivo é salvo legível apenas "
+"pela sua conta."
 
 #: src/ui/export.rs
 msgid "Clipboard"
-msgstr ""
+msgstr "Área de transferência"
 
 #: src/ui/export.rs
 msgid "Clipboard: more than 10,000 rows, file only"
-msgstr ""
+msgstr "Área de transferência: mais de 10.000 linhas, só para arquivo"
 
 #: src/ui/export.rs
 msgid "Column names as the first row"
-msgstr ""
+msgstr "Nomes das colunas na primeira linha"
 
 #: src/ui/export.rs src/ui/label_chooser.rs src/ui/structure.rs
 msgid "Columns"
-msgstr ""
+msgstr "Colunas"
 
 #: src/ui/export.rs
 msgid "Copy rows"
-msgstr ""
+msgstr "Copiar linhas"
 
 #: src/ui/export.rs
 #, rust-format
 msgid "Copy {rows} row"
 msgid_plural "Copy {rows} rows"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "Copiar {rows} linha"
+msgstr[1] "Copiar {rows} linhas"
 
 #: src/ui/export.rs
 msgid "Count exactly"
-msgstr ""
+msgstr "Contar com exatidão"
 
 #: src/ui/export.rs
 msgid "Current page"
-msgstr ""
+msgstr "Página atual"
 
 #: src/ui/export.rs
 msgid "Cut at 200 characters"
-msgstr ""
+msgstr "Cortados em 200 caracteres"
 
 #: src/ui/export.rs
 msgid "Dates and times"
-msgstr ""
+msgstr "Datas e horas"
 
 #: src/ui/export.rs
 msgid "Destination"
-msgstr ""
+msgstr "Destino"
 
 #: src/ui/export.rs
 msgid "Dialect"
-msgstr ""
+msgstr "Dialeto"
 
 #: src/ui/export.rs
 msgid "Empty"
-msgstr ""
+msgstr "Vazio"
 
 #: src/ui/export.rs
 msgid "Every value"
-msgstr ""
+msgstr "Em todos os valores"
 
 #: src/ui/export.rs src/ui/history.rs
 msgid "Export"
-msgstr ""
+msgstr "Exportar"
 
 #: src/ui/export.rs
 msgid "Export result"
-msgstr ""
+msgstr "Exportar resultado"
 
 #: src/ui/export.rs
 #, rust-format
 msgid "Export {rows} row"
 msgid_plural "Export {rows} rows"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "Exportar {rows} linha"
+msgstr[1] "Exportar {rows} linhas"
 
 #: src/ui/export.rs
 #, rust-format
 msgid "Export {rows} row…"
 msgid_plural "Export {rows} rows…"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "Exportar {rows} linha…"
+msgstr[1] "Exportar {rows} linhas…"
 
 #: src/ui/export.rs
 #, rust-format
 msgid "Export {table}"
-msgstr ""
+msgstr "Exportar {table}"
 
 #: src/ui/export.rs
 msgid "For Excel"
-msgstr ""
+msgstr "Para o Excel"
 
 #: src/ui/export.rs src/ui/sql_editor.rs src/ui/structure.rs
 msgid "Format"
-msgstr ""
+msgstr "Formato"
 
 #: src/ui/export.rs
 msgid "Hex"
-msgstr ""
+msgstr "Hex"
 
 #: src/ui/export.rs
 msgid "ISO 8601, with the offset for timestamptz"
-msgstr ""
+msgstr "ISO 8601, com o deslocamento para timestamptz"
 
 #: src/ui/export.rs
 msgid "In full"
-msgstr ""
+msgstr "Completos"
 
 #: src/ui/export.rs
 msgid "Indented"
-msgstr ""
+msgstr "Indentado"
 
 #: src/ui/export.rs
 msgid "LF"
-msgstr ""
+msgstr "LF"
 
 #: src/ui/export.rs
 msgid "Layout"
-msgstr ""
+msgstr "Layout"
 
 #: src/ui/export.rs
 msgid "Line endings"
-msgstr ""
+msgstr "Finais de linha"
 
 #: src/ui/export.rs
 msgid "Long values"
-msgstr ""
+msgstr "Valores longos"
 
 #: src/ui/export.rs
 msgid "NULL as"
-msgstr ""
+msgstr "NULL como"
 
 #: src/ui/export.rs
 msgid "Nested as JSON"
-msgstr ""
+msgstr "Aninhados como JSON"
 
 #: src/ui/export.rs
 msgid "None"
-msgstr ""
+msgstr "Nenhuma"
 
 #: src/ui/export.rs
 msgid "Not for a result: no table to read"
-msgstr ""
+msgstr "Não disponível para um resultado: não há tabela para ler"
 
 #: src/ui/export.rs
 msgid "Not needed: every row is loaded"
-msgstr ""
+msgstr "Não é necessário: todas as linhas estão carregadas"
 
 #: src/ui/export.rs
 msgid "Not offered: the connection is not ready"
-msgstr ""
+msgstr "Não disponível: a conexão não está pronta"
 
 #: src/ui/export.rs
 msgid "Not offered: the statement was edited since it ran"
-msgstr ""
+msgstr "Não disponível: a instrução foi editada depois de executada"
 
 #: src/ui/export.rs
 msgid "Not offered: this run changed data"
-msgstr ""
+msgstr "Não disponível: esta execução alterou dados"
 
 #: src/ui/export.rs
 msgid "Nothing runs: these rows are the ones loaded"
-msgstr ""
+msgstr "Nada é executado: estas são as linhas carregadas"
 
 #: src/ui/export.rs
 msgid "One line"
-msgstr ""
+msgstr "Em uma linha"
 
 #: src/ui/export.rs
 msgid "Other…"
-msgstr ""
+msgstr "Outro…"
 
 #: src/ui/export.rs
 msgid "Pipes and line breaks"
-msgstr ""
+msgstr "Barras verticais e quebras de linha"
 
 #: src/ui/export.rs
 msgid "Quoting"
-msgstr ""
+msgstr "Aspas"
 
 #: src/ui/export.rs
 msgid "Rows already loaded"
-msgstr ""
+msgstr "Linhas já carregadas"
 
 #: src/ui/export.rs
 msgid "Rows per INSERT"
-msgstr ""
+msgstr "Linhas por INSERT"
 
 #: src/ui/export.rs
 msgid "Run again without the limit"
-msgstr ""
+msgstr "Executar novamente sem o limite"
 
 #: src/ui/export.rs
 msgid "Run and export"
-msgstr ""
+msgstr "Executar e exportar"
 
 #: src/ui/export.rs
 msgid "Run and export…"
-msgstr ""
+msgstr "Executar e exportar…"
 
 #: src/ui/export.rs
 msgid ""
 "Runs once, read-only, streamed to the file in batches of 5,000 rows. Nothing "
 "is written to the database."
 msgstr ""
+"Executa uma vez, somente leitura, gravando no arquivo em lotes de 5.000 "
+"linhas. Nada é gravado no banco de dados."
 
 #: src/ui/export.rs
 msgid "Selected rows"
-msgstr ""
+msgstr "Linhas selecionadas"
 
 #: src/ui/export.rs
 msgid "Shape"
-msgstr ""
+msgstr "Forma"
 
 #: src/ui/export.rs
 #, rust-format
 msgid "Space includes or leaves out · {up} {down} move · drag ⋮⋮ to reorder"
 msgstr ""
+"Space inclui ou deixa de fora · {up} {down} movem · arraste ⋮⋮ para reordenar"
 
 #: src/ui/export.rs
 msgid "Start with CREATE TABLE from the DDL view"
-msgstr ""
+msgstr "Começar com o CREATE TABLE da visualização do DDL"
 
 #: src/ui/export.rs
 msgid "Table definition"
-msgstr ""
+msgstr "Definição da tabela"
 
 #: src/ui/export.rs
 msgid "Tabs and line breaks"
-msgstr ""
+msgstr "Tabulações e quebras de linha"
 
 #: src/ui/export.rs
 msgid "Target table"
-msgstr ""
+msgstr "Tabela de destino"
 
 #: src/ui/export.rs
 msgid "Up to 10,000 rows and 20 MB on the clipboard."
-msgstr ""
+msgstr "Até 10.000 linhas e 20 MB na área de transferência."
 
 #: src/ui/export.rs
 #, rust-format
@@ -5587,26 +5641,30 @@ msgid ""
 "Values the grid cuts off at 256 KiB are exported in full. These options are "
 "remembered for {format}."
 msgstr ""
+"Os valores que a grade corta em 256 KiB são exportados por completo. Estas "
+"opções são lembradas para {format}."
 
 #: src/ui/export.rs
 msgid "When needed"
-msgstr ""
+msgstr "Quando necessário"
 
 #: src/ui/export.rs
 msgid "Whole table"
-msgstr ""
+msgstr "Tabela inteira"
 
 #: src/ui/export.rs
 msgid "after a read-write run only \"rows already loaded\" is offered"
 msgstr ""
+"depois de uma execução de leitura e gravação, só “linhas já carregadas” é "
+"oferecida"
 
 #: src/ui/export.rs
 msgid "always, with a separator line"
-msgstr ""
+msgstr "sempre, com uma linha separadora"
 
 #: src/ui/export.rs src/ui/start.rs src/ui/workspace.rs
 msgid "back"
-msgstr ""
+msgstr "voltar"
 
 #: src/ui/export.rs src/ui/settings/terminal.rs
 #: src/ui/settings/updates_terminal.rs src/ui/workspace.rs
@@ -5615,166 +5673,170 @@ msgstr "copiar"
 
 #: src/ui/export.rs
 msgid "counted as it runs"
-msgstr ""
+msgstr "contado durante a execução"
 
 #: src/ui/export.rs
 msgid "edited since it ran"
-msgstr ""
+msgstr "editada depois de executada"
 
 #: src/ui/export.rs
 msgid "escaped as \\| and <br>"
-msgstr ""
+msgstr "escapados como \\| e <br>"
 
 #: src/ui/export.rs
 msgid "every row is loaded"
-msgstr ""
+msgstr "todas as linhas estão carregadas"
 
 #: src/ui/export.rs
 msgid "filter"
 msgid_plural "filters"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "filtro"
+msgstr[1] "filtros"
 
 #: src/ui/export.rs
 msgid "inside values are written as \\t and \\n"
-msgstr ""
+msgstr "dentro dos valores são gravados como \\t e \\n"
 
 #: src/ui/export.rs
 msgid "json and jsonb values"
-msgstr ""
+msgstr "valores json e jsonb"
 
 #: src/ui/export.rs src/ui/sql_results.rs
 msgid "limit reached"
-msgstr ""
+msgstr "limite atingido"
 
 #: src/ui/export.rs
 msgid "matching the filter"
-msgstr ""
+msgstr "que correspondem ao filtro"
 
 #: src/ui/export.rs
 msgid "no filter, primary key order"
-msgstr ""
+msgstr "sem filtro, na ordem da chave primária"
 
 #: src/ui/export.rs
 msgid "not after a write"
-msgstr ""
+msgstr "não depois de uma gravação"
 
 #: src/ui/export.rs
 msgid "not connected"
-msgstr ""
+msgstr "não conectado"
 
 #: src/ui/export.rs
 msgid "not counted"
-msgstr ""
+msgstr "não contado"
 
 #: src/ui/export.rs
 msgid "one array of objects, keys in column order"
-msgstr ""
+msgstr "um array de objetos, chaves na ordem das colunas"
 
 #: src/ui/export.rs
 msgid "one object per line"
-msgstr ""
+msgstr "um objeto por linha"
 
 #: src/ui/export.rs
 msgid "pick file"
-msgstr ""
+msgstr "escolher arquivo"
 
 #: src/ui/export.rs
 #, rust-format
 msgid "query {query}, statement {statement}"
-msgstr ""
+msgstr "consulta {query}, instrução {statement}"
 
 #: src/ui/export.rs
 msgid "read-only connection"
-msgstr ""
+msgstr "conexão somente leitura"
 
 #: src/ui/export.rs src/ui/history.rs
 msgid "read-only transaction"
-msgstr ""
+msgstr "transação somente leitura"
 
 #: src/ui/export.rs
 msgid "reads only"
-msgstr ""
+msgstr "somente leitura"
 
 #: src/ui/export.rs
 msgid ""
 "reads only · same statement, no LIMIT, no timeout from Settings › Editor"
 msgstr ""
+"somente leitura · mesma instrução, sem LIMIT, sem o tempo limite de "
+"Configurações › Editor"
 
 #: src/ui/export.rs
 #, rust-format
 msgid "result of Query {query}, statement {statement}"
-msgstr ""
+msgstr "resultado da Consulta {query}, instrução {statement}"
 
 #: src/ui/export.rs
 msgid "review sql"
-msgstr ""
+msgstr "revisar sql"
 
 #: src/ui/export.rs
 #, rust-format
 msgid "rows {first} to {last}, as sorted"
-msgstr ""
+msgstr "linhas de {first} a {last}, conforme a ordenação"
 
 #: src/ui/export.rs
 msgid "runs once, read-only, streamed in batches of 5,000 rows"
-msgstr ""
+msgstr "executa uma vez, somente leitura, em lotes de 5.000 linhas"
 
 #: src/ui/export.rs
 msgid "save to"
-msgstr ""
+msgstr "salvar em"
 
 #: src/ui/export.rs
 #, rust-format
 msgid "sorted by {sort}"
-msgstr ""
+msgstr "ordenado por {sort}"
 
 #: src/ui/export.rs
 msgid "space include · K/J move up/down · a all · n none"
-msgstr ""
+msgstr "space inclui · K/J sobe/desce · a todas · n nenhuma"
 
 #: src/ui/export.rs
 msgid "the result as shown"
-msgstr ""
+msgstr "o resultado como mostrado"
 
 #: src/ui/export.rs
 msgid "the result as shown · limit reached"
-msgstr ""
+msgstr "o resultado como mostrado · limite atingido"
 
 #: src/ui/export.rs
 msgid "to file"
-msgstr ""
+msgstr "para arquivo"
 
 #: src/ui/export.rs
 msgid "unsaved change"
 msgid_plural "unsaved changes"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "alteração não salva"
+msgstr[1] "alterações não salvas"
 
 #: src/ui/export.rs
 msgid ""
 "values cut at 256 KiB in the grid are written in full · file readable by you "
 "only"
 msgstr ""
+"valores cortados em 256 KiB na grade são gravados por completo · arquivo "
+"legível só por você"
 
 #: src/ui/export.rs
 #, rust-format
 msgid "written as {literal} literals"
-msgstr ""
+msgstr "gravados como literais {literal}"
 
 #: src/ui/export.rs
 #, rust-format
 msgid "{dialect}, from this connection"
-msgstr ""
+msgstr "{dialect}, desta conexão"
 
 #: src/ui/export.rs
 #, rust-format
 msgid "{format} options"
-msgstr ""
+msgstr "Opções de {format}"
 
 #: src/ui/export.rs
 #, rust-format
 msgid "{n} of {total}, in this order"
-msgstr ""
+msgstr "{n} de {total}, nesta ordem"
 
 #: src/ui/export.rs
 #, rust-format
@@ -5782,6 +5844,8 @@ msgid ""
 "{pending} in {table} aren't exported. Export reads what is saved in the "
 "database. Save first {key}"
 msgstr ""
+"{pending} em {table} não são exportadas. A exportação lê o que está salvo no "
+"banco de dados. Salve antes {key}"
 
 #: src/ui/export.rs
 #, rust-format
@@ -5789,49 +5853,51 @@ msgid ""
 "{pending} in {table} isn't exported. Export reads what is saved in the "
 "database. Save first {key}"
 msgstr ""
+"{pending} em {table} não é exportada. A exportação lê o que está salvo no "
+"banco de dados. Salve antes {key}"
 
 #: src/ui/export_toast.rs
 #, rust-format
 msgid "Copying {table}"
-msgstr ""
+msgstr "Copiando {table}"
 
 #: src/ui/export_toast.rs src/ui/mod.rs src/ui/pending_bar.rs
 msgid "Dismiss"
-msgstr ""
+msgstr "Dispensar"
 
 #: src/ui/export_toast.rs
 msgid "Export cancelled. Nothing was saved: the partial file was removed."
-msgstr ""
+msgstr "Exportação cancelada. Nada foi salvo: o arquivo parcial foi removido."
 
 #: src/ui/export_toast.rs
 #, rust-format
 msgid "Exported {n} row to {file} · {size} · {time}"
 msgid_plural "Exported {n} rows to {file} · {size} · {time}"
-msgstr[0] ""
-msgstr[1] ""
+msgstr[0] "{n} linha exportada para {file} · {size} · {time}"
+msgstr[1] "{n} linhas exportadas para {file} · {size} · {time}"
 
 #: src/ui/export_toast.rs
 #, rust-format
 msgid "Exporting {file}"
-msgstr ""
+msgstr "Exportando {file}"
 
 #: src/ui/export_toast.rs
 #, rust-format
 msgid "Exporting {table}"
-msgstr ""
+msgstr "Exportando {table}"
 
 #: src/ui/export_toast.rs
 #, rust-format
 msgid "Exporting {table}, {n} percent"
-msgstr ""
+msgstr "Exportando {table}, {n} por cento"
 
 #: src/ui/export_toast.rs
 msgid "Hide"
-msgstr ""
+msgstr "Ocultar"
 
 #: src/ui/export_toast.rs
 msgid "Show in Finder"
-msgstr ""
+msgstr "Mostrar no Finder"
 
 #: src/ui/export_toast.rs src/ui/settings/sheet.rs
 msgid "Show in folder"
