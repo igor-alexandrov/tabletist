@@ -6826,7 +6826,8 @@ msgstr "таблица"
 msgid "move"
 msgstr "перемещение"
 
-#: src/ui/pane_hints.rs src/ui/workspace.rs
+#: src/ui/pane_hints.rs src/ui/quick_open.rs src/ui/sidebar.rs src/ui/start.rs
+#: src/ui/workspace.rs
 msgctxt "key hint"
 msgid "open"
 msgstr "открыть"
@@ -7195,7 +7196,7 @@ msgstr "фильтр подключений"
 msgid "key's passphrase"
 msgstr "парольную фразу ключа"
 
-#: src/ui/picker.rs src/ui/quick_open.rs src/ui/sidebar.rs src/ui/start.rs
+#: src/ui/picker.rs
 msgid "open"
 msgstr "открыто"
 

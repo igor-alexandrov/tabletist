@@ -6,7 +6,7 @@ use egui::{CornerRadius, Id, Rect, Sense, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::{ObjectKind, ObjectRef};
 
 use crate::format::display_safe;
-use crate::i18n::{Locale, Msgid, gettext, msgid, ngettext};
+use crate::i18n::{Locale, Msgid, gettext, msgid, ngettext, pmsgid};
 use crate::keymap::{Command, Keymap, Scope, Written};
 use crate::model::{Action, AgentsHere, ConnTabId, TreeNode, TreeRow, Workspace};
 use crate::style::Icon;
@@ -531,7 +531,7 @@ pub fn filter_focused(ctx: &egui::Context, tab: ConnTabId) -> bool {
 const HINTS: [(Command, Msgid); 4] = [
     (Command::ToggleSidebar, msgid("hide")),
     (Command::ToggleTree, msgid("tree")),
-    (Command::OpenObject, msgid("open")),
+    (Command::OpenObject, pmsgid("key hint", "open")),
     (Command::Export, msgid("export table")),
 ];
 
