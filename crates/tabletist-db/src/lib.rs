@@ -177,11 +177,10 @@ impl Connection {
         // read-only whatever was asked, and its adapter runs only reads.
         // Editing files is not built: a Files session reads, whatever
         // access it is asked for, and says so.
+        // A Redis session sends only the reads on `redis::READS`, and says so.
         let access = match spec.driver {
-            Driver::BigQuery | Driver::Files => Access::ReadOnly,
-            // Kept as asked, for what the window shows: the connection
-            // sends only reads either way (`redis::READS`).
-            Driver::Sqlite | Driver::Postgres | Driver::MySql | Driver::Redis => access,
+            Driver::BigQuery | Driver::Files | Driver::Redis => Access::ReadOnly,
+            Driver::Sqlite | Driver::Postgres | Driver::MySql => access,
         };
         let Some(ssh) = ssh else {
             return Ok(Self {

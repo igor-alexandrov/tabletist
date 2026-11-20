@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-20 09:52-0500\n"
+"POT-Creation-Date: 2026-11-20 13:07-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -4611,12 +4611,11 @@ msgstr "Имя"
 
 #: src/ui/connect_dialog/sheet.rs
 msgid ""
-"Only read commands run: GET, HGETALL, LRANGE, SMEMBERS, ZRANGE, XRANGE, "
-"SCAN, TYPE, TTL. On by default for production; turn off to edit."
+"Only read commands run: GET, HGETALL, LRANGE, SSCAN, ZRANGE, XRANGE, SCAN, "
+"TYPE, PTTL."
 msgstr ""
-"Выполняются только команды чтения: GET, HGETALL, LRANGE, SMEMBERS, ZRANGE, "
-"XRANGE, SCAN, TYPE, TTL. Для production включено по умолчанию; выключите, "
-"чтобы изменять данные."
+"Выполняются только команды чтения: GET, HGETALL, LRANGE, SSCAN, ZRANGE, "
+"XRANGE, SCAN, TYPE, PTTL."
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 msgid "Open read-only"
@@ -4693,14 +4692,6 @@ msgstr "URL"
 msgid "User"
 msgstr "Пользователь"
 
-#: src/ui/connect_dialog/sheet.rs
-msgid ""
-"Writes are allowed. Redis applies each command at once and can't roll it "
-"back."
-msgstr ""
-"Запись разрешена. Redis выполняет каждую команду сразу и не может её "
-"откатить."
-
 #: src/ui/connect_dialog/terminal.rs
 msgid "Block every write from this app"
 msgstr "Запрещать любую запись из этого приложения"
@@ -4741,10 +4732,6 @@ msgstr "Хост SSH : Порт"
 #: src/ui/connect_dialog/terminal.rs
 msgid "SSH tunnel"
 msgstr "Туннель SSH"
-
-#: src/ui/connect_dialog/terminal.rs
-msgid "Writes allowed"
-msgstr "Запись разрешена"
 
 #: src/ui/connect_dialog/terminal.rs src/ui/export.rs src/ui/structure.rs
 #: src/ui/workspace.rs

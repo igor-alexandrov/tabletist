@@ -67,9 +67,13 @@ fn is_files(form: &ConnectionForm) -> bool {
 }
 
 /// Whether the read-only box is on and cannot be turned off: a Files
-/// connection's, until editing files is built.
+/// connection's, until editing files is built, and a Redis one's, which
+/// sends only the read commands on `redis::READS`.
 fn read_only_fixed(form: &ConnectionForm) -> bool {
-    is_files(form)
+    match form.driver {
+        Driver::Files | Driver::Redis => true,
+        Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => false,
+    }
 }
 
 /// What a Files connection's read-only box says.

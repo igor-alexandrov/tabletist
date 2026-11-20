@@ -712,14 +712,10 @@ fn env_check(ui: &mut Ui, on: bool, name: &str, skin: &Skin) -> Response {
 const READ_ONLY_NOTE: Msgid =
     msgid("Blocks every write from this app. On by default for production; turn off to edit.");
 
-/// What a Redis connection's promise says, on and off: this version
-/// sends reads alone either way.
-const REDIS_READ_ONLY_NOTE: Msgid = msgid(
-    "Only read commands run: GET, HGETALL, LRANGE, SMEMBERS, ZRANGE, XRANGE, SCAN, TYPE, TTL. \
-     On by default for production; turn off to edit.",
-);
-const REDIS_WRITES_NOTE: Msgid =
-    msgid("Writes are allowed. Redis applies each command at once and can't roll it back.");
+/// What a Redis connection's fixed box says: this version sends only the
+/// commands on `redis::READS`, and these are the ones that read values.
+const REDIS_READ_ONLY_NOTE: Msgid =
+    msgid("Only read commands run: GET, HGETALL, LRANGE, SSCAN, ZRANGE, XRANGE, SCAN, TYPE, PTTL.");
 
 /// macOS: the read-only promise, on the environment's tint. The box shows
 /// the environment's default until it is clicked, and is the user's
@@ -760,8 +756,7 @@ fn safety(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
                     // tone.
                     let tone = theme::mix(palette.secondary, skin.env_ink(&skin.env), 0.4);
                     let note = match form.driver {
-                        Driver::Redis if on => REDIS_READ_ONLY_NOTE,
-                        Driver::Redis => REDIS_WRITES_NOTE,
+                        Driver::Redis => REDIS_READ_ONLY_NOTE,
                         Driver::Sqlite
                         | Driver::Postgres
                         | Driver::MySql

@@ -2549,14 +2549,11 @@ impl ConnectionForm {
     /// environment's default, which for production is
     /// [`Self::production_read_only`].
     pub fn read_only(&self) -> bool {
-        // Editing files is not built: a Files connection opens read-only.
+        // Editing files and keys is not built: a Files or Redis
+        // connection opens read-only.
         match self.driver {
-            Driver::Files => return true,
-            Driver::Postgres
-            | Driver::MySql
-            | Driver::Sqlite
-            | Driver::BigQuery
-            | Driver::Redis => {}
+            Driver::Files | Driver::Redis => return true,
+            Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => {}
         }
         self.read_only.unwrap_or_else(|| {
             // Production is the one environment read-only by default.
@@ -2569,14 +2566,10 @@ impl ConnectionForm {
     /// settings said when it was made; else not set, and the environment's
     /// rule applies.
     fn saved_read_only(&self) -> Option<bool> {
-        // A Files connection is saved read-only, as its box shows.
+        // A Files or Redis connection is saved read-only, as its box shows.
         match self.driver {
-            Driver::Files => return Some(true),
-            Driver::Postgres
-            | Driver::MySql
-            | Driver::Sqlite
-            | Driver::BigQuery
-            | Driver::Redis => {}
+            Driver::Files | Driver::Redis => return Some(true),
+            Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => {}
         }
         let new_production = self.editing.is_none() && self.environment().read_only_by_default();
         self.read_only

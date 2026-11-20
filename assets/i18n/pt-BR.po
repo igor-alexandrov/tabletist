@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-20 09:52-0500\n"
+"POT-Creation-Date: 2026-11-20 13:07-0500\n"
 "PO-Revision-Date: 2026-11-19 16:11-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -4562,8 +4562,8 @@ msgstr "Nome"
 
 #: src/ui/connect_dialog/sheet.rs
 msgid ""
-"Only read commands run: GET, HGETALL, LRANGE, SMEMBERS, ZRANGE, XRANGE, "
-"SCAN, TYPE, TTL. On by default for production; turn off to edit."
+"Only read commands run: GET, HGETALL, LRANGE, SSCAN, ZRANGE, XRANGE, SCAN, "
+"TYPE, PTTL."
 msgstr ""
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
@@ -4639,12 +4639,6 @@ msgstr "URL"
 msgid "User"
 msgstr "Usuário"
 
-#: src/ui/connect_dialog/sheet.rs
-msgid ""
-"Writes are allowed. Redis applies each command at once and can't roll it "
-"back."
-msgstr ""
-
 #: src/ui/connect_dialog/terminal.rs
 msgid "Block every write from this app"
 msgstr "Bloquear toda gravação a partir deste app"
@@ -4685,10 +4679,6 @@ msgstr "Host SSH : Porta"
 #: src/ui/connect_dialog/terminal.rs
 msgid "SSH tunnel"
 msgstr "Túnel SSH"
-
-#: src/ui/connect_dialog/terminal.rs
-msgid "Writes allowed"
-msgstr ""
 
 #: src/ui/connect_dialog/terminal.rs src/ui/export.rs src/ui/structure.rs
 #: src/ui/workspace.rs

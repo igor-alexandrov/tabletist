@@ -218,9 +218,10 @@ the string, or the rest as JSON; **Copy key** copies its name.
 
 ### Read-only
 
-This version only reads. Every command Tabletist sends is checked against
-a list, and any other is refused before it reaches the server, whatever
-**Open read-only** says: `AUTH`, `HELLO`, `PING`, `INFO`, `SELECT`,
+This version only reads, so **Open read-only** is on for a Redis
+connection and cannot be turned off. Every command Tabletist sends is
+checked against a list, and any other is refused before it reaches the
+server: `AUTH`, `HELLO`, `PING`, `INFO`, `SELECT`,
 `DBSIZE`, `SCAN`, `HSCAN`, `SSCAN`, `TYPE`, `PTTL`, `MEMORY USAGE`,
 `OBJECT ENCODING`, `GET`, `GETRANGE`, `STRLEN`, `HGETALL`, `HLEN`,
 `LRANGE`, `LLEN`, `SCARD`, `ZRANGE`, `ZCARD`, `XRANGE`, `XLEN`,

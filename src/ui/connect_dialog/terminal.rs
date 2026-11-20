@@ -383,12 +383,11 @@ pub(super) fn terminal_body(
             let line = role.row_height(ui.ctx(), look.faces);
             terminal_row_of(ui, &skin.say(msgid("Read-only")), line, skin, |ui, _| {
                 let name = gettext(skin.locale, "Open read-only");
-                let on = form.read_only();
                 let fixed = super::read_only_fixed(form);
                 let production = format!("· {}", skin.say(msgid("Default for production")));
                 let (promise, note) = match form.driver {
-                    Driver::Redis if on => (skin.say(msgid("Only read commands run")), production),
-                    Driver::Redis => (skin.say(msgid("Writes allowed")), production),
+                    // Fixed on: this version sends only reads.
+                    Driver::Redis => (skin.say(msgid("Only read commands run")), String::new()),
                     Driver::Sqlite
                     | Driver::Postgres
                     | Driver::MySql

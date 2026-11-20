@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-20 09:52-0500\n"
+"POT-Creation-Date: 2026-11-20 13:07-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -4554,14 +4554,8 @@ msgstr ""
 
 #: src/ui/connect_dialog/sheet.rs
 msgid ""
-"Only read commands run: GET, HGETALL, LRANGE, SMEMBERS, ZRANGE, XRANGE, "
-"SCAN, TYPE, TTL. On by default for production; turn off to edit."
-msgstr ""
-
-#: src/ui/connect_dialog/sheet.rs
-msgid ""
-"Writes are allowed. Redis applies each command at once and can't roll it "
-"back."
+"Only read commands run: GET, HGETALL, LRANGE, SSCAN, ZRANGE, XRANGE, SCAN, "
+"TYPE, PTTL."
 msgstr ""
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
@@ -4639,10 +4633,6 @@ msgstr ""
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "Only read commands run"
-msgstr ""
-
-#: src/ui/connect_dialog/terminal.rs
-msgid "Writes allowed"
 msgstr ""
 
 #: src/ui/connect_dialog/terminal.rs

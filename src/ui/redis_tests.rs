@@ -1262,3 +1262,36 @@ fn a_keys_length_is_counted_with_its_types_noun() {
         Some("21 запись")
     );
 }
+
+#[test]
+fn a_redis_connections_read_only_box_stays_on_and_says_what_runs() {
+    for look in [crate::theme::Look::macos(), crate::theme::Look::omarchy()] {
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        harness.app.apply(Action::NewConnection);
+        harness.click(&look.label("Redis"));
+        harness.settle();
+        assert!(form(&mut harness).read_only());
+        // The box cannot be turned off: this version sends only reads.
+        harness.click("Open read-only");
+        harness.settle();
+        assert!(form(&mut harness).read_only());
+        // The macOS note names only commands on the read list; neither
+        // look says writes are allowed.
+        if !look.terminal {
+            assert!(harness.has(
+                "Only read commands run: GET, HGETALL, LRANGE, SSCAN, ZRANGE, XRANGE, SCAN, \
+                 TYPE, PTTL."
+            ));
+        }
+        let tree = harness.settle();
+        let writes: Vec<_> = labels(&tree)
+            .into_iter()
+            .filter(|label| {
+                let label = label.to_lowercase();
+                label.contains("writes allowed") || label.contains("writes are allowed")
+            })
+            .collect();
+        assert!(writes.is_empty(), "{writes:?}");
+    }
+}
