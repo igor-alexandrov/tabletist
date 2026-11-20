@@ -78,6 +78,12 @@ pub enum Command {
         secrets: Secrets,
         host_keys: HostKeys,
     },
+    /// Stops the check in full that a Files connection's Test `request`
+    /// started, where it still runs: the dialog closed, or what it tested
+    /// changed.
+    StopCheck {
+        request: RequestId,
+    },
     Close {
         session: SessionId,
     },
@@ -486,6 +492,13 @@ pub enum Event {
         request: RequestId,
         result: Result<tabletist_db::FilesRead, Error>,
     },
+    /// One file of Test `request`'s check in full is read: to its end
+    /// (`failure` none), or not; `left` files are still to check.
+    FileChecked {
+        request: RequestId,
+        failure: Option<tabletist_db::files::Failure>,
+        left: usize,
+    },
     /// The Host aliases in ~/.ssh/config, for the connection dialog.
     SshHosts {
         request: RequestId,
@@ -884,7 +897,7 @@ impl Backend {
         };
         let outbox = self.outbox.clone();
         runtime.spawn_blocking(move || {
-            let result = tabletist_db::files::scan_past(&source, |file| reading.skips(file));
+            let result = tabletist_db::files::scan_past(&source, |file| reading.skips(file), false);
             let result = result.map_err(|error| match error {
                 Error::Connect(message) | Error::InvalidSpec(message) => message,
                 other => other.to_string(),
@@ -2179,6 +2192,9 @@ struct Worker {
     updates: updates::Updates,
     /// What stops each export that runs.
     exports: Arc<Mutex<HashMap<export::ExportId, export::Stopper>>>,
+    /// The checks in full that Files Tests run, by their Test: aborting
+    /// one drops its session, which stops DuckDB's statement.
+    checks: HashMap<RequestId, tokio::task::AbortHandle>,
     #[cfg(test)]
     watched: Watched,
 }
@@ -2200,6 +2216,7 @@ impl Worker {
             history: history::History::default(),
             updates: updates::Updates::default(),
             exports: Arc::default(),
+            checks: HashMap::new(),
             #[cfg(test)]
             watched: Watched::default(),
         };
@@ -2339,38 +2356,77 @@ impl Worker {
                 host_keys,
             } => {
                 let outbox = self.outbox.clone();
+                // A Files connection's Test reads the start of every file
+                // it can open, and says how much it read and which it
+                // could not; then it reads its CSV, TSV and NDJSON files to
+                // their end, one at a time, saying each.
+                let files = match spec.driver {
+                    tabletist_db::Driver::Files => true,
+                    tabletist_db::Driver::Postgres
+                    | tabletist_db::Driver::MySql
+                    | tabletist_db::Driver::Sqlite
+                    | tabletist_db::Driver::BigQuery => false,
+                };
+                if files {
+                    let task = tokio::spawn(async move {
+                        let connection = match Connection::open_files_to_test(&spec).await {
+                            Ok(connection) => connection,
+                            Err(error) => {
+                                outbox.emit(Event::FilesTested {
+                                    request,
+                                    result: Err(error),
+                                });
+                                return;
+                            }
+                        };
+                        let read =
+                            connection
+                                .read_files()
+                                .await
+                                .unwrap_or(Err(Error::Unsupported(
+                                    "only a Files connection reads files",
+                                )));
+                        let checks = match &read {
+                            Ok(read) => read.checks.clone(),
+                            Err(_) => Vec::new(),
+                        };
+                        outbox.emit(Event::FilesTested {
+                            request,
+                            result: read,
+                        });
+                        let mut left = checks.len();
+                        for name in checks {
+                            left -= 1;
+                            // A check that cannot finish says nothing of
+                            // the file: it is not a row the file has.
+                            let failure = connection.check_file(&name).await.ok().flatten();
+                            outbox.emit(Event::FileChecked {
+                                request,
+                                failure,
+                                left,
+                            });
+                        }
+                        let _ = connection.close().await;
+                    });
+                    self.checks.retain(|_, check| !check.is_finished());
+                    self.checks.insert(request, task.abort_handle());
+                    return;
+                }
                 tokio::spawn(async move {
                     let connected =
                         Connection::connect_with(&spec, &secrets, &host_keys, Access::ReadOnly)
                             .await;
-                    match spec.driver {
-                        // A Files connection's Test reads the start of every
-                        // file too, and says how much it read.
-                        tabletist_db::Driver::Files => {
-                            let result = match connected {
-                                Ok(connection) => {
-                                    let read = connection.read_files().await.unwrap_or(Err(
-                                        Error::Unsupported("only a Files connection reads files"),
-                                    ));
-                                    let closed = connection.close().await;
-                                    read.and_then(|read| closed.map(|()| read))
-                                }
-                                Err(error) => Err(error),
-                            };
-                            outbox.emit(Event::FilesTested { request, result });
-                        }
-                        tabletist_db::Driver::Postgres
-                        | tabletist_db::Driver::MySql
-                        | tabletist_db::Driver::Sqlite
-                        | tabletist_db::Driver::BigQuery => {
-                            let result = match connected {
-                                Ok(connection) => connection.close().await,
-                                Err(error) => Err(error),
-                            };
-                            outbox.emit(Event::Tested { request, result });
-                        }
-                    }
+                    let result = match connected {
+                        Ok(connection) => connection.close().await,
+                        Err(error) => Err(error),
+                    };
+                    outbox.emit(Event::Tested { request, result });
                 });
+            }
+            Command::StopCheck { request } => {
+                if let Some(check) = self.checks.remove(&request) {
+                    check.abort();
+                }
             }
             Command::Close { session } => {
                 if let Some(handle) = self.sessions.remove(&session) {
@@ -2654,6 +2710,7 @@ fn session_of(command: &Command) -> SessionId {
         | Command::ServerVersion { session, .. }
         | Command::SessionZone { session, .. } => *session,
         Command::Test { .. }
+        | Command::StopCheck { .. }
         | Command::LoadSecret { .. }
         | Command::StoreSecret { .. }
         | Command::Save { .. }
@@ -2720,6 +2777,7 @@ fn requests_of(command: &Command) -> Vec<RequestId> {
         | Command::SessionZone { request, .. } => vec![*request],
         Command::Connect { .. }
         | Command::Test { .. }
+        | Command::StopCheck { .. }
         | Command::Close { .. }
         | Command::Cancel { .. }
         | Command::LoadSecret { .. }
@@ -2865,6 +2923,7 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         },
         Command::Connect { .. }
         | Command::Test { .. }
+        | Command::StopCheck { .. }
         | Command::Close { .. }
         | Command::Cancel { .. }
         | Command::LoadSecret { .. }
@@ -3299,6 +3358,7 @@ async fn run_session(
             }
             Command::Connect { .. }
             | Command::Test { .. }
+            | Command::StopCheck { .. }
             | Command::Close { .. }
             | Command::Cancel { .. }
             | Command::LoadSecret { .. }
@@ -4155,6 +4215,93 @@ mod tests {
             ),
             other => panic!("expected the folder read, got {other:?}"),
         }
+    }
+
+    /// A Files Test says what it read, then reads its CSV, TSV and NDJSON
+    /// files to their end, one at a time, saying each: here a value past
+    /// the sample in `returns.csv`.
+    #[test]
+    fn a_files_test_checks_its_files_in_full_after_it_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        tabletist_db::fixtures::write_bookshop_files(dir.path()).unwrap();
+        let mut text = String::from("order_id,returned_at,reason\n");
+        for order in 1..=30_000 {
+            text.push_str(&format!("{order},2026-02-{:02},damaged\n", order % 28 + 1));
+        }
+        text.push_str("30001,N/A,lost in the post\n");
+        std::fs::write(dir.path().join("returns.csv"), text).unwrap();
+        let spec = ConnectSpec::files(tabletist_db::files::Source::Folder(dir.path().to_owned()));
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        backend.send(Command::Test {
+            request: RequestId(7),
+            spec,
+            secrets: Secrets::default(),
+            host_keys: HostKeys::default(),
+        });
+        let checks = match backend.wait(WAIT) {
+            Some(Event::FilesTested {
+                request: RequestId(7),
+                result: Ok(read),
+            }) => {
+                assert!(read.failed.is_empty(), "{read:?}");
+                read.checks.len()
+            }
+            other => panic!("expected the Test, got {other:?}"),
+        };
+        assert_eq!(checks, 4);
+        let mut failures = Vec::new();
+        for left in (0..checks).rev() {
+            match backend.wait(WAIT) {
+                Some(Event::FileChecked {
+                    request: RequestId(7),
+                    failure,
+                    left: said,
+                }) => {
+                    assert_eq!(said, left);
+                    failures.extend(failure);
+                }
+                other => panic!("expected a file checked, got {other:?}"),
+            }
+        }
+        assert_eq!(
+            failures
+                .iter()
+                .map(|failure| failure.file.as_str())
+                .collect::<Vec<_>>(),
+            ["returns.csv"]
+        );
+    }
+
+    /// Stopped before it answers, a Files Test checks nothing. The worker
+    /// takes the Test and the stop on one thread before the Test's task
+    /// runs at all. (A stop during a check drops the same task, and
+    /// dropping its statement interrupts DuckDB.)
+    #[test]
+    fn a_files_test_stopped_before_it_answers_checks_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        tabletist_db::fixtures::write_bookshop_files(dir.path()).unwrap();
+        let spec = ConnectSpec::files(tabletist_db::files::Source::Folder(dir.path().to_owned()));
+        let (outbox, received) = quiet_outbox();
+        one_thread().block_on(async {
+            let (mut worker, _ready) = Worker::new(outbox, Keyring::memory());
+            worker.handle(Command::Test {
+                request: RequestId(8),
+                spec,
+                secrets: Secrets::default(),
+                host_keys: HostKeys::default(),
+            });
+            worker.handle(Command::StopCheck {
+                request: RequestId(8),
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        });
+        let after: Vec<Event> = received.try_iter().collect();
+        assert!(
+            after
+                .iter()
+                .all(|event| !matches!(event, Event::FileChecked { .. })),
+            "{after:?}"
+        );
     }
 
     #[test]

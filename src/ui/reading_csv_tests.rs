@@ -280,6 +280,7 @@ fn a_skipped_file_is_left_out_of_the_found_line() {
             })
             .collect(),
         missing: Vec::new(),
+        unreadable: Vec::new(),
     };
     form_mut(&mut harness).files_found =
         crate::model::FilesFound::Read(scan(&["orders", "returns"]));
@@ -305,6 +306,7 @@ fn a_skipped_file_is_left_out_of_the_found_line() {
                 found("orders.tsv", tabletist_db::files::Format::Tsv),
             ],
             missing: Vec::new(),
+            unreadable: Vec::new(),
         });
     form_mut(&mut harness).files_csv.overrides = vec![Override {
         file: "orders.tsv".into(),

@@ -17,6 +17,7 @@ mod agents_tests;
 mod agent_settings_tests;
 #[cfg(test)]
 mod appearance_settings_tests;
+pub mod banner;
 pub mod calendar;
 #[cfg(test)]
 mod calendar_tests;
@@ -116,6 +117,8 @@ pub mod pane_hints;
 mod pane_hints_tests;
 #[cfg(test)]
 mod pane_keys_tests;
+#[cfg(test)]
+mod partial_test_tests;
 pub mod password_prompt;
 pub mod pending_bar;
 pub mod picker;

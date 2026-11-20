@@ -135,7 +135,7 @@ impl Inner {
                     .as_ref()
                     .ok_or_else(|| Error::InvalidSpec("choose a folder or files".into()))?;
                 Ok(Self::Files(Box::new(
-                    duck::Conn::open(source, &spec.csv).await?,
+                    duck::Conn::open(source, &spec.csv, false).await?,
                 )))
             }
         }
@@ -615,6 +615,34 @@ impl Connection {
             Inner::MySql(conn) => conn.count_rows(query).await,
             Inner::BigQuery(conn) => conn.count_rows(query).await,
             Inner::Files(conn) => conn.count_rows(query).await,
+        }
+    }
+
+    /// A Files connection's session for its Test: every file it can open,
+    /// those it cannot left out and said by [`Connection::read_files`],
+    /// where a session to browse does not open with one.
+    pub async fn open_files_to_test(spec: &ConnectSpec) -> Result<Self> {
+        let source = spec
+            .files
+            .as_ref()
+            .ok_or_else(|| Error::InvalidSpec("choose a folder or files".into()))?;
+        Ok(Self {
+            inner: Inner::Files(Box::new(duck::Conn::open(source, &spec.csv, true).await?)),
+            access: Access::ReadOnly,
+            tunnel: None,
+        })
+    }
+
+    /// The whole of a Files connection's file whose table is `name`, read
+    /// to the end, as a Test's check in the background does: `None` when
+    /// every row reads, or why one does not. `None` too for any other
+    /// driver.
+    pub async fn check_file(&self, name: &str) -> Result<Option<files::Failure>> {
+        match &self.inner {
+            Inner::Files(conn) => conn.check(name).await,
+            Inner::Sqlite(_) | Inner::Postgres(_) | Inner::MySql(_) | Inner::BigQuery(_) => {
+                Ok(None)
+            }
         }
     }
 

@@ -753,6 +753,9 @@ commands! {
     FormAddFiles = "form_add_files",
     FormRemoveFile = "form_remove_file",
     FormResetOverride = "form_reset_override",
+    FormFixText = "form_fix_text",
+    FormFixEmpty = "form_fix_empty",
+    FormFixSkip = "form_fix_skip",
     SettingsMove = "settings_move",
     SettingsChange = "settings_change",
     SettingsToggle = "settings_toggle",
@@ -1294,6 +1297,21 @@ impl Command {
             ),
             C::FormResetOverride => info(
                 msgid("Reset the CSV override under the cursor of a Files connection"),
+                "",
+                Prompts,
+            ),
+            C::FormFixText => info(
+                msgid("Read the column a Files connection's Test could not read as text"),
+                "",
+                Prompts,
+            ),
+            C::FormFixEmpty => info(
+                msgid("Read the value a Files connection's Test could not read as empty"),
+                "",
+                Prompts,
+            ),
+            C::FormFixSkip => info(
+                msgid("Skip the file a Files connection's Test could not read"),
                 "",
                 Prompts,
             ),
@@ -2807,6 +2825,10 @@ pub const BINDINGS: &[Binding] = {
         bind(C::FormAddFiles, PROMPT, NONE, keys(&[k("a")])).when(When::ConnectionForm),
         bind(C::FormRemoveFile, PROMPT, NONE, keys(&[k("x")])).when(When::ConnectionForm),
         bind(C::FormResetOverride, PROMPT, NONE, keys(&[k("R")])).when(When::ConnectionForm),
+        // The partial Test's banner: its fixes, a letter each.
+        bind(C::FormFixText, PROMPT, NONE, keys(&[k("t")])).when(When::ConnectionForm),
+        bind(C::FormFixEmpty, PROMPT, NONE, keys(&[k("e")])).when(When::ConnectionForm),
+        bind(C::FormFixSkip, PROMPT, NONE, keys(&[k("s")])).when(When::ConnectionForm),
         bind(
             C::SettingsMove,
             PROMPT,

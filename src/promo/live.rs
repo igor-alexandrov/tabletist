@@ -263,6 +263,7 @@ impl Live {
                 // Nothing is written, saved, stored, watched, exported,
                 // revealed, notified or closed here.
                 Command::Test { .. }
+                | Command::StopCheck { .. }
                 | Command::Close { .. }
                 | Command::Cancel { .. }
                 | Command::Export(_)

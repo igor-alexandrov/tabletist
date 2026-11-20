@@ -71,6 +71,7 @@ fn exports(folder: &str) -> Scan {
             found("returns.csv", Format::Csv, 50_000_000),
         ],
         missing: Vec::new(),
+        unreadable: Vec::new(),
     }
 }
 
@@ -359,6 +360,8 @@ fn a_test_reads_every_file_and_says_how_much() {
             result: Ok(FilesRead {
                 files: 3,
                 bytes: 2_400_000_000,
+                failed: Vec::new(),
+                checks: Vec::new(),
             }),
         }));
         let said = look.label("Read 3 files · 2.4 GB");
@@ -404,6 +407,8 @@ fn what_a_files_test_read_is_not_said_of_another_type() {
             result: Ok(FilesRead {
                 files: 3,
                 bytes: 2_400_000_000,
+                failed: Vec::new(),
+                checks: Vec::new(),
             }),
         }));
         // A SQLite Test passed after it, the Files one's read still held.
@@ -436,6 +441,8 @@ fn a_test_of_another_source_is_not_said_of_this_one() {
         let read = Ok(FilesRead {
             files: 3,
             bytes: 2_400_000_000,
+            failed: Vec::new(),
+            checks: Vec::new(),
         });
         harness.app.apply(Action::TestConnection);
         let TestState::Running(request) = form(&harness).test else {
@@ -485,7 +492,12 @@ fn a_test_of_another_source_is_not_said_of_this_one() {
         harness.app.apply(Action::SetDriver(Driver::Sqlite));
         harness.app.apply(Action::Backend(Event::FilesTested {
             request,
-            result: Ok(FilesRead { files: 3, bytes: 1 }),
+            result: Ok(FilesRead {
+                files: 3,
+                bytes: 1,
+                failed: Vec::new(),
+                checks: Vec::new(),
+            }),
         }));
         assert_eq!(form(&harness).test, TestState::Idle, "{}", look.name);
         assert!(form(&harness).files_tested.is_none(), "{}", look.name);
