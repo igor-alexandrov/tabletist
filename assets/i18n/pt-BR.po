@@ -4495,7 +4495,7 @@ msgstr "Exportar seleção…"
 #: src/ui/data_view.rs src/ui/every_row_prompt.rs src/ui/review.rs
 msgctxt "list join"
 msgid " and "
-msgstr " e"
+msgstr " e "
 
 #: src/ui/data_view.rs
 msgid "1 row selected"
