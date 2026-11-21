@@ -12,6 +12,7 @@ use crate::env::Environment;
 use crate::paths::AppDirs;
 
 pub(crate) mod file;
+pub mod groups;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConnectionId(pub String);

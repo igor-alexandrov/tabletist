@@ -55,66 +55,13 @@ fn baseline(laid: &crate::typography::Laid) -> f32 {
         .map_or(laid.height() * 0.8, |glyph| glyph.pos.y)
 }
 
-/// Connections under one heading: those sharing a name, then the local
-/// and the remote rest.
-pub struct Group<'a> {
-    pub title: String,
-    pub connections: Vec<&'a SavedConnection>,
-}
-
-/// `connections` in groups: a name two or more share heads a group of its
-/// own; the others go under Local or Remote by where they connect.
-pub fn groups<'a>(connections: &[&'a SavedConnection]) -> Vec<Group<'a>> {
-    let mut named: Vec<Group<'a>> = Vec::new();
-    let mut local = Vec::new();
-    let mut remote = Vec::new();
-    for connection in connections {
-        let shared = connections
-            .iter()
-            .filter(|other| other.name == connection.name)
-            .count()
-            > 1;
-        if shared {
-            match named
-                .iter_mut()
-                .find(|group| group.title == connection.name)
-            {
-                Some(group) => group.connections.push(connection),
-                None => named.push(Group {
-                    title: connection.name.clone(),
-                    connections: vec![connection],
-                }),
-            }
-        } else if is_local(connection) {
-            local.push(*connection);
-        } else {
-            remote.push(*connection);
-        }
-    }
-    named.sort_by_key(|group| group.title.to_lowercase());
-    for (title, connections) in [("Local", local), ("Remote", remote)] {
-        if !connections.is_empty() {
-            named.push(Group {
-                title: title.into(),
-                connections,
-            });
-        }
-    }
-    named
-}
+pub use crate::connections::groups::{Group, groups};
 
 /// Whether a connection stays on this machine: a file, or a local host
 /// without a tunnel.
 fn is_local(connection: &SavedConnection) -> bool {
-    use tabletist_db::Driver;
     let spec = &connection.spec;
-    match spec.driver {
-        Driver::Sqlite | Driver::Files => true,
-        Driver::Postgres | Driver::MySql => {
-            spec.ssh.is_none() && crate::model::is_local_host(&spec.host)
-        }
-        Driver::BigQuery => false,
-    }
+    crate::connections::groups::stays_on_this_machine(spec.driver, &spec.host, spec.ssh.is_some())
 }
 
 /// The connections the picker lists, in its order: grouped and filtered by
