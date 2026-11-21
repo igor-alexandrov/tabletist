@@ -536,7 +536,9 @@ impl Connection {
     /// all of them when there are none. Sent to `to` as the columns, then
     /// batches of up to `batch` rows, read-only: one run streamed in two
     /// round trips on PostgreSQL once the table's shape is read, unbuffered
-    /// on MySQL, stepped on SQLite, so no more than a batch is read ahead
+    /// on MySQL and MariaDB in one round trip once the shape is read
+    /// (through the binary protocol, in four, for a table with a FLOAT),
+    /// stepped on SQLite, so no more than a batch is read ahead
     /// of what `to` has taken (on PostgreSQL, a batch and what the socket
     /// holds); on a Files connection
     /// a chunk of DuckDB's at a time, so no more than a batch and a chunk.
