@@ -577,6 +577,7 @@ const PACKET_TOO_LARGE: u16 = 1153;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+mod export;
 mod hidden;
 mod script;
 mod views;
@@ -1018,7 +1019,8 @@ impl Conn {
         rows.into_iter().map(from_row).collect()
     }
 
-    pub async fn primary_key(&self, object: &ObjectRef) -> Result<Vec<String>> {
+    #[cfg(test)]
+    async fn primary_key(&self, object: &ObjectRef) -> Result<Vec<String>> {
         self.catalog(PRIMARY_KEY, (&object.schema, &object.name))
             .await
     }
@@ -1126,22 +1128,6 @@ impl Conn {
         Ok(described.structure(&checks, self.version.contains("MariaDB")))
     }
 
-    /// The byte string columns a filter of `query` compares as bytes when
-    /// its value reads as bytes; empty, without asking, when no filter has
-    /// such a value.
-    async fn binary_columns(&self, query: &RowQuery) -> Result<Vec<(String, ColumnClass)>> {
-        if !crate::dialect::reads_bytes(query) {
-            return Ok(Vec::new());
-        }
-        let names: Vec<String> = self
-            .catalog(BINARY_COLUMNS, (&query.object.schema, &query.object.name))
-            .await?;
-        Ok(names
-            .into_iter()
-            .map(|name| (name, ColumnClass::Binary))
-            .collect())
-    }
-
     /// The CHECK constraints' `question` (see [`structure_questions`])
     /// asked alone, where the message it went last in stopped before it:
     /// see [`Conn::checks_answered`].
@@ -1187,6 +1173,24 @@ impl Conn {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         shapes.get(object).cloned()
+    }
+
+    /// The shape an export builds its statement from: the one this
+    /// session last read of `object`, or read now in one round trip (see
+    /// [`export::read_shape`]) and remembered, so that
+    /// [`Adapter::export_statement`] and then [`Adapter::stream_rows`]
+    /// read it once between them.
+    async fn export_shape(&self, object: &ObjectRef) -> Result<Shape> {
+        if let Some(shape) = self.known_shape(object) {
+            return Ok(shape);
+        }
+        let shape = {
+            let mut session = self.conn.lock().await;
+            let conn = session.conn()?;
+            export::read_shape(conn, object).await?
+        };
+        self.remember(object, shape.clone());
+        Ok(shape)
     }
 
     fn remember(&self, object: &ObjectRef, shape: Shape) {
@@ -1594,12 +1598,13 @@ impl Adapter for Conn {
     }
 
     async fn export_statement(&self, query: &RowQuery, columns: &[String]) -> Result<String> {
-        let key = self.primary_key(&query.object).await?;
-        let binary = self.binary_columns(query).await?;
-        Dialect::MySql.shown_export(query, &key, &binary, columns)
+        let shape = self.export_shape(&query.object).await?;
+        Dialect::MySql.shown_export(query, &shape.key, &shape.classes(query), columns)
     }
 
-    /// A table's export rows, through `stream_sql`.
+    /// A table's export rows, built from the shape read for
+    /// `export_statement` (see [`Conn::export_shape`]), through
+    /// `stream_sql`.
     async fn stream_rows(
         &self,
         query: &RowQuery,
@@ -1608,9 +1613,8 @@ impl Adapter for Conn {
         to: &tokio::sync::mpsc::Sender<crate::Streamed>,
         stop: &StopFlag,
     ) -> Result<u64> {
-        let key = self.primary_key(&query.object).await?;
-        let binary = self.binary_columns(query).await?;
-        let sql = Dialect::MySql.export_rows(query, &key, &binary, columns)?;
+        let shape = self.export_shape(&query.object).await?;
+        let sql = Dialect::MySql.export_rows(query, &shape.key, &shape.classes(query), columns)?;
         self.stream_sql(&sql, batch, to, stop).await
     }
 
@@ -4708,7 +4712,7 @@ mod tests {
 
     /// Whether the session is inside a transaction, by the server's status
     /// after a query of its own.
-    async fn in_transaction(conn: &Conn) -> bool {
+    pub(super) async fn in_transaction(conn: &Conn) -> bool {
         let mut conn = conn.conn.lock().await;
         conn.query_drop("DO 1").await.unwrap();
         status(&conn).contains(StatusFlags::SERVER_STATUS_IN_TRANS)
