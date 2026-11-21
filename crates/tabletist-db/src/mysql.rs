@@ -889,6 +889,10 @@ impl Conn {
     ) -> Result<u64> {
         let mut session = self.conn.lock().await;
         let conn = session.conn()?;
+        if stop.is_stopped() {
+            stop.finish();
+            return Err(Error::Cancelled);
+        }
         let streamed = async {
             begin_read(conn).await.map_err(StreamFailed::Before)?;
             stream_into(conn, sql, batch, to, stop).await
@@ -905,6 +909,40 @@ impl Conn {
             // rollback now would read every one of them first. The
             // export's connection is closed after a failure, which ends
             // the transaction with it (see `Connection::stream_rows`).
+            Err(StreamFailed::PartWay(error)) => Err(crate::agent::over_its_time(error)),
+        }
+    }
+
+    /// An export's rows in one round trip (see [`export::stream_message`]),
+    /// where the statement's values all have a literal; otherwise through
+    /// `stream_sql`. The caller has made sure no column is a FLOAT. A stop
+    /// that comes before the message keeps it from going.
+    async fn stream_in_one(
+        &self,
+        sql: &crate::dialect::Sql,
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        let Some(values) = sql.params.iter().map(literal).collect::<Option<Vec<_>>>() else {
+            return self.stream_sql(sql, batch, to, stop).await;
+        };
+        driver_parameter(&sql.text)?;
+        let mut session = self.conn.lock().await;
+        let conn = session.conn()?;
+        if stop.is_stopped() {
+            stop.finish();
+            return Err(Error::Cancelled);
+        }
+        let streamed = export::stream_message(conn, &sql.text, &values, batch, to, stop).await;
+        stop.finish();
+        match streamed {
+            // The message's own rollback ended the transaction.
+            Ok(sent) => Ok(sent),
+            Err(StreamFailed::Before(error)) => end_read(conn, Err(error))
+                .await
+                .map_err(crate::agent::over_its_time),
+            // As in `stream_sql`: the connection is closed after this.
             Err(StreamFailed::PartWay(error)) => Err(crate::agent::over_its_time(error)),
         }
     }
@@ -1603,8 +1641,9 @@ impl Adapter for Conn {
     }
 
     /// A table's export rows, built from the shape read for
-    /// `export_statement` (see [`Conn::export_shape`]), through
-    /// `stream_sql`.
+    /// `export_statement` (see [`Conn::export_shape`]): in one message
+    /// (see [`Conn::stream_in_one`]), or through `stream_sql` for a table
+    /// with a FLOAT.
     async fn stream_rows(
         &self,
         query: &RowQuery,
@@ -1615,10 +1654,17 @@ impl Adapter for Conn {
     ) -> Result<u64> {
         let shape = self.export_shape(&query.object).await?;
         let sql = Dialect::MySql.export_rows(query, &shape.key, &shape.classes(query), columns)?;
-        self.stream_sql(&sql, batch, to, stop).await
+        if shape.floats {
+            return self.stream_sql(&sql, batch, to, stop).await;
+        }
+        self.stream_in_one(&sql, batch, to, stop).await
     }
 
-    /// A statement of the person's, as `stream_rows` streams a table's.
+    /// A statement of the person's, as `stream_rows` streams a table's:
+    /// prepared through the driver first, which gives its columns' types
+    /// (and keeps it prepared for `stream_sql`), then in one message, or
+    /// through the binary protocol where a column is a FLOAT or the prepare
+    /// gave no columns.
     async fn stream_statement(
         &self,
         text: &str,
@@ -1630,7 +1676,18 @@ impl Adapter for Conn {
             text: text.to_owned(),
             params: Vec::new(),
         };
-        self.stream_sql(&sql, batch, to, stop).await
+        let metas = {
+            let mut session = self.conn.lock().await;
+            let conn = session.conn()?;
+            let statement = prepare(conn, &sql)
+                .await
+                .map_err(crate::agent::over_its_time)?;
+            column_metas(&statement.columns())
+        };
+        if metas.is_empty() || floats(&metas) {
+            return self.stream_sql(&sql, batch, to, stop).await;
+        }
+        self.stream_in_one(&sql, batch, to, stop).await
     }
 
     /// The number of rows, inside a read-only transaction, in one message
