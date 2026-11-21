@@ -157,6 +157,8 @@ mod tree_groups_tests;
 #[cfg(test)]
 mod tree_reload_tests;
 #[cfg(test)]
+mod two_databases_tests;
+#[cfg(test)]
 mod typing_settings_tests;
 #[cfg(test)]
 mod update_settings_tests;

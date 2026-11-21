@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-21 10:28-0500\n"
+"POT-Creation-Date: 2026-11-21 10:36-0500\n"
 "PO-Revision-Date: 2026-11-19 16:11-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -1529,6 +1529,10 @@ msgstr "Abrir um recente pelo número"
 #: crates/tabletist-core/src/keymap.rs
 msgid "Open a recent object"
 msgstr "Abrir um objeto recente"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open database in a new window"
+msgstr "Abrir o banco de dados em uma nova janela"
 
 #: crates/tabletist-core/src/keymap.rs
 msgid "Open every group"

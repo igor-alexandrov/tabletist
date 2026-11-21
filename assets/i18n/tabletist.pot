@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-21 10:28-0500\n"
+"POT-Creation-Date: 2026-11-21 10:36-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -741,6 +741,10 @@ msgstr ""
 
 #: crates/tabletist-core/src/keymap.rs src/app/commands.rs src/ui/start.rs
 msgid "Switch database"
+msgstr ""
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open database in a new window"
 msgstr ""
 
 #: crates/tabletist-core/src/keymap.rs src/app/commands.rs src/menu.rs

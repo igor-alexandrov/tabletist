@@ -271,6 +271,8 @@ pub enum When {
     DeletingConnection,
     /// The Copy as menu is open: its letters pick a format.
     CopyAs,
+    /// The database menu is open: the keys of its rows.
+    DatabaseMenu,
     /// The Export sheet (the terminal look's float) is open.
     Export,
     /// A failed export's line stands in the terminal look's status line.
@@ -466,6 +468,7 @@ commands! {
     Connections = "connections",
     GoToConnectionWindow = "go_to_connection_window",
     SwitchDatabase = "switch_database",
+    OpenDatabaseInNewWindow = "open_database_in_new_window",
     Settings = "settings",
     CheckForUpdates = "check_for_updates",
     LargerText = "larger_text",
@@ -853,6 +856,7 @@ impl Command {
                 Window,
             ),
             C::SwitchDatabase => info(msgid("Switch database"), "Switch database", Window),
+            C::OpenDatabaseInNewWindow => info(msgid("Open database in a new window"), "", Window),
             C::Settings => info(msgid("Settings"), "Settings", Window),
             C::CheckForUpdates => info(msgid("Check for Updates…"), "", Window),
             C::LargerText => info(msgid("Larger"), "", Window),
@@ -1529,6 +1533,15 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("ctrl+shift+1..9")]),
         ),
         bind(C::SwitchDatabase, GLOBAL, NONE, keys(&[k("ctrl+shift+d")])),
+        // On a row of the database menu: the database in a new window,
+        // where Enter switches this one.
+        bind(
+            C::OpenDatabaseInNewWindow,
+            PROMPT,
+            keys(&[k("cmd+enter")]),
+            keys(&[k("ctrl+enter")]),
+        )
+        .when(When::DatabaseMenu),
         // macOS's Tabletist menu has it; Omarchy's prompt.
         bind(C::CheckForUpdates, GLOBAL, NONE, keys(&[k(":update")])),
         bind(
