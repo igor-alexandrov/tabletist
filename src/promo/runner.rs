@@ -175,6 +175,7 @@ impl Film {
             harness.app.connections.upsert(SavedConnection {
                 id: ConnectionId::new(),
                 name: other.name.clone(),
+                group: None,
                 environment: other.environment,
                 read_only: Some(false),
                 password: PasswordMode::None,
@@ -186,6 +187,7 @@ impl Film {
         let saved = SavedConnection {
             id: ConnectionId::new(),
             name: name.into(),
+            group: None,
             environment: Environment::Dev,
             read_only: Some(false),
             password: PasswordMode::None,

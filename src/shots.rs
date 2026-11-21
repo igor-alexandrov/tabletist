@@ -32,6 +32,7 @@ fn saved() -> SavedConnection {
     SavedConnection {
         id: ConnectionId::new(),
         name: "Bookshop".into(),
+        group: None,
         environment: Environment::Dev,
         read_only: None,
         password: PasswordMode::None,
@@ -69,6 +70,7 @@ fn edit_production(harness: &mut Harness) {
     harness.app.connections.upsert(SavedConnection {
         id: id.clone(),
         name: "Bookshop".into(),
+        group: None,
         environment: Environment::Production,
         read_only: None,
         password: PasswordMode::Keyring,
@@ -2323,6 +2325,7 @@ pub(crate) mod mock {
             harness.app.connections.upsert(SavedConnection {
                 id: id.clone(),
                 name: name.into(),
+                group: None,
                 environment,
                 read_only: None,
                 password: PasswordMode::None,

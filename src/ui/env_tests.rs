@@ -131,6 +131,7 @@ fn the_connections_list_shows_each_environment_in_its_colours() {
                 .upsert(crate::connections::SavedConnection {
                     id: crate::connections::ConnectionId::new(),
                     name: format!("Bookshop {env:?}"),
+                    group: None,
                     environment: env,
                     read_only: None,
                     password: crate::connections::PasswordMode::None,

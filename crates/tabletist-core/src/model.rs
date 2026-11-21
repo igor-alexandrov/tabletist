@@ -2913,6 +2913,7 @@ impl ConnectionForm {
         Ok(crate::connections::SavedConnection {
             id: self.editing.clone().unwrap_or_else(ConnectionId::new),
             name: name.to_owned(),
+            group: None,
             environment: self.environment(),
             read_only: self.saved_read_only(),
             password,
@@ -9205,6 +9206,7 @@ mod tests {
         let saved = SavedConnection {
             id: ConnectionId("exports".into()),
             name: "Bookshop exports".into(),
+            group: None,
             environment: crate::env::Environment::Local,
             read_only: Some(true),
             password: crate::connections::PasswordMode::None,

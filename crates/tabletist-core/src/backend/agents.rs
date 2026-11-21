@@ -1121,6 +1121,7 @@ mod tests {
         SavedConnection {
             id: ConnectionId(id.into()),
             name: name.into(),
+            group: None,
             environment,
             read_only: Some(false),
             password: PasswordMode::None,

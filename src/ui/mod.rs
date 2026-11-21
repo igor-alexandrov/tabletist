@@ -4052,6 +4052,7 @@ value_tags   = true
         let saved = crate::connections::SavedConnection {
             id: crate::connections::ConnectionId::new(),
             name: name.into(),
+            group: None,
             environment: crate::env::Environment::Production,
             read_only: None,
             password: crate::connections::PasswordMode::None,
@@ -4154,6 +4155,7 @@ value_tags   = true
                 .upsert(crate::connections::SavedConnection {
                     id: crate::connections::ConnectionId::new(),
                     name: "Bookshop".into(),
+                    group: None,
                     environment: crate::env::Environment::Dev,
                     read_only: None,
                     password: crate::connections::PasswordMode::None,
@@ -4226,6 +4228,7 @@ value_tags   = true
             .upsert(crate::connections::SavedConnection {
                 id: crate::connections::ConnectionId::new(),
                 name: "Production".into(),
+                group: None,
                 environment: crate::env::Environment::Production,
                 read_only: None,
                 password: crate::connections::PasswordMode::Ask,
@@ -4718,6 +4721,7 @@ value_tags   = true
             .upsert(crate::connections::SavedConnection {
                 id: crate::connections::ConnectionId::new(),
                 name: "Production".into(),
+                group: None,
                 environment: crate::env::Environment::Production,
                 read_only: None,
                 password: crate::connections::PasswordMode::None,
@@ -9348,6 +9352,7 @@ value_tags   = true
         let saved = crate::connections::SavedConnection {
             id: crate::connections::ConnectionId::new(),
             name: "Prod".into(),
+            group: None,
             environment: crate::env::Environment::Production,
             read_only: None,
             password: crate::connections::PasswordMode::Ask,
@@ -9381,6 +9386,7 @@ value_tags   = true
         let saved = crate::connections::SavedConnection {
             id: crate::connections::ConnectionId::new(),
             name: "Prod".into(),
+            group: None,
             environment: crate::env::Environment::None,
             read_only: None,
             password: crate::connections::PasswordMode::Ask,
@@ -10057,6 +10063,7 @@ value_tags   = true
         let saved = crate::connections::SavedConnection {
             id: crate::connections::ConnectionId::new(),
             name: "Prod".into(),
+            group: None,
             environment: crate::env::Environment::Production,
             read_only: None,
             password: crate::connections::PasswordMode::None,
@@ -10964,6 +10971,7 @@ value_tags   = true
         let saved = crate::connections::SavedConnection {
             id: crate::connections::ConnectionId::new(),
             name: "Prod".into(),
+            group: None,
             environment: crate::env::Environment::Production,
             read_only: None,
             password: crate::connections::PasswordMode::None,
@@ -10990,6 +10998,7 @@ value_tags   = true
         let saved = crate::connections::SavedConnection {
             id: crate::connections::ConnectionId::new(),
             name: "Prod".into(),
+            group: None,
             environment: crate::env::Environment::Production,
             read_only: None,
             password: crate::connections::PasswordMode::None,

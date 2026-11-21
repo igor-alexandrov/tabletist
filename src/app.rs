@@ -10953,6 +10953,7 @@ mod tests {
         let saved = SavedConnection {
             id: ConnectionId::new(),
             name: "Local".into(),
+            group: None,
             environment: crate::env::Environment::Dev,
             read_only: None,
             password: crate::connections::PasswordMode::None,
@@ -16632,6 +16633,7 @@ masked = ["orders.email"]
         let saved = SavedConnection {
             id: ConnectionId::new(),
             name: "Prod".into(),
+            group: None,
             environment: crate::env::Environment::Production,
             read_only: None,
             password: mode,
@@ -17947,6 +17949,7 @@ masked = ["orders.email"]
         let saved = SavedConnection {
             id: ConnectionId::new(),
             name: "Shop".into(),
+            group: None,
             environment: crate::env::Environment::None,
             read_only: None,
             password: PasswordMode::None,
@@ -18195,6 +18198,7 @@ masked = ["orders.email"]
         let saved = SavedConnection {
             id: ConnectionId::new(),
             name: "Shop".into(),
+            group: None,
             environment: crate::env::Environment::None,
             read_only: None,
             password: PasswordMode::None,
@@ -18305,6 +18309,7 @@ masked = ["orders.email"]
             let saved = SavedConnection {
                 id: ConnectionId::new(),
                 name: "Prod".into(),
+                group: None,
                 environment: crate::env::Environment::Production,
                 read_only: None,
                 password: PasswordMode::None,

@@ -94,6 +94,7 @@ pub fn fixture_connection() -> SavedConnection {
     SavedConnection {
         id: ConnectionId::new(),
         name: "Fixture".into(),
+        group: None,
         environment: crate::env::Environment::Dev,
         // Read-only, as every connection was when most tests were written.
         // A test of a writable connection says so itself.

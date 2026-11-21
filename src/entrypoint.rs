@@ -249,6 +249,7 @@ pub fn demo_setup(app: &mut App) {
     let saved = crate::connections::SavedConnection {
         id: crate::connections::ConnectionId::new(),
         name: "Demo".into(),
+        group: None,
         environment: crate::env::Environment::Dev,
         read_only: None,
         password: crate::connections::PasswordMode::None,

@@ -592,6 +592,7 @@ fn harness_saved(id: &ConnectionId) -> SavedConnection {
     SavedConnection {
         id: id.clone(),
         name: "Bookshop".into(),
+        group: None,
         environment: Environment::Dev,
         read_only: None,
         password: PasswordMode::None,
@@ -608,6 +609,7 @@ fn used_bookshop(harness: &mut Harness) -> ConnectionId {
     let saved = SavedConnection {
         id: ConnectionId::new(),
         name: "Bookshop".into(),
+        group: None,
         environment: Environment::Dev,
         read_only: None,
         password: PasswordMode::None,
@@ -823,6 +825,7 @@ fn saved_exports(harness: &mut Harness, source: Source) -> ConnectionId {
     let saved = SavedConnection {
         id: ConnectionId::new(),
         name: "Bookshop exports".into(),
+        group: None,
         environment: Environment::Local,
         read_only: Some(true),
         password: PasswordMode::None,
@@ -884,6 +887,7 @@ fn the_list_says_what_a_files_connection_opens() {
     let sqlite = SavedConnection {
         id: ConnectionId::new(),
         name: "Bookshop on disk".into(),
+        group: None,
         environment: Environment::Local,
         read_only: None,
         password: PasswordMode::None,

@@ -1735,6 +1735,7 @@ mod tests {
         let connection = SavedConnection {
             id: ConnectionId::new(),
             name: "Fixture".into(),
+            group: None,
             environment: crate::env::Environment::Dev,
             read_only: None,
             password: crate::connections::PasswordMode::None,
@@ -1775,6 +1776,7 @@ mod tests {
         SavedConnection {
             id: ConnectionId::new(),
             name: "Bookshop exports".into(),
+            group: None,
             environment: crate::env::Environment::Local,
             read_only: Some(true),
             password: crate::connections::PasswordMode::None,

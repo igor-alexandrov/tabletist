@@ -303,6 +303,7 @@ mod mcp {
         let connection = SavedConnection {
             id: ConnectionId("shop".into()),
             name: "Bookshop".into(),
+            group: None,
             environment: Environment::Dev,
             read_only: None,
             password: PasswordMode::None,
@@ -379,6 +380,7 @@ mod mcp {
         let connection = SavedConnection {
             id: ConnectionId("shop".into()),
             name: "Bookshop".into(),
+            group: None,
             environment: Environment::Dev,
             read_only: None,
             password: PasswordMode::None,
