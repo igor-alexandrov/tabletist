@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-19 23:02-0500\n"
+"POT-Creation-Date: 2026-11-21 10:28-0500\n"
 "PO-Revision-Date: 2026-11-19 16:11-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -2830,7 +2830,7 @@ msgid "Zoom"
 msgstr "Zoom"
 
 #: src/ui/about.rs src/ui/connect_dialog/sheet.rs src/ui/help.rs
-#: src/ui/object_tabs.rs src/ui/settings/terminal.rs
+#: src/ui/object_tabs.rs src/ui/settings/terminal.rs src/ui/workspace.rs
 msgid "Close"
 msgstr "Fechar"
 

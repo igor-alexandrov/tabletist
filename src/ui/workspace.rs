@@ -836,6 +836,10 @@ pub(super) struct BarInfo {
     /// one, as the look writes them.
     connections_key: crate::keymap::Written,
     close_key: crate::keymap::Written,
+    /// Whether the connection is down (lost, cancelled, closed while
+    /// idle): the button at the bar's end says Close then, as it closes
+    /// the tab, and Disconnect while there is a session to end.
+    closes: bool,
 }
 
 /// How a status reads: fine, or a warning.
@@ -916,6 +920,10 @@ pub(super) fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
         chips: chips(app, tab),
         connections_key: app.keymap.key(app.layout(), Command::Connections),
         close_key: app.keymap.key(app.layout(), Command::CloseConnection),
+        closes: !matches!(
+            workspace.status,
+            SessionStatus::Connected | SessionStatus::Connecting { .. }
+        ),
     })
 }
 
@@ -1435,7 +1443,13 @@ fn mac_bar(
         }
     }
     // Disconnect, 12 in from the right: an icon and its label, 6 apart.
-    let label = gettext(locale, "Disconnect");
+    // A connection that is down has no session to end: its button closes
+    // the tab, and says so.
+    let (label, icon) = if info.closes {
+        (gettext(locale, "Close"), Icon::X)
+    } else {
+        (gettext(locale, "Disconnect"), Icon::LogIn)
+    };
     let text = Text::one(look, TextRole::UiBody, &label, palette.secondary).layout(ui.ctx());
     let width = 10.0 + 14.0 + 6.0 + text.width() + 10.0;
     let button = Rect::from_min_size(
@@ -1448,7 +1462,7 @@ fn mac_bar(
         ui.painter()
             .rect_filled(button, CornerRadius::same(6), face(0.7));
     }
-    Icon::LogIn.image(palette.secondary, 14.0).paint_at(
+    icon.image(palette.secondary, 14.0).paint_at(
         ui,
         Rect::from_center_size(pos2(button.left() + 17.0, center), vec2(14.0, 14.0)),
     );
@@ -1704,8 +1718,14 @@ fn terminal_bar(
         }
         x = button.right() + 12.0;
     }
-    // The way out, a muted note that also answers a click.
-    let note = format!("{} {}", info.close_key, gettext(locale, "disconnect"));
+    // The way out, a muted note that also answers a click: it closes the
+    // tab of a connection that is down, and says so.
+    let (word, label) = if info.closes {
+        (msgid("close"), msgid("Close"))
+    } else {
+        (msgid("disconnect"), msgid("Disconnect"))
+    };
+    let note = format!("{} {}", info.close_key, word.say(locale));
     let note = note.as_str();
     let width = widgets::measure(ui, label_copy(look, TextRole::OSecondary, note));
     let left = rect.right() - 12.0 - width;
@@ -1714,7 +1734,7 @@ fn terminal_bar(
         vec2(width + 8.0, rect.height()),
     );
     let response = ui.interact(hit, ui.id().with("disconnect"), Sense::click());
-    let label = gettext(locale, "Disconnect");
+    let label = label.say(locale);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
     let color = if response.hovered() {
         palette.text
@@ -3946,8 +3966,9 @@ fn tls_status(mode: TlsMode, encrypted: Option<bool>) -> (Msgid, bool) {
 }
 
 /// The strip over a tab whose connection was lost: what happened, the way
-/// back (Reconnect) and the way out (Disconnect). What was on screen stays
-/// under it. While a reconnect is on its way the strip says so.
+/// back (Reconnect) and the way out (Close, or Disconnect while it
+/// reconnects). What was on screen stays under it. While a reconnect is
+/// on its way the strip says so.
 fn banner(
     ui: &mut egui::Ui,
     paint: super::Paint,
@@ -4015,11 +4036,15 @@ fn banner(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 12.0;
                 let height = if look.terminal { 24.0 } else { 28.0 };
-                let (out, back) = (say(msgid("Disconnect")), say(msgid("Reconnect")));
-                let leave = states::button(&out, &look)
-                    .label("Disconnect")
-                    .salt("lost")
-                    .quiet();
+                // Reconnecting, there is a session to end; lost or
+                // cancelled, the way out closes the tab, as the bar's does.
+                let (out, name) = if reconnecting {
+                    (msgid("Disconnect"), "Disconnect")
+                } else {
+                    (msgid("Close"), "Close")
+                };
+                let (out, back) = (say(out), say(msgid("Reconnect")));
+                let leave = states::button(&out, &look).label(name).salt("lost").quiet();
                 let again =
                     (!reconnecting).then(|| states::button(&back, &look).label("Reconnect"));
                 // The buttons keep their room at the right, 8 apart and 12

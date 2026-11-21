@@ -767,11 +767,11 @@ mod tests {
                 }
                 let tree = harness.settle();
                 let window = egui::Rect::from_min_size(egui::Pos2::ZERO, harness.size);
-                // The connection bar has a Disconnect of its own: the
-                // strip's is the lower one.
+                // The connection bar has a Close of its own: the strip's
+                // is the lower one.
                 let reconnect = buttons_named(&tree, "Reconnect");
-                let disconnect = buttons_named(&tree, "Disconnect");
-                assert_eq!((reconnect.len(), disconnect.len()), (1, 2), "{}", look.name);
+                let close = buttons_named(&tree, "Close");
+                assert_eq!((reconnect.len(), close.len()), (1, 2), "{}", look.name);
                 if long {
                     // The error is there in full, before the buttons.
                     let said = error.to_string();
@@ -779,9 +779,7 @@ mod tests {
                     let text = text.expect("the exact error");
                     assert!(text.right() <= reconnect[0].1.left(), "{}", look.name);
                 }
-                for (name, (_, button)) in
-                    [("Reconnect", reconnect[0]), ("Disconnect", disconnect[1])]
-                {
+                for (name, (_, button)) in [("Reconnect", reconnect[0]), ("Close", close[1])] {
                     assert!(
                         window.contains_rect(button),
                         "{name} at {button:?} in {} (long error: {long})",
@@ -4507,6 +4505,105 @@ value_tags   = true
             ));
             assert!(harness.has(&look.label("Disconnected")), "{}", look.name);
             assert!(!harness.has("fixture.db"), "{}", look.name);
+        }
+    }
+
+    /// The button at the connection bar's end named `word`, if it is:
+    /// the one on the Connections button's row, apart from a
+    /// lost-connection strip's.
+    fn bar_button(
+        tree: &egui::accesskit::TreeUpdate,
+        word: &str,
+    ) -> Option<egui::accesskit::NodeId> {
+        let row = crate::testing::bounds(tree, "Connections", egui::accesskit::Role::Button)
+            .expect("the Connections button")
+            .center()
+            .y;
+        buttons_named(tree, word)
+            .into_iter()
+            .find(|(_, button)| (button.center().y - row).abs() < 2.0)
+            .map(|(id, _)| id)
+    }
+
+    /// Whether the button at the connection bar's end is `word` ("Close"
+    /// or "Disconnect"), as is the terminal look's note.
+    fn bar_says(harness: &mut Harness, word: &str) -> bool {
+        let tree = harness.settle();
+        let named = bar_button(&tree, word).is_some();
+        if !harness.app.look.terminal {
+            return named;
+        }
+        let key = harness.app.keymap.key(
+            harness.app.layout(),
+            crate::keymap::Command::CloseConnection,
+        );
+        let note = format!("{key} {}", word.to_lowercase());
+        named && harness.painted_rect(&note).is_some()
+    }
+
+    #[test]
+    fn the_bar_says_close_while_its_connection_is_down() {
+        use crate::model::SessionStatus;
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            // Connected, there is a session to end.
+            assert!(bar_says(&mut harness, "Disconnect"), "{}", look.name);
+            assert!(!bar_says(&mut harness, "Close"), "{}", look.name);
+            let session = harness.app.workspace(tab).unwrap().session;
+            harness.app.apply(crate::model::Action::Backend(
+                crate::backend::Event::Disconnected {
+                    session,
+                    error: tabletist_db::Error::ConnectionLost("server went away".into()),
+                },
+            ));
+            // Lost, cancelled or closed while idle, it closes the tab,
+            // and says so.
+            assert!(bar_says(&mut harness, "Close"), "lost in {}", look.name);
+            for (name, status) in [
+                ("cancelled", SessionStatus::Cancelled),
+                ("idle", SessionStatus::Idle),
+            ] {
+                harness.app.workspace_mut(tab).unwrap().status = status;
+                assert!(bar_says(&mut harness, "Close"), "{name} in {}", look.name);
+                assert!(!bar_says(&mut harness, "Disconnect"), "{}", look.name);
+            }
+            // Connecting again, it disconnects again.
+            harness.app.workspace_mut(tab).unwrap().status = SessionStatus::Connecting {
+                request: crate::backend::RequestId(0),
+            };
+            assert!(bar_says(&mut harness, "Disconnect"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_bars_close_closes_the_tab_of_a_lost_connection() {
+        use egui::accesskit;
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = lost(&mut harness);
+            let tree = harness.settle();
+            let close = bar_button(&tree, "Close").expect("the bar's Close");
+            harness.frame(vec![egui::Event::AccessKitActionRequest(
+                accesskit::ActionRequest {
+                    target_tree: accesskit::TreeId::ROOT,
+                    target_node: close,
+                    action: accesskit::Action::Click,
+                    data: None,
+                },
+            )]);
+            harness.settle();
+            assert!(harness.app.workspace(tab).is_none(), "{}", look.name);
+            assert!(
+                matches!(
+                    harness.app.active_tab().content,
+                    crate::model::ConnTabContent::Picker(_)
+                ),
+                "{}",
+                look.name
+            );
         }
     }
 
@@ -11998,16 +12095,39 @@ value_tags   = true
     }
 
     #[test]
+    fn the_strips_way_out_says_close_while_lost_and_disconnect_while_it_reconnects() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            lost(&mut harness);
+            // Lost, the strip's way out closes the tab, as the bar's does.
+            let tree = harness.settle();
+            assert_eq!(buttons_named(&tree, "Close").len(), 2, "{}", look.name);
+            assert!(
+                buttons_named(&tree, "Disconnect").is_empty(),
+                "{}",
+                look.name
+            );
+            // Reconnecting, there is a session to end again: both say
+            // Disconnect.
+            harness.click("Reconnect");
+            let tree = harness.settle();
+            assert_eq!(buttons_named(&tree, "Disconnect").len(), 2, "{}", look.name);
+            assert!(buttons_named(&tree, "Close").is_empty(), "{}", look.name);
+        }
+    }
+
+    #[test]
     fn a_lost_connection_can_be_left() {
         use egui::accesskit;
         for look in crate::theme::Look::ALL {
             let mut harness = Harness::new();
             harness.set_look(look);
             let tab = lost(&mut harness);
-            // The connection bar has a Disconnect of its own: the strip's
-            // is the lower one.
+            // The connection bar has a Close of its own: the strip's is
+            // the lower one.
             let tree = harness.settle();
-            let buttons = buttons_named(&tree, "Disconnect");
+            let buttons = buttons_named(&tree, "Close");
             assert_eq!(buttons.len(), 2, "{}", look.name);
             harness.frame(vec![egui::Event::AccessKitActionRequest(
                 accesskit::ActionRequest {
