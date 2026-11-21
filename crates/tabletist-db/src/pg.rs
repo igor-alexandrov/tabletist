@@ -535,7 +535,20 @@ impl Conn {
         let metas = column_metas(&statement);
         // Its close goes out on its own, waited on by nobody.
         drop(statement);
-        crate::stream::send(to, crate::Streamed::Columns(metas.clone())).await?;
+        let columns_sent = crate::stream::send(to, crate::Streamed::Columns(metas.clone())).await;
+        // A stop that came before the run, or an export no longer read, ends
+        // here: the run never goes out, and the transaction is rolled back.
+        let before_run = columns_sent.and_then(|()| {
+            if stop.is_stopped() {
+                Err(Error::Cancelled)
+            } else {
+                Ok(())
+            }
+        });
+        if let Err(error) = before_run {
+            let _ = client.batch_execute("ROLLBACK").await;
+            return Err(error);
+        }
 
         let run = format!("{READ_GUARD};\n{text}");
         let rows = client.simple_query_raw(&run).await.map_err(stream_error)?;
@@ -543,14 +556,7 @@ impl Conn {
         // it costs no round trip of its own; its answer follows the run's.
         let rollback = client.batch_execute("ROLLBACK");
         let mut rollback = std::pin::pin!(rollback);
-        let mut rolled_back = None;
-        std::future::poll_fn(|cx| {
-            if let std::task::Poll::Ready(done) = rollback.as_mut().poll(cx) {
-                rolled_back = Some(done);
-            }
-            std::task::Poll::Ready(())
-        })
-        .await;
+        let rolled_back = futures_util::FutureExt::now_or_never(rollback.as_mut());
 
         let mut rows = std::pin::pin!(rows);
         let mut kept = Vec::with_capacity(batch);
@@ -576,6 +582,11 @@ impl Conn {
             sent += kept.len() as u64;
             crate::stream::send(to, crate::Streamed::Rows(kept)).await?;
         }
+        // The ROLLBACK may already have run on the server while the last rows
+        // were still being read, so a cancel sent by a stop in this window
+        // lands on an idle session, or at worst on the ROLLBACK; the export
+        // still ends as cancelled (the stop flag is set), its connection
+        // closed.
         stop.finish();
         let rolled_back = match rolled_back {
             Some(done) => done,
@@ -2353,6 +2364,71 @@ mod tests {
         assert_eq!(sent.unwrap(), 12_000);
         assert_eq!(asked, 2);
         assert!(outside_a_transaction(&conn).await);
+    }
+
+    /// A stop that came before the run keeps it from running: the export
+    /// ends as cancelled without waiting for a slow statement, and the
+    /// transaction is rolled back.
+    #[tokio::test]
+    async fn a_stop_before_the_run_keeps_it_from_running() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        let stop = StopFlag::new();
+        stop.stop();
+        let (to, mut from) = tokio::sync::mpsc::channel(1);
+        let began = std::time::Instant::now();
+        let (sent, ()) = tokio::join!(
+            async {
+                let sent = conn
+                    .stream_statement("SELECT pg_sleep(5)", 10, &to, &stop)
+                    .await;
+                drop(to);
+                sent
+            },
+            async { while from.recv().await.is_some() {} },
+        );
+        assert!(matches!(sent, Err(Error::Cancelled)), "{sent:?}");
+        assert!(began.elapsed() < Duration::from_secs(2));
+        assert!(outside_a_transaction(&conn).await);
+    }
+
+    /// A stop after the first batch ends the export as cancelled; the
+    /// queued `ROLLBACK` runs once the rest of the result is drained, so
+    /// the session is clean and serves the next export.
+    #[tokio::test]
+    async fn a_stop_part_way_ends_the_export_and_leaves_the_session_clean() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        export_trips_table(&url).await;
+        let conn = session(&url).await;
+        let text = "SELECT id FROM export_trips ORDER BY id";
+        let stop = StopFlag::new();
+        let (to, mut from) = tokio::sync::mpsc::channel(1);
+        let (sent, arrived) = tokio::join!(
+            async {
+                let sent = conn.stream_statement(text, 10, &to, &stop).await;
+                drop(to);
+                sent
+            },
+            async {
+                let mut arrived = 0usize;
+                while let Some(streamed) = from.recv().await {
+                    if let crate::Streamed::Rows(rows) = streamed {
+                        arrived += rows.len();
+                        stop.stop();
+                    }
+                }
+                arrived
+            },
+        );
+        assert!(matches!(sent, Err(Error::Cancelled)), "{sent:?}");
+        assert!(arrived < 12_000, "{arrived}");
+        assert!(outside_a_transaction(&conn).await);
+        let (sent, _, _) = exported(&conn, text, 5_000).await;
+        assert_eq!(sent.unwrap(), 12_000);
     }
 
     /// A text of two statements is refused by the prepare, and nothing

@@ -535,7 +535,8 @@ impl Connection {
     /// (no `LIMIT`, no `OFFSET`): the `columns` named, in their order, or
     /// all of them when there are none. Sent to `to` as the columns, then
     /// batches of up to `batch` rows, read-only: one run streamed in two
-    /// round trips on PostgreSQL, unbuffered on MySQL, stepped on SQLite,
+    /// round trips on PostgreSQL once the table's shape is read,
+    /// unbuffered on MySQL, stepped on SQLite,
     /// so no more than a batch is read ahead of what `to` has taken (on
     /// PostgreSQL, a batch and what the socket holds); on a Files connection
     /// a chunk of DuckDB's at a time, so no more than a batch and a chunk.
@@ -544,9 +545,10 @@ impl Connection {
     /// statement the server's own timeout ended is [`Error::Timeout`].
     /// A connection whose stream failed once its statement ran (a closed
     /// `to` included, before any row was sent) is to be closed: on MySQL
-    /// the rows not yet read are still on their way, and the read-only
-    /// transaction they come in is left open, which a rollback could end
-    /// only by reading them all.
+    /// and PostgreSQL the rows not yet read are still on their way (the
+    /// PostgreSQL driver reads a hung-up response to its end before it
+    /// closes), and the read-only transaction they come in is left open,
+    /// which a rollback could end only by reading them all.
     pub async fn stream_rows(
         &self,
         query: &RowQuery,
