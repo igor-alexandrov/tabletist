@@ -1638,8 +1638,11 @@ impl Adapter for Conn {
 
     /// An export's rows in a read-only transaction: prepared first (which
     /// types the columns and refuses a second statement), then run and
-    /// streamed through the simple-query protocol, so the server holds the
-    /// rest.
+    /// streamed through the simple-query protocol, the server waiting
+    /// while a batch waits on `to`. The table's shape is the one this
+    /// session read for [`Adapter::export_statement`], moments before on
+    /// the export's own connection; it is read here only when there is
+    /// none.
     async fn stream_rows(
         &self,
         query: &RowQuery,
@@ -1648,7 +1651,10 @@ impl Adapter for Conn {
         to: &tokio::sync::mpsc::Sender<crate::Streamed>,
         stop: &StopFlag,
     ) -> Result<u64> {
-        let (key, binary) = self.shape(query).await?;
+        let (key, binary) = match self.known_shape(&query.object) {
+            Some(shape) => shape.for_query(query),
+            None => self.shape(query).await?,
+        };
         let sql = Dialect::Postgres.export_rows(query, &key, &binary, columns)?;
         // Every value is a literal in the text, so there is nothing to bind.
         debug_assert!(sql.params.is_empty());
@@ -2429,6 +2435,48 @@ mod tests {
         assert!(outside_a_transaction(&conn).await);
         let (sent, _, _) = exported(&conn, text, 5_000).await;
         assert_eq!(sent.unwrap(), 12_000);
+    }
+
+    /// A table's export reads the table's shape once, for the statement
+    /// the export's history shows, and its run builds on the shape read
+    /// then: with the two round trips of every export, three in all.
+    #[tokio::test]
+    async fn a_table_export_reads_its_shape_once() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        export_trips_table(&url).await;
+        let (conn, trips) = trip_counted(&url).await;
+        let query = RowQuery::new(ObjectRef::new("public", "export_trips"), 0);
+        let columns = vec!["id".to_owned()];
+        let (conn, query, columns) = (&conn, &query, &columns);
+        let (to, mut from) = tokio::sync::mpsc::channel(1);
+        let stop = StopFlag::new();
+        let streaming = async move {
+            let sent = conn.stream_rows(query, columns, 5_000, &to, &stop).await;
+            drop(to);
+            sent
+        };
+        let reading = async move {
+            let mut rows = 0;
+            while let Some(streamed) = from.recv().await {
+                if let crate::Streamed::Rows(batch) = streamed {
+                    rows += batch.len();
+                }
+            }
+            rows
+        };
+        let ((shown, sent, rows), asked) = counted(&trips, async {
+            let shown = conn.export_statement(query, columns).await;
+            let (sent, rows) = tokio::join!(streaming, reading);
+            (shown, sent, rows)
+        })
+        .await;
+        assert!(shown.unwrap().contains("ORDER BY"));
+        assert_eq!(sent.unwrap(), 12_000);
+        assert_eq!(rows, 12_000);
+        assert_eq!(asked, 3);
+        assert!(outside_a_transaction(conn).await);
     }
 
     /// A text of two statements is refused by the prepare, and nothing

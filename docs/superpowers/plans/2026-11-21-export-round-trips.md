@@ -32,6 +32,9 @@ TablePro 0.88 beta claims 0.08 s for the first (local) and 0.68 s for the second
 - `stream_statement` on PostgreSQL no longer runs through a cursor, so `SHOW search_path` and `EXPLAIN …` stream their rows instead of failing with "syntax error at or near SHOW". The test that pinned the failure (`tests/export.rs:524-529`) now pins the rows. Read-only stays the server's job: the run is inside `BEGIN READ ONLY` behind `READ_GUARD` on a read-only session, as every read is.
 - `the_servers_timeout_is_told_apart_on_postgres` set the timeout from inside the first `FETCH`'s statement for the second to run over. With one run there is no second statement, so the test takes the timeout from a database whose sessions have one (`ALTER DATABASE … SET statement_timeout`).
 
+- A server's `statement_timeout` (set for a role or a database, as managed PostgreSQL often does) now bounds the whole export, which is one statement, the time a slow writer or link holds the server back included; with the cursor each `FETCH` had a budget of its own. The other side: a slow writer no longer leaves the session idle in a transaction between `FETCH`es, where `idle_in_transaction_session_timeout` could end it. MySQL's unbuffered export already ran as one statement. Tabletist still sets no timeout of its own (no `SET LOCAL statement_timeout = 0`, which would override the server's); `docs/_guide/browsing-data.md` says so. (Added after the final review.)
+- A table's export read the table's shape twice, once for the statement its history shows (`export_statement`) and once in `stream_rows`: four round trips. `stream_rows` now reuses the shape its session read moments before, so a table's export is three. (Added after the final review.)
+
 ## Files
 
 - Modify `crates/tabletist-db/src/pg.rs`: `stream_text` (two flights, a stream), drop `EXPORT_CURSOR`. Tests: a trip count, a custom-typed column on a fresh session, a text of two statements.
@@ -466,6 +469,8 @@ If signing fails with "agent refused operation", 1Password is locked: leave it s
 ---
 
 ### Task 2: An SSH tunnel keeps a far link busy
+
+> **Corrected in review:** the snippets below give the first draft's rate, window ÷ round trip (`> 100e6`, "about 10 MB/s", "carry 160"). russh gives half the window each round trip: the committed code (`ssh.rs`, `TUNNEL_WINDOW` and `the_tunnel_window_keeps_a_far_link_busy`) uses `window / 2 / 0.2 > 75e6`, about 5 MB/s for 2 MiB and 80 MB/s for 32 MiB.
 
 **Files:**
 - Modify: `crates/tabletist-db/src/ssh.rs:412-417` and its `mod tests` (line 573)

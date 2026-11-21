@@ -302,6 +302,13 @@ In the Omarchy look `:export` does what the line offers: it tries again,
 shows the SQL after a timeout, or opens the float for another name, and
 Esc puts the line away.
 
+Tabletist sets no time limit on an export, but the server's own still
+applies: on PostgreSQL an export is one statement, so a
+`statement_timeout` set for your role or database bounds the whole
+export, the time it takes to write the file included. An export it ends
+fails with **Review SQL**; ask for a longer limit, or export fewer rows
+at a time.
+
 Several exports can run at once, each on its own connection. In the
 macOS and Windows looks their toasts stack at the bottom, the newest
 last, each with its own **Cancel** and ×, and each hidden one is a pill
