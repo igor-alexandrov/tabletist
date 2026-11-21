@@ -540,6 +540,7 @@ Files connection has one. A file that holds a Files connection says
 | --- | --- | --- |
 | `id` | Any text that no other connection has | Tabletist gives the connection one at the next start |
 | `name` | Text | Required |
+| `group` | Text: the group the picker lists the connection under. A file that holds one says `version = 9` | The picker's own: a name the connection shares with another that has no group (or that name as its group), else Local or Remote |
 | `environment` | `local`, `dev`, `staging`, `production`, `none` | `none` |
 | `read_only` | `true`, `false` | As the environment has it: read-only on production |
 | `password` | `none`, `keyring`, `ask` | `none` |

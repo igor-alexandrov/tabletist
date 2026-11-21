@@ -9,13 +9,18 @@ nav_order: 0
 Cmd/Ctrl+O (Ctrl+Shift+C in the Omarchy look) opens the picker with your
 saved connections. Each row shows
 the connection's environment and when it was last used, and
-**Find connection…** searches by name or by `user@host:port/database`.
+**Find connection…** searches by name, by the group you gave it, or by
+`user@host:port/database`.
 
 {% include shot.html file="macos-connections" alt="The connection picker: three connections named Bookshop grouped under that name, and two local ones" %}
 
-Connections with exactly the same name form a group under that name, which
-suits one database in several environments. The rest are listed under
-**Local** or **Remote**.
+A connection you put in a group, with **Group** in its form, is listed
+under that group: production and staging, one group per product, or
+whatever suits you. Of the others, those with exactly the same name form
+a group under that name, which suits one database in several
+environments, and the rest are listed under **Local** or **Remote**.
+Groups are listed by name, with Local and Remote last, and a group
+written in another case is the same group.
 
 A connection can be open more than once. Enter shows a connection that is
 already open, and Shift+Enter opens it again.
@@ -37,6 +42,7 @@ what was last open on it.
 | --- | --- |
 | **Name** | Left empty, it becomes `user@host:port/database`, the file's name or the BigQuery project |
 | **Type** | SQLite, PostgreSQL, MySQL, BigQuery or Files, as radio buttons in rows above the name. In the Omarchy look each type is a Tab stop and Enter or Space picks it; in the other looks the type is one Tab stop and the arrow keys choose. MySQL is also for [MariaDB](#mariadb). Changing it keeps the name, the environment and whatever was typed for the other types until the dialog closes. Saving a connection you have used under another type asks first |
+| **Group** | The group the picker lists it under: one the picker shows, or **New group…**, which turns the box into a field for a new group's name (Esc goes back). A connection put in the group it would be in anyway, the name it shares, Local or Remote, has none of its own, and follows its name and server. See [The picker](#the-picker) |
 | **Environment** | local, dev, staging, production or none. Sets the connection's color |
 | **File** | SQLite only |
 | **Project**, **Key file** | BigQuery only. See [BigQuery](#bigquery) |
