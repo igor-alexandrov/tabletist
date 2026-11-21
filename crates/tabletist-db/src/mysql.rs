@@ -237,12 +237,13 @@ type ReferencingRow = (String, String, String, String, String, String);
 /// columns, in key order, and its byte string columns, which a filter
 /// whose value reads as bytes compares as bytes. And whether a column of it
 /// is a FLOAT: the text protocol writes a FLOAT to six significant digits,
-/// so the pages of such a table are read through the binary protocol. An
-/// export's shape (see [`export::read_shape`]) says so of a view too, whose
-/// expression columns may be DOUBLEs the text protocol cuts, and its pages
-/// are then read that way as well. A session keeps the shape it last read
-/// of each table, and asks for it again in the message that reads a page
-/// from it (see [`Adapter::fetch_rows`]).
+/// so the pages of such a table are read through the binary protocol. A
+/// session keeps the shape it last read of each table, and asks for it
+/// again in the message that reads a page from it (see
+/// [`Adapter::fetch_rows`]). An export reads a shape of its own (see
+/// [`export::read_shape`]), which says so of a view too, whose expression
+/// columns may be DOUBLEs the text protocol cuts: browsing, which tells a
+/// FLOAT by its type alone, never gives an export its shape.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Shape {
     key: Vec<String>,
@@ -640,6 +641,10 @@ pub(crate) struct Conn {
     _opening: Opening,
     /// The shape of each table this session read last (see [`Shape`]).
     shapes: std::sync::Mutex<std::collections::HashMap<ObjectRef, Shape>>,
+    /// The shape [`Adapter::export_statement`] read of each table for the
+    /// export that follows it, which [`Adapter::stream_rows`] takes (see
+    /// [`Conn::export_shape`]). Only exports read it, and only they fill it.
+    export_shapes: std::sync::Mutex<std::collections::HashMap<ObjectRef, Shape>>,
     /// The SQL editor's statements whose answer lost digits in text (see
     /// `script::Lossy`).
     lossy: script::Lossy,
@@ -943,11 +948,13 @@ impl Conn {
     /// An export's rows in one round trip (see [`export::stream_message`]),
     /// where the statement's values all have a literal and it is no longer
     /// than [`LONGEST`] with them; otherwise through `stream_sql`. The
-    /// caller has made sure no column loses digits in text. A stop that
+    /// caller has made sure no column loses digits in text, and the message
+    /// checks it again, as `run` says, with a table's shape. A stop that
     /// comes before the message keeps it from going.
     async fn stream_in_one(
         &self,
         sql: &crate::dialect::Sql,
+        run: &export::Run<'_>,
         batch: usize,
         to: &tokio::sync::mpsc::Sender<crate::Streamed>,
         stop: &StopFlag,
@@ -965,7 +972,7 @@ impl Conn {
             stop.finish();
             return Err(Error::Cancelled);
         }
-        let streamed = export::stream_message(conn, &sql.text, &values, batch, to, stop).await;
+        let streamed = export::stream_message(conn, &sql.text, &values, run, batch, to, stop).await;
         stop.finish();
         match streamed {
             // The message's own rollback ended the transaction.
@@ -1073,6 +1080,7 @@ impl Conn {
             resetting: std::sync::Arc::new(tokio::sync::watch::Sender::new(false)),
             _opening: Opening(opening.abort_handle()),
             shapes: Default::default(),
+            export_shapes: Default::default(),
             lossy: Default::default(),
         })
     }
@@ -1244,22 +1252,30 @@ impl Conn {
         shapes.get(object).cloned()
     }
 
-    /// The shape an export builds its statement from: the one this
-    /// session last read of `object`, or read now in one round trip (see
-    /// [`export::read_shape`]) and remembered, so that
-    /// [`Adapter::export_statement`] and then [`Adapter::stream_rows`]
-    /// read it once between them.
+    /// `object`'s shape for an export, read now in one round trip (see
+    /// [`export::read_shape`]). Never one browsing read: that tells a
+    /// FLOAT by its type alone, and so takes a view's cut DOUBLE for one
+    /// the text protocol writes in full.
+    async fn read_export_shape(&self, object: &ObjectRef) -> Result<Shape> {
+        let mut session = self.conn.lock().await;
+        let conn = session.conn()?;
+        export::read_shape(conn, object).await
+    }
+
+    /// The shape a table's export rows are built from: the one
+    /// [`Adapter::export_statement`] read of `object` just before, taken,
+    /// so that the two read it once between them; or, where there is none,
+    /// read now. Either way the next export reads it afresh.
     async fn export_shape(&self, object: &ObjectRef) -> Result<Shape> {
-        if let Some(shape) = self.known_shape(object) {
-            return Ok(shape);
+        let taken = self
+            .export_shapes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(object);
+        match taken {
+            Some(shape) => Ok(shape),
+            None => self.read_export_shape(object).await,
         }
-        let shape = {
-            let mut session = self.conn.lock().await;
-            let conn = session.conn()?;
-            export::read_shape(conn, object).await?
-        };
-        self.remember(object, shape.clone());
-        Ok(shape)
     }
 
     fn remember(&self, object: &ObjectRef, shape: Shape) {
@@ -1268,16 +1284,6 @@ impl Conn {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         shapes.insert(object.clone(), shape);
-    }
-
-    /// Lets go of the shape this session read of `object`: the next read
-    /// of it reads it again.
-    fn forget(&self, object: &ObjectRef) {
-        let mut shapes = self
-            .shapes
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        shapes.remove(object);
     }
 
     /// `schema`'s tables and views, as [`listing_sql`] lists them, and in
@@ -1676,17 +1682,26 @@ impl Adapter for Conn {
         (structure, page)
     }
 
+    /// The statement, built from a shape read for it (see
+    /// [`Conn::read_export_shape`]), which is kept for the
+    /// [`Adapter::stream_rows`] that follows.
     async fn export_statement(&self, query: &RowQuery, columns: &[String]) -> Result<String> {
-        let shape = self.export_shape(&query.object).await?;
-        Dialect::MySql.shown_export(query, &shape.key, &shape.classes(query), columns)
+        let shape = self.read_export_shape(&query.object).await?;
+        let shown = Dialect::MySql.shown_export(query, &shape.key, &shape.classes(query), columns);
+        self.export_shapes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(query.object.clone(), shape);
+        shown
     }
 
     /// A table's export rows, built from the shape read for
     /// `export_statement` (see [`Conn::export_shape`]): in one message
     /// (see [`Conn::stream_in_one`]), or through `stream_sql` for a table
-    /// with a FLOAT, or a view. A FLOAT the shape did not know of fails
-    /// the export (see [`export::SHAPE_CHANGED`]), and the shape is let go
-    /// of, so that the export done again reads it afresh.
+    /// with a FLOAT, or a view. The message asks for the table's key and
+    /// byte string columns again, and a statement they would not have
+    /// built, or a FLOAT the shape did not know of, fails the export (see
+    /// [`export::CHANGED`]) before any row is sent.
     async fn stream_rows(
         &self,
         query: &RowQuery,
@@ -1696,16 +1711,19 @@ impl Adapter for Conn {
         stop: &StopFlag,
     ) -> Result<u64> {
         let shape = self.export_shape(&query.object).await?;
-        let sql = Dialect::MySql.export_rows(query, &shape.key, &shape.classes(query), columns)?;
+        let built = |shape: &Shape| {
+            Dialect::MySql.export_rows(query, &shape.key, &shape.classes(query), columns)
+        };
+        let sql = built(&shape)?;
         if shape.floats {
             return self.stream_sql(&sql, batch, to, stop).await;
         }
-        let streamed = self.stream_in_one(&sql, batch, to, stop).await;
-        if matches!(&streamed, Err(Error::Query { message, .. }) if message == export::SHAPE_CHANGED)
-        {
-            self.forget(&query.object);
-        }
-        streamed
+        let builds = |fresh: &Shape| built(fresh).as_ref().ok() == Some(&sql);
+        let run = export::Run::Table {
+            object: &query.object,
+            builds: &builds,
+        };
+        self.stream_in_one(&sql, &run, batch, to, stop).await
     }
 
     /// A statement of the person's, as `stream_rows` streams a table's:
@@ -1713,7 +1731,9 @@ impl Adapter for Conn {
     /// (and keeps it prepared for `stream_sql`), then in one message, or
     /// through the binary protocol where a column loses digits in text (see
     /// [`lossy`]: a FLOAT, or a DOUBLE written to a fixed number of
-    /// decimals, like `PI()`) or the prepare gave no columns.
+    /// decimals, like `PI()`) or the prepare gave no columns. The message
+    /// prepares it again, and refuses a column that loses digits there
+    /// (see [`export::Run::Statement`]): a view replaced in between.
     async fn stream_statement(
         &self,
         text: &str,
@@ -1737,7 +1757,8 @@ impl Adapter for Conn {
         if none || cut {
             return self.stream_sql(&sql, batch, to, stop).await;
         }
-        self.stream_in_one(&sql, batch, to, stop).await
+        self.stream_in_one(&sql, &export::Run::Statement, batch, to, stop)
+            .await
     }
 
     /// The number of rows, inside a read-only transaction, in one message
