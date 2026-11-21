@@ -304,10 +304,11 @@ Esc puts the line away.
 
 Tabletist sets no time limit on an export, but the server's own still
 applies: on PostgreSQL an export is one statement, so a
-`statement_timeout` set for your role or database bounds the whole
-export, the time it takes to write the file included. An export it ends
-fails with **Review SQL**; ask for a longer limit, or export fewer rows
-at a time.
+`statement_timeout` set for your role or database bounds the time until
+the server has sent the last row. The server waits while the file is
+written, so slow writing counts too, up to the last rows; writing them
+out after that does not. An export it ends fails with **Review SQL**;
+ask for a longer limit, or export fewer rows at a time.
 
 Several exports can run at once, each on its own connection. In the
 macOS and Windows looks their toasts stack at the bottom, the newest
