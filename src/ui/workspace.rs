@@ -3966,8 +3966,9 @@ fn tls_status(mode: TlsMode, encrypted: Option<bool>) -> (Msgid, bool) {
 }
 
 /// The strip over a tab whose connection was lost: what happened, the way
-/// back (Reconnect) and the way out (Disconnect). What was on screen stays
-/// under it. While a reconnect is on its way the strip says so.
+/// back (Reconnect) and the way out (Close, or Disconnect while it
+/// reconnects). What was on screen stays under it. While a reconnect is
+/// on its way the strip says so.
 fn banner(
     ui: &mut egui::Ui,
     paint: super::Paint,
@@ -4035,11 +4036,15 @@ fn banner(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 12.0;
                 let height = if look.terminal { 24.0 } else { 28.0 };
-                let (out, back) = (say(msgid("Disconnect")), say(msgid("Reconnect")));
-                let leave = states::button(&out, &look)
-                    .label("Disconnect")
-                    .salt("lost")
-                    .quiet();
+                // Reconnecting, there is a session to end; lost or
+                // cancelled, the way out closes the tab, as the bar's does.
+                let (out, name) = if reconnecting {
+                    (msgid("Disconnect"), "Disconnect")
+                } else {
+                    (msgid("Close"), "Close")
+                };
+                let (out, back) = (say(out), say(msgid("Reconnect")));
+                let leave = states::button(&out, &look).label(name).salt("lost").quiet();
                 let again =
                     (!reconnecting).then(|| states::button(&back, &look).label("Reconnect"));
                 // The buttons keep their room at the right, 8 apart and 12
