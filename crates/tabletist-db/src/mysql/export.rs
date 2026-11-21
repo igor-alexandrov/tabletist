@@ -11,7 +11,7 @@ use super::{
     inlined, lossy, parameter, prepared_run, query_error, read_start, script, text_values, typed,
     write,
 };
-use crate::{Error, ObjectRef, Result, StopFlag, Streamed};
+use crate::{Error, ObjectRef, Result, RowQuery, StopFlag, Streamed};
 
 /// Whether an export reads a table through the binary protocol (see
 /// [`Shape`]): where it has a FLOAT column, as [`super::LISTED_COLUMNS`]
@@ -36,21 +36,26 @@ pub(super) const CHANGED: &str = "a table the export reads changed as it started
 /// What an export's one message runs (see [`stream_message`]), and so what
 /// it checks before it sends a row on.
 pub(super) enum Run<'a> {
-    /// A table's rows, built from a [`Shape`] read a round trip before.
-    /// The message asks for the table's key and byte string columns again
-    /// just after its start, and `builds` says whether they build the
-    /// statement sent: one built from another key or other byte string
-    /// columns orders or filters the rows another way (a filter's `0x6162`
-    /// compared as text finds no bytes), and fails the export. So does a
-    /// FLOAT among the run's columns (see [`floats`]).
+    /// A table's rows, `query`'s `columns`, built from a [`Shape`] read a
+    /// round trip before. The message asks for the table's key and byte
+    /// string columns again just after its start, and `builds` says
+    /// whether they build the statement sent: one built from another key
+    /// or other byte string columns orders or filters the rows another way
+    /// (a filter's `0x6162` compared as text finds no bytes), and fails the
+    /// export. So does a FLOAT among the run's columns (see [`floats`]).
     ///
     /// Only a FLOAT: a DOUBLE whose column has a fixed number of decimals
     /// (see [`lossy`]) is a table's DOUBLE(M,D) here, stored to those
     /// decimals and so written in full. The one that loses digits is a
     /// view's expression, and a view is read the other way (see
     /// [`TABLE_FLOATS`]).
+    ///
+    /// A statement the message cannot carry is read through the binary
+    /// protocol instead, built from the key and byte string columns asked
+    /// as its transaction starts (see [`super::Conn::stream_table_sql`]).
     Table {
-        object: &'a ObjectRef,
+        query: &'a RowQuery,
+        columns: &'a [String],
         builds: &'a (dyn Fn(&Shape) -> bool + Sync),
     },
     /// A SQL result, whose columns the driver's prepare found none of
@@ -133,8 +138,8 @@ pub(super) async fn stream_message(
 ) -> std::result::Result<u64, StreamFailed> {
     let mut steps = read_start(conn);
     let asked = steps.len();
-    if let Run::Table { object, .. } = run {
-        let at = [object.schema.as_str(), object.name.as_str()];
+    if let Run::Table { query, .. } = run {
+        let at = [query.object.schema.as_str(), query.object.name.as_str()];
         steps.extend([inlined(PRIMARY_KEY, &at), inlined(BINARY_COLUMNS, &at)]);
     }
     let ran = steps.len() + RUN;
@@ -927,6 +932,70 @@ mod tests {
         assert_eq!(asked.load(Ordering::SeqCst) - before, 2);
         assert_eq!(sent.unwrap(), 1);
         assert_eq!(again, batches);
+        assert!(!in_transaction(&conn).await);
+    }
+
+    /// `export_tokens`' one row, as `tokens_query` finds it.
+    fn token_row() -> Vec<Vec<Vec<Value>>> {
+        vec![vec![vec![
+            Value::Int(1),
+            Value::Bytes(b"ab".as_slice().into()),
+        ]]]
+    }
+
+    /// A table read through the binary protocol builds its statement from
+    /// the key and byte string columns asked in the message that starts
+    /// its transaction, not from the shape read before: a byte string
+    /// column that shape did not know of is in the filter all the same,
+    /// which finds the row. Asking costs no round trip: the start, the
+    /// prepare, the run, the rollback.
+    #[tokio::test]
+    async fn a_byte_column_the_shape_missed_is_asked_again_on_the_binary_protocol() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let schema = export_tables(&url).await;
+        let (conn, asked) = counted_session(&url, Access::ReadOnly).await;
+        let (query, columns) = tokens_query(&schema);
+        // A FLOAT, so that the export takes the binary protocol.
+        let stale = super::super::Shape {
+            key: vec!["id".to_owned()],
+            floats: true,
+            ..Default::default()
+        };
+        keep_for_export(&conn, &query.object, stale);
+        let before = asked.load(Ordering::SeqCst);
+        let (sent, _, batches) = streamed_rows(&conn, &query, &columns).await;
+        assert_eq!(asked.load(Ordering::SeqCst) - before, 4);
+        assert_eq!(sent.unwrap(), 1);
+        assert_eq!(batches, token_row());
+        assert!(!in_transaction(&conn).await);
+    }
+
+    /// A table's statement longer than the one message carries is read
+    /// through the binary protocol, built from the key and byte string
+    /// columns asked as its transaction starts: a byte string column the
+    /// shape read before did not know of is in the filter all the same.
+    /// The start, the prepare, the run, the rollback.
+    #[tokio::test]
+    async fn a_long_table_statement_asks_for_its_shape_again() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let schema = export_tables(&url).await;
+        let (conn, asked) = counted_session(&url, Access::ReadOnly).await;
+        let (mut query, columns) = tokens_query(&schema);
+        query.raw_where = Some(format!("1 = 1 /* {} */", "x".repeat(super::super::LONGEST)));
+        let stale = super::super::Shape {
+            key: vec!["id".to_owned()],
+            ..Default::default()
+        };
+        keep_for_export(&conn, &query.object, stale);
+        let before = asked.load(Ordering::SeqCst);
+        let (sent, _, batches) = streamed_rows(&conn, &query, &columns).await;
+        assert_eq!(asked.load(Ordering::SeqCst) - before, 4);
+        assert_eq!(sent.unwrap(), 1);
+        assert_eq!(batches, token_row());
         assert!(!in_transaction(&conn).await);
     }
 
