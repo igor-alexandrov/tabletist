@@ -237,10 +237,12 @@ type ReferencingRow = (String, String, String, String, String, String);
 /// columns, in key order, and its byte string columns, which a filter
 /// whose value reads as bytes compares as bytes. And whether a column of it
 /// is a FLOAT: the text protocol writes a FLOAT to six significant digits,
-/// so the pages of such a table are read through the binary protocol. A
-/// session keeps the shape it last read of each table, and asks for it
-/// again in the message that reads a page from it (see
-/// [`Adapter::fetch_rows`]).
+/// so the pages of such a table are read through the binary protocol. An
+/// export's shape (see [`export::read_shape`]) says so of a view too, whose
+/// expression columns may be DOUBLEs the text protocol cuts, and its pages
+/// are then read that way as well. A session keeps the shape it last read
+/// of each table, and asks for it again in the message that reads a page
+/// from it (see [`Adapter::fetch_rows`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Shape {
     key: Vec<String>,
@@ -273,6 +275,31 @@ fn floats(columns: &[ColumnMeta]) -> bool {
         .iter()
         .any(|column| column.type_name.split(' ').next() == Some("float"))
 }
+
+/// What `decimals` says in a column's definition when its values are not
+/// written to a fixed number of decimals. Below it, a DOUBLE's text is
+/// cut to that many (`PI()` is `3.141593`).
+const NOT_FIXED_DECIMALS: u8 = 31;
+
+/// Whether the text protocol writes a value of `column` with fewer digits
+/// than the binary protocol sends: a FLOAT, to six significant digits,
+/// and a DOUBLE whose column has a fixed number of decimals, to that
+/// many. A DOUBLE without is written in full.
+fn lossy(column: &mysql_async::Column) -> bool {
+    match column.column_type() {
+        ColumnType::MYSQL_TYPE_FLOAT => true,
+        ColumnType::MYSQL_TYPE_DOUBLE => column.decimals() < NOT_FIXED_DECIMALS,
+        _ => false,
+    }
+}
+
+/// The longest statement a message of the text protocol carries, in
+/// bytes: a SQL editor run's (see `script::one`) or an export's (see
+/// [`Conn::stream_in_one`]). Its text goes as hex, twice as long, and a
+/// message longer than the server's `max_allowed_packet` would cost the
+/// connection; a longer statement runs the other way, which sends it as
+/// it is.
+const LONGEST: usize = 256 * 1024;
 
 /// `sql`, one of the catalog questions, with each `?` in turn given as a
 /// literal of `values`: so that several go in one message, which cannot
@@ -914,9 +941,10 @@ impl Conn {
     }
 
     /// An export's rows in one round trip (see [`export::stream_message`]),
-    /// where the statement's values all have a literal; otherwise through
-    /// `stream_sql`. The caller has made sure no column is a FLOAT. A stop
-    /// that comes before the message keeps it from going.
+    /// where the statement's values all have a literal and it is no longer
+    /// than [`LONGEST`] with them; otherwise through `stream_sql`. The
+    /// caller has made sure no column loses digits in text. A stop that
+    /// comes before the message keeps it from going.
     async fn stream_in_one(
         &self,
         sql: &crate::dialect::Sql,
@@ -924,7 +952,10 @@ impl Conn {
         to: &tokio::sync::mpsc::Sender<crate::Streamed>,
         stop: &StopFlag,
     ) -> Result<u64> {
-        let Some(values) = sql.params.iter().map(literal).collect::<Option<Vec<_>>>() else {
+        let values = sql.params.iter().map(literal).collect::<Option<Vec<_>>>();
+        let Some(values) = values.filter(|values| {
+            sql.text.len() + values.iter().map(String::len).sum::<usize>() <= LONGEST
+        }) else {
             return self.stream_sql(sql, batch, to, stop).await;
         };
         driver_parameter(&sql.text)?;
@@ -1237,6 +1268,16 @@ impl Conn {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         shapes.insert(object.clone(), shape);
+    }
+
+    /// Lets go of the shape this session read of `object`: the next read
+    /// of it reads it again.
+    fn forget(&self, object: &ObjectRef) {
+        let mut shapes = self
+            .shapes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        shapes.remove(object);
     }
 
     /// `schema`'s tables and views, as [`listing_sql`] lists them, and in
@@ -1643,7 +1684,9 @@ impl Adapter for Conn {
     /// A table's export rows, built from the shape read for
     /// `export_statement` (see [`Conn::export_shape`]): in one message
     /// (see [`Conn::stream_in_one`]), or through `stream_sql` for a table
-    /// with a FLOAT.
+    /// with a FLOAT, or a view. A FLOAT the shape did not know of fails
+    /// the export (see [`export::SHAPE_CHANGED`]), and the shape is let go
+    /// of, so that the export done again reads it afresh.
     async fn stream_rows(
         &self,
         query: &RowQuery,
@@ -1657,14 +1700,20 @@ impl Adapter for Conn {
         if shape.floats {
             return self.stream_sql(&sql, batch, to, stop).await;
         }
-        self.stream_in_one(&sql, batch, to, stop).await
+        let streamed = self.stream_in_one(&sql, batch, to, stop).await;
+        if matches!(&streamed, Err(Error::Query { message, .. }) if message == export::SHAPE_CHANGED)
+        {
+            self.forget(&query.object);
+        }
+        streamed
     }
 
     /// A statement of the person's, as `stream_rows` streams a table's:
     /// prepared through the driver first, which gives its columns' types
     /// (and keeps it prepared for `stream_sql`), then in one message, or
-    /// through the binary protocol where a column is a FLOAT or the prepare
-    /// gave no columns.
+    /// through the binary protocol where a column loses digits in text (see
+    /// [`lossy`]: a FLOAT, or a DOUBLE written to a fixed number of
+    /// decimals, like `PI()`) or the prepare gave no columns.
     async fn stream_statement(
         &self,
         text: &str,
@@ -1676,15 +1725,16 @@ impl Adapter for Conn {
             text: text.to_owned(),
             params: Vec::new(),
         };
-        let metas = {
+        let (none, cut) = {
             let mut session = self.conn.lock().await;
             let conn = session.conn()?;
             let statement = prepare(conn, &sql)
                 .await
                 .map_err(crate::agent::over_its_time)?;
-            column_metas(&statement.columns())
+            let columns = statement.columns();
+            (columns.is_empty(), columns.iter().any(lossy))
         };
-        if metas.is_empty() || floats(&metas) {
+        if none || cut {
             return self.stream_sql(&sql, batch, to, stop).await;
         }
         self.stream_in_one(&sql, batch, to, stop).await
@@ -2128,13 +2178,14 @@ async fn page_in_three(
     end_read(conn, outcome).await
 }
 
-/// The name of the statement [`page_in_one`] and [`count_in_one`] prepare
-/// on the server, and of the user variables they set: the text as
+/// The name of the statement [`page_in_one`], [`count_in_one`] and an
+/// export's one message ([`export::stream_message`]) prepare on the
+/// server, and of the user variables they set: the text as
 /// `@tabletist_page`, the values as `@tabletist_page_1` and on. They are
 /// set back to NULL, and the statement deallocated, in the same message,
 /// after the run; a message that stopped before then leaves them for the
-/// next page or count to replace, or the session reset after a SQL editor
-/// run to drop.
+/// next page, count or export to replace, or the session reset after a SQL
+/// editor run to drop.
 const PAGE: &str = "tabletist_page";
 
 /// What `EXECUTE` answers when it is given another number of values than

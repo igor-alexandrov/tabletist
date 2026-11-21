@@ -829,3 +829,36 @@ The benchmark files are throwaway and never committed. They live in the session 
 
 - The two-statement guard is the server's PREPARE, both from the driver and in the message. The read-only guard is `START TRANSACTION READ ONLY`, which runs first in the message, and the server stops a message at its first failure. These are the same guarantees `page_in_one` and `count_in_one` already rely on.
 - MariaDB isn't running here. The CI MariaDB job (ci.yml line 187) runs these tests: the fixtures avoid `cte_max_recursion_depth`, and the timeout test picks `max_statement_time`.
+
+## What changed from this plan while it ran (2026-11-21)
+
+- The baseline was 7 round trips for a table, not 6. The first catalog read
+  went through the driver's prepare, which is a round trip of its own.
+- mysql_async 0.37 keeps a later result's server error until the next read.
+  So an `EXECUTE` that fails at its start shows up in `text_sent_on` as a
+  result with no columns. That case is now `Before`, and the transaction is
+  rolled back. Test: `a_run_that_fails_at_its_start_sends_nothing`.
+- The review found that a DOUBLE with a fixed number of decimals loses
+  digits in text, as the SQL editor's `lossy` already knew (`PI()` is
+  `3.141593`).
+  - A SQL result with such a column takes the binary path.
+  - So does a view, since its expression columns look like a table's
+    `DOUBLE(M,D)` in `information_schema`.
+  - A table's own `DOUBLE(M,D)` stays in one message: it is stored to D
+    decimals, so its text is exact.
+- A statement longer than `LONGEST` (256 KiB, the SQL editor's limit) takes
+  the binary path, because the message carries it as hex, twice as long.
+- The timeout test needed a filtered cross join. MySQL 8.4 answers an
+  unfiltered `COUNT(*)` of one at once.
+
+Measured after (MySQL 8.4.11, 200 ms link):
+
+| Case | Before | After | Connecting alone |
+| --- | --- | --- | --- |
+| 200k rows × 10 columns to CSV | 2,273 ms | 1,323 ms | 704 ms |
+| 64 MB through SSH | 3,789 ms | 2,823 ms | 1,906 ms |
+| 200k rows to CSV, local | 158 ms | 191 ms | 1 ms |
+| 64 MB through SSH, local | 356 ms | 366 ms | 111 ms |
+
+The local runs ran at a load of 8 to 36 and are within noise of each other.
+Reading values through the text protocol may cost a few milliseconds more.

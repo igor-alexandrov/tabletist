@@ -7,25 +7,41 @@ use mysql_async::prelude::Queryable;
 use mysql_async::{QueryResult, TextProtocol};
 
 use super::{
-    BINARY_COLUMNS, PRIMARY_KEY, RUN, Shape, StreamFailed, column_metas, floats, inlined,
-    prepared_run, query_error, read_start, script, text_values, typed, write,
+    BINARY_COLUMNS, PRIMARY_KEY, RUN, Shape, StreamFailed, WRONG_ARGUMENTS, column_metas, floats,
+    inlined, parameter, prepared_run, query_error, read_start, script, text_values, typed, write,
 };
 use crate::{Error, ObjectRef, Result, StopFlag, Streamed};
 
-/// Whether a table has a FLOAT column, as [`super::LISTED_COLUMNS`] tells
-/// one: any column whose type starts with it.
+/// Whether an export reads a table through the binary protocol (see
+/// [`Shape`]): where it has a FLOAT column, as [`super::LISTED_COLUMNS`]
+/// tells one (any column whose type starts with it), or is a view, as
+/// [`super::COMMENT`] tells one. A view's column may be an expression
+/// that is a DOUBLE the text protocol cuts to a few decimals (`PI() * id`
+/// to six), and `information_schema` gives it the same type as a table's
+/// DOUBLE(M,D), which is stored to its D decimals and written in full. Its
+/// `?`s are the schema and the table, and then the two again.
 const TABLE_FLOATS: &str = "SELECT EXISTS (SELECT 1 FROM information_schema.columns \
-                            WHERE table_schema = ? AND table_name = ? \
-                              AND LOWER(column_type) LIKE 'float%')";
+                              WHERE table_schema = ? AND table_name = ? \
+                                AND LOWER(column_type) LIKE 'float%') \
+                            OR EXISTS (SELECT 1 FROM information_schema.tables \
+                              WHERE table_schema = ? AND table_name = ? \
+                                AND table_type LIKE '%VIEW')";
+
+/// What an export says when the run has a FLOAT its shape did not know
+/// of (see [`text_sent_on`]).
+pub(super) const SHAPE_CHANGED: &str =
+    "a column became a FLOAT as the export started; export again";
 
 /// `object`'s [`Shape`] in one round trip: its primary key, its byte
-/// string columns and whether it has a FLOAT, asked as one message.
+/// string columns and whether it is read through the binary protocol (see
+/// [`TABLE_FLOATS`]), asked as one message.
 pub(super) async fn read_shape(conn: &mut mysql_async::Conn, object: &ObjectRef) -> Result<Shape> {
     let at = [object.schema.as_str(), object.name.as_str()];
+    let twice = [at[0], at[1], at[0], at[1]];
     let questions = [
         inlined(PRIMARY_KEY, &at),
         inlined(BINARY_COLUMNS, &at),
-        inlined(TABLE_FLOATS, &at),
+        inlined(TABLE_FLOATS, &twice),
     ];
     let (answers, error) = script::answers(conn, &questions).await;
     if let Some(error) = error {
@@ -58,8 +74,9 @@ pub(super) async fn read_shape(conn: &mut mysql_async::Conn, object: &ObjectRef)
 /// it, and keeps an error found there for the read that comes to it. A
 /// failure up to the run, the run's own in place of its columns included,
 /// is [`StreamFailed::Before`]: nothing more is on its way, and the
-/// transaction may be open. Any failure once the run's columns are in is
-/// [`StreamFailed::PartWay`].
+/// transaction may be open. A run given another number of values than
+/// its text has `?`s says so, as a page's does (see [`before_run`]). Any
+/// failure once the run's columns are in is [`StreamFailed::PartWay`].
 pub(super) async fn stream_message(
     conn: &mut mysql_async::Conn,
     text: &str,
@@ -72,7 +89,7 @@ pub(super) async fn stream_message(
     let ran = steps.len() + RUN;
     steps.extend(prepared_run(text, values));
     steps.push(write::ROLLBACK.to_owned());
-    let before = |error| StreamFailed::Before(query_error(error));
+    let before = |error| StreamFailed::Before(before_run(error));
     // The first answer is in once this returns; the rest stays on the
     // connection, where a new `QueryResult` reads it (see `script::answers`).
     conn.query_iter(steps.join("; ")).await.map_err(before)?;
@@ -93,11 +110,28 @@ pub(super) async fn stream_message(
     Ok(sent)
 }
 
+/// A failure up to the run (see [`stream_message`]). `EXECUTE` given
+/// another number of values than the statement has parameters is a `?`
+/// with no value, as [`super::counted`] and [`super::answered`] say.
+fn before_run(error: mysql_async::Error) -> crate::Error {
+    match error {
+        mysql_async::Error::Server(refused) if refused.code == WRONG_ARGUMENTS => {
+            parameter("?", None)
+        }
+        error => query_error(error),
+    }
+}
+
 /// The run's rows as the text protocol sends them, read as the binary
 /// protocol would have sent them (see [`super::binary_form`]) and sent on
-/// to `to` a batch at a time. A FLOAT among the columns fails the export:
-/// its text has lost digits. The table's shape, read just before, said it
-/// had none, so the table changed in between.
+/// to `to` a batch at a time. A FLOAT among the columns fails the export
+/// with [`SHAPE_CHANGED`]: its text has lost digits. The table's shape,
+/// read just before, said it had none, so the table changed in between.
+///
+/// Only a FLOAT: a DOUBLE whose column has a fixed number of decimals
+/// (see [`super::lossy`]) is a table's DOUBLE(M,D) here, stored to those
+/// decimals and so written in full. The one that loses digits is a view's
+/// expression, and a view is read the other way (see [`TABLE_FLOATS`]).
 async fn text_sent_on(
     result: &mut QueryResult<'_, '_, TextProtocol>,
     batch: usize,
@@ -107,16 +141,14 @@ async fn text_sent_on(
     let part_way = StreamFailed::PartWay;
     let Some(raw) = result.columns() else {
         // The run's error stands where its columns would: it did not start.
-        let failed = result.next().await.err().map(query_error);
+        let failed = result.next().await.err().map(before_run);
         return Err(StreamFailed::Before(failed.unwrap_or_else(|| {
             Error::query("unexpected data from the server: the run gave no answer")
         })));
     };
     let columns = column_metas(&raw);
     if floats(&columns) {
-        return Err(part_way(Error::query(
-            "a column became a FLOAT as the export started; export again",
-        )));
+        return Err(part_way(Error::query(SHAPE_CHANGED)));
     }
     crate::stream::send(to, Streamed::Columns(columns.clone()))
         .await
@@ -177,8 +209,12 @@ mod tests {
 
     /// The export tables, in the test database, and its name:
     /// `export_trips` (12,000 rows of an `int` key and a name),
-    /// `export_floats` (one FLOAT row) and `export_types` (a row of each
-    /// common type, and a row of NULLs).
+    /// `export_floats` (one FLOAT row), `export_values` (a row of each
+    /// common type, and a row of NULLs), `export_doubles` (DOUBLEs with two
+    /// decimals) and the view `export_pi_view` (`PI()` times each of
+    /// `export_trips`' keys). `export_values` took over from an
+    /// `export_types` with fewer columns, which an earlier run may have
+    /// left as it was.
     async fn export_tables(url: &str) -> String {
         let _turn = TABLES.lock().await;
         let opts = mysql_async::Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
@@ -193,14 +229,25 @@ mod tests {
                  WHERE n < 12000; \
                  CREATE TABLE IF NOT EXISTS export_floats (id int PRIMARY KEY, f float); \
                  INSERT IGNORE INTO export_floats VALUES (1, 1.2345678); \
-                 CREATE TABLE IF NOT EXISTS export_types (id int PRIMARY KEY, \
+                 CREATE TABLE IF NOT EXISTS export_values (id int PRIMARY KEY, \
                    big bigint unsigned, money decimal(10, 2), ratio double, \
                    stamp datetime(3), day date, span time, yr year, name varchar(20), \
-                   bytes varbinary(4), doc json); \
-                 INSERT IGNORE INTO export_types VALUES \
+                   bytes varbinary(4), doc json, sum double, flags bit(8), \
+                   size enum('small', 'large'), tags set('red', 'blue'), at timestamp NULL, \
+                   small tinyint unsigned); \
+                 INSERT IGNORE INTO export_values VALUES \
                    (1, 18446744073709551615, 12.34, 0.1, '2024-01-02 03:04:05.678', \
-                    '2024-01-02', '-01:02:03', 2024, 'ñame', 0x00ff10, '{{\"a\": [1, 2]}}'), \
-                   (2, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)"
+                    '2024-01-02', '-01:02:03', 2024, 'ñame', 0x00ff10, '{{\"a\": [1, 2]}}', \
+                    0.30000000000000004e0, b'10100101', 'large', 'red,blue', \
+                    '2024-01-02 03:04:05', 255), \
+                   (2, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, \
+                    NULL, NULL, NULL, NULL, NULL); \
+                 CREATE TABLE IF NOT EXISTS export_doubles (id int PRIMARY KEY, \
+                   d double(10, 2)); \
+                 INSERT IGNORE INTO export_doubles VALUES \
+                   (1, 1.25), (2, 2.5), (3, 12345678.91), (4, NULL); \
+                 CREATE OR REPLACE VIEW export_pi_view AS \
+                   SELECT id, PI() * id AS p FROM export_trips"
             ))
             .await
             .unwrap();
@@ -336,7 +383,7 @@ mod tests {
         export_tables(&url).await;
         let (conn, _) = counted_session(&url, Access::ReadOnly).await;
         let sql = crate::dialect::Sql {
-            text: "SELECT * FROM export_types ORDER BY id".to_owned(),
+            text: "SELECT * FROM export_values ORDER BY id".to_owned(),
             params: Vec::new(),
         };
         let stop = StopFlag::new();
@@ -388,7 +435,8 @@ mod tests {
     }
 
     /// A text of two statements is refused by the prepare, and nothing of
-    /// it runs: no columns, no rows, no transaction.
+    /// it runs: no columns, no rows, no transaction, and every row of the
+    /// table is still there.
     #[tokio::test]
     async fn an_export_of_two_statements_runs_neither() {
         let Some(url) = test_url() else {
@@ -405,21 +453,33 @@ mod tests {
         assert!(sent.is_err());
         assert!(columns.is_empty() && batches.is_empty());
         assert!(!in_transaction(&conn).await);
+        let mut session = conn.conn.lock().await;
+        let left: Option<u64> = session
+            .conn()
+            .unwrap()
+            .query_first("SELECT COUNT(*) FROM export_trips")
+            .await
+            .unwrap();
+        assert_eq!(left, Some(12_000));
     }
 
     /// A stop that comes before the run keeps it from running, on the one
-    /// message's way and on the binary protocol's.
+    /// message's way and on the binary protocol's: the export waits only
+    /// on the driver's prepare.
     #[tokio::test]
     async fn a_stop_before_the_run_keeps_it_from_running() {
         let Some(url) = test_url() else {
             return;
         };
         export_tables(&url).await;
-        let (conn, _) = counted_session(&url, Access::ReadOnly).await;
+        let (conn, asked) = counted_session(&url, Access::ReadOnly).await;
         for text in ["SELECT id FROM export_trips", "SELECT f FROM export_floats"] {
             let stop = StopFlag::new();
             stop.stop();
+            let before = asked.load(Ordering::SeqCst);
             let (sent, columns, batches) = exported_statement(&conn, text, &stop).await;
+            // The driver's prepare, and nothing after it.
+            assert_eq!(asked.load(Ordering::SeqCst) - before, 1, "{text}");
             assert!(
                 matches!(sent, Err(crate::Error::Cancelled)),
                 "{text}: {sent:?}"
@@ -455,11 +515,15 @@ mod tests {
         )
         .await;
         assert!(matches!(sent, Err(crate::Error::Timeout)), "{sent:?}");
+        // The limit ends the run once its columns are in, part way: the
+        // transaction is left to the export's connection, which is closed
+        // after a failure (see `Conn::stream_sql`).
     }
 
     /// A run that fails where its columns would be has not started: it
     /// sends nothing, and its transaction ends. The run here has no value
-    /// for its parameter, which the server refuses at `EXECUTE`.
+    /// for its parameter, which the server refuses at `EXECUTE`, and the
+    /// export says so as a page or a count does.
     #[tokio::test]
     async fn a_run_that_fails_at_its_start_sends_nothing() {
         let Some(url) = test_url() else {
@@ -477,8 +541,176 @@ mod tests {
             async move { conn.stream_in_one(sql, 10, &to, stop).await }
         })
         .await;
-        assert!(sent.is_err(), "{sent:?}");
+        let crate::Error::Query {
+            message: expected, ..
+        } = super::super::parameter("?", None)
+        else {
+            unreachable!("a parameter's error is a query error");
+        };
+        assert!(
+            matches!(&sent, Err(crate::Error::Query { message, .. }) if *message == expected),
+            "{sent:?}"
+        );
         assert!(columns.is_empty() && batches.is_empty());
         assert!(!in_transaction(&conn).await);
+    }
+
+    /// `text` exported as a SQL result, and through the binary protocol
+    /// alone: what each sent, and the round trips the export took.
+    async fn both_ways(
+        conn: &Conn,
+        asked: &std::sync::atomic::AtomicUsize,
+        text: &str,
+    ) -> (
+        (Vec<ColumnMeta>, Vec<Vec<Vec<Value>>>),
+        (Vec<ColumnMeta>, Vec<Vec<Vec<Value>>>),
+        usize,
+    ) {
+        let before = asked.load(Ordering::SeqCst);
+        let (sent, columns, batches) = exported_statement(conn, text, &StopFlag::new()).await;
+        let trips = asked.load(Ordering::SeqCst) - before;
+        sent.unwrap();
+        let sql = crate::dialect::Sql {
+            text: text.to_owned(),
+            params: Vec::new(),
+        };
+        let stop = StopFlag::new();
+        let (sent, binary_columns, binary) = streamed(|to| {
+            let (sql, stop) = (&sql, &stop);
+            async move { conn.stream_sql(sql, 5_000, &to, stop).await }
+        })
+        .await;
+        sent.unwrap();
+        ((columns, batches), (binary_columns, binary), trips)
+    }
+
+    /// A DOUBLE the server writes to a fixed number of decimals (`PI()`
+    /// to six, a sum over a DOUBLE(10,2) to two) keeps every digit in a
+    /// SQL result's export: it is read through the binary protocol. The
+    /// prepare, then the start, the run and the rollback.
+    #[tokio::test]
+    async fn a_cut_double_keeps_its_digits_in_a_statement_export() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        export_tables(&url).await;
+        let (conn, asked) = counted_session(&url, Access::ReadOnly).await;
+        for text in [
+            "SELECT PI() AS p",
+            "SELECT SUM(d) / 3 AS t FROM export_doubles",
+        ] {
+            let (exported, binary, trips) = both_ways(&conn, &asked, text).await;
+            assert_eq!(exported, binary, "{text}");
+            assert_eq!(trips, 4, "{text}");
+        }
+        assert!(!in_transaction(&conn).await);
+    }
+
+    /// A view's column may be an expression the server writes to a fixed
+    /// number of decimals: a view is read through the binary protocol,
+    /// and keeps every digit. The view's shape, the start, the prepare,
+    /// the run, the rollback.
+    #[tokio::test]
+    async fn a_view_keeps_its_digits_in_an_export() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let schema = export_tables(&url).await;
+        let (conn, asked) = counted_session(&url, Access::ReadOnly).await;
+        let query = RowQuery::new(ObjectRef::new(&schema, "export_pi_view"), 0);
+        let columns = vec!["id".to_owned(), "p".to_owned()];
+        let before = asked.load(Ordering::SeqCst);
+        let (_, sent, _, batches) = exported_table(&conn, &query, &columns, &StopFlag::new()).await;
+        assert_eq!(sent.unwrap(), 12_000);
+        assert_eq!(asked.load(Ordering::SeqCst) - before, 5);
+        assert!(conn.known_shape(&query.object).unwrap().floats);
+        for row in batches.iter().flatten() {
+            let Value::Int(id) = row[0] else {
+                panic!("{row:?}");
+            };
+            assert_eq!(row[1], Value::Float(std::f64::consts::PI * id as f64));
+        }
+        assert!(!in_transaction(&conn).await);
+    }
+
+    /// A table's DOUBLE(10,2) is stored to two decimals, which its text
+    /// has in full: such a table still goes in one message, and gives the
+    /// values the binary protocol gives.
+    #[tokio::test]
+    async fn a_tables_fixed_decimals_go_in_one_message() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let schema = export_tables(&url).await;
+        let (conn, asked) = counted_session(&url, Access::ReadOnly).await;
+        let query = RowQuery::new(ObjectRef::new(&schema, "export_doubles"), 0);
+        let columns = vec!["id".to_owned(), "d".to_owned()];
+        let before = asked.load(Ordering::SeqCst);
+        let (_, sent, _, batches) = exported_table(&conn, &query, &columns, &StopFlag::new()).await;
+        assert_eq!(asked.load(Ordering::SeqCst) - before, 2);
+        assert_eq!(sent.unwrap(), 4);
+        assert!(!conn.known_shape(&query.object).unwrap().floats);
+        let (_, (_, binary), _) = both_ways(
+            &conn,
+            &asked,
+            "SELECT id, d FROM export_doubles ORDER BY id",
+        )
+        .await;
+        assert_eq!(batches, binary);
+        assert_eq!(batches[0][2][1], Value::Float(12_345_678.91));
+    }
+
+    /// A statement longer than the one message carries is read through
+    /// the binary protocol, which sends it as it is: the prepare, then the
+    /// start, the run and the rollback.
+    #[tokio::test]
+    async fn a_long_statement_export_takes_the_binary_protocol() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        export_tables(&url).await;
+        let (conn, asked) = counted_session(&url, Access::ReadOnly).await;
+        let text = format!(
+            "SELECT id, name FROM export_trips /* {} */ ORDER BY id",
+            "x".repeat(super::super::LONGEST)
+        );
+        let before = asked.load(Ordering::SeqCst);
+        let (sent, _, batches) = exported_statement(&conn, &text, &StopFlag::new()).await;
+        assert_eq!(asked.load(Ordering::SeqCst) - before, 4);
+        assert_eq!(sent.unwrap(), 12_000);
+        assert_eq!(
+            batches[2][1_999],
+            vec![Value::Int(12_000), Value::Text("row 12000".into())]
+        );
+        assert!(!in_transaction(&conn).await);
+    }
+
+    /// A FLOAT the shape did not know of fails the export before any row
+    /// is sent, and the shape is forgotten, so that the export done again
+    /// reads it afresh.
+    #[tokio::test]
+    async fn a_float_the_shape_missed_fails_the_export() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let schema = export_tables(&url).await;
+        let (conn, _) = counted_session(&url, Access::ReadOnly).await;
+        let object = ObjectRef::new(&schema, "export_floats");
+        conn.remember(&object, super::super::Shape::default());
+        let query = RowQuery::new(object.clone(), 0);
+        let columns = vec!["id".to_owned(), "f".to_owned()];
+        let stop = StopFlag::new();
+        let (sent, metas, batches) = streamed(|to| {
+            let (conn, query, columns, stop) = (&conn, &query, &columns, &stop);
+            async move { conn.stream_rows(query, columns, 5_000, &to, stop).await }
+        })
+        .await;
+        assert!(
+            matches!(&sent, Err(crate::Error::Query { message, .. })
+                if message.contains("export again")),
+            "{sent:?}"
+        );
+        assert!(metas.is_empty() && batches.is_empty());
+        assert_eq!(conn.known_shape(&object), None);
     }
 }

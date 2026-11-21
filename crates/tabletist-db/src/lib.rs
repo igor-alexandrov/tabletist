@@ -537,7 +537,8 @@ impl Connection {
     /// batches of up to `batch` rows, read-only: one run streamed in two
     /// round trips on PostgreSQL once the table's shape is read, unbuffered
     /// on MySQL and MariaDB in one round trip once the shape is read
-    /// (through the binary protocol, in four, for a table with a FLOAT),
+    /// (through the binary protocol, in four, for a table with a FLOAT
+    /// or a view),
     /// stepped on SQLite, so no more than a batch is read ahead
     /// of what `to` has taken (on PostgreSQL, a batch and what the socket
     /// holds); on a Files connection
