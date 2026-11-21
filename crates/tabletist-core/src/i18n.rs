@@ -583,6 +583,11 @@ mod tests {
     }
 
     #[test]
+    fn every_brazilian_portuguese_entry_is_translated() {
+        assert_every_entry_is_translated(CATALOGS[1]);
+    }
+
+    #[test]
     fn the_c_locale_is_no_language() {
         for none in ["C", "POSIX", "C.UTF-8", "c", ""] {
             assert_eq!(language_of(none), None, "{none:?}");

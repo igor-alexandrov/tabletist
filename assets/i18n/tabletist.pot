@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-20 09:47-0500\n"
+"POT-Creation-Date: 2026-11-21 15:13-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -2822,7 +2822,7 @@ msgid "License"
 msgstr ""
 
 #: src/ui/about.rs src/ui/connect_dialog/sheet.rs src/ui/help.rs
-#: src/ui/object_tabs.rs src/ui/settings/terminal.rs
+#: src/ui/object_tabs.rs src/ui/settings/terminal.rs src/ui/workspace.rs
 msgid "Close"
 msgstr ""
 
@@ -6736,7 +6736,8 @@ msgstr ""
 msgid "move"
 msgstr ""
 
-#: src/ui/pane_hints.rs src/ui/workspace.rs
+#: src/ui/pane_hints.rs src/ui/quick_open.rs src/ui/sidebar.rs src/ui/start.rs
+#: src/ui/workspace.rs
 msgctxt "key hint"
 msgid "open"
 msgstr ""
@@ -7109,7 +7110,7 @@ msgstr ""
 msgid "Connect to {name}"
 msgstr ""
 
-#: src/ui/picker.rs src/ui/quick_open.rs src/ui/sidebar.rs src/ui/start.rs
+#: src/ui/picker.rs
 msgid "open"
 msgstr ""
 

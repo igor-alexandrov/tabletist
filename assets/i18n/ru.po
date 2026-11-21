@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-20 09:47-0500\n"
+"POT-Creation-Date: 2026-11-21 15:13-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -2844,7 +2844,7 @@ msgid "Zoom"
 msgstr "Масштаб"
 
 #: src/ui/about.rs src/ui/connect_dialog/sheet.rs src/ui/help.rs
-#: src/ui/object_tabs.rs src/ui/settings/terminal.rs
+#: src/ui/object_tabs.rs src/ui/settings/terminal.rs src/ui/workspace.rs
 msgid "Close"
 msgstr "Закрыть"
 
@@ -6946,7 +6946,8 @@ msgstr "таблица"
 msgid "move"
 msgstr "перемещение"
 
-#: src/ui/pane_hints.rs src/ui/workspace.rs
+#: src/ui/pane_hints.rs src/ui/quick_open.rs src/ui/sidebar.rs src/ui/start.rs
+#: src/ui/workspace.rs
 msgctxt "key hint"
 msgid "open"
 msgstr "открыть"
@@ -7315,7 +7316,7 @@ msgstr "фильтр подключений"
 msgid "key's passphrase"
 msgstr "парольную фразу ключа"
 
-#: src/ui/picker.rs src/ui/quick_open.rs src/ui/sidebar.rs src/ui/start.rs
+#: src/ui/picker.rs
 msgid "open"
 msgstr "открыто"
 

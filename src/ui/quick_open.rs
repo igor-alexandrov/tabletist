@@ -18,7 +18,7 @@ use tabletist_db::ObjectKind;
 use crate::app::{QuickHeading, QuickList, QuickRow};
 use crate::env::{Environment, Platform, env_colors};
 use crate::format::display_safe;
-use crate::i18n::{Locale, Msgid, gettext, msgid, ngettext};
+use crate::i18n::{Locale, Msgid, gettext, msgid, ngettext, pmsgid};
 use crate::keymap::{Command, Keymap, Layout, Scope, Written};
 use crate::model::{
     About, Action, AgentsHere, ConnTabId, Found, QuickCaret, QuickCommand, QuickGroup, QuickItem,
@@ -1261,7 +1261,7 @@ fn footer(ui: &mut egui::Ui, shown: Footer, keys: &Keys, skin: &Skin<'_>) {
     };
     let (moves, open, editor, commands, pick, close) = (
         word(msgid("move")),
-        word(msgid("open")),
+        word(pmsgid("key hint", "open")),
         word(msgid("in SQL editor")),
         word(msgid("commands")),
         word(msgid("pick")),
