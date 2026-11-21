@@ -69,6 +69,22 @@ code.
    connection's tab a window ("Show window", "go to window",
    "ctrl+shift+1..9 window") and a table a tab; "new tab" would read as a
    table tab.*
+8. **The menu's key is the open menu's own, like Copy as's letters**
+   (asked while drafting run 1; this replaces decision 6's "listed in
+   Settings › Keyboard" and "rebindable"): a keymap line in the prompt
+   scope that holds while the database menu is open (`When::DatabaseMenu`).
+   It is fixed, Settings › Keyboard does not list it, and the hint is
+   written from the keymap. *Why: keys of menus and dialogs are in the
+   prompt scope, which Settings does not list and an override cannot
+   rebind; a global ⌘↩ would clash with the SQL editor's Run.*
+9. **A menu opened by its key gives the keyboard to its chip** (found while
+   drafting run 1): opened by Switch database's key or quick open, the
+   keyboard was nowhere and the arrows never reached the rows, so the new
+   key could not be pressed on one. Now the arrows go down the rows as
+   they do after Enter on the chip, and the keyboard goes back where it
+   was (a SQL editor being typed in) when the menu closes. A click leaves
+   the keyboard where it was. *Why: without it, ctrl+enter does nothing
+   from the keyboard in the Omarchy look.*
 
 ## Behaviour (so far)
 
@@ -82,12 +98,17 @@ code.
 - The start screen's database button opens the same menu, so the gesture
   works there; quick open's "Switch database" opens the chip's menu, where
   it works too.
+- While the database menu is open, its key is read before every other
+  chord: a SQL editor in front does not run on ⌘↩.
+- At quit, of two windows of one connection on its own database, the first
+  in the bar is the one whose tables are kept (until run 2 keeps each).
 - Agents (MCP) are per connection and unchanged; "show agents" goes to the
   first tab of the connection, as now.
-- The hint is the menu row's `detail` (muted, at the right), on the lit row
-  only; the menu widens to fit it. The keyboard's Enter on a row with the
-  command modifier held takes the new command; a pointer click reads
-  `modifiers.command`.
+- The hint is the menu row's `hint` (muted, at the right; in the terminal
+  look the key leads, in the accent), on the lit row only; the room is kept
+  on every row, so the menu's width does not move. The key is read before
+  the rows are drawn, so the row under the keyboard does not take it as an
+  Enter that switches; a pointer click reads `modifiers.command`.
 
 ## Relaunch
 
