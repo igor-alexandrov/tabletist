@@ -153,6 +153,51 @@ fn opening_a_database_in_a_new_window_leaves_this_one_as_it_was() {
 }
 
 #[test]
+fn the_new_window_is_on_the_server_this_one_connected_to() {
+    let (mut harness, first) = bookshop(Look::macos());
+    // The saved connection now names another server; this window is
+    // still on the one it connected to, with that one's password.
+    let conn = harness.app.workspace(first).unwrap().conn_id.clone();
+    let mut edited = harness.app.connections.get(&conn).unwrap().clone();
+    edited.spec.host = "db.example.com".into();
+    harness.app.connections.upsert(edited);
+    let sent = harness.app.backend.sent.len();
+    harness.app.apply(Action::OpenDatabaseInNewWindow {
+        tab: first,
+        database: "bookshop_test".into(),
+    });
+    let (spec, secrets) = harness.app.backend.sent[sent..]
+        .iter()
+        .find_map(|command| match command {
+            Command::Connect { spec, secrets, .. } => Some((spec, secrets)),
+            _ => None,
+        })
+        .expect("the new window connects");
+    assert_eq!(
+        spec.host, "localhost",
+        "the password goes to its own server"
+    );
+    assert_eq!(spec.database, "bookshop_test");
+    assert_eq!(secrets.password.as_deref(), Some("secret"));
+}
+
+#[test]
+fn the_key_is_not_listed_in_the_keyboard_settings() {
+    let keymap = crate::keymap::Keymap::default();
+    for layout in [
+        crate::keymap::Layout::Mac,
+        crate::keymap::Layout::Windows,
+        crate::keymap::Layout::Omarchy,
+    ] {
+        let listed = keymap
+            .rows(layout)
+            .iter()
+            .any(|row| row.command == crate::keymap::Command::OpenDatabaseInNewWindow);
+        assert!(!listed, "{layout:?}");
+    }
+}
+
+#[test]
 fn the_new_window_goes_right_after_the_one_it_came_from() {
     let (mut harness, first) = bookshop(Look::macos());
     // A second connection after it, in a window of its own.
@@ -477,6 +522,48 @@ fn esc_gives_the_keyboard_back_where_it_was() {
             "terminal: {terminal}"
         );
     }
+}
+
+#[test]
+fn the_menu_leaves_the_keyboard_nowhere_when_it_was_nowhere() {
+    for look in [Look::macos(), Look::omarchy()] {
+        let terminal = look.terminal;
+        let (mut harness, first) = bookshop(look);
+        harness.settle();
+        assert_eq!(harness.ctx.memory(|memory| memory.focused()), None);
+        // Closed by Esc, and by a pick.
+        open_menu(&mut harness, first);
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!egui::Popup::is_id_open(
+            &harness.ctx,
+            database_menu_id(first, false)
+        ));
+        harness.settle();
+        let focused = harness.ctx.memory(|memory| memory.focused());
+        assert_eq!(focused, None, "Esc, terminal: {terminal}");
+        open_menu(&mut harness, first);
+        key_to(&mut harness, "bookshop_test");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert_eq!(database(&harness, first), "bookshop_test");
+        harness.settle();
+        let focused = harness.ctx.memory(|memory| memory.focused());
+        assert_eq!(focused, None, "a pick, terminal: {terminal}");
+    }
+}
+
+#[test]
+fn the_menu_keeps_its_width_as_the_keyboard_moves() {
+    let (mut harness, first) = bookshop(Look::macos());
+    open_menu(&mut harness, first);
+    let width = |harness: &mut Harness| {
+        let tree = harness.settle();
+        bounds(&tree, "postgres", Role::Button).unwrap().width()
+    };
+    let unlit = width(&mut harness);
+    key_to(&mut harness, "bookshop_test");
+    assert_eq!(width(&mut harness), unlit, "lit bookshop_test");
+    key_to(&mut harness, "postgres");
+    assert_eq!(width(&mut harness), unlit, "lit postgres");
 }
 
 #[test]

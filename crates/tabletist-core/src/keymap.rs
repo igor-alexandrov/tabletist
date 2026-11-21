@@ -856,7 +856,7 @@ impl Command {
                 Window,
             ),
             C::SwitchDatabase => info(msgid("Switch database"), "Switch database", Window),
-            C::OpenDatabaseInNewWindow => info(msgid("Open database in a new window"), "", Window),
+            C::OpenDatabaseInNewWindow => info(msgid("Open database in a new window"), "", Prompts),
             C::Settings => info(msgid("Settings"), "Settings", Window),
             C::CheckForUpdates => info(msgid("Check for Updates…"), "", Window),
             C::LargerText => info(msgid("Larger"), "", Window),

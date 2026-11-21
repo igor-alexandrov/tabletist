@@ -106,7 +106,8 @@ pub struct Item<'a> {
     current: Option<bool>,
     role: Option<TextRole>,
     detail: Option<&'a str>,
-    hint: Option<(&'a str, &'a str)>,
+    hint: Option<(&'a str, &'a crate::keymap::Written)>,
+    hint_shown: Option<bool>,
     disabled: Option<&'a str>,
     note: Option<&'a str>,
     lit: Option<bool>,
@@ -122,6 +123,7 @@ impl<'a> Item<'a> {
             role: None,
             detail: None,
             hint: None,
+            hint_shown: None,
             disabled: None,
             note: None,
             lit: None,
@@ -157,10 +159,17 @@ impl<'a> Item<'a> {
     /// What a key does on the row, at its right while the row is lit:
     /// `words` and the `key` that does it, as the look writes them
     /// (`New window ⌘↩`, the terminal's `ctrl+enter new window` with its
-    /// key in the accent). The room is kept on every row, so the menu
-    /// keeps its width as the light moves.
-    pub fn hint(mut self, words: &'a str, key: &'a str) -> Self {
+    /// key in the accent). Give it to every row of the menu: each keeps
+    /// its room, so the menu keeps its width as the light moves.
+    pub fn hint(mut self, words: &'a str, key: &'a crate::keymap::Written) -> Self {
         self.hint = Some((words, key));
+        self
+    }
+
+    /// Whether the hint is drawn, where it is not the lit row's: on the
+    /// row the key goes to.
+    pub fn hint_shown(mut self, shown: bool) -> Self {
+        self.hint_shown = Some(shown);
         self
     }
 
@@ -215,7 +224,7 @@ impl<'a> Item<'a> {
             .detail
             .map_or(0.0, |detail| DETAIL_GAP + measure(note, detail));
         let hinted = self.hint.map_or(0.0, |(words, key)| {
-            DETAIL_GAP + measure(note, words) + shape.gap + measure(note, key)
+            DETAIL_GAP + measure(note, words) + shape.gap + measure(note, key.as_str())
         });
         let own = measure(role, self.text);
         let after = self
@@ -247,7 +256,7 @@ impl<'a> Item<'a> {
             });
         }
         if let Some((words, key)) = self.hint {
-            let said = format!("{words} {key}");
+            let said = format!("{words} {}", key.as_str());
             ui.ctx().accesskit_node_builder(response.id, |node| {
                 node.set_description(said);
             });
@@ -319,7 +328,9 @@ impl<'a> Item<'a> {
                 .layout(ui.ctx())
                 .paint_right(painter, rect.right() - shape.inset, center);
         }
-        if let Some((words, key)) = self.hint.filter(|_| lit) {
+        let hint_shown = self.hint_shown.unwrap_or(lit);
+        if let Some((words, key)) = self.hint.filter(|_| hint_shown) {
+            let key = key.as_str();
             let right = rect.right() - shape.inset;
             if look.terminal {
                 // The key leads, in the accent, as the footers write keys.

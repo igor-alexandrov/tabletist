@@ -1277,6 +1277,31 @@ struct OpenedByKey {
     given: bool,
 }
 
+/// The database menu (`by_key` under its id) has closed, or closes on a
+/// pick of `row`: opened by a key, it gives the keyboard back where it
+/// was, and where it was nowhere, its `chip` and the row let it go. A pick
+/// gives it back at once: the window it switches reconnects, and its chip
+/// may not be drawn again for a while.
+fn give_keyboard_back(
+    ctx: &egui::Context,
+    by_key: egui::Id,
+    chip: egui::Id,
+    row: Option<egui::Id>,
+) {
+    let Some(opened) = ctx.data(|data| data.get_temp::<OpenedByKey>(by_key)) else {
+        return;
+    };
+    ctx.data_mut(|data| data.remove::<OpenedByKey>(by_key));
+    ctx.memory_mut(|memory| match opened.from {
+        Some(from) => memory.request_focus(from),
+        None => {
+            for id in std::iter::once(chip).chain(row) {
+                memory.surrender_focus(id);
+            }
+        }
+    });
+}
+
 /// Opens the database menu `id` as a key does (Switch database's, quick
 /// open's): its chip takes the keyboard, so that the arrows go down the
 /// rows as they do after Enter on it, and the keyboard goes back where it
@@ -1317,10 +1342,7 @@ pub(super) fn database_menu(
     let by_key = id.with("by key");
     if let Some(opened) = ctx.data(|data| data.get_temp::<OpenedByKey>(by_key)) {
         if !egui::Popup::is_id_open(ctx, id) {
-            ctx.data_mut(|data| data.remove::<OpenedByKey>(by_key));
-            if let Some(from) = opened.from {
-                ctx.memory_mut(|memory| memory.request_focus(from));
-            }
+            give_keyboard_back(ctx, by_key, response.id, None);
         } else if !opened.given {
             response.request_focus();
             let given = OpenedByKey {
@@ -1330,8 +1352,8 @@ pub(super) fn database_menu(
             ctx.data_mut(|data| data.insert_temp(by_key, given));
         }
     }
-    // The row the key goes to, as the last frame lit it: the hint is on it
-    // alone.
+    // The row the key goes to, as the last frame lit it: the hint is
+    // drawn on it alone, and every row keeps its room.
     let lit_id = id.with("lit");
     let was_lit = ctx.data(|data| data.get_temp::<String>(lit_id));
     menu::under_id(response, id, response.rect.width(), look, palette, |ui| {
@@ -1340,14 +1362,20 @@ pub(super) fn database_menu(
             .data_mut(|data| data.remove_temp::<bool>(id.with("new window")))
             .unwrap_or(false);
         let mut lit = None;
+        let mut lit_row = None;
+        let mut picked = None;
         for database in &info.databases {
             // Database names come from the server: nothing hidden.
             let name = display_safe(database);
             let mut item = menu::Item::choice(&name, *database == info.database).role(role);
-            if !key.is_empty() && was_lit.as_ref() == Some(database) {
-                item = item.hint(&words, &key);
+            if !key.is_empty() {
+                let shown = was_lit.as_ref() == Some(database);
+                item = item.hint(&words, &key).hint_shown(shown);
             }
             let row = item.show(ui, look, palette);
+            if row.clicked() {
+                picked = Some(row.id);
+            }
             let new_window = row.clicked() && ui.input(|input| input.modifiers.command);
             if new_window {
                 actions.push(Action::OpenDatabaseInNewWindow {
@@ -1364,6 +1392,7 @@ pub(super) fn database_menu(
             // The keyboard's row, or else the pointer's.
             if row.has_focus() || (lit.is_none() && row.hovered()) {
                 lit = Some(database);
+                lit_row = Some(row.id);
             }
         }
         if lit != was_lit.as_ref() {
@@ -1382,6 +1411,10 @@ pub(super) fn database_menu(
                 database: database.clone(),
             });
             ui.close();
+            picked = lit_row;
+        }
+        if picked.is_some() {
+            give_keyboard_back(ui.ctx(), by_key, response.id, picked);
         }
     });
 }

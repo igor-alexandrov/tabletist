@@ -3920,13 +3920,17 @@ impl App {
         let Some(workspace) = self.workspace(tab) else {
             return;
         };
+        // The server this window connected to, which its secrets are
+        // for, even where the saved connection has been edited since.
         let typed = workspace.secrets.clone();
+        let spec = workspace.spec.clone();
         let Some(mut saved) = self.connections.get(&workspace.conn_id).cloned() else {
             return;
         };
         let Some(index) = self.tab_index(tab) else {
             return;
         };
+        saved.spec = spec;
         saved.spec.database = database;
         let window = self.picker_tab();
         let id = window.id;
