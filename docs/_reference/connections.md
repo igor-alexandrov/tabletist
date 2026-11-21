@@ -31,6 +31,20 @@ be undone: the
 connection goes with its saved password and SSH secret, its labels, and
 what was last open on it.
 
+## Another database of the server
+
+The chip of the connection you are in (the start screen's **Switch
+database** and quick open's open the same menu) lists the server's other
+databases, where it has more than one. Picking one switches the window to
+it: the tables close, and the SQL editors stay. Cmd-click or Cmd+Enter
+(Ctrl on Windows and Linux, Ctrl+Enter in the Omarchy look) opens it in a
+new window instead, right after this one and in front, with a session of
+its own. The row under the pointer or the keyboard names the key. The new
+window connects with the password this one connected with, so nothing is
+asked again, and this one keeps its tables, editors and edits. Do it on
+the database you are on for a second window on it. The chips tell the
+windows apart by their database.
+
 ## Fields
 
 | Field | Notes |
