@@ -182,6 +182,9 @@ fn the_connection_dialog_takes_the_chosen_environments_colours() {
                 // Named, so the header's line about the connection is not
                 // the environment's name alone.
                 form.name = "Bookshop".into();
+                // In a group of its own, so Group does not read Local,
+                // the name of an environment too.
+                form.group = Some("Bookshop".into());
                 form.environment = Some(env);
                 // The box follows the environment: set, it is filled in
                 // each one's colour.

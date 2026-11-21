@@ -2033,6 +2033,16 @@ pub struct ConnectionForm {
     /// `Some` when editing a saved connection, `None` for a new one.
     pub editing: Option<ConnectionId>,
     pub name: String,
+    /// The group chosen in Group: `None` while the connection goes by the
+    /// Connections list's rule.
+    pub group: Option<String>,
+    /// The name being typed after New group…, while its field is open.
+    pub group_typed: Option<String>,
+    /// Put the keyboard in Group on the next frame: in its field once New
+    /// group… opens it, on the dropdown once Escape closes the field.
+    pub focus_group: bool,
+    /// What Group offers, read again on each frame the dialog draws.
+    pub group_choices: crate::connections::groups::Choices,
     /// The environment the user chose; `None` until they do, while it
     /// follows where the connection points (see
     /// [`ConnectionForm::environment`]).
@@ -2276,6 +2286,10 @@ impl Default for ConnectionForm {
         Self {
             editing: None,
             name: String::new(),
+            group: None,
+            group_typed: None,
+            focus_group: false,
+            group_choices: Default::default(),
             environment: None,
             read_only: None,
             production_read_only: true,
@@ -2527,6 +2541,10 @@ impl ConnectionForm {
         Self {
             editing: Some(saved.id.clone()),
             name: saved.name.clone(),
+            group: saved.group.clone(),
+            group_typed: None,
+            focus_group: false,
+            group_choices: Default::default(),
             environment: Some(saved.environment),
             read_only: saved.read_only,
             production_read_only: true,
@@ -2913,7 +2931,7 @@ impl ConnectionForm {
         Ok(crate::connections::SavedConnection {
             id: self.editing.clone().unwrap_or_else(ConnectionId::new),
             name: name.to_owned(),
-            group: None,
+            group: self.chosen_group(),
             environment: self.environment(),
             read_only: self.saved_read_only(),
             password,
@@ -2921,6 +2939,24 @@ impl ConnectionForm {
             spec,
             agents,
         })
+    }
+
+    /// The group to save: the one typed after New group…, while its field
+    /// is open, else the one chosen; none where it is blank.
+    pub fn chosen_group(&self) -> Option<String> {
+        self.group_typed
+            .as_deref()
+            .or(self.group.as_deref())
+            .map(str::trim)
+            .filter(|group| !group.is_empty())
+            .map(str::to_owned)
+    }
+
+    /// Whether the connection stays on this machine, as the fields say: a
+    /// file, or a local host without a tunnel. Without a group of its own
+    /// it is then listed under Local.
+    pub fn stays_local(&self) -> bool {
+        crate::connections::groups::stays_on_this_machine(self.driver, &self.host, self.ssh)
     }
 
     /// Takes into the Tables control a name typed and not yet added, as a
@@ -8319,6 +8355,40 @@ mod tests {
             production_read_only,
             ..ssh_form()
         }
+    }
+
+    #[test]
+    fn the_group_chosen_or_typed_is_saved_and_read_back() {
+        let chosen = ConnectionForm {
+            group: Some("Experiments".into()),
+            ..ssh_form()
+        };
+        let saved = chosen.to_saved().unwrap();
+        assert_eq!(saved.group.as_deref(), Some("Experiments"));
+        assert_eq!(ConnectionForm::from_saved(&saved).group, saved.group);
+        // A name typed after New group… wins over the choice, without the
+        // spaces round it; a blank one leaves the connection to the rule.
+        let typed = |text: &str| {
+            ConnectionForm {
+                group: Some("Experiments".into()),
+                group_typed: Some(text.into()),
+                ..ssh_form()
+            }
+            .to_saved()
+            .unwrap()
+            .group
+        };
+        assert_eq!(typed(" Side projects "), Some("Side projects".into()));
+        assert_eq!(typed("  "), None);
+        assert_eq!(ssh_form().to_saved().unwrap().group, None);
+        // The fields decide where the rule would put it.
+        assert!(!ssh_form().stays_local());
+        let local = ConnectionForm {
+            ssh: false,
+            host: "localhost".into(),
+            ..ssh_form()
+        };
+        assert!(local.stays_local());
     }
 
     #[test]

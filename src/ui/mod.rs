@@ -82,6 +82,8 @@ mod format_settings_tests;
 pub mod grid;
 #[cfg(test)]
 mod grid_keys_tests;
+#[cfg(test)]
+mod group_tests;
 pub mod help;
 #[cfg(test)]
 mod help_tests;
@@ -245,7 +247,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         _ => None,
     };
     if let Some(Dialog::Connection(form)) = &mut app.dialog {
-        let asked = connect_dialog::show(&ui.ctx().clone(), paint, form, &app.keymap, loaded);
+        let groups = crate::connections::groups::Choices::of(
+            &form.name,
+            form.stays_local(),
+            form.editing.as_ref(),
+            &app.connections.connections,
+        );
+        let asked =
+            connect_dialog::show(&ui.ctx().clone(), paint, form, &app.keymap, loaded, groups);
         app.actions.extend(asked);
     } else {
         connect_dialog::fold(ui.ctx());

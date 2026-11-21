@@ -3927,6 +3927,14 @@ msgstr ""
 msgid "none · {key} adds files"
 msgstr ""
 
+#: src/ui/connect_dialog/group.rs
+msgid "Group name"
+msgstr ""
+
+#: src/ui/connect_dialog/group.rs
+msgid "New group…"
+msgstr ""
+
 #: src/ui/connect_dialog/mod.rs
 msgid "One database file on this computer"
 msgstr ""
@@ -4268,6 +4276,10 @@ msgstr ""
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/structure.rs
 msgid "Name"
+msgstr ""
+
+#: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
+msgid "Group"
 msgstr ""
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs

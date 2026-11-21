@@ -6401,6 +6401,9 @@ impl App {
                 }
             }
         }
+        // A group that is the one the rule gives it anyway is none: the
+        // connection then follows the rule, as its name or server change.
+        saved.group = crate::connections::groups::keep(&saved, &self.connections.connections);
         self.connections.upsert(saved.clone());
         self.save_connections();
         self.rename_launch(&saved);
