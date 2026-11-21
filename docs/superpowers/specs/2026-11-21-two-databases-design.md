@@ -19,13 +19,22 @@ database with one set of kept tables per connection.
 - The picker: an open connection's row reads "open" and its button "Show
   window" (macOS); Omarchy's footer reads "enter connect / go to window".
 
-## Departures from the canvas
+## On the canvas
 
-| What the canvas has | What will be built | Why |
-|---|---|---|
-| The database menu is not drawn | The lit row (pointer or keyboard) shows a muted hint at its right: "new tab ⌘↩" (macOS look), "new tab Ctrl+Enter" (Windows/Linux), "ctrl+enter new tab" (Omarchy) | Shows the new gesture where it is used |
-| Picker footer: "↩ connect ⌘E edit ⌘D duplicate ⌫ delete" / Omarchy "enter connect / go to window …" | Adds "⇧↩ open another" / "shift+enter another" | Shows the gesture that exists already |
-| — (code: right-click "Connect again") | Renamed "Open another" | Says what it does to an open connection |
+Drawn after approval, on the Connections page under "Multiple open":
+"macOS – Two databases of one connection" (`MacTwoDatabases`) and
+"Omarchy – Two databases of one connection" (`OmarchyTwoDatabases`). They
+show the database menu with its hint (macOS, Windows/Linux, Omarchy), the
+bar after the new window opened, and the picker's "Open another" and
+footer. They add to the canvas what it did not draw; the only change to a
+drawn board is the picker footer's new hint. Keep them in step with the
+code.
+
+| What the boards show | Was on the canvas before |
+|---|---|
+| The lit row's muted hint: "New window ⌘↩" (macOS look), "New window Ctrl+Enter" (Windows/Linux), "ctrl+enter new window" (Omarchy) | The menu's pop-up was not drawn |
+| Picker footer adds "⇧↩ open another" / "shift+enter another" | "↩ connect ⌘E edit ⌘D duplicate ⌫ delete" / "enter connect / go to window …" |
+| Right-click "Open another" (code: "Connect again") | Not drawn |
 
 ## Decisions
 
@@ -48,12 +57,18 @@ database with one set of kept tables per connection.
    nothing open. ⌘1..9 shift for the tabs after it. *Why: it was asked for
    to be used now, and next to its sibling.*
 5. **Omarchy key: ctrl+enter** (and ctrl-click), the hint reading
-   "ctrl+enter new tab". *Why: the same as Linux and Windows, close to
+   "ctrl+enter new window". *Why: the same as Linux and Windows, close to
    Omarchy's ctrl chords.*
-6. **A keymap command, rebindable:** "Open database in a new tab", ⌘↩ on
+6. **A keymap command, rebindable:** "Open database in a new window", ⌘↩ on
    macOS and Ctrl+Enter elsewhere, listed in Settings › Keyboard; the hint
    is written from the keymap. The click modifier stays fixed (⌘ / Ctrl).
    *Why: as "Open the connection again" (⇧↩) is.*
+7. **The word is "window", not "tab"** (asked when the boards were drawn):
+   the hint reads "New window ⌘↩" / "ctrl+enter new window", and the
+   command "Open database in a new window". *Why: the canvas calls a
+   connection's tab a window ("Show window", "go to window",
+   "ctrl+shift+1..9 window") and a table a tab; "new tab" would read as a
+   table tab.*
 
 ## Behaviour (so far)
 
@@ -92,14 +107,14 @@ database with one set of kept tables per connection.
 
 ## Runs (a PR each)
 
-1. **Database menu: open in a new tab.** The keymap command, the hint in
-   both looks, the modifier click, the new tab next to its sibling and in
+1. **Database menu: open in a new window.** The keymap command, the hint in
+   both looks, the modifier click, the new window next to its sibling and in
    front with the source's secrets, the start screen's menu, the guide and
    the keyboard reference. Headless tests: ⌘-click and ⌘↩ open a second
    tab, both connected, each on its own database, the first tab's tables
    untouched; the chip order; no second password prompt; a rebinding
    rewrites the hint; the Omarchy hint. Until run 2, a relaunch puts the
-   new tab on the saved database, as a switched tab is today.
+   new window on the saved database, as a switched tab is today.
 2. **Relaunch each tab as it was.** session.json `windows`, read and
    written; tests for the round trip, an old file, and two tabs of one
    connection with different tables.
