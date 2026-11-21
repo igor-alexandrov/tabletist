@@ -55,6 +55,7 @@ fn baseline(laid: &crate::typography::Laid) -> f32 {
         .map_or(laid.height() * 0.8, |glyph| glyph.pos.y)
 }
 
+use crate::connections::groups::same;
 pub use crate::connections::groups::{Group, groups};
 
 /// Whether a connection stays on this machine: a file, or a local host
@@ -622,7 +623,8 @@ fn body(
                     if number > 0 && !look.terminal {
                         ui.add_space(20.0);
                     }
-                    let open = !folded.contains(&group.title);
+                    // Folded by its title in any case, as the groups are merged.
+                    let open = !folded.iter().any(|title| same(title, &group.title));
                     group_header(ui, &group, open, side, &look, &palette, &mut actions, tab);
                     if !open {
                         continue;

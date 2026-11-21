@@ -1199,7 +1199,11 @@ impl App {
                     .map(|group| group.title);
                 if let Some(picker) = self.picker_mut(tab) {
                     picker.search = search;
-                    picker.folded.retain(|title| Some(title) != group.as_ref());
+                    picker.folded.retain(|title| {
+                        !group
+                            .as_ref()
+                            .is_some_and(|name| crate::connections::groups::same(title, name))
+                    });
                     picker.selected = Some(conn.clone());
                     picker.deleting = Some(conn);
                     picker.form = form;
@@ -1252,7 +1256,9 @@ impl App {
             }
             Action::FoldConnectionGroup { tab, group } => {
                 if let Some(picker) = self.picker_mut(tab) {
-                    if let Some(index) = picker.folded.iter().position(|title| *title == group) {
+                    // One key per group, whichever case its title shows in.
+                    let same = |title: &String| crate::connections::groups::same(title, &group);
+                    if let Some(index) = picker.folded.iter().position(same) {
                         picker.folded.remove(index);
                     } else {
                         picker.folded.push(group);

@@ -335,3 +335,41 @@ fn group_sits_beside_the_name_on_macos_and_under_it_in_the_terminal() {
         }
     }
 }
+
+/// A group folded under one spelling stays folded when a search shows it
+/// under another, and its heading clicked there unfolds it: titles in
+/// another case are one group, and one fold.
+#[test]
+fn a_group_folds_as_one_whichever_case_its_heading_shows() {
+    for look in looks() {
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        add(&mut harness, "Acme", Some("Clients"), "/srv/acme.db");
+        add(&mut harness, "Bolt", Some("clients"), "/srv/bolt.db");
+        harness.settle();
+        let tab = harness.app.active_tab_id();
+        harness.app.apply(Action::FoldConnectionGroup {
+            tab,
+            group: "Clients".into(),
+        });
+        harness.app.picker_mut(tab).unwrap().search = "bolt".into();
+        let tree = harness.settle();
+        assert!(
+            bounds(&tree, "clients", Role::Button).is_some(),
+            "{look:?}: {:?}",
+            crate::testing::labels(&tree)
+        );
+        assert!(bounds(&tree, "Bolt", Role::Button).is_none(), "{look:?}");
+        // Its heading, clicked as the search shows it.
+        harness.app.apply(Action::FoldConnectionGroup {
+            tab,
+            group: "clients".into(),
+        });
+        let tree = harness.settle();
+        assert!(bounds(&tree, "Bolt", Role::Button).is_some(), "{look:?}");
+        assert!(
+            harness.app.picker_mut(tab).unwrap().folded.is_empty(),
+            "{look:?}"
+        );
+    }
+}
