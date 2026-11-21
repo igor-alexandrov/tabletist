@@ -535,10 +535,10 @@ impl Connection {
     /// (no `LIMIT`, no `OFFSET`): the `columns` named, in their order, or
     /// all of them when there are none. Sent to `to` as the columns, then
     /// batches of up to `batch` rows, read-only: one run streamed in two
-    /// round trips on PostgreSQL once the table's shape is read,
-    /// unbuffered on MySQL, stepped on SQLite,
-    /// so no more than a batch is read ahead of what `to` has taken (on
-    /// PostgreSQL, a batch and what the socket holds); on a Files connection
+    /// round trips on PostgreSQL once the table's shape is read, unbuffered
+    /// on MySQL, stepped on SQLite, so no more than a batch is read ahead
+    /// of what `to` has taken (on PostgreSQL, a batch and what the socket
+    /// holds); on a Files connection
     /// a chunk of DuckDB's at a time, so no more than a batch and a chunk.
     /// Returns the rows sent.
     /// `stop`, or `to` closing, ends it as [`Error::Cancelled`]; a

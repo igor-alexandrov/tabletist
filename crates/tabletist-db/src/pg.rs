@@ -585,8 +585,8 @@ impl Conn {
         // The ROLLBACK may already have run on the server while the last rows
         // were still being read, so a cancel sent by a stop in this window
         // lands on an idle session, or at worst on the ROLLBACK; the export
-        // still ends as cancelled (the stop flag is set), its connection
-        // closed.
+        // still ends as cancelled, since its writer's finish checks the
+        // person's stop, and its connection is closed.
         stop.finish();
         let rolled_back = match rolled_back {
             Some(done) => done,

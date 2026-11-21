@@ -279,7 +279,8 @@ pub async fn run(job: ExportJob, stopper: Stopper, report: impl Fn(ExportState))
     let writing = async {
         let written = write(&job, create.as_deref(), from, &report).await;
         // A writer that failed stops the statement at once: on MySQL and
-        // PostgreSQL the rows it would still send are otherwise read to the end.
+        // PostgreSQL the rows it would still send are otherwise read to the
+        // end.
         if written.is_err() {
             stopper.halt().await;
         }
