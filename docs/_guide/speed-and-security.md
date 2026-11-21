@@ -53,9 +53,10 @@ network in between.
 An export opens a connection of its own. On PostgreSQL it then waits on
 the server three times for a table and twice for a SQL result, however
 many rows it writes, and the rows come as fast as the network carries
-them, through an SSH tunnel too. Through a network that adds 200 ms to
-every round trip, 200,000 rows of ten columns are written to a CSV file
-in about 1.9 seconds, the connection included.
+them; through an SSH tunnel, up to about 80 MB a second at that
+distance. Through a network that adds 200 ms to every round trip,
+200,000 rows of ten columns are written to a CSV file in about 1.8
+seconds, the connection included.
 
 ## Secure
 
