@@ -411,10 +411,6 @@ fn session_setup(access: Access) -> String {
     format!("{read_only}SET standard_conforming_strings = on; {PRINTS_EXACTLY}")
 }
 
-/// The cursor an export reads through. One export per connection, so one
-/// name.
-const EXPORT_CURSOR: &str = "tabletist_export";
-
 /// How long the PgBouncer probe may take, startup and SHOW together.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -499,8 +495,20 @@ fn row_values(row: &tokio_postgres::SimpleQueryRow, columns: &[ColumnMeta]) -> R
 }
 
 impl Conn {
-    /// `text`'s rows through a cursor in a read-only transaction, a
-    /// `FETCH` of `batch` rows at a time.
+    /// `text`'s rows, read in a read-only transaction and sent to `to` in
+    /// batches of `batch` as they arrive: two round trips, however many
+    /// rows. The first is the `BEGIN READ ONLY` and the prepare, which
+    /// types the columns and fails on a text of more than one statement.
+    /// The second is the run, behind [`READ_GUARD`], and the `ROLLBACK`,
+    /// sent together; the rows come back behind them. While a batch waits
+    /// on `to`, the driver stops reading the socket, so the server waits
+    /// too and no more than a batch or so is held.
+    ///
+    /// The prepare is waited on before the run goes out, not sent with it
+    /// as [`read_alongside`] does: a column of a type the session has not
+    /// seen (an enum, a domain) has the driver look the type up, and that
+    /// lookup would go out behind the run and be answered after its last
+    /// row, which could not be typed until then.
     async fn stream_text(
         &self,
         text: &str,
@@ -508,48 +516,72 @@ impl Conn {
         to: &tokio::sync::mpsc::Sender<crate::Streamed>,
         stop: &StopFlag,
     ) -> Result<u64> {
-        let mut client = self.client.lock().await;
-        let transaction = client
-            .build_transaction()
-            .read_only(true)
-            .start()
-            .await
-            .map_err(stream_error)?;
-        // Prepared first: its columns, and a second statement refused
-        // before anything runs.
-        let statement = transaction.prepare(text).await.map_err(stream_error)?;
+        use futures_util::StreamExt;
+
+        let client = self.client.lock().await;
+        let (begun, prepared) = tokio::join!(
+            client.batch_execute("BEGIN READ ONLY"),
+            client.prepare(text),
+        );
+        let statement = match begun.and(prepared) {
+            Ok(statement) => statement,
+            Err(error) => {
+                // A failed prepare leaves a failed transaction; a failed
+                // BEGIN, none, and the rollback says so harmlessly.
+                let _ = client.batch_execute("ROLLBACK").await;
+                return Err(stream_error(error));
+            }
+        };
         let metas = column_metas(&statement);
+        // Its close goes out on its own, waited on by nobody.
+        drop(statement);
         crate::stream::send(to, crate::Streamed::Columns(metas.clone())).await?;
-        transaction
-            .simple_query(&format!(
-                "DECLARE {EXPORT_CURSOR} NO SCROLL CURSOR FOR {text}"
-            ))
-            .await
-            .map_err(stream_error)?;
-        let fetch = format!("FETCH {batch} FROM {EXPORT_CURSOR}");
+
+        let run = format!("{READ_GUARD};\n{text}");
+        let rows = client.simple_query_raw(&run).await.map_err(stream_error)?;
+        // The ROLLBACK goes out on its first poll, right behind the run, so
+        // it costs no round trip of its own; its answer follows the run's.
+        let rollback = client.batch_execute("ROLLBACK");
+        let mut rollback = std::pin::pin!(rollback);
+        let mut rolled_back = None;
+        std::future::poll_fn(|cx| {
+            if let std::task::Poll::Ready(done) = rollback.as_mut().poll(cx) {
+                rolled_back = Some(done);
+            }
+            std::task::Poll::Ready(())
+        })
+        .await;
+
+        let mut rows = std::pin::pin!(rows);
+        let mut kept = Vec::with_capacity(batch);
         let mut sent = 0u64;
-        loop {
-            if stop.is_stopped() {
-                return Err(Error::Cancelled);
-            }
-            let messages = transaction
-                .simple_query(&fetch)
-                .await
-                .map_err(stream_error)?;
-            let mut rows = Vec::with_capacity(batch);
-            for message in messages {
-                if let SimpleQueryMessage::Row(row) = message {
-                    rows.push(row_values(&row, &metas)?);
+        while let Some(message) = rows.next().await {
+            let SimpleQueryMessage::Row(row) = message.map_err(stream_error)? else {
+                continue;
+            };
+            kept.push(row_values(&row, &metas)?);
+            if kept.len() == batch {
+                if stop.is_stopped() {
+                    return Err(Error::Cancelled);
                 }
+                sent += kept.len() as u64;
+                let full = std::mem::replace(&mut kept, Vec::with_capacity(batch));
+                crate::stream::send(to, crate::Streamed::Rows(full)).await?;
             }
-            if rows.is_empty() {
-                break;
-            }
-            sent += rows.len() as u64;
-            crate::stream::send(to, crate::Streamed::Rows(rows)).await?;
+        }
+        if stop.is_stopped() {
+            return Err(Error::Cancelled);
+        }
+        if !kept.is_empty() {
+            sent += kept.len() as u64;
+            crate::stream::send(to, crate::Streamed::Rows(kept)).await?;
         }
         stop.finish();
-        transaction.rollback().await.map_err(stream_error)?;
+        let rolled_back = match rolled_back {
+            Some(done) => done,
+            None => rollback.await,
+        };
+        rolled_back.map_err(stream_error)?;
         Ok(sent)
     }
 
@@ -1593,10 +1625,10 @@ impl Adapter for Conn {
         Dialect::Postgres.shown_export(query, &key, &binary, columns)
     }
 
-    /// An export's rows through a cursor in a read-only transaction:
-    /// prepared first (which types the columns and refuses a second
-    /// statement), declared, then fetched a batch at a time through the
-    /// simple-query protocol, so the server holds the rest.
+    /// An export's rows in a read-only transaction: prepared first (which
+    /// types the columns and refuses a second statement), then run and
+    /// streamed through the simple-query protocol, so the server holds the
+    /// rest.
     async fn stream_rows(
         &self,
         query: &RowQuery,
@@ -2212,6 +2244,128 @@ mod tests {
         let (found, asked) = counted(&trips, conn.lookup(&lookup)).await;
         assert_eq!(found.unwrap().rows.len(), 2);
         assert_eq!(asked, 1);
+        assert!(outside_a_transaction(&conn).await);
+    }
+
+    /// A table of 12,000 rows with an enum column, for the export tests.
+    /// Made once: two tests that create it at once can fail.
+    async fn export_trips_table(url: &str) {
+        static MADE: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+        MADE.get_or_init(|| async {
+            let mut config: tokio_postgres::Config = url.parse().unwrap();
+            config.ssl_mode(tokio_postgres::config::SslMode::Disable);
+            let (client, connection) = config.connect(tokio_postgres::NoTls).await.unwrap();
+            tokio::spawn(connection);
+            client
+                .batch_execute(
+                    "DO $$ BEGIN CREATE TYPE export_mood AS ENUM ('calm', 'busy'); \
+                     EXCEPTION WHEN duplicate_object THEN NULL; END $$; \
+                     CREATE TABLE IF NOT EXISTS export_trips ( \
+                         id int PRIMARY KEY, mood export_mood NOT NULL); \
+                     INSERT INTO export_trips \
+                     SELECT g, CASE WHEN g % 2 = 0 THEN 'calm' ELSE 'busy' END::export_mood \
+                     FROM generate_series(1, 12000) g ON CONFLICT DO NOTHING",
+                )
+                .await
+                .unwrap();
+        })
+        .await;
+    }
+
+    /// What an export of `text` sent, read as the app's export reads it
+    /// (a channel that holds one batch): its answer, its columns and its
+    /// batches.
+    async fn exported(
+        conn: &Conn,
+        text: &str,
+        batch: usize,
+    ) -> (Result<u64>, Vec<ColumnMeta>, Vec<Vec<Vec<Value>>>) {
+        let (to, mut from) = tokio::sync::mpsc::channel(1);
+        let stop = StopFlag::new();
+        let reading = async move {
+            let (mut columns, mut batches) = (Vec::new(), Vec::new());
+            while let Some(streamed) = from.recv().await {
+                match streamed {
+                    crate::Streamed::Columns(metas) => columns = metas,
+                    crate::Streamed::Rows(rows) => batches.push(rows),
+                }
+            }
+            (columns, batches)
+        };
+        let (sent, (columns, batches)) = tokio::join!(
+            async move {
+                let sent = conn.stream_statement(text, batch, &to, &stop).await;
+                drop(to);
+                sent
+            },
+            reading,
+        );
+        (sent, columns, batches)
+    }
+
+    /// An export waits on the server twice, however many rows it has: the
+    /// `BEGIN` and the prepare, then the run and its `ROLLBACK`, with the
+    /// rows streaming back behind them. A `FETCH` of a batch at a time
+    /// waited once for every batch.
+    #[tokio::test]
+    async fn an_export_asks_the_server_twice_whatever_its_rows() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        export_trips_table(&url).await;
+        let (conn, trips) = trip_counted(&url).await;
+        let text = "SELECT id FROM export_trips ORDER BY id";
+        let ((sent, columns, batches), asked) = counted(&trips, exported(&conn, text, 5_000)).await;
+        assert_eq!(sent.unwrap(), 12_000);
+        assert_eq!(columns.len(), 1);
+        assert_eq!(columns[0].name, "id");
+        let sizes: Vec<usize> = batches.iter().map(Vec::len).collect();
+        assert_eq!(sizes, [5_000, 5_000, 2_000]);
+        assert_eq!(batches[0][0], vec![Value::Int(1)]);
+        assert_eq!(batches[2][1_999], vec![Value::Int(12_000)]);
+        assert_eq!(asked, 2);
+        assert!(outside_a_transaction(&conn).await);
+    }
+
+    /// A column of a type the session has not seen yet has the driver
+    /// look the type up while it prepares. That lookup is answered before
+    /// the run goes out, so it does not wait behind the run's rows: the
+    /// export ends. Once the type is known, two round trips again.
+    #[tokio::test]
+    async fn an_export_of_a_type_the_session_has_not_seen_ends() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        export_trips_table(&url).await;
+        let (conn, trips) = trip_counted(&url).await;
+        let text = "SELECT id, mood FROM export_trips ORDER BY id";
+        let first = tokio::time::timeout(Duration::from_secs(30), exported(&conn, text, 5_000))
+            .await
+            .expect("the export waits on nothing that waits on it");
+        let (sent, columns, batches) = first;
+        assert_eq!(sent.unwrap(), 12_000);
+        assert_eq!(columns[1].type_name, "export_mood");
+        assert_eq!(
+            batches[0][0],
+            vec![Value::Int(1), Value::Text("busy".into())]
+        );
+        let ((sent, _, _), asked) = counted(&trips, exported(&conn, text, 5_000)).await;
+        assert_eq!(sent.unwrap(), 12_000);
+        assert_eq!(asked, 2);
+        assert!(outside_a_transaction(&conn).await);
+    }
+
+    /// A text of two statements is refused by the prepare, and nothing
+    /// of it runs: no columns, no rows, no transaction left open.
+    #[tokio::test]
+    async fn an_export_of_two_statements_runs_neither() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        let (sent, columns, batches) = exported(&conn, "SELECT 1; SELECT 2", 10).await;
+        assert!(sent.is_err(), "{sent:?}");
+        assert!(columns.is_empty() && batches.is_empty());
         assert!(outside_a_transaction(&conn).await);
     }
 
