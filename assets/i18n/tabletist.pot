@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-21 10:36-0500\n"
+"POT-Creation-Date: 2026-11-21 09:54-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -10193,6 +10193,10 @@ msgstr ""
 #: src/ui/workspace.rs
 #, rust-format
 msgid "Switch to {connection} · {environment}"
+msgstr ""
+
+#: src/ui/workspace.rs
+msgid "New window"
 msgstr ""
 
 #: src/ui/workspace.rs

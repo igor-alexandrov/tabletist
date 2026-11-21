@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-21 10:36-0500\n"
+"POT-Creation-Date: 2026-11-21 09:54-0500\n"
 "PO-Revision-Date: 2026-11-19 16:11-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -10393,6 +10393,10 @@ msgstr "Local"
 #: src/ui/workspace.rs
 msgid "Login refused"
 msgstr "Login recusado"
+
+#: src/ui/workspace.rs
+msgid "New window"
+msgstr "Nova janela"
 
 #: src/ui/workspace.rs
 msgid "Not encrypted"
