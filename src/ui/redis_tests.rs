@@ -1228,6 +1228,10 @@ fn a_databases_keys_are_counted_in_the_words_of_the_language() {
     assert_eq!(words(3), "3 ключа");
     assert_eq!(words(5), "5 ключей");
     assert_eq!(words(21), "21 ключ");
+    let words = |keys| super::redis::keys_words(keys, Locale::BrazilianPortuguese);
+    assert_eq!(words(0), "vazio");
+    assert_eq!(words(1), "1 chave");
+    assert_eq!(words(2), "2 chaves");
 }
 
 #[test]

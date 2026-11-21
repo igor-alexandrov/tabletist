@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-20 15:03-0500\n"
+"POT-Creation-Date: 2026-11-21 15:13-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -2899,6 +2899,7 @@ msgstr ""
 
 #: src/ui/about.rs src/ui/connect_dialog/sheet.rs src/ui/help.rs
 #: src/ui/object_tabs.rs src/ui/redis.rs src/ui/settings/terminal.rs
+#: src/ui/workspace.rs
 msgid "Close"
 msgstr ""
 

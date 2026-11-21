@@ -54,6 +54,45 @@ msginit --no-translator --locale=de_DE.UTF-8 \
   --input=assets/i18n/tabletist.pot --output-file=assets/i18n/de.po
 ```
 
+Check the `Plural-Forms` header `msginit` writes against the language's
+rule in the [CLDR plural rules](https://www.unicode.org/cldr/charts/latest/supplemental/language_plural_rules.html).
+Name the file by the tag the settings file will write: `de.po`, or with
+its region where the region matters, like `pt-BR.po`. The build compiles
+every catalog in `assets/i18n` on its own, into a module named by the
+file in lower case with `-` as `_` (`de`, `pt_br`).
+
+The code that names the language, with German as the example:
+
+- `crates/tabletist-core/src/i18n.rs`:
+  - a `German` variant in `enum Locale`;
+  - it in `Locale::ALL`, which is the order the language menu lists them:
+    by their own names, Latin script first;
+  - its tag in `tag()` (`"de"`), which the settings file writes;
+  - its language subtag in `language()` (`"de"`), which picks it from the
+    system's language and from a tag like `de-AT`;
+  - its own name in `native_name()` (`"Deutsch"`), never translated;
+  - its catalog in `catalog()` (`Some(&de::Translator)`);
+  - its file in the tests' `CATALOGS`, so its placeholders are checked.
+- `crates/tabletist-core/src/i18n/numbers.rs`: its group and decimal
+  marks in `marks()`, as CLDR gives them (`('.', ',')` for German).
+- `src/ui/settings/mod.rs`: its name in English in `language_aside()`
+  (`gettext(locale, "German")`), which the menu writes beside the native
+  name in the other languages.
+- `crates/tabletist-core/src/settings.rs`: the values beside
+  `interface.language` in `note()`, and the doc comment of
+  `Language::name()`.
+
+Then run `assets/i18n/update.sh`, which adds "German" to every catalog
+to translate, and name the language where the docs list them:
+`docs/_reference/settings-and-files.md` (the Language row and
+`interface.language`), `docs/_guide/omarchy.md` (the `h` `l` keys) and
+the top of this page.
+
+The Rust compiler finds a `match` that misses the new variant. Tests
+for the language go beside Russian's and Brazilian Portuguese's: its
+tags in `i18n.rs` and `settings.rs`, its numbers in `numbers.rs`, and
+the menu in `src/ui/language_tests.rs`.
+
 ## What to keep as it is
 
 - Keys and chords (`⌘S`, `Ctrl+Shift+P`, `j/k`, `ctrl+b`), and `:`
