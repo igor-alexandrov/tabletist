@@ -46,22 +46,24 @@ groups"):
 ### Groups
 
 - A group is a title. A connection shows under its saved `group`, else under
-  its automatic one: a name it shares with another connection, else Local,
-  else Remote. Titles compare trimmed and case-insensitively, so a saved
-  "Local" and the automatic Local are one heading. An empty title is no group.
-  A group exists while a connection is in it; no list of groups is kept on its
-  own.
+  its automatic one: a name it shares with another connection that has no
+  group of its own, else Local, else Remote. Titles compare trimmed and
+  case-insensitively, so a saved "Local" and the automatic Local are one
+  heading, titled as the first connection in the file writes it. An empty
+  title is no group. A group exists while a connection is in it; no list of
+  groups is kept on its own.
 - Order: named and shared-name groups sorted by title together, then Local,
   then Remote. Nothing about order is stored.
-- Search matches the group title too.
+- Search matches the group the person gave too (not Local, Remote or a
+  shared name, which is found as the name).
 - Duplicate keeps the group. A new connection starts with none.
 
 ### Choosing a group
 
-- **Form** (both looks, as the canvas draws it): a dropdown of every group the
-  picker shows (named, shared-name, Local, Remote) and New group…, which turns
-  the box into a text field in place (Esc goes back to the list; empty means no
-  group).
+- **Form** (both looks, as the canvas draws it): a dropdown of the groups the
+  picker shows and the one the rule gives this connection, then New group…,
+  which turns the box into a text field in place (Esc goes back to the list;
+  empty means no group).
 - **Row menus** (More actions and right-click, macOS and Windows): a Group
   section between Delete and Agents, with the same choices, the row's ticked.
   New group… opens the connection's form with the Group field ready to type.
@@ -112,9 +114,9 @@ every-entry-translated tests).
 | No grouping switch in the picker header | Segmented Groups / Environment; Omarchy `groups env`, `g` | Decision 2 |
 | No Group section in the row menus | Group section above Agents, Omarchy `m` | Decision 4 |
 | No rename | Heading right-click Rename group…, Omarchy `R` | Decision 7 |
-| Dropdown lists Bookshop, Local, New group… | Also lists Remote and every other group shown | Decision 1 |
-
-All four are now drawn on the canvas (decision 9).
+All three are now drawn on the canvas (decision 9). The dropdown lists what
+the canvas's does: the groups shown and the connection's own (Bookshop,
+Local, New group… there).
 
 ## Runs (a PR each)
 
@@ -134,9 +136,11 @@ Connect again at the top, so the two do not collide.
 
 ## Decisions
 
-1. Group field: "Groups shown + New group…". The dropdown lists every group
-   the picker shows and New group…; only a choice that differs from the
-   automatic group is saved. Follows the canvas.
+1. Group field: "Groups shown + New group…". The dropdown lists the groups
+   the picker shows, the connection's own automatic one, and New group…; only
+   a choice that differs from the automatic group is saved. Follows the
+   canvas. (Drafting run 1 narrowed "every group, Local and Remote too" to
+   what the canvas lists.)
 2. Environment: "Picker switch: Group / Environment". Igor chose the switch
    over leaving environment to named groups.
 3. Order: "Alphabetical, Local and Remote last". Nothing to store or reorder.
