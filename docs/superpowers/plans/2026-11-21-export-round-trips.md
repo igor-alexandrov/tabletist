@@ -617,7 +617,7 @@ EOF
 cp "$BENCH/tools/bench_tablepro.rs" crates/tabletist-core/tests/ && BENCH_DIR="$BENCH" ~/.cargo/bin/cargo test --locked --release -p tabletist-core --test bench_tablepro -- --ignored --nocapture 2>&1 | grep BENCH; rm crates/tabletist-core/tests/bench_tablepro.rs
 ```
 
-Expected (before → after, at 200 ms): `export 200k x 10 to CSV, 200 ms link` 10.6 s → about 1.6 s (connect 1.0 + shape, prepare and run 0.6 + the rows). `64 MB result through SSH, 200 ms link` 17.7 s → about 3.5 s (connect 2.2 + 0.6 + the rows at the window's rate). The local rows should not get slower (0.17 s and 0.80 s before). If the SSH case is still above 5 s, the window is not what limits it: check with `RUST_LOG=russh=debug` that `CHANNEL_WINDOW_ADJUST` asks for 32 MiB, before changing anything else.
+Expected (before → after, at 200 ms): `export 200k x 10 to CSV, 200 ms link` 10.6 s → about 1.6 s (connect 1.0 + shape, prepare and run 0.6 + the rows). `64 MB result through SSH, 200 ms link` 17.7 s → about 3.5 s (connect 2.2 + 0.6 + the rows at the window's rate). The local rows should not get slower (0.17 s and 0.80 s before). If the SSH case is still above 5 s, the window is not what limits it: check with `RUST_LOG=russh=debug` that russh's line `sender_window_size …, target 33554432` appears (each adjust then adds about 16 MiB), before changing anything else.
 
 - [ ] **Step 3: Clean up**
 
