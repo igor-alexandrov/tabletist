@@ -626,12 +626,12 @@ diff --git a/crates/tabletist-core/src/session.rs b/crates/tabletist-core/src/se
 +    match spec.driver {
 +        tabletist_db::Driver::Postgres
 +        | tabletist_db::Driver::MySql
-+        | tabletist_db::Driver::BigQuery
-+            if !database.is_empty() =>
-+        {
-+            spec.database = database.to_owned();
++        | tabletist_db::Driver::BigQuery => {
++            if !database.is_empty() {
++                spec.database = database.to_owned();
++            }
 +        }
-+        _ => {}
++        tabletist_db::Driver::Sqlite | tabletist_db::Driver::Files => {}
      }
  }
  
