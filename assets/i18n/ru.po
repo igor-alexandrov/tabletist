@@ -4021,6 +4021,14 @@ msgstr "нет · {key} добавляет файлы"
 msgid "pick"
 msgstr "выбрать"
 
+#: src/ui/connect_dialog/group.rs
+msgid "Group name"
+msgstr "Название группы"
+
+#: src/ui/connect_dialog/group.rs
+msgid "New group…"
+msgstr "Новая группа…"
+
 #: src/ui/connect_dialog/mod.rs
 msgid "Changes the fields below"
 msgstr "Меняет поля ниже"
@@ -4494,6 +4502,10 @@ msgstr "Заполнить"
 msgid ""
 "Fills the parameters. A password in the URL moves to the password field."
 msgstr "Заполняет параметры. Пароль из URL переносится в поле пароля."
+
+#: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
+msgid "Group"
+msgstr "Группа"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/workspace.rs

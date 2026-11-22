@@ -7292,6 +7292,7 @@ mod tests {
         connections.upsert(crate::connections::SavedConnection {
             id: crate::connections::ConnectionId::new(),
             name: name.into(),
+            group: None,
             environment: crate::env::Environment::None,
             read_only: None,
             password: crate::connections::PasswordMode::None,

@@ -12,6 +12,7 @@ use crate::env::Environment;
 use crate::paths::AppDirs;
 
 pub(crate) mod file;
+pub mod groups;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConnectionId(pub String);
@@ -104,6 +105,11 @@ impl Agents {
 pub struct SavedConnection {
     pub id: ConnectionId,
     pub name: String,
+    /// The group the person put it in, as they wrote it; `None` until
+    /// they do, so the Connections list places it by its rule: under a
+    /// name it shares, else Local or Remote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     /// What the connection is. Its colour everywhere comes from this.
     pub environment: Environment,
     /// Read-only as the user set it; `None` until they do, so the
@@ -310,6 +316,7 @@ impl StoredConnection {
         let saved = SavedConnection {
             id: self.id,
             name: self.name,
+            group: None,
             environment,
             read_only: self.read_only,
             password: self.password,
@@ -591,7 +598,9 @@ impl SavedConnections {
         Some(new_id)
     }
 
-    /// Connections whose name or summary contains `text`, ignoring case.
+    /// Connections whose name, group or summary contains `text`, ignoring
+    /// case. The group is the one the person gave: Local and Remote are
+    /// no words to find a connection by.
     pub fn search(&self, text: &str) -> Vec<&SavedConnection> {
         let needle = text.trim().to_lowercase();
         self.connections
@@ -599,6 +608,10 @@ impl SavedConnections {
             .filter(|connection| {
                 needle.is_empty()
                     || connection.name.to_lowercase().contains(&needle)
+                    || connection
+                        .group
+                        .as_ref()
+                        .is_some_and(|group| group.to_lowercase().contains(&needle))
                     || connection.spec.summary().to_lowercase().contains(&needle)
             })
             .collect()
@@ -695,6 +708,7 @@ mod tests {
         SavedConnection {
             id: ConnectionId::new(),
             name: name.into(),
+            group: None,
             environment: Environment::None,
             read_only: None,
             password: PasswordMode::None,
@@ -1101,6 +1115,37 @@ mod tests {
         assert_eq!(names("stage.db"), vec!["Staging"]);
         assert_eq!(names("  "), vec!["Production", "Staging"]);
         assert!(names("mysql").is_empty());
+    }
+
+    #[test]
+    fn search_matches_the_group_the_person_gave() {
+        let mut store = SavedConnections::default();
+        store.upsert(SavedConnection {
+            group: Some("Side projects".into()),
+            ..saved("Playground", "/srv/playground.db")
+        });
+        store.upsert(saved("Rails test", "/srv/test.db"));
+        let names = |text: &str| -> Vec<String> {
+            store.search(text).iter().map(|c| c.name.clone()).collect()
+        };
+        assert_eq!(names("side PROJ"), vec!["Playground"]);
+        // The rule's own groups are no words of a connection's.
+        assert!(names("Local").is_empty());
+    }
+
+    #[test]
+    fn a_duplicate_keeps_its_group() {
+        let mut store = SavedConnections::default();
+        let original = SavedConnection {
+            group: Some("Experiments".into()),
+            ..saved("Playground", "/p.db")
+        };
+        store.upsert(original.clone());
+        let copy = store.duplicate(&original.id).unwrap();
+        assert_eq!(
+            store.get(&copy).unwrap().group.as_deref(),
+            Some("Experiments")
+        );
     }
 
     #[test]

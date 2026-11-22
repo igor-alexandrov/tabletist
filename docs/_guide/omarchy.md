@@ -101,13 +101,13 @@ numbered; once you type, it lists what matches. Its commands stay on `:`.
 | Ctrl+Enter | Save and connect |
 | Backspace, Delete | In the empty password field: forget the saved password |
 | Up, Down | In add table…'s or add column…'s list: move. Enter adds the one chosen, or in add column…'s puts a table chosen in the field for its columns, and Esc closes the field. In a Files connection's list of files: move |
-| Enter, Space | Choose the choice the cursor is on: a type, an environment, folder or files. On a closed section's heading (a Files connection's reading csv or agents): open it, and on an open one, close it |
+| Enter, Space | Choose the choice the cursor is on: a type, an environment, folder or files. On a closed section's heading (a Files connection's reading csv or agents): open it, and on an open one, close it. On group: open its list of groups, where Up and Down move and Enter picks; new group… turns it into a field for a new group's name |
 | Ctrl+O | A Files connection: pick its folder, or add files to its list, in the file chooser |
 | `a` | A Files connection's list: add files |
 | `x` | A Files connection's list: take the file under the cursor off the list. The file stays on disk |
 | `R` | A Files connection's reading csv: take the override the cursor is on off. Other overrides still apply |
 | `t`, `e`, `s` | A Files connection's partial Test: read the column of the value that could not be read as text, read that value as empty, or skip the file. Each is saved as an override under reading csv, and the Test runs again |
-| Esc | Cancel |
+| Esc | Cancel. In new group…'s field: back to the list of groups |
 
 {% include shot.html file="omarchy-connection-edit" alt="The connection form in the Omarchy look, for a production database behind an SSH tunnel" width="2200" height="2032" %}
 

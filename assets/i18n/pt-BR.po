@@ -4009,6 +4009,14 @@ msgstr "nenhum · {key} adiciona arquivos"
 msgid "pick"
 msgstr "escolher"
 
+#: src/ui/connect_dialog/group.rs
+msgid "Group name"
+msgstr "Nome do grupo"
+
+#: src/ui/connect_dialog/group.rs
+msgid "New group…"
+msgstr "Novo grupo…"
+
 #: src/ui/connect_dialog/mod.rs
 msgid "Changes the fields below"
 msgstr "Altera os campos abaixo"
@@ -4477,6 +4485,10 @@ msgstr "Preencher"
 msgid ""
 "Fills the parameters. A password in the URL moves to the password field."
 msgstr "Preenche os parâmetros. Uma senha na URL vai para o campo de senha."
+
+#: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
+msgid "Group"
+msgstr "Grupo"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/workspace.rs

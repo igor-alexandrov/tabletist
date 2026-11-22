@@ -240,7 +240,10 @@ type ReferencingRow = (String, String, String, String, String, String);
 /// so the pages of such a table are read through the binary protocol. A
 /// session keeps the shape it last read of each table, and asks for it
 /// again in the message that reads a page from it (see
-/// [`Adapter::fetch_rows`]).
+/// [`Adapter::fetch_rows`]). An export reads a shape of its own (see
+/// [`export::read_shape`]), which says so of a view too, whose expression
+/// columns may be DOUBLEs the text protocol cuts: browsing, which tells a
+/// FLOAT by its type alone, never gives an export its shape.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Shape {
     key: Vec<String>,
@@ -273,6 +276,31 @@ fn floats(columns: &[ColumnMeta]) -> bool {
         .iter()
         .any(|column| column.type_name.split(' ').next() == Some("float"))
 }
+
+/// What `decimals` says in a column's definition when its values are not
+/// written to a fixed number of decimals. Below it, a DOUBLE's text is
+/// cut to that many (`PI()` is `3.141593`).
+const NOT_FIXED_DECIMALS: u8 = 31;
+
+/// Whether the text protocol writes a value of `column` with fewer digits
+/// than the binary protocol sends: a FLOAT, to six significant digits,
+/// and a DOUBLE whose column has a fixed number of decimals, to that
+/// many. A DOUBLE without is written in full.
+fn lossy(column: &mysql_async::Column) -> bool {
+    match column.column_type() {
+        ColumnType::MYSQL_TYPE_FLOAT => true,
+        ColumnType::MYSQL_TYPE_DOUBLE => column.decimals() < NOT_FIXED_DECIMALS,
+        _ => false,
+    }
+}
+
+/// The longest statement a message of the text protocol carries, in
+/// bytes: a SQL editor run's (see `script::one`) or an export's (see
+/// [`Conn::stream_in_one`]). Its text goes as hex, twice as long, and a
+/// message longer than the server's `max_allowed_packet` would cost the
+/// connection; a longer statement runs the other way, which sends it as
+/// it is.
+const LONGEST: usize = 256 * 1024;
 
 /// `sql`, one of the catalog questions, with each `?` in turn given as a
 /// literal of `values`: so that several go in one message, which cannot
@@ -577,6 +605,7 @@ const PACKET_TOO_LARGE: u16 = 1153;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+mod export;
 mod hidden;
 mod script;
 mod views;
@@ -612,6 +641,10 @@ pub(crate) struct Conn {
     _opening: Opening,
     /// The shape of each table this session read last (see [`Shape`]).
     shapes: std::sync::Mutex<std::collections::HashMap<ObjectRef, Shape>>,
+    /// The shape [`Adapter::export_statement`] read of each table for the
+    /// export that follows it, which [`Adapter::stream_rows`] takes (see
+    /// [`Conn::export_shape`]). Only exports read it, and only they fill it.
+    export_shapes: std::sync::Mutex<std::collections::HashMap<ObjectRef, Shape>>,
     /// The SQL editor's statements whose answer lost digits in text (see
     /// `script::Lossy`).
     lossy: script::Lossy,
@@ -874,11 +907,26 @@ fn full(error: &mysql_async::Error) -> Option<Full> {
     }
 }
 
+/// What an export reads through the binary protocol (see
+/// [`Conn::stream_sql`] and [`Conn::stream_table_sql`]).
+enum Prepared<'a> {
+    /// A statement as it is: a SQL editor's.
+    Sql(&'a crate::dialect::Sql),
+    /// A table's rows, built once the transaction has started from the
+    /// key and byte string columns asked in its message (see
+    /// [`begin_with_shape`]).
+    Table {
+        query: &'a RowQuery,
+        columns: &'a [String],
+    },
+}
+
 impl Conn {
     /// An export's rows through a prepared statement inside a read-only
     /// transaction, read from the server a row at a time (the driver does
-    /// not buffer a result), sent on a batch at a time: a table's
-    /// statement, or a SQL editor's.
+    /// not buffer a result), sent on a batch at a time: a SQL editor's
+    /// statement as it is. A table's goes through
+    /// [`Conn::stream_table_sql`].
     async fn stream_sql(
         &self,
         sql: &crate::dialect::Sql,
@@ -886,10 +934,64 @@ impl Conn {
         to: &tokio::sync::mpsc::Sender<crate::Streamed>,
         stop: &StopFlag,
     ) -> Result<u64> {
+        self.stream_prepared(Prepared::Sql(sql), batch, to, stop)
+            .await
+    }
+
+    /// A table's export rows as [`Conn::stream_sql`] streams a statement,
+    /// built from the table's key and byte string columns as they are
+    /// asked in the message that starts the transaction (see
+    /// [`begin_with_shape`]), at no round trip of their own: not from a
+    /// shape read before, which a key or a byte string column changed in
+    /// between would leave building another statement (a filter's
+    /// `0x6162` compared as text finds no bytes). The prepare, the run and
+    /// the rollback follow as for a statement.
+    async fn stream_table_sql(
+        &self,
+        query: &RowQuery,
+        columns: &[String],
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        self.stream_prepared(Prepared::Table { query, columns }, batch, to, stop)
+            .await
+    }
+
+    /// What [`Conn::stream_sql`] and [`Conn::stream_table_sql`] share: a
+    /// stop that comes before the start keeps anything from running; a
+    /// failure before the run ends the transaction, and one part way
+    /// leaves it to the export's connection.
+    async fn stream_prepared(
+        &self,
+        prepared: Prepared<'_>,
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
         let mut session = self.conn.lock().await;
         let conn = session.conn()?;
+        if stop.is_stopped() {
+            stop.finish();
+            return Err(Error::Cancelled);
+        }
         let streamed = async {
-            begin_read(conn).await.map_err(StreamFailed::Before)?;
+            let built;
+            let sql = match prepared {
+                Prepared::Sql(sql) => {
+                    begin_read(conn).await.map_err(StreamFailed::Before)?;
+                    sql
+                }
+                Prepared::Table { query, columns } => {
+                    let shape = begin_with_shape(conn, &query.object)
+                        .await
+                        .map_err(StreamFailed::Before)?;
+                    built = Dialect::MySql
+                        .export_rows(query, &shape.key, &shape.classes(query), columns)
+                        .map_err(StreamFailed::Before)?;
+                    &built
+                }
+            };
             stream_into(conn, sql, batch, to, stop).await
         }
         .await;
@@ -904,6 +1006,55 @@ impl Conn {
             // rollback now would read every one of them first. The
             // export's connection is closed after a failure, which ends
             // the transaction with it (see `Connection::stream_rows`).
+            Err(StreamFailed::PartWay(error)) => Err(crate::agent::over_its_time(error)),
+        }
+    }
+
+    /// An export's rows in one round trip (see [`export::stream_message`]),
+    /// where the statement's values all have a literal and it is no longer
+    /// than [`LONGEST`] with them; otherwise through the binary protocol:
+    /// a table's rows (see [`export::Run::Table`]) through
+    /// [`Conn::stream_table_sql`], which builds the statement again from
+    /// the key and byte string columns its start asks for, and a SQL
+    /// result through `stream_sql`. The caller has made sure no column
+    /// loses digits in text, and the message checks it again, as `run`
+    /// says, with a table's shape. A stop that comes before the message
+    /// keeps it from going.
+    async fn stream_in_one(
+        &self,
+        sql: &crate::dialect::Sql,
+        run: &export::Run<'_>,
+        batch: usize,
+        to: &tokio::sync::mpsc::Sender<crate::Streamed>,
+        stop: &StopFlag,
+    ) -> Result<u64> {
+        let values = sql.params.iter().map(literal).collect::<Option<Vec<_>>>();
+        let Some(values) = values.filter(|values| {
+            sql.text.len() + values.iter().map(String::len).sum::<usize>() <= LONGEST
+        }) else {
+            return match run {
+                export::Run::Table { query, columns, .. } => {
+                    self.stream_table_sql(query, columns, batch, to, stop).await
+                }
+                export::Run::Statement => self.stream_sql(sql, batch, to, stop).await,
+            };
+        };
+        driver_parameter(&sql.text)?;
+        let mut session = self.conn.lock().await;
+        let conn = session.conn()?;
+        if stop.is_stopped() {
+            stop.finish();
+            return Err(Error::Cancelled);
+        }
+        let streamed = export::stream_message(conn, &sql.text, &values, run, batch, to, stop).await;
+        stop.finish();
+        match streamed {
+            // The message's own rollback ended the transaction.
+            Ok(sent) => Ok(sent),
+            Err(StreamFailed::Before(error)) => end_read(conn, Err(error))
+                .await
+                .map_err(crate::agent::over_its_time),
+            // As in `stream_sql`: the connection is closed after this.
             Err(StreamFailed::PartWay(error)) => Err(crate::agent::over_its_time(error)),
         }
     }
@@ -1003,6 +1154,7 @@ impl Conn {
             resetting: std::sync::Arc::new(tokio::sync::watch::Sender::new(false)),
             _opening: Opening(opening.abort_handle()),
             shapes: Default::default(),
+            export_shapes: Default::default(),
             lossy: Default::default(),
         })
     }
@@ -1018,7 +1170,8 @@ impl Conn {
         rows.into_iter().map(from_row).collect()
     }
 
-    pub async fn primary_key(&self, object: &ObjectRef) -> Result<Vec<String>> {
+    #[cfg(test)]
+    async fn primary_key(&self, object: &ObjectRef) -> Result<Vec<String>> {
         self.catalog(PRIMARY_KEY, (&object.schema, &object.name))
             .await
     }
@@ -1126,22 +1279,6 @@ impl Conn {
         Ok(described.structure(&checks, self.version.contains("MariaDB")))
     }
 
-    /// The byte string columns a filter of `query` compares as bytes when
-    /// its value reads as bytes; empty, without asking, when no filter has
-    /// such a value.
-    async fn binary_columns(&self, query: &RowQuery) -> Result<Vec<(String, ColumnClass)>> {
-        if !crate::dialect::reads_bytes(query) {
-            return Ok(Vec::new());
-        }
-        let names: Vec<String> = self
-            .catalog(BINARY_COLUMNS, (&query.object.schema, &query.object.name))
-            .await?;
-        Ok(names
-            .into_iter()
-            .map(|name| (name, ColumnClass::Binary))
-            .collect())
-    }
-
     /// The CHECK constraints' `question` (see [`structure_questions`])
     /// asked alone, where the message it went last in stopped before it:
     /// see [`Conn::checks_answered`].
@@ -1187,6 +1324,32 @@ impl Conn {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         shapes.get(object).cloned()
+    }
+
+    /// `object`'s shape for an export, read now in one round trip (see
+    /// [`export::read_shape`]). Never one browsing read: that tells a
+    /// FLOAT by its type alone, and so takes a view's cut DOUBLE for one
+    /// the text protocol writes in full.
+    async fn read_export_shape(&self, object: &ObjectRef) -> Result<Shape> {
+        let mut session = self.conn.lock().await;
+        let conn = session.conn()?;
+        export::read_shape(conn, object).await
+    }
+
+    /// The shape a table's export rows are built from: the one
+    /// [`Adapter::export_statement`] read of `object` just before, taken,
+    /// so that the two read it once between them; or, where there is none,
+    /// read now. Either way the next export reads it afresh.
+    async fn export_shape(&self, object: &ObjectRef) -> Result<Shape> {
+        let taken = self
+            .export_shapes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(object);
+        match taken {
+            Some(shape) => Ok(shape),
+            None => self.read_export_shape(object).await,
+        }
     }
 
     fn remember(&self, object: &ObjectRef, shape: Shape) {
@@ -1593,13 +1756,30 @@ impl Adapter for Conn {
         (structure, page)
     }
 
+    /// The statement, built from a shape read for it (see
+    /// [`Conn::read_export_shape`]), which is kept for the
+    /// [`Adapter::stream_rows`] that follows.
     async fn export_statement(&self, query: &RowQuery, columns: &[String]) -> Result<String> {
-        let key = self.primary_key(&query.object).await?;
-        let binary = self.binary_columns(query).await?;
-        Dialect::MySql.shown_export(query, &key, &binary, columns)
+        let shape = self.read_export_shape(&query.object).await?;
+        let shown = Dialect::MySql.shown_export(query, &shape.key, &shape.classes(query), columns);
+        self.export_shapes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(query.object.clone(), shape);
+        shown
     }
 
-    /// A table's export rows, through `stream_sql`.
+    /// A table's export rows, built from the shape read for
+    /// `export_statement` (see [`Conn::export_shape`]): in one message
+    /// (see [`Conn::stream_in_one`]), or through the binary protocol (see
+    /// [`Conn::stream_table_sql`]) for a table with a FLOAT, or a view.
+    /// Either way the table's key and byte string columns are asked again
+    /// as the transaction starts, at no round trip of their own. In the
+    /// message, a statement they would not have built, or a FLOAT the
+    /// shape did not know of, fails the export (see [`export::CHANGED`])
+    /// before any row is sent: its run is in the message already. On the
+    /// binary protocol nothing has run yet, so the statement is built from
+    /// them.
     async fn stream_rows(
         &self,
         query: &RowQuery,
@@ -1608,13 +1788,31 @@ impl Adapter for Conn {
         to: &tokio::sync::mpsc::Sender<crate::Streamed>,
         stop: &StopFlag,
     ) -> Result<u64> {
-        let key = self.primary_key(&query.object).await?;
-        let binary = self.binary_columns(query).await?;
-        let sql = Dialect::MySql.export_rows(query, &key, &binary, columns)?;
-        self.stream_sql(&sql, batch, to, stop).await
+        let shape = self.export_shape(&query.object).await?;
+        if shape.floats {
+            return self.stream_table_sql(query, columns, batch, to, stop).await;
+        }
+        let built = |shape: &Shape| {
+            Dialect::MySql.export_rows(query, &shape.key, &shape.classes(query), columns)
+        };
+        let sql = built(&shape)?;
+        let builds = |fresh: &Shape| built(fresh).as_ref().ok() == Some(&sql);
+        let run = export::Run::Table {
+            query,
+            columns,
+            builds: &builds,
+        };
+        self.stream_in_one(&sql, &run, batch, to, stop).await
     }
 
-    /// A statement of the person's, as `stream_rows` streams a table's.
+    /// A statement of the person's, as `stream_rows` streams a table's:
+    /// prepared through the driver first, which gives its columns' types
+    /// (and keeps it prepared for `stream_sql`), then in one message, or
+    /// through the binary protocol where a column loses digits in text (see
+    /// [`lossy`]: a FLOAT, or a DOUBLE written to a fixed number of
+    /// decimals, like `PI()`) or the prepare gave no columns. The message
+    /// prepares it again, and refuses a column that loses digits there
+    /// (see [`export::Run::Statement`]): a view replaced in between.
     async fn stream_statement(
         &self,
         text: &str,
@@ -1626,7 +1824,20 @@ impl Adapter for Conn {
             text: text.to_owned(),
             params: Vec::new(),
         };
-        self.stream_sql(&sql, batch, to, stop).await
+        let (none, cut) = {
+            let mut session = self.conn.lock().await;
+            let conn = session.conn()?;
+            let statement = prepare(conn, &sql)
+                .await
+                .map_err(crate::agent::over_its_time)?;
+            let columns = statement.columns();
+            (columns.is_empty(), columns.iter().any(lossy))
+        };
+        if none || cut {
+            return self.stream_sql(&sql, batch, to, stop).await;
+        }
+        self.stream_in_one(&sql, &export::Run::Statement, batch, to, stop)
+            .await
     }
 
     /// The number of rows, inside a read-only transaction, in one message
@@ -2037,6 +2248,21 @@ async fn begin_shaped(
         .collect())
 }
 
+/// Starts a read of `object`'s rows (see [`begin_read_asking`]), asking in
+/// the same message for its key and byte string columns: the [`Shape`] the
+/// read's statement is built from, as the transaction sees the table. Its
+/// `floats` is left for the read to tell.
+async fn begin_with_shape(conn: &mut mysql_async::Conn, object: &ObjectRef) -> Result<Shape> {
+    let at = [object.schema.as_str(), object.name.as_str()];
+    let questions = [inlined(PRIMARY_KEY, &at), inlined(BINARY_COLUMNS, &at)];
+    let mut sets = begin_read_asking(conn, &questions).await?.into_iter();
+    Ok(Shape {
+        key: typed(sets.next().unwrap_or_default())?,
+        binary: typed(sets.next().unwrap_or_default())?,
+        floats: false,
+    })
+}
+
 /// A page's columns and rows.
 type Page = (Vec<ColumnMeta>, Vec<Vec<Value>>);
 
@@ -2051,14 +2277,7 @@ async fn page_in_three(
     limit: usize,
 ) -> Result<(Page, Shape)> {
     let outcome = async {
-        let at = [query.object.schema.as_str(), query.object.name.as_str()];
-        let questions = [inlined(PRIMARY_KEY, &at), inlined(BINARY_COLUMNS, &at)];
-        let mut sets = begin_read_asking(conn, &questions).await?.into_iter();
-        let mut shape = Shape {
-            key: typed(sets.next().unwrap_or_default())?,
-            binary: typed(sets.next().unwrap_or_default())?,
-            floats: false,
-        };
+        let mut shape = begin_with_shape(conn, &query.object).await?;
         let page = read_page(conn, &shape.page(query)?, limit).await?;
         shape.floats = floats(&page.0);
         Ok((page, shape))
@@ -2067,13 +2286,14 @@ async fn page_in_three(
     end_read(conn, outcome).await
 }
 
-/// The name of the statement [`page_in_one`] and [`count_in_one`] prepare
-/// on the server, and of the user variables they set: the text as
+/// The name of the statement [`page_in_one`], [`count_in_one`] and an
+/// export's one message ([`export::stream_message`]) prepare on the
+/// server, and of the user variables they set: the text as
 /// `@tabletist_page`, the values as `@tabletist_page_1` and on. They are
 /// set back to NULL, and the statement deallocated, in the same message,
 /// after the run; a message that stopped before then leaves them for the
-/// next page or count to replace, or the session reset after a SQL editor
-/// run to drop.
+/// next page, count or export to replace, or the session reset after a SQL
+/// editor run to drop.
 const PAGE: &str = "tabletist_page";
 
 /// What `EXECUTE` answers when it is given another number of values than
@@ -4708,7 +4928,7 @@ mod tests {
 
     /// Whether the session is inside a transaction, by the server's status
     /// after a query of its own.
-    async fn in_transaction(conn: &Conn) -> bool {
+    pub(super) async fn in_transaction(conn: &Conn) -> bool {
         let mut conn = conn.conn.lock().await;
         conn.query_drop("DO 1").await.unwrap();
         status(&conn).contains(StatusFlags::SERVER_STATUS_IN_TRANS)

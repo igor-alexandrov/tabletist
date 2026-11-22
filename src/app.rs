@@ -1229,7 +1229,11 @@ impl App {
                     .map(|group| group.title);
                 if let Some(picker) = self.picker_mut(tab) {
                     picker.search = search;
-                    picker.folded.retain(|title| Some(title) != group.as_ref());
+                    picker.folded.retain(|title| {
+                        !group
+                            .as_ref()
+                            .is_some_and(|name| crate::connections::groups::same(title, name))
+                    });
                     picker.selected = Some(conn.clone());
                     picker.deleting = Some(conn);
                     picker.form = form;
@@ -1282,7 +1286,9 @@ impl App {
             }
             Action::FoldConnectionGroup { tab, group } => {
                 if let Some(picker) = self.picker_mut(tab) {
-                    if let Some(index) = picker.folded.iter().position(|title| *title == group) {
+                    // One key per group, whichever case its title shows in.
+                    let same = |title: &String| crate::connections::groups::same(title, &group);
+                    if let Some(index) = picker.folded.iter().position(same) {
                         picker.folded.remove(index);
                     } else {
                         picker.folded.push(group);
@@ -6522,6 +6528,9 @@ impl App {
                 }
             }
         }
+        // A group that is the one the rule gives it anyway is none: the
+        // connection then follows the rule, as its name or server change.
+        saved.group = crate::connections::groups::keep(&saved, &self.connections.connections);
         self.connections.upsert(saved.clone());
         self.save_connections();
         self.rename_launch(&saved);
@@ -11101,6 +11110,7 @@ mod tests {
         let saved = SavedConnection {
             id: ConnectionId::new(),
             name: "Local".into(),
+            group: None,
             environment: crate::env::Environment::Dev,
             read_only: None,
             password: crate::connections::PasswordMode::None,
@@ -16780,6 +16790,7 @@ masked = ["orders.email"]
         let saved = SavedConnection {
             id: ConnectionId::new(),
             name: "Prod".into(),
+            group: None,
             environment: crate::env::Environment::Production,
             read_only: None,
             password: mode,
@@ -18095,6 +18106,7 @@ masked = ["orders.email"]
         let saved = SavedConnection {
             id: ConnectionId::new(),
             name: "Shop".into(),
+            group: None,
             environment: crate::env::Environment::None,
             read_only: None,
             password: PasswordMode::None,
@@ -18343,6 +18355,7 @@ masked = ["orders.email"]
         let saved = SavedConnection {
             id: ConnectionId::new(),
             name: "Shop".into(),
+            group: None,
             environment: crate::env::Environment::None,
             read_only: None,
             password: PasswordMode::None,
@@ -18453,6 +18466,7 @@ masked = ["orders.email"]
             let saved = SavedConnection {
                 id: ConnectionId::new(),
                 name: "Prod".into(),
+                group: None,
                 environment: crate::env::Environment::Production,
                 read_only: None,
                 password: PasswordMode::None,

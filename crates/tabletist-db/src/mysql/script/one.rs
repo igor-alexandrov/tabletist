@@ -9,13 +9,13 @@ use std::hash::{BuildHasher, RandomState};
 use std::sync::Arc;
 use std::time::Instant;
 
-use mysql_async::consts::{ColumnType, StatusFlags};
+use mysql_async::consts::StatusFlags;
 use mysql_async::prelude::Queryable;
 use mysql_async::{QueryResult, TextProtocol};
 
 use super::super::{
-    UNKNOWN_SYSTEM_VARIABLE, WRONG_ARGUMENTS, column_metas, from_row, hex_literal, query_error,
-    status, text_values,
+    LONGEST, UNKNOWN_SYSTEM_VARIABLE, WRONG_ARGUMENTS, column_metas, from_row, hex_literal, lossy,
+    query_error, status, text_values,
 };
 use super::{
     Ended, SessionKind, Standing, Unfinished, closing, counts_rows, driver_parameter, end, opened,
@@ -43,17 +43,6 @@ pub(super) enum One {
 /// the user variable that holds its text. The reset after the run drops
 /// both.
 const RUN: &str = "tabletist_run";
-
-/// The longest statement the message carries, in bytes. Its text goes as
-/// hex, twice as long, and a message longer than the server's
-/// `max_allowed_packet` would cost the connection; a longer statement
-/// runs the other way, which sends it as it is.
-const LONGEST: usize = 256 * 1024;
-
-/// What `decimals` says in a column's definition when its values are not
-/// written to a fixed number of decimals. Below it, a DOUBLE's text is
-/// cut to that many (`PI()` is `3.141593`).
-const NOT_FIXED_DECIMALS: u8 = 31;
 
 /// The message's steps, and where some of them are.
 #[derive(Debug)]
@@ -351,18 +340,6 @@ fn answered(answer: &mut Heard, text: &str, limit: usize) -> Option<StatementOut
         rows,
         truncated,
     })
-}
-
-/// Whether the text protocol writes a value of `column` with fewer digits
-/// than the binary protocol sends: a FLOAT, to six significant digits,
-/// and a DOUBLE whose column has a fixed number of decimals, to that
-/// many. A DOUBLE without is written in full.
-fn lossy(column: &mysql_async::Column) -> bool {
-    match column.column_type() {
-        ColumnType::MYSQL_TYPE_FLOAT => true,
-        ColumnType::MYSQL_TYPE_DOUBLE => column.decimals() < NOT_FIXED_DECIMALS,
-        _ => false,
-    }
 }
 
 /// The statements of this session whose answer lost digits in text: the

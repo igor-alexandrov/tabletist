@@ -27,6 +27,7 @@ fn bookshop_saved() -> SavedConnection {
         ssh_secret: PasswordMode::None,
         spec,
         agents: Default::default(),
+        group: None,
     }
 }
 

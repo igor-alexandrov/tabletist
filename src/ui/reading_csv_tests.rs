@@ -354,6 +354,7 @@ fn cancel_keeps_how_the_saved_connection_reads_csv() {
     let saved = SavedConnection {
         id: ConnectionId::new(),
         name: "Bookshop exports".into(),
+        group: None,
         environment: Environment::Local,
         read_only: Some(true),
         password: PasswordMode::None,
@@ -388,6 +389,7 @@ fn a_reset_before_delete_in_one_frame_is_kept_by_keep() {
     let saved = SavedConnection {
         id: ConnectionId::new(),
         name: "Bookshop exports".into(),
+        group: None,
         environment: Environment::Local,
         read_only: Some(true),
         password: PasswordMode::None,
@@ -459,6 +461,7 @@ fn agents_on_files_is_a_closed_row_that_says_the_access() {
     let saved = SavedConnection {
         id: ConnectionId::new(),
         name: "Bookshop exports".into(),
+        group: None,
         environment: Environment::Local,
         read_only: Some(true),
         password: PasswordMode::None,

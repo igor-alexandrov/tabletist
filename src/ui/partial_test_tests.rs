@@ -681,6 +681,7 @@ fn keep_after_delete_brings_back_no_check_that_is_not_running() {
         ssh_secret: PasswordMode::None,
         spec: tabletist_db::ConnectSpec::files(tabletist_db::files::Source::Folder(FOLDER.into())),
         agents: Default::default(),
+        group: None,
     };
     let id = saved.id.clone();
     harness.app.connections.upsert(saved);
