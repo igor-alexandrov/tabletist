@@ -6,6 +6,7 @@
 mod agents;
 mod choice;
 mod files;
+mod group;
 mod reading;
 mod sheet;
 mod terminal;
@@ -290,13 +291,15 @@ pub fn lists_names(form: &ConnectionForm) -> bool {
 /// `loaded` is what an open window of the connection the form edits has
 /// loaded, read again on each frame, as a sidebar loads: `None` where it
 /// lists no names ([`lists_names`]), is a new connection, or no window of
-/// it is open.
+/// it is open. `groups` is what Group offers, read again on each frame
+/// too.
 pub fn show(
     ctx: &egui::Context,
     paint: Paint,
     form: &mut ConnectionForm,
     keymap: &Keymap,
     loaded: Option<LoadedTables>,
+    groups: crate::connections::groups::Choices,
 ) -> Vec<Action> {
     let Paint {
         locale,
@@ -335,6 +338,7 @@ pub fn show(
         _ => None,
     };
     form.agents_loaded = loaded;
+    form.group_choices = groups;
     let placement: Placement = ctx
         .data(|data| data.get_temp(placement_id()))
         .unwrap_or_default();

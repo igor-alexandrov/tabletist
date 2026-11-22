@@ -606,7 +606,7 @@ fn follow_pick(ui: &Ui, list: egui::Id, rows: &[String], pick: &mut Option<usize
 /// Whether the form's Cancel, as the keymap has it, was pressed while
 /// `field` has the keyboard or has just let it go: the field's own, taken
 /// out of the frame so that the dialog is not closed by it.
-fn cancel_asked(ui: &Ui, field: &egui::Response, skin: &Skin) -> bool {
+pub(super) fn cancel_asked(ui: &Ui, field: &egui::Response, skin: &Skin) -> bool {
     (field.has_focus() || field.lost_focus()) && {
         let keymap = crate::ui::keys::published(ui.ctx());
         let layout = crate::keymap::Layout::of(skin.look);

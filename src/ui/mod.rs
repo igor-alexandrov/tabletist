@@ -82,6 +82,8 @@ mod format_settings_tests;
 pub mod grid;
 #[cfg(test)]
 mod grid_keys_tests;
+#[cfg(test)]
+mod group_tests;
 pub mod help;
 #[cfg(test)]
 mod help_tests;
@@ -247,7 +249,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         _ => None,
     };
     if let Some(Dialog::Connection(form)) = &mut app.dialog {
-        let asked = connect_dialog::show(&ui.ctx().clone(), paint, form, &app.keymap, loaded);
+        let groups = crate::connections::groups::Choices::of(
+            &form.name,
+            form.stays_local(),
+            form.editing.as_ref(),
+            &app.connections.connections,
+        );
+        let asked =
+            connect_dialog::show(&ui.ctx().clone(), paint, form, &app.keymap, loaded, groups);
         app.actions.extend(asked);
     } else {
         connect_dialog::fold(ui.ctx());
@@ -4054,6 +4063,7 @@ value_tags   = true
         let saved = crate::connections::SavedConnection {
             id: crate::connections::ConnectionId::new(),
             name: name.into(),
+            group: None,
             environment: crate::env::Environment::Production,
             read_only: None,
             password: crate::connections::PasswordMode::None,
@@ -4156,6 +4166,7 @@ value_tags   = true
                 .upsert(crate::connections::SavedConnection {
                     id: crate::connections::ConnectionId::new(),
                     name: "Bookshop".into(),
+                    group: None,
                     environment: crate::env::Environment::Dev,
                     read_only: None,
                     password: crate::connections::PasswordMode::None,
@@ -4228,6 +4239,7 @@ value_tags   = true
             .upsert(crate::connections::SavedConnection {
                 id: crate::connections::ConnectionId::new(),
                 name: "Production".into(),
+                group: None,
                 environment: crate::env::Environment::Production,
                 read_only: None,
                 password: crate::connections::PasswordMode::Ask,
@@ -4720,6 +4732,7 @@ value_tags   = true
             .upsert(crate::connections::SavedConnection {
                 id: crate::connections::ConnectionId::new(),
                 name: "Production".into(),
+                group: None,
                 environment: crate::env::Environment::Production,
                 read_only: None,
                 password: crate::connections::PasswordMode::None,
@@ -9350,6 +9363,7 @@ value_tags   = true
         let saved = crate::connections::SavedConnection {
             id: crate::connections::ConnectionId::new(),
             name: "Prod".into(),
+            group: None,
             environment: crate::env::Environment::Production,
             read_only: None,
             password: crate::connections::PasswordMode::Ask,
@@ -9383,6 +9397,7 @@ value_tags   = true
         let saved = crate::connections::SavedConnection {
             id: crate::connections::ConnectionId::new(),
             name: "Prod".into(),
+            group: None,
             environment: crate::env::Environment::None,
             read_only: None,
             password: crate::connections::PasswordMode::Ask,
@@ -10059,6 +10074,7 @@ value_tags   = true
         let saved = crate::connections::SavedConnection {
             id: crate::connections::ConnectionId::new(),
             name: "Prod".into(),
+            group: None,
             environment: crate::env::Environment::Production,
             read_only: None,
             password: crate::connections::PasswordMode::None,
@@ -10966,6 +10982,7 @@ value_tags   = true
         let saved = crate::connections::SavedConnection {
             id: crate::connections::ConnectionId::new(),
             name: "Prod".into(),
+            group: None,
             environment: crate::env::Environment::Production,
             read_only: None,
             password: crate::connections::PasswordMode::None,
@@ -10992,6 +11009,7 @@ value_tags   = true
         let saved = crate::connections::SavedConnection {
             id: crate::connections::ConnectionId::new(),
             name: "Prod".into(),
+            group: None,
             environment: crate::env::Environment::Production,
             read_only: None,
             password: crate::connections::PasswordMode::None,

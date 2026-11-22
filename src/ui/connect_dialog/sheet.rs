@@ -322,16 +322,29 @@ fn identity(
         look,
     );
     ui.add_space(18.0);
-    let name = labelled(
-        ui,
-        &skin.say(msgid("Name")),
-        TextRole::FormLabel,
-        skin,
-        |ui| ui.add(input(ui, &mut form.name, TextRole::UiBody, 34.0, skin)),
-    );
-    if focus_name {
-        name.request_focus();
-    }
+    // The name, and beside it the group the Connections list shows it in.
+    let columns = [Column::Fr(1.4), Column::Fr(1.0)];
+    row(ui, 12.0, &columns, |ui, column| match column {
+        0 => {
+            let name = labelled(
+                ui,
+                &skin.say(msgid("Name")),
+                TextRole::FormLabel,
+                skin,
+                |ui| ui.add(input(ui, &mut form.name, TextRole::UiBody, 34.0, skin)),
+            );
+            if focus_name {
+                name.request_focus();
+            }
+        }
+        _ => {
+            let heading = skin.say(msgid("Group"));
+            let width = ui.available_width();
+            labelled(ui, &heading, TextRole::FormLabel, skin, |ui| {
+                super::group::control(ui, form, &heading, width, skin)
+            });
+        }
+    });
     ui.add_space(18.0);
     let heading = skin.say(msgid("Environment"));
     widgets::label(ui, TextRole::FormLabel, &heading, palette.secondary, look);
