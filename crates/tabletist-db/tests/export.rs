@@ -526,12 +526,12 @@ mod postgres {
             return;
         };
         streams_a_statement(&connection, "postgres").await;
-        // A statement no cursor holds fails with the server's words.
-        let shown = streamed_statement(&connection, "SHOW search_path", 10, &StopFlag::new()).await;
-        let Err(error) = shown else {
-            panic!("{shown:?}");
-        };
-        assert!(error.to_string().contains("syntax error"), "{error}");
+        // A statement no cursor could hold streams as well.
+        let shown = streamed_statement(&connection, "SHOW search_path", 10, &StopFlag::new())
+            .await
+            .unwrap();
+        assert_eq!(shown.columns, ["search_path"]);
+        assert_eq!(shown.sent, 1);
         streams_a_statement(&connection, "postgres").await;
     }
 
@@ -546,20 +546,42 @@ mod postgres {
     }
 
     /// The server's `statement_timeout` ends a stream as a timeout, not as
-    /// a cancel. The first `FETCH` sets it for the transaction (an export
-    /// sets none of its own), so the second one runs over it.
+    /// a cancel. An export sets no timeout of its own: this one is the
+    /// database's, as a server's configuration or a role's would give it.
     #[tokio::test]
     async fn the_servers_timeout_is_told_apart_on_postgres() {
-        let Some(connection) = bookshop().await else {
+        let Some(url) = url() else {
+            eprintln!("skipped: TABLETIST_TEST_PG_URL is not set");
             return;
         };
-        let mut query = books("public");
-        query.raw_where = Some(
-            "set_config('statement_timeout', '50', true) IS NOT NULL \
-             AND pg_sleep(0.2) IS NOT NULL"
-                .into(),
-        );
-        let ended = streamed(&connection, &query, &["id"], 2).await;
+        let server = admin(&url, None).await;
+        let made = server
+            .query_opt(
+                "SELECT 1 FROM pg_database WHERE datname = 'export_timeout'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .is_some();
+        if !made {
+            server
+                .batch_execute("CREATE DATABASE export_timeout")
+                .await
+                .unwrap();
+        }
+        server
+            .batch_execute("ALTER DATABASE export_timeout SET statement_timeout = 300")
+            .await
+            .unwrap();
+        let (mut spec, secrets) = ConnectSpec::from_url(&url).unwrap();
+        spec.tls = TlsMode::Disable;
+        spec.database = "export_timeout".into();
+        let connection =
+            Connection::connect_with(&spec, &secrets, &HostKeys::default(), Access::ReadOnly)
+                .await
+                .unwrap();
+        let ended =
+            streamed_statement(&connection, "SELECT pg_sleep(2)", 2, &StopFlag::new()).await;
         assert!(
             matches!(ended, Err(Error::Timeout)),
             "{:?}",

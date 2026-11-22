@@ -618,15 +618,27 @@ impl<'a> Writer<'a> {
     pub fn row<C: Cell>(&mut self, cells: &[C], out: &mut String) {
         let values = || cells.iter().map(Cell::value);
         match self.format {
+            // Each cell is written straight into `out`: a row of plain
+            // values costs no text of its own.
             Format::Csv => {
                 let csv = &self.options.csv;
-                let written: Vec<String> = values().map(|value| csv_cell(value, csv)).collect();
-                line(out, &written, &csv.delimiter.to_string(), csv.line_ending);
+                for (index, value) in values().enumerate() {
+                    if index > 0 {
+                        out.push(csv.delimiter);
+                    }
+                    csv_cell(value, csv, out);
+                }
+                out.push_str(csv.line_ending.text());
             }
             Format::Tsv => {
                 let tsv = &self.options.tsv;
-                let written: Vec<String> = values().map(|value| tsv_cell(value, tsv)).collect();
-                line(out, &written, "\t", tsv.line_ending);
+                for (index, value) in values().enumerate() {
+                    if index > 0 {
+                        out.push('\t');
+                    }
+                    tsv_cell(value, tsv, out);
+                }
+                out.push_str(tsv.line_ending.text());
             }
             Format::Json => {
                 let json = &self.options.json;
@@ -825,6 +837,18 @@ fn line(out: &mut String, cells: &[String], delimiter: &str, ending: LineEnding)
     out.push_str(ending.text());
 }
 
+/// [`plain`], written at the end of `out`.
+fn push_plain(value: &Value, binary: Binary, out: &mut String) {
+    match value {
+        Value::Null => {}
+        Value::Int(number) => {
+            let _ = write!(out, "{number}");
+        }
+        Value::Text(text) => out.push_str(text),
+        _ => out.push_str(&plain(value, binary)),
+    }
+}
+
 /// A value as plain text: what CSV, TSV and Markdown write of it.
 fn plain(value: &Value, binary: Binary) -> Cow<'_, str> {
     match value {
@@ -870,39 +894,60 @@ fn base64(bytes: &[u8]) -> String {
     text
 }
 
-fn csv_cell(value: Option<&Value>, csv: &Csv) -> String {
+/// A cell as CSV, written at the end of `out`.
+fn csv_cell(value: Option<&Value>, csv: &Csv, out: &mut String) {
+    let start = out.len();
     match value {
         None | Some(Value::Null) => match csv.null_as {
-            NullAs::Empty => String::new(),
+            NullAs::Empty => {}
             // Never quoted unless it must be: a quoted one reads as text.
-            NullAs::Text => csv_quoted(&csv.null_text, csv, false),
+            NullAs::Text => {
+                out.push_str(&csv.null_text);
+                quote_from(out, start, csv, false);
+            }
         },
-        Some(value) => csv_quoted(
-            &plain(value, csv.binary),
-            csv,
-            csv.quoting == Quoting::Every,
-        ),
+        Some(value) => {
+            push_plain(value, csv.binary, out);
+            quote_from(out, start, csv, csv.quoting == Quoting::Every);
+        }
     }
 }
 
 /// `text` in quotes where `always` says or it holds the delimiter, a quote
 /// or a line break, its quotes doubled.
 fn csv_quoted(text: &str, csv: &Csv, always: bool) -> String {
-    let needs = text.contains([csv.delimiter, '"', '\n', '\r']);
+    let mut out = text.to_owned();
+    quote_from(&mut out, 0, csv, always);
+    out
+}
+
+/// What `out` holds from `start` in quotes, as [`csv_quoted`] says. Text
+/// that needs none stays where it is.
+fn quote_from(out: &mut String, start: usize, csv: &Csv, always: bool) {
+    let needs = out[start..].contains([csv.delimiter, '"', '\n', '\r']);
     if always || needs {
-        format!("\"{}\"", text.replace('"', "\"\""))
-    } else {
-        text.to_owned()
+        let text = out.split_off(start);
+        out.push('"');
+        out.push_str(&text.replace('"', "\"\""));
+        out.push('"');
     }
 }
 
-fn tsv_cell(value: Option<&Value>, tsv: &Tsv) -> String {
+/// A cell as TSV, written at the end of `out`.
+fn tsv_cell(value: Option<&Value>, tsv: &Tsv, out: &mut String) {
     match value {
         None | Some(Value::Null) => match tsv.null_as {
-            NullAs::Empty => String::new(),
-            NullAs::Text => tsv.null_text.clone(),
+            NullAs::Empty => {}
+            NullAs::Text => out.push_str(&tsv.null_text),
         },
-        Some(value) => tsv_escaped(&plain(value, tsv.binary)),
+        Some(value) => {
+            let start = out.len();
+            push_plain(value, tsv.binary, out);
+            if out[start..].contains(['\\', '\t', '\n', '\r']) {
+                let text = out.split_off(start);
+                out.push_str(&tsv_escaped(&text));
+            }
+        }
     }
 }
 

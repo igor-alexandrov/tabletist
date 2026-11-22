@@ -540,6 +540,7 @@ Files connection has one. A file that holds a Files connection says
 | --- | --- | --- |
 | `id` | Any text that no other connection has | Tabletist gives the connection one at the next start |
 | `name` | Text | Required |
+| `group` | Text: the group the picker lists the connection under. A file that holds one says `version = 9` | The picker's own: a name the connection shares with another that has no group (or that name as its group), else Local or Remote |
 | `environment` | `local`, `dev`, `staging`, `production`, `none` | `none` |
 | `read_only` | `true`, `false` | As the environment has it: read-only on production |
 | `password` | `none`, `keyring`, `ask` | `none` |
@@ -674,9 +675,10 @@ If a column that `masked` names is renamed or dropped, agents may not use
 the connection at all until you take it out of the list or put the right
 one in.
 
-A file with a Redis connection says `version = 9`. Without one, a file
-with a Files connection that reads CSV its own way says `version = 8`, and
-one with a Files connection `version = 7`. Otherwise, one in
+A file with a Redis connection says `version = 10`. Without one, a file
+in which a connection has a `group` says `version = 9`, one with a Files
+connection that reads CSV its own way `version = 8`, and one with a Files
+connection `version = 7`. Otherwise, one in
 which a connection masks a column says `version = 6`, one in
 which a connection hides a table and masks none says `version = 5`, one
 in which a connection has the table and neither hides nor masks says

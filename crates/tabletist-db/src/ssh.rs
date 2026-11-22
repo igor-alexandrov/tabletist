@@ -38,6 +38,28 @@ const PROXY_WAITS: ProxyWaits = ProxyWaits {
     login: Duration::from_secs(120),
 };
 
+/// How much the server may send down a tunnel's channel before it hears
+/// back. russh tops the window up only once half of it is used, so about
+/// half of it arrives in each round trip: russh's default, 2 MiB, held a
+/// 200 ms link to about 5 MB/s, and 32 MiB lets it carry about 80 MB/s.
+/// Tabletist holds no more for it: russh tops the window up as data
+/// arrives and stops reading the socket once `channel_buffer_size`
+/// messages wait unread. The server may hold up to the window for a
+/// channel whose reader stalls, and while one channel's reader stalls the
+/// tunnel's other channels wait too, as they did with a smaller window.
+const TUNNEL_WINDOW: u32 = 32 * 1024 * 1024;
+
+/// The SSH client's settings for a tunnel.
+fn client_config() -> client::Config {
+    client::Config {
+        nodelay: true,
+        inactivity_timeout: None,
+        keepalive_interval: Some(Duration::from_secs(30)),
+        window_size: TUNNEL_WINDOW,
+        ..Default::default()
+    }
+}
+
 /// Trusted SSH host keys: `host:port` to a `SHA256:` fingerprint.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -409,12 +431,7 @@ impl Tunnel {
                 .map(str::to_owned),
             seen: Arc::clone(&seen),
         };
-        let config = Arc::new(client::Config {
-            nodelay: true,
-            inactivity_timeout: None,
-            keepalive_interval: Some(Duration::from_secs(30)),
-            ..Default::default()
-        });
+        let config = Arc::new(client_config());
         let (connected, said, mut running, timeout) = match &endpoint.via {
             None => {
                 let address = (endpoint.host.clone(), endpoint.port);
@@ -573,6 +590,22 @@ impl Tunnel {
 mod tests {
     use super::*;
     use crate::ssh_config::{HostConfig, Proxy};
+
+    /// At a 200 ms round trip the window lets the server send over 75 MB
+    /// a second down a tunnel; russh's default, 2 MiB, held it to about 5,
+    /// so a 64 MB export took twelve seconds on the wire alone. russh tops
+    /// the window up only once half of it is used: about half of it comes
+    /// in each round trip.
+    #[test]
+    fn the_tunnel_window_keeps_a_far_link_busy() {
+        let config = client_config();
+        let per_second = f64::from(config.window_size) / 2.0 / 0.2;
+        assert!(per_second > 75e6, "{per_second}");
+        // What the tunnel set before stays as it was.
+        assert!(config.nodelay);
+        assert_eq!(config.inactivity_timeout, None);
+        assert_eq!(config.keepalive_interval, Some(Duration::from_secs(30)));
+    }
 
     fn key(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -92,6 +92,7 @@ pub fn fixture_connection() -> SavedConnection {
     SavedConnection {
         id: ConnectionId::new(),
         name: "Fixture".into(),
+        group: None,
         environment: crate::env::Environment::Dev,
         // Read-only, as every connection was when most tests were written.
         // A test of a writable connection says so itself.
@@ -109,8 +110,10 @@ pub fn bookshop_cache() -> SavedConnection {
     SavedConnection {
         id: ConnectionId::new(),
         name: "Bookshop cache".into(),
+        group: None,
         environment: crate::env::Environment::Dev,
-        read_only: Some(false),
+        // This version sends only reads to Redis, and saves it so.
+        read_only: Some(true),
         password: crate::connections::PasswordMode::None,
         ssh_secret: crate::connections::PasswordMode::None,
         spec: ConnectSpec::redis("localhost", 6379),

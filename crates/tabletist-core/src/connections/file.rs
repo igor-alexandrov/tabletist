@@ -26,16 +26,20 @@ use crate::util::toml_string;
 /// `connections.json`. 4 has a connection's settings for agents, 5 the
 /// tables they may not read, 6 the columns they get masked, 7 Files
 /// connections, with their `source`, 8 how a Files connection reads its
-/// CSV files (`[connections.csv]`, `[[connections.override]]`), and 9
-/// Redis connections. A file is
+/// CSV files (`[connections.csv]`, `[[connections.override]]`), 9 the
+/// group the person put a connection in (`group`), and 10 Redis
+/// connections. A file is
 /// written as the oldest that holds what it has: a Tabletist that does not
 /// know a key refuses only a file it would lose it from, and one that
 /// would read agents' tables as all of them, or a masked column's values
 /// as they are, never reads the file.
-pub(super) const VERSION: u32 = 9;
+pub(super) const VERSION: u32 = 10;
 
-/// The version that has how Files connections read CSV and no Redis
-/// connection.
+/// The version that has the group the person put a connection in and no
+/// Redis connection.
+const GROUP_VERSION: u32 = 9;
+
+/// The version that has how Files connections read CSV and no group.
 const CSV_VERSION: u32 = 8;
 
 /// The version that has Files connections and not how they read CSV.
@@ -106,6 +110,7 @@ struct File {
 struct Entry {
     id: Option<String>,
     name: String,
+    group: Option<String>,
     #[serde(default)]
     environment: Environment,
     read_only: Option<bool>,
@@ -605,9 +610,15 @@ impl Entry {
             | Driver::BigQuery
             | Driver::Redis => Reading::default(),
         };
+        // A blank group is none: the connection goes by the rule.
+        let group = self
+            .group
+            .map(|group| group.trim().to_owned())
+            .filter(|group| !group.is_empty());
         Ok(SavedConnection {
             id,
             name: self.name,
+            group,
             environment: self.environment,
             read_only: self.read_only,
             password: self.password,
@@ -819,6 +830,16 @@ fn reads_csv_its_own_way(reading: &Reading) -> bool {
     !options_are_default(reading) || written(reading).next().is_some()
 }
 
+/// The group the file holds for `connection`: none for a blank one, which
+/// the file could not read back as one.
+fn written_group(connection: &SavedConnection) -> Option<&str> {
+    connection
+        .group
+        .as_deref()
+        .map(str::trim)
+        .filter(|group| !group.is_empty())
+}
+
 fn password(mode: PasswordMode) -> &'static str {
     match mode {
         PasswordMode::None => "none",
@@ -864,20 +885,24 @@ pub(super) fn write(connections: &[SavedConnection]) -> std::io::Result<String> 
     let csv = connections
         .iter()
         .any(|saved| saved.spec.files.is_some() && reads_csv_its_own_way(&saved.spec.csv));
+    let groups = connections
+        .iter()
+        .any(|saved| written_group(saved).is_some());
     let redis = connections.iter().any(|saved| match saved.spec.driver {
         Driver::Redis => true,
         Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery | Driver::Files => {
             false
         }
     });
-    let version = match (redis, csv, files, masks, hides, agents) {
-        (true, _, _, _, _, _) => VERSION,
-        (false, true, _, _, _, _) => CSV_VERSION,
-        (false, false, true, _, _, _) => FILES_VERSION,
-        (false, false, false, true, _, _) => MASKED_VERSION,
-        (false, false, false, false, true, _) => TABLES_VERSION,
-        (false, false, false, false, false, true) => AGENTS_VERSION,
-        (false, false, false, false, false, false) => FIRST_VERSION,
+    let version = match (redis, groups, csv, files, masks, hides, agents) {
+        (true, _, _, _, _, _, _) => VERSION,
+        (false, true, _, _, _, _, _) => GROUP_VERSION,
+        (false, false, true, _, _, _, _) => CSV_VERSION,
+        (false, false, false, true, _, _, _) => FILES_VERSION,
+        (false, false, false, false, true, _, _) => MASKED_VERSION,
+        (false, false, false, false, false, true, _) => TABLES_VERSION,
+        (false, false, false, false, false, false, true) => AGENTS_VERSION,
+        (false, false, false, false, false, false, false) => FIRST_VERSION,
     };
     let mut out = format!("{HEADER}version = {version}\n");
     for connection in connections {
@@ -898,6 +923,9 @@ pub(super) fn write(connections: &[SavedConnection]) -> std::io::Result<String> 
         let mut lines = Lines::default();
         lines.text("id", &connection.id.0);
         lines.text("name", &connection.name);
+        if let Some(group) = written_group(connection) {
+            lines.text("group", group);
+        }
         lines.text("environment", connection.environment.key());
         if let Some(read_only) = connection.read_only {
             lines.bare("read_only", read_only);
@@ -1074,6 +1102,7 @@ mod tests {
         SavedConnection {
             id: ConnectionId(id.into()),
             name: name.into(),
+            group: None,
             environment: Environment::None,
             read_only: None,
             password: PasswordMode::None,
@@ -1471,8 +1500,8 @@ auth = "key-file"
         let said = |text: &str| read(text).unwrap_err().to_string();
         assert!(said("").contains("missing field `version`"), "{}", said(""));
         assert_eq!(
-            said("version = 10\n"),
-            "it is version 10 of the file, written by a newer Tabletist; this one reads version 9"
+            said("version = 11\n"),
+            "it is version 11 of the file, written by a newer Tabletist; this one reads version 10"
         );
         assert_eq!(
             said("version = 2\n"),
@@ -1700,9 +1729,9 @@ masked       = ["orders.email", "\"odd.schema\".orders.phone"]
     }
 
     #[test]
-    fn a_redis_connection_is_read_back_as_it_was_in_version_nine() {
+    fn a_redis_connection_is_read_back_as_it_was_in_version_ten() {
         let text = write(&[cache()]).unwrap();
-        assert!(text.contains("version = 9\n"), "{text}");
+        assert!(text.contains("version = 10\n"), "{text}");
         assert!(text.contains("driver      = \"redis\""), "{text}");
         assert!(
             text.contains("\n[connections.redis]\ndatabase = 2\n"),
@@ -1722,7 +1751,7 @@ masked       = ["orders.email", "\"odd.schema\".orders.phone"]
 
     #[test]
     fn a_redis_connection_has_no_agents_table() {
-        let text = "version = 9\n[[connections]]\nid = \"c\"\nname = \"Cache\"\n\
+        let text = "version = 10\n[[connections]]\nid = \"c\"\nname = \"Cache\"\n\
                     driver = \"redis\"\nhost = \"localhost\"\n\
                     [connections.agents]\naccess = \"read\"\n";
         let said = read(text).unwrap_err().to_string();
@@ -1731,7 +1760,7 @@ masked       = ["orders.email", "\"odd.schema\".orders.phone"]
 
     #[test]
     fn a_redis_tables_left_out_keys_take_a_new_connections() {
-        let text = "version = 9\n[[connections]]\nid = \"c\"\nname = \"Cache\"\n\
+        let text = "version = 10\n[[connections]]\nid = \"c\"\nname = \"Cache\"\n\
                     driver = \"redis\"\nhost = \"localhost\"\n";
         let read = read(text).unwrap();
         let spec = &read.connections[0].spec;
@@ -1750,7 +1779,7 @@ masked       = ["orders.email", "\"odd.schema\".orders.phone"]
 
     #[test]
     fn what_a_redis_connection_cannot_say_is_refused() {
-        let entry = "version = 9\n[[connections]]\nid = \"c\"\nname = \"Cache\"\n\
+        let entry = "version = 10\n[[connections]]\nid = \"c\"\nname = \"Cache\"\n\
                      driver = \"redis\"\nhost = \"localhost\"\n";
         for (extra, why) in [
             ("tls = \"require\"\n", "[connections.redis.tls]"),
@@ -1772,7 +1801,7 @@ masked       = ["orders.email", "\"odd.schema\".orders.phone"]
             let said = read(&format!("{entry}{extra}")).unwrap_err().to_string();
             assert!(said.contains(why), "{extra}: {said}");
         }
-        let postgres = "version = 9\n[[connections]]\nid = \"p\"\nname = \"Shop\"\n\
+        let postgres = "version = 10\n[[connections]]\nid = \"p\"\nname = \"Shop\"\n\
                         driver = \"postgres\"\nhost = \"h\"\n[connections.redis]\n";
         let said = read(postgres).unwrap_err().to_string();
         assert!(said.contains("only a Redis connection"), "{said}");
@@ -1945,6 +1974,54 @@ masked       = ["orders.email", "\"odd.schema\".orders.phone"]
         // Without one, the file is as it was.
         let others = write(&bookshop()).unwrap();
         assert!(!others.contains("version = 7"), "{others}");
+    }
+
+    /// The group the person put a connection in, after its name, makes the
+    /// file version 9, whatever else it holds.
+    #[test]
+    fn a_group_is_written_after_the_name_in_version_nine() {
+        let mut connections = bookshop();
+        connections[2].group = Some("Experiments".into());
+        let text = write(&connections).unwrap();
+        assert!(text.contains("\nversion = 9\n"), "{text}");
+        assert!(
+            text.ends_with(
+                r#"id          = "file"
+name        = "Bookshop on disk"
+group       = "Experiments"
+environment = "local"
+driver      = "sqlite"
+sqlite_path = "/home/ada/bookshop.db"
+"#
+            ),
+            "{text}"
+        );
+        assert_eq!(read(&text).unwrap().connections, connections);
+        // Without one, the file stays as old as the rest lets it; a blank
+        // one is none.
+        connections[2].group = None;
+        assert!(write(&connections).unwrap().contains("\nversion = 3\n"));
+        connections[2].group = Some("  ".into());
+        let blank = write(&connections).unwrap();
+        assert!(
+            blank.contains("\nversion = 3\n") && !blank.contains("group"),
+            "{blank}"
+        );
+        connections[2].group = None;
+        // A blank group, as a person may leave one, is none; the spaces
+        // round one are not kept.
+        let with = |line: &str| {
+            text.replace(
+                "group       = \"Experiments\"",
+                &format!("group       = {line}"),
+            )
+        };
+        assert_eq!(read(&with("\"  \"")).unwrap().connections, connections);
+        connections[2].group = Some("Side projects".into());
+        assert_eq!(
+            read(&with("\" Side projects \"")).unwrap().connections,
+            connections
+        );
     }
 
     /// How a Files connection reads CSV, as the file writes it: version 8,

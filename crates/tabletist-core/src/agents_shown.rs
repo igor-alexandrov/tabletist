@@ -346,6 +346,7 @@ mod tests {
         SavedConnection {
             id: ConnectionId(id.into()),
             name: id.into(),
+            group: None,
             environment: crate::env::Environment::Dev,
             read_only: None,
             password: crate::connections::PasswordMode::None,

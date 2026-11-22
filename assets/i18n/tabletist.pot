@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-22 09:35-0500\n"
+"POT-Creation-Date: 2026-11-22 09:39-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -4022,6 +4022,14 @@ msgstr ""
 msgid "none · {key} adds files"
 msgstr ""
 
+#: src/ui/connect_dialog/group.rs
+msgid "Group name"
+msgstr ""
+
+#: src/ui/connect_dialog/group.rs
+msgid "New group…"
+msgstr ""
+
 #: src/ui/connect_dialog/mod.rs
 msgid "One database file on this computer"
 msgstr ""
@@ -4499,6 +4507,10 @@ msgstr ""
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/structure.rs
 msgid "Name"
+msgstr ""
+
+#: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
+msgid "Group"
 msgstr ""
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs

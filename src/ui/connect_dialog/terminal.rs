@@ -346,6 +346,11 @@ pub(super) fn terminal_body(
                     name.request_focus();
                 }
             });
+            let heading = skin.say(msgid("Group"));
+            terminal_row(ui, &heading, skin, |ui, label| {
+                let width = ui.available_width();
+                super::group::control(ui, form, &heading, width, skin).labelled_by(label);
+            });
             let heading = skin.say(msgid("Environment"));
             terminal_row_of(ui, &heading, Group::Buttons.height(), skin, |ui, _| {
                 environment_choice(ui, &heading, skin, actions);

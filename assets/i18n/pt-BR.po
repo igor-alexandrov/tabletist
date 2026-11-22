@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-22 09:35-0500\n"
+"POT-Creation-Date: 2026-11-22 09:39-0500\n"
 "PO-Revision-Date: 2026-11-19 16:11-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -4086,6 +4086,14 @@ msgstr "nenhum · {key} adiciona arquivos"
 msgid "pick"
 msgstr "escolher"
 
+#: src/ui/connect_dialog/group.rs
+msgid "Group name"
+msgstr "Nome do grupo"
+
+#: src/ui/connect_dialog/group.rs
+msgid "New group…"
+msgstr "Novo grupo…"
+
 #: src/ui/connect_dialog/mod.rs
 msgid "Changes the fields below"
 msgstr "Altera os campos abaixo"
@@ -4589,6 +4597,10 @@ msgstr "Preencher"
 msgid ""
 "Fills the parameters. A password in the URL moves to the password field."
 msgstr "Preenche os parâmetros. Uma senha na URL vai para o campo de senha."
+
+#: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
+msgid "Group"
+msgstr "Grupo"
 
 #: src/ui/connect_dialog/sheet.rs src/ui/connect_dialog/terminal.rs
 #: src/ui/structure.rs
