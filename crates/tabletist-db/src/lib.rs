@@ -534,18 +534,24 @@ impl Connection {
     /// Every row of `query`'s table that its filters keep, in its order
     /// (no `LIMIT`, no `OFFSET`): the `columns` named, in their order, or
     /// all of them when there are none. Sent to `to` as the columns, then
-    /// batches of up to `batch` rows, read-only: through a cursor on
-    /// PostgreSQL, unbuffered on MySQL, stepped on SQLite, so no more than
-    /// a batch is read ahead of what `to` has taken; on a Files connection
+    /// batches of up to `batch` rows, read-only: one run streamed in two
+    /// round trips on PostgreSQL once the table's shape is read, unbuffered
+    /// on MySQL and MariaDB in one round trip once the shape is read
+    /// (through the binary protocol, in four, for a table with a FLOAT
+    /// or a view),
+    /// stepped on SQLite, so no more than a batch is read ahead
+    /// of what `to` has taken (on PostgreSQL, a batch and what the socket
+    /// holds); on a Files connection
     /// a chunk of DuckDB's at a time, so no more than a batch and a chunk.
     /// Returns the rows sent.
     /// `stop`, or `to` closing, ends it as [`Error::Cancelled`]; a
     /// statement the server's own timeout ended is [`Error::Timeout`].
     /// A connection whose stream failed once its statement ran (a closed
     /// `to` included, before any row was sent) is to be closed: on MySQL
-    /// the rows not yet read are still on their way, and the read-only
-    /// transaction they come in is left open, which a rollback could end
-    /// only by reading them all.
+    /// and PostgreSQL the rows not yet read are still on their way (the
+    /// PostgreSQL driver reads a hung-up response to its end before it
+    /// closes), and the read-only transaction they come in is left open,
+    /// which a rollback could end only by reading them all.
     pub async fn stream_rows(
         &self,
         query: &RowQuery,
@@ -572,10 +578,9 @@ impl Connection {
     /// [`sql::refusal`] lets it run: an export never runs a write. Returns
     /// the rows sent; `stop`, or `to` closing, ends it as
     /// [`Error::Cancelled`], and the server's own timeout as
-    /// [`Error::Timeout`]. On PostgreSQL it runs as a cursor, so a
-    /// statement no cursor holds (`SHOW`, `EXPLAIN`) fails with the
-    /// server's words. A connection whose stream failed once its statement
-    /// ran is to be closed, as for [`Self::stream_rows`].
+    /// [`Error::Timeout`]. On PostgreSQL a `SHOW` or an `EXPLAIN` streams
+    /// as a `SELECT` does. A connection whose stream failed once its
+    /// statement ran is to be closed, as for [`Self::stream_rows`].
     pub async fn stream_statement(
         &self,
         statement: &sql::Statement,

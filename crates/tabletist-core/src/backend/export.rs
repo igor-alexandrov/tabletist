@@ -278,8 +278,9 @@ pub async fn run(job: ExportJob, stopper: Stopper, report: impl Fn(ExportState))
     let producing = produce(&job, reading.as_ref(), &stopper.stop, to);
     let writing = async {
         let written = write(&job, create.as_deref(), from, &report).await;
-        // A writer that failed stops the statement at once: on MySQL the
-        // rows it would still send are otherwise read to the end.
+        // A writer that failed stops the statement at once: on MySQL and
+        // PostgreSQL the rows it would still send are otherwise read to the
+        // end.
         if written.is_err() {
             stopper.halt().await;
         }
@@ -346,8 +347,8 @@ async fn ended(
                 }
             }
             // A statement may still be sending rows: it is stopped first,
-            // for the rest are never read (a goodbye, or a dropped MySQL
-            // session, would read them all).
+            // for the rest are never read (a goodbye, or a dropped MySQL or
+            // PostgreSQL session, would read them all).
             _ => {
                 if let Err(error) = connection.cancel_handle().cancel().await {
                     log::warn!("could not stop an export's statement: {error}");
