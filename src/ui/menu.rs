@@ -106,6 +106,8 @@ pub struct Item<'a> {
     current: Option<bool>,
     role: Option<TextRole>,
     detail: Option<&'a str>,
+    hint: Option<(&'a str, &'a crate::keymap::Written)>,
+    hint_shown: Option<bool>,
     disabled: Option<&'a str>,
     note: Option<&'a str>,
     lit: Option<bool>,
@@ -120,6 +122,8 @@ impl<'a> Item<'a> {
             current: None,
             role: None,
             detail: None,
+            hint: None,
+            hint_shown: None,
             disabled: None,
             note: None,
             lit: None,
@@ -149,6 +153,23 @@ impl<'a> Item<'a> {
     /// A muted note at the row's right.
     pub fn detail(mut self, detail: &'a str) -> Self {
         self.detail = Some(detail);
+        self
+    }
+
+    /// What a key does on the row, at its right while the row is lit:
+    /// `words` and the `key` that does it, as the look writes them
+    /// (`New window ⌘↩`, the terminal's `ctrl+enter new window` with its
+    /// key in the accent). Give it to every row of the menu: each keeps
+    /// its room, so the menu keeps its width as the light moves.
+    pub fn hint(mut self, words: &'a str, key: &'a crate::keymap::Written) -> Self {
+        self.hint = Some((words, key));
+        self
+    }
+
+    /// Whether the hint is drawn, where it is not the lit row's: on the
+    /// row the key goes to.
+    pub fn hint_shown(mut self, shown: bool) -> Self {
+        self.hint_shown = Some(shown);
         self
     }
 
@@ -202,11 +223,14 @@ impl<'a> Item<'a> {
         let noted = self
             .detail
             .map_or(0.0, |detail| DETAIL_GAP + measure(note, detail));
+        let hinted = self.hint.map_or(0.0, |(words, key)| {
+            DETAIL_GAP + measure(note, words) + shape.gap + measure(note, key.as_str())
+        });
         let own = measure(role, self.text);
         let after = self
             .note
             .map_or(0.0, |words| shape.gap + measure(note, words));
-        let wanted = lead + own + after + noted + shape.inset;
+        let wanted = lead + own + after + noted + hinted + shape.inset;
         // A row that cannot be picked answers no press, and still takes
         // the keyboard, as a button that cannot be pressed does: the
         // keyboard can then read why. In a menu the keyboard never comes
@@ -229,6 +253,12 @@ impl<'a> Item<'a> {
         if let Some(detail) = self.detail {
             ui.ctx().accesskit_node_builder(response.id, |node| {
                 node.set_description(detail);
+            });
+        }
+        if let Some((words, key)) = self.hint {
+            let said = format!("{words} {}", key.as_str());
+            ui.ctx().accesskit_node_builder(response.id, |node| {
+                node.set_description(said);
             });
         }
         if let Some(reason) = self.disabled {
@@ -297,6 +327,27 @@ impl<'a> Item<'a> {
             Text::one(look, note, detail, palette.dim)
                 .layout(ui.ctx())
                 .paint_right(painter, rect.right() - shape.inset, center);
+        }
+        let hint_shown = self.hint_shown.unwrap_or(lit);
+        if let Some((words, key)) = self.hint.filter(|_| hint_shown) {
+            let key = key.as_str();
+            let right = rect.right() - shape.inset;
+            if look.terminal {
+                // The key leads, in the accent, as the footers write keys.
+                let words = Text::one(look, note, words, palette.dim).layout(ui.ctx());
+                let width = words.width();
+                words.paint_right(painter, right, center);
+                Text::one(look, note, key, palette.accent)
+                    .layout(ui.ctx())
+                    .paint_right(painter, right - width - shape.gap, center);
+            } else {
+                let key = Text::one(look, note, key, palette.dim).layout(ui.ctx());
+                let width = key.width();
+                key.paint_right(painter, right, center);
+                Text::one(look, note, words, palette.dim)
+                    .layout(ui.ctx())
+                    .paint_right(painter, right - width - shape.gap, center);
+            }
         }
         match self.disabled {
             Some(reason) => {

@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-21 15:13-0500\n"
+"POT-Creation-Date: 2026-11-22 09:34-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -1527,6 +1527,10 @@ msgstr "Открыть недавнее по номеру"
 #: crates/tabletist-core/src/keymap.rs
 msgid "Open a recent object"
 msgstr "Открыть недавний объект"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Open database in a new window"
+msgstr "Открыть базу данных в новом окне"
 
 #: crates/tabletist-core/src/keymap.rs
 msgid "Open every group"
@@ -10601,6 +10605,10 @@ msgstr "Локальное"
 #: src/ui/workspace.rs
 msgid "Login refused"
 msgstr "Вход отклонён"
+
+#: src/ui/workspace.rs
+msgid "New window"
+msgstr "Новое окно"
 
 #: src/ui/workspace.rs
 msgid "Not encrypted"
