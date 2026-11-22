@@ -161,6 +161,22 @@ pub fn database_of(spec: &tabletist_db::ConnectSpec) -> String {
     }
 }
 
+/// Puts `spec` on `database`, a name [`database_of`] gave: a server's
+/// database. A SQLite file or a Files connection opens what it names, and
+/// a window kept with no database stays on its connection's.
+pub fn put_on(spec: &mut tabletist_db::ConnectSpec, database: &str) {
+    match spec.driver {
+        tabletist_db::Driver::Postgres
+        | tabletist_db::Driver::MySql
+        | tabletist_db::Driver::BigQuery
+            if !database.is_empty() =>
+        {
+            spec.database = database.to_owned();
+        }
+        _ => {}
+    }
+}
+
 /// The file as it is written and read, each part on its own: a value of
 /// the wrong kind costs itself, not the file.
 #[derive(Default, Serialize, Deserialize)]
