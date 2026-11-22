@@ -57,7 +57,9 @@ TLS, SSH tunnels and where passwords are kept are covered in
 
 - **The header** holds a chip for each open connection. Click one to
   switch, or press Cmd/Ctrl+1 to 9 (Ctrl+Shift+1 to 9 in the Omarchy
-  look).
+  look). The chip of the connection you are in lists the server's other
+  databases: pick one to switch to it, or Cmd/Ctrl-click it to open it in
+  a new window beside this one.
 - **The sidebar** lists the tables and views of one schema. On macOS and
   Windows the ones you opened recently are on top. Cmd/Ctrl+B shows or
   hides it.

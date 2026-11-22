@@ -1325,28 +1325,152 @@ pub fn database_menu_id(tab: ConnTabId, start: bool) -> egui::Id {
     egui::Id::new(("database-menu", tab.0, start))
 }
 
+/// Where the keyboard was when a key opened the database menu, and
+/// whether the menu has given its chip the keyboard yet.
+#[derive(Clone, Copy)]
+struct OpenedByKey {
+    from: Option<egui::Id>,
+    given: bool,
+}
+
+/// The database menu (`by_key` under its id) has closed, or closes on a
+/// pick of `row`: opened by a key, it gives the keyboard back where it
+/// was, and where it was nowhere, its `chip` and the row let it go. A pick
+/// gives it back at once: the window it switches reconnects, and its chip
+/// may not be drawn again for a while.
+fn give_keyboard_back(
+    ctx: &egui::Context,
+    by_key: egui::Id,
+    chip: egui::Id,
+    row: Option<egui::Id>,
+) {
+    let Some(opened) = ctx.data(|data| data.get_temp::<OpenedByKey>(by_key)) else {
+        return;
+    };
+    ctx.data_mut(|data| data.remove::<OpenedByKey>(by_key));
+    ctx.memory_mut(|memory| match opened.from {
+        Some(from) => memory.request_focus(from),
+        None => {
+            for id in std::iter::once(chip).chain(row) {
+                memory.surrender_focus(id);
+            }
+        }
+    });
+}
+
+/// Opens the database menu `id` as a key does (Switch database's, quick
+/// open's): its chip takes the keyboard, so that the arrows go down the
+/// rows as they do after Enter on it, and the keyboard goes back where it
+/// was when the menu closes.
+pub fn open_database_menu_by_key(ctx: &egui::Context, id: egui::Id) {
+    egui::Popup::open_id(ctx, id);
+    let from = ctx.memory(|memory| memory.focused());
+    ctx.data_mut(|data| data.insert_temp(id.with("by key"), OpenedByKey { from, given: false }));
+}
+
+/// The key of Open database in a new window went down while the menu `id`
+/// was open: the menu takes it on the row it lights. Read before anything
+/// else reads the keys, so that no other chord of it (a SQL editor's Run)
+/// takes it.
+pub fn ask_new_window(ctx: &egui::Context, id: egui::Id) {
+    ctx.data_mut(|data| data.insert_temp(id.with("new window"), true));
+}
+
 /// The pop-up of the server's other databases, under the bar's own chip
-/// or the start screen's button (`response`), with `id` its own.
+/// or the start screen's button (`response`), with `id` its own. A click
+/// or Enter switches `tab` to the row's database; with Cmd (Ctrl off
+/// macOS), or the key of Open database in a new window, it opens in a new
+/// window beside `tab`, which the lit row's hint says.
 pub(super) fn database_menu(
     response: &egui::Response,
     id: egui::Id,
     tab: ConnTabId,
     info: &BarInfo,
-    (look, palette): (&Look, &Palette),
+    (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
     actions: &mut Vec<Action>,
 ) {
     let role = TextRole::pick(look, TextRole::MonoSecondary, TextRole::OSecondary);
+    let key = crate::ui::keys::written(&response.ctx, look, Command::OpenDatabaseInNewWindow);
+    let words = look.label(&gettext(locale, "New window"));
+    let ctx = &response.ctx;
+    // Opened by a key, the menu gives its chip the keyboard once, and the
+    // keyboard goes back where it was as the menu closes.
+    let by_key = id.with("by key");
+    if let Some(opened) = ctx.data(|data| data.get_temp::<OpenedByKey>(by_key)) {
+        if !egui::Popup::is_id_open(ctx, id) {
+            give_keyboard_back(ctx, by_key, response.id, None);
+        } else if !opened.given {
+            response.request_focus();
+            let given = OpenedByKey {
+                given: true,
+                ..opened
+            };
+            ctx.data_mut(|data| data.insert_temp(by_key, given));
+        }
+    }
+    // The row the key goes to, as the last frame lit it: the hint is
+    // drawn on it alone, and every row keeps its room.
+    let lit_id = id.with("lit");
+    let was_lit = ctx.data(|data| data.get_temp::<String>(lit_id));
     menu::under_id(response, id, response.rect.width(), look, palette, |ui| {
+        let asked = ui
+            .ctx()
+            .data_mut(|data| data.remove_temp::<bool>(id.with("new window")))
+            .unwrap_or(false);
+        let mut lit = None;
+        let mut lit_row = None;
+        let mut picked = None;
         for database in &info.databases {
             // Database names come from the server: nothing hidden.
             let name = display_safe(database);
-            let item = menu::Item::choice(&name, *database == info.database).role(role);
-            if item.show(ui, look, palette).clicked() && *database != info.database {
+            let mut item = menu::Item::choice(&name, *database == info.database).role(role);
+            if !key.is_empty() {
+                let shown = was_lit.as_ref() == Some(database);
+                item = item.hint(&words, &key).hint_shown(shown);
+            }
+            let row = item.show(ui, look, palette);
+            if row.clicked() {
+                picked = Some(row.id);
+            }
+            let new_window = row.clicked() && ui.input(|input| input.modifiers.command);
+            if new_window {
+                actions.push(Action::OpenDatabaseInNewWindow {
+                    tab,
+                    database: database.clone(),
+                });
+                ui.close();
+            } else if row.clicked() && *database != info.database {
                 actions.push(Action::SwitchDatabase {
                     tab,
                     database: database.clone(),
                 });
             }
+            // The keyboard's row, or else the pointer's.
+            if row.has_focus() || (lit.is_none() && row.hovered()) {
+                lit = Some(database);
+                lit_row = Some(row.id);
+            }
+        }
+        if lit != was_lit.as_ref() {
+            let lit = lit.cloned();
+            ui.ctx().data_mut(|data| match lit {
+                Some(lit) => {
+                    data.insert_temp(lit_id, lit);
+                }
+                None => data.remove::<String>(lit_id),
+            });
+            ui.ctx().request_repaint();
+        }
+        if let Some(database) = lit.filter(|_| asked) {
+            actions.push(Action::OpenDatabaseInNewWindow {
+                tab,
+                database: database.clone(),
+            });
+            ui.close();
+            picked = lit_row;
+        }
+        if picked.is_some() {
+            give_keyboard_back(ui.ctx(), by_key, response.id, picked);
         }
     });
 }
@@ -1368,7 +1492,7 @@ fn top_bar(
     // Quick open's Switch database asks for the chip's menu, as its key
     // does: the menu opens as the chip is drawn.
     if std::mem::take(&mut workspace.database_menu_asked) {
-        egui::Popup::open_id(ui.ctx(), database_menu_id(tab, false));
+        open_database_menu_by_key(ui.ctx(), database_menu_id(tab, false));
     }
     let super::Paint {
         locale,
@@ -1685,7 +1809,7 @@ fn mac_bar(
                     Rect::from_center_size(pos2(rect.right() - 16.0, center), vec2(12.0, 12.0)),
                 );
                 let id = database_menu_id(tab, false);
-                database_menu(&response, id, tab, info, (look, palette), actions);
+                database_menu(&response, id, tab, info, (look, palette, locale), actions);
             }
         } else if response.clicked() {
             actions.push(Action::ActivateConnTab(chip.tab));
@@ -1960,7 +2084,7 @@ fn terminal_bar(
                     Text::one(look, TextRole::OBody, "▾", palette.dim),
                 );
                 let id = database_menu_id(tab, false);
-                database_menu(&response, id, tab, info, (look, palette), actions);
+                database_menu(&response, id, tab, info, (look, palette, locale), actions);
             }
         } else if response.clicked() {
             actions.push(Action::ActivateConnTab(chip.tab));

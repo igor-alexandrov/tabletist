@@ -886,7 +886,7 @@ fn starts(
                 id,
                 skin.tab,
                 &shown.info,
-                (look, palette),
+                (look, palette, locale),
                 actions,
             );
         }
@@ -1003,7 +1003,7 @@ fn starts(
                     id,
                     skin.tab,
                     &shown.info,
-                    (look, palette),
+                    (look, palette, locale),
                     actions,
                 );
             }

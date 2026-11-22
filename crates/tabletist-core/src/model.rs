@@ -1354,6 +1354,12 @@ pub enum Action {
         tab: ConnTabId,
         database: String,
     },
+    /// Open another database of this tab's connection in a new window
+    /// beside it, leaving this tab as it is.
+    OpenDatabaseInNewWindow {
+        tab: ConnTabId,
+        database: String,
+    },
 }
 
 /// A connection tab that is (or was) connected.
