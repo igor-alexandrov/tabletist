@@ -3282,6 +3282,9 @@ impl App {
                 // session for.
                 self.reconnect(tab);
             }
+            Action::OpenDatabaseInNewWindow { tab, database } => {
+                self.open_database_beside(tab, database);
+            }
             Action::Backend(event) => self.apply_event(event),
             // Not over a question about deleting a connection: a form opened
             // there would take the form the question holds.
@@ -3869,8 +3872,11 @@ impl App {
         if !self.writes_session {
             return;
         }
+        // From the last window to the first: where two windows have one
+        // connection open on its own database, the first in the bar is the
+        // one kept, not a second opened on it (empty, or with less).
         let ids: Vec<ConnTabId> = self.tabs.iter().map(|tab| tab.id).collect();
-        for id in &ids {
+        for id in ids.iter().rev() {
             self.keep_tabs(*id);
         }
         let mut open = Vec::new();
@@ -3905,15 +3911,51 @@ impl App {
         });
     }
 
+    /// Opens `database` of `tab`'s connection in a new window right after
+    /// it, in front. It connects with the secrets `tab` holds, so nothing
+    /// is asked again, and `tab` stays as it was: its tables, its editors,
+    /// its edits and its session. It opens on nothing: what the
+    /// connection's window kept is its own database's.
+    fn open_database_beside(&mut self, tab: ConnTabId, database: String) {
+        let Some(workspace) = self.workspace(tab) else {
+            return;
+        };
+        // The server this window connected to, which its secrets are
+        // for, even where the saved connection has been edited since.
+        let typed = workspace.secrets.clone();
+        let spec = workspace.spec.clone();
+        let Some(mut saved) = self.connections.get(&workspace.conn_id).cloned() else {
+            return;
+        };
+        let Some(index) = self.tab_index(tab) else {
+            return;
+        };
+        saved.spec = spec;
+        saved.spec.database = database;
+        let window = self.picker_tab();
+        let id = window.id;
+        self.tabs.insert(index + 1, window);
+        self.active = index + 1;
+        self.open_workspace(id, saved, typed, false);
+        self.authenticate(id);
+    }
+
     /// Opens `saved` in `tab`; `typed` holds secrets typed in the dialog.
     fn connect_tab(&mut self, tab: ConnTabId, saved: SavedConnection, typed: Secrets) {
-        self.open_workspace(tab, saved, typed);
+        self.open_workspace(tab, saved, typed, true);
         self.authenticate(tab);
     }
 
     /// Puts a connecting workspace for `saved` in `tab`, without starting to
-    /// authenticate.
-    fn open_workspace(&mut self, tab: ConnTabId, saved: SavedConnection, typed: Secrets) {
+    /// authenticate. With `reopen` it puts back the tables the connection's
+    /// window kept, where the settings reopen them.
+    fn open_workspace(
+        &mut self,
+        tab: ConnTabId,
+        saved: SavedConnection,
+        typed: Secrets,
+        reopen: bool,
+    ) {
         let session = SessionId(self.next_id());
         let request = RequestId(self.next_id());
         // Where the option puts it; the grid's link switches it from there.
@@ -3932,8 +3974,9 @@ impl App {
         // A relaunch after an update puts back what the restart took away,
         // whatever the settings reopen.
         let restore = self.settings.restore_tabs || self.relaunch.is_some();
-        let tables = kept
-            .filter(|kept| restore && kept.database == crate::session::database_of(&saved.spec));
+        let tables = kept.filter(|kept| {
+            reopen && restore && kept.database == crate::session::database_of(&saved.spec)
+        });
         let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) else {
             return;
         };
@@ -6430,7 +6473,7 @@ impl App {
             if let (Some(kind), Some(secret)) = (SecretKind::for_ssh(&saved.spec), &typed_ssh) {
                 *kind.slot(&mut secrets) = Some(secret.clone());
             }
-            self.open_workspace(tab, saved, secrets);
+            self.open_workspace(tab, saved, secrets, true);
             // Ask for a secret whose saved copy was for the old server,
             // rather than trusting the keyring to have dropped it.
             if let Some(workspace) = self.workspace_mut(tab) {

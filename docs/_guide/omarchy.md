@@ -37,7 +37,7 @@ second Esc gives the keyboard back.
 | Ctrl+Shift+1 to 9, Ctrl+Tab, Ctrl+Shift+Tab | Switch connection |
 | Ctrl+Shift+W | Close the connection |
 | Ctrl+T | New SQL editor |
-| Ctrl+Shift+D | Switch database, where the server has another |
+| Ctrl+Shift+D | Switch database, where the server has another. In its menu Ctrl+Enter opens the database in a new window instead |
 | Alt+1 to 9 | Go to that tab |
 | Ctrl+Shift+[ and ] | Previous and next tab |
 | Ctrl+W | Close the tab. While you type in a field it deletes a word instead; in the SQL editor's normal mode it does neither |

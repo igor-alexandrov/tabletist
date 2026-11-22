@@ -74,6 +74,13 @@ In the picker:
 | Mod+D | Duplicate |
 | Mod+Backspace | Delete, once you say so. Esc keeps the connection |
 
+In the menu of the server's databases:
+
+| Keys | Do |
+| --- | --- |
+| Arrows, then Enter | Switch this window to the database |
+| Mod+Enter | Open the database in a new window |
+
 In the connection dialog:
 
 | Keys | Do |

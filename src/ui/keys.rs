@@ -718,6 +718,13 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     let mut menu_asked = false;
     // The DDL view's text was asked to be copied, by its chord.
     let mut copy_ddl = None;
+    // The open database menu's key, for the menu: read first, it is no SQL
+    // editor's Run, nor any other chord it shares.
+    let database_menu = [false, true]
+        .map(|start| crate::ui::workspace::database_menu_id(active, start))
+        .into_iter()
+        .find(|id| egui::Popup::is_id_open(ctx, *id));
+    let mut new_window = false;
     ctx.input_mut(|input| {
         // The keymap says which key: each line asks whether its command's
         // chord went down, in the scope it is read in. The guards say when
@@ -726,6 +733,8 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         let on = |input: &mut egui::InputState, command: Command, scope: Scope| {
             asked(input, keymap, layout, command, scope, normal)
         };
+        new_window = database_menu.is_some()
+            && on(input, Command::OpenDatabaseInNewWindow, Scope::Prompt).fresh;
         // The completion list's keys come first: the editor never sees
         // them, nor do the chords below.
         if let Some(editor) = in_editor {
@@ -1258,7 +1267,10 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     // database has none, and the key does nothing.
     if menu_asked {
         let id = crate::ui::workspace::database_menu_id(active, false);
-        egui::Popup::open_id(ctx, id);
+        crate::ui::workspace::open_database_menu_by_key(ctx, id);
+    }
+    if let Some(id) = database_menu.filter(|_| new_window) {
+        crate::ui::workspace::ask_new_window(ctx, id);
     }
     // The tab at the place its digit named.
     if let Some(index) = tab_asked
@@ -3307,7 +3319,7 @@ fn letters(
             }
             (Some(Command::SwitchDatabase), _) if start && switchable(workspace) => {
                 let id = crate::ui::workspace::database_menu_id(tab, true);
-                egui::Popup::open_id(ctx, id);
+                crate::ui::workspace::open_database_menu_by_key(ctx, id);
             }
             (Some(Command::StartSearchFocus), _) if start => {
                 actions.push(Action::StartSearchFocus(tab));
