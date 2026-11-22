@@ -3912,11 +3912,14 @@ impl App {
             let (entry, window) = match &tab.content {
                 ConnTabContent::Picker(_) => (None, None),
                 ConnTabContent::Workspace(workspace) => {
-                    if self.connections.get(&workspace.conn_id).is_none() {
+                    let Some(saved) = self.connections.get(&workspace.conn_id) else {
                         continue;
-                    }
-                    let kept = crate::session::Kept::of(workspace);
-                    (Some(workspace.conn_id.clone()), Some(kept))
+                    };
+                    // Its database only while it is on the connection's
+                    // server: not the old server's on an edited one.
+                    let kept = crate::session::on_server(&workspace.spec, &saved.spec)
+                        .then(|| crate::session::Kept::of(workspace));
+                    (Some(workspace.conn_id.clone()), kept)
                 }
             };
             if index == self.active {

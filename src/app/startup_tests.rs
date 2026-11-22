@@ -1416,6 +1416,30 @@ fn each_window_of_a_connection_reopens_on_its_own_database_with_its_tables() {
 }
 
 #[test]
+fn a_window_whose_connection_was_edited_since_reopens_as_the_connection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = quit_with_two_windows(&mut app, "bookshop_test");
+    // Edited onto another server while its windows stay on the old one,
+    // then quit again.
+    let mut saved = app.connections.get(&conn).unwrap().clone();
+    saved.spec.host = "db.bookshop.example".into();
+    app.connections.upsert(saved);
+    app.save_session();
+    write_files(&app);
+    save_written(&app, |_| {});
+    let app = start(dir.path());
+    assert_eq!(windows(&app), vec![Some(conn.clone()), Some(conn)]);
+    // Not the old server's database on the new one: each on the
+    // connection's own, as before the windows were kept.
+    for index in [0, 1] {
+        let spec = &app.workspace(app.tabs[index].id).unwrap().spec;
+        assert_eq!(spec.host, "db.bookshop.example");
+        assert_eq!(spec.database, "bookshop_development");
+    }
+}
+
+#[test]
 fn two_windows_on_one_database_each_get_their_own_tables_back() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app_in(dir.path());

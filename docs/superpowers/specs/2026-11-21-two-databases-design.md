@@ -127,6 +127,10 @@ code.
   the `windows` it does not know (`Session::rest`) with its own `open`, so
   `windows` is read only where each entry's connection is `open`'s at the
   same place; otherwise it is dropped and the file reads as today.
+- A tab whose connection was edited since it connected (another host,
+  port, user or anything but the database) keeps nothing of its own: it
+  reopens as the connection does, never the old server's database on the
+  new one.
 - `connections` (per connection) stays: it is what the connection's own
   database had when its last tab on it closed, for opening it later from
   the picker.

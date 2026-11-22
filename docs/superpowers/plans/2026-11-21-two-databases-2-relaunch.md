@@ -35,7 +35,7 @@ No board changes: nothing on screen is new. The canvas's boards (`MacTwoDatabase
 
 | File | Task | What changes |
 |---|---|---|
-| `crates/tabletist-core/src/session.rs` | 1, 2 | `Session::windows`, the file's `windows`, `windows_of`, `Session::windows_written` (1); `put_on` (2) |
+| `crates/tabletist-core/src/session.rs` | 1, 2 | `Session::windows`, the file's `windows`, `windows_of`, `Session::windows_written` (1); `put_on`, `on_server` (2) |
 | `src/app.rs` | 2 | `enum Reopen`; `open_workspace` takes it; `open_last_session` and `save_session` |
 | `src/app/startup_tests.rs` | 2 | The launch's tests |
 | `docs/_reference/settings-and-files.md`, `docs/_reference/connections.md` | 3 | The docs |
@@ -391,7 +391,7 @@ git commit -m "Keep each window's database and tables in session.json beside it 
 **Files:**
 - Modify: `crates/tabletist-core/src/session.rs`, `src/app.rs`, `src/app/startup_tests.rs`
 
-What it holds: `save_session` writes each window's `Kept::of` beside it in `open`. The picker has none, and a session of the picker alone holds none, as the file reads it back. `connections` is kept as before, the first window in the bar on the connection's own database being the one kept there.
+What it holds: `save_session` writes each window's `Kept::of` beside it in `open`, while the window is on the server its connection names (`session::on_server`: its spec the saved one's but for the database). A window whose connection was edited since it connected (another host, port, user, key...) keeps nothing of its own and reopens as the connection does, never the old server's database on the new one. The picker has none, and a session of the picker alone holds none, as the file reads it back. `connections` is kept as before, the first window in the bar on the connection's own database being the one kept there.
 
 `open_workspace`'s run 1 `reopen: bool` becomes `Reopen`:
 - `Reopen::Nothing`: a new window beside another, opening nothing.
@@ -406,7 +406,7 @@ What it holds: `save_session` writes each window's `Kept::of` beside it in `open
 diff --git a/src/app/startup_tests.rs b/src/app/startup_tests.rs
 --- a/src/app/startup_tests.rs
 +++ b/src/app/startup_tests.rs
-@@ -1339,3 +1339,149 @@
+@@ -1339,3 +1339,173 @@
          Some(("SELECT 2", RunMode::ReadWrite))
      );
  }
@@ -487,6 +487,30 @@ diff --git a/src/app/startup_tests.rs b/src/app/startup_tests.rs
 +}
 +
 +#[test]
++fn a_window_whose_connection_was_edited_since_reopens_as_the_connection() {
++    let dir = tempfile::tempdir().unwrap();
++    let mut app = app_in(dir.path());
++    let conn = quit_with_two_windows(&mut app, "bookshop_test");
++    // Edited onto another server while its windows stay on the old one,
++    // then quit again.
++    let mut saved = app.connections.get(&conn).unwrap().clone();
++    saved.spec.host = "db.bookshop.example".into();
++    app.connections.upsert(saved);
++    app.save_session();
++    write_files(&app);
++    save_written(&app, |_| {});
++    let app = start(dir.path());
++    assert_eq!(windows(&app), vec![Some(conn.clone()), Some(conn)]);
++    // Not the old server's database on the new one: each on the
++    // connection's own, as before the windows were kept.
++    for index in [0, 1] {
++        let spec = &app.workspace(app.tabs[index].id).unwrap().spec;
++        assert_eq!(spec.host, "db.bookshop.example");
++        assert_eq!(spec.database, "bookshop_development");
++    }
++}
++
++#[test]
 +fn two_windows_on_one_database_each_get_their_own_tables_back() {
 +    let dir = tempfile::tempdir().unwrap();
 +    let mut app = app_in(dir.path());
@@ -562,14 +586,14 @@ diff --git a/src/app/startup_tests.rs b/src/app/startup_tests.rs
 
 Run: `~/.cargo/bin/cargo test --locked -p tabletist --lib startup_tests`
 
-Expected: the old file's test passes, as a launch reads it today; the other four fail, nothing being written of the windows or reopened from them:
+Expected: the old file's test and the edited connection's pass, as a launch reads them today; the other four fail, nothing being written of the windows or reopened from them:
 
 ```
 test app::startup_tests::each_window_of_a_connection_reopens_on_its_own_database_with_its_tables ... FAILED
 test app::startup_tests::the_file_holds_each_window_beside_it_and_the_connections_own_tables ... FAILED
-test app::startup_tests::with_restore_off_each_window_reopens_on_its_own_database_with_no_table ... FAILED
 test app::startup_tests::two_windows_on_one_database_each_get_their_own_tables_back ... FAILED
-test result: FAILED. 40 passed; 4 failed; 0 ignored; 0 measured; 3041 filtered out; finished in …
+test app::startup_tests::with_restore_off_each_window_reopens_on_its_own_database_with_no_table ... FAILED
+test result: FAILED. 41 passed; 4 failed; 0 ignored; 0 measured; 3041 filtered out; finished in …
 ```
 
 - [ ] **Step 3: Write the code**
@@ -578,11 +602,21 @@ test result: FAILED. 40 passed; 4 failed; 0 ignored; 0 measured; 3041 filtered o
 diff --git a/crates/tabletist-core/src/session.rs b/crates/tabletist-core/src/session.rs
 --- a/crates/tabletist-core/src/session.rs
 +++ b/crates/tabletist-core/src/session.rs
-@@ -158,6 +158,22 @@
+@@ -158,6 +158,32 @@
          tabletist_db::Driver::Postgres
          | tabletist_db::Driver::MySql
          | tabletist_db::Driver::BigQuery => spec.database.clone(),
 +    }
++}
++
++/// Whether `window`, the spec a window connected with, is on the server
++/// `saved` names now: the same but for its database. A connection edited
++/// since is not, and its window is kept as nothing of its own, for the
++/// edited connection to open as it opens.
++pub fn on_server(window: &tabletist_db::ConnectSpec, saved: &tabletist_db::ConnectSpec) -> bool {
++    let mut window = window.clone();
++    window.database.clone_from(&saved.database);
++    window == *saved
 +}
 +
 +/// Puts `spec` on `database`, a name [`database_of`] gave: a server's
@@ -674,7 +708,7 @@ diff --git a/src/app.rs b/src/app.rs
      /// that is not saved (deleted while its window is open) is left out.
      /// The window calls it as the app quits.
      pub fn save_session(&mut self) {
-@@ -3880,23 +3900,32 @@
+@@ -3880,23 +3900,35 @@
              self.keep_tabs(*id);
          }
          let mut open = Vec::new();
@@ -686,12 +720,17 @@ diff --git a/src/app.rs b/src/app.rs
 +            let (entry, window) = match &tab.content {
 +                ConnTabContent::Picker(_) => (None, None),
                  ConnTabContent::Workspace(workspace) => {
-                     if self.connections.get(&workspace.conn_id).is_none() {
+-                    if self.connections.get(&workspace.conn_id).is_none() {
++                    let Some(saved) = self.connections.get(&workspace.conn_id) else {
                          continue;
-                     }
+-                    }
 -                    Some(workspace.conn_id.clone())
-+                    let kept = crate::session::Kept::of(workspace);
-+                    (Some(workspace.conn_id.clone()), Some(kept))
++                    };
++                    // Its database only while it is on the connection's
++                    // server: not the old server's on an edited one.
++                    let kept = crate::session::on_server(&workspace.spec, &saved.spec)
++                        .then(|| crate::session::Kept::of(workspace));
++                    (Some(workspace.conn_id.clone()), kept)
                  }
              };
              if index == self.active {
@@ -710,7 +749,7 @@ diff --git a/src/app.rs b/src/app.rs
          self.session.active = active;
          // The connections were read, or this would not write: one that is
          // not among them, deleted from connections.toml by hand, goes.
-@@ -3936,25 +3965,25 @@
+@@ -3936,25 +3968,25 @@
          let id = window.id;
          self.tabs.insert(index + 1, window);
          self.active = index + 1;
@@ -742,7 +781,7 @@ diff --git a/src/app.rs b/src/app.rs
      ) {
          let session = SessionId(self.next_id());
          let request = RequestId(self.next_id());
-@@ -3966,16 +3995,27 @@
+@@ -3966,16 +3998,27 @@
          // that what the window just had is what reopens, if this connection
          // was it.
          let replaced = self.keep_tabs(tab);
@@ -775,7 +814,7 @@ diff --git a/src/app.rs b/src/app.rs
          });
          let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) else {
              return;
-@@ -6473,7 +6513,7 @@
+@@ -6473,7 +6516,7 @@
              if let (Some(kind), Some(secret)) = (SecretKind::for_ssh(&saved.spec), &typed_ssh) {
                  *kind.slot(&mut secrets) = Some(secret.clone());
              }
@@ -790,7 +829,7 @@ diff --git a/src/app.rs b/src/app.rs
 
 Run: `~/.cargo/bin/cargo test --locked -p tabletist --lib startup_tests`
 
-Expected: every `startup_tests` test passes, the five new ones among them. Then every check under Checks passes; the app's library ends `test result: ok. 3069 passed; 0 failed; 16 ignored; 0 measured; 0 filtered out; finished in …`.
+Expected: every `startup_tests` test passes, the six new ones among them. Then every check under Checks passes; the app's library ends `test result: ok. 3070 passed; 0 failed; 16 ignored; 0 measured; 0 filtered out; finished in …`.
 
 - [ ] **Step 5: Try it**
 

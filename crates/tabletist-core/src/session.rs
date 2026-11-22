@@ -161,6 +161,16 @@ pub fn database_of(spec: &tabletist_db::ConnectSpec) -> String {
     }
 }
 
+/// Whether `window`, the spec a window connected with, is on the server
+/// `saved` names now: the same but for its database. A connection edited
+/// since is not, and its window is kept as nothing of its own, for the
+/// edited connection to open as it opens.
+pub fn on_server(window: &tabletist_db::ConnectSpec, saved: &tabletist_db::ConnectSpec) -> bool {
+    let mut window = window.clone();
+    window.database.clone_from(&saved.database);
+    window == *saved
+}
+
 /// Puts `spec` on `database`, a name [`database_of`] gave: a server's
 /// database. A SQLite file or a Files connection opens what it names, and
 /// a window kept with no database stays on its connection's.
