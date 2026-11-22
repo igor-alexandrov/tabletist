@@ -35,7 +35,7 @@ No board changes: nothing on screen is new. The canvas's boards (`MacTwoDatabase
 
 | File | Task | What changes |
 |---|---|---|
-| `crates/tabletist-core/src/session.rs` | 1, 2 | `Session::windows`, the file's `windows`, `windows_of`, `Session::windows_written` (1); `put_on`, `on_server` (2) |
+| `crates/tabletist-core/src/session.rs` | 1, 2 | `Session::windows`, the file's `windows`, `windows_of`, `Session::windows_written` (1); `Window`, `server_of`, `windows_with`, `put_on` (2) |
 | `src/app.rs` | 2 | `enum Reopen`; `open_workspace` takes it; `open_last_session` and `save_session` |
 | `src/app/startup_tests.rs` | 2 | The launch's tests |
 | `docs/_reference/settings-and-files.md`, `docs/_reference/connections.md` | 3 | The docs |
@@ -391,7 +391,7 @@ git commit -m "Keep each window's database and tables in session.json beside it 
 **Files:**
 - Modify: `crates/tabletist-core/src/session.rs`, `src/app.rs`, `src/app/startup_tests.rs`
 
-What it holds: `save_session` writes each window's `Kept::of` beside it in `open`, while the window is on the server its connection names (`session::on_server`: its spec the saved one's but for the database). A window whose connection was edited since it connected (another host, port, user, key...) keeps nothing of its own and reopens as the connection does, never the old server's database on the new one. The picker has none, and a session of the picker alone holds none, as the file reads it back. `connections` is kept as before, the first window in the bar on the connection's own database being the one kept there.
+What it holds: `save_session` writes each window's `Kept::of` beside it in `open`, as a `session::Window` with the server it is on: `session::server_of`, a hash of its spec but for the database, so the file holds nothing of the server itself. At launch a window reopens as it was only where its connection still names that server. One edited since (another host, port, user, key...), while it was open or in `connections.toml` after the quit, reopens as the connection does, never the old server's database on the new one. The file also says which `connections` its `windows` were written beside (`windows_with`, their hash): an older version keeps both among the keys it does not know and writes them back as they were with `connections` of its own, so where they no longer match, none of the windows is read. The picker has none, and a session of the picker alone holds none, as the file reads it back. `connections` is kept as before, the first window in the bar on the connection's own database being the one kept there.
 
 `open_workspace`'s run 1 `reopen: bool` becomes `Reopen`:
 - `Reopen::Nothing`: a new window beside another, opening nothing.
@@ -598,25 +598,68 @@ test result: FAILED. 41 passed; 4 failed; 0 ignored; 0 measured; 3041 filtered o
 
 - [ ] **Step 3: Write the code**
 
+With it come the tests of the server and of `windows_with`, added in the PR's review: a connection edited after the quit (`a_window_whose_connection_was_edited_after_the_quit_reopens_as_the_connection`) and an older version's write-back (`windows_written_back_beside_other_connections_are_left_out`), with the session tests' files given a server and a stamp.
+
 ```diff
 diff --git a/crates/tabletist-core/src/session.rs b/crates/tabletist-core/src/session.rs
 --- a/crates/tabletist-core/src/session.rs
 +++ b/crates/tabletist-core/src/session.rs
-@@ -158,6 +158,32 @@
-         tabletist_db::Driver::Postgres
-         | tabletist_db::Driver::MySql
-         | tabletist_db::Driver::BigQuery => spec.database.clone(),
-+    }
+@@ -28,7 +28,7 @@
+     /// tables and its row panel. `None` for the picker and for a window
+     /// the file had nothing of; empty where it had nothing of any (a file
+     /// from before, or one whose `windows` are not its `open`'s).
+-    pub windows: Vec<Option<Kept>>,
++    pub windows: Vec<Option<Window>>,
+     /// Each saved connection's table tabs as its window last had them, by
+     /// its id. Changed through [`Session::keep`] and [`Session::forget`].
+     pub connections: BTreeMap<String, Kept>,
+@@ -44,6 +44,15 @@
+     /// The file's keys this version does not know, written back as they
+     /// were.
+     rest: BTreeMap<String, serde_json::Value>,
 +}
 +
-+/// Whether `window`, the spec a window connected with, is on the server
-+/// `saved` names now: the same but for its database. A connection edited
-+/// since is not, and its window is kept as nothing of its own, for the
-+/// edited connection to open as it opens.
-+pub fn on_server(window: &tabletist_db::ConnectSpec, saved: &tabletist_db::ConnectSpec) -> bool {
-+    let mut window = window.clone();
-+    window.database.clone_from(&saved.database);
-+    window == *saved
++/// A window of `open` as it was at quit: what it had, and the server it
++/// was on ([`server_of`]), for the launch to tell whether its connection
++/// still names that server.
++#[derive(Debug, Clone, PartialEq)]
++pub struct Window {
++    pub kept: Kept,
++    pub server: String,
+ }
+ 
+ /// One connection's window as it was when it closed: its tables, and
+@@ -161,6 +170,51 @@
+     }
+ }
+ 
++/// The server `spec` names, all of it but its database, as a hash: what a
++/// window keeps of the server it was on, so that a connection edited since
++/// (another host, port, user, key...) is told from it without the file
++/// holding any of it. Two specs give one only where they differ in their
++/// database alone.
++pub fn server_of(spec: &tabletist_db::ConnectSpec) -> String {
++    let mut spec = spec.clone();
++    spec.database.clear();
++    hash_of(&serde_json::to_string(&spec).unwrap_or_default())
++}
++
++/// `text`'s SHA-256, in hex.
++fn hash_of(text: &str) -> String {
++    use sha2::Digest;
++    sha2::Sha256::digest(text.as_bytes())
++        .iter()
++        .map(|byte| format!("{byte:02x}"))
++        .collect()
++}
++
++/// What `windows` were written beside: the hash of the file's
++/// `connections` as written. An older version keeps `windows` and this
++/// among the keys it does not know and writes them back as they were,
++/// with `connections` of its own: where they are no longer the ones the
++/// `windows` were written with, the windows are not read.
++fn stamp_of(connections: &BTreeMap<String, serde_json::Value>) -> String {
++    hash_of(&serde_json::to_string(connections).unwrap_or_default())
 +}
 +
 +/// Puts `spec` on `database`, a name [`database_of`] gave: a server's
@@ -632,9 +675,227 @@ diff --git a/crates/tabletist-core/src/session.rs b/crates/tabletist-core/src/se
 +            }
 +        }
 +        tabletist_db::Driver::Sqlite | tabletist_db::Driver::Files => {}
++    }
++}
++
+ /// The file as it is written and read, each part on its own: a value of
+ /// the wrong kind costs itself, not the file.
+ #[derive(Default, Serialize, Deserialize)]
+@@ -174,6 +228,9 @@
+     /// back with an `open` of its own.
+     #[serde(skip_serializing_if = "serde_json::Value::is_null")]
+     windows: serde_json::Value,
++    /// The `connections` the `windows` were written beside ([`stamp_of`]).
++    #[serde(skip_serializing_if = "serde_json::Value::is_null")]
++    windows_with: serde_json::Value,
+     connections: BTreeMap<String, serde_json::Value>,
+     #[serde(flatten)]
+     rest: BTreeMap<String, serde_json::Value>,
+@@ -185,6 +242,12 @@
+     pub fn load(path: &Path) -> Self {
+         let file: File = crate::util::load_json(path);
+         let mut session = Self::default();
++        // Only beside the `connections` they were written with: not where
++        // an older version wrote them back with its own.
++        let places = match file.windows_with.as_str() == Some(&stamp_of(&file.connections)) {
++            true => windows_of(&file.open, &file.windows),
++            false => Vec::new(),
++        };
+         for (id, kept) in file.connections {
+             match serde_json::from_value(kept.clone()) {
+                 Ok(kept) => drop(session.connections.insert(id, kept)),
+@@ -195,7 +258,6 @@
+                 }
+             }
+         }
+-        let places = windows_of(&file.open, &file.windows);
+         // A window that is neither an id nor the picker is left out.
+         let mut active = None;
+         let wanted = file.active.as_u64();
+@@ -286,6 +348,10 @@
+                 .collect(),
+             active: self.active.into(),
+             windows: self.windows_written(),
++            windows_with: match self.windows.iter().all(Option::is_none) {
++                true => serde_json::Value::Null,
++                false => stamp_of(&connections).into(),
++            },
+             connections,
+             rest: self.rest.clone(),
+         };
+@@ -293,19 +359,21 @@
      }
- }
  
+     /// `windows` as the file has them, each beside its window in `open`
+-    /// with its connection's id: none where nothing is held of any.
++    /// with its connection's id and its server: none where nothing is
++    /// held of any.
+     fn windows_written(&self) -> serde_json::Value {
+         if self.windows.iter().all(Option::is_none) {
+             return serde_json::Value::Null;
+         }
+         let written = self.open.iter().enumerate().map(|(at, id)| {
+-            let kept = self.windows.get(at).and_then(Option::as_ref);
+-            let (Some(id), Some(kept)) = (id, kept) else {
++            let window = self.windows.get(at).and_then(Option::as_ref);
++            let (Some(id), Some(Window { kept, server })) = (id, window) else {
+                 return serde_json::Value::Null;
+             };
+             match serde_json::to_value(kept) {
+                 Ok(serde_json::Value::Object(mut window)) => {
+                     window.insert("connection".into(), id.0.clone().into());
++                    window.insert("server".into(), server.clone().into());
+                     serde_json::Value::Object(window)
+                 }
+                 _ => serde_json::Value::Null,
+@@ -318,8 +386,8 @@
+ /// What `windows` has of each of `open`, at its place. Nothing at all
+ /// where they are not as many, or where one is not of the window at its
+ /// place: an older version wrote them back beside an `open` of its own.
+-/// A window that does not read costs only itself.
+-fn windows_of(open: &[serde_json::Value], windows: &serde_json::Value) -> Vec<Option<Kept>> {
++/// A window that does not read, or has no server, costs only itself.
++fn windows_of(open: &[serde_json::Value], windows: &serde_json::Value) -> Vec<Option<Window>> {
+     let Some(windows) = windows
+         .as_array()
+         .filter(|windows| windows.len() == open.len())
+@@ -335,8 +403,12 @@
+             {
+                 let mut window = window.clone();
+                 window.remove("connection");
++                let server = window.remove("server");
+                 match serde_json::from_value(serde_json::Value::Object(window)) {
+-                    Ok(kept) => Some(kept),
++                    Ok(kept) => match server {
++                        Some(serde_json::Value::String(server)) => Some(Window { kept, server }),
++                        _ => None,
++                    },
+                     Err(error) => {
+                         // Not the error's text: it can quote a stored filter value.
+                         log::warn!("a window of {id} was not read: {:?}", error.classify());
+@@ -591,13 +663,20 @@
+ 
+     /// Bookshop's window on `database`, with `tabs` and the row panel
+     /// hidden.
+-    fn window(database: &str, tabs: Vec<KeptTab>) -> Kept {
+-        Kept {
++    fn window(database: &str, tabs: Vec<KeptTab>) -> Window {
++        let kept = Kept {
+             database: database.into(),
+             active: (!tabs.is_empty()).then_some(0),
+             tabs,
+             row_panel: false,
+             rest: BTreeMap::new(),
++        };
++        let spec = tabletist_db::ConnectSpec::from_url("postgres://demo@localhost:5432/bookshop")
++            .unwrap()
++            .0;
++        Window {
++            kept,
++            server: server_of(&spec),
+         }
+     }
+ 
+@@ -660,8 +739,9 @@
+     fn windows_that_are_not_the_open_ones_are_left_out() {
+         let dir = tempfile::tempdir().unwrap();
+         let path = dir.path().join("session.json");
+-        let window =
+-            serde_json::json!({"connection": "a", "database": "bookshop_test", "tabs": []});
++        let window = serde_json::json!(
++            {"connection": "a", "server": "s", "database": "bookshop_test", "tabs": []}
++        );
+         for (open, windows) in [
+             // An older version wrote back the windows with its own open.
+             (
+@@ -681,7 +761,12 @@
+             // Not a list.
+             (serde_json::json!(["a"]), serde_json::json!({"width": 1280})),
+         ] {
+-            let text = serde_json::json!({"version": 1, "open": open, "windows": windows});
++            let text = serde_json::json!({
++                "version": 1,
++                "open": open,
++                "windows": windows,
++                "windows_with": stamp_of(&BTreeMap::new()),
++            });
+             std::fs::write(&path, text.to_string()).unwrap();
+             let session = Session::load(&path);
+             assert!(session.windows.is_empty(), "{text}");
+@@ -695,25 +780,63 @@
+         let path = dir.path().join("session.json");
+         let text = serde_json::json!({
+             "version": 1,
+-            "open": [7, "a", "b", "c"],
++            "open": [7, "a", "b", "c", "d"],
+             "windows": [
+                 null,
+-                {"connection": "a", "tabs": "not a list"},
+-                {"connection": "b", "database": "bookshop_test", "tabs": []},
++                {"connection": "a", "server": "s", "tabs": "not a list"},
++                {"connection": "b", "server": "s", "database": "bookshop_test", "tabs": []},
+                 null,
++                {"connection": "d", "database": "bookshop_test", "tabs": []},
+             ],
++            "windows_with": stamp_of(&BTreeMap::new()),
+         });
+         std::fs::write(&path, text.to_string()).unwrap();
+         let session = Session::load(&path);
+-        // Each beside its window, the one of the wrong kind left out.
+-        assert_eq!(session.open.len(), 3);
+-        assert_eq!(session.windows.len(), 3);
++        // Each beside its window, the one of the wrong kind left out, and
++        // the one with no server not read.
++        assert_eq!(session.open.len(), 4);
++        assert_eq!(session.windows.len(), 4);
+         assert_eq!(session.windows[0], None);
+-        assert_eq!(
+-            session.windows[1].as_ref().unwrap().database,
+-            "bookshop_test"
+-        );
++        let read = session.windows[1].as_ref().unwrap();
++        assert_eq!(read.kept.database, "bookshop_test");
++        assert_eq!(read.server, "s");
+         assert_eq!(session.windows[2], None);
++        assert_eq!(session.windows[3], None);
++    }
++
++    #[test]
++    fn windows_written_back_beside_other_connections_are_left_out() {
++        let dir = tempfile::tempdir().unwrap();
++        let path = dir.path().join("session.json");
++        let bookshop = ConnectionId("a".into());
++        let mut session = Session {
++            open: vec![Some(bookshop.clone())],
++            windows: vec![Some(window("bookshop_test", vec![books()]))],
++            ..Session::default()
++        };
++        session.keep(&bookshop, Kept::default());
++        session.save(&path).unwrap();
++        assert_eq!(Session::load(&path).windows, session.windows);
++        // An older version, which does not know the windows, wrote them
++        // back as they were with its own tables of the connection.
++        let text = std::fs::read_to_string(&path).unwrap();
++        let mut json: serde_json::Value = serde_json::from_str(&text).unwrap();
++        json["connections"]["a"] = serde_json::json!({"database": "bookshop", "tabs": []});
++        std::fs::write(&path, json.to_string()).unwrap();
++        let read = Session::load(&path);
++        assert!(read.windows.is_empty());
++        assert_eq!(read.open, session.open);
++        assert_eq!(read.connections["a"].database, "bookshop");
++        // And one with nothing to say what they were written beside.
++        json.as_object_mut().unwrap().remove("windows_with");
++        json["connections"] = text_connections(&text);
++        std::fs::write(&path, json.to_string()).unwrap();
++        assert!(Session::load(&path).windows.is_empty());
++    }
++
++    /// The `connections` of the file `text`.
++    fn text_connections(text: &str) -> serde_json::Value {
++        serde_json::from_str::<serde_json::Value>(text).unwrap()["connections"].clone()
+     }
+ 
+     #[test]
 diff --git a/src/app.rs b/src/app.rs
 --- a/src/app.rs
 +++ b/src/app.rs
@@ -669,18 +930,27 @@ diff --git a/src/app.rs b/src/app.rs
      /// question it asks at once is asked over it, and the others in their
      /// order after it. A window behind that asks before the front window
      /// does (the front one is still reading its password from the
-@@ -3765,7 +3778,9 @@
+@@ -3765,7 +3778,18 @@
              {
                  self.relaunch_windows.insert(tab.id, window);
              }
 -            windows.push((tab.id, saved));
-+            // What the window had at quit: its database and its tables.
++            // What the window had at quit: its database and its tables,
++            // where its connection still names the server it was on. One
++            // edited since, here or in the file, reopens as the connection
++            // does: never the old server's database on the new one.
 +            let kept = self.session.windows.get(index).cloned().flatten();
++            let kept = kept.filter(|window| {
++                saved
++                    .as_ref()
++                    .is_some_and(|saved| window.server == crate::session::server_of(&saved.spec))
++            });
++            let kept = kept.map(|window| window.kept);
 +            windows.push((tab.id, saved, kept));
              self.tabs.push(tab);
              if index <= self.session.active {
                  active = Some(self.tabs.len() - 1 - base);
-@@ -3777,9 +3792,13 @@
+@@ -3777,9 +3801,13 @@
              let front = windows.remove(active);
              windows.insert(0, front);
          }
@@ -696,7 +966,7 @@ diff --git a/src/app.rs b/src/app.rs
              }
          }
      }
-@@ -3864,8 +3883,9 @@
+@@ -3864,8 +3892,9 @@
      }
  
      /// Writes session.json on the backend: the connection tabs open now,
@@ -708,7 +978,7 @@ diff --git a/src/app.rs b/src/app.rs
      /// that is not saved (deleted while its window is open) is left out.
      /// The window calls it as the app quits.
      pub fn save_session(&mut self) {
-@@ -3880,23 +3900,35 @@
+@@ -3880,23 +3909,37 @@
              self.keep_tabs(*id);
          }
          let mut open = Vec::new();
@@ -720,17 +990,17 @@ diff --git a/src/app.rs b/src/app.rs
 +            let (entry, window) = match &tab.content {
 +                ConnTabContent::Picker(_) => (None, None),
                  ConnTabContent::Workspace(workspace) => {
--                    if self.connections.get(&workspace.conn_id).is_none() {
-+                    let Some(saved) = self.connections.get(&workspace.conn_id) else {
+                     if self.connections.get(&workspace.conn_id).is_none() {
                          continue;
--                    }
+                     }
 -                    Some(workspace.conn_id.clone())
++                    // With the server it is on, for the launch to tell a
++                    // connection edited since.
++                    let window = crate::session::Window {
++                        kept: crate::session::Kept::of(workspace),
++                        server: crate::session::server_of(&workspace.spec),
 +                    };
-+                    // Its database only while it is on the connection's
-+                    // server: not the old server's on an edited one.
-+                    let kept = crate::session::on_server(&workspace.spec, &saved.spec)
-+                        .then(|| crate::session::Kept::of(workspace));
-+                    (Some(workspace.conn_id.clone()), kept)
++                    (Some(workspace.conn_id.clone()), Some(window))
                  }
              };
              if index == self.active {
@@ -749,7 +1019,7 @@ diff --git a/src/app.rs b/src/app.rs
          self.session.active = active;
          // The connections were read, or this would not write: one that is
          // not among them, deleted from connections.toml by hand, goes.
-@@ -3936,25 +3968,25 @@
+@@ -3936,25 +3979,25 @@
          let id = window.id;
          self.tabs.insert(index + 1, window);
          self.active = index + 1;
@@ -781,7 +1051,7 @@ diff --git a/src/app.rs b/src/app.rs
      ) {
          let session = SessionId(self.next_id());
          let request = RequestId(self.next_id());
-@@ -3966,16 +3998,27 @@
+@@ -3966,16 +4009,27 @@
          // that what the window just had is what reopens, if this connection
          // was it.
          let replaced = self.keep_tabs(tab);
@@ -814,7 +1084,7 @@ diff --git a/src/app.rs b/src/app.rs
          });
          let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) else {
              return;
-@@ -6473,7 +6516,7 @@
+@@ -6473,7 +6527,7 @@
              if let (Some(kind), Some(secret)) = (SecretKind::for_ssh(&saved.spec), &typed_ssh) {
                  *kind.slot(&mut secrets) = Some(secret.clone());
              }
@@ -823,13 +1093,54 @@ diff --git a/src/app.rs b/src/app.rs
              // Ask for a secret whose saved copy was for the old server,
              // rather than trusting the keyring to have dropped it.
              if let Some(workspace) = self.workspace_mut(tab) {
+diff --git a/src/app/startup_tests.rs b/src/app/startup_tests.rs
+--- a/src/app/startup_tests.rs
++++ b/src/app/startup_tests.rs
+@@ -1440,6 +1440,28 @@
+ }
+ 
+ #[test]
++fn a_window_whose_connection_was_edited_after_the_quit_reopens_as_the_connection() {
++    let dir = tempfile::tempdir().unwrap();
++    let mut app = app_in(dir.path());
++    let conn = quit_with_two_windows(&mut app, "bookshop_test");
++    save_written(&app, |_| {});
++    // connections.toml edited after the quit, by hand or by another
++    // version: another server, and its own database on it.
++    let mut saved = app.connections.get(&conn).unwrap().clone();
++    saved.spec.host = "db.bookshop.example".into();
++    saved.spec.database = "bookshop_production".into();
++    app.connections.upsert(saved);
++    write_files(&app);
++    let app = start(dir.path());
++    assert_eq!(windows(&app), vec![Some(conn.clone()), Some(conn)]);
++    for index in [0, 1] {
++        let spec = &app.workspace(app.tabs[index].id).unwrap().spec;
++        assert_eq!(spec.host, "db.bookshop.example");
++        assert_eq!(spec.database, "bookshop_production");
++    }
++}
++
++#[test]
+ fn two_windows_on_one_database_each_get_their_own_tables_back() {
+     let dir = tempfile::tempdir().unwrap();
+     let mut app = app_in(dir.path());
+@@ -1493,7 +1515,7 @@
+         .windows
+         .iter()
+         .map(|window| {
+-            let window = window.as_ref().unwrap();
++            let window = &window.as_ref().unwrap().kept;
+             let names = window.tabs.iter().map(|tab| tab.name.clone()).collect();
+             (window.database.clone(), names)
+         })
 ```
 
 - [ ] **Step 4: Run the tests, then the checks**
 
 Run: `~/.cargo/bin/cargo test --locked -p tabletist --lib startup_tests`
 
-Expected: every `startup_tests` test passes, the six new ones among them. Then every check under Checks passes; the app's library ends `test result: ok. 3070 passed; 0 failed; 16 ignored; 0 measured; 0 filtered out; finished in …`.
+Expected: every `startup_tests` test passes, the seven new ones among them, and every `session::` test, the one new there among them. Then every check under Checks passes; the app's library ends `test result: ok. 3071 passed; 0 failed; 16 ignored; 0 measured; 0 filtered out; finished in …`.
 
 - [ ] **Step 5: Try it**
 

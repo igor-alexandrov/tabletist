@@ -3784,8 +3784,17 @@ impl App {
             {
                 self.relaunch_windows.insert(tab.id, window);
             }
-            // What the window had at quit: its database and its tables.
+            // What the window had at quit: its database and its tables,
+            // where its connection still names the server it was on. One
+            // edited since, here or in the file, reopens as the connection
+            // does: never the old server's database on the new one.
             let kept = self.session.windows.get(index).cloned().flatten();
+            let kept = kept.filter(|window| {
+                saved
+                    .as_ref()
+                    .is_some_and(|saved| window.server == crate::session::server_of(&saved.spec))
+            });
+            let kept = kept.map(|window| window.kept);
             windows.push((tab.id, saved, kept));
             self.tabs.push(tab);
             if index <= self.session.active {
@@ -3912,14 +3921,16 @@ impl App {
             let (entry, window) = match &tab.content {
                 ConnTabContent::Picker(_) => (None, None),
                 ConnTabContent::Workspace(workspace) => {
-                    let Some(saved) = self.connections.get(&workspace.conn_id) else {
+                    if self.connections.get(&workspace.conn_id).is_none() {
                         continue;
+                    }
+                    // With the server it is on, for the launch to tell a
+                    // connection edited since.
+                    let window = crate::session::Window {
+                        kept: crate::session::Kept::of(workspace),
+                        server: crate::session::server_of(&workspace.spec),
                     };
-                    // Its database only while it is on the connection's
-                    // server: not the old server's on an edited one.
-                    let kept = crate::session::on_server(&workspace.spec, &saved.spec)
-                        .then(|| crate::session::Kept::of(workspace));
-                    (Some(workspace.conn_id.clone()), kept)
+                    (Some(workspace.conn_id.clone()), Some(window))
                 }
             };
             if index == self.active {

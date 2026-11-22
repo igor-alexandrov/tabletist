@@ -1440,6 +1440,28 @@ fn a_window_whose_connection_was_edited_since_reopens_as_the_connection() {
 }
 
 #[test]
+fn a_window_whose_connection_was_edited_after_the_quit_reopens_as_the_connection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = quit_with_two_windows(&mut app, "bookshop_test");
+    save_written(&app, |_| {});
+    // connections.toml edited after the quit, by hand or by another
+    // version: another server, and its own database on it.
+    let mut saved = app.connections.get(&conn).unwrap().clone();
+    saved.spec.host = "db.bookshop.example".into();
+    saved.spec.database = "bookshop_production".into();
+    app.connections.upsert(saved);
+    write_files(&app);
+    let app = start(dir.path());
+    assert_eq!(windows(&app), vec![Some(conn.clone()), Some(conn)]);
+    for index in [0, 1] {
+        let spec = &app.workspace(app.tabs[index].id).unwrap().spec;
+        assert_eq!(spec.host, "db.bookshop.example");
+        assert_eq!(spec.database, "bookshop_production");
+    }
+}
+
+#[test]
 fn two_windows_on_one_database_each_get_their_own_tables_back() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app_in(dir.path());
@@ -1493,7 +1515,7 @@ fn the_file_holds_each_window_beside_it_and_the_connections_own_tables() {
         .windows
         .iter()
         .map(|window| {
-            let window = window.as_ref().unwrap();
+            let window = &window.as_ref().unwrap().kept;
             let names = window.tabs.iter().map(|tab| tab.name.clone()).collect();
             (window.database.clone(), names)
         })

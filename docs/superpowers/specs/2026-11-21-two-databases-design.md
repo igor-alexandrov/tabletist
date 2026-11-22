@@ -126,11 +126,14 @@ code.
 - A file without `windows` reads as today. An older version writes back
   the `windows` it does not know (`Session::rest`) with its own `open`, so
   `windows` is read only where each entry's connection is `open`'s at the
-  same place; otherwise it is dropped and the file reads as today.
-- A tab whose connection was edited since it connected (another host,
-  port, user or anything but the database) keeps nothing of its own: it
-  reopens as the connection does, never the old server's database on the
-  new one.
+  same place, and only beside the `connections` they were written with
+  (`windows_with`, a hash of them: an older version writes `connections`
+  of its own); otherwise it is dropped and the file reads as today.
+- Each entry keeps a hash of the server its tab was on (its spec but for
+  the database). A tab whose connection names another server at launch
+  (edited while it was open, or in `connections.toml` after the quit)
+  keeps nothing of its own: it reopens as the connection does, never the
+  old server's database on the new one.
 - `connections` (per connection) stays: it is what the connection's own
   database had when its last tab on it closed, for opening it later from
   the picker.
