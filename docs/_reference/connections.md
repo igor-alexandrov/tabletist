@@ -23,7 +23,8 @@ Groups are listed by name, with Local and Remote last, and a group
 written in another case is the same group.
 
 A connection can be open more than once. Enter shows a connection that is
-already open, and Shift+Enter opens it again.
+already open, and Shift+Enter, or **Open another** in its row's menu,
+opens one more window of it, on its saved database.
 
 Cmd/Ctrl+Backspace (`dd` in the Omarchy look), **Delete** in a row's menu,
 or **Delete** in the connection's form asks at the bottom of the picker

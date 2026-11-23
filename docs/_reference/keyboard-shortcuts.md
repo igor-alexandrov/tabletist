@@ -68,7 +68,7 @@ In the picker:
 | Keys | Do |
 | --- | --- |
 | Arrows, Enter | Pick a connection. Mod+Up and Mod+Down go to the first and the last |
-| Shift+Enter | Open it again |
+| Shift+Enter | Open one more window of it |
 | Mod+N | New connection |
 | Mod+E | Edit |
 | Mod+D | Duplicate |
