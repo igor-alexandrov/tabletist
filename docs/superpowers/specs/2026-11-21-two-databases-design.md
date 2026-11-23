@@ -90,6 +90,13 @@ code.
    window that was on `bookshop_test` still reopens on it, with no
    tables. *Why: the database is the window's, as its row panel is,
    which comes back either way; the setting is about the tables.*
+11. **The row menu's Open another names its key** (found while planning
+   run 3, from the canvas): `⇧↩` (Omarchy `shift+enter`, Windows and Linux
+   `Shift+Enter`) at the row's right while it is lit, the database menu's
+   way, with the row's own words and no others. The footer names the key
+   whatever row is selected, as it names the others. *Why: the canvas
+   draws it on the lit row; decision 2's "footer hint only" was about the
+   connection's row in the list, which does not change.*
 
 ## Behaviour (so far)
 
@@ -156,6 +163,7 @@ code.
 2. **Relaunch each tab as it was.** session.json `windows`, read and
    written; tests for the round trip, an old file, and two tabs of one
    connection with different tables.
-3. **Picker: "Open another".** The rename and the footer hint in both
-   looks. Small, and touching the picker, so it lands after #367's picker
-   work to avoid conflicts.
+3. **Picker: "Open another".** The rename, its key on the lit menu row
+   (decision 11) and the footer hint in all three looks, the guide's and
+   the reference's words for Shift+Enter. Small, and touching the picker,
+   so it lands after #367's picker work to avoid conflicts.
