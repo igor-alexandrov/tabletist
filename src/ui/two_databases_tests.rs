@@ -21,6 +21,7 @@ fn bookshop_saved() -> SavedConnection {
     SavedConnection {
         id: crate::connections::ConnectionId::new(),
         name: "Bookshop".into(),
+        group: None,
         environment: crate::env::Environment::Dev,
         read_only: Some(true),
         password: PasswordMode::Ask,

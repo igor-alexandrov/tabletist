@@ -1339,3 +1339,195 @@ fn a_relaunch_puts_each_sql_editor_back_in_its_place() {
         Some(("SELECT 2", RunMode::ReadWrite))
     );
 }
+
+// Each window as it was at quit: two windows of one connection, each on
+// its own database and with its own tables (#366).
+
+/// The names of the tables of the `index`th window, in order.
+fn tables(app: &App, index: usize) -> Vec<String> {
+    app.workspace(app.tabs[index].id)
+        .unwrap()
+        .object_tabs()
+        .map(|object| object.object.name.clone())
+        .collect()
+}
+
+/// The database the `index`th window is on.
+fn database(app: &App, index: usize) -> String {
+    app.workspace(app.tabs[index].id)
+        .unwrap()
+        .spec
+        .database
+        .clone()
+}
+
+/// Bookshop's development server with `books` open in its window, and a
+/// second window beside it on `second` with `authors`, in front; the
+/// files written as the app quits.
+fn quit_with_two_windows(app: &mut App, second: &str) -> crate::connections::ConnectionId {
+    let conn = bookshop_at(app, "postgres://demo@localhost:5432/bookshop_development");
+    let first = open_window(app, &conn);
+    connected_to(app, tabletist_db::Driver::Postgres);
+    books(app, first, "books");
+    app.apply(Action::OpenDatabaseInNewWindow {
+        tab: first,
+        database: second.into(),
+    });
+    let window = app.active_tab_id();
+    connected_to(app, tabletist_db::Driver::Postgres);
+    books(app, window, "authors");
+    app.save_session();
+    write_files(app);
+    conn
+}
+
+/// Writes the session the app last sent to be written, as the backend
+/// would, `change`d first.
+fn save_written(app: &App, change: impl FnOnce(&mut Session)) {
+    let mut session = written(app).unwrap();
+    change(&mut session);
+    session.save(&app.dirs.session_file()).unwrap();
+}
+
+#[test]
+fn each_window_of_a_connection_reopens_on_its_own_database_with_its_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = quit_with_two_windows(&mut app, "bookshop_test");
+    save_written(&app, |_| {});
+    let app = start(dir.path());
+    assert_eq!(windows(&app), vec![Some(conn.clone()), Some(conn)]);
+    assert_eq!(app.active, 1, "the second in front again");
+    assert_eq!(database(&app, 0), "bookshop_development");
+    assert_eq!(database(&app, 1), "bookshop_test");
+    assert_eq!(tables(&app, 0), ["books"]);
+    assert_eq!(tables(&app, 1), ["authors"]);
+    // Each connects to its own, the one in front first.
+    let connects: Vec<String> = app
+        .backend
+        .sent
+        .iter()
+        .filter_map(|command| match command {
+            Command::Connect { spec, .. } => Some(spec.database.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(connects, ["bookshop_test", "bookshop_development"]);
+}
+
+#[test]
+fn a_window_whose_connection_was_edited_since_reopens_as_the_connection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = quit_with_two_windows(&mut app, "bookshop_test");
+    // Edited onto another server while its windows stay on the old one,
+    // then quit again.
+    let mut saved = app.connections.get(&conn).unwrap().clone();
+    saved.spec.host = "db.bookshop.example".into();
+    app.connections.upsert(saved);
+    app.save_session();
+    write_files(&app);
+    save_written(&app, |_| {});
+    let app = start(dir.path());
+    assert_eq!(windows(&app), vec![Some(conn.clone()), Some(conn)]);
+    // Not the old server's database on the new one: each on the
+    // connection's own, as before the windows were kept.
+    for index in [0, 1] {
+        let spec = &app.workspace(app.tabs[index].id).unwrap().spec;
+        assert_eq!(spec.host, "db.bookshop.example");
+        assert_eq!(spec.database, "bookshop_development");
+    }
+}
+
+#[test]
+fn a_window_whose_connection_was_edited_after_the_quit_reopens_as_the_connection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = quit_with_two_windows(&mut app, "bookshop_test");
+    save_written(&app, |_| {});
+    // connections.toml edited after the quit, by hand or by another
+    // version: another server, and its own database on it.
+    let mut saved = app.connections.get(&conn).unwrap().clone();
+    saved.spec.host = "db.bookshop.example".into();
+    saved.spec.database = "bookshop_production".into();
+    app.connections.upsert(saved);
+    write_files(&app);
+    let app = start(dir.path());
+    assert_eq!(windows(&app), vec![Some(conn.clone()), Some(conn)]);
+    for index in [0, 1] {
+        let spec = &app.workspace(app.tabs[index].id).unwrap().spec;
+        assert_eq!(spec.host, "db.bookshop.example");
+        assert_eq!(spec.database, "bookshop_production");
+    }
+}
+
+#[test]
+fn two_windows_on_one_database_each_get_their_own_tables_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    quit_with_two_windows(&mut app, "bookshop_development");
+    save_written(&app, |_| {});
+    let app = start(dir.path());
+    assert_eq!(database(&app, 1), "bookshop_development");
+    assert_eq!(tables(&app, 0), ["books"]);
+    assert_eq!(tables(&app, 1), ["authors"]);
+}
+
+#[test]
+fn with_restore_off_each_window_reopens_on_its_own_database_with_no_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    app.apply(Action::SetOption(
+        crate::settings::OptionValue::RestoreTabs(false),
+    ));
+    quit_with_two_windows(&mut app, "bookshop_test");
+    save_written(&app, |_| {});
+    let app = start(dir.path());
+    assert_eq!(database(&app, 0), "bookshop_development");
+    assert_eq!(database(&app, 1), "bookshop_test");
+    assert!(tables(&app, 0).is_empty());
+    assert!(tables(&app, 1).is_empty());
+}
+
+#[test]
+fn a_file_with_nothing_of_its_windows_reopens_them_as_before() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = quit_with_two_windows(&mut app, "bookshop_test");
+    // As a file from before, or one an older version wrote back.
+    save_written(&app, |session| session.windows.clear());
+    let app = start(dir.path());
+    assert_eq!(windows(&app), vec![Some(conn.clone()), Some(conn)]);
+    // On the connection's own database, with what it kept.
+    assert_eq!(database(&app, 1), "bookshop_development");
+    assert_eq!(tables(&app, 0), ["books"]);
+    assert_eq!(tables(&app, 1), ["books"]);
+}
+
+#[test]
+fn the_file_holds_each_window_beside_it_and_the_connections_own_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = quit_with_two_windows(&mut app, "bookshop_test");
+    let session = written(&app).unwrap();
+    assert_eq!(session.open, vec![Some(conn.clone()), Some(conn.clone())]);
+    let kept: Vec<(String, Vec<String>)> = session
+        .windows
+        .iter()
+        .map(|window| {
+            let window = &window.as_ref().unwrap().kept;
+            let names = window.tabs.iter().map(|tab| tab.name.clone()).collect();
+            (window.database.clone(), names)
+        })
+        .collect();
+    assert_eq!(
+        kept,
+        [
+            ("bookshop_development".to_owned(), vec!["books".to_owned()]),
+            ("bookshop_test".to_owned(), vec!["authors".to_owned()]),
+        ]
+    );
+    // The connection's own, for opening it from the picker, is the first
+    // window's.
+    assert_eq!(session.connections[&conn.0].tabs[0].name, "books");
+}

@@ -85,6 +85,11 @@ code.
    was (a SQL editor being typed in) when the menu closes. A click leaves
    the keyboard where it was. *Why: without it, ctrl+enter does nothing
    from the keyboard in the Omarchy look.*
+10. **A window's database comes back whatever `restore_tabs` says**
+   (asked while planning run 2): with Restore tabs and filters off, a
+   window that was on `bookshop_test` still reopens on it, with no
+   tables. *Why: the database is the window's, as its row panel is,
+   which comes back either way; the setting is about the tables.*
 
 ## Behaviour (so far)
 
@@ -101,7 +106,9 @@ code.
 - While the database menu is open, its key is read before every other
   chord: a SQL editor in front does not run on ⌘↩.
 - At quit, of two windows of one connection on its own database, the first
-  in the bar is the one whose tables are kept (until run 2 keeps each).
+  in the bar is the one whose tables are kept in `connections`, for
+  opening the connection later from the picker; run 2 keeps each
+  window's in `windows` for the next launch.
 - Agents (MCP) are per connection and unchanged; "show agents" goes to the
   first tab of the connection, as now.
 - The hint is the menu row's `hint` (muted, at the right; in the terminal
@@ -119,12 +126,22 @@ code.
 - A file without `windows` reads as today. An older version writes back
   the `windows` it does not know (`Session::rest`) with its own `open`, so
   `windows` is read only where each entry's connection is `open`'s at the
-  same place; otherwise it is dropped and the file reads as today.
+  same place, and only beside the `connections` they were written with
+  (`windows_with`, a hash of them: an older version writes `connections`
+  of its own); otherwise it is dropped and the file reads as today.
+- Each entry keeps a hash of the server its tab was on (its spec but for
+  the database). A tab whose connection names another server at launch
+  (edited while it was open, or in `connections.toml` after the quit)
+  keeps nothing of its own: it reopens as the connection does, never the
+  old server's database on the new one.
 - `connections` (per connection) stays: it is what the connection's own
   database had when its last tab on it closed, for opening it later from
   the picker.
 - A relaunch to update (`relaunch.window_of`) is per tab already and is
   unchanged.
+- Each window reopens on its database whatever Restore tabs and filters
+  says (decision 10); its tables come back where the setting is on, or on
+  a relaunch to update, as a connection's do.
 
 ## Runs (a PR each)
 

@@ -48,7 +48,9 @@ its own. The row under the pointer or the keyboard names the key. The new
 window connects with the password this one connected with, so nothing is
 asked again, and this one keeps its tables, editors and edits. Do it on
 the database you are on for a second window on it. The chips tell the
-windows apart by their database.
+windows apart by their database. The next time Tabletist starts, each
+window opens again on its own database, with its own tables where
+**Restore tabs and filters** is on.
 
 ## Fields
 

@@ -111,6 +111,18 @@ enum LookSwitch {
     Installed(crate::theme::Look),
 }
 
+/// What a window that opens on a connection puts back.
+enum Reopen {
+    /// Nothing: a new window beside another, on a database of its own.
+    Nothing,
+    /// What the connection's window kept, where it is of the database the
+    /// window opens on.
+    Connection,
+    /// What this window had at the last quit: the database it was on, its
+    /// tables and its row panel.
+    Window(crate::session::Kept),
+}
+
 pub struct App {
     pub dirs: AppDirs,
     pub settings: Settings,
@@ -3734,8 +3746,9 @@ impl App {
         }
     }
 
-    /// The windows open at the last quit, each connecting as a connection
-    /// does, asking for what it needs: the one in front first, so that a
+    /// The windows open at the last quit, each on the database it was on
+    /// with the tables it had, connecting as a connection does, asking
+    /// for what it needs: the one in front first, so that a
     /// question it asks at once is asked over it, and the others in their
     /// order after it. A window behind that asks before the front window
     /// does (the front one is still reading its password from the
@@ -3771,7 +3784,18 @@ impl App {
             {
                 self.relaunch_windows.insert(tab.id, window);
             }
-            windows.push((tab.id, saved));
+            // What the window had at quit: its database and its tables,
+            // where its connection still names the server it was on. One
+            // edited since, here or in the file, reopens as the connection
+            // does: never the old server's database on the new one.
+            let kept = self.session.windows.get(index).cloned().flatten();
+            let kept = kept.filter(|window| {
+                saved
+                    .as_ref()
+                    .is_some_and(|saved| window.server == crate::session::server_of(&saved.spec))
+            });
+            let kept = kept.map(|window| window.kept);
+            windows.push((tab.id, saved, kept));
             self.tabs.push(tab);
             if index <= self.session.active {
                 active = Some(self.tabs.len() - 1 - base);
@@ -3783,9 +3807,13 @@ impl App {
             let front = windows.remove(active);
             windows.insert(0, front);
         }
-        for (tab, saved) in windows {
+        for (tab, saved, kept) in windows {
             if let Some(saved) = saved {
-                self.connect_tab(tab, saved, Secrets::default());
+                // A file with nothing of the window: what its connection
+                // kept, on the connection's own database.
+                let reopen = kept.map_or(Reopen::Connection, Reopen::Window);
+                self.open_workspace(tab, saved, Secrets::default(), reopen);
+                self.authenticate(tab);
             }
         }
     }
@@ -3870,8 +3898,9 @@ impl App {
     }
 
     /// Writes session.json on the backend: the connection tabs open now,
-    /// in order, the picker as none, and the tables of every window open,
-    /// with what is kept of the connections closed before. A connection
+    /// in order, the picker as none, each with its database and its
+    /// tables, and what is kept of every connection, its windows open now
+    /// and those closed before. A connection
     /// that is not saved (deleted while its window is open) is left out.
     /// The window calls it as the app quits.
     pub fn save_session(&mut self) {
@@ -3886,23 +3915,37 @@ impl App {
             self.keep_tabs(*id);
         }
         let mut open = Vec::new();
+        let mut windows = Vec::new();
         let mut active = 0;
         for (index, tab) in self.tabs.iter().enumerate() {
-            let entry = match &tab.content {
-                ConnTabContent::Picker(_) => None,
+            let (entry, window) = match &tab.content {
+                ConnTabContent::Picker(_) => (None, None),
                 ConnTabContent::Workspace(workspace) => {
                     if self.connections.get(&workspace.conn_id).is_none() {
                         continue;
                     }
-                    Some(workspace.conn_id.clone())
+                    // With the server it is on, for the launch to tell a
+                    // connection edited since.
+                    let window = crate::session::Window {
+                        kept: crate::session::Kept::of(workspace),
+                        server: crate::session::server_of(&workspace.spec),
+                    };
+                    (Some(workspace.conn_id.clone()), Some(window))
                 }
             };
             if index == self.active {
                 active = open.len();
             }
             open.push(entry);
+            windows.push(window);
+        }
+        // Nothing of any window (the picker alone) is none, as the file
+        // reads back.
+        if windows.iter().all(Option::is_none) {
+            windows.clear();
         }
         self.session.open = open;
+        self.session.windows = windows;
         self.session.active = active;
         // The connections were read, or this would not write: one that is
         // not among them, deleted from connections.toml by hand, goes.
@@ -3942,25 +3985,25 @@ impl App {
         let id = window.id;
         self.tabs.insert(index + 1, window);
         self.active = index + 1;
-        self.open_workspace(id, saved, typed, false);
+        self.open_workspace(id, saved, typed, Reopen::Nothing);
         self.authenticate(id);
     }
 
     /// Opens `saved` in `tab`; `typed` holds secrets typed in the dialog.
     fn connect_tab(&mut self, tab: ConnTabId, saved: SavedConnection, typed: Secrets) {
-        self.open_workspace(tab, saved, typed, true);
+        self.open_workspace(tab, saved, typed, Reopen::Connection);
         self.authenticate(tab);
     }
 
     /// Puts a connecting workspace for `saved` in `tab`, without starting to
-    /// authenticate. With `reopen` it puts back the tables the connection's
-    /// window kept, where the settings reopen them.
+    /// authenticate, with what `reopen` puts back: the tables where the
+    /// settings reopen them, and the row panel as it was left.
     fn open_workspace(
         &mut self,
         tab: ConnTabId,
-        saved: SavedConnection,
+        mut saved: SavedConnection,
         typed: Secrets,
-        reopen: bool,
+        reopen: Reopen,
     ) {
         let session = SessionId(self.next_id());
         let request = RequestId(self.next_id());
@@ -3972,16 +4015,27 @@ impl App {
         // that what the window just had is what reopens, if this connection
         // was it.
         let replaced = self.keep_tabs(tab);
-        // What the connection's window last had: its row panel as it was
-        // left, and its tables, where the settings reopen them and they
-        // are of the database it opens on.
-        let kept = self.session.connections.get(&saved.id.0).cloned();
+        // What the window last had, or else the connection's window: its
+        // row panel as it was left, and its tables, where the settings
+        // reopen them and they are of the database it opens on. A window
+        // as it was at quit is on the database it was on, whatever the
+        // settings reopen.
+        let tables_back = !matches!(reopen, Reopen::Nothing);
+        let kept = match reopen {
+            Reopen::Nothing | Reopen::Connection => {
+                self.session.connections.get(&saved.id.0).cloned()
+            }
+            Reopen::Window(kept) => {
+                crate::session::put_on(&mut saved.spec, &kept.database);
+                Some(kept)
+            }
+        };
         let row_panel = kept.as_ref().is_none_or(|kept| kept.row_panel);
         // A relaunch after an update puts back what the restart took away,
         // whatever the settings reopen.
         let restore = self.settings.restore_tabs || self.relaunch.is_some();
         let tables = kept.filter(|kept| {
-            reopen && restore && kept.database == crate::session::database_of(&saved.spec)
+            tables_back && restore && kept.database == crate::session::database_of(&saved.spec)
         });
         let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) else {
             return;
@@ -6482,7 +6536,7 @@ impl App {
             if let (Some(kind), Some(secret)) = (SecretKind::for_ssh(&saved.spec), &typed_ssh) {
                 *kind.slot(&mut secrets) = Some(secret.clone());
             }
-            self.open_workspace(tab, saved, secrets, true);
+            self.open_workspace(tab, saved, secrets, Reopen::Connection);
             // Ask for a secret whose saved copy was for the old server,
             // rather than trusting the keyring to have dropped it.
             if let Some(workspace) = self.workspace_mut(tab) {
