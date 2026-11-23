@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-22 21:36-0500\n"
+"POT-Creation-Date: 2026-11-22 21:38-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -6905,6 +6905,11 @@ msgstr ""
 
 #: src/ui/picker.rs
 msgid "connect / show"
+msgstr ""
+
+#: src/ui/picker.rs
+msgctxt "key hint"
+msgid "another"
 msgstr ""
 
 #: src/ui/picker.rs src/ui/row_panel.rs

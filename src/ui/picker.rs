@@ -481,6 +481,7 @@ fn body(
             let words = [
                 msgid("move"),
                 msgid("connect / show"),
+                pmsgid("key hint", "another"),
                 msgid("edit"),
                 msgid("new"),
                 msgid("duplicate"),
@@ -492,15 +493,16 @@ fn body(
             let mut hints = vec![
                 (&moves, &*words[0], true),
                 (&connect, &*words[1], true),
-                (&edit, &*words[2], true),
-                (&new_key, &*words[3], true),
-                (&duplicate, &*words[4], true),
-                (&delete, &*words[5], true),
-                (&filter, &*words[6], true),
+                (&again, &*words[2], true),
+                (&edit, &*words[3], true),
+                (&new_key, &*words[4], true),
+                (&duplicate, &*words[5], true),
+                (&delete, &*words[6], true),
+                (&filter, &*words[7], true),
             ];
             // Where agents can reach the app.
             if crate::endpoint::AVAILABLE {
-                hints.push((&agent_access, &*words[7], true));
+                hints.push((&agent_access, &*words[8], true));
             }
             // What does not fit beside the keyring's note gives way, from the
             // end: the window may be as narrow as 720.
@@ -524,6 +526,7 @@ fn body(
         } else {
             let hints = [
                 format!("{connect} connect"),
+                format!("{again} open another"),
                 format!("{edit} edit"),
                 format!("{duplicate} duplicate"),
                 format!("{delete} delete"),

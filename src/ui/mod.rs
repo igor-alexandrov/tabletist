@@ -3877,6 +3877,7 @@ value_tags   = true
         let omarchy = painted(Look::omarchy());
         for hint in [
             "j/k move",
+            "shift+enter another",
             "yy p duplicate",
             "dd delete",
             "/ filter",
@@ -3888,11 +3889,22 @@ value_tags   = true
             );
         }
         let mac = painted(Look::macos());
-        for hint in ["↩ connect", "⌘E edit", "⌘D duplicate", "⌘⌫ delete"] {
+        for hint in [
+            "↩ connect",
+            "⇧↩ open another",
+            "⌘E edit",
+            "⌘D duplicate",
+            "⌘⌫ delete",
+        ] {
             assert!(mac.iter().any(|text| text == hint), "{hint}: {mac:?}");
         }
         let standard = painted(Look::standard());
-        for hint in ["Enter connect", "Ctrl+E edit", "Ctrl+Backspace delete"] {
+        for hint in [
+            "Enter connect",
+            "Shift+Enter open another",
+            "Ctrl+E edit",
+            "Ctrl+Backspace delete",
+        ] {
             assert!(
                 standard.iter().any(|text| text == hint),
                 "{hint}: {standard:?}"
