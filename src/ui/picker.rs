@@ -384,6 +384,7 @@ fn body(
         key(Command::FilterConnections),
     );
     let agent_access = key(Command::ChangeAgentAccess);
+    let again = key(Command::ConnectAgain);
     let answers = (
         key(Command::ConfirmDeleteConnection),
         key(Command::KeepConnection),
@@ -635,6 +636,7 @@ fn body(
                         locale,
                         now,
                         side,
+                        again: &again,
                     };
                     if look.terminal {
                         for connection in &group.connections {
@@ -768,6 +770,9 @@ struct RowSkin<'a> {
     locale: crate::i18n::Locale,
     now: u64,
     side: f32,
+    /// The key that opens an open connection once more, as the look
+    /// writes it: the row menu's Open another names it.
+    again: &'a crate::keymap::Written,
 }
 
 /// Where a row's connection opens: the picker's tab, or the tab that has
@@ -924,9 +929,16 @@ fn row_response(
     rect: Rect,
     connection: &SavedConnection,
     opening: Opening,
-    (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
+    skin: RowSkin<'_>,
     actions: &mut Vec<Action>,
 ) -> egui::Response {
+    let RowSkin {
+        look,
+        palette,
+        locale,
+        again,
+        ..
+    } = skin;
     let tab = opening.tab;
     let response = ui.interact(
         rect,
@@ -960,12 +972,18 @@ fn row_response(
                 .show(ui, look, palette)
                 .clicked()
         };
-        // An open connection shows, and can be opened once more.
+        // An open connection shows, and can be opened once more: its key
+        // on the row while it is lit, as the footer names it.
         if opening.open.is_some() {
             if item(ui, msgid("Show")) {
                 actions.push(opening.choose(connection));
             }
-            if item(ui, msgid("Connect again")) {
+            let another = msgid("Open another").say(locale);
+            if menu::Item::action(&another)
+                .hint("", again)
+                .show(ui, look, palette)
+                .clicked()
+            {
                 actions.push(opening.connect(connection));
             }
         } else if item(ui, msgid("Connect")) {
@@ -1219,14 +1237,7 @@ fn mac_row(
         pos2(card.left(), rect.top()),
         pos2(card.right(), rect.bottom()),
     );
-    let response = row_response(
-        ui,
-        rect,
-        connection,
-        opening,
-        (look, palette, locale),
-        actions,
-    );
+    let response = row_response(ui, rect, connection, opening, skin, actions);
     let is_selected = selected == Some(&connection.id);
     let rows = (card.height() / height).round() as usize;
     // The card's inner corners: its 10 less its border.
@@ -1545,17 +1556,11 @@ fn terminal_row(
         locale,
         now,
         side,
+        ..
     } = skin;
     let (rect, _) =
         ui.allocate_exact_size(vec2(ui.available_width(), row_height(look)), Sense::hover());
-    let response = row_response(
-        ui,
-        rect,
-        connection,
-        opening,
-        (look, palette, locale),
-        actions,
-    );
+    let response = row_response(ui, rect, connection, opening, skin, actions);
     let is_selected = selected == Some(&connection.id);
     let center = rect.center().y;
     if is_selected {
@@ -1708,7 +1713,7 @@ mod tests {
         };
         assert!(connects(closed.choose(&connection)));
         // Open: choosing it shows that tab, and it can still connect again
-        // (the row menu's Connect again, and Shift+Enter).
+        // (the row menu's Open another, and Shift+Enter).
         let opened = Opening {
             tab: picker,
             open: Some(open),
