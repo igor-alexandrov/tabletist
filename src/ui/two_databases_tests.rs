@@ -676,3 +676,23 @@ fn open_another_names_its_key_while_it_is_lit() {
         assert!(another.contains(hint.center()), "{}: {hint:?}", look.name);
     }
 }
+
+/// The key acts on the selected row, and a right-click selects nothing:
+/// the menu of a row that is not selected names no key it would not keep.
+#[test]
+fn open_another_names_no_key_on_a_row_that_is_not_selected() {
+    for look in Look::ALL {
+        let (mut harness, picker, _) = picker_with_it_open(look);
+        harness.app.apply(Action::SelectConnection {
+            tab: picker,
+            conn: None,
+        });
+        let command = crate::keymap::Command::ConnectAgain;
+        let key = crate::ui::keys::written(&harness.ctx, &look, command);
+        let key = key.as_str().to_owned();
+        let another = row_menu(&mut harness, "Open another");
+        harness.frame(vec![egui::Event::PointerMoved(another.center())]);
+        harness.settle();
+        assert_eq!(harness.painted_rect(&key), None, "{}", look.name);
+    }
+}

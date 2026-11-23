@@ -93,8 +93,10 @@ code.
 11. **The row menu's Open another names its key** (found while planning
    run 3, from the canvas): `⇧↩` (Omarchy `shift+enter`, Windows and Linux
    `Shift+Enter`) at the row's right while it is lit, the database menu's
-   way, with the row's own words and no others. The footer names the key
-   whatever row is selected, as it names the others. *Why: the canvas
+   way, with the row's own words and no others, in the selected row's menu
+   only: the key acts on the selection, and a right-click selects nothing
+   (from review). The footer names the key whatever row is selected, as it
+   names the others. *Why: the canvas
    draws it on the lit row; decision 2's "footer hint only" was about the
    connection's row in the list, which does not change.*
 

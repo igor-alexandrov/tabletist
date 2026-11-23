@@ -926,11 +926,13 @@ pub(crate) fn terminal_files_line(
 
 /// The row's own response, answering a click by selecting and a double
 /// click, Enter or a screen reader by choosing it: an open connection
-/// shows, another connects.
+/// shows, another connects. `selected` is whether the row is the list's
+/// selection, which the keys act on.
 fn row_response(
     ui: &mut egui::Ui,
     rect: Rect,
     connection: &SavedConnection,
+    selected: bool,
     opening: Opening,
     skin: RowSkin<'_>,
     actions: &mut Vec<Action>,
@@ -976,17 +978,19 @@ fn row_response(
                 .clicked()
         };
         // An open connection shows, and can be opened once more: its key
-        // on the row while it is lit, as the footer names it.
+        // on the row while it is lit, as the footer names it. The key acts
+        // on the selected row, and a right-click selects nothing, so only
+        // the selected row's menu names it.
         if opening.open.is_some() {
             if item(ui, msgid("Show")) {
                 actions.push(opening.choose(connection));
             }
             let another = msgid("Open another").say(locale);
-            if menu::Item::action(&another)
-                .hint("", again)
-                .show(ui, look, palette)
-                .clicked()
-            {
+            let mut item = menu::Item::action(&another);
+            if selected {
+                item = item.hint("", again);
+            }
+            if item.show(ui, look, palette).clicked() {
                 actions.push(opening.connect(connection));
             }
         } else if item(ui, msgid("Connect")) {
@@ -1240,8 +1244,8 @@ fn mac_row(
         pos2(card.left(), rect.top()),
         pos2(card.right(), rect.bottom()),
     );
-    let response = row_response(ui, rect, connection, opening, skin, actions);
     let is_selected = selected == Some(&connection.id);
+    let response = row_response(ui, rect, connection, is_selected, opening, skin, actions);
     let rows = (card.height() / height).round() as usize;
     // The card's inner corners: its 10 less its border.
     let round = |on: bool| if on { 9 } else { 0 };
@@ -1563,8 +1567,8 @@ fn terminal_row(
     } = skin;
     let (rect, _) =
         ui.allocate_exact_size(vec2(ui.available_width(), row_height(look)), Sense::hover());
-    let response = row_response(ui, rect, connection, opening, skin, actions);
     let is_selected = selected == Some(&connection.id);
+    let response = row_response(ui, rect, connection, is_selected, opening, skin, actions);
     let center = rect.center().y;
     if is_selected {
         ui.painter()
