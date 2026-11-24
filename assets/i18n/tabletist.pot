@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-21 09:54-0500\n"
+"POT-Creation-Date: 2026-11-22 21:38-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -6907,6 +6907,11 @@ msgstr ""
 msgid "connect / show"
 msgstr ""
 
+#: src/ui/picker.rs
+msgctxt "key hint"
+msgid "another"
+msgstr ""
+
 #: src/ui/picker.rs src/ui/row_panel.rs
 msgid "duplicate"
 msgstr ""
@@ -6955,7 +6960,7 @@ msgid "No joins"
 msgstr ""
 
 #: src/ui/picker.rs
-msgid "Connect again"
+msgid "Open another"
 msgstr ""
 
 #: src/ui/picker.rs

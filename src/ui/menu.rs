@@ -160,7 +160,9 @@ impl<'a> Item<'a> {
     /// `words` and the `key` that does it, as the look writes them
     /// (`New window ⌘↩`, the terminal's `ctrl+enter new window` with its
     /// key in the accent). Give it to every row of the menu: each keeps
-    /// its room, so the menu keeps its width as the light moves.
+    /// its room, so the menu keeps its width as the light moves. `words`
+    /// are empty where the row's own say what the key does (`Open another
+    /// ⇧↩`): the key goes alone.
     pub fn hint(mut self, words: &'a str, key: &'a crate::keymap::Written) -> Self {
         self.hint = Some((words, key));
         self
@@ -224,7 +226,14 @@ impl<'a> Item<'a> {
             .detail
             .map_or(0.0, |detail| DETAIL_GAP + measure(note, detail));
         let hinted = self.hint.map_or(0.0, |(words, key)| {
-            DETAIL_GAP + measure(note, words) + shape.gap + measure(note, key.as_str())
+            // The words, where there are any, and the gap between them and
+            // the key.
+            let words = if words.is_empty() {
+                0.0
+            } else {
+                measure(note, words) + shape.gap
+            };
+            DETAIL_GAP + words + measure(note, key.as_str())
         });
         let own = measure(role, self.text);
         let after = self
@@ -256,7 +265,7 @@ impl<'a> Item<'a> {
             });
         }
         if let Some((words, key)) = self.hint {
-            let said = format!("{words} {}", key.as_str());
+            let said = format!("{words} {}", key.as_str()).trim_start().to_owned();
             ui.ctx().accesskit_node_builder(response.id, |node| {
                 node.set_description(said);
             });
@@ -334,12 +343,17 @@ impl<'a> Item<'a> {
             let right = rect.right() - shape.inset;
             if look.terminal {
                 // The key leads, in the accent, as the footers write keys.
+                let alone = words.is_empty();
                 let words = Text::one(look, note, words, palette.dim).layout(ui.ctx());
-                let width = words.width();
+                let width = if alone {
+                    0.0
+                } else {
+                    words.width() + shape.gap
+                };
                 words.paint_right(painter, right, center);
                 Text::one(look, note, key, palette.accent)
                     .layout(ui.ctx())
-                    .paint_right(painter, right - width - shape.gap, center);
+                    .paint_right(painter, right - width, center);
             } else {
                 let key = Text::one(look, note, key, palette.dim).layout(ui.ctx());
                 let width = key.width();

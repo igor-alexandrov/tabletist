@@ -590,3 +590,109 @@ fn the_hint_is_on_the_keyboards_row_when_the_pointer_is_on_another() {
     let second = harness.app.active_tab_id();
     assert_eq!(database(&harness, second), "bookshop_test");
 }
+
+/// The picker in `look` with the fixture connection open in a window and
+/// its row selected. Returns the picker's tab and the open window.
+fn picker_with_it_open(look: Look) -> (Harness, ConnTabId, ConnTabId) {
+    let mut harness = Harness::new();
+    harness.set_look(look);
+    let open = harness.connect_fake();
+    harness.app.apply(Action::ShowConnections);
+    let picker = harness.app.active_tab_id();
+    let conn = Some(harness.app.workspace(open).unwrap().conn_id.clone());
+    harness
+        .app
+        .apply(Action::SelectConnection { tab: picker, conn });
+    harness.settle();
+    (harness, picker, open)
+}
+
+/// The windows on `open`'s connection, `open` among them.
+fn windows_on(harness: &Harness, open: ConnTabId) -> usize {
+    let conn = &harness.app.workspace(open).unwrap().conn_id;
+    let tabs = harness.app.tabs.iter();
+    tabs.filter(|tab| {
+        let workspace = harness.app.workspace(tab.id);
+        workspace.is_some_and(|workspace| &workspace.conn_id == conn)
+    })
+    .count()
+}
+
+/// Right-clicks the picker's row of the fixture connection, as a mouse
+/// does, and returns where its menu's row of `name` is.
+fn row_menu(harness: &mut Harness, name: &str) -> egui::Rect {
+    let tree = harness.settle();
+    let at = bounds(&tree, "Fixture", Role::Button)
+        .unwrap_or_else(|| panic!("no row: {:?}", labels(&tree)))
+        .center();
+    let press = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Secondary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    harness.frame(vec![egui::Event::PointerMoved(at)]);
+    harness.frame(vec![press(true)]);
+    harness.frame(vec![press(false)]);
+    let tree = harness.settle();
+    bounds(&tree, name, Role::Button)
+        .unwrap_or_else(|| panic!("no {name:?} in the menu: {:?}", labels(&tree)))
+}
+
+#[test]
+fn open_another_in_an_open_connections_menu_opens_one_more_window() {
+    for look in [Look::macos(), Look::omarchy()] {
+        let (mut harness, picker, open) = picker_with_it_open(look);
+        row_menu(&mut harness, "Open another");
+        assert!(!harness.has("Connect again"), "{}", look.name);
+        assert_eq!(windows_on(&harness, open), 1, "{}", look.name);
+        harness.click("Open another");
+        // The picker's tab connects, on the saved database, beside the
+        // window that had it open.
+        assert_eq!(windows_on(&harness, open), 2, "{}", look.name);
+        assert!(harness.app.workspace(picker).is_some(), "{}", look.name);
+        assert!(harness.app.workspace(open).is_some(), "{}", look.name);
+    }
+}
+
+#[test]
+fn open_another_names_its_key_while_it_is_lit() {
+    for look in Look::ALL {
+        let (mut harness, ..) = picker_with_it_open(look);
+        let command = crate::keymap::Command::ConnectAgain;
+        let key = crate::ui::keys::written(&harness.ctx, &look, command);
+        let key = key.as_str().to_owned();
+        let show = row_menu(&mut harness, "Show");
+        harness.frame(vec![egui::Event::PointerMoved(show.center())]);
+        harness.settle();
+        assert_eq!(harness.painted_rect(&key), None, "{}: Show lit", look.name);
+        let tree = harness.settle();
+        let another = bounds(&tree, "Open another", Role::Button).unwrap();
+        harness.frame(vec![egui::Event::PointerMoved(another.center())]);
+        harness.settle();
+        let hint = harness
+            .painted_rect(&key)
+            .unwrap_or_else(|| panic!("{}: no {key:?}", look.name));
+        assert!(another.contains(hint.center()), "{}: {hint:?}", look.name);
+    }
+}
+
+/// The key acts on the selected row, and a right-click selects nothing:
+/// the menu of a row that is not selected names no key it would not keep.
+#[test]
+fn open_another_names_no_key_on_a_row_that_is_not_selected() {
+    for look in Look::ALL {
+        let (mut harness, picker, _) = picker_with_it_open(look);
+        harness.app.apply(Action::SelectConnection {
+            tab: picker,
+            conn: None,
+        });
+        let command = crate::keymap::Command::ConnectAgain;
+        let key = crate::ui::keys::written(&harness.ctx, &look, command);
+        let key = key.as_str().to_owned();
+        let another = row_menu(&mut harness, "Open another");
+        harness.frame(vec![egui::Event::PointerMoved(another.center())]);
+        harness.settle();
+        assert_eq!(harness.painted_rect(&key), None, "{}", look.name);
+    }
+}

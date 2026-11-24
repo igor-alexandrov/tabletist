@@ -384,6 +384,7 @@ fn body(
         key(Command::FilterConnections),
     );
     let agent_access = key(Command::ChangeAgentAccess);
+    let again = key(Command::ConnectAgain);
     let answers = (
         key(Command::ConfirmDeleteConnection),
         key(Command::KeepConnection),
@@ -480,6 +481,7 @@ fn body(
             let words = [
                 msgid("move"),
                 msgid("connect / show"),
+                pmsgid("key hint", "another"),
                 msgid("edit"),
                 msgid("new"),
                 msgid("duplicate"),
@@ -491,15 +493,16 @@ fn body(
             let mut hints = vec![
                 (&moves, &*words[0], true),
                 (&connect, &*words[1], true),
-                (&edit, &*words[2], true),
-                (&new_key, &*words[3], true),
-                (&duplicate, &*words[4], true),
-                (&delete, &*words[5], true),
-                (&filter, &*words[6], true),
+                (&again, &*words[2], true),
+                (&edit, &*words[3], true),
+                (&new_key, &*words[4], true),
+                (&duplicate, &*words[5], true),
+                (&delete, &*words[6], true),
+                (&filter, &*words[7], true),
             ];
             // Where agents can reach the app.
             if crate::endpoint::AVAILABLE {
-                hints.push((&agent_access, &*words[7], true));
+                hints.push((&agent_access, &*words[8], true));
             }
             // What does not fit beside the keyring's note gives way, from the
             // end: the window may be as narrow as 720.
@@ -523,6 +526,7 @@ fn body(
         } else {
             let hints = [
                 format!("{connect} connect"),
+                format!("{again} open another"),
                 format!("{edit} edit"),
                 format!("{duplicate} duplicate"),
                 format!("{delete} delete"),
@@ -635,6 +639,7 @@ fn body(
                         locale,
                         now,
                         side,
+                        again: &again,
                     };
                     if look.terminal {
                         for connection in &group.connections {
@@ -768,6 +773,9 @@ struct RowSkin<'a> {
     locale: crate::i18n::Locale,
     now: u64,
     side: f32,
+    /// The key that opens an open connection once more, as the look
+    /// writes it: the row menu's Open another names it.
+    again: &'a crate::keymap::Written,
 }
 
 /// Where a row's connection opens: the picker's tab, or the tab that has
@@ -918,15 +926,24 @@ pub(crate) fn terminal_files_line(
 
 /// The row's own response, answering a click by selecting and a double
 /// click, Enter or a screen reader by choosing it: an open connection
-/// shows, another connects.
+/// shows, another connects. `selected` is whether the row is the list's
+/// selection, which the keys act on.
 fn row_response(
     ui: &mut egui::Ui,
     rect: Rect,
     connection: &SavedConnection,
+    selected: bool,
     opening: Opening,
-    (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
+    skin: RowSkin<'_>,
     actions: &mut Vec<Action>,
 ) -> egui::Response {
+    let RowSkin {
+        look,
+        palette,
+        locale,
+        again,
+        ..
+    } = skin;
     let tab = opening.tab;
     let response = ui.interact(
         rect,
@@ -960,12 +977,20 @@ fn row_response(
                 .show(ui, look, palette)
                 .clicked()
         };
-        // An open connection shows, and can be opened once more.
+        // An open connection shows, and can be opened once more: its key
+        // on the row while it is lit, as the footer names it. The key acts
+        // on the selected row, and a right-click selects nothing, so only
+        // the selected row's menu names it.
         if opening.open.is_some() {
             if item(ui, msgid("Show")) {
                 actions.push(opening.choose(connection));
             }
-            if item(ui, msgid("Connect again")) {
+            let another = msgid("Open another").say(locale);
+            let mut item = menu::Item::action(&another);
+            if selected {
+                item = item.hint("", again);
+            }
+            if item.show(ui, look, palette).clicked() {
                 actions.push(opening.connect(connection));
             }
         } else if item(ui, msgid("Connect")) {
@@ -1219,15 +1244,8 @@ fn mac_row(
         pos2(card.left(), rect.top()),
         pos2(card.right(), rect.bottom()),
     );
-    let response = row_response(
-        ui,
-        rect,
-        connection,
-        opening,
-        (look, palette, locale),
-        actions,
-    );
     let is_selected = selected == Some(&connection.id);
+    let response = row_response(ui, rect, connection, is_selected, opening, skin, actions);
     let rows = (card.height() / height).round() as usize;
     // The card's inner corners: its 10 less its border.
     let round = |on: bool| if on { 9 } else { 0 };
@@ -1545,18 +1563,12 @@ fn terminal_row(
         locale,
         now,
         side,
+        ..
     } = skin;
     let (rect, _) =
         ui.allocate_exact_size(vec2(ui.available_width(), row_height(look)), Sense::hover());
-    let response = row_response(
-        ui,
-        rect,
-        connection,
-        opening,
-        (look, palette, locale),
-        actions,
-    );
     let is_selected = selected == Some(&connection.id);
+    let response = row_response(ui, rect, connection, is_selected, opening, skin, actions);
     let center = rect.center().y;
     if is_selected {
         ui.painter()
@@ -1708,7 +1720,7 @@ mod tests {
         };
         assert!(connects(closed.choose(&connection)));
         // Open: choosing it shows that tab, and it can still connect again
-        // (the row menu's Connect again, and Shift+Enter).
+        // (the row menu's Open another, and Shift+Enter).
         let opened = Opening {
             tab: picker,
             open: Some(open),
