@@ -591,10 +591,13 @@ fn opened(files: &[Found], reading: &Reading, past: bool) -> Result<Made> {
             rows,
         });
     }
-    // The fence: these files and no other, then no setting changed again.
-    // A reader asks by its own spelling of a file, which names only it.
-    let mut allowed = Vec::with_capacity(files.len());
-    for file in &files {
+    // The fence: the files that opened and no other, then no setting
+    // changed again. One a Test went on without is not read, and its path
+    // may be one DuckDB cannot be given. A reader asks by its own spelling
+    // of a file, which names only it.
+    let mut allowed = Vec::with_capacity(opened.len());
+    for file in &opened {
+        let file = &file.found;
         let (path, read) = (path_text(&file.path)?, reader_path(&file.path)?);
         if read != path {
             allowed.push(literal(&read));

@@ -340,3 +340,26 @@ async fn a_test_says_a_listed_file_it_cannot_look_at_and_reads_the_others() {
     );
     assert_eq!(read.checks, ["orders"]);
 }
+
+/// A file whose name is not UTF-8, which Linux allows, cannot be given to
+/// DuckDB: a Test says so of that file and reads the others.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_test_says_a_file_whose_name_is_not_utf8_and_reads_the_others() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = exports();
+    let odd = dir
+        .path()
+        .join(std::ffi::OsStr::from_bytes(b"returns-\xff.csv"));
+    std::fs::copy(dir.path().join("returns.csv"), &odd).unwrap();
+    let spec = ConnectSpec::files(Source::Files(vec![
+        odd.clone(),
+        dir.path().join("orders.csv"),
+    ]));
+    let connection = Connection::open_files_to_test(&spec).await.unwrap();
+    let read = connection.read_files().await.unwrap().unwrap();
+    assert_eq!(read.files, 2);
+    assert_eq!(read.failed.len(), 1, "{:?}", read.failed);
+    assert_eq!(read.failed[0].path, odd);
+    assert_eq!(read.checks, ["orders"]);
+}
