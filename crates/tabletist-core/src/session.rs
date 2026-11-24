@@ -1,6 +1,7 @@
-//! What was open when the app last quit, and each connection's tables as
-//! they were when its window last closed: `session.json`, in the state
-//! directory. Of this computer, and no setting: what the next launch and
+//! What was open when the app last quit, each window with its database
+//! and its tables, and each connection's tables as they were when its
+//! window last closed: `session.json`, in the state directory. Of this
+//! computer, and no setting: what the next launch and
 //! the next open of a connection make of it is the settings' (`startup`).
 
 use std::collections::BTreeMap;
@@ -23,6 +24,11 @@ pub struct Session {
     pub open: Vec<Option<ConnectionId>>,
     /// Which of `open` was in front.
     pub active: usize,
+    /// Each of `open` as it was at quit, at its place: its database, its
+    /// tables and its row panel. `None` for the picker and for a window
+    /// the file had nothing of; empty where it had nothing of any (a file
+    /// from before, or one whose `windows` are not its `open`'s).
+    pub windows: Vec<Option<Window>>,
     /// Each saved connection's table tabs as its window last had them, by
     /// its id. Changed through [`Session::keep`] and [`Session::forget`].
     pub connections: BTreeMap<String, Kept>,
@@ -38,6 +44,15 @@ pub struct Session {
     /// The file's keys this version does not know, written back as they
     /// were.
     rest: BTreeMap<String, serde_json::Value>,
+}
+
+/// A window of `open` as it was at quit: what it had, and the server it
+/// was on ([`server_of`]), for the launch to tell whether its connection
+/// still names that server.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Window {
+    pub kept: Kept,
+    pub server: String,
 }
 
 /// One connection's window as it was when it closed: its tables, and
@@ -157,6 +172,63 @@ pub fn database_of(spec: &tabletist_db::ConnectSpec) -> String {
     }
 }
 
+/// The server `spec` names, all of it but its database, as a hash: what a
+/// window keeps of the server it was on, so that a connection edited since
+/// (another host, port, user, key...) is told from it without the file
+/// holding any of it. Two specs give one only where they differ in their
+/// database alone.
+pub fn server_of(spec: &tabletist_db::ConnectSpec) -> String {
+    let mut spec = spec.clone();
+    spec.database.clear();
+    // A Redis connection's database is a number of its own.
+    if let Some(redis) = &mut spec.redis {
+        redis.database = 0;
+    }
+    hash_of(&serde_json::to_string(&spec).unwrap_or_default())
+}
+
+/// `text`'s SHA-256, in hex.
+fn hash_of(text: &str) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// What `windows` were written beside: the hash of the file's
+/// `connections` as written. An older version keeps `windows` and this
+/// among the keys it does not know and writes them back as they were,
+/// with `connections` of its own: where they are no longer the ones the
+/// `windows` were written with, the windows are not read.
+fn stamp_of(connections: &BTreeMap<String, serde_json::Value>) -> String {
+    hash_of(&serde_json::to_string(connections).unwrap_or_default())
+}
+
+/// Puts `spec` on `database`, a name [`database_of`] gave: a server's
+/// database, or a Redis database's number. A SQLite file or a Files
+/// connection opens what it names, and a window kept with no database (or
+/// a Redis one with no number) stays on its connection's.
+pub fn put_on(spec: &mut tabletist_db::ConnectSpec, database: &str) {
+    match spec.driver {
+        tabletist_db::Driver::Postgres
+        | tabletist_db::Driver::MySql
+        | tabletist_db::Driver::BigQuery => {
+            if !database.is_empty() {
+                spec.database = database.to_owned();
+            }
+        }
+        tabletist_db::Driver::Redis => {
+            if let Ok(number) = database.parse::<u32>() {
+                let mut redis = spec.redis_spec();
+                redis.database = number;
+                spec.redis = Some(redis);
+            }
+        }
+        tabletist_db::Driver::Sqlite | tabletist_db::Driver::Files => {}
+    }
+}
+
 /// The file as it is written and read, each part on its own: a value of
 /// the wrong kind costs itself, not the file.
 #[derive(Default, Serialize, Deserialize)]
@@ -165,6 +237,14 @@ struct File {
     version: serde_json::Value,
     open: Vec<serde_json::Value>,
     active: serde_json::Value,
+    /// Beside `open`, each window's database and tables, with its
+    /// connection: an older version that does not know them writes them
+    /// back with an `open` of its own.
+    #[serde(skip_serializing_if = "serde_json::Value::is_null")]
+    windows: serde_json::Value,
+    /// The `connections` the `windows` were written beside ([`stamp_of`]).
+    #[serde(skip_serializing_if = "serde_json::Value::is_null")]
+    windows_with: serde_json::Value,
     connections: BTreeMap<String, serde_json::Value>,
     #[serde(flatten)]
     rest: BTreeMap<String, serde_json::Value>,
@@ -176,6 +256,12 @@ impl Session {
     pub fn load(path: &Path) -> Self {
         let file: File = crate::util::load_json(path);
         let mut session = Self::default();
+        // Only beside the `connections` they were written with: not where
+        // an older version wrote them back with its own.
+        let places = match file.windows_with.as_str() == Some(&stamp_of(&file.connections)) {
+            true => windows_of(&file.open, &file.windows),
+            false => Vec::new(),
+        };
         for (id, kept) in file.connections {
             match serde_json::from_value(kept.clone()) {
                 Ok(kept) => drop(session.connections.insert(id, kept)),
@@ -199,6 +285,10 @@ impl Session {
                 active = Some(session.open.len());
             }
             session.open.push(window);
+            session.windows.push(places.get(at).cloned().flatten());
+        }
+        if session.windows.iter().all(Option::is_none) {
+            session.windows.clear();
         }
         // Counted against the windows read: one that pointed at a window
         // left out, or past the end, is the first.
@@ -271,11 +361,80 @@ impl Session {
                 })
                 .collect(),
             active: self.active.into(),
+            windows: self.windows_written(),
+            windows_with: match self.windows.iter().all(Option::is_none) {
+                true => serde_json::Value::Null,
+                false => stamp_of(&connections).into(),
+            },
             connections,
             rest: self.rest.clone(),
         };
         crate::util::save_json(path, &file)
     }
+
+    /// `windows` as the file has them, each beside its window in `open`
+    /// with its connection's id and its server: none where nothing is
+    /// held of any.
+    fn windows_written(&self) -> serde_json::Value {
+        if self.windows.iter().all(Option::is_none) {
+            return serde_json::Value::Null;
+        }
+        let written = self.open.iter().enumerate().map(|(at, id)| {
+            let window = self.windows.get(at).and_then(Option::as_ref);
+            let (Some(id), Some(Window { kept, server })) = (id, window) else {
+                return serde_json::Value::Null;
+            };
+            match serde_json::to_value(kept) {
+                Ok(serde_json::Value::Object(mut window)) => {
+                    window.insert("connection".into(), id.0.clone().into());
+                    window.insert("server".into(), server.clone().into());
+                    serde_json::Value::Object(window)
+                }
+                _ => serde_json::Value::Null,
+            }
+        });
+        written.collect()
+    }
+}
+
+/// What `windows` has of each of `open`, at its place. Nothing at all
+/// where they are not as many, or where one is not of the window at its
+/// place: an older version wrote them back beside an `open` of its own.
+/// A window that does not read, or has no server, costs only itself.
+fn windows_of(open: &[serde_json::Value], windows: &serde_json::Value) -> Vec<Option<Window>> {
+    let Some(windows) = windows
+        .as_array()
+        .filter(|windows| windows.len() == open.len())
+    else {
+        return Vec::new();
+    };
+    let mut read = Vec::new();
+    for (entry, window) in open.iter().zip(windows) {
+        let window = match (entry, window) {
+            (_, serde_json::Value::Null) => None,
+            (serde_json::Value::String(id), serde_json::Value::Object(window))
+                if window.get("connection").and_then(|of| of.as_str()) == Some(id) =>
+            {
+                let mut window = window.clone();
+                window.remove("connection");
+                let server = window.remove("server");
+                match serde_json::from_value(serde_json::Value::Object(window)) {
+                    Ok(kept) => match server {
+                        Some(serde_json::Value::String(server)) => Some(Window { kept, server }),
+                        _ => None,
+                    },
+                    Err(error) => {
+                        // Not the error's text: it can quote a stored filter value.
+                        log::warn!("a window of {id} was not read: {:?}", error.classify());
+                        None
+                    }
+                }
+            }
+            _ => return Vec::new(),
+        };
+        read.push(window);
+    }
+    read
 }
 
 impl Kept {
@@ -461,6 +620,20 @@ fn op_of(name: &str) -> Option<FilterOp> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_redis_window_goes_back_on_its_database_number_on_its_server() {
+        let mut spec = tabletist_db::ConnectSpec::redis("localhost", 6379);
+        let server = server_of(&spec);
+        put_on(&mut spec, "3");
+        assert_eq!(spec.redis_spec().database, 3);
+        assert_eq!(database_of(&spec), "3");
+        // Its database is no part of its server.
+        assert_eq!(server_of(&spec), server);
+        // A window kept with no number stays where it is.
+        put_on(&mut spec, "");
+        assert_eq!(spec.redis_spec().database, 3);
+    }
     use super::*;
 
     fn books() -> KeptTab {
@@ -514,6 +687,184 @@ mod tests {
         assert_eq!(tab["filter"]["rows"][0][1], "eq");
         // What is as a new tab has it is left out.
         assert!(tab.get("pinned").is_none(), "{text}");
+    }
+
+    /// Bookshop's window on `database`, with `tabs` and the row panel
+    /// hidden.
+    fn window(database: &str, tabs: Vec<KeptTab>) -> Window {
+        let kept = Kept {
+            database: database.into(),
+            active: (!tabs.is_empty()).then_some(0),
+            tabs,
+            row_panel: false,
+            rest: BTreeMap::new(),
+        };
+        let spec = tabletist_db::ConnectSpec::from_url("postgres://demo@localhost:5432/bookshop")
+            .unwrap()
+            .0;
+        Window {
+            kept,
+            server: server_of(&spec),
+        }
+    }
+
+    #[test]
+    fn each_window_is_written_and_read_back_with_its_database_and_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let bookshop = ConnectionId("6a0c1f0e-5a52-4b7b-9c56-3f0c8f2f7a11".into());
+        let authors = KeptTab {
+            name: "authors".into(),
+            ..books()
+        };
+        let session = Session {
+            open: vec![Some(bookshop.clone()), Some(bookshop.clone()), None],
+            active: 1,
+            windows: vec![
+                Some(window("bookshop_development", vec![books()])),
+                Some(window("bookshop_test", vec![authors])),
+                None,
+            ],
+            ..Session::default()
+        };
+        session.save(&path).unwrap();
+        assert_eq!(Session::load(&path), session);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let windows = &json["windows"];
+        assert_eq!(windows[0]["connection"], bookshop.0.as_str());
+        assert_eq!(windows[1]["database"], "bookshop_test");
+        assert_eq!(windows[1]["tabs"][0]["name"], "authors");
+        assert_eq!(windows[2], serde_json::Value::Null);
+        // A session with nothing of its windows writes none.
+        let session = Session {
+            open: vec![Some(bookshop), None],
+            ..Session::default()
+        };
+        session.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("windows"), "{text}");
+        assert_eq!(Session::load(&path), session);
+    }
+
+    #[test]
+    fn a_file_from_before_the_windows_were_kept_has_nothing_of_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        std::fs::write(
+            &path,
+            r#"{"version":1,"open":["a",null],"active":0,"connections":{
+                "a":{"database":"bookshop","tabs":[{"schema":"public","name":"books","kind":"table"}]}}}"#,
+        )
+        .unwrap();
+        let session = Session::load(&path);
+        assert_eq!(session.open, vec![Some(ConnectionId("a".into())), None]);
+        assert!(session.windows.is_empty());
+        assert_eq!(session.connections["a"].tabs[0].name, "books");
+    }
+
+    #[test]
+    fn windows_that_are_not_the_open_ones_are_left_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let window = serde_json::json!(
+            {"connection": "a", "server": "s", "database": "bookshop_test", "tabs": []}
+        );
+        for (open, windows) in [
+            // An older version wrote back the windows with its own open.
+            (
+                serde_json::json!(["b"]),
+                serde_json::json!([window.clone()]),
+            ),
+            // As many as there were then.
+            (
+                serde_json::json!(["a", null]),
+                serde_json::json!([window.clone()]),
+            ),
+            // The picker where a window was.
+            (
+                serde_json::json!([null]),
+                serde_json::json!([window.clone()]),
+            ),
+            // Not a list.
+            (serde_json::json!(["a"]), serde_json::json!({"width": 1280})),
+        ] {
+            let text = serde_json::json!({
+                "version": 1,
+                "open": open,
+                "windows": windows,
+                "windows_with": stamp_of(&BTreeMap::new()),
+            });
+            std::fs::write(&path, text.to_string()).unwrap();
+            let session = Session::load(&path);
+            assert!(session.windows.is_empty(), "{text}");
+            assert!(!session.open.is_empty(), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_window_that_does_not_read_costs_only_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let text = serde_json::json!({
+            "version": 1,
+            "open": [7, "a", "b", "c", "d"],
+            "windows": [
+                null,
+                {"connection": "a", "server": "s", "tabs": "not a list"},
+                {"connection": "b", "server": "s", "database": "bookshop_test", "tabs": []},
+                null,
+                {"connection": "d", "database": "bookshop_test", "tabs": []},
+            ],
+            "windows_with": stamp_of(&BTreeMap::new()),
+        });
+        std::fs::write(&path, text.to_string()).unwrap();
+        let session = Session::load(&path);
+        // Each beside its window, the one of the wrong kind left out, and
+        // the one with no server not read.
+        assert_eq!(session.open.len(), 4);
+        assert_eq!(session.windows.len(), 4);
+        assert_eq!(session.windows[0], None);
+        let read = session.windows[1].as_ref().unwrap();
+        assert_eq!(read.kept.database, "bookshop_test");
+        assert_eq!(read.server, "s");
+        assert_eq!(session.windows[2], None);
+        assert_eq!(session.windows[3], None);
+    }
+
+    #[test]
+    fn windows_written_back_beside_other_connections_are_left_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let bookshop = ConnectionId("a".into());
+        let mut session = Session {
+            open: vec![Some(bookshop.clone())],
+            windows: vec![Some(window("bookshop_test", vec![books()]))],
+            ..Session::default()
+        };
+        session.keep(&bookshop, Kept::default());
+        session.save(&path).unwrap();
+        assert_eq!(Session::load(&path).windows, session.windows);
+        // An older version, which does not know the windows, wrote them
+        // back as they were with its own tables of the connection.
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        json["connections"]["a"] = serde_json::json!({"database": "bookshop", "tabs": []});
+        std::fs::write(&path, json.to_string()).unwrap();
+        let read = Session::load(&path);
+        assert!(read.windows.is_empty());
+        assert_eq!(read.open, session.open);
+        assert_eq!(read.connections["a"].database, "bookshop");
+        // And one with nothing to say what they were written beside.
+        json.as_object_mut().unwrap().remove("windows_with");
+        json["connections"] = text_connections(&text);
+        std::fs::write(&path, json.to_string()).unwrap();
+        assert!(Session::load(&path).windows.is_empty());
+    }
+
+    /// The `connections` of the file `text`.
+    fn text_connections(text: &str) -> serde_json::Value {
+        serde_json::from_str::<serde_json::Value>(text).unwrap()["connections"].clone()
     }
 
     #[test]
@@ -690,7 +1041,7 @@ mod tests {
         let path = dir.path().join("session.json");
         let text = serde_json::json!({
             "version": 2,
-            "windows": {"width": 1280},
+            "layout": {"width": 1280},
             "open": ["a"],
             "connections": {"a": {
                 "database": "",
@@ -705,7 +1056,7 @@ mod tests {
         session.save(&path).unwrap();
         let written: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(written["windows"]["width"], 1280);
+        assert_eq!(written["layout"]["width"], 1280);
         let kept = &written["connections"]["a"];
         assert_eq!(kept["pane"], "grid");
         assert_eq!(kept["tabs"][0]["hidden"][0], "price");

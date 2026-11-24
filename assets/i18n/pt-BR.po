@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-22 09:39-0500\n"
+"POT-Creation-Date: 2026-11-23 21:22-0500\n"
 "PO-Revision-Date: 2026-11-19 16:11-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -7253,10 +7253,6 @@ msgstr ""
 "arquivos de dados, para começar a navegar."
 
 #: src/ui/picker.rs
-msgid "Connect again"
-msgstr "Conectar novamente"
-
-#: src/ui/picker.rs
 #, rust-format
 msgid "Connect to {name}"
 msgstr "Conectar a {name}"
@@ -7308,6 +7304,10 @@ msgid "No joins"
 msgstr "Sem joins"
 
 #: src/ui/picker.rs
+msgid "Open another"
+msgstr "Abrir outra janela"
+
+#: src/ui/picker.rs
 msgid "Passwords are stored in the macOS Keychain"
 msgstr "As senhas ficam guardadas no Acesso às Chaves do macOS"
 
@@ -7348,6 +7348,11 @@ msgstr "acesso de agentes"
 #, rust-format
 msgid "agents {level}"
 msgstr "agentes: {level}"
+
+#: src/ui/picker.rs
+msgctxt "key hint"
+msgid "another"
+msgstr "outra janela"
 
 #: src/ui/picker.rs
 msgid "connect / show"

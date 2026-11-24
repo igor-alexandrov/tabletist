@@ -79,7 +79,7 @@ numbered; once you type, it lists what matches. Its commands stay on `:`.
 | --- | --- |
 | `j` `k`, arrows | Move |
 | Enter | Connect, or show the connection if it is open already |
-| Shift+Enter | Open it again |
+| Shift+Enter | Open one more window of it |
 | `n` | New connection |
 | `e` | Edit |
 | `yy` then `p` | Duplicate |
