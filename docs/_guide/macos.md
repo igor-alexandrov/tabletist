@@ -161,7 +161,7 @@ keyboard.
 | Arrows | Move |
 | Cmd+Up, Cmd+Down | The first and the last connection |
 | Return | Connect, or show the connection if it is open already |
-| Shift+Return | Open it again |
+| Shift+Return | Open one more window of it |
 | Cmd+N | New connection |
 | Cmd+E | Edit |
 | Cmd+D | Duplicate |
