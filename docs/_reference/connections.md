@@ -147,6 +147,15 @@ and DuckDB files (`.duckdb`). DuckDB reads them, inside Tabletist.
   a listed file that is gone, still stops the connection from opening:
   Test shows it as partial, with its fixes. The Excel reader is
   downloaded the first time a connection opens an Excel file.
+- The same banner shows on a table's view when its rows cannot be read
+  while you browse: a page, a sort or a filter that reaches a row such
+  as 48,112 says which file, row, value and column, in place of the
+  error card, with the same fixes. In the Omarchy look `t`, `e` and `x`
+  run them, and `s` still shows the structure. A fix is saved with the
+  connection at once and the connection opens again with it: its tabs
+  stay and the table reads again. **Skip** closes the table's tab, and
+  the table leaves the sidebar. Reset under Reading CSV in the
+  connection's dialog takes a fix off.
 - The SQL editor runs DuckDB's SQL, and the Structure view shows each
   file's path, size and format beside its columns, and what it is read
   with.

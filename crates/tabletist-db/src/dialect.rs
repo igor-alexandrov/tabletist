@@ -2697,6 +2697,7 @@ mod tests {
                 number,
                 constraint: None,
                 columns: Vec::new(),
+                file: None,
             }),
         };
         for code in ["40P01", "55P03", "40001"] {

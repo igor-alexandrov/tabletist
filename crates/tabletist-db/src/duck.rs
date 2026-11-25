@@ -1547,6 +1547,23 @@ impl Conn {
         .await
     }
 
+    /// `error` from reading `object`, naming the file it could not be read
+    /// from where `object` is a file's table and DuckDB's words say a row,
+    /// a value or a line of it. Any other error is left as it is.
+    fn of_file(&self, object: &ObjectRef, mut error: Error) -> Error {
+        let Some(file) = self.file_of(object) else {
+            return error;
+        };
+        let failure = failure(&file.found, &error);
+        if let (Error::Query { named, .. }, false) = (
+            &mut error,
+            matches!(failure.why, crate::files::Why::Other(_)),
+        ) {
+            named.file = Some(failure);
+        }
+        error
+    }
+
     /// The file `object` is read from, where it is a file's table.
     fn file_of(&self, object: &ObjectRef) -> Option<&Opened> {
         (object.schema == MAIN)
@@ -1746,6 +1763,7 @@ impl Adapter for Conn {
 
     async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
         check_raw_where(query)?;
+        let object = query.object.clone();
         let query = query.clone();
         let limit = query.limit as usize;
         self.run(move |connection| {
@@ -1768,6 +1786,7 @@ impl Adapter for Conn {
             })
         })
         .await
+        .map_err(|error| self.of_file(&object, error))
     }
 
     async fn export_statement(&self, query: &RowQuery, columns: &[String]) -> Result<String> {

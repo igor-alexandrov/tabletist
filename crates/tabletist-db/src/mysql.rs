@@ -3248,6 +3248,7 @@ pub(crate) fn named(number: u32, message: &str) -> Named {
         number: Some(number),
         constraint,
         columns,
+        file: None,
     }
 }
 

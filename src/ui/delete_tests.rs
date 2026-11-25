@@ -1011,6 +1011,7 @@ fn refused(code: &str, number: Option<u32>, constraint: Option<&str>) -> tableti
             number,
             constraint: constraint.map(str::to_owned),
             columns: Vec::new(),
+            file: None,
         }),
     }
 }

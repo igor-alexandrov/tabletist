@@ -1,21 +1,53 @@
-//! The partial Test of a Files connection: what the banner over the
-//! footer says of the first file the Test could not read, and the fixes it
-//! offers. A value its column's type cannot take in a CSV or TSV has three
-//! (read the column as text, read the value as empty, skip the file); any
-//! other failure has the last alone. With several, the next shows once the
-//! first is mended and the Test has run again.
+//! The partial banner of a Files connection: what it says of a file that
+//! could not be read, and the fixes it offers. A value its column's type
+//! cannot take in a CSV or TSV has three (read the column as text, read
+//! the value as empty, skip the file); any other failure has the last
+//! alone. The connection dialog shows it over its footer for the first
+//! file its Test could not read; a table's view shows it where the rows
+//! go for the file its page could not be read from.
 
 use tabletist_db::files::{Failure, Why};
 
-use super::Skin;
-use crate::i18n::gettext;
+use crate::i18n::{Locale, gettext};
 use crate::keymap::Command;
-use crate::model::{ConnectionForm, FileFix};
+use crate::model::FileFix;
+use crate::theme::Look;
 use crate::ui::banner::{Action, Banner};
 use crate::ui::states::Tone;
 
+/// The commands whose keys run the fixes where the banner shows, in the
+/// terminal look: reading the column as text, the value as empty, and
+/// skipping the file.
+pub struct Keys {
+    pub text: Command,
+    pub empty: Command,
+    pub skip: Command,
+}
+
+/// The connection dialog's keys: `t`, `e` and `s`.
+pub const FORM_KEYS: Keys = Keys {
+    text: Command::FormFixText,
+    empty: Command::FormFixEmpty,
+    skip: Command::FormFixSkip,
+};
+
+/// A Files table's keys, where its rows go: `t`, `e` and `x`, which
+/// leaves `s` the table's Structure.
+pub const GRID_KEYS: Keys = Keys {
+    text: Command::GridFixText,
+    empty: Command::GridFixEmpty,
+    skip: Command::GridFixSkip,
+};
+
+/// What the words are put in: the look, for its case, and the language.
+#[derive(Clone, Copy)]
+struct Skin<'a> {
+    look: &'a Look,
+    locale: Locale,
+}
+
 /// The banner's words and fixes, made for one frame.
-pub(super) struct Partial {
+pub struct Partial {
     lead: String,
     text: String,
     fixes: Vec<Fix>,
@@ -29,7 +61,7 @@ struct Fix {
 }
 
 impl Partial {
-    pub(super) fn banner(&self) -> Banner<'_> {
+    pub fn banner(&self) -> Banner<'_> {
         Banner {
             tone: Tone::Warning,
             lead: &self.lead,
@@ -48,7 +80,7 @@ impl Partial {
     }
 
     /// The fix of the action at `at`, as the banner counts them.
-    pub(super) fn fix(&self, at: usize) -> Option<FileFix> {
+    pub fn fix(&self, at: usize) -> Option<FileFix> {
         self.fixes.get(at).map(|fix| fix.fix)
     }
 }
@@ -98,9 +130,16 @@ fn short(text: &str) -> String {
     }
 }
 
-/// The banner for the first file `form`'s last Test could not read.
-pub(super) fn of(ctx: &egui::Context, form: &ConnectionForm, skin: &Skin) -> Option<Partial> {
-    let failure = form.first_failure()?;
+/// The banner for `failure`, in `look` and `locale`, its fixes run by
+/// `keys` in the terminal look.
+pub fn of(
+    ctx: &egui::Context,
+    failure: &Failure,
+    look: &Look,
+    locale: Locale,
+    keys: &Keys,
+) -> Partial {
+    let skin = &Skin { look, locale };
     let terminal = skin.look.terminal;
     let file = failure.file.as_str();
     let lead = match terminal {
@@ -129,7 +168,7 @@ pub(super) fn of(ctx: &egui::Context, form: &ConnectionForm, skin: &Skin) -> Opt
                 &[("column", &short(column))],
             ),
             fix: FileFix::Text,
-            key: key(Command::FormFixText),
+            key: key(keys.text),
             quiet: false,
         });
         fixes.push(Fix {
@@ -139,7 +178,7 @@ pub(super) fn of(ctx: &egui::Context, form: &ConnectionForm, skin: &Skin) -> Opt
                 &[("value", &short(value))],
             ),
             fix: FileFix::Empty,
-            key: key(Command::FormFixEmpty),
+            key: key(keys.empty),
             quiet: false,
         });
     }
@@ -150,10 +189,10 @@ pub(super) fn of(ctx: &egui::Context, form: &ConnectionForm, skin: &Skin) -> Opt
             &[("file", &short(file))],
         ),
         fix: FileFix::Skip,
-        key: key(Command::FormFixSkip),
+        key: key(keys.skip),
         quiet: true,
     });
-    Some(Partial { lead, text, fixes })
+    Partial { lead, text, fixes }
 }
 
 /// What the banner says of why the file could not be read.

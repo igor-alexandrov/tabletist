@@ -119,6 +119,14 @@ pub enum Action {
     /// One of the partial Test's fixes for the first file it could not
     /// read: saved as an override in the form, and the Test run again.
     FixFile(FileFix),
+    /// One of the partial banner's fixes for the file a Files table's rows
+    /// could not be read from: saved as an override in the connection, and
+    /// the session opened again with it. Skip closes the tab.
+    FixTableFile {
+        tab: ConnTabId,
+        object_tab: TabId,
+        fix: FileFix,
+    },
     /// Read what a Files connection's Source holds again, for the found
     /// line: after its folder is typed.
     ReadSource,
@@ -2229,6 +2237,54 @@ pub enum FileFix {
     Skip,
 }
 
+/// The override under Reading CSV that mends `failure` as `fix` says, for
+/// a connection that reads `source`. `None` where `fix` changes a column
+/// and the failure is not of a column's value. The override names the
+/// file by its name, or by its path where the list holds another file of
+/// that name (`./returns.csv` for one listed as `returns.csv`).
+pub fn file_override(
+    failure: &tabletist_db::files::Failure,
+    fix: FileFix,
+    source: Option<&tabletist_db::files::Source>,
+) -> Option<tabletist_db::files::Override> {
+    use tabletist_db::files::{Change, Override, Source, Why};
+    let change = match (fix, &failure.why) {
+        (FileFix::Skip, _) => Change::Skip,
+        (FileFix::Text, Why::Value { column, .. }) if failure.takes_column_fixes() => {
+            Change::Text {
+                column: column.clone(),
+            }
+        }
+        (FileFix::Empty, Why::Value { column, value, .. }) if failure.takes_column_fixes() => {
+            Change::Empty {
+                column: column.clone(),
+                values: vec![value.clone()],
+            }
+        }
+        (FileFix::Text | FileFix::Empty, _) => return None,
+    };
+    let name = tabletist_db::files::file_name(&failure.path);
+    let shared = match source {
+        Some(Source::Files(listed)) => listed
+            .iter()
+            .filter(|listed| **listed != failure.path)
+            .any(|listed| tabletist_db::files::file_name(listed) == name),
+        Some(Source::Folder(_)) | None => false,
+    };
+    let file = match shared {
+        // A path with no folder in it is written from the current one,
+        // so that it is a path still, which no other file matches.
+        true => match failure.path.parent() {
+            Some(folder) if folder.as_os_str().is_empty() => {
+                format!(".{}{name}", std::path::MAIN_SEPARATOR)
+            }
+            _ => tabletist_db::files::shown(&failure.path),
+        },
+        false => name,
+    };
+    Some(Override { file, change })
+}
+
 /// A change in a Files connection's Reading CSV section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CsvChange {
@@ -2465,52 +2521,18 @@ impl ConnectionForm {
     }
 
     /// Mends the first file the last Test could not read as `fix` says: an
-    /// override under Reading CSV, which forgets the Test. False when there
-    /// is no such file, or `fix` changes a column and the failure is not of
-    /// a column's value. The override names the file by its name, or by
-    /// its path where the list holds another file of that name
-    /// (`./returns.csv` for one listed as `returns.csv`).
+    /// override under Reading CSV (`file_override`), which forgets the
+    /// Test. False when there is no such file, or `fix` changes a column
+    /// and the failure is not of a column's value.
     pub fn fix_file(&mut self, fix: FileFix) -> bool {
-        use tabletist_db::files::{Change, Override, Why};
-        let Some(failure) = self.first_failure().cloned() else {
+        let Some(failure) = self.first_failure() else {
             return false;
         };
-        let change = match (fix, &failure.why) {
-            (FileFix::Skip, _) => Change::Skip,
-            (FileFix::Text, Why::Value { column, .. }) if failure.takes_column_fixes() => {
-                Change::Text {
-                    column: column.clone(),
-                }
-            }
-            (FileFix::Empty, Why::Value { column, value, .. }) if failure.takes_column_fixes() => {
-                Change::Empty {
-                    column: column.clone(),
-                    values: vec![value.clone()],
-                }
-            }
-            (FileFix::Text | FileFix::Empty, _) => return false,
-        };
-        let name = tabletist_db::files::file_name(&failure.path);
         // The list as the Test read it.
-        let shared = match self.files_source() {
-            Some(tabletist_db::files::Source::Files(listed)) => listed
-                .iter()
-                .filter(|listed| **listed != failure.path)
-                .any(|listed| tabletist_db::files::file_name(listed) == name),
-            Some(tabletist_db::files::Source::Folder(_)) | None => false,
+        let Some(added) = file_override(failure, fix, self.files_source().as_ref()) else {
+            return false;
         };
-        let file = match shared {
-            // A path with no folder in it is written from the current one,
-            // so that it is a path still, which no other file matches.
-            true => match failure.path.parent() {
-                Some(folder) if folder.as_os_str().is_empty() => {
-                    format!(".{}{name}", std::path::MAIN_SEPARATOR)
-                }
-                _ => tabletist_db::files::shown(&failure.path),
-            },
-            false => name,
-        };
-        self.files_csv.overrides.push(Override { file, change });
+        self.files_csv.overrides.push(added);
         self.forget_test();
         true
     }
@@ -4879,6 +4901,15 @@ impl FilterBar {
 }
 
 impl ObjectTab {
+    /// The file a Files table's rows could not be read from, and why, while
+    /// that error is on screen: what the partial banner says and mends.
+    pub fn file_failure(&self) -> Option<&tabletist_db::files::Failure> {
+        match self.rows.shown_error()? {
+            tabletist_db::Error::Query { named, .. } => named.file.as_ref(),
+            _ => None,
+        }
+    }
+
     /// Asks the row panel to give the keyboard to its field of the column
     /// `col`, and makes that field's cell the selected one at once: what
     /// acts on the selection in the frame before the panel is drawn (a

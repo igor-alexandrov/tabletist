@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-24 08:23-0500\n"
+"POT-Creation-Date: 2026-11-24 20:53-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -1730,6 +1730,11 @@ msgstr ""
 "Читать как текст столбец, который не прочитала проверка подключения Files"
 
 #: crates/tabletist-core/src/keymap.rs
+msgid "Read the column a Files table's rows could not be read from as text"
+msgstr ""
+"Читать как текст столбец, из-за которого не прочитались строки таблицы Files"
+
+#: crates/tabletist-core/src/keymap.rs
 msgid "Read the release notes of the version offered, in the settings"
 msgstr "Прочитать заметки к предложенной версии (в настройках)"
 
@@ -1737,6 +1742,12 @@ msgstr "Прочитать заметки к предложенной верси
 msgid "Read the value a Files connection's Test could not read as empty"
 msgstr ""
 "Читать как пустое значение, которое не прочитала проверка подключения Files"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Read the value a Files table's rows could not be read from as empty"
+msgstr ""
+"Читать как пустое значение, из-за которого не прочитались строки таблицы "
+"Files"
 
 #: crates/tabletist-core/src/keymap.rs
 msgid "Read-only or read-write runs"
@@ -1947,6 +1958,10 @@ msgstr "Боковая панель"
 #: crates/tabletist-core/src/keymap.rs
 msgid "Skip the file a Files connection's Test could not read"
 msgstr "Пропустить файл, который не прочитала проверка подключения Files"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Skip the file a Files table's rows could not be read from"
+msgstr "Пропустить файл, из которого не прочитались строки таблицы Files"
 
 #: crates/tabletist-core/src/keymap.rs
 msgid "Skip the version offered, in the settings"
@@ -4204,83 +4219,6 @@ msgid_plural "{n} failed"
 msgstr[0] "{n} не прочитан"
 msgstr[1] "{n} не прочитаны"
 msgstr[2] "{n} не прочитаны"
-
-#: src/ui/connect_dialog/partial.rs
-#, rust-format
-msgid "Line {line} has a value of another type than the lines before it."
-msgstr "В строке {line} значение другого типа, чем в строках до неё."
-
-#: src/ui/connect_dialog/partial.rs
-#, rust-format
-msgid "Line {line} isn't JSON."
-msgstr "Строка {line} не в формате JSON."
-
-#: src/ui/connect_dialog/partial.rs
-#, rust-format
-msgid "Read '{value}' as empty"
-msgstr "Читать '{value}' как пустое"
-
-#: src/ui/connect_dialog/partial.rs
-#, rust-format
-msgid "Read {column} as text"
-msgstr "Читать {column} как текст"
-
-#: src/ui/connect_dialog/partial.rs
-#, rust-format
-msgid "Row {row} has '{value}' in {column}, {kind}."
-msgstr "В строке {row} в {column} стоит '{value}', а это {kind}."
-
-#: src/ui/connect_dialog/partial.rs
-#, rust-format
-msgid "Row {row} has {found} values, where the file's rows have {expected}."
-msgstr "В строке {row} значений: {found}, а в строках файла их {expected}."
-
-#: src/ui/connect_dialog/partial.rs
-#, rust-format
-msgid "Skip {file}"
-msgstr "Пропустить {file}"
-
-#: src/ui/connect_dialog/partial.rs
-msgid "a UUID column"
-msgstr "столбец UUID"
-
-#: src/ui/connect_dialog/partial.rs
-#, rust-format
-msgid "a column of type {kind}"
-msgstr "столбец типа {kind}"
-
-#: src/ui/connect_dialog/partial.rs
-msgid "a date column"
-msgstr "столбец дат"
-
-#: src/ui/connect_dialog/partial.rs
-msgid "a number column"
-msgstr "числовой столбец"
-
-#: src/ui/connect_dialog/partial.rs
-msgid "a time column"
-msgstr "столбец времени"
-
-#: src/ui/connect_dialog/partial.rs
-msgid "a timestamp column"
-msgstr "столбец меток времени"
-
-#: src/ui/connect_dialog/partial.rs
-msgid "a true or false column"
-msgstr "столбец значений «да» и «нет»"
-
-#: src/ui/connect_dialog/partial.rs
-msgid "a whole number column"
-msgstr "столбец целых чисел"
-
-#: src/ui/connect_dialog/partial.rs
-msgid "an interval column"
-msgstr "столбец интервалов"
-
-#: src/ui/connect_dialog/partial.rs
-#, rust-format
-msgid "{file} couldn't be read."
-msgstr "Не удалось прочитать {file}."
 
 #: src/ui/connect_dialog/reading.rs
 msgid "All rows"
@@ -6989,6 +6927,83 @@ msgstr "дерево"
 #: src/ui/write_prompts.rs
 msgid "write"
 msgstr "записать"
+
+#: src/ui/partial.rs
+#, rust-format
+msgid "Line {line} has a value of another type than the lines before it."
+msgstr "В строке {line} значение другого типа, чем в строках до неё."
+
+#: src/ui/partial.rs
+#, rust-format
+msgid "Line {line} isn't JSON."
+msgstr "Строка {line} не в формате JSON."
+
+#: src/ui/partial.rs
+#, rust-format
+msgid "Read '{value}' as empty"
+msgstr "Читать '{value}' как пустое"
+
+#: src/ui/partial.rs
+#, rust-format
+msgid "Read {column} as text"
+msgstr "Читать {column} как текст"
+
+#: src/ui/partial.rs
+#, rust-format
+msgid "Row {row} has '{value}' in {column}, {kind}."
+msgstr "В строке {row} в {column} стоит '{value}', а это {kind}."
+
+#: src/ui/partial.rs
+#, rust-format
+msgid "Row {row} has {found} values, where the file's rows have {expected}."
+msgstr "В строке {row} значений: {found}, а в строках файла их {expected}."
+
+#: src/ui/partial.rs
+#, rust-format
+msgid "Skip {file}"
+msgstr "Пропустить {file}"
+
+#: src/ui/partial.rs
+msgid "a UUID column"
+msgstr "столбец UUID"
+
+#: src/ui/partial.rs
+#, rust-format
+msgid "a column of type {kind}"
+msgstr "столбец типа {kind}"
+
+#: src/ui/partial.rs
+msgid "a date column"
+msgstr "столбец дат"
+
+#: src/ui/partial.rs
+msgid "a number column"
+msgstr "числовой столбец"
+
+#: src/ui/partial.rs
+msgid "a time column"
+msgstr "столбец времени"
+
+#: src/ui/partial.rs
+msgid "a timestamp column"
+msgstr "столбец меток времени"
+
+#: src/ui/partial.rs
+msgid "a true or false column"
+msgstr "столбец значений «да» и «нет»"
+
+#: src/ui/partial.rs
+msgid "a whole number column"
+msgstr "столбец целых чисел"
+
+#: src/ui/partial.rs
+msgid "an interval column"
+msgstr "столбец интервалов"
+
+#: src/ui/partial.rs
+#, rust-format
+msgid "{file} couldn't be read."
+msgstr "Не удалось прочитать {file}."
 
 #: src/ui/password_prompt.rs src/ui/picker.rs
 msgid "Connect"
