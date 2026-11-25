@@ -126,6 +126,7 @@ pub mod partial;
 #[cfg(test)]
 mod partial_test_tests;
 pub mod password_prompt;
+pub mod path_list;
 pub mod pending_bar;
 pub mod picker;
 #[cfg(test)]
@@ -146,6 +147,8 @@ pub mod settings;
 #[cfg(test)]
 mod settings_access_tests;
 pub mod sidebar;
+#[cfg(test)]
+mod source_names_tests;
 pub mod sql_complete;
 pub mod sql_editor;
 pub mod sql_results;

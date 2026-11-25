@@ -696,50 +696,21 @@ fn choices(ui: &mut Ui, sheet: &ExportSheet, skin: Skin<'_>, actions: &mut Vec<A
                 response.rect.center().y,
                 hint(),
             );
-            // Where the list is drawn (where egui put it, as a small window
-            // may move it up): a press on it takes the keyboard from the
-            // line for the moment of a click, a pointer only resting there
-            // does not keep it.
-            let list_rect = sheet.listed.as_ref().map(|list| {
-                let height = TextRole::OBody.row_height(ui.ctx(), look.faces) + 4.0;
-                let below = Rect::from_min_size(
-                    response.rect.left_bottom(),
-                    vec2(response.rect.width(), height * list.names.len() as f32),
-                );
-                ui.ctx()
-                    .memory(|memory| memory.area_rect(list_id(sheet)))
-                    .unwrap_or(below)
-            });
-            let clicking = ui
-                .ctx()
-                .input(|input| input.pointer.any_down() || input.pointer.any_released());
-            let pointer_on_list = clicking
-                && list_rect.is_some_and(|rect| {
-                    ui.ctx()
-                        .pointer_latest_pos()
-                        .is_some_and(|pos| rect.contains(pos))
-                });
             // The keyboard gone from the line: its list goes too, until the
             // next key typed there (plan 4b, B9).
-            if !response.has_focus() && !pointer_on_list && sheet.listed.is_some() {
+            let asked = crate::ui::path_list::under(
+                ui,
+                &response,
+                &sheet.path,
+                sheet.listed.as_ref(),
+                list_id(sheet),
+                (look, palette),
+            );
+            if asked.close {
                 change(actions, ExportChange::ClosePathList);
             }
-            if (response.has_focus() || pointer_on_list) && sheet.lit_name().is_some() {
-                // Esc and ↑ ↓ are the list's, not egui's to move or drop
-                // the keyboard with (`keys`).
-                let filter = egui::EventFilter {
-                    horizontal_arrows: true,
-                    vertical_arrows: true,
-                    escape: true,
-                    ..Default::default()
-                };
-                ui.ctx()
-                    .memory_mut(|memory| memory.set_focus_lock_filter(response.id, filter));
-                if path_list(ui.ctx(), sheet, response.rect, skin, actions) {
-                    // Back to the line, for a folder's names next.
-                    ui.ctx()
-                        .memory_mut(|memory| memory.request_focus(response.id));
-                }
+            if let Some(at) = asked.taken {
+                actions.push(Action::PickPath(Some(at)));
             }
             if sheet.exists {
                 widgets::label(
@@ -763,93 +734,7 @@ fn list_id(sheet: &ExportSheet) -> Id {
 /// time the app asks (`ExportSheet::to_line`): a name taken from the list,
 /// `ctrl+o`'s answer.
 fn take_line(ctx: &egui::Context, id: Id, sheet: &ExportSheet) {
-    let seen = id.with("to-line");
-    let asked = ctx.data_mut(|data| {
-        let before = data.get_temp::<u64>(seen).unwrap_or(0);
-        data.insert_temp(seen, sheet.to_line);
-        before != sheet.to_line
-    });
-    if !asked {
-        return;
-    }
-    let mut state = egui::text_edit::TextEditState::load(ctx, id).unwrap_or_default();
-    let end = egui::text::CCursor::new(sheet.path.chars().count());
-    state
-        .cursor
-        .set_char_range(Some(egui::text::CCursorRange::one(end)));
-    state.store(ctx, id);
-    ctx.memory_mut(|memory| memory.request_focus(id));
-}
-
-/// The names the path line starts, under the line `field` (spec 4, S15;
-/// the component board's path line): the lit one on the selection's fill,
-/// the rest muted, in an area of their own over the float, as the float's
-/// rows scroll and clip. A click takes one; returns whether one did.
-fn path_list(
-    ctx: &egui::Context,
-    sheet: &ExportSheet,
-    field: Rect,
-    skin: Skin<'_>,
-    actions: &mut Vec<Action>,
-) -> bool {
-    let Skin { look, palette, .. } = skin;
-    let Some(list) = sheet.listed.as_ref() else {
-        return false;
-    };
-    let lit = list.lit.min(list.names.len().saturating_sub(1));
-    let height = TextRole::OBody.row_height(ctx, look.faces) + 4.0;
-    let mut taken = false;
-    egui::Area::new(list_id(sheet))
-        .order(egui::Order::Tooltip)
-        .fixed_pos(field.left_bottom())
-        .show(ctx, |ui| {
-            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-            for (at, listed) in list.names.iter().enumerate() {
-                // No keyboard of its own: the line keeps it.
-                let (row, response) =
-                    ui.allocate_exact_size(vec2(field.width(), height), Sense::CLICK);
-                let name = match listed.folder {
-                    true => format!("{}/", listed.name),
-                    false => listed.name.clone(),
-                };
-                let ink = match at == lit {
-                    true => {
-                        ui.painter().rect_filled(row, 0, palette.selection);
-                        palette.text
-                    }
-                    false => {
-                        ui.painter().rect_filled(row, 0, palette.panel);
-                        palette.dim
-                    }
-                };
-                widgets::paint_text(
-                    ui,
-                    row.left() + 8.0,
-                    row.center().y,
-                    Text::one(look, TextRole::OBody, &name, ink),
-                );
-                response.widget_info(|| {
-                    egui::WidgetInfo::selected(
-                        egui::WidgetType::SelectableLabel,
-                        true,
-                        at == lit,
-                        &name,
-                    )
-                });
-                if response.clicked() {
-                    actions.push(Action::PickPath(Some(at)));
-                    taken = true;
-                }
-            }
-            let outline = ui.min_rect();
-            ui.painter().rect_stroke(
-                outline,
-                0,
-                egui::Stroke::new(1.0, palette.outline),
-                egui::StrokeKind::Inside,
-            );
-        });
-    taken
+    crate::ui::path_list::to_line(ctx, id, sheet.to_line, &sheet.path);
 }
 
 /// The notes under the choices, always in sight above the footer: the

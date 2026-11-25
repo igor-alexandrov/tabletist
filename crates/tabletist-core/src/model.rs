@@ -134,6 +134,9 @@ pub enum Action {
     /// Read what a Files connection's Source holds again, for the found
     /// line: after its folder is typed.
     ReadSource,
+    /// The names listed under a Files connection's path line, in the
+    /// terminal look: the folder field's, or the file list's add line's.
+    SourceNames(SourceNames),
     /// Put this ~/.ssh/config Host alias in the SSH host field.
     PickSshHost(String),
     /// Ask an open window of the saved connection for the columns of these
@@ -2186,6 +2189,23 @@ pub struct ConnectionForm {
     pub files_list: Vec<String>,
     /// Files: the row of the list the keyboard is on, by its place.
     pub files_cursor: Option<usize>,
+    /// Files, terminal look: the line under the list a file's path is
+    /// typed in, to add it.
+    pub files_add: String,
+    /// Files, terminal look: the names listed under the path line being
+    /// typed in (the folder field, or the add line), for the line they
+    /// were listed for.
+    pub files_names: Option<crate::export_sheet::PathList>,
+    /// Files: the listing on its way, by its ask. One at a time: a line
+    /// typed meanwhile is listed once it answers.
+    pub files_listing: Option<u64>,
+    /// Files: the names put away (Escape) for the line as it is, until it
+    /// changes.
+    pub files_names_closed: bool,
+    /// Asks the view, once for each new value, to give the path line the
+    /// keyboard with its cursor at the end: after a name is taken from
+    /// its list.
+    pub files_to_line: u64,
     /// Files: what the Source holds, as the backend last read it, for the
     /// found line and the list's rows.
     pub files_found: FilesFound,
@@ -2228,6 +2248,22 @@ pub enum PickTarget {
     Folder,
     /// Files added to a Files connection's list.
     Files,
+}
+
+/// A change to the names listed under a Files connection's path line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceNames {
+    /// The line was typed in: the names it starts, asked for anew.
+    Typed,
+    /// The lit name moved by, round.
+    Move(isize),
+    /// The name at the place taken, else the lit one: a folder's lists
+    /// its own names next, a file's is added to the list.
+    Take(Option<usize>),
+    /// The names put away until the line changes.
+    Close,
+    /// The add line's Enter with no name listed: the path as typed added.
+    Add,
 }
 
 /// A fix the partial Test offers for a file it could not read.
@@ -2435,6 +2471,11 @@ impl Default for ConnectionForm {
             files_folder: String::new(),
             files_list: Vec::new(),
             files_cursor: None,
+            files_add: String::new(),
+            files_names: None,
+            files_listing: None,
+            files_names_closed: false,
+            files_to_line: 0,
             files_found: FilesFound::Unread,
             files_tested: None,
             files_check: None,
@@ -2477,6 +2518,10 @@ impl ConnectionForm {
         }
         self.pick_request = None;
         self.ssh_hosts_request = None;
+        // Nor is a folder's listing answered: the names start anew.
+        self.files_listing = None;
+        self.files_names = None;
+        self.files_names_closed = false;
     }
 
     /// Applies a change made in the Reading CSV section. A Test read with
@@ -2510,6 +2555,39 @@ impl ConnectionForm {
         self.test_waiting = 0;
         self.files_tested = None;
         self.files_check = None;
+    }
+
+    /// Files, terminal look: the path line names are typed into, as the
+    /// Source's kind has it (the folder field, or the list's add line),
+    /// and the names it offers.
+    pub fn source_line(&self) -> (&str, crate::source_names::Keep) {
+        match self.files_kind {
+            FilesKind::Folder => (&self.files_folder, crate::source_names::Keep::Folders),
+            FilesKind::Files => (&self.files_add, crate::source_names::Keep::Readable),
+        }
+    }
+
+    /// The name lit under the path line, if one is listed for the line as
+    /// it is.
+    pub fn lit_source_name(&self) -> Option<&crate::export_sheet::Listed> {
+        let (line, _) = self.source_line();
+        let list = self.files_names.as_ref().filter(|list| list.line == line)?;
+        list.names
+            .get(list.lit.min(list.names.len().saturating_sub(1)))
+    }
+
+    /// Whether the list holds the file `path` names, however it is
+    /// written (`~` or the home folder's path, `/` or `\`, `./`).
+    pub fn lists_file(&self, path: &str) -> bool {
+        self.listed_at(path).is_some()
+    }
+
+    /// Where the list holds the file `path` names, however it is written.
+    pub fn listed_at(&self, path: &str) -> Option<usize> {
+        let path = tabletist_db::files::expanded(Path::new(path.trim()));
+        self.files_list
+            .iter()
+            .position(|listed| tabletist_db::files::expanded(Path::new(listed.trim())) == path)
     }
 
     /// The first file the last Test could not read, which the partial
@@ -9376,6 +9454,27 @@ mod tests {
         assert!(before.is_on(&completion_site(""), print("users")));
         // But not with the cursor moved back before the letter.
         assert!(!before.is_on(&completion_site(""), print("susers")));
+    }
+
+    /// A form set aside (its Delete asked about) gets no answer to the
+    /// listing it waited for: once it is back, its path lines list anew.
+    #[test]
+    fn a_form_set_aside_waits_for_no_listing() {
+        let mut form = ConnectionForm {
+            driver: Driver::Files,
+            files_listing: Some(9),
+            files_names: Some(crate::export_sheet::PathList {
+                line: "/data/book".into(),
+                names: Vec::new(),
+                lit: 0,
+            }),
+            files_names_closed: true,
+            ..ConnectionForm::default()
+        };
+        form.set_aside();
+        assert_eq!(form.files_listing, None);
+        assert!(form.files_names.is_none());
+        assert!(!form.files_names_closed);
     }
 
     /// A fix adds the override for the first file the Test could not read

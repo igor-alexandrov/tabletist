@@ -6,6 +6,8 @@
 mod agents;
 mod choice;
 mod files;
+#[cfg(test)]
+pub(crate) use files::source_line_id;
 mod group;
 mod reading;
 mod sheet;
@@ -22,7 +24,7 @@ use crate::env::{EnvColors, Environment, Platform, env_colors};
 use crate::i18n::{Locale, Msgid, fill, gettext, msgid, ngettext};
 use crate::keymap::{Command, Keymap, Scope};
 use crate::model::{
-    Action, ConnectionForm, FilesKind, LoadedTables, SshAuthKind, SshHints, TestState,
+    Action, ConnectionForm, FilesKind, LoadedTables, SourceNames, SshAuthKind, SshHints, TestState,
 };
 use crate::style::Icon;
 use crate::theme::{self, Look, Palette};
@@ -349,6 +351,31 @@ pub fn show(
     let focus_name = form.focus_name;
     form.focus_name &= measuring;
     let mut actions: Vec<Action> = wanted.into_iter().collect();
+    // The names under a Files path line, while they show: their keys come
+    // before the form's Enter and Esc, and are not the line's to move its
+    // cursor with. Enter held from the press that took a name takes
+    // nothing more.
+    let on_line =
+        ctx.memory(|memory| memory.focused()) == Some(files::source_line_id(form.files_kind));
+    if look.terminal && is_files(form) && on_line && form.lit_source_name().is_some() {
+        ctx.input_mut(|input| {
+            let pick = on(input, Command::PathPick);
+            if pick.count > 0 {
+                crate::ui::keys::take_enter(input);
+                if pick.fresh {
+                    actions.push(Action::SourceNames(SourceNames::Take(None)));
+                }
+            } else if on(input, Command::ClosePathList).count > 0 {
+                actions.push(Action::SourceNames(SourceNames::Close));
+            } else {
+                let step = on(input, Command::PathNext).count as isize
+                    - on(input, Command::PathPrevious).count as isize;
+                if step != 0 {
+                    actions.push(Action::SourceNames(SourceNames::Move(step)));
+                }
+            }
+        });
+    }
     // The dialog's own keys are taken before anything draws: a focused
     // button would read the chord that saves and connects as a press of
     // itself. An open list keeps them, as it keeps Escape. A press of its

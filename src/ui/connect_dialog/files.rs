@@ -7,7 +7,7 @@ use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 
 use super::choice::{Choice, Group, choose};
 use super::{Skin, field_with_button, input};
-use crate::model::{Action, ConnectionForm, FilesFound, FilesKind};
+use crate::model::{Action, ConnectionForm, FilesFound, FilesKind, SourceNames};
 use crate::style::Icon;
 use crate::typography::{Text, TextRole};
 use crate::ui::{file_list, widgets};
@@ -288,9 +288,51 @@ pub(super) fn sheet(
     }
 }
 
-/// The terminal look: the "source" section's rows. The folder is typed
-/// or picked (`ctrl+o`); the list's rows are moved through with the
-/// arrows, `a` adds files and `x` takes the row off.
+/// The path line names are typed into for the Source's `kind`, in the
+/// terminal look: the folder field, or the list's add line. Each its own,
+/// so neither takes the other's text back with undo.
+pub(crate) fn source_line_id(kind: FilesKind) -> egui::Id {
+    match kind {
+        FilesKind::Folder => egui::Id::new("files-folder-line"),
+        FilesKind::Files => egui::Id::new("files-add-line"),
+    }
+}
+
+/// The names listed under the path line, over the dialog.
+fn names_id() -> egui::Id {
+    egui::Id::new("files-source-names")
+}
+
+/// The names under the path line `field` (the "Omarchy – Files, path
+/// completions" board), and what they ask for.
+fn names(
+    ui: &Ui,
+    field: &egui::Response,
+    form: &ConnectionForm,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) -> crate::ui::path_list::Asked {
+    let asked = crate::ui::path_list::under(
+        ui,
+        field,
+        form.source_line().0,
+        form.files_names.as_ref(),
+        names_id(),
+        (skin.look, skin.palette),
+    );
+    if asked.close {
+        actions.push(Action::SourceNames(SourceNames::Close));
+    }
+    if let Some(at) = asked.taken {
+        actions.push(Action::SourceNames(SourceNames::Take(Some(at))));
+    }
+    asked
+}
+
+/// The terminal look: the "source" section's rows. The folder is typed,
+/// its folders listed under it as it is, or picked (`ctrl+o`); the list's
+/// rows are moved through with the arrows, `a` adds files and `x` takes
+/// the row off.
 pub(super) fn terminal(
     ui: &mut Ui,
     form: &mut ConnectionForm,
@@ -323,13 +365,22 @@ pub(super) fn terminal(
                     role,
                     skin,
                 );
+                let id = source_line_id(FilesKind::Folder);
+                crate::ui::path_list::to_line(ui.ctx(), id, form.files_to_line, &form.files_folder);
                 let field = ui
                     .add(
                         input(ui, &mut form.files_folder, role, skin.field_height(), skin)
+                            .id(id)
                             .hint_text(hint),
                     )
                     .labelled_by(label);
-                if field.lost_focus() {
+                if field.changed() {
+                    actions.push(Action::SourceNames(SourceNames::Typed));
+                }
+                let asked = names(ui, &field, form, skin, actions);
+                // A click on a name is no leaving: the folder is read when
+                // the keyboard goes on.
+                if field.lost_focus() && !asked.on_list {
                     actions.push(Action::ReadSource);
                 }
             });
