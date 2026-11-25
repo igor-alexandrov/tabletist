@@ -3589,6 +3589,7 @@ impl App {
                     self.apply(Action::TestConnection);
                 }
             }
+            Action::OpenPrivacySettings => self.backend.send(Command::OpenPrivacySettings),
             Action::FixFile(fix) => {
                 let Some(Dialog::Connection(form)) = &mut self.dialog else {
                     return;

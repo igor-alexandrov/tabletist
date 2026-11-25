@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-24 20:53-0500\n"
+"POT-Creation-Date: 2026-11-25 01:22-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -6845,6 +6845,23 @@ msgstr "включён сервер агентов"
 #, rust-format
 msgid "{rest}, and {last}"
 msgstr "{rest} и {last}"
+
+#: src/ui/not_allowed.rs
+#, rust-format
+msgid "Can't read {path}."
+msgstr "Не удалось прочитать {path}."
+
+#: src/ui/not_allowed.rs src/ui/partial.rs
+msgid "Open Privacy & Security"
+msgstr "Открыть «Конфиденциальность и безопасность»"
+
+#: src/ui/not_allowed.rs src/ui/partial.rs
+msgid "macOS hasn't allowed Tabletist to open this file."
+msgstr "macOS не разрешила Tabletist открыть этот файл."
+
+#: src/ui/not_allowed.rs
+msgid "macOS hasn't allowed Tabletist to open this folder."
+msgstr "macOS не разрешила Tabletist открыть эту папку."
 
 #: src/ui/object_tabs.rs src/ui/sidebar.rs
 msgid "New SQL editor"

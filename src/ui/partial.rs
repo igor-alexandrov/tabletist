@@ -50,6 +50,9 @@ struct Skin<'a> {
 pub struct Partial {
     lead: String,
     text: String,
+    /// "Open Privacy & Security", first, where macOS's privacy settings
+    /// refused the file.
+    privacy: Option<String>,
     fixes: Vec<Fix>,
 }
 
@@ -67,13 +70,18 @@ impl Partial {
             lead: &self.lead,
             text: &self.text,
             actions: self
-                .fixes
+                .privacy
                 .iter()
-                .map(|fix| Action {
+                .map(|label| Action {
+                    label,
+                    key: None,
+                    quiet: false,
+                })
+                .chain(self.fixes.iter().map(|fix| Action {
                     label: &fix.label,
                     key: fix.key.clone(),
                     quiet: fix.quiet,
-                })
+                }))
                 .collect(),
             salt: "partial",
         }
@@ -81,7 +89,13 @@ impl Partial {
 
     /// The fix of the action at `at`, as the banner counts them.
     pub fn fix(&self, at: usize) -> Option<FileFix> {
-        self.fixes.get(at).map(|fix| fix.fix)
+        let first = usize::from(self.privacy.is_some());
+        self.fixes.get(at.checked_sub(first)?).map(|fix| fix.fix)
+    }
+
+    /// Whether the action at `at` opens Privacy & Security.
+    pub fn opens_privacy(&self, at: usize) -> bool {
+        self.privacy.is_some() && at == 0
     }
 }
 
@@ -192,7 +206,20 @@ pub fn of(
         key: key(keys.skip),
         quiet: true,
     });
-    Partial { lead, text, fixes }
+    // macOS's privacy settings refused the file: where it may be allowed.
+    let privacy = match &failure.why {
+        Why::Other(why) if tabletist_db::files::refused_file_by_macos(why) => Some(
+            skin.look
+                .label(&gettext(skin.locale, "Open Privacy & Security")),
+        ),
+        _ => None,
+    };
+    Partial {
+        lead,
+        text,
+        privacy,
+        fixes,
+    }
 }
 
 /// What the banner says of why the file could not be read.
@@ -248,6 +275,12 @@ fn sentence(failure: &Failure, skin: &Skin) -> String {
             ),
             &[("line", &crate::i18n::number(skin.locale, *line))],
         ),
+        Why::Other(message) if tabletist_db::files::refused_file_by_macos(message) => {
+            skin.look.label(&gettext(
+                skin.locale,
+                "macOS hasn't allowed Tabletist to open this file.",
+            ))
+        }
         Why::Other(message) => message.clone(),
     }
 }

@@ -1173,9 +1173,38 @@ struct Messages {
     cap: f32,
     /// An unknown SSH host key: the button that trusts it follows.
     untrusted: bool,
-    /// A Files connection's partial Test: the banner of the first file it
-    /// could not read, with its fixes, under the notices, and its height.
-    partial: Option<(crate::ui::partial::Partial, f32)>,
+    /// A Files connection's banner under the notices, and its height: the
+    /// partial Test's of the first file it could not read, with its fixes,
+    /// or the "not allowed" state's, with the way to Privacy & Security.
+    banner: Option<(Shown, f32)>,
+}
+
+/// The banner the messages show: a Test that read some files, or one that
+/// macOS's privacy settings refused. Never both: one Test passed, the
+/// other failed.
+enum Shown {
+    Partial(crate::ui::partial::Partial),
+    NotAllowed(crate::ui::not_allowed::NotAllowed),
+}
+
+impl Shown {
+    fn banner(&self) -> crate::ui::banner::Banner<'_> {
+        match self {
+            Self::Partial(partial) => partial.banner(),
+            Self::NotAllowed(refused) => refused.banner(),
+        }
+    }
+
+    /// What pressing the banner's action at `at` asks for.
+    fn action(&self, at: usize) -> Option<Action> {
+        match self {
+            Self::Partial(partial) if partial.opens_privacy(at) => {
+                Some(Action::OpenPrivacySettings)
+            }
+            Self::Partial(partial) => partial.fix(at).map(Action::FixFile),
+            Self::NotAllowed(_) => Some(Action::OpenPrivacySettings),
+        }
+    }
 }
 
 impl Messages {
@@ -1189,9 +1218,16 @@ impl Messages {
             texts.push((message.into(), palette.danger));
         }
         let mut untrusted = false;
+        let mut refused = None;
         match &form.test {
             TestState::Idle | TestState::Running(_) | TestState::Passed => {}
-            TestState::Failed(message) => texts.push((message.into(), palette.danger)),
+            // macOS's refusal is the banner's to say, with its button.
+            TestState::Failed(message) => {
+                match crate::ui::not_allowed::NotAllowed::of(message, look, skin.locale) {
+                    Some(not_allowed) => refused = Some(not_allowed),
+                    None => texts.push((message.into(), palette.danger)),
+                }
+            }
             TestState::Untrusted {
                 host, fingerprint, ..
             } => {
@@ -1220,22 +1256,24 @@ impl Messages {
                 .collect()
         };
         let partial = form.first_failure().map(|failure| {
-            let partial = crate::ui::partial::of(
+            Shown::Partial(crate::ui::partial::of(
                 ctx,
                 failure,
                 skin.look,
                 skin.locale,
                 &crate::ui::partial::FORM_KEYS,
-            );
+            ))
+        });
+        let banner = partial.or(refused.map(Shown::NotAllowed)).map(|shown| {
             let width = width - 2.0 * Self::side(skin);
-            let height = partial.banner().height(ctx, width, look, skin.palette);
-            (partial, height)
+            let height = shown.banner().height(ctx, width, look, skin.palette);
+            (shown, height)
         });
         let mut messages = Self {
             notices: lay(wrap),
             cap,
             untrusted,
-            partial,
+            banner,
         };
         // Texts that will scroll leave room for the scroll bar.
         if messages.texts_height(skin) > cap {
@@ -1285,7 +1323,7 @@ impl Messages {
     /// The height the messages take in the dialog: nothing when nothing
     /// went wrong.
     fn height(&self, skin: &Skin) -> f32 {
-        if self.notices.is_empty() && self.partial.is_none() {
+        if self.notices.is_empty() && self.banner.is_none() {
             return 0.0;
         }
         let button = if self.untrusted {
@@ -1293,7 +1331,7 @@ impl Messages {
         } else {
             0.0
         };
-        let banner = match (&self.partial, self.notices.is_empty()) {
+        let banner = match (&self.banner, self.notices.is_empty()) {
             (Some((_, height)), true) => *height,
             (Some((_, height)), false) => Self::GAP + height,
             (None, _) => 0.0,
@@ -1306,7 +1344,7 @@ impl Messages {
     }
 
     fn show(self, ui: &mut Ui, skin: &Skin, actions: &mut Vec<Action>) {
-        if self.notices.is_empty() && self.partial.is_none() {
+        if self.notices.is_empty() && self.banner.is_none() {
             return;
         }
         let noticed = !self.notices.is_empty();
@@ -1347,17 +1385,17 @@ impl Messages {
                             }
                         });
                 }
-                // The partial Test's banner, over the footer, with its fixes.
-                if let Some((partial, _)) = &self.partial {
+                // The banner over the footer, with its actions.
+                if let Some((shown, _)) = &self.banner {
                     if noticed {
                         ui.add_space(Self::GAP);
                     }
-                    if let Some(fix) = partial
+                    if let Some(action) = shown
                         .banner()
                         .show(ui, look, palette)
-                        .and_then(|at| partial.fix(at))
+                        .and_then(|at| shown.action(at))
                     {
-                        actions.push(Action::FixFile(fix));
+                        actions.push(action);
                     }
                 }
                 // The way out of an unknown host key stays in reach however

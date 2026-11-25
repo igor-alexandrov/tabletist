@@ -441,3 +441,50 @@ async fn a_page_that_fails_on_another_file_names_none() {
     assert!(message.contains("returns.csv"), "{message}");
     assert_eq!(named.file, None);
 }
+
+/// A listed file that may be looked at and not read (its own permissions,
+/// or macOS's privacy settings for a file in a folder they guard) is said
+/// by the scan: a Test reads the others and says it, and connecting fails
+/// on it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_listed_file_that_cannot_be_read_is_said_by_the_scan() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = exports();
+    let shut = dir.path().join("returns.csv");
+    let spec = ConnectSpec::files(Source::Files(vec![
+        shut.clone(),
+        dir.path().join("orders.csv"),
+    ]));
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let readable = std::fs::File::open(&shut).is_ok();
+    let connected = Connection::connect(&spec, &Secrets::default()).await.err();
+    let tested = Connection::open_files_to_test(&spec).await;
+    let read = match &tested {
+        Ok(connection) => Some(connection.read_files().await.unwrap().unwrap()),
+        Err(_) => None,
+    };
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o644)).unwrap();
+    if readable {
+        // Run as root, which may read anything.
+        return;
+    }
+    let error = connected.unwrap();
+    assert!(
+        error
+            .to_string()
+            .contains("returns.csv: not allowed to read it"),
+        "{error}"
+    );
+    let read = read.unwrap_or_else(|| panic!("{:?}", tested.err()));
+    assert_eq!(
+        read.failed,
+        [Failure {
+            file: "returns.csv".into(),
+            path: shut,
+            format: Format::Csv,
+            why: Why::Other("not allowed to read it".into()),
+        }]
+    );
+    assert_eq!(read.checks, ["orders"]);
+}

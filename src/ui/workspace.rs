@@ -711,10 +711,24 @@ fn failure(
         SessionStatus::Disconnected(error) => Some(error),
         _ => None,
     };
-    let (icon, title) = failure_title(error, &workspace.spec, say);
-    let sentence = error
-        .map(|error| crate::format::describe_error(locale, error))
-        .unwrap_or_default();
+    // A Files connection's folder macOS's privacy settings refused: the
+    // dialog's words, and the way to where it may be allowed first.
+    let refused = match error {
+        Some(Error::Connect(message)) => {
+            crate::ui::not_allowed::NotAllowed::of(message, &look, locale)
+        }
+        _ => None,
+    };
+    let (icon, title) = match &refused {
+        Some(refused) => (Icon::Lock, refused.lead.clone()),
+        None => failure_title(error, &workspace.spec, say),
+    };
+    let sentence = match &refused {
+        Some(refused) => refused.text.clone(),
+        None => error
+            .map(|error| crate::format::describe_error(locale, error))
+            .unwrap_or_default(),
+    };
     let raw = error.map(ToString::to_string).unwrap_or_default();
     // The settings are what is wrong: changing them comes first.
     let edit_first = matches!(
@@ -766,42 +780,86 @@ fn failure(
             .layout(ui.ctx())
             .label(&mut ui);
     }
-    let (mut retry, mut edit) = (false, false);
     let details = format!("{title}\n{raw}");
-    ui.horizontal(|ui| {
-        let height = states::button_height(&look);
-        let (again, change, copy) = (
-            say(msgid("Retry")),
-            say(msgid("Edit connection")),
-            say(msgid("Copy details")),
-        );
-        // The button that fixes the cause is the primary one.
-        fn lead(button: ButtonSpec<'_>, first: bool) -> ButtonSpec<'_> {
-            if first { button.primary() } else { button }
-        }
-        let retry_button = lead(states::button(&again, &look).label("Retry"), !edit_first);
-        let edit_button = lead(
-            states::button(&change, &look).label("Edit connection"),
-            edit_first,
-        );
-        if edit_first {
-            edit = edit_button.show(ui, height, &look, &palette).clicked();
-            retry = retry_button.show(ui, height, &look, &palette).clicked();
-        } else {
-            retry = retry_button.show(ui, height, &look, &palette).clicked();
-            edit = edit_button.show(ui, height, &look, &palette).clicked();
-        }
-        // A prompt the user closed has no error, so nothing to copy.
-        if error.is_none() {
-            return;
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let copy = states::button(&copy, &look).label("Copy details").quiet();
-            if copy.show(ui, height, &look, &palette).clicked() {
-                ui.ctx().copy_text(details.clone());
+    let height = states::button_height(&look);
+    let (again, change, copy) = (
+        say(msgid("Retry")),
+        say(msgid("Edit connection")),
+        say(msgid("Copy details")),
+    );
+    // The button that fixes the cause is the primary one.
+    fn lead(button: ButtonSpec<'_>, first: bool) -> ButtonSpec<'_> {
+        if first { button.primary() } else { button }
+    }
+    let retry_button = lead(
+        states::button(&again, &look).label("Retry"),
+        !edit_first && refused.is_none(),
+    );
+    let edit_button = lead(
+        states::button(&change, &look).label("Edit connection"),
+        edit_first,
+    );
+    let mut buttons = Vec::new();
+    if let Some(refused) = &refused {
+        let open = states::button(&refused.button, &look)
+            .label("Open Privacy & Security")
+            .primary();
+        buttons.push((Pressed::Privacy, open));
+    }
+    if edit_first {
+        buttons.push((Pressed::Edit, edit_button));
+        buttons.push((Pressed::Retry, retry_button));
+    } else {
+        buttons.push((Pressed::Retry, retry_button));
+        buttons.push((Pressed::Edit, edit_button));
+    }
+    // A prompt the user closed has no error, so nothing to copy.
+    let copy_button = error
+        .is_some()
+        .then(|| states::button(&copy, &look).label("Copy details").quiet());
+    // One row while it fits the card; past that the buttons wrap, and
+    // Copy details takes a line of its own, still at the right.
+    let gap = ui.spacing().item_spacing.x;
+    let needed = buttons
+        .iter()
+        .map(|(_, button)| button.width(&ui, &look))
+        .chain(copy_button.iter().map(|button| button.width(&ui, &look)))
+        .map(|each| each + gap)
+        .sum::<f32>()
+        - gap;
+    let fits = needed <= ui.available_width();
+    let mut pressed = Vec::new();
+    let mut copied = false;
+    let (inline, below) = match fits {
+        true => (copy_button, None),
+        false => (None, copy_button),
+    };
+    let row = |ui: &mut egui::Ui| {
+        for (which, button) in buttons {
+            if button.show(ui, height, &look, &palette).clicked() {
+                pressed.push(which);
             }
-        });
-    });
+        }
+        if let Some(copy) = inline {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                copied |= copy.show(ui, height, &look, &palette).clicked();
+            });
+        }
+    };
+    match fits {
+        true => ui.horizontal(row),
+        false => ui.horizontal_wrapped(row),
+    };
+    if let Some(copy) = below {
+        ui.allocate_ui_with_layout(
+            vec2(ui.available_width(), height),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| copied |= copy.show(ui, height, &look, &palette).clicked(),
+        );
+    }
+    if copied {
+        ui.ctx().copy_text(details);
+    }
     if tls {
         let note = say(msgid(
             "There is no \"connect anyway\". Change the TLS mode or the host in the connection.",
@@ -811,14 +869,22 @@ fn failure(
             .layout(ui.ctx())
             .label(&mut ui);
     }
-    let mut actions = Vec::new();
-    if retry {
-        actions.push(Action::Reconnect(tab));
-    }
-    if edit {
-        actions.push(Action::EditConnection(conn));
-    }
-    actions
+    pressed
+        .into_iter()
+        .map(|which| match which {
+            Pressed::Privacy => Action::OpenPrivacySettings,
+            Pressed::Retry => Action::Reconnect(tab),
+            Pressed::Edit => Action::EditConnection(conn.clone()),
+        })
+        .collect()
+}
+
+/// A connect-failure card's button that was pressed.
+#[derive(Clone, Copy)]
+enum Pressed {
+    Privacy,
+    Retry,
+    Edit,
 }
 
 /// What the connection bar says: the open connections, and more about the
