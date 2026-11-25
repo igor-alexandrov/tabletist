@@ -409,9 +409,13 @@ pub fn scan_past(source: &Source, skipped: impl Fn(&Path) -> bool, past: bool) -
                     continue;
                 }
                 // A link to a file counts as the file; a folder never, nor
-                // a broken link. A file that cannot be looked at is said.
+                // a broken link. A file that cannot be looked at, or read,
+                // is said.
                 match std::fs::metadata(&path) {
-                    Ok(meta) if meta.is_file() => entries.push((path, format, meta.len())),
+                    Ok(meta) if meta.is_file() => match readable(&path) {
+                        Ok(()) => entries.push((path, format, meta.len())),
+                        Err(error) => unlooked(&path, &error)?,
+                    },
                     Ok(_) => {}
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => unlooked(&path, &error)?,
@@ -429,7 +433,10 @@ pub fn scan_past(source: &Source, skipped: impl Fn(&Path) -> bool, past: bool) -
                     )));
                 };
                 match std::fs::metadata(path) {
-                    Ok(meta) if meta.is_file() => entries.push((path.clone(), format, meta.len())),
+                    Ok(meta) if meta.is_file() => match readable(path) {
+                        Ok(()) => entries.push((path.clone(), format, meta.len())),
+                        Err(error) => unlooked(path, &error)?,
+                    },
                     Ok(_) => missing.push(path.clone()),
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                         missing.push(path.clone());
@@ -472,12 +479,19 @@ pub fn by_name(path: &Path) -> (Option<String>, PathBuf) {
     (name, path.to_owned())
 }
 
+/// Whether `path` may be read, which looking at it does not say: a file's
+/// own permissions refuse its contents and not its size, and so do macOS's
+/// privacy settings for a file in a folder they guard.
+fn readable(path: &Path) -> std::io::Result<()> {
+    std::fs::File::open(path).map(drop)
+}
+
 /// Why a folder cannot be read, in the dialog's words.
 fn folder_error(folder: &Path, error: &std::io::Error) -> Error {
     let why = match error.kind() {
         std::io::ErrorKind::NotFound => "no such folder".to_owned(),
         std::io::ErrorKind::NotADirectory => "not a folder".to_owned(),
-        std::io::ErrorKind::PermissionDenied => "not allowed to read it".to_owned(),
+        std::io::ErrorKind::PermissionDenied => not_allowed(error, Refused::Folder),
         _ => error.to_string(),
     };
     Error::Connect(format!("Can't open {}: {why}", shown(folder)))
@@ -492,9 +506,59 @@ fn file_error(file: &Path, error: &std::io::Error) -> Error {
 /// Why a file cannot be looked at, in the dialog's words.
 fn file_why(error: &std::io::Error) -> String {
     match error.kind() {
-        std::io::ErrorKind::PermissionDenied => "not allowed to read it".to_owned(),
+        std::io::ErrorKind::PermissionDenied => not_allowed(error, Refused::File),
         _ => error.to_string(),
     }
+}
+
+/// What macOS's privacy settings (Files and Folders, Full Disk Access)
+/// did not let Tabletist open: a Files connection's folder, or one of its
+/// files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refused {
+    Folder,
+    File,
+}
+
+/// What a refusal of macOS's privacy settings says after the path.
+const FOLDER_REFUSED: &str = "macOS hasn't allowed Tabletist to open this folder";
+const FILE_REFUSED: &str = "macOS hasn't allowed Tabletist to open this file";
+
+/// Why `what` may not be read, its error a refusal: macOS's privacy
+/// settings where they refused it, its own permissions anywhere else.
+fn not_allowed(error: &std::io::Error, what: Refused) -> String {
+    not_allowed_on(error, what, cfg!(target_os = "macos"))
+}
+
+/// [`not_allowed`] on macOS or elsewhere. macOS's privacy settings refuse
+/// with `EPERM`, where a file's own permissions refuse with `EACCES`.
+fn not_allowed_on(error: &std::io::Error, what: Refused, macos: bool) -> String {
+    const EPERM: i32 = 1;
+    match (macos && error.raw_os_error() == Some(EPERM), what) {
+        (true, Refused::Folder) => FOLDER_REFUSED.to_owned(),
+        (true, Refused::File) => FILE_REFUSED.to_owned(),
+        (false, _) => "not allowed to read it".to_owned(),
+    }
+}
+
+/// Whether `why`, a file's [`Why::Other`], is macOS's privacy settings
+/// refusing Tabletist that file: a Test goes past such a file, and says
+/// so.
+pub fn refused_file_by_macos(why: &str) -> bool {
+    why == FILE_REFUSED
+}
+
+/// The folder or file a message of [`scan`]'s says macOS's privacy
+/// settings did not let Tabletist open, as the message shows it, and which
+/// it is. `None` for any other message.
+pub fn refused_by_macos(message: &str) -> Option<(&str, Refused)> {
+    let rest = message.strip_prefix("Can't open ")?;
+    [
+        (FOLDER_REFUSED, Refused::Folder),
+        (FILE_REFUSED, Refused::File),
+    ]
+    .into_iter()
+    .find_map(|(why, what)| Some((rest.strip_suffix(why)?.strip_suffix(": ")?, what)))
 }
 
 /// The name a file's stem becomes: lowercased, with anything outside
@@ -930,5 +994,56 @@ mod tests {
         assert_eq!(list.title(), "orders.csv, customers.parquet");
         let folder = Source::Folder("/data/bookshop-exports".into());
         assert_eq!(folder.title(), "bookshop-exports");
+    }
+
+    /// On macOS a refusal of its privacy settings (`EPERM`) is said as
+    /// macOS's, of the folder or of a file; a file's own permissions
+    /// (`EACCES`) are not, and elsewhere neither is.
+    #[test]
+    fn a_refusal_of_macos_privacy_settings_is_said_as_its() {
+        let eperm = std::io::Error::from_raw_os_error(1);
+        let eacces = std::io::Error::from_raw_os_error(13);
+        assert_eq!(
+            not_allowed_on(&eperm, Refused::Folder, true),
+            "macOS hasn't allowed Tabletist to open this folder"
+        );
+        assert_eq!(
+            not_allowed_on(&eperm, Refused::File, true),
+            "macOS hasn't allowed Tabletist to open this file"
+        );
+        assert_eq!(
+            not_allowed_on(&eacces, Refused::Folder, true),
+            "not allowed to read it"
+        );
+        assert_eq!(
+            not_allowed_on(&eperm, Refused::Folder, false),
+            "not allowed to read it"
+        );
+    }
+
+    /// The path and what macOS refused, read back from the message; any
+    /// other message is not one.
+    #[test]
+    fn a_refusal_of_macos_is_read_back_from_its_message() {
+        assert_eq!(
+            refused_by_macos(
+                "Can't open ~/Data/bookshop-exports: macOS hasn't allowed Tabletist to open this folder"
+            ),
+            Some(("~/Data/bookshop-exports", Refused::Folder))
+        );
+        assert_eq!(
+            refused_by_macos(
+                "Can't open ~/Documents/orders.csv: macOS hasn't allowed Tabletist to open this file"
+            ),
+            Some(("~/Documents/orders.csv", Refused::File))
+        );
+        assert_eq!(
+            refused_by_macos("Can't open ~/Data/bookshop-exports: no such folder"),
+            None
+        );
+        assert_eq!(
+            refused_by_macos("Can't open ~/Data/bookshop-exports: not allowed to read it"),
+            None
+        );
     }
 }
