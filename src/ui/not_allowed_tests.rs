@@ -6,12 +6,14 @@
 use std::path::PathBuf;
 
 use egui::accesskit::Role;
-use tabletist_db::Error;
-use tabletist_db::files::{Format, Found, Scan};
+use tabletist_db::files::{Format, Found, Scan, Source};
+use tabletist_db::{ConnectSpec, Error};
 
 use crate::backend::{Command, Event};
+use crate::connections::{ConnectionId, PasswordMode, SavedConnection};
+use crate::env::Environment;
 use crate::model::{Action, ConnectionForm, Dialog, FilesFound, PickTarget, TestState};
-use crate::testing::{Harness, node};
+use crate::testing::{Harness, last_sent, node};
 use crate::theme::Look;
 
 fn looks() -> [Look; 2] {
@@ -245,4 +247,59 @@ fn the_found_line_names_a_listed_file_macos_refused() {
         "Can't read {FOLDER}/orders.csv. macOS hasn't allowed Tabletist to open this file."
     );
     assert!(labels.contains(&line), "{labels:?}");
+}
+
+/// The saved Bookshop exports connection, over its folder.
+fn saved_exports() -> SavedConnection {
+    SavedConnection {
+        id: ConnectionId::new(),
+        name: "Bookshop exports".into(),
+        group: None,
+        environment: Environment::Local,
+        read_only: Some(true),
+        password: PasswordMode::None,
+        ssh_secret: PasswordMode::None,
+        spec: ConnectSpec::files(Source::Folder(FOLDER.into())),
+        agents: Default::default(),
+    }
+}
+
+#[test]
+fn a_connect_macos_refused_says_so_with_privacy_and_security_first() {
+    for look in looks() {
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        let saved = saved_exports();
+        let conn = saved.id.clone();
+        harness.app.connections.upsert(saved);
+        let tab = harness.app.active_tab_id();
+        harness.app.apply(Action::Connect { tab, conn });
+        let Command::Connect {
+            session, request, ..
+        } = *last_sent(&harness.app)
+        else {
+            panic!("expected Connect");
+        };
+        harness.app.apply(Action::Backend(Event::ConnectFailed {
+            session,
+            request,
+            error: Error::Connect(refused()),
+        }));
+        let tree = harness.settle();
+        let labels = crate::testing::labels(&tree);
+        let title = lead(look);
+        assert!(labels.contains(&title), "{}: {labels:?}", look.name);
+        assert!(
+            labels
+                .iter()
+                .any(|label| *label
+                    == look.label("macOS hasn't allowed Tabletist to open this folder.")),
+            "{}: {labels:?}",
+            look.name
+        );
+        // The card's buttons are named as the macOS look shows them.
+        assert!(node(&tree, "Retry", Role::Button).is_some());
+        harness.click("Open Privacy & Security");
+        assert!(opened_privacy(&harness), "{}", look.name);
+    }
 }

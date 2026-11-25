@@ -711,10 +711,24 @@ fn failure(
         SessionStatus::Disconnected(error) => Some(error),
         _ => None,
     };
-    let (icon, title) = failure_title(error, &workspace.spec, say);
-    let sentence = error
-        .map(|error| crate::format::describe_error(locale, error))
-        .unwrap_or_default();
+    // A Files connection's folder macOS's privacy settings refused: the
+    // dialog's words, and the way to where it may be allowed first.
+    let refused = match error {
+        Some(Error::Connect(message)) => {
+            crate::ui::not_allowed::NotAllowed::of(message, &look, locale)
+        }
+        _ => None,
+    };
+    let (icon, title) = match &refused {
+        Some(refused) => (Icon::Lock, refused.lead.clone()),
+        None => failure_title(error, &workspace.spec, say),
+    };
+    let sentence = match &refused {
+        Some(refused) => refused.text.clone(),
+        None => error
+            .map(|error| crate::format::describe_error(locale, error))
+            .unwrap_or_default(),
+    };
     let raw = error.map(ToString::to_string).unwrap_or_default();
     // The settings are what is wrong: changing them comes first.
     let edit_first = matches!(
@@ -766,7 +780,7 @@ fn failure(
             .layout(ui.ctx())
             .label(&mut ui);
     }
-    let (mut retry, mut edit) = (false, false);
+    let (mut retry, mut edit, mut privacy) = (false, false, false);
     let details = format!("{title}\n{raw}");
     ui.horizontal(|ui| {
         let height = states::button_height(&look);
@@ -779,7 +793,16 @@ fn failure(
         fn lead(button: ButtonSpec<'_>, first: bool) -> ButtonSpec<'_> {
             if first { button.primary() } else { button }
         }
-        let retry_button = lead(states::button(&again, &look).label("Retry"), !edit_first);
+        if let Some(refused) = &refused {
+            let open = states::button(&refused.button, &look)
+                .label("Open Privacy & Security")
+                .primary();
+            privacy = open.show(ui, height, &look, &palette).clicked();
+        }
+        let retry_button = lead(
+            states::button(&again, &look).label("Retry"),
+            !edit_first && refused.is_none(),
+        );
         let edit_button = lead(
             states::button(&change, &look).label("Edit connection"),
             edit_first,
@@ -812,6 +835,9 @@ fn failure(
             .label(&mut ui);
     }
     let mut actions = Vec::new();
+    if privacy {
+        actions.push(Action::OpenPrivacySettings);
+    }
     if retry {
         actions.push(Action::Reconnect(tab));
     }
