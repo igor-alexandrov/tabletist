@@ -447,6 +447,7 @@ pub(crate) fn query_error(error: tokio_postgres::Error) -> Error {
                 number: None,
                 constraint: db.constraint().map(str::to_owned),
                 columns: db.column().map(str::to_owned).into_iter().collect(),
+                file: None,
             }),
         };
     }

@@ -20,6 +20,9 @@ pub struct Named {
     /// The columns the database says the failure is of. Empty where it
     /// names a constraint alone, or nothing.
     pub columns: Vec<String>,
+    /// The file a Files connection's table could not be read from, and
+    /// why, where DuckDB's words name a row, a value or a line of it.
+    pub file: Option<crate::files::Failure>,
 }
 
 /// Everything that can go wrong talking to a database. Messages are shown to

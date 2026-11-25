@@ -119,6 +119,7 @@ pub mod pane_hints;
 mod pane_hints_tests;
 #[cfg(test)]
 mod pane_keys_tests;
+pub mod partial;
 #[cfg(test)]
 mod partial_test_tests;
 pub mod password_prompt;
@@ -151,6 +152,8 @@ pub mod start;
 mod start_tests;
 pub mod states;
 pub mod structure;
+#[cfg(test)]
+mod table_partial_tests;
 pub mod terminal_dialog;
 #[cfg(test)]
 mod text_settings_tests;

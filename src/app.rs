@@ -3602,6 +3602,11 @@ impl App {
                     self.apply(Action::TestConnection);
                 }
             }
+            Action::FixTableFile {
+                tab,
+                object_tab,
+                fix,
+            } => self.fix_table_file(tab, object_tab, fix),
             Action::TestConnection => {
                 let request = RequestId(self.next_id());
                 let Some(Dialog::Connection(form)) = &mut self.dialog else {
@@ -4522,6 +4527,59 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Mends the file `object_tab`'s rows could not be read from as `fix`
+    /// says: the override goes into the saved connection, which is saved,
+    /// where it still reads the tab's source, and into the tab's own copy
+    /// of it, and the session opens again with it. Its tabs stay, and the table reads again; a skipped file's tab
+    /// closes, as its table leaves the connection.
+    fn fix_table_file(&mut self, tab: ConnTabId, object_tab: TabId, fix: crate::model::FileFix) {
+        let Some(workspace) = self.workspace(tab) else {
+            return;
+        };
+        let Some(failure) = workspace
+            .object_tab(object_tab)
+            .and_then(ObjectTab::file_failure)
+        else {
+            return;
+        };
+        let Some(added) = crate::model::file_override(failure, fix, workspace.spec.files.as_ref())
+        else {
+            return;
+        };
+        let conn = workspace.conn_id.clone();
+        let source = workspace.spec.files.clone();
+        // Saved only where the connection still reads the source the tab
+        // read: in another, a file of that name may be another file.
+        if let Some(mut saved) = self.connections.get(&conn).cloned()
+            && source.is_some()
+            && saved.spec.files == source
+        {
+            saved.spec.csv.overrides.push(added.clone());
+            self.connections.upsert(saved);
+            self.save_connections();
+        }
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        workspace.spec.csv.overrides.push(added);
+        match fix {
+            crate::model::FileFix::Skip => self.apply(Action::CloseTab {
+                tab,
+                id: object_tab,
+            }),
+            // The banner goes at once, so a second press while the
+            // session opens again mends nothing twice; the tab then waits
+            // for its rows, which are read again once the session is up.
+            crate::model::FileFix::Text | crate::model::FileFix::Empty => {
+                if let Some(object) = self.object_tab_mut(tab, object_tab) {
+                    object.drop_page();
+                    object.rows.error = None;
+                }
+            }
+        }
+        self.reconnect(tab);
     }
 
     fn reconnect(&mut self, tab: ConnTabId) {

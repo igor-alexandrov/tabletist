@@ -220,6 +220,9 @@ pub enum When {
     /// The results offer Run without timeout: a run the timeout stopped
     /// shows its cancel.
     TimedOut,
+    /// A Files table's view shows the partial banner: its rows could not
+    /// be read from its file.
+    FileFailed,
     /// The connection form.
     ConnectionForm,
     /// The Settings screen.
@@ -759,6 +762,9 @@ commands! {
     FormFixText = "form_fix_text",
     FormFixEmpty = "form_fix_empty",
     FormFixSkip = "form_fix_skip",
+    GridFixText = "grid_fix_text",
+    GridFixEmpty = "grid_fix_empty",
+    GridFixSkip = "grid_fix_skip",
     SettingsMove = "settings_move",
     SettingsChange = "settings_change",
     SettingsToggle = "settings_toggle",
@@ -1316,6 +1322,21 @@ impl Command {
             ),
             C::FormFixSkip => info(
                 msgid("Skip the file a Files connection's Test could not read"),
+                "",
+                Prompts,
+            ),
+            C::GridFixText => info(
+                msgid("Read the column a Files table's rows could not be read from as text"),
+                "",
+                Prompts,
+            ),
+            C::GridFixEmpty => info(
+                msgid("Read the value a Files table's rows could not be read from as empty"),
+                "",
+                Prompts,
+            ),
+            C::GridFixSkip => info(
+                msgid("Skip the file a Files table's rows could not be read from"),
                 "",
                 Prompts,
             ),
@@ -2695,6 +2716,12 @@ pub const BINDINGS: &[Binding] = {
         bind(C::AllowRefusedWrite, SQL_EDITOR, NONE, keys(&[k("w")])).when(When::RefusedWrite),
         bind(C::ShowAllRows, SQL_EDITOR, NONE, keys(&[k("a")])).when(When::RowsCut),
         bind(C::RunWithoutTimeout, SQL_EDITOR, NONE, keys(&[k("t")])).when(When::TimedOut),
+        // The partial banner where a Files table's rows go: `x` skips the
+        // file, as it takes a file off a Files connection's list, and `s`
+        // stays the table's Structure.
+        bind(C::GridFixText, GRID, NONE, keys(&[k("t")])).when(When::FileFailed),
+        bind(C::GridFixEmpty, GRID, NONE, keys(&[k("e")])).when(When::FileFailed),
+        bind(C::GridFixSkip, GRID, NONE, keys(&[k("x")])).when(When::FileFailed),
         // AI assistant.
         bind(
             C::AskAi,

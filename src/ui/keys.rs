@@ -2752,6 +2752,14 @@ fn letters(
     let structure_shows =
         object.is_some_and(|object| object.view == crate::model::ObjectView::Structure);
     let ddl_shows = object.is_some_and(|object| object.view == crate::model::ObjectView::Ddl);
+    // The partial banner stands where a Files table's rows go: the table
+    // whose fixes its letters run, before the grid's.
+    let failing = active.filter(|_| {
+        rows_show
+            && object
+                .and_then(crate::model::ObjectTab::file_failure)
+                .is_some()
+    });
     // The cursor's row is a new one: the row panel is its form, and the
     // key that drops the row is read from the form's fields too.
     let on_new = selection.is_some_and(|cell| crate::edit::new_id(cell.row).is_some());
@@ -2939,6 +2947,7 @@ fn letters(
         crate::keymap::When::RefusedWrite => has_card,
         crate::keymap::When::RowsCut => cut,
         crate::keymap::When::TimedOut => timed_out,
+        crate::keymap::When::FileFailed => failing.is_some(),
         crate::keymap::When::NewRow => on_new,
         crate::keymap::When::Visual => visual,
         crate::keymap::When::VisualRows => visual_rows,
@@ -3649,6 +3658,27 @@ fn letters(
                     && let Some(at) = links.iter().position(|(offered, _)| *offered == command)
                 {
                     actions.push(links.swap_remove(at).1);
+                }
+            }
+            // A fix of the partial banner on a Files table. A press of its
+            // own, as the card's: the table reads again once it is mended.
+            (
+                Some(
+                    command @ (Command::GridFixText | Command::GridFixEmpty | Command::GridFixSkip),
+                ),
+                _,
+            ) => {
+                if fresh_key && let Some(object_tab) = failing {
+                    let fix = match command {
+                        Command::GridFixText => crate::model::FileFix::Text,
+                        Command::GridFixEmpty => crate::model::FileFix::Empty,
+                        _ => crate::model::FileFix::Skip,
+                    };
+                    actions.push(Action::FixTableFile {
+                        tab,
+                        object_tab,
+                        fix,
+                    });
                 }
             }
             // Only the documents of a panel that shows.

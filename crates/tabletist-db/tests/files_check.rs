@@ -363,3 +363,81 @@ async fn a_test_says_a_file_whose_name_is_not_utf8_and_reads_the_others() {
     assert_eq!(read.failed[0].path, odd);
     assert_eq!(read.checks, ["orders"]);
 }
+
+/// A page of a file's table that reaches a row its reading cannot take
+/// fails, and the error names the file and why, as a Test would: the
+/// table view's banner and its fixes are made from it. DuckDB's words
+/// stay the message.
+#[tokio::test]
+async fn a_page_past_the_sample_names_the_file_it_could_not_read() {
+    use tabletist_db::{ObjectRef, RowQuery};
+    let dir = exports();
+    let connection = Connection::connect(&spec(dir.path(), Vec::new()), &Secrets::default())
+        .await
+        .unwrap();
+    let mut query = RowQuery::new(ObjectRef::new("main", "returns"), 50);
+    query.offset = 29_990;
+    let error = connection.fetch_rows(&query).await.unwrap_err();
+    let tabletist_db::Error::Query { message, named, .. } = &error else {
+        panic!("{error:?}");
+    };
+    assert!(message.contains("N/A"), "{message}");
+    assert_eq!(
+        named.file,
+        Some(Failure {
+            file: "returns.csv".into(),
+            path: dir.path().join("returns.csv"),
+            format: Format::Csv,
+            why: Why::Value {
+                row: 30_001,
+                column: "returned_at".into(),
+                value: "N/A".into(),
+                kind: "DATE".into(),
+            },
+        })
+    );
+    // A page the file reads names none.
+    let page = connection
+        .fetch_rows(&RowQuery::new(ObjectRef::new("main", "orders"), 50))
+        .await
+        .unwrap();
+    assert!(!page.rows.is_empty());
+}
+
+/// An error that is not of a file's reading names no file: a filter on a
+/// column the table does not have.
+#[tokio::test]
+async fn a_failed_page_that_is_not_of_the_file_names_none() {
+    use tabletist_db::{ObjectRef, RowQuery};
+    let dir = exports();
+    let connection = Connection::connect(&spec(dir.path(), Vec::new()), &Secrets::default())
+        .await
+        .unwrap();
+    let mut query = RowQuery::new(ObjectRef::new("main", "orders"), 50);
+    query.raw_where = Some("no_such_column = 1".into());
+    let error = connection.fetch_rows(&query).await.unwrap_err();
+    let tabletist_db::Error::Query { named, .. } = &error else {
+        panic!("{error:?}");
+    };
+    assert_eq!(named.file, None);
+}
+
+/// A page of one table whose WHERE line reads another file's table fails
+/// on that file: the error names no file, so no fix is offered for a file
+/// that reads.
+#[tokio::test]
+async fn a_page_that_fails_on_another_file_names_none() {
+    use tabletist_db::{ObjectRef, RowQuery};
+    let dir = exports();
+    let connection = Connection::connect(&spec(dir.path(), Vec::new()), &Secrets::default())
+        .await
+        .unwrap();
+    let mut query = RowQuery::new(ObjectRef::new("main", "orders"), 50);
+    query.raw_where = Some("(SELECT max(returned_at) FROM main.returns) IS NOT NULL".into());
+    let error = connection.fetch_rows(&query).await.unwrap_err();
+    let tabletist_db::Error::Query { message, named, .. } = &error else {
+        panic!("{error:?}");
+    };
+    assert!(message.contains("returns.csv"), "{message}");
+    assert_eq!(named.file, None);
+}

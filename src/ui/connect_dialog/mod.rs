@@ -7,7 +7,6 @@ mod agents;
 mod choice;
 mod files;
 mod group;
-mod partial;
 mod reading;
 mod sheet;
 mod terminal;
@@ -1176,7 +1175,7 @@ struct Messages {
     untrusted: bool,
     /// A Files connection's partial Test: the banner of the first file it
     /// could not read, with its fixes, under the notices, and its height.
-    partial: Option<(partial::Partial, f32)>,
+    partial: Option<(crate::ui::partial::Partial, f32)>,
 }
 
 impl Messages {
@@ -1220,7 +1219,14 @@ impl Messages {
                 })
                 .collect()
         };
-        let partial = partial::of(ctx, form, skin).map(|partial| {
+        let partial = form.first_failure().map(|failure| {
+            let partial = crate::ui::partial::of(
+                ctx,
+                failure,
+                skin.look,
+                skin.locale,
+                &crate::ui::partial::FORM_KEYS,
+            );
             let width = width - 2.0 * Self::side(skin);
             let height = partial.banner().height(ctx, width, look, skin.palette);
             (partial, height)

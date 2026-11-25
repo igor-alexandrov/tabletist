@@ -1734,7 +1734,27 @@ pub fn show(
     let waited = object.rows.running_for();
     let lasted = waited.is_some_and(states::lasted);
     let reconnected = reconnect.is_some_and(|waited| waited.is_none_or(states::lasted));
-    if let Some(error) = shown_error(&object.rows) {
+    if let Some(failure) = object.file_failure() {
+        // A Files table whose file could not be read: the partial banner
+        // in place of the error card, with its fixes for its Retry.
+        let partial = crate::ui::partial::of(
+            ui.ctx(),
+            failure,
+            &look,
+            locale,
+            &crate::ui::partial::GRID_KEYS,
+        );
+        Frame::new().inner_margin(Margin::same(12)).show(ui, |ui| {
+            let pressed = partial.banner().show(ui, &look, &palette);
+            if let Some(fix) = pressed.and_then(|at| partial.fix(at)) {
+                actions.push(Action::FixTableFile {
+                    tab,
+                    object_tab,
+                    fix,
+                });
+            }
+        });
+    } else if let Some(error) = shown_error(&object.rows) {
         Frame::new().inner_margin(Margin::same(12)).show(ui, |ui| {
             error_box(ui, error, &look, &palette, locale, || {
                 actions.push(Action::RetryRows { tab, object_tab })
