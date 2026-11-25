@@ -65,17 +65,27 @@ pub(crate) fn client_config(mode: TlsMode, ca_file: Option<&Path>) -> Result<rus
     Ok(config)
 }
 
-/// The CA file's certificates, or the operating system's roots.
+/// The CA file's certificates, or the operating system's roots. The file is
+/// PEM, or one binary DER certificate (most `.cer` files), which mysql_async
+/// also falls back to.
 fn roots(ca_file: Option<&Path>) -> Result<Arc<rustls::RootCertStore>> {
     let mut roots = rustls::RootCertStore::empty();
     match ca_file {
         Some(path) => {
-            let certificates = CertificateDer::pem_file_iter(path).map_err(|error| {
+            let bytes = std::fs::read(path).map_err(|error| {
                 Error::Tls(format!("could not read {}: {error}", path.display()))
             })?;
-            for certificate in certificates {
+            for certificate in CertificateDer::pem_slice_iter(&bytes) {
                 let certificate = certificate.map_err(tls_error)?;
                 roots.add(certificate).map_err(tls_error)?;
+            }
+            if roots.is_empty() && !bytes.is_empty() {
+                roots.add(CertificateDer::from(bytes)).map_err(|_| {
+                    Error::Tls(format!(
+                        "{} holds no PEM or DER certificate",
+                        path.display()
+                    ))
+                })?;
             }
             if roots.is_empty() {
                 return Err(Error::Tls(format!(
@@ -279,17 +289,42 @@ mod tests {
             client_config(TlsMode::VerifyFull, Some(&missing)),
             Err(Error::Tls(_))
         ));
-        let empty = dir.path().join("empty.pem");
-        std::fs::write(&empty, "no certificates here").unwrap();
-        assert!(matches!(
-            client_config(TlsMode::VerifyCa, Some(&empty)),
-            Err(Error::Tls(_))
-        ));
+        let garbage = dir.path().join("garbage.pem");
+        std::fs::write(&garbage, "no certificates here").unwrap();
+        // Neither PEM nor a DER certificate: the DER fallback refuses it too.
+        match client_config(TlsMode::VerifyCa, Some(&garbage)) {
+            Err(Error::Tls(message)) => {
+                assert!(
+                    message.ends_with("holds no PEM or DER certificate"),
+                    "{message}"
+                )
+            }
+            other => panic!("expected a TLS error, got {:?}", other.map(|_| ())),
+        }
         // `require` with a CA file uses it, like libpq, so a bad one fails.
         assert!(matches!(
-            client_config(TlsMode::Require, Some(&empty)),
+            client_config(TlsMode::Require, Some(&garbage)),
             Err(Error::Tls(_))
         ));
+        let empty = dir.path().join("empty.pem");
+        std::fs::write(&empty, "").unwrap();
+        match client_config(TlsMode::VerifyFull, Some(&empty)) {
+            Err(Error::Tls(message)) => {
+                assert!(message.ends_with("holds no certificates"), "{message}")
+            }
+            other => panic!("expected a TLS error, got {:?}", other.map(|_| ())),
+        }
+    }
+
+    /// Most `.cer` files are one certificate in binary DER, not PEM.
+    #[test]
+    fn a_der_ca_file_builds_a_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = dir.path().join("ca.cer");
+        // The same CA as ca.pem, written with `openssl x509 -outform der`.
+        std::fs::write(&ca, include_bytes!("../tests/tls/ca.der")).unwrap();
+        assert!(client_config(TlsMode::VerifyCa, Some(&ca)).is_ok());
+        assert!(client_config(TlsMode::VerifyFull, Some(&ca)).is_ok());
     }
 
     #[test]
