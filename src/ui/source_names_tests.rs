@@ -478,3 +478,38 @@ fn a_name_taken_in_one_line_does_not_focus_the_other() {
     harness.settle();
     assert!(!on_line(&harness), "the folder field takes no keyboard");
 }
+
+/// A listing asked for one line is dropped when the kind changes: the
+/// other line, holding the same text, lists its own names.
+#[test]
+fn a_listing_for_the_other_kind_is_dropped() {
+    let mut harness = dialog(FilesKind::Folder);
+    type_line(&mut harness, "/data/");
+    let old = form(&harness).files_listing.expect("a listing on its way");
+    harness.app.apply(Action::SetFilesKind(FilesKind::Files));
+    harness.settle();
+    let id = crate::ui::connect_dialog::source_line_id(FilesKind::Files);
+    harness.ctx.memory_mut(|memory| memory.request_focus(id));
+    harness.settle();
+    type_line(&mut harness, "/data/");
+    assert_eq!(
+        asks(&harness).last().map(|ask| ask.3),
+        Some(Keep::Readable),
+        "the add line asks for its own"
+    );
+    harness.app.apply(Action::Backend(Event::FolderListed {
+        asked: old,
+        typed: "/data/".to_owned(),
+        names: vec![Listed {
+            name: "bookshop-exports".to_owned(),
+            folder: true,
+        }],
+    }));
+    harness.settle();
+    assert!(
+        form(&harness).files_names.is_none(),
+        "the folder field's names"
+    );
+    answer(&mut harness, "/data/", &[("orders.csv", false)]);
+    assert!(painted(&harness, "orders.csv"), "{:?}", harness.painted);
+}

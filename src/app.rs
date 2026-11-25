@@ -3526,8 +3526,11 @@ impl App {
             Action::SetFilesKind(kind) => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
                     form.files_kind = kind;
-                    // The names were the other line's.
+                    // The names, and the listing on its way, were the other
+                    // line's: its answer is dropped when it comes.
                     form.files_names = None;
+                    form.files_listing = None;
+                    form.files_names_closed = false;
                     self.read_form_source();
                 }
             }
