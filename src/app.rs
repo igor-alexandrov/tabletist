@@ -40,6 +40,7 @@ mod keyboard_tests;
 mod labels;
 mod menu;
 mod quick_open;
+mod source_names;
 #[cfg(test)]
 mod startup_tests;
 mod updates;
@@ -3525,6 +3526,11 @@ impl App {
             Action::SetFilesKind(kind) => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
                     form.files_kind = kind;
+                    // The names, and the listing on its way, were the other
+                    // line's: its answer is dropped when it comes.
+                    form.files_names = None;
+                    form.files_listing = None;
+                    form.files_names_closed = false;
                     self.read_form_source();
                 }
             }
@@ -3548,6 +3554,7 @@ impl App {
                 }
             }
             Action::ReadSource => self.read_form_source(),
+            Action::SourceNames(change) => self.source_names(change),
             Action::PickSshHost(alias) => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
                     form.pick_ssh_host(&alias);
@@ -4606,11 +4613,16 @@ impl App {
                 self.export_path_answered(job, path, replace)
             }
             Event::Export { job, state } => self.export_state(job, state),
+            // The export float's line, or a Files connection's: one dialog
+            // is open at a time.
             Event::FolderListed {
                 asked,
                 typed,
                 names,
-            } => self.folder_listed(asked, &typed, names),
+            } => match &self.dialog {
+                Some(Dialog::Connection(_)) => self.source_listed(asked, &typed, names),
+                _ => self.folder_listed(asked, &typed, names),
+            },
             Event::Connected {
                 session,
                 request,
@@ -5588,7 +5600,7 @@ impl App {
 
     /// Has the backend read what the open dialog's Files Source holds, for
     /// its found line. A Source not chosen yet is not read.
-    fn read_form_source(&mut self) {
+    pub(super) fn read_form_source(&mut self) {
         let request = RequestId(self.next_id());
         let Some(Dialog::Connection(form)) = &mut self.dialog else {
             return;

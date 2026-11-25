@@ -38,6 +38,7 @@ pub mod secrets;
 pub mod selection;
 pub mod session;
 pub mod settings;
+pub mod source_names;
 pub mod theme;
 pub mod update;
 pub mod util;

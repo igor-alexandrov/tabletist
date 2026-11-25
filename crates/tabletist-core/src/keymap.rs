@@ -283,8 +283,9 @@ pub enum When {
     /// The terminal look's `:export cancel` asks which of the exports
     /// running to cancel.
     CancelExports,
-    /// The float's save to line has the keyboard, with the names it
-    /// starts listed under it.
+    /// A path line has the keyboard, with the names it starts listed
+    /// under it: the float's save to line, or a Files connection's folder
+    /// field or add line in the terminal look.
     PathListed,
     /// A button of a toast has the keyboard (⌘⇧' put it there).
     ToastFocused,
@@ -2263,7 +2264,8 @@ pub const BINDINGS: &[Binding] = {
         bind(C::CancelExportPick, PROMPT, NONE, keys(&[k("enter")])).when(When::CancelExports),
         bind(C::CloseCancelExport, PROMPT, NONE, keys(&[k("esc")])).when(When::CancelExports),
         // The float's save to line (spec 4, S15 and S16): the system's
-        // dialog, and the names the line starts.
+        // dialog, and the names the line starts. A Files connection's path
+        // lines take the names' keys too.
         bind(C::ExportPickFile, PROMPT, NONE, keys(&[k("ctrl+o")])).when(When::Export),
         bind(C::PathNext, PROMPT, NONE, keys(&[k("ctrl+n"), k("down")])).when(When::PathListed),
         bind(C::PathPrevious, PROMPT, NONE, keys(&[k("ctrl+p"), k("up")])).when(When::PathListed),
