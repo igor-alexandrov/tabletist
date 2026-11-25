@@ -1091,7 +1091,7 @@ impl Conn {
             ));
         }
         let builder = builder(spec, secrets, via);
-        let with_tls: Opts = with_tls(builder.clone(), spec, via).into();
+        let with_tls: Opts = with_tls(builder.clone(), spec, via)?.into();
         let target = Target::of(spec);
         let (mut conn, opts) =
             match tokio::time::timeout(CONNECT_TIMEOUT, sign_in(with_tls.clone(), &target)).await {
@@ -3092,31 +3092,47 @@ const LARGEST_PACKET: usize = 1 << 30;
 /// there in full authentication. Without TLS (`disable`, or `prefer`
 /// falling back to a plain connection from `builder`) the driver refuses
 /// the plugin, so a password never crosses the network in plain text.
-pub(crate) fn with_tls(builder: OptsBuilder, spec: &ConnectSpec, via: Option<u16>) -> OptsBuilder {
-    let ssl = ssl_opts(spec.tls, spec.ca_file.as_deref()).map(|ssl| match via {
+pub(crate) fn with_tls(
+    builder: OptsBuilder,
+    spec: &ConnectSpec,
+    via: Option<u16>,
+) -> Result<OptsBuilder> {
+    let ssl = ssl_opts(spec.tls, spec.ca_file.as_deref())?.map(|ssl| match via {
         Some(_) => ssl.with_danger_tls_hostname_override(Some(spec.host.clone())),
         None => ssl,
     });
     let encrypted = ssl.is_some();
-    builder.ssl_opts(ssl).enable_cleartext_plugin(encrypted)
+    Ok(builder.ssl_opts(ssl).enable_cleartext_plugin(encrypted))
 }
 
 /// `mysql_async` TLS options for our mode (`None` means no TLS).
-pub(crate) fn ssl_opts(mode: TlsMode, ca_file: Option<&Path>) -> Option<SslOpts> {
-    // A CA file is the only root trusted, as for PostgreSQL; without one,
-    // mysql_async's bundled roots are used.
-    let base = match ca_file {
-        Some(path) => SslOpts::default()
+///
+/// As for PostgreSQL, a CA file is the only root trusted, and `verify-full`
+/// without one checks against the operating system's certificates (read
+/// once per connect: the options are kept and cloned from there), not
+/// mysql_async's bundled list. `prefer` and `require` check nothing, so
+/// they keep the bundled list, which costs no read of the system store.
+pub(crate) fn ssl_opts(mode: TlsMode, ca_file: Option<&Path>) -> Result<Option<SslOpts>> {
+    let base = match (ca_file, mode) {
+        (Some(path), _) => SslOpts::default()
             .with_root_certs(vec![path.to_path_buf().into()])
             .with_disable_built_in_roots(true),
-        None => SslOpts::default(),
+        (None, TlsMode::VerifyFull) => SslOpts::default()
+            .with_root_certs(
+                crate::tls::system_roots()?
+                    .into_iter()
+                    .map(|certificate| certificate.to_vec().into())
+                    .collect(),
+            )
+            .with_disable_built_in_roots(true),
+        (None, _) => SslOpts::default(),
     };
-    match mode {
+    Ok(match mode {
         TlsMode::Disable => None,
         TlsMode::Prefer | TlsMode::Require => Some(base.with_danger_accept_invalid_certs(true)),
         TlsMode::VerifyCa => Some(base.with_danger_skip_domain_validation(true)),
         TlsMode::VerifyFull => Some(base),
-    }
+    })
 }
 
 pub(crate) fn connect_error(error: mysql_async::Error) -> Error {
@@ -3754,24 +3770,56 @@ mod tests {
 
     #[test]
     fn tls_modes_become_ssl_options() {
-        assert!(ssl_opts(TlsMode::Disable, None).is_none());
-        let require = ssl_opts(TlsMode::Require, None).unwrap();
+        assert!(ssl_opts(TlsMode::Disable, None).unwrap().is_none());
+        let require = ssl_opts(TlsMode::Require, None).unwrap().unwrap();
         assert!(require.accept_invalid_certs());
-        let prefer = ssl_opts(TlsMode::Prefer, None).unwrap();
+        let prefer = ssl_opts(TlsMode::Prefer, None).unwrap().unwrap();
         assert!(prefer.accept_invalid_certs());
-        let ca = ssl_opts(TlsMode::VerifyCa, Some(std::path::Path::new("/ca.pem"))).unwrap();
+        let ca = ssl_opts(TlsMode::VerifyCa, Some(std::path::Path::new("/ca.pem")))
+            .unwrap()
+            .unwrap();
         assert!(!ca.accept_invalid_certs() && ca.skip_domain_validation());
         assert_eq!(ca.root_certs().len(), 1);
-        let full = ssl_opts(TlsMode::VerifyFull, None).unwrap();
+        // With a CA file, so this runs on a machine with no system
+        // certificates; the test below covers verify-full without one.
+        let full = ssl_opts(TlsMode::VerifyFull, Some(std::path::Path::new("/ca.pem")))
+            .unwrap()
+            .unwrap();
         assert!(!full.accept_invalid_certs() && !full.skip_domain_validation());
-        assert!(!full.disable_built_in_roots());
     }
 
     #[test]
     fn a_ca_file_is_the_only_trusted_root() {
-        let full = ssl_opts(TlsMode::VerifyFull, Some(std::path::Path::new("/ca.pem"))).unwrap();
+        let full = ssl_opts(TlsMode::VerifyFull, Some(std::path::Path::new("/ca.pem")))
+            .unwrap()
+            .unwrap();
         assert_eq!(full.root_certs().len(), 1);
         assert!(full.disable_built_in_roots());
+    }
+
+    /// Like PostgreSQL, `verify-full` without a CA file trusts the system's
+    /// certificates (the Keychain on macOS), not mysql_async's own list.
+    #[test]
+    fn verify_full_without_a_ca_file_trusts_the_system_roots() {
+        let Ok(system) = crate::tls::system_roots() else {
+            eprintln!("skipped: this system has no trusted certificates");
+            return;
+        };
+        let full = ssl_opts(TlsMode::VerifyFull, None).unwrap().unwrap();
+        assert!(full.disable_built_in_roots());
+        // mysql_async does not export its certificate type, so the system's
+        // go through the same constructor to compare. As sets: on macOS
+        // each read of the store can list them in another order.
+        let expected = SslOpts::default().with_root_certs(
+            system
+                .iter()
+                .map(|certificate| certificate.to_vec().into())
+                .collect(),
+        );
+        assert_eq!(full.root_certs().len(), system.len());
+        let given: std::collections::HashSet<_> = full.root_certs().iter().collect();
+        let expected: std::collections::HashSet<_> = expected.root_certs().iter().collect();
+        assert!(given == expected);
     }
 
     #[tokio::test]
@@ -4719,14 +4767,21 @@ mod tests {
     fn a_tunnelled_mysql_opts_keep_the_host_name_for_tls() {
         let (mut spec, secrets) = ConnectSpec::from_url("mysql://me@db.example.com/shop").unwrap();
         spec.tls = TlsMode::VerifyFull;
-        let opts: Opts = with_tls(builder(&spec, &secrets, Some(40002)), &spec, Some(40002)).into();
+        // A CA file, so the options are built without the system's
+        // certificates, which a machine may not have.
+        spec.ca_file = Some("/ca.pem".into());
+        let opts: Opts = with_tls(builder(&spec, &secrets, Some(40002)), &spec, Some(40002))
+            .unwrap()
+            .into();
         assert_eq!(opts.ip_or_hostname(), "127.0.0.1");
         assert_eq!(opts.tcp_port(), 40002);
         assert_eq!(
             opts.ssl_opts().and_then(|ssl| ssl.tls_hostname_override()),
             Some("db.example.com")
         );
-        let direct: Opts = with_tls(builder(&spec, &secrets, None), &spec, None).into();
+        let direct: Opts = with_tls(builder(&spec, &secrets, None), &spec, None)
+            .unwrap()
+            .into();
         assert_eq!(direct.ip_or_hostname(), "db.example.com");
         assert_eq!(
             direct
@@ -4739,6 +4794,9 @@ mod tests {
     #[test]
     fn mysql_sends_a_cleartext_password_only_inside_tls() {
         let (mut spec, secrets) = ConnectSpec::from_url("mysql://me@db.example.com/shop").unwrap();
+        // A CA file, so verify-full's options are built without the
+        // system's certificates, which a machine may not have.
+        spec.ca_file = Some("/ca.pem".into());
         for mode in [
             TlsMode::Disable,
             TlsMode::Prefer,
@@ -4748,7 +4806,9 @@ mod tests {
         ] {
             spec.tls = mode;
             for via in [None, Some(40002)] {
-                let opts: Opts = with_tls(builder(&spec, &secrets, via), &spec, via).into();
+                let opts: Opts = with_tls(builder(&spec, &secrets, via), &spec, via)
+                    .unwrap()
+                    .into();
                 assert_eq!(
                     opts.enable_cleartext_plugin(),
                     opts.ssl_opts().is_some(),

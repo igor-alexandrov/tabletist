@@ -85,17 +85,31 @@ fn roots(ca_file: Option<&Path>) -> Result<Arc<rustls::RootCertStore>> {
             }
         }
         None => {
-            for certificate in rustls_native_certs::load_native_certs().certs {
-                let _ = roots.add(certificate);
-            }
-            if roots.is_empty() {
-                return Err(Error::Tls(
-                    "no trusted certificates found on this system".into(),
-                ));
-            }
+            roots.add_parsable_certificates(system_roots()?);
         }
     }
     Ok(Arc::new(roots))
+}
+
+/// Why a check against the system's certificates cannot be made.
+const NO_SYSTEM_ROOTS: &str = "no trusted certificates found on this system";
+
+/// The operating system's trusted root certificates: the Keychain's trust
+/// settings on macOS, the system store on Windows, the CA bundle on Linux.
+/// Only those rustls can use as roots are kept, since mysql_async fails the
+/// connection on the first one it cannot add. Read afresh on each call, so
+/// a certificate trusted while the app runs counts from the next connect.
+pub(crate) fn system_roots() -> Result<Vec<CertificateDer<'static>>> {
+    let mut check = rustls::RootCertStore::empty();
+    let certificates: Vec<_> = rustls_native_certs::load_native_certs()
+        .certs
+        .into_iter()
+        .filter(|certificate| check.add(certificate.clone()).is_ok())
+        .collect();
+    if certificates.is_empty() {
+        return Err(Error::Tls(NO_SYSTEM_ROOTS.into()));
+    }
+    Ok(certificates)
 }
 
 /// libpq's `sslmode` for our mode. Certificate checks happen in rustls, so
