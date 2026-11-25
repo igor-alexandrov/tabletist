@@ -2202,10 +2202,14 @@ pub struct ConnectionForm {
     /// Files: the names put away (Escape) for the line as it is, until it
     /// changes.
     pub files_names_closed: bool,
-    /// Asks the view, once for each new value, to give the path line the
-    /// keyboard with its cursor at the end: after a name is taken from
-    /// its list.
-    pub files_to_line: u64,
+    /// Asks the view, once for each new value, to give the folder field
+    /// the keyboard with its cursor at the end: after a name is taken
+    /// from its list. Each line has its own, so the other kind's line,
+    /// shown when the kind changes, takes no keyboard.
+    pub files_to_folder: u64,
+    /// The same, for the add line: after a name is taken from its list,
+    /// or a file added.
+    pub files_to_add: u64,
     /// Files: what the Source holds, as the backend last read it, for the
     /// found line and the list's rows.
     pub files_found: FilesFound,
@@ -2475,7 +2479,8 @@ impl Default for ConnectionForm {
             files_names: None,
             files_listing: None,
             files_names_closed: false,
-            files_to_line: 0,
+            files_to_folder: 0,
+            files_to_add: 0,
             files_found: FilesFound::Unread,
             files_tested: None,
             files_check: None,

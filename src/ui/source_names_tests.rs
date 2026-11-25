@@ -453,3 +453,28 @@ fn a_file_typed_another_way_is_not_added_twice() {
     assert_eq!(open.files_list, ["/data/bookshop-exports/orders.csv"]);
     assert_eq!(open.files_cursor, Some(0));
 }
+
+/// Each line takes the keyboard back only for a name taken from its own
+/// list: the other kind's line, shown when the kind changes, leaves it
+/// on the kind's choice.
+#[test]
+fn a_name_taken_in_one_line_does_not_focus_the_other() {
+    let mut harness = dialog(FilesKind::Folder);
+    type_line(&mut harness, "~/Data/book");
+    answer(&mut harness, "~/Data/book", &[("bookshop-exports", true)]);
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert!(on_line(&harness), "the folder field keeps the keyboard");
+    harness.app.apply(Action::SetFilesKind(FilesKind::Files));
+    harness.settle();
+    assert!(!on_line(&harness), "the add line takes no keyboard");
+
+    let mut harness = dialog(FilesKind::Files);
+    type_line(&mut harness, "/data/bookshop-exports/events.ndjson");
+    answer(&mut harness, "/data/bookshop-exports/events.ndjson", &[]);
+    harness.press(Key::Enter, Modifiers::NONE);
+    harness.settle();
+    assert!(on_line(&harness), "the add line keeps the keyboard");
+    harness.app.apply(Action::SetFilesKind(FilesKind::Folder));
+    harness.settle();
+    assert!(!on_line(&harness), "the folder field takes no keyboard");
+}

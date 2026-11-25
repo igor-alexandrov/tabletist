@@ -35,7 +35,7 @@ impl App {
             SourceNames::Add => {
                 form.files_names = None;
                 // Enter takes the keyboard from the line: back to it.
-                form.files_to_line += 1;
+                form.files_to_add += 1;
                 // Only a file's path from a root: not a folder's (a held
                 // Enter after one was taken), nor one the connection would
                 // read from wherever the app was started.
@@ -143,7 +143,10 @@ impl App {
         let taken = complete(&line, &picked);
         form.files_names = None;
         // Typing goes on at the line's end, not where the part taken was.
-        form.files_to_line += 1;
+        match form.files_kind {
+            FilesKind::Folder => form.files_to_folder += 1,
+            FilesKind::Files => form.files_to_add += 1,
+        }
         match (picked.folder, form.files_kind) {
             (true, FilesKind::Folder) => {
                 form.files_folder = taken;

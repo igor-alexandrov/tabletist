@@ -366,7 +366,12 @@ pub(super) fn terminal(
                     skin,
                 );
                 let id = source_line_id(FilesKind::Folder);
-                crate::ui::path_list::to_line(ui.ctx(), id, form.files_to_line, &form.files_folder);
+                crate::ui::path_list::to_line(
+                    ui.ctx(),
+                    id,
+                    form.files_to_folder,
+                    &form.files_folder,
+                );
                 let field = ui
                     .add(
                         input(ui, &mut form.files_folder, role, skin.field_height(), skin)
@@ -466,7 +471,7 @@ fn add_line(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut V
             skin,
         );
         let id = source_line_id(FilesKind::Files);
-        crate::ui::path_list::to_line(ui.ctx(), id, form.files_to_line, &form.files_add);
+        crate::ui::path_list::to_line(ui.ctx(), id, form.files_to_add, &form.files_add);
         let field = ui
             .add(
                 input(ui, &mut form.files_add, role, skin.field_height(), skin)
