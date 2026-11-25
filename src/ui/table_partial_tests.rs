@@ -218,6 +218,41 @@ fn reading_the_column_as_text_saves_it_and_opens_the_session_again() {
     assert!(reads, "{:?}", harness.app.backend.sent.last());
 }
 
+/// A fix takes the banner off at once: a second press while the session
+/// opens again neither saves the override twice nor opens it again.
+#[test]
+fn a_fix_pressed_twice_saves_it_once() {
+    let (mut harness, tab, conn) = connected(Look::macos());
+    let object_tab = failed(&mut harness, late_na());
+    harness.app.apply(Action::FixTableFile {
+        tab,
+        object_tab,
+        fix: FileFix::Text,
+    });
+    let connects = |harness: &Harness| {
+        let sent = harness.app.backend.sent.iter();
+        sent.filter(|command| matches!(command, Command::Connect { .. }))
+            .count()
+    };
+    let opened = connects(&harness);
+    let file_failure = |harness: &Harness| {
+        harness
+            .app
+            .workspace(tab)
+            .and_then(|workspace| workspace.object_tab(object_tab))
+            .and_then(crate::model::ObjectTab::file_failure)
+            .cloned()
+    };
+    assert_eq!(file_failure(&harness), None);
+    harness.app.apply(Action::FixTableFile {
+        tab,
+        object_tab,
+        fix: FileFix::Empty,
+    });
+    assert_eq!(saved_overrides(&harness, &conn), [text_override()]);
+    assert_eq!(connects(&harness), opened);
+}
+
 #[test]
 fn reading_the_value_as_empty_saves_that_value_for_the_column() {
     let (mut harness, tab, conn) = connected(Look::macos());

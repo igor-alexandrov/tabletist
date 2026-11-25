@@ -4565,10 +4565,13 @@ impl App {
                 tab,
                 id: object_tab,
             }),
-            // Read again once the session is up: an error is not.
+            // The banner goes at once, so a second press while the
+            // session opens again mends nothing twice; the tab then waits
+            // for its rows, which are read again once the session is up.
             crate::model::FileFix::Text | crate::model::FileFix::Empty => {
                 if let Some(object) = self.object_tab_mut(tab, object_tab) {
                     object.drop_page();
+                    object.rows.error = None;
                 }
             }
         }
