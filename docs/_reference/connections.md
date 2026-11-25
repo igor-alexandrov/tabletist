@@ -217,6 +217,9 @@ The SSL modes are libpq's:
 
 In a URL, `allow` is read as `prefer`.
 
+The CA certificate file can be PEM (`.pem`, `.crt`) or one certificate
+in binary DER, as most `.cer` files are.
+
 Unless the mode checks the certificate, someone on the network between
 you and a remote server can read the password. To prevent that, use
 `verify-full` or an SSH tunnel. The dialog warns you when this applies.

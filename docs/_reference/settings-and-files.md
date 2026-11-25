@@ -549,7 +549,7 @@ Files connection has one. A file that holds a Files connection says
 | `host`, `user`, `database` | Text | Empty |
 | `port` | A number up to 65535 | 5432 for PostgreSQL, 3306 for MySQL |
 | `tls` | `disable`, `prefer`, `require`, `verify-ca`, `verify-full` | `prefer` |
-| `ca_file` | The path of a certificate file | None |
+| `ca_file` | The path of a certificate file, PEM or DER | None |
 | `sqlite_path` | The path of a SQLite file | None |
 
 How a Files connection reads its CSV files is its `[connections.csv]`
