@@ -3780,7 +3780,11 @@ mod tests {
             .unwrap();
         assert!(!ca.accept_invalid_certs() && ca.skip_domain_validation());
         assert_eq!(ca.root_certs().len(), 1);
-        let full = ssl_opts(TlsMode::VerifyFull, None).unwrap().unwrap();
+        // With a CA file, so this runs on a machine with no system
+        // certificates; the test below covers verify-full without one.
+        let full = ssl_opts(TlsMode::VerifyFull, Some(std::path::Path::new("/ca.pem")))
+            .unwrap()
+            .unwrap();
         assert!(!full.accept_invalid_certs() && !full.skip_domain_validation());
     }
 
@@ -3804,7 +3808,8 @@ mod tests {
         let full = ssl_opts(TlsMode::VerifyFull, None).unwrap().unwrap();
         assert!(full.disable_built_in_roots());
         // mysql_async does not export its certificate type, so the system's
-        // go through the same constructor to compare.
+        // go through the same constructor to compare. As sets: on macOS
+        // each read of the store can list them in another order.
         let expected = SslOpts::default().with_root_certs(
             system
                 .iter()
@@ -3812,7 +3817,9 @@ mod tests {
                 .collect(),
         );
         assert_eq!(full.root_certs().len(), system.len());
-        assert!(full.root_certs() == expected.root_certs());
+        let given: std::collections::HashSet<_> = full.root_certs().iter().collect();
+        let expected: std::collections::HashSet<_> = expected.root_certs().iter().collect();
+        assert!(given == expected);
     }
 
     #[tokio::test]
@@ -4760,6 +4767,9 @@ mod tests {
     fn a_tunnelled_mysql_opts_keep_the_host_name_for_tls() {
         let (mut spec, secrets) = ConnectSpec::from_url("mysql://me@db.example.com/shop").unwrap();
         spec.tls = TlsMode::VerifyFull;
+        // A CA file, so the options are built without the system's
+        // certificates, which a machine may not have.
+        spec.ca_file = Some("/ca.pem".into());
         let opts: Opts = with_tls(builder(&spec, &secrets, Some(40002)), &spec, Some(40002))
             .unwrap()
             .into();
@@ -4784,6 +4794,9 @@ mod tests {
     #[test]
     fn mysql_sends_a_cleartext_password_only_inside_tls() {
         let (mut spec, secrets) = ConnectSpec::from_url("mysql://me@db.example.com/shop").unwrap();
+        // A CA file, so verify-full's options are built without the
+        // system's certificates, which a machine may not have.
+        spec.ca_file = Some("/ca.pem".into());
         for mode in [
             TlsMode::Disable,
             TlsMode::Prefer,
