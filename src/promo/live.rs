@@ -269,6 +269,7 @@ impl Live {
                 | Command::Export(_)
                 | Command::CancelExport(_)
                 | Command::Reveal { .. }
+                | Command::OpenPrivacySettings
                 | Command::Notify { .. }
                 | Command::LoadSecret { .. }
                 | Command::StoreSecret { .. }

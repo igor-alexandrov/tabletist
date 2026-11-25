@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-24 20:53-0500\n"
+"POT-Creation-Date: 2026-11-25 01:22-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -6653,6 +6653,23 @@ msgstr ""
 msgid ""
 "Agent access was changed outside Tabletist: {changes}. Until you answer, "
 "agents may not. Keep it, or put it back?"
+msgstr ""
+
+#: src/ui/not_allowed.rs
+#, rust-format
+msgid "Can't read {path}."
+msgstr ""
+
+#: src/ui/not_allowed.rs
+msgid "macOS hasn't allowed Tabletist to open this folder."
+msgstr ""
+
+#: src/ui/not_allowed.rs src/ui/partial.rs
+msgid "macOS hasn't allowed Tabletist to open this file."
+msgstr ""
+
+#: src/ui/not_allowed.rs src/ui/partial.rs
+msgid "Open Privacy & Security"
 msgstr ""
 
 #: src/ui/object_tabs.rs

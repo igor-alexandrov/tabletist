@@ -116,7 +116,16 @@ impl Banner<'_> {
     /// The width of an action in the terminal look: its key, a space, its
     /// words. No wider than the row `width`.
     fn key_width(ctx: &egui::Context, (key, words): &(Laid, Laid), width: f32, look: &Look) -> f32 {
-        (key.width() + space(ctx, look, " ") + words.width()).min(width)
+        (key.width() + Self::after_key(ctx, key, look) + words.width()).min(width)
+    }
+
+    /// The space between an action's key and its words: none where it has
+    /// no key, so its words start where a key would.
+    fn after_key(ctx: &egui::Context, key: &Laid, look: &Look) -> f32 {
+        match key.width() > 0.0 {
+            true => space(ctx, look, " "),
+            false => 0.0,
+        }
     }
 
     /// Where each action goes, from the left of a row `width` wide, `wide`
@@ -230,7 +239,6 @@ impl Banner<'_> {
             sentence.paint(ui.painter(), pos2(left, top));
             let line = TextRole::OBody.row_height(ui.ctx(), look.faces);
             let below = top + sentence.height();
-            let space = space(ui.ctx(), look, " ");
             for (at, ((place, (key, words)), action)) in self
                 .key_places(ui.ctx(), inner, look, palette)
                 .into_iter()
@@ -247,7 +255,8 @@ impl Banner<'_> {
                         .rect_filled(place, CornerRadius::ZERO, palette.selection);
                 }
                 key.paint_left(ui.painter(), x, y);
-                words.paint_left(ui.painter(), x + key.width() + space, y);
+                let after = Self::after_key(ui.ctx(), &key, look);
+                words.paint_left(ui.painter(), x + key.width() + after, y);
                 crate::ui::focus::hint(ui, &response, place, crate::ui::focus::Ring::Bar);
                 if response.clicked() {
                     pressed = Some(at);

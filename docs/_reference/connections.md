@@ -156,6 +156,14 @@ and DuckDB files (`.duckdb`). DuckDB reads them, inside Tabletist.
   stay and the table reads again. **Skip** closes the table's tab, and
   the table leaves the sidebar. Reset under Reading CSV in the
   connection's dialog takes a fix off.
+- On macOS, a folder that macOS's privacy settings have not let
+  Tabletist open (one in Documents, Desktop or Downloads, or on an
+  external disk, until you allow it) makes the Test fail with "Can't read
+  ~/Data/bookshop-exports. macOS hasn't allowed Tabletist to open this
+  folder." and **Open Privacy & Security**, which opens System Settings
+  at Privacy & Security › Files and Folders. Opening the connection says
+  the same on its window, with the same button first. macOS keeps what
+  you allow there, so Tabletist keeps no bookmark of the folder.
 - The SQL editor runs DuckDB's SQL, and the Structure view shows each
   file's path, size and format beside its columns, and what it is read
   with.

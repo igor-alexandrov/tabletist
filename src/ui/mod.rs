@@ -113,6 +113,9 @@ mod language_tests;
 #[cfg(test)]
 mod look_switch_tests;
 pub mod menu;
+pub mod not_allowed;
+#[cfg(test)]
+mod not_allowed_tests;
 pub mod object_tabs;
 pub mod pane_hints;
 #[cfg(test)]

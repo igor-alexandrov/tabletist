@@ -291,6 +291,10 @@ pub enum Command {
     Reveal {
         path: PathBuf,
     },
+    /// Opens System Settings at Privacy & Security, Files and Folders, on
+    /// macOS, where a Files connection's folder may be allowed; nothing
+    /// elsewhere. Nothing is answered: a failure is logged.
+    OpenPrivacySettings,
     /// A desktop notification of `summary` over `body`, with no action:
     /// on Linux over D-Bus (what mako shows on Omarchy); nothing elsewhere,
     /// where the window asks for attention instead. Nothing is answered.
@@ -2053,6 +2057,28 @@ fn can_run(file: &std::path::Path) -> bool {
     }
 }
 
+/// Where System Settings shows which apps may open the files in which
+/// folders.
+#[cfg(target_os = "macos")]
+const PRIVACY_FILES_AND_FOLDERS: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders";
+
+/// Opens System Settings at Privacy & Security, Files and Folders, with
+/// `open`, which hands the link to System Settings, not to the browser.
+/// Nothing to open elsewhere.
+fn open_privacy_settings() -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let status = std::process::Command::new("open")
+            .arg(PRIVACY_FILES_AND_FOLDERS)
+            .status()?;
+        if !status.success() {
+            return Err(std::io::Error::other(format!("open exited with {status}")));
+        }
+    }
+    Ok(())
+}
+
 /// The program that shows where `path` is kept on this system, and what
 /// it is given. On Windows the one argument is explorer's command line as
 /// it must read, and is given to it as it is ([`start_reveal`]).
@@ -2629,6 +2655,13 @@ impl Worker {
                     }
                 });
             }
+            Command::OpenPrivacySettings => {
+                tokio::task::spawn_blocking(|| {
+                    if let Err(error) = open_privacy_settings() {
+                        log::warn!("could not open Privacy & Security: {error}");
+                    }
+                });
+            }
             Command::ListFolder {
                 asked,
                 typed,
@@ -2726,6 +2759,7 @@ fn session_of(command: &Command) -> SessionId {
         | Command::Export(_)
         | Command::CancelExport(_)
         | Command::Reveal { .. }
+        | Command::OpenPrivacySettings
         | Command::Notify { .. }
         | Command::ListFolder { .. }
         | Command::Agents(_)
@@ -2795,6 +2829,7 @@ fn requests_of(command: &Command) -> Vec<RequestId> {
         | Command::Export(_)
         | Command::CancelExport(_)
         | Command::Reveal { .. }
+        | Command::OpenPrivacySettings
         | Command::Notify { .. }
         | Command::ListFolder { .. }
         | Command::Agents(_)
@@ -2941,6 +2976,7 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         | Command::Export(_)
         | Command::CancelExport(_)
         | Command::Reveal { .. }
+        | Command::OpenPrivacySettings
         | Command::Notify { .. }
         | Command::ListFolder { .. }
         | Command::Agents(_)
@@ -3376,6 +3412,7 @@ async fn run_session(
             | Command::Export(_)
             | Command::CancelExport(_)
             | Command::Reveal { .. }
+            | Command::OpenPrivacySettings
             | Command::Notify { .. }
             | Command::ListFolder { .. }
             | Command::Agents(_)

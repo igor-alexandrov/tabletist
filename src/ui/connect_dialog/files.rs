@@ -54,13 +54,23 @@ pub(super) fn found_line(found: &FilesFound, terminal: bool) -> Option<String> {
 }
 
 /// Why the Source cannot be read, as the field says it: a folder that is
-/// gone in the board's words (translated), anything else as the backend
-/// said it.
+/// gone, or that macOS's privacy settings refused, in the boards' words
+/// (translated), anything else as the backend said it.
 fn trouble(found: &FilesFound, skin: &Skin) -> Option<String> {
     match found {
         FilesFound::Failed(why) if why.ends_with(": no such folder") => Some(skin.say(GONE)),
-        // A path in it keeps its case, in either look.
-        FilesFound::Failed(why) => Some(why.clone()),
+        // macOS's privacy settings in the banner's words, naming the file
+        // where it is one of a list's; anything else as it is, a path in it
+        // keeping its case in either look.
+        FilesFound::Failed(why) => Some(
+            match crate::ui::not_allowed::NotAllowed::of(why, skin.look, skin.locale) {
+                Some(refused) if refused.what == tabletist_db::files::Refused::File => {
+                    format!("{} {}", refused.lead, refused.text)
+                }
+                Some(refused) => refused.text,
+                None => why.clone(),
+            },
+        ),
         FilesFound::Unread | FilesFound::Reading(_) | FilesFound::Read(_) => None,
     }
 }

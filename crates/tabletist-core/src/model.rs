@@ -119,6 +119,10 @@ pub enum Action {
     /// One of the partial Test's fixes for the first file it could not
     /// read: saved as an override in the form, and the Test run again.
     FixFile(FileFix),
+    /// Open System Settings where macOS lets an app open a folder's files
+    /// (Privacy & Security, Files and Folders): from the "not allowed"
+    /// state of a Files connection, in its dialog or its window.
+    OpenPrivacySettings,
     /// One of the partial banner's fixes for the file a Files table's rows
     /// could not be read from: saved as an override in the connection, and
     /// the session opened again with it. Skip closes the tab.
