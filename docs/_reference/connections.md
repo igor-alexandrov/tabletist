@@ -213,7 +213,7 @@ The SSL modes are libpq's:
 | `prefer` (the default) | Encrypts when the server can. The certificate is not checked | The same |
 | `require` | Encrypts. The certificate is not checked, unless you give a CA certificate | Encrypts. The certificate is not checked |
 | `verify-ca` | Checks the certificate against your CA certificate, which is required | Not available yet |
-| `verify-full` | Checks the certificate and the host name, against your CA certificate or the system's | Checks the certificate and the host name, against your CA certificate or a built-in list of public CAs (not the system's) |
+| `verify-full` | Checks the certificate and the host name, against your CA certificate or the system's | Checks the certificate and the host name, against your CA certificate or the system's |
 
 In a URL, `allow` is read as `prefer`.
 
