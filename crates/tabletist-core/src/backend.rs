@@ -302,16 +302,20 @@ pub enum Command {
         summary: String,
         body: String,
     },
-    /// The names of `folder` that start with `start`, for the export
-    /// float's path line `typed` (spec 4, S15): read off the UI thread, a
-    /// slow or network disk taking what it takes. Answered with
-    /// [`Event::FolderListed`], no names where the folder cannot be read.
+    /// The names of `folder` that start with `start`, for a path line
+    /// `typed`: the export float's (spec 4, S15) or a Files connection's in
+    /// the terminal look. Read off the UI thread, a slow or network disk
+    /// taking what it takes. Answered with [`Event::FolderListed`], no
+    /// names where the folder cannot be read.
     ListFolder {
-        /// The sheet's (`ExportSheet::asked`).
+        /// The sheet's (`ExportSheet::asked`), or the connection form's
+        /// listing (`ConnectionForm::files_listing`).
         asked: u64,
         typed: String,
         folder: PathBuf,
         start: String,
+        /// The names the line offers.
+        keep: crate::source_names::Keep,
     },
     /// Signals `done` once every save sent before it is on disk.
     Flush {
@@ -2667,10 +2671,11 @@ impl Worker {
                 typed,
                 folder,
                 start,
+                keep,
             } => {
                 let outbox = self.outbox.clone();
                 tokio::task::spawn_blocking(move || {
-                    let names = list_folder(&folder, &start);
+                    let names = list_folder(&folder, &start, keep);
                     outbox.emit(Event::FolderListed {
                         asked,
                         typed,
@@ -2769,9 +2774,14 @@ fn session_of(command: &Command) -> SessionId {
 }
 
 /// The names of `folder` the path line offers for `start` (see
-/// [`crate::export_sheet::completions`]); none where it cannot be read. A
-/// name that is not UTF-8 is left out: the line could not write it.
-fn list_folder(folder: &Path, start: &str) -> Vec<crate::export_sheet::Listed> {
+/// [`crate::export_sheet::completions`]), of those `keep` keeps; none
+/// where it cannot be read. A name that is not UTF-8 is left out: the
+/// line could not write it.
+fn list_folder(
+    folder: &Path,
+    start: &str,
+    keep: crate::source_names::Keep,
+) -> Vec<crate::export_sheet::Listed> {
     let Ok(entries) = std::fs::read_dir(folder) else {
         return Vec::new();
     };
@@ -2784,7 +2794,8 @@ fn list_folder(folder: &Path, start: &str) -> Vec<crate::export_sheet::Listed> {
             .is_ok_and(|kind| kind.is_dir() || (kind.is_symlink() && entry.path().is_dir()));
         Some((name, folder))
     });
-    crate::export_sheet::completions(names, start)
+    let kept = names.filter(|(name, folder)| keep.keeps(name, *folder));
+    crate::export_sheet::completions(kept, start)
 }
 
 /// The requests a queued command answers: one, or none, or the two of an
@@ -4120,12 +4131,13 @@ mod tests {
             std::fs::write(dir.path().join(name), "").unwrap();
         }
         let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
-        let mut ask = |start: &str, folder: PathBuf| {
+        let mut ask_keeping = |start: &str, folder: PathBuf, keep| {
             backend.send(Command::ListFolder {
                 asked: 7,
                 typed: format!("~/x/{start}"),
                 folder,
                 start: start.to_owned(),
+                keep,
             });
             match backend.wait(WAIT) {
                 Some(Event::FolderListed {
@@ -4141,6 +4153,9 @@ mod tests {
                 }
                 other => panic!("expected the names, got {other:?}"),
             }
+        };
+        let mut ask = |start: &str, folder: PathBuf| {
+            ask_keeping(start, folder, crate::source_names::Keep::All)
         };
         let owned = |names: &[(&str, bool)]| {
             names
@@ -4173,6 +4188,42 @@ mod tests {
                 owned(&[("linked", true), ("link.csv", false)])
             );
         }
+    }
+
+    /// A Files connection's lines: its folder field lists folders, its
+    /// add line folders and the files a Files connection reads.
+    #[test]
+    fn a_files_line_lists_only_what_it_takes() {
+        use crate::source_names::Keep;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("returns-2025")).unwrap();
+        for name in ["returns.csv", "returns.xlsx", "returns-notes.txt"] {
+            std::fs::write(dir.path().join(name), "").unwrap();
+        }
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        let mut ask = |keep| {
+            backend.send(Command::ListFolder {
+                asked: 8,
+                typed: "/data/ret".into(),
+                folder: dir.path().to_path_buf(),
+                start: "ret".into(),
+                keep,
+            });
+            match backend.wait(WAIT) {
+                Some(Event::FolderListed {
+                    asked: 8, names, ..
+                }) => names
+                    .into_iter()
+                    .map(|listed| listed.name)
+                    .collect::<Vec<_>>(),
+                other => panic!("expected the names, got {other:?}"),
+            }
+        };
+        assert_eq!(ask(Keep::Folders), ["returns-2025"]);
+        assert_eq!(
+            ask(Keep::Readable),
+            ["returns-2025", "returns.csv", "returns.xlsx"]
+        );
     }
 
     #[test]

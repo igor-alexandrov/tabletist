@@ -696,6 +696,7 @@ impl App {
             typed: sheet.path.clone(),
             folder,
             start,
+            keep: crate::source_names::Keep::All,
         };
         self.backend.send(command);
         if let Some(Dialog::Export(sheet)) = &mut self.dialog {
