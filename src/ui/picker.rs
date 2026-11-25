@@ -1760,6 +1760,7 @@ mod tests {
                 })
                 .collect(),
             missing: Vec::new(),
+            unreadable: Vec::new(),
         })
     }
 

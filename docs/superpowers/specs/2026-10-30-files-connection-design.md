@@ -215,7 +215,10 @@ merged:
   overrides with Reset, `connections.toml`, the collapsed section rows.
 - **2b: the partial Test**: the background check, the banner with its
   three fixes in the dialog and on the table view; each fix saves a 2a
-  override.
+  override. Split again on 2026-11-18 ("Two PRs, dialog first"): **2b-1**
+  the dialog (below), **2b-2** the banner on the table view, planned
+  once 2b-1 merges, its Omarchy keys decided then (`s` is Structure in
+  the grid).
 - **2c: macOS "not allowed"** and security-scoped bookmarks.
 - **2d: Omarchy path completions** under the folder field.
 
@@ -311,3 +314,118 @@ merged:
   keeps the saved reading.
 - Agents on a Files form is a closed row whose summary follows the
   access; the list menu's Agents… opens it.
+
+## Run 2b-1: the partial Test in the dialog
+
+### Where 2b-1 differs from the prompt and the boards
+
+Approved by Igor on 2026-11-18 ("Yes, all five"):
+
+| The prompt or a board asks | Built | Why |
+| --- | --- | --- |
+| "Row 48,112 has 'N/A' in returned_at" | The row counts data rows: DuckDB says the file's line, and a header row (line 1) is taken off | A row of the table, as the grid numbers it |
+| Three fixes for a file that failed | The three for a CSV's or TSV's value its column's type cannot take; Skip alone for anything else (a row with more or fewer values, an NDJSON line that is not JSON or whose value is of another type) | Reading CSV does not read NDJSON, and those errors name no column |
+| "Read 3 of 4 files · returns.csv failed" | With several, "Read 2 of 4 files · 2 failed"; the banner says the first, the next once it is mended and the Test has run again | One banner, as the boards draw it |
+| "Each fix is saved as a per-file override" | Into the form's Reading CSV, shown as its override, and the Test runs again; `connections.toml` has it when the dialog is saved | As every field of the dialog: Cancel drops it |
+| Partial when one file fails | Test opens each file it can and says those it cannot; connecting with a file that cannot be opened still fails as in run 1 | A session with a table missing would hide it; the error's Edit connection leads to the Test and its fixes |
+
+### The engine
+
+- `Connection::open_files_to_test(spec)` opens a Files connection's
+  files for a Test: a file that cannot be opened (its view cannot be
+  made) is left out and kept as a `files::Failure`, where a session to
+  browse (`connect`) still stops on it.
+- `read_files` reads each file's first 20,000 rows; a file that fails is
+  a failure too. `FilesRead` says the connection's files (those that
+  failed among them), their size, the failures in the connection's
+  order, and `checks`: the CSV, TSV and NDJSON files read, by table.
+- `check_file(name)` reads one file to its end:
+  `SELECT count(COLUMNS(*)) FROM <view>` (each column counted, so each
+  is converted; `count(*)` converts none). `None`, or the failure.
+- A `Failure` has the file's name, path and format, and `Why`, read from
+  DuckDB's message: `Value { row, column, value, kind }` from "CSV Error
+  on Line: N … Error when converting column "c". Could not convert
+  string "v" to 'T'" (row = N, less 1 where the message says `header =
+  true`); `Columns { row, expected, found }` from "Expected Number of
+  Columns: 2 Found: 3"; `Json { line, malformed }` from "Malformed JSON …
+  in line N" (DuckDB says the line after; one is taken off) and "JSON
+  transform error … in line N"; `Other(first line)`.
+  `takes_column_fixes()` is true for a `Value` of a CSV or TSV.
+
+### The backend
+
+- `Command::Test` for Files opens with `open_files_to_test`, sends
+  `Event::FilesTested`, then checks each of `checks` in turn, sending
+  `Event::FileChecked { request, failure, left }` after each, and closes
+  the session. The task's abort handle is kept by request.
+- `Command::StopCheck { request }` aborts it: the dropped call
+  interrupts DuckDB's statement.
+
+### The form and the App
+
+- `ConnectionForm.files_check: Option<(RequestId, usize)>`: the Test the
+  check follows and the files left. `forget_test` and a new Test clear
+  it. A `FileChecked` of that Test lowers it and adds its failure to
+  `files_tested.failed`.
+- `first_failure()` is the first of `files_tested.failed` while the Test
+  stands passed.
+- `Action::FixFile(FileFix::{Text, Empty, Skip})`: `fix_file` adds the
+  override (`Text { column }`, `Empty { column, values: [value] }`,
+  `Skip`) for the first failure, naming the file by its name, or by its
+  `~` path where the list holds another file of that name; the Test
+  forgotten, then run again. A Skip reads the found line again, past
+  the file it skips. A column fix of a failure that is not a value does
+  nothing.
+- The App keeps the check the dialog waits for, and after each action
+  sends `StopCheck` once the dialog no longer waits for it (closed, the
+  Test forgotten or run again). A check that ends is not stopped.
+
+### The dialog
+
+- A shared component, `ui::banner` (the Components boards' "banner with
+  actions" and "banner with keys"):
+  - macOS: a box in the warning tint, its line round it, corners of 8;
+    the triangle; "**returns.csv couldn't be read.** Row 48,112 has
+    'N/A' in returned_at, a date column."; under it the fixes as buttons
+    28 high, 8 apart, the last (Skip) quiet in the accent colour,
+    going on to a second row where one cannot hold them.
+  - Omarchy: a rule of 2 in the warning colour down its left, the fill
+    the warning at a tenth; `! returns.csv row 48,112 has 'N/A' in
+    returned_at, a date column`, then `t read returned_at as text   e
+    read 'N/A' as empty   s skip returns.csv`, each key in the accent
+    colour.
+  - In both looks a value, a column's name or a file's name longer
+    than 32 characters is cut there with "…" in a fix's words.
+  - An alert for a screen reader (its role and words on its node,
+    assertive); each fix a button named as shown.
+- It sits in the dialog's messages area, over the footer, outside what
+  scrolls.
+- The footer: while the check runs, "✓ Read 4 files · 4.0 KB · 41 ms ·
+  checking 3 files…" ("checking 1 file…"); partial, in the warning
+  colour with the triangle, "Read 3 of 4 files · returns.csv failed",
+  or "· 2 failed", and the check's words after while it still runs.
+- The words of a value's column type: date, time, timestamp, whole
+  number, number, true or false, UUID, interval, else DuckDB's in lower
+  case ("a column of type blob").
+- Omarchy `t`, `e`, `s` (`FormFixText`, `FormFixEmpty`, `FormFixSkip`,
+  When ConnectionForm, none on macOS) run the fixes while the keyboard
+  is not in a text field.
+
+### Tests (headless, Bookshop data only)
+
+- Engine: the check finds `returns.csv`'s `N/A` on row 30,001 as a
+  `DATE` column's value; each fix reads the file to its end (a skip
+  leaves it out of the files and the checks); a row with three values
+  and an NDJSON line of another type say their row and line and take
+  no column fix; a malformed NDJSON line says its own line; a file that
+  is not Parquet stops `connect` but is a failure of the Test, the
+  others read and checked.
+- Backend: a Files Test sends what it read, then each file checked with
+  what is left; a stopped check sends no more.
+- Dialog, both looks: the footer while checking and once a file fails;
+  the banner, an alert with the file, row, value, column and type; each
+  fix's button saves its override and sends a new Test; Omarchy's keys;
+  Skip alone for a row with more values; two failures counted and the
+  first shown; the check stopped when the reading changes, the dialog
+  closes or the Test runs again, and not once it ends; a fix names a
+  file by its path when the list has two of its name.
