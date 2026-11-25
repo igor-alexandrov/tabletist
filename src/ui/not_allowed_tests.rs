@@ -264,27 +264,33 @@ fn saved_exports() -> SavedConnection {
     }
 }
 
+/// Connects to the saved exports in `harness`, and answers that macOS's
+/// privacy settings refused the folder.
+fn connect_refused(harness: &mut Harness) {
+    let saved = saved_exports();
+    let conn = saved.id.clone();
+    harness.app.connections.upsert(saved);
+    let tab = harness.app.active_tab_id();
+    harness.app.apply(Action::Connect { tab, conn });
+    let Command::Connect {
+        session, request, ..
+    } = *last_sent(&harness.app)
+    else {
+        panic!("expected Connect");
+    };
+    harness.app.apply(Action::Backend(Event::ConnectFailed {
+        session,
+        request,
+        error: Error::Connect(refused()),
+    }));
+}
+
 #[test]
 fn a_connect_macos_refused_says_so_with_privacy_and_security_first() {
     for look in looks() {
         let mut harness = Harness::new();
         harness.set_look(look);
-        let saved = saved_exports();
-        let conn = saved.id.clone();
-        harness.app.connections.upsert(saved);
-        let tab = harness.app.active_tab_id();
-        harness.app.apply(Action::Connect { tab, conn });
-        let Command::Connect {
-            session, request, ..
-        } = *last_sent(&harness.app)
-        else {
-            panic!("expected Connect");
-        };
-        harness.app.apply(Action::Backend(Event::ConnectFailed {
-            session,
-            request,
-            error: Error::Connect(refused()),
-        }));
+        connect_refused(&mut harness);
         let tree = harness.settle();
         let labels = crate::testing::labels(&tree);
         let title = lead(look);
@@ -301,5 +307,62 @@ fn a_connect_macos_refused_says_so_with_privacy_and_security_first() {
         assert!(node(&tree, "Retry", Role::Button).is_some());
         harness.click("Open Privacy & Security");
         assert!(opened_privacy(&harness), "{}", look.name);
+    }
+}
+
+/// In the narrowest window, and in the longest words the app ships, the
+/// card's four buttons stay inside the card and apart, Copy details at
+/// the right.
+#[test]
+fn the_connect_card_keeps_its_buttons_apart_in_a_narrow_window() {
+    use crate::i18n::Locale;
+    const NAMES: [&str; 4] = [
+        "Open Privacy & Security",
+        "Retry",
+        "Edit connection",
+        "Copy details",
+    ];
+    for look in looks() {
+        for locale in [Locale::English, Locale::Russian] {
+            let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
+            harness.set_look(look);
+            harness.app.locale = locale;
+            connect_refused(&mut harness);
+            let tree = harness.settle();
+            let at = NAMES.map(|name| {
+                crate::testing::bounds(&tree, name, Role::Button)
+                    .unwrap_or_else(|| panic!("{} {locale:?}: no {name}", look.name))
+            });
+            // The row starts at the card's left; the card is no wider
+            // than 520.
+            let right = (at[0].left() + 520.0).min(720.0);
+            for (each, rect) in NAMES.iter().zip(at) {
+                assert!(
+                    rect.right() <= right + 0.5,
+                    "{} {locale:?}: {each} at {rect:?}",
+                    look.name
+                );
+            }
+            for i in 0..at.len() {
+                for j in i + 1..at.len() {
+                    assert!(
+                        !at[i].intersects(at[j]),
+                        "{} {locale:?}: {} at {:?} over {} at {:?}",
+                        look.name,
+                        NAMES[i],
+                        at[i],
+                        NAMES[j],
+                        at[j]
+                    );
+                }
+            }
+            // Copy details keeps the right: no button ends past it.
+            let copy = at[3];
+            assert!(
+                at[..3].iter().all(|rect| rect.right() <= copy.right()),
+                "{} {locale:?}: {at:?}",
+                look.name
+            );
+        }
     }
 }
