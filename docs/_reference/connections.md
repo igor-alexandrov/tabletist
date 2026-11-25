@@ -101,6 +101,15 @@ and DuckDB files (`.duckdb`). DuckDB reads them, inside Tabletist.
   are left out, and a file added later shows the next time the connection
   opens. **Files** is a list you add files to (**Add files…**); × takes a
   file off the list and never off the disk.
+- In the Omarchy look the folder is typed, or picked with Ctrl+O, and the
+  list has an **add** line under it for a file's path. While you type a
+  path that starts with `/` or `~`, the names of its folder that start
+  with its last part are listed under the line: folders for the folder,
+  and folders and the files a Files connection reads for the add line.
+  Ctrl+N and Ctrl+P (or Down and Up) move, Enter takes one (a folder
+  lists its own names next, a file is added), and Esc closes the list.
+  Tab moves on and never completes. Enter in the add line with nothing
+  listed adds the path as typed, if it names a file from `/` or `~`.
 - Under the source, Tabletist says what it found: `4 files · 2.5 GB · CSV,
   Parquet, NDJSON`, and the tables they become.
 - A table's name is the file's name without its extension, in lower case,

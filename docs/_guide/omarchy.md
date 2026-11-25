@@ -103,6 +103,7 @@ numbered; once you type, it lists what matches. Its commands stay on `:`.
 | Up, Down | In add table…'s or add column…'s list: move. Enter adds the one chosen, or in add column…'s puts a table chosen in the field for its columns, and Esc closes the field. In a Files connection's list of files: move |
 | Enter, Space | Choose the choice the cursor is on: a type, an environment, folder or files. On a closed section's heading (a Files connection's reading csv or agents): open it, and on an open one, close it. On group: open its list of groups, where Up and Down move and Enter picks; new group… turns it into a field for a new group's name |
 | Ctrl+O | A Files connection: pick its folder, or add files to its list, in the file chooser |
+| Ctrl+N, Ctrl+P | A Files connection's folder, or the add line under its list of files, while the names a typed path starts are listed under it: move (Down and Up too). Enter takes one: a folder lists its own names, a file is added to the list. Esc closes the list. In the add line with nothing listed, Enter adds the path as typed, if it names a file from `/` or `~` |
 | `a` | A Files connection's list: add files |
 | `x` | A Files connection's list: take the file under the cursor off the list. The file stays on disk |
 | `R` | A Files connection's reading csv: take the override the cursor is on off. Other overrides still apply |

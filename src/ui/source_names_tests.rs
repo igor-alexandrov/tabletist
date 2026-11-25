@@ -266,3 +266,190 @@ fn a_click_takes_a_name() {
     assert_eq!(form(&harness).files_folder, "/data/bookshop-exports/");
     assert_eq!(harness.app.backend.sources_read.len(), read);
 }
+
+/// The add line lists folders and the files a Files connection reads;
+/// Enter on a file adds it to the list, empties the line and reads the
+/// Source again, the keyboard staying on the line for the next.
+#[test]
+fn the_add_line_adds_the_file_taken() {
+    let mut harness = dialog(FilesKind::Files);
+    type_line(&mut harness, "/data/bookshop-exports/ret");
+    assert_eq!(
+        asks(&harness).last(),
+        Some(&(
+            "/data/bookshop-exports/ret".to_owned(),
+            PathBuf::from("/data/bookshop-exports/"),
+            "ret".to_owned(),
+            Keep::Readable
+        ))
+    );
+    answer(
+        &mut harness,
+        "/data/bookshop-exports/ret",
+        &[("returns.csv", false), ("returns.xlsx", false)],
+    );
+    assert!(painted(&harness, "returns.csv"));
+    let read = harness.app.backend.sources_read.len();
+    harness.press(Key::Enter, Modifiers::NONE);
+    harness.settle();
+    let open = form(&harness);
+    assert_eq!(open.files_list, ["/data/bookshop-exports/returns.csv"]);
+    assert_eq!(open.files_cursor, Some(0));
+    assert!(open.files_add.is_empty());
+    assert!(open.files_names.is_none());
+    assert_eq!(harness.app.backend.sources_read.len(), read + 1);
+    assert!(on_line(&harness), "the line keeps the keyboard");
+}
+
+/// A file the list holds already is not offered again; its folder is.
+#[test]
+fn a_listed_file_is_not_offered_again() {
+    let mut harness = dialog(FilesKind::Files);
+    if let Some(Dialog::Connection(form)) = &mut harness.app.dialog {
+        form.files_list = vec!["/data/bookshop-exports/orders.csv".into()];
+    }
+    type_line(&mut harness, "/data/bookshop-exports/ord");
+    answer(
+        &mut harness,
+        "/data/bookshop-exports/ord",
+        &[("orders-2025", true), ("orders.csv", false)],
+    );
+    let names: Vec<&str> = form(&harness)
+        .files_names
+        .as_ref()
+        .expect("names listed")
+        .names
+        .iter()
+        .map(|listed| listed.name.as_str())
+        .collect();
+    assert_eq!(names, ["orders-2025"]);
+}
+
+/// Enter with no name listed adds the path as typed: one that is not
+/// there is listed all the same, its row saying it is missing.
+/// (`enter_adds_only_a_files_path` has what it does not add.)
+#[test]
+fn enter_with_no_names_adds_the_path_as_typed() {
+    let mut harness = dialog(FilesKind::Files);
+    type_line(&mut harness, "/data/bookshop-exports/events.ndjson");
+    answer(&mut harness, "/data/bookshop-exports/events.ndjson", &[]);
+    harness.press(Key::Enter, Modifiers::NONE);
+    harness.settle();
+    let open = form(&harness);
+    assert_eq!(open.files_list, ["/data/bookshop-exports/events.ndjson"]);
+    assert!(open.files_add.is_empty());
+    assert!(on_line(&harness), "the line keeps the keyboard");
+    assert!(matches!(harness.app.dialog, Some(Dialog::Connection(_))));
+}
+
+/// In the add line `a` and `x` type: they add and remove files only
+/// where no line has the keyboard. Each comes as a keyboard sends it, the
+/// key and then its text.
+#[test]
+fn letters_in_the_add_line_are_typed() {
+    let mut harness = dialog(FilesKind::Files);
+    if let Some(Dialog::Connection(form)) = &mut harness.app.dialog {
+        form.files_list = vec!["/data/bookshop-exports/orders.csv".into()];
+    }
+    for (key, text) in [(Key::A, "a"), (Key::X, "x")] {
+        harness.frame(vec![
+            crate::testing::key(key, Modifiers::NONE),
+            egui::Event::Text(text.into()),
+            crate::testing::release(key, Modifiers::NONE),
+        ]);
+    }
+    harness.settle();
+    let open = form(&harness);
+    assert_eq!(open.files_add, "ax");
+    assert_eq!(open.files_list.len(), 1, "x removed nothing");
+    assert!(open.pick_request.is_none(), "a opened no picker");
+}
+
+/// Enter in the add line adds only a file's path from a root: not a
+/// folder's, which ends in its `/`, nor a path with no root, which the
+/// connection would read from wherever the app was started. The line
+/// keeps its text and the keyboard.
+#[test]
+fn enter_adds_only_a_files_path() {
+    let mut harness = dialog(FilesKind::Files);
+    for line in ["/data/bookshop-exports/", "orders.csv"] {
+        type_line(&mut harness, line);
+        if form(&harness).files_listing.is_some() {
+            answer(&mut harness, line, &[]);
+        }
+        harness.press(Key::Enter, Modifiers::NONE);
+        harness.settle();
+        let open = form(&harness);
+        assert!(open.files_list.is_empty(), "{line}: {:?}", open.files_list);
+        assert_eq!(open.files_add, line);
+        assert!(on_line(&harness), "{line}: the line keeps the keyboard");
+    }
+}
+
+/// Enter held after it took a folder takes nothing more, though the
+/// folder lists nothing: the folder is not added as a file.
+#[test]
+fn enter_held_after_a_folder_adds_nothing() {
+    let mut harness = dialog(FilesKind::Files);
+    type_line(&mut harness, "/data/bookshop-exports/ret");
+    answer(
+        &mut harness,
+        "/data/bookshop-exports/ret",
+        &[("returns-2025", true)],
+    );
+    let enter = || crate::testing::key(Key::Enter, Modifiers::NONE);
+    harness.frame(vec![enter()]);
+    harness.settle();
+    assert_eq!(
+        form(&harness).files_add,
+        "/data/bookshop-exports/returns-2025/"
+    );
+    answer(&mut harness, "/data/bookshop-exports/returns-2025/", &[]);
+    // Still held: egui sends the key down again, as a repeat.
+    harness.frame(vec![enter()]);
+    harness.frame(vec![crate::testing::release(Key::Enter, Modifiers::NONE)]);
+    harness.settle();
+    let open = form(&harness);
+    assert!(open.files_list.is_empty(), "{:?}", open.files_list);
+    assert_eq!(open.files_add, "/data/bookshop-exports/returns-2025/");
+}
+
+/// While names are listed under the add line, Down moves in them, not
+/// the file list's cursor above it.
+#[test]
+fn down_moves_in_the_names_not_the_list() {
+    let mut harness = dialog(FilesKind::Files);
+    if let Some(Dialog::Connection(form)) = &mut harness.app.dialog {
+        form.files_list = vec![
+            "/data/bookshop-exports/orders.csv".into(),
+            "/data/bookshop-exports/customers.parquet".into(),
+        ];
+        form.files_cursor = Some(0);
+    }
+    type_line(&mut harness, "/data/bookshop-exports/ret");
+    answer(
+        &mut harness,
+        "/data/bookshop-exports/ret",
+        &[("returns.csv", false), ("returns.xlsx", false)],
+    );
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    assert_eq!(lit(&harness), 1);
+    assert_eq!(form(&harness).files_cursor, Some(0));
+}
+
+/// A file is found in the list however its path is written: typed again
+/// with a `./` in it, it is not added a second time.
+#[test]
+fn a_file_typed_another_way_is_not_added_twice() {
+    let mut harness = dialog(FilesKind::Files);
+    if let Some(Dialog::Connection(form)) = &mut harness.app.dialog {
+        form.files_list = vec!["/data/bookshop-exports/orders.csv".into()];
+    }
+    type_line(&mut harness, "/data/bookshop-exports/./orders.csv");
+    answer(&mut harness, "/data/bookshop-exports/./orders.csv", &[]);
+    harness.press(Key::Enter, Modifiers::NONE);
+    harness.settle();
+    let open = form(&harness);
+    assert_eq!(open.files_list, ["/data/bookshop-exports/orders.csv"]);
+    assert_eq!(open.files_cursor, Some(0));
+}

@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-25 01:22-0500\n"
+"POT-Creation-Date: 2026-11-25 14:27-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -3979,6 +3979,10 @@ msgstr "таблица или схема.таблица"
 #: src/ui/connect_dialog/agents.rs
 msgid "table.column"
 msgstr "таблица.столбец"
+
+#: src/ui/connect_dialog/files.rs
+msgid "Add"
+msgstr "Добавить"
 
 #: src/ui/connect_dialog/files.rs
 msgid "Add files"

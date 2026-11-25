@@ -332,7 +332,7 @@ fn names(
 /// The terminal look: the "source" section's rows. The folder is typed,
 /// its folders listed under it as it is, or picked (`ctrl+o`); the list's
 /// rows are moved through with the arrows, `a` adds files and `x` takes
-/// the row off.
+/// the row off, and a file's path is typed in the add line under it.
 pub(super) fn terminal(
     ui: &mut Ui,
     form: &mut ConnectionForm,
@@ -434,6 +434,7 @@ pub(super) fn terminal(
                     },
                 );
             }
+            add_line(ui, form, skin, actions);
         }
     }
     let (text, color) = match trouble(&form.files_found, skin) {
@@ -448,6 +449,42 @@ pub(super) fn terminal(
                 .label(ui);
         });
     }
+}
+
+/// The line under the list a file's path is typed in: its folders and
+/// the files a Files connection reads listed under it as it is, Enter on
+/// one taking it, and Enter with none listed adding the path as typed.
+fn add_line(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut Vec<Action>) {
+    let look = skin.look;
+    let role = TextRole::OBody;
+    let pick = crate::ui::keys::written(ui.ctx(), look, crate::keymap::Command::FormPick);
+    super::terminal::terminal_row(ui, &skin.say(msgid("Add")), skin, |ui, label| {
+        let hint = super::hint(
+            ui,
+            &format!("{} {}", pick.as_str(), skin.say(msgid("pick"))),
+            role,
+            skin,
+        );
+        let id = source_line_id(FilesKind::Files);
+        crate::ui::path_list::to_line(ui.ctx(), id, form.files_to_line, &form.files_add);
+        let field = ui
+            .add(
+                input(ui, &mut form.files_add, role, skin.field_height(), skin)
+                    .id(id)
+                    .hint_text(hint),
+            )
+            .labelled_by(label);
+        if field.changed() {
+            actions.push(Action::SourceNames(SourceNames::Typed));
+        }
+        let asked = names(ui, &field, form, skin, actions);
+        // Enter with no name listed (the list's Enter is the dialog's,
+        // read before it draws): the path as typed.
+        let entered = ui.input(|input| input.key_pressed(egui::Key::Enter));
+        if field.lost_focus() && entered && !asked.on_list {
+            actions.push(Action::SourceNames(SourceNames::Add));
+        }
+    });
 }
 
 #[cfg(test)]
