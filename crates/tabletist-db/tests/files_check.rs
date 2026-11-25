@@ -421,3 +421,23 @@ async fn a_failed_page_that_is_not_of_the_file_names_none() {
     };
     assert_eq!(named.file, None);
 }
+
+/// A page of one table whose WHERE line reads another file's table fails
+/// on that file: the error names no file, so no fix is offered for a file
+/// that reads.
+#[tokio::test]
+async fn a_page_that_fails_on_another_file_names_none() {
+    use tabletist_db::{ObjectRef, RowQuery};
+    let dir = exports();
+    let connection = Connection::connect(&spec(dir.path(), Vec::new()), &Secrets::default())
+        .await
+        .unwrap();
+    let mut query = RowQuery::new(ObjectRef::new("main", "orders"), 50);
+    query.raw_where = Some("(SELECT max(returned_at) FROM main.returns) IS NOT NULL".into());
+    let error = connection.fetch_rows(&query).await.unwrap_err();
+    let tabletist_db::Error::Query { message, named, .. } = &error else {
+        panic!("{error:?}");
+    };
+    assert!(message.contains("returns.csv"), "{message}");
+    assert_eq!(named.file, None);
+}

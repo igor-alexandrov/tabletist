@@ -1548,17 +1548,24 @@ impl Conn {
     }
 
     /// `error` from reading `object`, naming the file it could not be read
-    /// from where `object` is a file's table and DuckDB's words say a row,
-    /// a value or a line of it. Any other error is left as it is.
+    /// from where `object` is a file's table, DuckDB's words name that
+    /// table's own file, and they say a row, a value or a line of it. A
+    /// WHERE line may read another file's table, whose failure is not this
+    /// table's to mend. Any other error is left as it is.
     fn of_file(&self, object: &ObjectRef, mut error: Error) -> Error {
         let Some(file) = self.file_of(object) else {
             return error;
         };
         let failure = failure(&file.found, &error);
-        if let (Error::Query { named, .. }, false) = (
-            &mut error,
-            matches!(failure.why, crate::files::Why::Other(_)),
-        ) {
+        let Error::Query { message, named, .. } = &mut error else {
+            return error;
+        };
+        let own = [path_text(&file.found.path), reader_path(&file.found.path)];
+        let its_own = named_file(message).is_some_and(|named| {
+            own.iter()
+                .any(|own| own.as_deref().is_ok_and(|own| own == named))
+        });
+        if its_own && !matches!(failure.why, crate::files::Why::Other(_)) {
             named.file = Some(failure);
         }
         error
@@ -1575,6 +1582,19 @@ impl Conn {
             .flatten()
             .filter(|file| !file.found.format.is_database())
     }
+}
+
+/// The file DuckDB's words say it could not read, as it was given it:
+/// a CSV reader's `file = …` option line, or a JSON reader's `in file "…"`.
+fn named_file(message: &str) -> Option<&str> {
+    let option = message
+        .lines()
+        .find_map(|line| line.trim_start().strip_prefix("file = "));
+    if let Some(path) = option {
+        return Some(path.trim_end());
+    }
+    let (_, after) = message.split_once("in file \"")?;
+    after.split_once('"').map(|(path, _)| path)
 }
 
 /// A file's name, for a message.
@@ -2005,5 +2025,16 @@ mod tests {
         assert_eq!(read[2].1, f64::NEG_INFINITY);
         assert_eq!(read[3].1, 4.5);
         assert!(read.iter().all(|row| row.2 == "none"));
+    }
+
+    /// The file DuckDB's words name: the CSV reader's option line, and the
+    /// JSON reader's quoted path. Words that name none give none.
+    #[test]
+    fn named_file_reads_the_csv_and_the_json_readers_words() {
+        let csv = "Conversion Error: CSV Error on Line: 30002\n\n  file = /data/returns.csv\n  delimiter = , (Auto-Detected)";
+        assert_eq!(named_file(csv), Some("/data/returns.csv"));
+        let json = "Invalid Input Error: Malformed JSON in file \"/data/events.ndjson\", at byte 8 in line 30002: unexpected character.";
+        assert_eq!(named_file(json), Some("/data/events.ndjson"));
+        assert_eq!(named_file("Binder Error: column \"nope\" not found"), None);
     }
 }

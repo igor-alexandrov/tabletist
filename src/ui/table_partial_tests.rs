@@ -206,9 +206,11 @@ fn reading_the_column_as_text_saves_it_and_opens_the_session_again() {
             .and_then(|workspace| workspace.object_tab(object_tab))
             .is_some()
     );
-    // Once it is up, the table reads again.
+    // Once it is up, the table reads again: a read sent after the
+    // session's answer, not the one that failed.
+    let sent = harness.app.backend.sent.len();
     answer_connect(&mut harness);
-    let reads = harness.app.backend.sent.iter().rev().any(|command| {
+    let reads = harness.app.backend.sent[sent..].iter().any(|command| {
         matches!(
             command,
             Command::FetchRows { query, .. } | Command::Open { query, .. }
@@ -251,6 +253,27 @@ fn a_fix_pressed_twice_saves_it_once() {
     });
     assert_eq!(saved_overrides(&harness, &conn), [text_override()]);
     assert_eq!(connects(&harness), opened);
+}
+
+/// The saved connection was changed to read another folder while the tab
+/// stayed open: the fix mends the tab's session, and is not saved where a
+/// file of that name may be another.
+#[test]
+fn a_fix_is_not_saved_in_a_connection_that_reads_another_source_now() {
+    let (mut harness, tab, conn) = connected(Look::macos());
+    let object_tab = failed(&mut harness, late_na());
+    let mut saved = harness.app.connections.get(&conn).expect("saved").clone();
+    saved.spec.files = Some(Source::Folder("/data/bookshop-archive".into()));
+    harness.app.connections.upsert(saved);
+    let before = saves(&harness);
+    harness.app.apply(Action::FixTableFile {
+        tab,
+        object_tab,
+        fix: FileFix::Text,
+    });
+    assert!(saved_overrides(&harness, &conn).is_empty());
+    assert_eq!(saves(&harness), before);
+    assert_eq!(connected_with(&harness), [text_override()]);
 }
 
 #[test]

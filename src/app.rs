@@ -4531,8 +4531,8 @@ impl App {
 
     /// Mends the file `object_tab`'s rows could not be read from as `fix`
     /// says: the override goes into the saved connection, which is saved,
-    /// and into the tab's own copy of it, and the session opens again with
-    /// it. Its tabs stay, and the table reads again; a skipped file's tab
+    /// where it still reads the tab's source, and into the tab's own copy
+    /// of it, and the session opens again with it. Its tabs stay, and the table reads again; a skipped file's tab
     /// closes, as its table leaves the connection.
     fn fix_table_file(&mut self, tab: ConnTabId, object_tab: TabId, fix: crate::model::FileFix) {
         let Some(workspace) = self.workspace(tab) else {
@@ -4549,8 +4549,12 @@ impl App {
             return;
         };
         let conn = workspace.conn_id.clone();
+        let source = workspace.spec.files.clone();
+        // Saved only where the connection still reads the source the tab
+        // read: in another, a file of that name may be another file.
         if let Some(mut saved) = self.connections.get(&conn).cloned()
-            && saved.spec.files.is_some()
+            && source.is_some()
+            && saved.spec.files == source
         {
             saved.spec.csv.overrides.push(added.clone());
             self.connections.upsert(saved);
