@@ -366,3 +366,27 @@ fn the_connect_card_keeps_its_buttons_apart_in_a_narrow_window() {
         }
     }
 }
+
+/// In the terminal look an action with no key starts its words where a
+/// key would, with no space before them: Open Privacy & Security is as
+/// wide as its words.
+#[test]
+fn the_terminal_banner_puts_no_space_before_an_action_with_no_key() {
+    let look = Look::omarchy();
+    let mut harness = exports(look);
+    tested(&mut harness, Error::Connect(refused()));
+    let tree = harness.settle();
+    let button = crate::testing::bounds(&tree, &privacy(look), Role::Button)
+        .expect("no Open Privacy & Security");
+    let words = harness
+        .painted_rect(&privacy(look))
+        .expect("Open Privacy & Security not painted");
+    assert!(
+        (words.left() - button.left()).abs() < 0.5,
+        "words at {words:?}, the action at {button:?}"
+    );
+    assert!(
+        button.right() <= words.right() + 0.5,
+        "words at {words:?}, the action at {button:?}"
+    );
+}
