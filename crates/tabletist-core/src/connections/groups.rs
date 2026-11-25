@@ -170,7 +170,9 @@ pub fn same(one: &str, other: &str) -> bool {
 pub fn stays_on_this_machine(driver: Driver, host: &str, tunnel: bool) -> bool {
     match driver {
         Driver::Sqlite | Driver::Files => true,
-        Driver::Postgres | Driver::MySql => !tunnel && crate::model::is_local_host(host),
+        Driver::Postgres | Driver::MySql | Driver::Redis => {
+            !tunnel && crate::model::is_local_host(host)
+        }
         Driver::BigQuery => false,
     }
 }

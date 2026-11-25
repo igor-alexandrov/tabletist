@@ -1,12 +1,12 @@
 ---
 layout: home
 title: Tabletist
-description: A fast, native database client for PostgreSQL, MySQL, MariaDB, SQLite and BigQuery.
+description: A fast, native database client for PostgreSQL, MySQL, MariaDB, SQLite, BigQuery and Redis.
 permalink: /
 hero:
   name: Tabletist
   text: Your databases, native and fast
-  tagline: A database client for PostgreSQL, MySQL, MariaDB, SQLite and BigQuery. Written in Rust, for Linux, macOS and Windows.
+  tagline: A database client for PostgreSQL, MySQL, MariaDB, SQLite, BigQuery and Redis. Written in Rust, for Linux, macOS and Windows.
   actions:
     - theme: brand
       text: Download
@@ -31,8 +31,8 @@ features:
     link: /speed-and-security/
     link_text: Why it is fast
   - icon: 🗄️
-    title: Four databases
-    details: PostgreSQL, MySQL (MariaDB too), SQLite and BigQuery, with the same grid, row panel and SQL editor for each.
+    title: Five databases
+    details: PostgreSQL, MySQL (MariaDB too), SQLite and BigQuery, with the same grid, row panel and SQL editor for each, and Redis's keys and values.
   - icon: 🔐
     title: Secure connections
     details: TLS that checks the certificate when you choose verify-full, SSH tunnels (through ProxyJump and ProxyCommand too) that check the SSH server's key, and passwords kept in the system keyring, never in a file.

@@ -207,7 +207,10 @@ impl App {
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
-        let dialect = workspace.driver.dialect();
+        // Nothing of it without SQL (Redis).
+        let Some(dialect) = workspace.driver.dialect() else {
+            return;
+        };
         let place = workspace.label_place();
         let mut ready = Vec::new();
         let mut commits = Vec::new();

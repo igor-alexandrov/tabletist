@@ -119,7 +119,10 @@ fn shown(
             .as_ref()
             .map(tabletist_db::files::Source::title)
             .unwrap_or_default(),
-        Driver::Postgres | Driver::MySql | Driver::BigQuery => info.database.clone(),
+        // Redis draws no start screen: its keys stand in its place.
+        Driver::Postgres | Driver::MySql | Driver::BigQuery | Driver::Redis => {
+            info.database.clone()
+        }
     };
     let objects = schema
         .and_then(|schema| workspace.tree.nodes.get(&schema))
@@ -636,7 +639,7 @@ fn lists(
         match shown.driver {
             Driver::Postgres | Driver::MySql => gettext(locale, "Largest tables").into_owned(),
             // BigQuery's list comes without row estimates.
-            Driver::Sqlite | Driver::BigQuery | Driver::Files => {
+            Driver::Sqlite | Driver::BigQuery | Driver::Redis | Driver::Files => {
                 gettext(locale, "Tables").into_owned()
             }
         }
@@ -646,7 +649,7 @@ fn lists(
             Driver::Postgres | Driver::MySql => {
                 skin.say(msgid("From table statistics. Nothing is queried."))
             }
-            Driver::Sqlite | Driver::BigQuery | Driver::Files => {
+            Driver::Sqlite | Driver::BigQuery | Driver::Redis | Driver::Files => {
                 skin.say(msgid("Nothing is queried."))
             }
         })

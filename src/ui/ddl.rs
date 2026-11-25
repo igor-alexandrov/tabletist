@@ -228,6 +228,8 @@ fn engine(driver: Driver) -> &'static str {
         Driver::Sqlite => "SQLite",
         Driver::BigQuery => "BigQuery",
         Driver::Files => "DuckDB",
+        // Never shown: Redis has no DDL.
+        Driver::Redis => "Redis",
     }
 }
 
@@ -239,7 +241,7 @@ fn left_out(driver: Driver, locale: Locale) -> Option<Cow<'static, str>> {
             locale,
             "Not included: owner, grants, sequences owned by the table, row-level policies",
         )),
-        Driver::MySql | Driver::Sqlite | Driver::BigQuery | Driver::Files => None,
+        Driver::MySql | Driver::Sqlite | Driver::BigQuery | Driver::Redis | Driver::Files => None,
     }
 }
 
@@ -383,7 +385,10 @@ pub fn show(
         let name = gettext(locale, "DDL of {name}")
             .replace("{name}", &format::display_safe(&object.object.name));
         let id = text_id(tab, object_tab);
-        let dialect = ddl.driver.dialect();
+        // A DDL is only ever read for a SQL server.
+        let Some(dialect) = ddl.driver.dialect() else {
+            return actions;
+        };
         if look.terminal {
             let lines = Lines {
                 id,
@@ -915,7 +920,7 @@ fn left_out_lines(driver: Driver, locale: Locale) -> Option<[String; 2]> {
             gettext(locale, "owner · grants · owned sequences").into_owned(),
             gettext(locale, "row-level policies").into_owned(),
         ]),
-        Driver::MySql | Driver::Sqlite | Driver::BigQuery | Driver::Files => None,
+        Driver::MySql | Driver::Sqlite | Driver::BigQuery | Driver::Redis | Driver::Files => None,
     }
 }
 
@@ -1017,7 +1022,7 @@ impl Failed<'_> {
             Driver::MySql => matches!(named.number, Some(1044 | 1142 | 1143 | 1227)),
             Driver::Postgres => code.as_deref() == Some("42501"),
             // A file the session may not read never opens.
-            Driver::Sqlite | Driver::BigQuery | Driver::Files => false,
+            Driver::Sqlite | Driver::BigQuery | Driver::Files | Driver::Redis => false,
         }
     }
 
@@ -1035,7 +1040,14 @@ impl Failed<'_> {
             (Driver::MySql, ObjectKind::Table | ObjectKind::MaterializedView) => msgid(
                 "The connection's user can't run SHOW CREATE TABLE here. Rows and Structure still work.",
             ),
-            (Driver::Postgres | Driver::Sqlite | Driver::BigQuery | Driver::Files, _) => msgid(
+            (
+                Driver::Postgres
+                | Driver::Sqlite
+                | Driver::BigQuery
+                | Driver::Redis
+                | Driver::Files,
+                _,
+            ) => msgid(
                 "The connection's user can't read this part of the catalog. Rows and Structure still work.",
             ),
         };

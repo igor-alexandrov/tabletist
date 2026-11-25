@@ -167,6 +167,8 @@ pub fn database_of(spec: &tabletist_db::ConnectSpec) -> String {
         tabletist_db::Driver::Postgres
         | tabletist_db::Driver::MySql
         | tabletist_db::Driver::BigQuery => spec.database.clone(),
+        // The database a Redis connection opens on, by its number.
+        tabletist_db::Driver::Redis => spec.redis_spec().database.to_string(),
     }
 }
 
@@ -178,6 +180,10 @@ pub fn database_of(spec: &tabletist_db::ConnectSpec) -> String {
 pub fn server_of(spec: &tabletist_db::ConnectSpec) -> String {
     let mut spec = spec.clone();
     spec.database.clear();
+    // A Redis connection's database is a number of its own.
+    if let Some(redis) = &mut spec.redis {
+        redis.database = 0;
+    }
     hash_of(&serde_json::to_string(&spec).unwrap_or_default())
 }
 
@@ -200,8 +206,9 @@ fn stamp_of(connections: &BTreeMap<String, serde_json::Value>) -> String {
 }
 
 /// Puts `spec` on `database`, a name [`database_of`] gave: a server's
-/// database. A SQLite file or a Files connection opens what it names, and
-/// a window kept with no database stays on its connection's.
+/// database, or a Redis database's number. A SQLite file or a Files
+/// connection opens what it names, and a window kept with no database (or
+/// a Redis one with no number) stays on its connection's.
 pub fn put_on(spec: &mut tabletist_db::ConnectSpec, database: &str) {
     match spec.driver {
         tabletist_db::Driver::Postgres
@@ -209,6 +216,13 @@ pub fn put_on(spec: &mut tabletist_db::ConnectSpec, database: &str) {
         | tabletist_db::Driver::BigQuery => {
             if !database.is_empty() {
                 spec.database = database.to_owned();
+            }
+        }
+        tabletist_db::Driver::Redis => {
+            if let Ok(number) = database.parse::<u32>() {
+                let mut redis = spec.redis_spec();
+                redis.database = number;
+                spec.redis = Some(redis);
             }
         }
         tabletist_db::Driver::Sqlite | tabletist_db::Driver::Files => {}
@@ -606,6 +620,20 @@ fn op_of(name: &str) -> Option<FilterOp> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_redis_window_goes_back_on_its_database_number_on_its_server() {
+        let mut spec = tabletist_db::ConnectSpec::redis("localhost", 6379);
+        let server = server_of(&spec);
+        put_on(&mut spec, "3");
+        assert_eq!(spec.redis_spec().database, 3);
+        assert_eq!(database_of(&spec), "3");
+        // Its database is no part of its server.
+        assert_eq!(server_of(&spec), server);
+        // A window kept with no number stays where it is.
+        put_on(&mut spec, "");
+        assert_eq!(spec.redis_spec().database, 3);
+    }
     use super::*;
 
     fn books() -> KeptTab {

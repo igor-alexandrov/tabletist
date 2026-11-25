@@ -71,7 +71,7 @@ async fn refused(connection: &Connection, text: &str) -> String {
 async fn each_file_is_a_table_and_a_duckdb_file_a_schema() {
     let (connection, _dir) = exports().await;
     assert_eq!(connection.driver(), Driver::Files);
-    assert_eq!(connection.dialect(), Dialect::DuckDb);
+    assert_eq!(connection.dialect(), Some(Dialect::DuckDb));
     assert!(!connection.is_encrypted());
     assert!(connection.list_databases().await.unwrap().is_empty());
     assert_eq!(

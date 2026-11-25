@@ -865,8 +865,9 @@ pub fn refuses_writes(error: &tabletist_db::Error, driver: tabletist_db::Driver)
         Error::Query { code, message, .. } => match driver {
             Driver::Sqlite => code.as_deref() == Some("8"),
             Driver::Postgres | Driver::MySql => code.as_deref() == Some("25006"),
-            // A BigQuery error carries no SQLSTATE here.
-            Driver::BigQuery => false,
+            // A BigQuery error carries no SQLSTATE here, and Redis is
+            // never written to.
+            Driver::BigQuery | Driver::Redis => false,
             // DuckDB gives no code: its own words, which no setting changes.
             Driver::Files => message.contains("transaction is launched in read-only mode"),
         },

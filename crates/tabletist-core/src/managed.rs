@@ -103,7 +103,7 @@ impl Match {
     /// file, or its folder. A key the driver has no use for does not match.
     pub fn matches(&self, spec: &ConnectSpec, home: Option<&Path>) -> bool {
         let server = match spec.driver {
-            Driver::Postgres | Driver::MySql => true,
+            Driver::Postgres | Driver::MySql | Driver::Redis => true,
             // BigQuery's `database` (its project) is a rule's to match; a
             // host or port rule is never its: it has neither, and a `*`
             // would match the emptiness.
@@ -135,7 +135,7 @@ impl Match {
             return false;
         }
         if let Some(database) = &self.database
-            && !glob(database, &spec.database)
+            && !glob(database, &crate::session::database_of(spec))
         {
             return false;
         }
@@ -150,7 +150,7 @@ impl Match {
                     .files
                     .as_ref()
                     .is_some_and(|source| reaches(path, source, home)),
-                Driver::Postgres | Driver::MySql | Driver::BigQuery => false,
+                Driver::Postgres | Driver::MySql | Driver::BigQuery | Driver::Redis => false,
             };
             if !reached {
                 return false;
@@ -231,12 +231,13 @@ fn names_a_file_in(pattern: &str, folder: &str) -> bool {
 }
 
 /// Every driver, for the words a rule's `driver` may say.
-const DRIVERS: [Driver; 5] = [
+const DRIVERS: [Driver; 6] = [
     Driver::Postgres,
     Driver::MySql,
     Driver::Sqlite,
     Driver::BigQuery,
     Driver::Files,
+    Driver::Redis,
 ];
 
 /// The driver's word in the file, as in `connections.toml`. A new driver
@@ -248,6 +249,7 @@ fn driver_key(driver: Driver) -> &'static str {
         Driver::Sqlite => "sqlite",
         Driver::BigQuery => "bigquery",
         Driver::Files => "files",
+        Driver::Redis => "redis",
     }
 }
 
@@ -517,8 +519,8 @@ impl MatchTable {
             && !DRIVERS.into_iter().any(|known| driver_key(known) == driver)
         {
             return Err(
-                "its driver is none that Tabletist knows: postgres, mysql, sqlite, bigquery or \
-                 files"
+                "its driver is none that Tabletist knows: postgres, mysql, sqlite, bigquery, \
+                 files or redis"
                     .into(),
             );
         }
@@ -857,6 +859,21 @@ access_max = "off"
         assert!(connections.contains("it has connections"), "{connections}");
         let service = problem("version = 1\n[service]\nurl = \"https://example.com\"\n");
         assert!(service.contains("it has a service"), "{service}");
+    }
+
+    #[test]
+    fn a_rule_can_name_redis_and_match_its_connections() {
+        let policy = read(
+            "version = 1\n[[rules]]\nname = \"Caches\"\n\
+             match = { driver = \"redis\", host = \"cache.*\", database = \"2\" }\n",
+        )
+        .expect("a rule for Redis reads");
+        let rule = &policy.rules[0].matches;
+        let mut spec = tabletist_db::ConnectSpec::redis("cache.example.com", 6379);
+        assert!(!rule.matches(&spec, None), "database 0 is not 2");
+        spec.redis.as_mut().unwrap().database = 2;
+        assert!(rule.matches(&spec, None));
+        assert!(!rule.matches(&postgres("cache.example.com", "2"), None));
     }
 
     #[test]

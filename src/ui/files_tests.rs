@@ -189,10 +189,16 @@ fn the_mac_type_grid_is_one_tab_stop_and_the_arrows_choose() {
     harness.press(Key::ArrowLeft, Modifiers::NONE);
     assert_eq!(form(&harness).driver, Driver::Sqlite);
     assert_eq!(focused_label(&mut harness).as_deref(), Some("SQLite"));
-    // SQLite, PostgreSQL, MySQL, BigQuery on the first row; Files under SQLite.
+    // SQLite, PostgreSQL, MySQL, BigQuery on the first row; Files under
+    // SQLite, and Redis beside it.
     harness.press(Key::ArrowDown, Modifiers::NONE);
     assert_eq!(form(&harness).driver, Driver::Files);
     assert_eq!(focused_label(&mut harness).as_deref(), Some("Files"));
+    harness.press(Key::ArrowRight, Modifiers::NONE);
+    assert_eq!(form(&harness).driver, Driver::Redis);
+    assert_eq!(focused_label(&mut harness).as_deref(), Some("Redis"));
+    harness.press(Key::ArrowLeft, Modifiers::NONE);
+    assert_eq!(form(&harness).driver, Driver::Files);
     // Nothing under Files: down stays.
     harness.press(Key::ArrowDown, Modifiers::NONE);
     assert_eq!(form(&harness).driver, Driver::Files);
@@ -931,6 +937,8 @@ fn the_omarchy_type_grid_takes_tab_and_enter_or_space() {
     harness.settle();
     // A new connection gives the name the keyboard. Back from it: the last
     // type, then the one before it.
+    harness.press(Key::Tab, Modifiers::SHIFT);
+    assert_eq!(focused_label(&mut harness), Some(look.label("Redis")));
     harness.press(Key::Tab, Modifiers::SHIFT);
     assert_eq!(focused_label(&mut harness), Some(look.label("Files")));
     harness.press(Key::Tab, Modifiers::SHIFT);

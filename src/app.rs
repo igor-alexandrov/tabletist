@@ -40,6 +40,7 @@ mod keyboard_tests;
 mod labels;
 mod menu;
 mod quick_open;
+mod redis;
 #[cfg(test)]
 mod startup_tests;
 mod updates;
@@ -211,6 +212,10 @@ pub struct App {
     /// What the toast, or the terminal look's status line, says next: the
     /// frame says it (`ui::show`).
     pub said: Option<String>,
+    /// The keys each Redis connection's database held when it was last
+    /// probed (a Test, or its window), for the Connections list. Never
+    /// saved: a count goes stale.
+    pub redis_keys: std::collections::HashMap<crate::connections::ConnectionId, (u32, u64)>,
     /// The sheet the toast's Export… opens, said with `said` when a copy is
     /// over the clipboard's limit (spec 3b, R6): the frame hands both to
     /// the toast.
@@ -506,6 +511,7 @@ impl App {
             export_said: None,
             to_clipboard: None,
             said: None,
+            redis_keys: std::collections::HashMap::new(),
             offer: None,
             focused: true,
             session,
@@ -633,6 +639,13 @@ impl App {
 
     pub fn workspace(&self, tab: ConnTabId) -> Option<&Workspace> {
         workspace_in(&self.tabs, tab)
+    }
+
+    /// Whether `tab` is a connection that runs SQL: what an editor, the
+    /// history, agents and exports of tables are offered on. Not Redis.
+    pub fn has_sql(&self, tab: ConnTabId) -> bool {
+        self.workspace(tab)
+            .is_some_and(|workspace| workspace.driver.dialect().is_some())
     }
 
     pub fn picker_mut(&mut self, tab: ConnTabId) -> Option<&mut PickerState> {
@@ -3237,13 +3250,17 @@ impl App {
                     // A Files connection has no URL to show.
                     match driver {
                         Driver::Files => form.url_mode = false,
-                        Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => {}
+                        Driver::Postgres
+                        | Driver::MySql
+                        | Driver::Sqlite
+                        | Driver::BigQuery
+                        | Driver::Redis => {}
                     }
                     match driver {
                         // No port or password of its own to default.
                         Driver::Sqlite | Driver::BigQuery => {}
                         Driver::Files => self.read_form_source(),
-                        Driver::Postgres | Driver::MySql => {
+                        Driver::Postgres | Driver::MySql | Driver::Redis => {
                             if form.port.trim().is_empty() || form.port.trim() == old_default {
                                 form.port = driver.default_port().to_string();
                             }
@@ -3298,6 +3315,13 @@ impl App {
                     self.send_what_waited(prompt.tab);
                 }
             }
+            Action::SwitchDatabase { tab, database }
+                if self
+                    .workspace(tab)
+                    .is_some_and(|workspace| workspace.redis.is_some()) =>
+            {
+                self.redis_switch_label(tab, &database);
+            }
             Action::SwitchDatabase { tab, database } => {
                 // While the window is on its own connection's database
                 // this keeps its tables for the next time; switched once
@@ -3334,6 +3358,7 @@ impl App {
                 self.open_database_beside(tab, database);
             }
             Action::Backend(event) => self.apply_event(event),
+            Action::Redis(tab, action) => self.apply_redis(tab, action),
             // Not over a question about deleting a connection: a form opened
             // there would take the form the question holds.
             Action::NewConnection | Action::EditConnection(_)
@@ -3493,6 +3518,18 @@ impl App {
                     self.backend.pick_ca_file(request);
                 }
             }
+            Action::PickRedisFile { key } => {
+                let request = RequestId(self.next_id());
+                if let Some(Dialog::Connection(form)) = &mut self.dialog {
+                    form.pick_request = Some(request);
+                    form.pick_target = if key {
+                        PickTarget::RedisKey
+                    } else {
+                        PickTarget::RedisCert
+                    };
+                    self.backend.pick_ca_file(request);
+                }
+            }
             Action::PickFolder => {
                 let request = RequestId(self.next_id());
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
@@ -3551,6 +3588,34 @@ impl App {
             Action::PickSshHost(alias) => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
                     form.pick_ssh_host(&alias);
+                }
+            }
+            Action::RedisUrlTyped => {
+                if let Some(Dialog::Connection(form)) = &mut self.dialog {
+                    form.message = None;
+                    // A URL half typed fills nothing; one that reads fills
+                    // the fields, and its password the password's.
+                    let parsed = tabletist_db::ParsedUrl::parse(&form.url).ok();
+                    let redis = parsed.filter(|parsed| match parsed.spec.driver {
+                        Driver::Redis => true,
+                        // Another engine's URL, typed over Redis's: it
+                        // fills nothing until Fill or Save reads it.
+                        Driver::Postgres
+                        | Driver::MySql
+                        | Driver::Sqlite
+                        | Driver::BigQuery
+                        | Driver::Files => false,
+                    });
+                    if let Some(parsed) = redis {
+                        form.take_redis(&parsed.spec);
+                        if let Some(password) = parsed
+                            .secrets
+                            .password
+                            .filter(|password| password != crate::model::REDIS_URL_DOTS)
+                        {
+                            form.password = password;
+                        }
+                    }
                 }
             }
             Action::ApplyUrl => {
@@ -4701,17 +4766,27 @@ impl App {
                     workspace.status = SessionStatus::Disconnected(error);
                 }
             }
+            Event::Redis {
+                session,
+                request,
+                answer,
+            } => self.apply_redis_event(session, request, answer),
             Event::Tested { request, result } => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog
                     && form.test == TestState::Running(request)
                 {
                     let elapsed = form.test_started.take().map(|started| started.elapsed());
                     form.test_took = if result.is_ok() { elapsed } else { None };
+                    form.redis_probe = result.as_ref().ok().cloned().flatten();
+                    if let (Some(conn), Some(probe)) = (&form.editing, &form.redis_probe) {
+                        let keys = probe.keys.unwrap_or_else(|| probe.keys_in(probe.database));
+                        self.redis_keys.insert(conn.clone(), (probe.database, keys));
+                    }
                     // The key belongs to the SSH host the test reached, which
                     // the error names (a Host alias's HostName), not whatever
                     // the fields say now.
                     form.test = match result {
-                        Ok(()) => TestState::Passed,
+                        Ok(_) => TestState::Passed,
                         Err(Error::Ssh {
                             stage:
                                 SshStage::HostKeyUnknown {
@@ -4725,7 +4800,21 @@ impl App {
                             port,
                             fingerprint,
                         },
-                        Err(error) => TestState::Failed(error.to_string()),
+                        Err(error) => TestState::Failed(match &form.test_spec {
+                            Some(spec) => match spec.driver {
+                                // Redis says the cause in words, with the
+                                // server's code.
+                                Driver::Redis => {
+                                    crate::keyspace::test_failure(&error, spec, self.locale)
+                                }
+                                Driver::Postgres
+                                | Driver::MySql
+                                | Driver::Sqlite
+                                | Driver::BigQuery
+                                | Driver::Files => error.to_string(),
+                            },
+                            None => error.to_string(),
+                        }),
                     };
                 }
             }
@@ -4754,6 +4843,12 @@ impl App {
                         }
                         (Some(path), PickTarget::CaFile) => {
                             form.ca_file = path.display().to_string();
+                        }
+                        (Some(path), PickTarget::RedisCert) => {
+                            form.redis_cert = path.display().to_string();
+                        }
+                        (Some(path), PickTarget::RedisKey) => {
+                            form.redis_key = path.display().to_string();
                         }
                         (Some(path), PickTarget::Sqlite) => {
                             form.sqlite_path = path.display().to_string();
@@ -4960,7 +5055,10 @@ impl App {
                 let Some(workspace) = self.workspace_mut(tab) else {
                     return;
                 };
-                let dialect = workspace.driver.dialect();
+                // Nothing of it without SQL (Redis).
+                let Some(dialect) = workspace.driver.dialect() else {
+                    return;
+                };
                 let base =
                     history::entry_on(workspace, crate::history::Source::Filter, String::new());
                 let Some(object) = workspace
@@ -5423,7 +5521,10 @@ impl App {
                 else {
                     return;
                 };
-                let dialect = workspace.driver.dialect();
+                // Nothing of it without SQL (Redis).
+                let Some(dialect) = workspace.driver.dialect() else {
+                    return;
+                };
                 let base = history::entry_on(workspace, crate::history::Source::Sql, String::new());
                 let Some(sql) = workspace
                     .sql_tabs_mut()
@@ -5536,7 +5637,11 @@ impl App {
         };
         let source = match form.driver {
             Driver::Files => form.files_source(),
-            Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => None,
+            Driver::Postgres
+            | Driver::MySql
+            | Driver::Sqlite
+            | Driver::BigQuery
+            | Driver::Redis => None,
         };
         // A Test of another Source, or of another type, done or still
         // running, says nothing of this one.
@@ -5547,17 +5652,21 @@ impl App {
                     .as_ref()
                     .is_some_and(|spec| match spec.driver {
                         Driver::Files => spec.files.as_ref() == source.as_ref(),
-                        Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => {
-                            false
-                        }
+                        Driver::Postgres
+                        | Driver::MySql
+                        | Driver::Sqlite
+                        | Driver::BigQuery
+                        | Driver::Redis => false,
                     });
                 if !same {
                     form.forget_test();
                 }
             }
-            Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => {
-                form.files_tested = None
-            }
+            Driver::Postgres
+            | Driver::MySql
+            | Driver::Sqlite
+            | Driver::BigQuery
+            | Driver::Redis => form.files_tested = None,
         }
         match source {
             Some(source) => {
@@ -5797,7 +5906,10 @@ impl App {
         };
         let limit = self.settings.sql_limit;
         if let Some(workspace) = self.workspace_mut(tab) {
-            let dialect = workspace.driver.dialect();
+            // Nothing of it without SQL (Redis).
+            let Some(dialect) = workspace.driver.dialect() else {
+                return;
+            };
             let name = format!(
                 "{}.{}",
                 dialect.ident(&object.schema),
@@ -5842,7 +5954,7 @@ impl App {
             .iter()
             .filter(|saved| match saved.spec.driver {
                 Driver::Files | Driver::Sqlite => true,
-                Driver::Postgres | Driver::MySql | Driver::BigQuery => false,
+                Driver::Postgres | Driver::MySql | Driver::BigQuery | Driver::Redis => false,
             })
             .map(|saved| (saved.id.clone(), saved.spec.clone()))
             .collect();
@@ -6658,7 +6770,11 @@ impl App {
         };
         let asks = match workspace.driver {
             Driver::MySql => workspace.session_zone.needs_load(),
-            Driver::Postgres | Driver::Sqlite | Driver::BigQuery | Driver::Files => false,
+            Driver::Postgres
+            | Driver::Sqlite
+            | Driver::BigQuery
+            | Driver::Redis
+            | Driver::Files => false,
         };
         if asks {
             let session = workspace.session;
@@ -6673,6 +6789,21 @@ impl App {
     /// After a (re)connect: load the tree, restart everything that waited on
     /// the old session, and open anything queued for this connection.
     pub fn after_connect(&mut self, tab: ConnTabId) {
+        if let Some(workspace) = self.workspace(tab) {
+            match workspace.driver {
+                // Keys, not tables: the browser reads them, and there is no
+                // server version, zone or tree to ask for.
+                Driver::Redis => {
+                    self.redis_after_connect(tab);
+                    return;
+                }
+                Driver::Postgres
+                | Driver::MySql
+                | Driver::Sqlite
+                | Driver::BigQuery
+                | Driver::Files => {}
+            }
+        }
         self.ask_server_version(tab);
         self.ask_session_zone(tab);
         self.refresh_tree(tab);
@@ -6693,7 +6824,12 @@ impl App {
                         self.send_databases_after_tree(tab);
                     }
                 }
-                Driver::MySql | Driver::Sqlite | Driver::BigQuery | Driver::Files => {}
+                // Redis went to its browser above.
+                Driver::MySql
+                | Driver::Sqlite
+                | Driver::BigQuery
+                | Driver::Files
+                | Driver::Redis => {}
             }
         }
         let Some(workspace) = self.workspace_mut(tab) else {
@@ -6910,18 +7046,18 @@ fn lost<T>(fetch: &Fetch<T>) -> bool {
 }
 
 /// What `workspace` knows, as a completion list reads it. `schemas` are
-/// the ones its sidebar shows.
+/// the ones its sidebar shows. None without SQL (Redis).
 fn catalog_of<'a>(
     workspace: &'a Workspace,
     schemas: &'a [String],
-) -> crate::completion::Catalog<'a> {
-    crate::completion::Catalog {
-        dialect: workspace.driver.dialect(),
+) -> Option<crate::completion::Catalog<'a>> {
+    Some(crate::completion::Catalog {
+        dialect: workspace.driver.dialect()?,
         tree: &workspace.tree,
         bare: workspace.bare_schema(),
         schemas,
         columns: &workspace.columns,
-    }
+    })
 }
 
 impl App {
@@ -7103,7 +7239,8 @@ impl App {
     /// strip where it is not open yet. Only what the person does calls
     /// it: nothing the server says opens the tab or brings it forward.
     fn show_agents(&mut self, tab: ConnTabId) {
-        if !crate::endpoint::AVAILABLE {
+        // Nor is a connection with no SQL (Redis) an agent's yet.
+        if !crate::endpoint::AVAILABLE || !self.has_sql(tab) {
             return;
         }
         let id = TabId(self.next_id());
@@ -7449,6 +7586,10 @@ impl App {
     /// is a workspace. It opens read-only, or as the connection has it
     /// where the settings say so (`editor.run.new_tab`).
     fn new_sql_tab(&mut self, tab: ConnTabId) -> Option<TabId> {
+        // Redis has no SQL to write in one.
+        if !self.has_sql(tab) {
+            return None;
+        }
         let id = TabId(self.next_id());
         let request = RequestId(self.next_id());
         let (limit, timeout) = (self.settings.sql_limit, self.settings.sql_timeout());
@@ -7633,7 +7774,10 @@ impl App {
         let Some(workspace) = self.workspace_mut(tab) else {
             return changed;
         };
-        let dialect = workspace.driver.dialect();
+        // Nothing of it without SQL (Redis).
+        let Some(dialect) = workspace.driver.dialect() else {
+            return changed;
+        };
         let generation = workspace.catalog_generation;
         let Some(sql) = workspace.sql_tab_mut(id) else {
             return changed;
@@ -7696,12 +7840,17 @@ impl App {
         let schemas = workspace
             .tree
             .visible_schemas(workspace.driver, show_system);
-        let needs = crate::completion::needs(&site, &catalog_of(workspace, &schemas));
+        let Some(catalog) = catalog_of(workspace, &schemas) else {
+            return changed;
+        };
+        let needs = crate::completion::needs(&site, &catalog);
         self.send_needs(tab, &needs);
         let Some(workspace) = self.workspace(tab) else {
             return changed;
         };
-        let catalog = catalog_of(workspace, &schemas);
+        let Some(catalog) = catalog_of(workspace, &schemas) else {
+            return changed;
+        };
         let case = self.settings.keywords_in(self.look.terminal);
         let listed = crate::completion::list(&site, &typed, manual, &catalog, case);
         let loading = needs.iter().any(|need| workspace.is_loading(need));
@@ -7766,7 +7915,10 @@ impl App {
         if !workspace.takes_commands() {
             return;
         }
-        let dialect = workspace.driver.dialect();
+        // Nothing of it without SQL (Redis).
+        let Some(dialect) = workspace.driver.dialect() else {
+            return;
+        };
         let Some(sql) = workspace.sql_tab(id) else {
             return;
         };
@@ -7886,7 +8038,10 @@ impl App {
         if statements.is_empty() {
             return;
         }
-        let dialect = workspace.driver.dialect();
+        // Nothing of it without SQL (Redis).
+        let Some(dialect) = workspace.driver.dialect() else {
+            return;
+        };
         let mode = script_mode(workspace.run_mode(sql), dialect, &statements);
         let caps = crate::model::RunCaps {
             timeout: None,
@@ -7948,12 +8103,17 @@ impl App {
         let Some(workspace) = self.workspace(tab) else {
             return Vec::new();
         };
-        let dialect = workspace.driver.dialect();
+        // Nothing of it without SQL (Redis).
+        let Some(dialect) = workspace.driver.dialect() else {
+            return Vec::new();
+        };
         let show_system = self.settings.show_system_schemas;
         let schemas = workspace
             .tree
             .visible_schemas(workspace.driver, show_system);
-        let catalog = catalog_of(workspace, &schemas);
+        let Some(catalog) = catalog_of(workspace, &schemas) else {
+            return Vec::new();
+        };
         let asks = |verb: Verb| match verb {
             Verb::Update | Verb::Delete => self.settings.confirm_unsafe_writes,
             Verb::Truncate => true,
@@ -8042,7 +8202,10 @@ impl App {
         let Some(sql) = workspace.sql_tab(id) else {
             return;
         };
-        let dialect = workspace.driver.dialect();
+        // Nothing of it without SQL (Redis).
+        let Some(dialect) = workspace.driver.dialect() else {
+            return;
+        };
         let mode = script_mode(workspace.run_mode(sql), dialect, &statements);
         self.send_run(tab, id, statements, mode, caps);
     }
@@ -8707,7 +8870,8 @@ impl App {
     /// [`App::copy`], of the grid in front in `tab`.
     pub fn copy_in(&self, tab: ConnTabId, pick: Pick, how: How) -> Option<Copying> {
         let workspace = self.workspace(tab)?;
-        let dialect = workspace.driver.dialect();
+        // A grid of rows is SQL's: Redis copies its values itself.
+        let dialect = workspace.driver.dialect()?;
         if let Some(object) = workspace.active_object_tab() {
             let mut selected = object.selected()?;
             if pick == Pick::CursorRow {
@@ -9532,6 +9696,22 @@ fn apply_url(form: &mut ConnectionForm) -> Result<(), String> {
                 .map(|path| path.display().to_string())
                 .unwrap_or_default();
         }
+        Driver::Redis => {
+            if form.name.trim().is_empty() {
+                form.name = spec.summary();
+            }
+            form.take_redis(&spec);
+            // The dots the live URL shows stand for the password kept.
+            if let Some(password) = secrets
+                .password
+                .filter(|password| password != crate::model::REDIS_URL_DOTS)
+            {
+                form.password = password;
+            }
+            if form.password_mode == PasswordMode::None {
+                form.password_mode = PasswordMode::Keyring;
+            }
+        }
         // No URL names a Files connection.
         Driver::Files => {}
         Driver::Postgres | Driver::MySql => {
@@ -9578,13 +9758,17 @@ fn retype_question(name: &str, from: Driver, to: Driver, rules: bool) -> String 
         Driver::Postgres | Driver::MySql => "Its server settings will be removed.",
         Driver::Sqlite => "Its database file will be removed from it.",
         Driver::BigQuery => "Its BigQuery settings will be removed.",
+        Driver::Redis => "Its Redis settings will be removed.",
         Driver::Files => "Its folder or files will be removed from it.",
     };
     // A Files connection keeps no hidden tables and no masked columns.
     let agents = match (to, rules) {
         (Driver::Files, true) => " What agents may not read or get masked is taken off too.",
         (Driver::Files, false)
-        | (Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery, _) => "",
+        | (
+            Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery | Driver::Redis,
+            _,
+        ) => "",
     };
     format!(
         "Change {name} from {} to {}? {loses}{agents} Save again to change it.",
@@ -9996,7 +10180,8 @@ fn logged_statement(driver: Driver, sql: &str, params: Option<&str>) -> String {
                 let place = at + 1;
                 let named = match driver {
                     Driver::Postgres => format!("${place}"),
-                    Driver::Sqlite | Driver::BigQuery => format!("?{place}"),
+                    // Redis logs no statement; its place is a number too.
+                    Driver::Sqlite | Driver::BigQuery | Driver::Redis => format!("?{place}"),
                     Driver::MySql | Driver::Files => format!("? #{place}"),
                 };
                 text.push_str(&format!("-- {named} = {value}\n"));
@@ -10032,7 +10217,8 @@ fn hold_check(
         tabletist_db::Driver::Postgres
         | tabletist_db::Driver::MySql
         | tabletist_db::Driver::Sqlite
-        | tabletist_db::Driver::BigQuery => false,
+        | tabletist_db::Driver::BigQuery
+        | tabletist_db::Driver::Redis => false,
     };
     if !files {
         return;
@@ -13861,7 +14047,7 @@ masked = ["orders.email"]
         assert!(form(&mut app).test_started.is_some());
         app.apply(Action::Backend(Event::Tested {
             request,
-            result: Ok(()),
+            result: Ok(None),
         }));
         assert_eq!(form(&mut app).test, TestState::Passed);
         assert!(form(&mut app).test_took.is_some());
@@ -13919,7 +14105,7 @@ masked = ["orders.email"]
         };
         app.apply(Action::Backend(Event::Tested {
             request: RequestId(request.0 + 1000),
-            result: Ok(()),
+            result: Ok(None),
         }));
         assert!(matches!(form(&mut app).test, TestState::Running(_)));
         app.apply(Action::Backend(Event::Tested {
@@ -13932,7 +14118,7 @@ masked = ["orders.email"]
         app.apply(Action::CloseDialog);
         app.apply(Action::Backend(Event::Tested {
             request,
-            result: Ok(()),
+            result: Ok(None),
         }));
         assert!(app.dialog.is_none());
     }
@@ -14811,7 +14997,8 @@ masked = ["orders.email"]
     fn start_run(harness: &mut Harness, tab: ConnTabId, id: TabId) -> RequestId {
         let request = RequestId(harness.app.next_id());
         let workspace = harness.app.workspace_mut(tab).unwrap();
-        let statements = tabletist_db::sql::statements(workspace.driver.dialect(), "SELECT 1");
+        let statements =
+            tabletist_db::sql::statements(workspace.driver.dialect().unwrap(), "SELECT 1");
         let superseded = workspace.sql_tab_mut(id).unwrap().start_run(
             request,
             statements,
@@ -17419,7 +17606,8 @@ masked = ["orders.email"]
         let id = TabId(app.next_id());
         let run = RequestId(app.next_id());
         let workspace = app.workspace_mut(tab).unwrap();
-        let statements = tabletist_db::sql::statements(workspace.driver.dialect(), "SELECT 1");
+        let statements =
+            tabletist_db::sql::statements(workspace.driver.dialect().unwrap(), "SELECT 1");
         let _ = workspace.push_sql_tab(id, 1_000, None).start_run(
             run,
             statements,

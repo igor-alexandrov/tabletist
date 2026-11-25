@@ -189,6 +189,16 @@ keyboard.
 | Cmd+R | Reload the list |
 | Right-click | A table's or view's menu: Open, Structure, DDL, Copy name, Export… |
 
+### A Redis window
+
+| Keys | Do |
+| --- | --- |
+| Arrows, Home, End | Move in the keys. Right opens a group, Left closes it |
+| Return | Open the key, or open or close the group |
+| Cmd+F | Filter the keys by a pattern |
+| Cmd+R | Scan the keys again |
+| Shift+Cmd+D | Switch database |
+
 ### A table
 
 | Keys | Do |

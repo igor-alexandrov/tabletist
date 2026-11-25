@@ -25,6 +25,7 @@ pub mod i18n;
 pub mod json;
 pub mod key_picker;
 pub mod keymap;
+pub mod keyspace;
 pub mod known_hosts;
 pub mod labels;
 pub mod managed;

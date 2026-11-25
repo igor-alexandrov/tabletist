@@ -39,7 +39,7 @@ impl App {
     pub fn label_of(&self, tab: ConnTabId, table: &ObjectRef, key: &str) -> Option<Resolved> {
         let workspace = self.workspace(tab)?;
         let place = workspace.label_place();
-        let of = (&place, workspace.driver.dialect());
+        let of = (&place, workspace.driver.dialect()?);
         resolved(&self.labels, of, workspace.columns.get(table)?, table, key)
     }
 
@@ -100,7 +100,7 @@ impl App {
         match object.view {
             ObjectView::Structure => {
                 let structure = object.structure.value.as_ref()?;
-                let dialect = workspace.driver.dialect();
+                let dialect = workspace.driver.dialect()?;
                 let lines = labels::lines(
                     dialect,
                     Some(&structure.columns),
@@ -131,7 +131,7 @@ impl App {
         }
         let structure = object.structure.value.as_ref()?;
         let choice = self.labels.choice(&workspace.label_place(), &object.object);
-        let dialect = workspace.driver.dialect();
+        let dialect = workspace.driver.dialect()?;
         let keys = labels::own_keys(structure);
         Some(labels::resolve(&choice, dialect, &structure.columns, &keys))
     }
@@ -346,7 +346,7 @@ impl App {
         let asked = self.workspace(tab).and_then(|workspace| {
             let object = workspace.object_tab(id)?;
             let structure = object.structure.value.as_ref()?;
-            let dialect = workspace.driver.dialect();
+            let dialect = workspace.driver.dialect()?;
             let keys = labels::own_keys(structure);
             Some(labels::choosable(dialect, &structure.columns, &keys, name))
         });
@@ -404,7 +404,9 @@ impl App {
             let Some(workspace) = self.workspace_mut(tab) else {
                 continue;
             };
-            let dialect = workspace.driver.dialect();
+            let Some(dialect) = workspace.driver.dialect() else {
+                continue;
+            };
             let columns = std::mem::take(&mut workspace.columns);
             for object in workspace.object_tabs_mut() {
                 let picker = object
