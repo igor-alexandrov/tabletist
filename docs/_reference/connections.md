@@ -129,8 +129,25 @@ and DuckDB files (`.duckdb`). DuckDB reads them, inside Tabletist.
   section is closed, and says the access on one line.
 - **Test** reads each file's columns and its first rows, never a whole
   file to the end. With **Column types** from all rows, DuckDB reads a
-  CSV in full to find its types, which takes longer on a large file. The Excel reader is downloaded the first time a connection opens
-  an Excel file.
+  CSV in full to find its types, which takes longer on a large file.
+  After a Test that read, the CSV, TSV and NDJSON files are read to
+  their end in the background while the dialog is open, one at a time:
+  the footer adds "checking 2 files…". That is how a value past the
+  first rows is found, such as an `N/A` on row 48,112 of a date column.
+- A file that cannot be read makes the Test **partial**: the footer says
+  "Read 3 of 4 files · returns.csv failed" (with several, how many), and
+  a banner over it names the file, the row, the value and the column.
+  For a value its column cannot take it offers three fixes: **Read
+  returned_at as text**, **Read 'N/A' as empty** (that value becomes
+  NULL in that column) and **Skip returns.csv**; for anything else, such
+  as a row with more values than the others or a line of NDJSON that is
+  not JSON, it offers to skip the file. In the Omarchy look `t`, `e` and
+  `s` run them. Each fix is an override under Reading CSV, and the Test
+  runs again; it is saved with the connection. A file that cannot be
+  opened at all, a file in a folder Tabletist is not allowed to read, or
+  a listed file that is gone, still stops the connection from opening:
+  Test shows it as partial, with its fixes. The Excel reader is
+  downloaded the first time a connection opens an Excel file.
 - The SQL editor runs DuckDB's SQL, and the Structure view shows each
   file's path, size and format beside its columns, and what it is read
   with.

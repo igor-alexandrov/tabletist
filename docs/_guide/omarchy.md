@@ -106,6 +106,7 @@ numbered; once you type, it lists what matches. Its commands stay on `:`.
 | `a` | A Files connection's list: add files |
 | `x` | A Files connection's list: take the file under the cursor off the list. The file stays on disk |
 | `R` | A Files connection's reading csv: take the override the cursor is on off. Other overrides still apply |
+| `t`, `e`, `s` | A Files connection's partial Test: read the column of the value that could not be read as text, read that value as empty, or skip the file. Each is saved as an override under reading csv, and the Test runs again |
 | Esc | Cancel. In new group…'s field: back to the list of groups |
 
 {% include shot.html file="omarchy-connection-edit" alt="The connection form in the Omarchy look, for a production database behind an SSH tunnel" width="2200" height="2032" %}

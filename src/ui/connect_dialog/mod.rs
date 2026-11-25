@@ -7,6 +7,7 @@ mod agents;
 mod choice;
 mod files;
 mod group;
+mod partial;
 mod reading;
 mod redis;
 mod sheet;
@@ -20,7 +21,7 @@ use tabletist_db::{Driver, TlsMode};
 
 use crate::connections::PasswordMode;
 use crate::env::{EnvColors, Environment, Platform, env_colors};
-use crate::i18n::{Locale, Msgid, gettext, msgid, ngettext};
+use crate::i18n::{Locale, Msgid, fill, gettext, msgid, ngettext};
 use crate::keymap::{Command, Keymap, Scope};
 use crate::model::{
     Action, ConnectionForm, FilesKind, LoadedTables, SshAuthKind, SshHints, TestState,
@@ -505,6 +506,23 @@ pub fn show(
                         }
                         Some(Command::FormAddFiles) if listed => {
                             actions.push(Action::PickDataFiles);
+                            false
+                        }
+                        Some(
+                            command @ (Command::FormFixText
+                            | Command::FormFixEmpty
+                            | Command::FormFixSkip),
+                        ) if files && form.first_failure().is_some() => {
+                            // Once a press: a held key would mend the next
+                            // file too once the Test runs again, unseen.
+                            if *repeat {
+                                return false;
+                            }
+                            actions.push(Action::FixFile(match command {
+                                Command::FormFixText => crate::model::FileFix::Text,
+                                Command::FormFixEmpty => crate::model::FileFix::Empty,
+                                _ => crate::model::FileFix::Skip,
+                            }));
                             false
                         }
                         Some(Command::FormResetOverride) if files => {
@@ -1190,6 +1208,9 @@ struct Messages {
     cap: f32,
     /// An unknown SSH host key: the button that trusts it follows.
     untrusted: bool,
+    /// A Files connection's partial Test: the banner of the first file it
+    /// could not read, with its fixes, under the notices, and its height.
+    partial: Option<(partial::Partial, f32)>,
 }
 
 impl Messages {
@@ -1233,10 +1254,16 @@ impl Messages {
                 })
                 .collect()
         };
+        let partial = partial::of(ctx, form, skin).map(|partial| {
+            let width = width - 2.0 * Self::side(skin);
+            let height = partial.banner().height(ctx, width, look, skin.palette);
+            (partial, height)
+        });
         let mut messages = Self {
             notices: lay(wrap),
             cap,
             untrusted,
+            partial,
         };
         // Texts that will scroll leave room for the scroll bar.
         if messages.texts_height(skin) > cap {
@@ -1286,7 +1313,7 @@ impl Messages {
     /// The height the messages take in the dialog: nothing when nothing
     /// went wrong.
     fn height(&self, skin: &Skin) -> f32 {
-        if self.notices.is_empty() {
+        if self.notices.is_empty() && self.partial.is_none() {
             return 0.0;
         }
         let button = if self.untrusted {
@@ -1294,13 +1321,23 @@ impl Messages {
         } else {
             0.0
         };
-        Self::above(skin) + self.texts_height(skin).min(self.cap) + button + Self::below(skin)
+        let banner = match (&self.partial, self.notices.is_empty()) {
+            (Some((_, height)), true) => *height,
+            (Some((_, height)), false) => Self::GAP + height,
+            (None, _) => 0.0,
+        };
+        Self::above(skin)
+            + self.texts_height(skin).min(self.cap)
+            + button
+            + banner
+            + Self::below(skin)
     }
 
     fn show(self, ui: &mut Ui, skin: &Skin, actions: &mut Vec<Action>) {
-        if self.notices.is_empty() {
+        if self.notices.is_empty() && self.partial.is_none() {
             return;
         }
+        let noticed = !self.notices.is_empty();
         let Skin { look, palette, .. } = *skin;
         let side = Self::side(skin) as i8;
         let pad = Self::pad(skin);
@@ -1313,29 +1350,44 @@ impl Messages {
             })
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                egui::ScrollArea::vertical()
-                    .id_salt("messages")
-                    .max_height(self.cap)
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        for (index, (laid, color)) in self.notices.into_iter().enumerate() {
-                            if index > 0 {
-                                ui.add_space(Self::GAP);
-                            }
-                            if look.terminal {
-                                laid.label(ui);
-                                continue;
-                            }
-                            egui::Frame::new()
-                                .fill(theme::mix(skin.fill, color, 0.08))
-                                .corner_radius(CornerRadius::same(10))
-                                .inner_margin(egui::Margin::symmetric(pad.x as i8, pad.y as i8))
-                                .show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
+                if noticed {
+                    egui::ScrollArea::vertical()
+                        .id_salt("messages")
+                        .max_height(self.cap)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            for (index, (laid, color)) in self.notices.into_iter().enumerate() {
+                                if index > 0 {
+                                    ui.add_space(Self::GAP);
+                                }
+                                if look.terminal {
                                     laid.label(ui);
-                                });
-                        }
-                    });
+                                    continue;
+                                }
+                                egui::Frame::new()
+                                    .fill(theme::mix(skin.fill, color, 0.08))
+                                    .corner_radius(CornerRadius::same(10))
+                                    .inner_margin(egui::Margin::symmetric(pad.x as i8, pad.y as i8))
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        laid.label(ui);
+                                    });
+                            }
+                        });
+                }
+                // The partial Test's banner, over the footer, with its fixes.
+                if let Some((partial, _)) = &self.partial {
+                    if noticed {
+                        ui.add_space(Self::GAP);
+                    }
+                    if let Some(fix) = partial
+                        .banner()
+                        .show(ui, look, palette)
+                        .and_then(|at| partial.fix(at))
+                    {
+                        actions.push(Action::FixFile(fix));
+                    }
+                }
                 // The way out of an unknown host key stays in reach however
                 // long the text above it is.
                 if self.untrusted {
@@ -1360,6 +1412,8 @@ enum Status {
     Passed(String),
     /// Connected, with a warning: a Redis user that can't list keys.
     Warned(String),
+    /// A Files connection's Test read some of its files, not all.
+    Partial(String),
 }
 
 fn status(form: &ConnectionForm, skin: &Skin) -> Option<Status> {
@@ -1389,6 +1443,60 @@ fn status(form: &ConnectionForm, skin: &Skin) -> Option<Status> {
                 | Driver::BigQuery
                 | Driver::Redis => None,
             };
+            // What a Files connection's check in full still has to read:
+            // "checking 2 files…".
+            let checking = form.files_check.map(|(_, left)| {
+                fill(
+                    &ngettext(
+                        skin.locale,
+                        "checking {n} file…",
+                        "checking {n} files…",
+                        left,
+                    ),
+                    &[("{n}", &crate::i18n::number(skin.locale, left))],
+                )
+            });
+            // Some files it could not read: "Read 3 of 4 files · returns.csv
+            // failed", or with several, how many.
+            if let Some(read) = read.filter(|read| !read.failed.is_empty()) {
+                // The file's own name keeps its case: only the words take
+                // the look's, so it goes in after them.
+                let failed = match read.failed.as_slice() {
+                    [one] => fill(
+                        &skin.look.label(&gettext(skin.locale, "{file} failed")),
+                        &[("{file}", &one.file)],
+                    ),
+                    many => fill(
+                        &skin.look.label(&ngettext(
+                            skin.locale,
+                            "{n} failed",
+                            "{n} failed",
+                            many.len(),
+                        )),
+                        &[("{n}", &crate::i18n::number(skin.locale, many.len()))],
+                    ),
+                };
+                let mut text = skin.look.label(&fill(
+                    &ngettext(
+                        skin.locale,
+                        "Read {read} of {n} file",
+                        "Read {read} of {n} files",
+                        read.files,
+                    ),
+                    &[
+                        (
+                            "{read}",
+                            &crate::i18n::number(skin.locale, read.files - read.failed.len()),
+                        ),
+                        ("{n}", &crate::i18n::number(skin.locale, read.files)),
+                    ],
+                ));
+                text = format!("{text} · {failed}");
+                if let Some(checking) = checking {
+                    text = format!("{text} · {}", skin.look.label(&checking));
+                }
+                return Some(Status::Partial(text));
+            }
             let mut text = match read {
                 // What a Files connection's Test read: "Read 3 files ·
                 // 2.4 GB".
@@ -1404,6 +1512,9 @@ fn status(form: &ConnectionForm, skin: &Skin) -> Option<Status> {
             };
             if let Some(took) = form.test_took {
                 text = format!("{text} · {}", crate::format::elapsed(skin.locale, took));
+            }
+            if let Some(checking) = checking {
+                text = format!("{text} · {checking}");
             }
             Some(Status::Passed(skin.look.label(&text)))
         }
@@ -1431,6 +1542,7 @@ fn paint_status(ui: &mut Ui, form: &ConnectionForm, x: StatusAt, y: f32, skin: &
         Status::Running(text) => (text, palette.dim),
         Status::Passed(text) => (text, palette.success),
         Status::Warned(text) => (text, palette.warning),
+        Status::Partial(text) => (text, palette.warning),
     };
     let laid = Text::one(look, role, text, color).layout(ui.ctx());
     // The mark and the gap after it. The terminal look's are smaller:
@@ -1455,6 +1567,9 @@ fn paint_status(ui: &mut Ui, form: &ConnectionForm, x: StatusAt, y: f32, skin: &
             let bang = Text::one(look, role, "!", color).layout(ui.ctx());
             bang.paint_left(ui.painter(), place.left(), y);
         }
+        Status::Partial(_) => crate::style::Icon::TriangleAlert
+            .image(color, mark)
+            .paint_at(ui, place),
     }
     let x = left + mark + gap;
     laid.paint_left(ui.painter(), x, y);

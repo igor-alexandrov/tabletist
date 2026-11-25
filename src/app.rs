@@ -359,6 +359,9 @@ pub struct App {
     /// What a restart to update kept, while the relaunched windows open:
     /// each window's own, by its tab.
     relaunch_windows: HashMap<ConnTabId, crate::update::relaunch::Window>,
+    /// The check in full of a Files Test that the dialog waits for: it is
+    /// stopped once the dialog no longer does.
+    files_check: Option<RequestId>,
     /// The SQL editors a restart to update kept, while the relaunched
     /// windows open: each takes its own.
     relaunch: Option<crate::update::relaunch::Relaunch>,
@@ -566,6 +569,7 @@ impl App {
             launch_arguments: Vec::new(),
             relaunch: None,
             relaunch_windows: HashMap::new(),
+            files_check: None,
             next_id: 1,
         };
         app.refresh_keymap();
@@ -1087,6 +1091,32 @@ impl App {
     }
 
     pub fn apply(&mut self, action: Action) {
+        self.apply_action(action);
+        self.stop_stale_check();
+    }
+
+    /// Stops the check in full a Files Test started, once the dialog no
+    /// longer waits for it or its Test: it closed, or the Test was
+    /// forgotten or run again, before it answered or after.
+    fn stop_stale_check(&mut self) {
+        let Some(request) = self.files_check else {
+            return;
+        };
+        // From the Test's start: a Files Test checks its files once it
+        // answers, whether or not the dialog still waits for that answer.
+        let waited = matches!(
+            &self.dialog,
+            Some(Dialog::Connection(form))
+                if form.test == TestState::Running(request)
+                    || form.files_check.is_some_and(|(check, _)| check == request)
+        );
+        if !waited {
+            self.files_check = None;
+            self.backend.send(Command::StopCheck { request });
+        }
+    }
+
+    fn apply_action(&mut self, action: Action) {
         // What a prompt asks about must not change under it. The keys still
         // run while a dialog is open, and a click can be a frame behind it.
         if matches!(
@@ -3624,6 +3654,19 @@ impl App {
                     self.apply(Action::TestConnection);
                 }
             }
+            Action::FixFile(fix) => {
+                let Some(Dialog::Connection(form)) = &mut self.dialog else {
+                    return;
+                };
+                if form.fix_file(fix) {
+                    // A skipped file leaves the found line, as it leaves
+                    // the connection.
+                    if fix == crate::model::FileFix::Skip {
+                        self.read_form_source();
+                    }
+                    self.apply(Action::TestConnection);
+                }
+            }
             Action::TestConnection => {
                 let request = RequestId(self.next_id());
                 let Some(Dialog::Connection(form)) = &mut self.dialog else {
@@ -3643,6 +3686,8 @@ impl App {
                 };
                 form.message = None;
                 form.test = TestState::Running(request);
+                // The last Test's check in full speaks for it alone.
+                form.files_check = None;
                 // The clock starts when the Test is sent, not while a saved
                 // secret is read from the keyring.
                 form.test_started = None;
@@ -3692,6 +3737,7 @@ impl App {
                 form.test_waiting = loads.len() as u8;
                 if loads.is_empty() {
                     form.test_started = Some(std::time::Instant::now());
+                    hold_check(&mut self.files_check, &mut self.backend, &spec, request);
                     self.backend.send(Command::Test {
                         request,
                         spec,
@@ -4852,6 +4898,24 @@ impl App {
                     };
                 }
             }
+            Event::FileChecked {
+                request,
+                failure,
+                left,
+            } => {
+                if let Some(Dialog::Connection(form)) = &mut self.dialog
+                    && form.test == TestState::Passed
+                    && form.files_check.is_some_and(|(check, _)| check == request)
+                {
+                    form.files_check = (left > 0).then_some((request, left));
+                    if let (Some(failure), Some(read)) = (failure, &mut form.files_tested) {
+                        read.failed.push(failure);
+                    }
+                }
+                if left == 0 && self.files_check == Some(request) {
+                    self.files_check = None;
+                }
+            }
             Event::FilesTested { request, result } => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog
                     && form.test == TestState::Running(request)
@@ -4860,6 +4924,10 @@ impl App {
                     form.test_took = if result.is_ok() { elapsed } else { None };
                     form.test = match result {
                         Ok(read) => {
+                            // Its CSV, TSV and NDJSON files are read to their
+                            // end next, in the background.
+                            form.files_check =
+                                (!read.checks.is_empty()).then_some((request, read.checks.len()));
                             form.files_tested = Some(read);
                             TestState::Passed
                         }
@@ -4873,6 +4941,10 @@ impl App {
                             TestState::Failed(error.to_string())
                         }
                     };
+                    // No check follows: nothing is left to stop.
+                    if form.files_check.is_none() && self.files_check == Some(request) {
+                        self.files_check = None;
+                    }
                 }
             }
             Event::Schemas {
@@ -5197,6 +5269,12 @@ impl App {
                                     && let Some(spec) = form.test_spec.clone()
                                 {
                                     form.test_started = Some(std::time::Instant::now());
+                                    hold_check(
+                                        &mut self.files_check,
+                                        &mut self.backend,
+                                        &spec,
+                                        test,
+                                    );
                                     self.backend.send(Command::Test {
                                         request: test,
                                         spec,
@@ -10122,6 +10200,34 @@ fn logged_statement(driver: Driver, sql: &str, params: Option<&str>) -> String {
     }
     text.push_str(sql);
     text
+}
+
+/// Holds `request` as the Files Test whose check in full the dialog waits
+/// for, from the moment it is sent: the backend starts the check as soon as
+/// the Test answers, and only the App can stop it. Another one held is
+/// stopped. Nothing for another type's Test, which checks nothing.
+fn hold_check(
+    held: &mut Option<RequestId>,
+    backend: &mut Backend,
+    spec: &tabletist_db::ConnectSpec,
+    request: RequestId,
+) {
+    let files = match spec.driver {
+        tabletist_db::Driver::Files => true,
+        tabletist_db::Driver::Postgres
+        | tabletist_db::Driver::MySql
+        | tabletist_db::Driver::Sqlite
+        | tabletist_db::Driver::BigQuery
+        | tabletist_db::Driver::Redis => false,
+    };
+    if !files {
+        return;
+    }
+    if let Some(old) = held.replace(request)
+        && old != request
+    {
+        backend.send(Command::StopCheck { request: old });
+    }
 }
 
 #[cfg(test)]

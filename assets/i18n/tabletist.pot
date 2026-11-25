@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-23 21:22-0500\n"
+"POT-Creation-Date: 2026-11-24 19:52-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -1905,6 +1905,18 @@ msgstr ""
 
 #: crates/tabletist-core/src/keymap.rs
 msgid "Reset the CSV override under the cursor of a Files connection"
+msgstr ""
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Read the column a Files connection's Test could not read as text"
+msgstr ""
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Read the value a Files connection's Test could not read as empty"
+msgstr ""
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Skip the file a Files connection's Test could not read"
 msgstr ""
 
 #: crates/tabletist-core/src/keymap.rs
@@ -4163,10 +4175,113 @@ msgstr ""
 
 #: src/ui/connect_dialog/mod.rs
 #, rust-format
+msgid "checking {n} file…"
+msgid_plural "checking {n} files…"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid "{file} failed"
+msgstr ""
+
+#: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid "{n} failed"
+msgid_plural "{n} failed"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid "Read {read} of {n} file"
+msgid_plural "Read {read} of {n} files"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/connect_dialog/mod.rs
+#, rust-format
 msgid "Read {n} file · {size}"
 msgid_plural "Read {n} files · {size}"
 msgstr[0] ""
 msgstr[1] ""
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "{file} couldn't be read."
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "Read {column} as text"
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "Read '{value}' as empty"
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "Skip {file}"
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "Row {row} has '{value}' in {column}, {kind}."
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "Row {row} has {found} values, where the file's rows have {expected}."
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "Line {line} isn't JSON."
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "Line {line} has a value of another type than the lines before it."
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+msgid "a date column"
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+msgid "a time column"
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+msgid "a timestamp column"
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+msgid "a whole number column"
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+msgid "a number column"
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+msgid "a true or false column"
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+msgid "a UUID column"
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+msgid "an interval column"
+msgstr ""
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "a column of type {kind}"
+msgstr ""
 
 #: src/ui/connect_dialog/reading.rs
 msgid "Defaults for every CSV in this connection"

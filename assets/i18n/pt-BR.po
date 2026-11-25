@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-23 21:22-0500\n"
+"POT-Creation-Date: 2026-11-24 19:52-0500\n"
 "PO-Revision-Date: 2026-11-19 16:11-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -1751,8 +1751,20 @@ msgid "Put away a failed export's line"
 msgstr "Ocultar a linha de uma exportação que falhou"
 
 #: crates/tabletist-core/src/keymap.rs
+msgid "Read the column a Files connection's Test could not read as text"
+msgstr ""
+"Ler como texto a coluna que o teste de uma conexão de arquivos não conseguiu "
+"ler"
+
+#: crates/tabletist-core/src/keymap.rs
 msgid "Read the release notes of the version offered, in the settings"
 msgstr "Ler as notas da versão oferecida, nas configurações"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Read the value a Files connection's Test could not read as empty"
+msgstr ""
+"Ler como vazio o valor que o teste de uma conexão de arquivos não conseguiu "
+"ler"
 
 #: crates/tabletist-core/src/keymap.rs
 msgid "Read-only or read-write runs"
@@ -1968,6 +1980,11 @@ msgstr "Mostrar onde o agente selecionado trabalha"
 #: crates/tabletist-core/src/keymap.rs
 msgid "Sidebar"
 msgstr "Barra lateral"
+
+#: crates/tabletist-core/src/keymap.rs
+msgid "Skip the file a Files connection's Test could not read"
+msgstr ""
+"Ignorar o arquivo que o teste de uma conexão de arquivos não conseguiu ler"
 
 #: crates/tabletist-core/src/keymap.rs
 msgid "Skip the version offered, in the settings"
@@ -4163,6 +4180,13 @@ msgstr[0] "{n} arquivo lido · {size}"
 msgstr[1] "{n} arquivos lidos · {size}"
 
 #: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid "Read {read} of {n} file"
+msgid_plural "Read {read} of {n} files"
+msgstr[0] "{read} de {n} arquivo lido"
+msgstr[1] "{read} de {n} arquivos lidos"
+
+#: src/ui/connect_dialog/mod.rs
 msgid "Required"
 msgstr "Obrigatório"
 
@@ -4213,12 +4237,24 @@ msgid "Unknown SSH host key for {host}: {fingerprint}"
 msgstr "Chave de host SSH desconhecida para {host}: {fingerprint}"
 
 #: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid "checking {n} file…"
+msgid_plural "checking {n} files…"
+msgstr[0] "verificando {n} arquivo…"
+msgstr[1] "verificando {n} arquivos…"
+
+#: src/ui/connect_dialog/mod.rs
 msgid "from ~/.ssh/config"
 msgstr "do ~/.ssh/config"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "opens"
 msgstr "abre"
+
+#: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid "{file} failed"
+msgstr "{file} falhou"
 
 #: src/ui/connect_dialog/mod.rs
 #, rust-format
@@ -4234,6 +4270,91 @@ msgstr "{name} via ProxyJump {hops} do ~/.ssh/config"
 #, rust-format
 msgid "{name} through a ProxyCommand from ~/.ssh/config"
 msgstr "{name} via um ProxyCommand do ~/.ssh/config"
+
+#: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid "{n} failed"
+msgid_plural "{n} failed"
+msgstr[0] "{n} falhou"
+msgstr[1] "{n} falharam"
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "Line {line} has a value of another type than the lines before it."
+msgstr "A linha {line} tem um valor de outro tipo que as linhas anteriores."
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "Line {line} isn't JSON."
+msgstr "A linha {line} não é JSON."
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "Read '{value}' as empty"
+msgstr "Ler '{value}' como vazio"
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "Read {column} as text"
+msgstr "Ler {column} como texto"
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "Row {row} has '{value}' in {column}, {kind}."
+msgstr "A linha {row} tem '{value}' em {column}, {kind}."
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "Row {row} has {found} values, where the file's rows have {expected}."
+msgstr ""
+"A linha {row} tem {found} valores, e as linhas do arquivo têm {expected}."
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "Skip {file}"
+msgstr "Ignorar {file}"
+
+#: src/ui/connect_dialog/partial.rs
+msgid "a UUID column"
+msgstr "uma coluna de UUIDs"
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "a column of type {kind}"
+msgstr "uma coluna do tipo {kind}"
+
+#: src/ui/connect_dialog/partial.rs
+msgid "a date column"
+msgstr "uma coluna de datas"
+
+#: src/ui/connect_dialog/partial.rs
+msgid "a number column"
+msgstr "uma coluna de números"
+
+#: src/ui/connect_dialog/partial.rs
+msgid "a time column"
+msgstr "uma coluna de horas"
+
+#: src/ui/connect_dialog/partial.rs
+msgid "a timestamp column"
+msgstr "uma coluna de carimbos de data/hora"
+
+#: src/ui/connect_dialog/partial.rs
+msgid "a true or false column"
+msgstr "uma coluna de verdadeiro ou falso"
+
+#: src/ui/connect_dialog/partial.rs
+msgid "a whole number column"
+msgstr "uma coluna de números inteiros"
+
+#: src/ui/connect_dialog/partial.rs
+msgid "an interval column"
+msgstr "uma coluna de intervalos"
+
+#: src/ui/connect_dialog/partial.rs
+#, rust-format
+msgid "{file} couldn't be read."
+msgstr "Não foi possível ler {file}."
 
 #: src/ui/connect_dialog/reading.rs
 msgid "All rows"

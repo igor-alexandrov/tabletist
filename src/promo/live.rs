@@ -265,6 +265,7 @@ impl Live {
                 // The promo's scenes are of a SQL database: no Redis.
                 Command::Test { .. }
                 | Command::Redis { .. }
+                | Command::StopCheck { .. }
                 | Command::Close { .. }
                 | Command::Cancel { .. }
                 | Command::Export(_)

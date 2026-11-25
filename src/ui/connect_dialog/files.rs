@@ -409,6 +409,7 @@ mod tests {
                 found("returns.csv", Format::Csv, 50_000_000),
             ],
             missing: Vec::new(),
+            unreadable: Vec::new(),
         }
     }
 
