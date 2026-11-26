@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-25 20:50-0500\n"
+"POT-Creation-Date: 2026-11-26 08:30-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -3817,6 +3817,16 @@ msgid "Agents can query the files, never change them."
 msgstr ""
 
 #: src/ui/connect_dialog/agents.rs
+#, rust-format
+msgid "Agents don't reach {name}: its own agent access is Off."
+msgstr ""
+
+#: src/ui/connect_dialog/agents.rs
+#, rust-format
+msgid "Agents don't reach {name}: it hides tables or masks columns."
+msgstr ""
+
+#: src/ui/connect_dialog/agents.rs
 msgid "table, or schema.table"
 msgstr ""
 
@@ -7185,6 +7195,11 @@ msgstr ""
 
 #: src/ui/picker.rs
 msgid "No joins"
+msgstr ""
+
+#: src/ui/picker.rs
+#, rust-format
+msgid "Joins {name}"
 msgstr ""
 
 #: src/ui/picker.rs

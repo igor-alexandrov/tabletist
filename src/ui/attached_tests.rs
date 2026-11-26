@@ -10,7 +10,7 @@ use tabletist_db::{ConnectSpec, Driver, ObjectInfo, ObjectKind};
 use crate::backend::{AgentsCommand, Command, Event};
 use crate::connections::{AgentAccess, ConnectionId, PasswordMode, SavedConnection};
 use crate::env::{Environment, Platform};
-use crate::model::Action;
+use crate::model::{Action, Dialog};
 use crate::testing::{Harness, answer_tree, last_sent};
 use crate::theme::Look;
 
@@ -158,6 +158,48 @@ fn an_attached_schema_shows_its_environment_s_badge() {
             harness.painted_rect(label(Environment::Staging)).is_some(),
             "{name}"
         );
+    }
+}
+
+#[test]
+fn the_agents_part_names_the_attachments_agents_don_t_reach() {
+    for look in looks() {
+        let name = look.name;
+        let mut harness = Harness::with_size(egui::vec2(1200.0, 1600.0));
+        harness.set_look(look);
+        let id = bookshop(&mut harness);
+        harness.app.apply(Action::EditConnection(id));
+        if let Some(Dialog::Connection(form)) = &mut harness.app.dialog {
+            form.agents_open = true;
+        }
+        harness.settle();
+        let says = |harness: &mut Harness, text: &str| {
+            let tree = harness.settle();
+            let text = text.to_lowercase();
+            crate::testing::labels(&tree)
+                .iter()
+                .any(|label| label.to_lowercase().contains(&text))
+        };
+        assert!(
+            says(
+                &mut harness,
+                "Agents don't reach bookshop_production: its own agent access is Off."
+            ),
+            "{name}"
+        );
+        assert!(
+            says(
+                &mut harness,
+                "Agents don't reach bookshop_staging: it hides tables or masks columns."
+            ),
+            "{name}"
+        );
+        assert!(!says(&mut harness, "reach bookshop_development"), "{name}");
+        // With agents Off here, nothing of them is said.
+        if let Some(Dialog::Connection(form)) = &mut harness.app.dialog {
+            form.agents.access = AgentAccess::Off;
+        }
+        assert!(!says(&mut harness, "Agents don't reach"), "{name}");
     }
 }
 

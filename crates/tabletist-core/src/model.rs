@@ -2080,6 +2080,10 @@ pub struct ConnectionForm {
     /// Files: the saved connections the Join section lists, read again
     /// on each frame the dialog draws.
     pub joinable: Vec<crate::connections::join::Joinable>,
+    /// Files: the saved connections it attaches that agents don't reach,
+    /// by the name SQL calls each, and why. Read again on each frame the
+    /// dialog draws, as the policy the app sends agents says.
+    pub agents_left_out: Vec<(String, crate::backend::LeftOut)>,
     /// The environment the user chose; `None` until they do, while it
     /// follows where the connection points (see
     /// [`ConnectionForm::environment`]).
@@ -2436,6 +2440,7 @@ impl Default for ConnectionForm {
             focus_group: false,
             group_choices: Default::default(),
             joinable: Vec::new(),
+            agents_left_out: Vec::new(),
             environment: None,
             read_only: None,
             production_read_only: true,
@@ -2774,6 +2779,7 @@ impl ConnectionForm {
             focus_group: false,
             group_choices: Default::default(),
             joinable: Vec::new(),
+            agents_left_out: Vec::new(),
             environment: Some(saved.environment),
             read_only: saved.read_only,
             production_read_only: true,

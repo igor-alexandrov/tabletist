@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-25 20:50-0500\n"
+"POT-Creation-Date: 2026-11-26 08:30-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -3862,6 +3862,18 @@ msgid "Agents can query the files, never change them."
 msgstr "Агенты могут запрашивать файлы, но не изменять их."
 
 #: src/ui/connect_dialog/agents.rs
+#, rust-format
+msgid "Agents don't reach {name}: it hides tables or masks columns."
+msgstr ""
+"Агенты не обращаются к {name}: в нём скрыты таблицы или замаскированы "
+"столбцы."
+
+#: src/ui/connect_dialog/agents.rs
+#, rust-format
+msgid "Agents don't reach {name}: its own agent access is Off."
+msgstr "Агенты не обращаются к {name}: у него самого доступ агентов выключен."
+
+#: src/ui/connect_dialog/agents.rs
 msgid ""
 "Agents may not use this connection while a hidden table is not in its "
 "database. Take the name out, or add the table's new name."
@@ -7359,6 +7371,11 @@ msgstr "Изменить…"
 #: src/ui/picker.rs
 msgid "Find connection…"
 msgstr "Найти подключение…"
+
+#: src/ui/picker.rs
+#, rust-format
+msgid "Joins {name}"
+msgstr "Соединяется с {name}"
 
 #: src/ui/picker.rs
 #, rust-format
