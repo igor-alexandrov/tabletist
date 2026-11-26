@@ -24,7 +24,6 @@ use crate::{Dialect, Driver, Error, Result, TlsMode};
 /// The statements that attach `attaching` as the session's `at`th
 /// attachment, reached through a tunnel's local port `via` where it has
 /// one, in order.
-#[derive(Debug)]
 pub(super) struct Statements {
     /// Its login, for PostgreSQL and MySQL; none for a SQLite file.
     pub(super) secret: Option<String>,
@@ -33,6 +32,19 @@ pub(super) struct Statements {
     pub(super) forget: Option<String>,
     /// The SQLite file, which the session's fence lets DuckDB open.
     pub(super) file: Option<String>,
+}
+
+/// Prints whether there is a secret, never the statement: it holds the
+/// password.
+impl std::fmt::Debug for Statements {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Statements")
+            .field("secret", &self.secret.is_some())
+            .field("attach", &self.attach)
+            .field("forget", &self.forget)
+            .field("file", &self.file)
+            .finish()
+    }
 }
 
 /// The reader DuckDB attaches `attaching` with.
@@ -261,7 +273,7 @@ mod tests {
     #[test]
     fn a_password_goes_into_the_secret_alone() {
         let made = statements(0, &attaching(postgres(), Some("it's s3cret")), None).unwrap();
-        let secret = made.secret.unwrap();
+        let secret = made.secret.clone().unwrap();
         assert_eq!(
             secret,
             "CREATE SECRET tabletist_attach_0 (TYPE postgres, HOST 'db.example.com', \
@@ -276,6 +288,8 @@ mod tests {
              (TYPE postgres, SECRET tabletist_attach_0, READ_ONLY)"
         );
         assert!(!made.attach.contains("s3cret"));
+        let printed = format!("{made:?}");
+        assert!(!printed.contains("s3cret"), "{printed}");
         assert_eq!(
             made.forget.as_deref(),
             Some("DROP SECRET tabletist_attach_0")
