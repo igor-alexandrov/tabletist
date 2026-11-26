@@ -142,9 +142,10 @@ and DuckDB files (`.duckdb`). DuckDB reads them, inside Tabletist.
   other schemas are reached in SQL, as
   `bookshop_development.billing.invoices`. The schema menu lists the
   attached ones after the files' own. In the connections list the row
-  says what it joins: "Joins Bookshop · dev", with "+1", "+2" for the others
+  says whether its files are "Read-only" or "Editable", and what it
+  joins: "Joins Bookshop · dev", with "+1", "+2" for the others
   (`joins bookshop_development` in the Omarchy look). An attached
-  connection is always read-only. Its password comes from the keyring as
+  connection is always read-only, even when the files are editable. Its password comes from the keyring as
   the Files connection opens, and its SSH tunnel, if it has one, is
   opened then too; a connection whose password is asked for on every
   connect, or a MySQL one that names no database, cannot be attached. If
@@ -160,10 +161,18 @@ and DuckDB files (`.duckdb`). DuckDB reads them, inside Tabletist.
   PostgreSQL, MySQL or SQLite, DuckDB downloads it, and Test says so
   while it does ("Downloading the PostgreSQL reader for DuckDB…"). Once
   downloaded, it is used offline.
-- A new Files connection is **local**, and lets agents read. Files open
-  read-only: nothing writes to them, and a statement that would read
-  another file on the computer, write a file or install anything is
-  refused. Agents can query the files, never change them, and cannot
+- A new Files connection is **local**, opens read-only, and lets agents
+  read. A statement that would read another file on the computer, write
+  a file or install anything is refused, and the SQL editor only reads.
+  With **Open read-only** off, a file's table is edited in the grid and
+  saved: see [Edit files]({% link _guide/editing-data.md %}#edit-files).
+  The box's note says that saving rewrites the whole file, and names
+  the largest file a save would write again: "Editing is on. Changes
+  are kept until you save; saving rewrites the whole file, so orders.csv
+  (1.6 GB) is written again in full." The Omarchy look says it on one
+  line in the warning colour: `[ ] editing on · changes wait for :w,
+  which rewrites the whole file (orders.csv 1.6 gb)`. Agents can query
+  the files, never change them, and cannot
   hide tables or mask columns on a Files connection. Its **Agents**
   section is closed, and says the access on one line. Agents reach an
   attached connection only where its own **Agents** setting is **Read**
@@ -464,7 +473,8 @@ SQLite file is opened read-only. A BigQuery connection is read-only with
 the box off too: see [BigQuery](#bigquery).
 
 The box is ticked by default for production, and not for the other
-environments. Turn it off to edit. A change applies from the next time
+environments. A Files connection's is ticked whatever its environment.
+Turn it off to edit. A change applies from the next time
 you connect. Where a new production connection's box starts is
 **New production connections open read-only** in
 [Settings]({% link _reference/settings-and-files.md %}#the-settings-window).

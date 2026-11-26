@@ -690,11 +690,11 @@ const READ_ONLY_NOTE: Msgid =
 fn safety(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
     let Skin { look, palette, .. } = *skin;
     let title = skin.say(msgid("Open read-only"));
-    // Editing files is not built: their box is on, and stays so.
-    let fixed = super::read_only_fixed(form);
-    let note = match fixed {
-        true => super::FILES_READ_ONLY_NOTE,
-        false => READ_ONLY_NOTE,
+    // A Files connection's note says what a save does to its files.
+    let note = match (super::is_files(form), form.read_only()) {
+        (true, true) => skin.say(super::FILES_READ_ONLY_NOTE),
+        (true, false) => super::files_editing_note(form, skin.locale),
+        (false, _) => skin.say(READ_ONLY_NOTE),
     };
     egui::Frame::new()
         .fill(skin.env.bar_bg())
@@ -705,9 +705,7 @@ fn safety(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
                 let on = form.read_only();
-                let mut toggled = ui
-                    .add_enabled_ui(!fixed, |ui| env_check(ui, on, &title, skin).clicked())
-                    .inner;
+                let mut toggled = env_check(ui, on, &title, skin).clicked();
                 ui.vertical(|ui| {
                     // The title toggles the box under the pointer, as a
                     // check box's own label does. It takes clicks alone:
@@ -715,14 +713,14 @@ fn safety(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
                     let label = Text::one(look, TextRole::UiBodyStrong, &title, palette.text)
                         .layout(ui.ctx())
                         .label_sense(ui, Sense::CLICK);
-                    toggled |= label.clicked() && !fixed;
+                    toggled |= label.clicked();
                     ui.add_space(2.0);
                     // The secondary colour, warmed by the environment's
                     // text colour: 0.4 is the share at which production's
                     // red on the light palette comes out in the design's
                     // tone.
                     let tone = theme::mix(palette.secondary, skin.env_ink(&skin.env), 0.4);
-                    widgets::label(ui, TextRole::Secondary, &skin.say(note), tone, look);
+                    widgets::label(ui, TextRole::Secondary, &note, tone, look);
                 });
                 if toggled {
                     form.read_only = Some(!on);

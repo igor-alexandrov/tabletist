@@ -4120,6 +4120,13 @@ msgstr ""
 "As conexões anexadas abrem aqui somente para leitura, como os arquivos."
 
 #: src/ui/connect_dialog/join.rs
+msgid ""
+"Attached connections open read-only here, even when the files are editable."
+msgstr ""
+"Conexões anexadas abrem em somente leitura aqui, mesmo quando os arquivos "
+"são editáveis."
+
+#: src/ui/connect_dialog/join.rs
 msgid "Join with saved connections"
 msgstr "Cruzar com conexões salvas"
 
@@ -4176,13 +4183,35 @@ msgid "Downloading the SQLite reader for DuckDB…"
 msgstr "Baixando o leitor de SQLite do DuckDB…"
 
 #: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid ""
+"Editing is on. Changes are kept until you save; saving rewrites the whole "
+"file, so {file} ({size}) is written again in full."
+msgstr ""
+"A edição está ativada. As alterações ficam guardadas até você salvar; salvar "
+"regrava o arquivo inteiro, então {file} ({size}) é gravado de novo por "
+"completo."
+
+#: src/ui/connect_dialog/mod.rs
+msgid ""
+"Editing is on. Changes are kept until you save; saving rewrites the whole "
+"file."
+msgstr ""
+"A edição está ativada. As alterações ficam guardadas até você salvar; salvar "
+"regrava o arquivo inteiro."
+
+#: src/ui/connect_dialog/mod.rs
 msgid "Files connections have no URL. Choose a folder or files under Source."
 msgstr ""
 "Conexões de arquivos não têm URL. Escolha uma pasta ou arquivos em Origem."
 
 #: src/ui/connect_dialog/mod.rs
-msgid "Files open read-only."
-msgstr "Os arquivos abrem em somente leitura."
+msgid ""
+"Files open read-only. Turn off to edit: changes are kept until you save, and "
+"saving rewrites the whole file."
+msgstr ""
+"Os arquivos abrem em somente leitura. Desative para editar: as alterações "
+"ficam guardadas até você salvar, e salvar regrava o arquivo inteiro."
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Hosts from ~/.ssh/config"
@@ -4658,6 +4687,10 @@ msgid "Default for production"
 msgstr "Padrão para production"
 
 #: src/ui/connect_dialog/terminal.rs
+msgid "Editing on"
+msgstr "Edição ativada"
+
+#: src/ui/connect_dialog/terminal.rs
 msgid "Files open read-only"
 msgstr "Os arquivos abrem em somente leitura"
 
@@ -4685,6 +4718,20 @@ msgstr "Host SSH : Porta"
 #: src/ui/connect_dialog/terminal.rs
 msgid "SSH tunnel"
 msgstr "Túnel SSH"
+
+#: src/ui/connect_dialog/terminal.rs
+msgid "Turn off to edit; saving rewrites the whole file"
+msgstr "Desative para editar; salvar regrava o arquivo inteiro"
+
+#: src/ui/connect_dialog/terminal.rs
+msgid "changes wait for :w, which rewrites the whole file"
+msgstr "as alterações esperam :w, que regrava o arquivo inteiro"
+
+#: src/ui/connect_dialog/terminal.rs
+#, rust-format
+msgid "changes wait for :w, which rewrites the whole file ({file} {size})"
+msgstr ""
+"as alterações esperam :w, que regrava o arquivo inteiro ({file} {size})"
 
 #: src/ui/connect_dialog/terminal.rs src/ui/export.rs src/ui/structure.rs
 #: src/ui/workspace.rs
@@ -7244,6 +7291,36 @@ msgstr "{column} é obrigatória"
 
 #: src/ui/pending_bar.rs
 #, rust-format
+msgid ""
+"{file} changed on disk since you opened it. Reload to see the new version; "
+"your {n} change stays pending."
+msgid_plural ""
+"{file} changed on disk since you opened it. Reload to see the new version; "
+"your {n} changes stay pending."
+msgstr[0] ""
+"{file} mudou no disco desde que você o abriu. Recarregue para ver a nova "
+"versão; sua {n} alteração continua pendente."
+msgstr[1] ""
+"{file} mudou no disco desde que você o abriu. Recarregue para ver a nova "
+"versão; suas {n} alterações continuam pendentes."
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid ""
+"{file} couldn't be saved: its folder can't be written to. Your {n} change "
+"stays pending."
+msgid_plural ""
+"{file} couldn't be saved: its folder can't be written to. Your {n} changes "
+"stay pending."
+msgstr[0] ""
+"Não foi possível salvar {file}: não é possível gravar na pasta dele. Sua {n} "
+"alteração continua pendente."
+msgstr[1] ""
+"Não foi possível salvar {file}: não é possível gravar na pasta dele. Suas "
+"{n} alterações continuam pendentes."
+
+#: src/ui/pending_bar.rs
+#, rust-format
 msgid "{n} can't be deleted."
 msgid_plural "{n} can't be deleted."
 msgstr[0] "{n} não pode ser excluída."
@@ -7319,6 +7396,10 @@ msgstr "Excluir {connection}? Isso não pode ser desfeito."
 #: src/ui/picker.rs src/ui/row_panel.rs
 msgid "Duplicate"
 msgstr "Duplicar"
+
+#: src/ui/picker.rs
+msgid "Editable"
+msgstr "Editável"
 
 #: src/ui/picker.rs
 msgid "Edit…"

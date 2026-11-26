@@ -505,11 +505,50 @@ yours. Then you choose:
 If someone deleted the row, there is nothing to reload or overwrite:
 **Discard my changes** drops your change, and Esc leaves it pending.
 
+## Edit files
+
+A Files connection opens read-only until you turn **Open read-only** off
+in its form. Then a file's table is edited like any other: change values,
+add rows and delete rows, then save. The first time a file's table opens,
+Tabletist reads the file into memory, so a large file takes as long to
+open as it takes to read, and each row keeps its place in the file.
+That place is what a save finds the row by: a file has no key.
+
+Saving writes the whole file again, to a hidden file in its folder that
+then takes the file's place:
+
+- A CSV or a TSV keeps every row you did not change as it was written,
+  byte for byte. A changed or new row is written with the file's
+  delimiter and quote, each value as you typed it. A date is written the
+  way the file writes its dates. A CSV whose rows Tabletist cannot match
+  one for one to the lines DuckDB read opens read-only, and its header
+  says why.
+- Parquet keeps its compression. JSON stays one array, and NDJSON one
+  object per line. DuckDB writes these from the table, so a value can be
+  written another way than it was: `12.50` as `12.5`.
+- Excel files always open read-only, and so do `.duckdb` files for now.
+  Their table's header says so.
+- An attached connection's tables open read-only here, even when the
+  files are editable.
+
+Before it writes, a save checks that the file is as it was when its
+table was read: the same size and the same time it was changed. If
+another program changed it since, nothing is written: "orders.csv
+changed on disk since you opened it. Reload to see the new version;
+your 3 changes stay pending." If the folder can't be written to, nothing
+is written either, and your changes stay pending.
+
+The SQL editor reads a Files connection, whether it opens read-only or
+not: a statement that would write is refused, and its card says to edit
+the file's table instead.
+
 ## What cannot be edited
 
 A cell that cannot be edited says why when you try. The common reasons:
 
 - The connection opens read-only.
+- The file is an Excel or a `.duckdb` file, or its table is an attached
+  connection's (see [Edit files](#edit-files)).
 - The object is a view.
 - The table has no primary key or unique index, so a row cannot be
   targeted safely.

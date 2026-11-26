@@ -216,10 +216,16 @@ pub fn header(
     // pointer: the terminal's bar says it in its own tag.
     let production =
         Some(workspace.environment).filter(|env| env.is_production() && !look.terminal);
-    let parts = match (look.terminal, view) {
+    let mut parts = match (look.terminal, view) {
         (true, ObjectView::Ddl) => super::ddl::subtitle(object, locale),
         _ => subtitle(object, &look, locale),
     };
+    // A file's table its connection does not edit, though it may write,
+    // says why first: "Excel files open read-only".
+    let never = Table::of(workspace, object).and_then(|table| table.never());
+    if let Some(lock @ (crate::edit::Lock::Unedited(_) | crate::edit::Lock::Unmatched)) = never {
+        parts.insert(0, look.label(&cell_editor::lock_text(lock, &name, locale)));
+    }
     let summary = parts.join(" · ");
     // Why Add row cannot be pressed, where it cannot: the table takes no
     // row, or its page is not there yet.

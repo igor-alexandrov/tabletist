@@ -4029,6 +4029,11 @@ msgid "Attached connections open read-only here, as the files do."
 msgstr ""
 
 #: src/ui/connect_dialog/join.rs
+msgid ""
+"Attached connections open read-only here, even when the files are editable."
+msgstr ""
+
+#: src/ui/connect_dialog/join.rs
 msgid "None attached · optional"
 msgstr ""
 
@@ -4078,7 +4083,22 @@ msgid "Changes the fields below"
 msgstr ""
 
 #: src/ui/connect_dialog/mod.rs
-msgid "Files open read-only."
+msgid ""
+"Files open read-only. Turn off to edit: changes are kept until you save, and "
+"saving rewrites the whole file."
+msgstr ""
+
+#: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid ""
+"Editing is on. Changes are kept until you save; saving rewrites the whole "
+"file, so {file} ({size}) is written again in full."
+msgstr ""
+
+#: src/ui/connect_dialog/mod.rs
+msgid ""
+"Editing is on. Changes are kept until you save; saving rewrites the whole "
+"file."
 msgstr ""
 
 #: src/ui/connect_dialog/mod.rs
@@ -4587,6 +4607,15 @@ msgstr ""
 msgid "connect"
 msgstr ""
 
+#: src/ui/connect_dialog/terminal.rs
+#, rust-format
+msgid "changes wait for :w, which rewrites the whole file ({file} {size})"
+msgstr ""
+
+#: src/ui/connect_dialog/terminal.rs
+msgid "changes wait for :w, which rewrites the whole file"
+msgstr ""
+
 #: src/ui/connect_dialog/terminal.rs src/ui/ddl.rs src/ui/picker.rs
 #: src/ui/sql_editor.rs src/ui/start.rs src/ui/workspace.rs
 msgid "Read-only"
@@ -4594,6 +4623,14 @@ msgstr ""
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "Files open read-only"
+msgstr ""
+
+#: src/ui/connect_dialog/terminal.rs
+msgid "Turn off to edit; saving rewrites the whole file"
+msgstr ""
+
+#: src/ui/connect_dialog/terminal.rs
+msgid "Editing on"
 msgstr ""
 
 #: src/ui/connect_dialog/terminal.rs
@@ -7075,6 +7112,28 @@ msgstr ""
 
 #: src/ui/pending_bar.rs
 #, rust-format
+msgid ""
+"{file} changed on disk since you opened it. Reload to see the new version; "
+"your {n} change stays pending."
+msgid_plural ""
+"{file} changed on disk since you opened it. Reload to see the new version; "
+"your {n} changes stay pending."
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid ""
+"{file} couldn't be saved: its folder can't be written to. Your {n} change "
+"stays pending."
+msgid_plural ""
+"{file} couldn't be saved: its folder can't be written to. Your {n} changes "
+"stay pending."
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/pending_bar.rs
+#, rust-format
 msgid "written {what}"
 msgstr ""
 
@@ -7219,6 +7278,10 @@ msgstr ""
 #: src/ui/picker.rs
 #, rust-format
 msgid "Joins {name}"
+msgstr ""
+
+#: src/ui/picker.rs
+msgid "Editable"
 msgstr ""
 
 #: src/ui/picker.rs

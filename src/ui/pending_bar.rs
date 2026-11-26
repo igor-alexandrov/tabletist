@@ -266,11 +266,66 @@ fn note_said(
         )),
         Note::NotSent => say(msgid("Not connected. Nothing was sent.")),
         Note::Cancelled => format!("{} {nothing}", say(msgid("Save cancelled."))),
-        Note::Refused(error) => format!(
-            "{} {nothing}",
-            sentence(&format::capped(&error.to_string()))
-        ),
+        Note::Refused(error) => match unsaved_of(error) {
+            Some(why) => unsaved_text(why, object, locale, &own),
+            None => format!(
+                "{} {nothing}",
+                sentence(&format::capped(&error.to_string()))
+            ),
+        },
     }
+}
+
+/// Why a save to a Files connection's file wrote nothing, where it was the
+/// file's own doing.
+fn unsaved_of(error: &tabletist_db::Error) -> Option<&tabletist_db::Unsaved> {
+    match error {
+        tabletist_db::Error::Query { named, .. } => named.unsaved.as_ref(),
+        _ => None,
+    }
+}
+
+/// What a save that the file kept from writing says: why, and that every
+/// change it had is still there to save.
+fn unsaved_text(
+    why: &tabletist_db::Unsaved,
+    object: &ObjectTab,
+    locale: Locale,
+    own: &impl Fn(&str) -> String,
+) -> String {
+    let counts = object.edits.counts();
+    let n = counts.changes + counts.added + counts.deleted;
+    let (words, file) = match why {
+        tabletist_db::Unsaved::Changed(file) => (
+            ngettext(
+                locale,
+                "{file} changed on disk since you opened it. Reload to see the new version; your \
+                 {n} change stays pending.",
+                "{file} changed on disk since you opened it. Reload to see the new version; your \
+                 {n} changes stay pending.",
+                n,
+            ),
+            file,
+        ),
+        tabletist_db::Unsaved::Unwritable(file) => (
+            ngettext(
+                locale,
+                "{file} couldn't be saved: its folder can't be written to. Your {n} change stays \
+                 pending.",
+                "{file} couldn't be saved: its folder can't be written to. Your {n} changes stay \
+                 pending.",
+                n,
+            ),
+            file,
+        ),
+    };
+    crate::i18n::fill(
+        &own(&words),
+        &[
+            ("{file}", &format::display_safe(file)),
+            ("{n}", &crate::i18n::number(locale, n)),
+        ],
+    )
 }
 
 /// What a save that wrote says once it is done: `written 2 changes · 1 row

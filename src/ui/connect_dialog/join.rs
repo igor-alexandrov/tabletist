@@ -20,8 +20,11 @@ const HINT: Msgid =
     msgid("Attach a saved connection to join a file to its live tables in one query. Optional.");
 
 /// What the open section says under the list: an attached connection
-/// keeps its own safety.
+/// keeps its own safety, read-only as the files are, or though they are
+/// not.
 const SAFETY: Msgid = msgid("Attached connections open read-only here, as the files do.");
+const SAFETY_EDITING: Msgid =
+    msgid("Attached connections open read-only here, even when the files are editable.");
 
 /// The closed row's summary: none attached, else their names.
 pub(super) fn summary(form: &ConnectionForm, locale: Locale) -> String {
@@ -194,7 +197,11 @@ fn rows(
             });
     }
     ui.add_space(8.0);
-    let safety = look.label(&skin.say(SAFETY));
+    let safety = match form.read_only() {
+        true => SAFETY,
+        false => SAFETY_EDITING,
+    };
+    let safety = look.label(&skin.say(safety));
     widgets::label(ui, small, &safety, palette.dim, look);
 }
 

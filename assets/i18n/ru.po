@@ -4130,6 +4130,13 @@ msgstr ""
 "Присоединённые подключения открываются здесь только для чтения, как и файлы."
 
 #: src/ui/connect_dialog/join.rs
+msgid ""
+"Attached connections open read-only here, even when the files are editable."
+msgstr ""
+"Присоединённые подключения здесь открываются только для чтения, даже когда "
+"файлы можно изменять."
+
+#: src/ui/connect_dialog/join.rs
 msgid "Join with saved connections"
 msgstr "Соединение с сохранёнными подключениями"
 
@@ -4188,14 +4195,36 @@ msgid "Downloading the SQLite reader for DuckDB…"
 msgstr "Загрузка модуля чтения SQLite для DuckDB…"
 
 #: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid ""
+"Editing is on. Changes are kept until you save; saving rewrites the whole "
+"file, so {file} ({size}) is written again in full."
+msgstr ""
+"Изменение включено. Изменения хранятся до сохранения; сохранение "
+"перезаписывает файл целиком, так что {file} ({size}) записывается заново "
+"полностью."
+
+#: src/ui/connect_dialog/mod.rs
+msgid ""
+"Editing is on. Changes are kept until you save; saving rewrites the whole "
+"file."
+msgstr ""
+"Изменение включено. Изменения хранятся до сохранения; сохранение "
+"перезаписывает файл целиком."
+
+#: src/ui/connect_dialog/mod.rs
 msgid "Files connections have no URL. Choose a folder or files under Source."
 msgstr ""
 "У подключений к файлам нет URL. Выберите папку или файлы в разделе "
 "«Источник»."
 
 #: src/ui/connect_dialog/mod.rs
-msgid "Files open read-only."
-msgstr "Файлы открываются только для чтения."
+msgid ""
+"Files open read-only. Turn off to edit: changes are kept until you save, and "
+"saving rewrites the whole file."
+msgstr ""
+"Файлы открываются только для чтения. Выключите, чтобы изменять: изменения "
+"хранятся до сохранения, а сохранение перезаписывает файл целиком."
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Hosts from ~/.ssh/config"
@@ -4678,6 +4707,10 @@ msgid "Default for production"
 msgstr "По умолчанию для production"
 
 #: src/ui/connect_dialog/terminal.rs
+msgid "Editing on"
+msgstr "Изменение включено"
+
+#: src/ui/connect_dialog/terminal.rs
 msgid "Files open read-only"
 msgstr "Файлы открываются только для чтения"
 
@@ -4705,6 +4738,19 @@ msgstr "Хост SSH : Порт"
 #: src/ui/connect_dialog/terminal.rs
 msgid "SSH tunnel"
 msgstr "Туннель SSH"
+
+#: src/ui/connect_dialog/terminal.rs
+msgid "Turn off to edit; saving rewrites the whole file"
+msgstr "Выключите, чтобы изменять; сохранение перезаписывает файл целиком"
+
+#: src/ui/connect_dialog/terminal.rs
+msgid "changes wait for :w, which rewrites the whole file"
+msgstr "изменения ждут :w, которое перезаписывает файл целиком"
+
+#: src/ui/connect_dialog/terminal.rs
+#, rust-format
+msgid "changes wait for :w, which rewrites the whole file ({file} {size})"
+msgstr "изменения ждут :w, которое перезаписывает файл целиком ({file} {size})"
 
 #: src/ui/connect_dialog/terminal.rs src/ui/export.rs src/ui/structure.rs
 #: src/ui/workspace.rs
@@ -7304,6 +7350,42 @@ msgstr "Столбец {column} обязателен"
 
 #: src/ui/pending_bar.rs
 #, rust-format
+msgid ""
+"{file} changed on disk since you opened it. Reload to see the new version; "
+"your {n} change stays pending."
+msgid_plural ""
+"{file} changed on disk since you opened it. Reload to see the new version; "
+"your {n} changes stay pending."
+msgstr[0] ""
+"{file} изменился на диске после того, как вы его открыли. Перезагрузите, "
+"чтобы увидеть новую версию; ваше {n} изменение остаётся в ожидании."
+msgstr[1] ""
+"{file} изменился на диске после того, как вы его открыли. Перезагрузите, "
+"чтобы увидеть новую версию; ваши {n} изменения остаются в ожидании."
+msgstr[2] ""
+"{file} изменился на диске после того, как вы его открыли. Перезагрузите, "
+"чтобы увидеть новую версию; ваши {n} изменений остаются в ожидании."
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid ""
+"{file} couldn't be saved: its folder can't be written to. Your {n} change "
+"stays pending."
+msgid_plural ""
+"{file} couldn't be saved: its folder can't be written to. Your {n} changes "
+"stay pending."
+msgstr[0] ""
+"Не удалось сохранить {file}: в его папку нельзя записывать. Ваше {n} "
+"изменение остаётся в ожидании."
+msgstr[1] ""
+"Не удалось сохранить {file}: в его папку нельзя записывать. Ваши {n} "
+"изменения остаются в ожидании."
+msgstr[2] ""
+"Не удалось сохранить {file}: в его папку нельзя записывать. Ваши {n} "
+"изменений остаются в ожидании."
+
+#: src/ui/pending_bar.rs
+#, rust-format
 msgid "{n} can't be deleted."
 msgid_plural "{n} can't be deleted."
 msgstr[0] "Нельзя удалить: {n}."
@@ -7384,6 +7466,10 @@ msgstr "Удалить {connection}? Это нельзя отменить."
 #: src/ui/picker.rs src/ui/row_panel.rs
 msgid "Duplicate"
 msgstr "Дублировать"
+
+#: src/ui/picker.rs
+msgid "Editable"
+msgstr "Можно изменять"
 
 #: src/ui/picker.rs
 msgid "Edit…"

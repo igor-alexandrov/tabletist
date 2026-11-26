@@ -1,11 +1,12 @@
 //! Editing a Files connection's table, in both looks: a save finds each
-//! row by its place in the file, and a table its connection does not edit
-//! is not. On the Bookshop's `orders.csv`.
+//! row by its place in the file, a save the file keeps from writing says
+//! why and keeps every change, and a table its connection does not edit
+//! says why in its header. On the Bookshop's `orders.csv`.
 
 use tabletist_db::files::Format;
 use tabletist_db::{
     ColumnInfo, ColumnMeta, Driver, FILE_POSITION, FileFacts, ObjectKind, ObjectRef, RowPage,
-    Structure, Unedited, Value, ValueKind,
+    Structure, Unedited, Unsaved, Value, ValueKind,
 };
 
 use crate::backend::Command;
@@ -144,12 +145,74 @@ fn a_save_finds_each_row_of_a_file_by_its_place() {
 }
 
 #[test]
-fn an_excel_file_opens_read_only() {
+fn a_file_changed_on_disk_keeps_every_change_and_says_how_many() {
+    for look in looks() {
+        let (mut harness, tab, id) =
+            orders(look, orders_structure(Format::Csv, None), orders_page(true));
+        super::insert_audit_tests::set(&mut harness, tab, id, (0, 2), "11.00");
+        super::insert_audit_tests::set(&mut harness, tab, id, (1, 2), "22.00");
+        super::insert_audit_tests::set(&mut harness, tab, id, (2, 2), "33.00");
+        harness.app.apply(Action::WriteEdits { tab, id });
+        let mut error =
+            tabletist_db::Error::query("orders.csv changed on disk since it was opened");
+        if let tabletist_db::Error::Query { named, .. } = &mut error {
+            named.unsaved = Some(Unsaved::Changed("orders.csv".into()));
+        }
+        harness.answer_written(Err(error));
+        harness.settle();
+        let edits = super::insert_audit_tests::edits(&harness, tab, id);
+        assert_eq!(edits.counts().changes, 3, "{}", look.name);
+        let said = "orders.csv changed on disk since you opened it. Reload to see the new \
+                    version; your 3 changes stay pending.";
+        let painted = harness
+            .painted
+            .iter()
+            .any(|(text, _)| text.to_lowercase().contains(&said.to_lowercase()));
+        assert!(
+            harness.has(said) || painted,
+            "{}: {:?}",
+            look.name,
+            harness.painted
+        );
+    }
+}
+
+#[test]
+fn a_folder_that_cannot_be_written_to_keeps_the_change() {
+    let (mut harness, tab, id) = orders(
+        Look::macos(),
+        orders_structure(Format::Csv, None),
+        orders_page(true),
+    );
+    super::insert_audit_tests::set(&mut harness, tab, id, (0, 2), "11.00");
+    harness.app.apply(Action::WriteEdits { tab, id });
+    let mut error = tabletist_db::Error::query("orders.csv could not be written");
+    if let tabletist_db::Error::Query { named, .. } = &mut error {
+        named.unsaved = Some(Unsaved::Unwritable("orders.csv".into()));
+    }
+    harness.answer_written(Err(error));
+    assert!(harness.has(
+        "orders.csv couldn't be saved: its folder can't be written to. Your 1 change stays pending."
+    ));
+}
+
+#[test]
+fn an_excel_file_says_in_its_header_that_it_opens_read_only() {
     for look in looks() {
         let (mut harness, tab, id) = orders(
             look,
             orders_structure(Format::Excel, Some(Unedited::Excel)),
             orders_page(false),
+        );
+        let said = look.label("Excel files open read-only");
+        assert!(
+            harness
+                .painted
+                .iter()
+                .any(|(text, _)| text.starts_with(&said)),
+            "{}: {:?}",
+            look.name,
+            harness.painted
         );
         // No cell of it is edited, and no row added.
         let workspace = harness.app.workspace(tab).unwrap();

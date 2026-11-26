@@ -178,6 +178,22 @@ pub(super) fn terminal_footer(
 /// The terminal look: a label in the 150 pt column, then what `add` draws
 /// on the same line, 8 below the row before it. The row is as tall as a
 /// field.
+/// What a Files connection's read-only row says while it edits: that a
+/// save writes a whole file, and the largest it would.
+fn terminal_editing_note(form: &ConnectionForm, locale: crate::i18n::Locale) -> String {
+    match super::largest_rewritten(form) {
+        Some((file, size)) => crate::i18n::fill(
+            &gettext(
+                locale,
+                "changes wait for :w, which rewrites the whole file ({file} {size})",
+            ),
+            // The size in the look's case, as its list rows write it.
+            &[("{file}", &file), ("{size}", &size.to_lowercase())],
+        ),
+        None => gettext(locale, "changes wait for :w, which rewrites the whole file").into_owned(),
+    }
+}
+
 pub(super) fn terminal_row(
     ui: &mut Ui,
     label: &str,
@@ -376,12 +392,30 @@ pub(super) fn terminal_body(
             let line = role.row_height(ui.ctx(), look.faces);
             terminal_row_of(ui, &skin.say(msgid("Read-only")), line, skin, |ui, _| {
                 let name = gettext(skin.locale, "Open read-only");
-                let fixed = super::read_only_fixed(form);
-                let (promise, note) = match fixed {
-                    true => (skin.say(msgid("Files open read-only")), String::new()),
-                    false => (
+                // A Files connection's says what a save does to its files,
+                // and while it edits, in the warning's colour.
+                let (promise, note, tone) = match (super::is_files(form), form.read_only()) {
+                    // In the look's own case, as its board writes them.
+                    (true, true) => (
+                        look.label(&skin.say(msgid("Files open read-only"))),
+                        format!(
+                            "· {}",
+                            look.label(
+                                &skin
+                                    .say(msgid("Turn off to edit; saving rewrites the whole file"))
+                            )
+                        ),
+                        palette.dim,
+                    ),
+                    (true, false) => (
+                        look.label(&skin.say(msgid("Editing on"))),
+                        format!("· {}", terminal_editing_note(form, skin.locale)),
+                        palette.warning,
+                    ),
+                    (false, _) => (
                         skin.say(msgid("Block every write from this app")),
                         format!("· {}", skin.say(msgid("Default for production"))),
+                        palette.dim,
                     ),
                 };
                 // The note goes under the promise where one line has no
@@ -393,15 +427,10 @@ pub(super) fn terminal_body(
                     // The environment's colour, as text can take it.
                     let mark = skin.env_ink(&skin.env);
                     let mut on = form.read_only();
-                    let changed = ui
-                        .add_enabled_ui(!fixed, |ui| {
-                            terminal_check(ui, &mut on, &promise, &name, mark, skin).changed()
-                        })
-                        .inner;
-                    if changed {
+                    if terminal_check(ui, &mut on, &promise, &name, mark, skin).changed() {
                         form.read_only = Some(on);
                     }
-                    widgets::label(ui, role, &note, palette.dim, look);
+                    widgets::label(ui, role, &note, tone, look);
                 };
                 if one_line {
                     draw(ui);
