@@ -1123,7 +1123,8 @@ impl App {
             spec: workspace.spec.clone(),
             secrets,
             host_keys: self.host_keys.clone(),
-            attach: crate::backend::attach::AttachTo::of(&workspace.spec.attach, &self.connections),
+            // What the tab's session attached, as it connected.
+            attach: workspace.attached.clone(),
         }
     }
 

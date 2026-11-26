@@ -4339,6 +4339,9 @@ impl App {
             }
         }
         let attach = AttachTo::of(&spec.attach, &self.connections);
+        if let Some(workspace) = self.workspace_mut(tab) {
+            workspace.attached = attach.clone();
+        }
         self.backend.send(Command::Connect {
             session,
             request,

@@ -1431,6 +1431,10 @@ pub struct Workspace {
     pub password_mode: PasswordMode,
     /// The secrets this tab connected with (kept in memory for Reconnect).
     pub secrets: tabletist_db::Secrets,
+    /// What a Files tab's session attached, as it was when it connected:
+    /// what an export of the tab attaches too, whatever the saved
+    /// connections became since.
+    pub attached: Vec<crate::backend::attach::AttachTo>,
     /// Databases on the server (PostgreSQL), for the switcher.
     pub databases: Fetch<Vec<String>>,
     /// A listing of `databases` started by a connect and not sent yet: it
@@ -6774,6 +6778,7 @@ impl Workspace {
             pending_open: None,
             password_mode: saved.password,
             secrets,
+            attached: Vec::new(),
             databases: Fetch::default(),
             databases_after_tree: None,
             save_password: false,

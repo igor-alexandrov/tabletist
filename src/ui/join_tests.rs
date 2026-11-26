@@ -465,6 +465,28 @@ fn an_open_sends_what_is_attached() {
             ("now_bigquery", true)
         ]
     );
+    // The tab keeps what its session attached, for its exports, whatever
+    // the saved connection becomes while it stays open.
+    let mut moved = harness.app.connections.get(&dev).unwrap().clone();
+    moved.spec.database = "bookshop_archive".into();
+    harness.app.connections.upsert(moved);
+    let kept = &harness.app.workspace(tab).unwrap().attached;
+    let databases: Vec<Option<&str>> = kept
+        .iter()
+        .map(|each| {
+            each.saved
+                .as_ref()
+                .map(|saved| saved.spec.database.as_str())
+        })
+        .collect();
+    assert_eq!(
+        databases,
+        [
+            Some("bookshop_development"),
+            None,
+            Some("bookshop-analytics")
+        ]
+    );
     // Edited, the deleted one and the BigQuery one are let go: their rows
     // are not listed to untick.
     harness.app.apply(Action::EditConnection(id));
