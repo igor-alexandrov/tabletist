@@ -13,6 +13,7 @@ use crate::paths::AppDirs;
 
 pub(crate) mod file;
 pub mod groups;
+pub mod join;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConnectionId(pub String);

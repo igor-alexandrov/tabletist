@@ -116,6 +116,9 @@ pub enum Action {
     SetFilesKind(FilesKind),
     /// A change in a Files connection's Reading CSV section.
     SetCsv(CsvChange),
+    /// Attach the saved connection to the Files connection in the dialog,
+    /// under its database's name, or let it go where it is attached.
+    ToggleAttach(crate::connections::ConnectionId),
     /// One of the partial Test's fixes for the first file it could not
     /// read: saved as an override in the form, and the Test run again.
     FixFile(FileFix),
@@ -2067,6 +2070,9 @@ pub struct ConnectionForm {
     pub focus_group: bool,
     /// What Group offers, read again on each frame the dialog draws.
     pub group_choices: crate::connections::groups::Choices,
+    /// Files: the saved connections the Join section lists, read again
+    /// on each frame the dialog draws.
+    pub joinable: Vec<crate::connections::join::Joinable>,
     /// The environment the user chose; `None` until they do, while it
     /// follows where the connection points (see
     /// [`ConnectionForm::environment`]).
@@ -2224,6 +2230,14 @@ pub struct ConnectionForm {
     /// Files: whether the Reading CSV section is open. Closed each time
     /// the dialog opens.
     pub csv_open: bool,
+    /// Files: the saved connections it attaches, in the order they were
+    /// ticked, each with the name SQL calls it by.
+    pub files_attach: Vec<tabletist_db::files::Attach>,
+    /// Files: whether the Join with saved connections section is open.
+    /// Closed each time the dialog opens.
+    pub join_open: bool,
+    /// Files: the reader DuckDB is downloading for the running Test.
+    pub files_downloading: Option<tabletist_db::files::Reader>,
     /// Files: whether the Agents section is open, which a Files form
     /// keeps closed until it is opened or `show_agents` asks.
     pub agents_open: bool,
@@ -2414,6 +2428,7 @@ impl Default for ConnectionForm {
             group_typed: None,
             focus_group: false,
             group_choices: Default::default(),
+            joinable: Vec::new(),
             environment: None,
             read_only: None,
             production_read_only: true,
@@ -2486,6 +2501,9 @@ impl Default for ConnectionForm {
             files_check: None,
             files_csv: tabletist_db::files::Reading::default(),
             csv_open: false,
+            files_attach: Vec::new(),
+            join_open: false,
+            files_downloading: None,
             agents_open: false,
             retype_asked: false,
             agents_chosen: false,
@@ -2560,6 +2578,7 @@ impl ConnectionForm {
         self.test_waiting = 0;
         self.files_tested = None;
         self.files_check = None;
+        self.files_downloading = None;
     }
 
     /// Files, terminal look: the path line names are typed into, as the
@@ -2747,6 +2766,7 @@ impl ConnectionForm {
             group_typed: None,
             focus_group: false,
             group_choices: Default::default(),
+            joinable: Vec::new(),
             environment: Some(saved.environment),
             read_only: saved.read_only,
             production_read_only: true,
@@ -2855,10 +2875,27 @@ impl ConnectionForm {
                 Some(Source::Folder(_)) | None => Vec::new(),
             },
             files_csv: spec.csv.clone(),
+            files_attach: spec.attach.clone(),
             // A saved connection's agents are what the file says.
             agents_chosen: true,
             ..Self::default()
         }
+    }
+
+    /// The schemas a Files connection has of its own, which no attached
+    /// connection can be named as: `main`, and each `.duckdb` file's, as
+    /// the Source was last read.
+    pub fn own_schemas(&self) -> Vec<String> {
+        let mut schemas = vec!["main".to_owned()];
+        if let FilesFound::Read(scan) = &self.files_found {
+            schemas.extend(
+                scan.files
+                    .iter()
+                    .filter(|file| file.format.is_database())
+                    .map(|file| file.name.clone()),
+            );
+        }
+        schemas
     }
 
     /// What a Files connection's Source names, as the backend reads it:
@@ -2951,10 +2988,19 @@ impl ConnectionForm {
                 Ok(ConnectSpec::sqlite(path))
             }
             Driver::Files => match self.files_source() {
-                Some(source) => Ok(ConnectSpec {
-                    csv: self.files_csv.clone(),
-                    ..ConnectSpec::files(source)
-                }),
+                Some(source) => {
+                    let taken = self.own_schemas();
+                    if let Some(problem) =
+                        crate::connections::join::name_problem(&self.files_attach, &taken)
+                    {
+                        return Err(problem);
+                    }
+                    Ok(ConnectSpec {
+                        csv: self.files_csv.clone(),
+                        attach: self.files_attach.clone(),
+                        ..ConnectSpec::files(source)
+                    })
+                }
                 None => Err(match self.files_kind {
                     FilesKind::Folder => "Choose a folder.".into(),
                     FilesKind::Files => "Add a file.".into(),
