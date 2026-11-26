@@ -142,7 +142,7 @@ and DuckDB files (`.duckdb`). DuckDB reads them, inside Tabletist.
   other schemas are reached in SQL, as
   `bookshop_development.billing.invoices`. The schema menu lists the
   attached ones after the files' own. In the connections list the row
-  says what it joins: "Joins Bookshop · dev", with "+1" for each more
+  says what it joins: "Joins Bookshop · dev", with "+1", "+2" for the others
   (`joins bookshop_development` in the Omarchy look). An attached
   connection is always read-only. Its password comes from the keyring as
   the Files connection opens, and its SSH tunnel, if it has one, is
