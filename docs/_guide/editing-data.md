@@ -542,8 +542,11 @@ another program changed it, nothing is written: "orders.csv changed on
 disk since you opened it. Reload to see the new version; your 3 changes
 stay pending." A program that replaces the file in the moment between
 that last check and the rename isn't caught, and its version is written
-over: don't save a file another program is writing. If the folder can't
-be written to, or the file can't be read or written for another reason,
+over: don't save a file another program is writing. A file made
+read-only (its permissions, or Windows' read-only attribute) isn't
+written over either: "orders.csv couldn't be saved: the file itself is
+read-only." If the folder can't be written to, or the file can't be read
+or written for another reason,
 nothing is written either: the message says why, and your changes stay
 pending. Reloading the table
 lets them go, as with any pending edits: it asks first while **Ask

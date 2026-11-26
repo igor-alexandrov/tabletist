@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-26 17:33-0500\n"
+"POT-Creation-Date: 2026-11-26 17:50-0500\n"
 "PO-Revision-Date: 2026-11-19 16:11-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -7324,6 +7324,21 @@ msgstr[0] ""
 msgstr[1] ""
 "Não foi possível salvar {file}: não é possível gravar na pasta dele. Suas "
 "{n} alterações continuam pendentes."
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid ""
+"{file} couldn't be saved: the file itself is read-only. Your {n} change "
+"stays pending."
+msgid_plural ""
+"{file} couldn't be saved: the file itself is read-only. Your {n} changes "
+"stay pending."
+msgstr[0] ""
+"Não foi possível salvar {file}: o próprio arquivo está em somente leitura. "
+"Sua {n} alteração continua pendente."
+msgstr[1] ""
+"Não foi possível salvar {file}: o próprio arquivo está em somente leitura. "
+"Suas {n} alterações continuam pendentes."
 
 #: src/ui/pending_bar.rs
 #, rust-format

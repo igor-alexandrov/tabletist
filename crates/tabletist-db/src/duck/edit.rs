@@ -286,7 +286,11 @@ pub(super) fn load(
             while let Some(record) = records.next().map_err(map_error)? {
                 let text: String = record.get(0).map_err(map_error)?;
                 let parsed = serde_json::from_str::<serde_json::Value>(&text);
-                if !parsed.is_ok_and(|value| same_keys(&value, &mut String::new(), &mut seen)) {
+                // A record that is no object comes back as one.
+                let kept = parsed.is_ok_and(|value| {
+                    value.is_object() && same_keys(&value, &mut String::new(), &mut seen)
+                });
+                if !kept {
                     drop(records);
                     return unmatched();
                 }
@@ -318,7 +322,7 @@ pub(super) fn load(
 }
 
 /// Whether every object in `value` has the keys `seen` has for its place
-/// (`.meta`, `.items[]`), each place's first keeping its keys there.
+/// (`."meta"`, `."items"[]`), each place's first keeping its keys there.
 fn same_keys(
     value: &serde_json::Value,
     place: &mut String,
@@ -337,8 +341,9 @@ fn same_keys(
             }
             map.iter().all(|(key, inner)| {
                 let at = place.len();
+                // Quoted, so a key with a dot in it is no nested one.
                 place.push('.');
-                place.push_str(key);
+                place.push_str(&serde_json::Value::String(key.clone()).to_string());
                 let same = same_keys(inner, place, seen);
                 place.truncate(at);
                 same
@@ -726,6 +731,14 @@ pub(super) fn save(
             format!("{label} changed on disk since it was opened"),
         ));
     }
+    // A file its owner made read-only is not written over: the rename
+    // would replace it all the same where its folder is writable.
+    if std::fs::metadata(path).is_ok_and(|meta| meta.permissions().readonly()) {
+        return Err(unsaved(
+            Unsaved::Protected(label.clone()),
+            format!("{label} is read-only"),
+        ));
+    }
     connection
         .execute_batch("BEGIN TRANSACTION")
         .map_err(map_error)?;
@@ -963,16 +976,29 @@ fn write_file(
 ) -> std::result::Result<Stamp, WriteError> {
     let path = &file.found.path;
     let temp = temp_path(path);
-    if std::fs::symlink_metadata(&temp).is_ok() {
-        let name = crate::files::file_name(&temp);
-        return Err(WriteError::Io(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            format!("a file named {name} is in its folder"),
-        )));
-    }
+    // The hidden file is this save's from here: made where none is, in one
+    // step, or not at all. One already there is left as it is.
+    let claimed = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::AlreadyExists => {
+                let name = crate::files::file_name(&temp);
+                WriteError::Io(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!("a file named {name} is in its folder"),
+                ))
+            }
+            _ => in_folder(error),
+        })?;
     let written = match &copy.csv {
-        Some(layout) => write_csv(connection, file, layout, changes, &temp),
-        None => write_copy(connection, file, copy, &temp),
+        Some(layout) => write_csv(connection, file, layout, changes, claimed),
+        // DuckDB writes over the file this save made.
+        None => {
+            drop(claimed);
+            write_copy(connection, file, copy, &temp)
+        }
     };
     let renamed = written.and_then(|()| {
         // The file keeps its own permissions.
@@ -986,20 +1012,20 @@ fn write_file(
             return Err(WriteError::Changed);
         }
         let stamp = Stamp::of(&temp).map_err(WriteError::Io)?;
-        std::fs::rename(&temp, path).map_err(in_folder)?;
+        // Refused for permission, a rename is not the folder's doing alone
+        // (a folder with its sticky bit, a file another user owns): the
+        // system's words say which.
+        std::fs::rename(&temp, path).map_err(WriteError::Io)?;
         Ok(stamp)
     });
-    // Made by this save, unless another took the name since: the CSV
-    // writer makes it only where none is.
-    let ours = !matches!(&renamed, Err(WriteError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists);
-    if renamed.is_err() && ours {
+    if renamed.is_err() {
         let _ = std::fs::remove_file(&temp);
     }
     renamed
 }
 
-/// `error` from making the hidden file or putting it in the file's place:
-/// the folder's want of permission where it is one.
+/// `error` from making the hidden file: the folder's want of permission
+/// where it is one.
 fn in_folder(error: std::io::Error) -> WriteError {
     match error.kind() {
         std::io::ErrorKind::PermissionDenied => WriteError::Folder(error),
@@ -1032,7 +1058,11 @@ fn write_copy(
     let to = path_text(temp).map_err(WriteError::Db)?;
     connection
         .execute_batch(&format!(
-            "COPY (SELECT * EXCLUDE ({position}) FROM {table} ORDER BY {position}) TO {} ({options})",
+            // Into the hidden file this save made, as it is: DuckDB would
+            // write a file beside an existing one first, which the fence
+            // refuses.
+            "COPY (SELECT * EXCLUDE ({position}) FROM {table} ORDER BY {position}) TO {} \
+             ({options}, USE_TMP_FILE false)",
             literal(&to)
         ))
         .map_err(|error| {
@@ -1053,15 +1083,10 @@ fn write_csv(
     file: &Opened,
     layout: &Layout,
     changes: &ChangeSet,
-    temp: &Path,
+    target: std::fs::File,
 ) -> std::result::Result<(), WriteError> {
     let plan = plan(connection, file, layout, changes).map_err(WriteError::Db)?;
     let source = std::fs::File::open(&file.found.path).map_err(WriteError::Io)?;
-    let target = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(temp)
-        .map_err(in_folder)?;
     let mut target = BufWriter::new(target);
     rewrite(BufReader::new(source), &mut target, layout, &plan).map_err(|error| match error {
         Error::Io(message) => WriteError::Io(std::io::Error::other(message)),

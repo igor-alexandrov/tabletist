@@ -35,6 +35,9 @@ pub enum Unsaved {
     Changed(String),
     /// Its folder could not be written to.
     Unwritable(String),
+    /// The file itself is read-only: its permissions, or Windows' read-only
+    /// attribute, keep it from being written.
+    Protected(String),
     /// It was read again since the rows to save were read: they may not
     /// be where they were.
     Reread(String),

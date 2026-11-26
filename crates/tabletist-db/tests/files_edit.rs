@@ -350,6 +350,31 @@ async fn a_file_that_cannot_be_read_back_is_not_blamed_on_its_folder() {
 }
 
 #[tokio::test]
+async fn a_file_made_read_only_is_not_written_over() {
+    let (connection, dir) = editable().await;
+    let path = dir.path().join("orders.csv");
+    let before = std::fs::read(&path).unwrap();
+    let orders = page(&connection, "orders").await;
+    let mut read_only = std::fs::metadata(&path).unwrap().permissions();
+    read_only.set_readonly(true);
+    std::fs::set_permissions(&path, read_only.clone()).unwrap();
+    let mut changes = set("orders");
+    changes.deletes.push(RowDelete {
+        key: at(&orders, 0),
+    });
+    let error = save(&connection, &changes).await.unwrap_err();
+    #[allow(clippy::permissions_set_readonly_false)]
+    read_only.set_readonly(false);
+    std::fs::set_permissions(&path, read_only).unwrap();
+    assert_eq!(
+        unsaved(&error),
+        Some(Unsaved::Protected("orders.csv".into()))
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert!(names(dir.path()).iter().all(|name| !name.starts_with('.')));
+}
+
+#[tokio::test]
 async fn a_csv_whose_rows_are_not_counted_as_duckdb_reads_them_is_not_edited() {
     let dir = tempfile::tempdir().unwrap();
     // A first line DuckDB's sniffer takes for no part of the table.
@@ -447,6 +472,21 @@ async fn a_json_file_whose_nested_objects_differ_in_keys_is_not_edited() {
     assert_eq!(page(&connection, "items").await.positions, None);
     // A null where another has an object adds no key.
     assert!(page(&connection, "even").await.positions.is_some());
+}
+
+#[tokio::test]
+async fn a_json_file_of_records_that_are_no_objects_is_not_edited() {
+    let (connection, _dir) = over(
+        &[
+            ("numbers.json", "[1,2,3]"),
+            // A key with a dot in it is no nested one.
+            ("dotted.json", r#"[{"a":{"b":{"x":1}},"a.b":{"y":2}}]"#),
+        ],
+        None,
+    )
+    .await;
+    assert_eq!(page(&connection, "numbers").await.positions, None);
+    assert!(page(&connection, "dotted").await.positions.is_some());
 }
 
 #[tokio::test]

@@ -319,6 +319,17 @@ fn unsaved_text(
             ),
             file,
         ),
+        tabletist_db::Unsaved::Protected(file) => (
+            ngettext(
+                locale,
+                "{file} couldn't be saved: the file itself is read-only. Your {n} change stays \
+                 pending.",
+                "{file} couldn't be saved: the file itself is read-only. Your {n} changes stay \
+                 pending.",
+                n,
+            ),
+            file,
+        ),
         tabletist_db::Unsaved::Reread(file) => (
             ngettext(
                 locale,

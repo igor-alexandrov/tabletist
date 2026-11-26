@@ -184,7 +184,39 @@ fn a_page_whose_rows_a_save_moved_takes_no_edit_until_read_again() {
         ),
         "Rows moved in the file since this page was read. Reload to edit."
     );
+    // Cancelled, the read leaves the old page on screen, and it still
+    // takes no change and no delete.
+    harness.app.apply(Action::CancelQuery(tab));
+    let (session, request) = harness
+        .app
+        .backend
+        .sent
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::FetchRows {
+                session, request, ..
+            } => Some((*session, *request)),
+            _ => None,
+        })
+        .expect("the page was asked for again");
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::Rows {
+            session,
+            request,
+            result: Err(tabletist_db::Error::Cancelled),
+        }));
+    harness.settle();
+    assert_eq!(lock(&harness), Some(crate::edit::Lock::Moved));
+    super::insert_audit_tests::set(&mut harness, tab, id, (1, 2), "99.00");
+    super::insert_audit_tests::select(&mut harness, tab, id, (2, 1));
+    harness.app.apply(Action::DeleteRow { tab, id });
+    harness.settle();
+    let counts = super::insert_audit_tests::edits(&harness, tab, id).counts();
+    assert_eq!((counts.changes, counts.deleted), (0, 0));
     // A page read after it does.
+    harness.app.apply(Action::Refresh(tab));
     let mut fresh = orders_page(true);
     fresh.positions = Some(tabletist_db::Positions {
         copy: 8,
@@ -269,6 +301,21 @@ fn a_save_of_rows_read_before_the_file_was_read_again_says_so() {
     assert!(harness.has(
         "orders.csv was read again since you changed these rows. Reload to see it as it is now; \
          your 1 change stays pending."
+    ));
+}
+
+#[test]
+fn a_save_of_a_read_only_file_says_the_file_is() {
+    let (mut harness, tab, id) = orders(
+        Look::macos(),
+        orders_structure(Format::Csv, None),
+        orders_page(true),
+    );
+    super::insert_audit_tests::set(&mut harness, tab, id, (0, 2), "11.00");
+    harness.app.apply(Action::WriteEdits { tab, id });
+    refused(&mut harness, Unsaved::Protected("orders.csv".into()));
+    assert!(harness.has(
+        "orders.csv couldn't be saved: the file itself is read-only. Your 1 change stays pending."
     ));
 }
 
