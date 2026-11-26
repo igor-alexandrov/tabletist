@@ -374,6 +374,52 @@ async fn a_file_made_read_only_is_not_written_over() {
     assert!(names(dir.path()).iter().all(|name| !name.starts_with('.')));
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn a_file_its_owner_may_not_write_is_not_written_over() {
+    use std::os::unix::fs::PermissionsExt;
+    let (connection, dir) = editable().await;
+    let path = dir.path().join("orders.csv");
+    let before = std::fs::read(&path).unwrap();
+    let orders = page(&connection, "orders").await;
+    // Not read-only to Rust's eye, the group may write it, but its owner may
+    // not.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o464)).unwrap();
+    if std::fs::OpenOptions::new().write(true).open(&path).is_ok() {
+        // One who may write any file (root).
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        return;
+    }
+    let mut changes = set("orders");
+    changes.deletes.push(RowDelete {
+        key: at(&orders, 0),
+    });
+    let error = save(&connection, &changes).await.unwrap_err();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(
+        unsaved(&error),
+        Some(Unsaved::Protected("orders.csv".into()))
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_saved_file_keeps_its_own_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let (connection, dir) = editable().await;
+    let path = dir.path().join("orders.csv");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+    let orders = page(&connection, "orders").await;
+    let mut changes = set("orders");
+    changes.deletes.push(RowDelete {
+        key: at(&orders, 0),
+    });
+    save(&connection, &changes).await.unwrap();
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o640);
+}
+
 #[tokio::test]
 async fn a_csv_whose_rows_are_not_counted_as_duckdb_reads_them_is_not_edited() {
     let dir = tempfile::tempdir().unwrap();

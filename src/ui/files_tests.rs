@@ -555,6 +555,24 @@ fn files_open_read_only_until_the_box_is_turned_off() {
 }
 
 #[test]
+fn another_type_s_box_left_off_does_not_make_files_editable() {
+    let mut harness = new_files(Look::macos());
+    harness.click("PostgreSQL");
+    form_mut(&mut harness).read_only = Some(false);
+    harness.click("Files");
+    assert!(form(&harness).read_only());
+    assert_eq!(form(&harness).read_only, None);
+    // Nor does the Files box left off carry to another type.
+    form_mut(&mut harness).read_only = Some(false);
+    harness.click("SQLite");
+    assert_eq!(form(&harness).read_only, None);
+    // A switch within the other types keeps the person's choice.
+    form_mut(&mut harness).read_only = Some(false);
+    harness.click("PostgreSQL");
+    assert_eq!(form(&harness).read_only, Some(false));
+}
+
+#[test]
 fn a_files_note_names_the_largest_file_a_save_writes_again() {
     let mut harness = new_files(Look::macos());
     form_mut(&mut harness).read_only = Some(false);

@@ -733,7 +733,14 @@ pub(super) fn save(
     }
     // A file its owner made read-only is not written over: the rename
     // would replace it all the same where its folder is writable.
-    if std::fs::metadata(path).is_ok_and(|meta| meta.permissions().readonly()) {
+    // Its permissions say so, or this user may not write it: opened to
+    // write, and not truncated, it says which.
+    let protected = std::fs::metadata(path).is_ok_and(|meta| meta.permissions().readonly())
+        || std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::PermissionDenied);
+    if protected {
         return Err(unsaved(
             Unsaved::Protected(label.clone()),
             format!("{label} is read-only"),
@@ -766,6 +773,16 @@ pub(super) fn save(
                     Unsaved::Changed(label.clone()),
                     format!("{label} changed on disk while it was saved"),
                 ),
+                WriteError::Taken => {
+                    let why = format!(
+                        "another program replaced {} while it was written",
+                        crate::files::file_name(&temp_path(path))
+                    );
+                    unsaved(
+                        Unsaved::Failed(label.clone(), why.clone()),
+                        format!("{label} could not be written: {why}"),
+                    )
+                }
                 WriteError::Folder(error) => unsaved(
                     Unsaved::Unwritable(label.clone()),
                     format!("{label}'s folder cannot be written to: {error}"),
@@ -782,7 +799,7 @@ pub(super) fn save(
     // a deleted one move up, and new rows are last.
     let position = Dialect::DuckDb.quote_ident(POSITION);
     let table = Dialect::DuckDb.qualified(&Copy::object(&file.found.name));
-    let brought = match fails_after_rename() {
+    let brought = match fails_after_rename(path) {
         true => Err(duckdb::Error::QueryReturnedNoRows),
         false => bring_up(connection, &table, &position),
     };
@@ -822,17 +839,34 @@ fn bring_up(connection: &duckdb::Connection, table: &str, position: &str) -> duc
         })
 }
 
-/// A test's way to make a save fail after its file is written.
+/// A test's way to make a save of one file fail after it is written.
 #[cfg(test)]
-static FAIL_AFTER_RENAME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static FAIL_AFTER_RENAME: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-/// Whether this save fails after its file is written: only where a test
-/// says so.
-fn fails_after_rename() -> bool {
+/// A test's way to have another program replace one file's hidden file
+/// mid-save.
+#[cfg(test)]
+static REPLACE_HIDDEN: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Whether a test set `hook` for the file at `path`.
+#[cfg(test)]
+fn hooked(hook: &Mutex<Option<PathBuf>>, path: &Path) -> bool {
+    hook.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_deref()
+        == Some(path)
+}
+
+/// Whether this save of `path` fails after its file is written: only where
+/// a test says so.
+fn fails_after_rename(path: &Path) -> bool {
     #[cfg(test)]
-    return FAIL_AFTER_RENAME.load(Ordering::SeqCst);
+    return hooked(&FAIL_AFTER_RENAME, path);
     #[cfg(not(test))]
-    false
+    {
+        let _ = path;
+        false
+    }
 }
 
 /// `changes` with each row's key as the copy finds it, its place alone.
@@ -960,6 +994,8 @@ enum WriteError {
     Io(std::io::Error),
     /// The file changed on disk while the save wrote its hidden one.
     Changed,
+    /// Another program put a file of its own at the hidden file's name.
+    Taken,
     Db(Error),
 }
 
@@ -978,29 +1014,43 @@ fn write_file(
     let temp = temp_path(path);
     // The hidden file is this save's from here: made where none is, in one
     // step, or not at all. One already there is left as it is.
-    let claimed = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .map_err(|error| match error.kind() {
-            std::io::ErrorKind::AlreadyExists => {
-                let name = crate::files::file_name(&temp);
-                WriteError::Io(std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    format!("a file named {name} is in its folder"),
-                ))
-            }
-            _ => in_folder(error),
-        })?;
-    let written = match &copy.csv {
-        Some(layout) => write_csv(connection, file, layout, changes, claimed),
-        // DuckDB writes over the file this save made.
-        None => {
-            drop(claimed);
-            write_copy(connection, file, copy, &temp)
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    // Only this user's until it takes the file's own permissions: the file
+    // may be one others can't read.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    // Windows answers "access is denied" where a folder has the name: what
+    // is there is what says it is taken.
+    let claimed = options.open(&temp).map_err(|error| {
+        if std::fs::symlink_metadata(&temp).is_err() {
+            return in_folder(error);
         }
+        let name = crate::files::file_name(&temp);
+        WriteError::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("a file named {name} is in its folder"),
+        ))
+    })?;
+    // Kept open to the end: what is at the hidden file's name is still the
+    // one this save made, or another program put its own there.
+    let written = match &copy.csv {
+        Some(layout) => claimed
+            .try_clone()
+            .map_err(WriteError::Io)
+            .and_then(|target| write_csv(connection, file, layout, changes, target)),
+        // DuckDB writes over the file this save made, as it is.
+        None => write_copy(connection, file, copy, &temp),
     };
+    #[cfg(test)]
+    if hooked(&REPLACE_HIDDEN, path) {
+        let _ = std::fs::remove_file(&temp);
+        let _ = std::fs::write(&temp, "another program's");
+    }
     let renamed = written.and_then(|()| {
+        if !same_file(&claimed, &temp) {
+            return Err(WriteError::Taken);
+        }
         // The file keeps its own permissions.
         if let Ok(meta) = std::fs::metadata(path) {
             std::fs::set_permissions(&temp, meta.permissions()).map_err(WriteError::Io)?;
@@ -1016,12 +1066,49 @@ fn write_file(
         // (a folder with its sticky bit, a file another user owns): the
         // system's words say which.
         std::fs::rename(&temp, path).map_err(WriteError::Io)?;
+        settle(path);
         Ok(stamp)
     });
-    if renamed.is_err() {
+    if renamed.is_err() && same_file(&claimed, &temp) {
         let _ = std::fs::remove_file(&temp);
     }
     renamed
+}
+
+/// Whether the file at `path` is `claimed`, the one this save made. Where
+/// the system names no file by its number (Windows), it is taken to be.
+fn same_file(claimed: &std::fs::File, path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (claimed.metadata(), std::fs::symlink_metadata(path)) {
+            (Ok(ours), Ok(there)) => ours.dev() == there.dev() && ours.ino() == there.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (claimed, path);
+        true
+    }
+}
+
+/// Writes the folder holding `path` to disk, so the rename that put the
+/// saved file in place outlasts a crash. The file is saved by then, so a
+/// folder that can't be synced (Windows opens none) is no failure.
+fn settle(path: &Path) {
+    #[cfg(unix)]
+    if let Some(folder) = path.parent() {
+        let _ = std::fs::File::open(folder).and_then(|folder| folder.sync_all());
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// What DuckDB's `COPY` into the hidden file said, in the system's words.
+/// This save made that file already: no failure of it is the folder's.
+fn copy_failed(said: &str) -> WriteError {
+    WriteError::Io(std::io::Error::other(said.to_owned()))
 }
 
 /// `error` from making the hidden file: the folder's want of permission
@@ -1065,15 +1152,7 @@ fn write_copy(
              ({options}, USE_TMP_FILE false)",
             literal(&to)
         ))
-        .map_err(|error| {
-            // DuckDB says the system's words of a file it cannot write.
-            let said = map_error(error).to_string();
-            let kind = match said.contains("Permission denied") {
-                true => std::io::ErrorKind::PermissionDenied,
-                false => std::io::ErrorKind::Other,
-            };
-            in_folder(std::io::Error::new(kind, said))
-        })
+        .map_err(|error| copy_failed(&map_error(error).to_string()))
 }
 
 /// A CSV or TSV file, written row for row as [`rewrite`] does: what a save
@@ -1197,6 +1276,59 @@ fn plan(
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_copy_refused_for_permission_is_not_the_folder_s_doing() {
+        let said = "IO Error: Cannot open file \"x\": Permission denied";
+        assert!(matches!(copy_failed(said), WriteError::Io(error) if error.to_string() == said));
+    }
+
+    #[tokio::test]
+    async fn a_hidden_file_another_program_replaced_is_neither_put_in_place_nor_removed() {
+        use crate::adapter::Adapter;
+        let dir = tempfile::tempdir().unwrap();
+        crate::fixtures::write_bookshop_files(dir.path()).unwrap();
+        let path = dir.path().join("orders.csv");
+        let before = std::fs::read(&path).unwrap();
+        let source = crate::files::Source::Folder(dir.path().to_owned());
+        let conn = super::super::Conn::open(
+            &source,
+            &Reading::default(),
+            false,
+            Vec::new(),
+            None,
+            crate::Access::Writable,
+        )
+        .await
+        .unwrap();
+        let query = RowQuery::new(ObjectRef::new("main", "orders"), 100);
+        let page = conn.fetch_rows(&query).await.unwrap();
+        let copy = page.positions.as_ref().unwrap().copy;
+        let changes = ChangeSet {
+            object: query.object.clone(),
+            inserts: Vec::new(),
+            rows: Vec::new(),
+            deletes: vec![crate::RowDelete {
+                key: vec![
+                    (POSITION.to_owned(), Value::Int(0)),
+                    (FILE_COPY.to_owned(), Value::Int(copy)),
+                ],
+            }],
+        };
+        *REPLACE_HIDDEN.lock().unwrap() = Some(path.clone());
+        let error = conn.write(&changes, &StopFlag::new()).await.unwrap_err();
+        *REPLACE_HIDDEN.lock().unwrap() = None;
+        let Error::Query { named, .. } = &error else {
+            panic!("{error:?}");
+        };
+        assert!(matches!(&named.unsaved, Some(Unsaved::Failed(file, _)) if file == "orders.csv"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let hidden = dir.path().join(".orders.csv.tabletist-save");
+        assert_eq!(
+            std::fs::read_to_string(&hidden).unwrap(),
+            "another program's"
+        );
+    }
+
     #[tokio::test]
     async fn a_save_that_wrote_the_file_says_so_though_its_copy_fails_after() {
         use crate::adapter::Adapter;
@@ -1228,9 +1360,9 @@ mod tests {
             rows: Vec::new(),
             deletes: vec![crate::RowDelete { key: key(at) }],
         };
-        FAIL_AFTER_RENAME.store(true, Ordering::SeqCst);
+        *FAIL_AFTER_RENAME.lock().unwrap() = Some(dir.path().join("orders.csv"));
         let outcome = conn.write(&delete(0), &StopFlag::new()).await;
-        FAIL_AFTER_RENAME.store(false, Ordering::SeqCst);
+        *FAIL_AFTER_RENAME.lock().unwrap() = None;
         // The file is written, and the save says so.
         assert!(
             matches!(outcome, Ok(WriteOutcome::Written { .. })),

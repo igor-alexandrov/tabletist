@@ -3230,6 +3230,18 @@ impl App {
                     if form.driver != driver {
                         form.forget_test();
                     }
+                    // Files open read-only until their own box is turned
+                    // off: another type's choice is not theirs, nor theirs
+                    // another's.
+                    let files = |driver: Driver| match driver {
+                        Driver::Files => true,
+                        Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => {
+                            false
+                        }
+                    };
+                    if files(form.driver) != files(driver) {
+                        form.read_only = None;
+                    }
                     form.driver = driver;
                     // A type changed again is asked about again.
                     form.retype_asked = false;
