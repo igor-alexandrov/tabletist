@@ -487,6 +487,27 @@ fn an_open_sends_what_is_attached() {
             Some("bookshop-analytics")
         ]
     );
+    // Woken after it was closed for being idle, it attaches the same:
+    // a Reconnect takes the saved connections as they are now.
+    let sent_database = |harness: &Harness| -> String {
+        let attach = harness
+            .app
+            .backend
+            .sent
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::Connect { attach, .. } => Some(attach.clone()),
+                _ => None,
+            })
+            .unwrap();
+        attach[0].saved.as_ref().unwrap().spec.database.clone()
+    };
+    harness.app.workspace_mut(tab).unwrap().status = crate::model::SessionStatus::Idle;
+    harness.app.apply(Action::Refresh(tab));
+    assert_eq!(sent_database(&harness), "bookshop_development");
+    harness.app.apply(Action::Reconnect(tab));
+    assert_eq!(sent_database(&harness), "bookshop_archive");
     // Edited, the deleted one and the BigQuery one are let go: their rows
     // are not listed to untick.
     harness.app.apply(Action::EditConnection(id));

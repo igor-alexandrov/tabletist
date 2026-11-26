@@ -4338,7 +4338,17 @@ impl App {
                 *slot = None;
             }
         }
-        let attach = AttachTo::of(&spec.attach, &self.connections);
+        // What a Files tab attaches: on a wake what its session attached
+        // before, as it keeps its access; on an open or a Reconnect, the
+        // saved connections as they are now.
+        let kept = self
+            .workspace(tab)
+            .filter(|workspace| workspace.keep_access)
+            .map(|workspace| workspace.attached.clone());
+        let attach = match kept {
+            Some(kept) => kept,
+            None => AttachTo::of(&spec.attach, &self.connections),
+        };
         if let Some(workspace) = self.workspace_mut(tab) {
             workspace.attached = attach.clone();
         }
