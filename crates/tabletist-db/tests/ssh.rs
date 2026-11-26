@@ -358,8 +358,9 @@ async fn a_database_host_that_never_answers_times_out_like_a_direct_connect() {
     }
 }
 
-/// A Files connection attaches PostgreSQL's and MySQL's Bookshops, each
-/// through a tunnel of its own, and reads both.
+/// A Files connection attaches PostgreSQL's and MySQL's test databases,
+/// each through a tunnel of its own, and reads both: their catalogs, which
+/// every job's servers have, loaded or not.
 #[tokio::test]
 async fn a_files_connection_attaches_through_tunnels() {
     let Some((ssh, password)) = server() else {
@@ -369,10 +370,8 @@ async fn a_files_connection_attaches_through_tunnels() {
     let dir = tempfile::tempdir().unwrap();
     tabletist_db::fixtures::write_bookshop_files(dir.path()).unwrap();
     let secrets = secrets_with_db(with_password(&password));
-    let mut postgres = pg_via(&ssh);
-    postgres.database = "bookshop".into();
-    let mut mysql = mysql_via(&ssh);
-    mysql.database = "bookshop".into();
+    let postgres = pg_via(&ssh);
+    let mysql = mysql_via(&ssh);
     let attaching = [
         tabletist_db::files::Attaching {
             name: "pg_shop".into(),
@@ -389,8 +388,30 @@ async fn a_files_connection_attaches_through_tunnels() {
     let connection = Connection::connect_files(&spec, &attaching, &keys, None)
         .await
         .unwrap();
+    let schemas = connection.list_schemas().await.unwrap();
+    assert!(
+        schemas.contains(&"pg_shop".to_owned()) && schemas.contains(&"my_shop".to_owned()),
+        "{schemas:?}"
+    );
     for schema in ["pg_shop", "my_shop"] {
-        let books = RowQuery::new(ObjectRef::new(schema, "books"), 100);
-        assert_eq!(connection.count_rows(&books).await.unwrap(), 12, "{schema}");
+        let text = format!("SELECT count(*) FROM {schema}.information_schema.tables");
+        let statements = tabletist_db::sql::statements(tabletist_db::Dialect::DuckDb, &text);
+        let outcome = connection
+            .run_script(
+                &statements,
+                10,
+                tabletist_db::ScriptMode::ReadOnly,
+                &tabletist_db::StopFlag::new(),
+            )
+            .await
+            .unwrap();
+        let read = match &outcome.results[0].outcome {
+            tabletist_db::StatementOutcome::Rows { rows, .. } => rows.clone(),
+            other => panic!("{schema}: {other:?}"),
+        };
+        assert!(
+            matches!(read.as_slice(), [row] if matches!(row.as_slice(), [tabletist_db::Value::Int(count)] if *count > 0)),
+            "{schema}: {read:?}"
+        );
     }
 }

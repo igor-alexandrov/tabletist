@@ -160,6 +160,23 @@ async fn an_attached_connection_is_read_only() {
     );
 }
 
+/// A name a `.duckdb` file of the connection's has already.
+#[tokio::test]
+async fn an_attach_named_as_a_file_s_schema_says_so() {
+    let dir = exports();
+    let mut shop = sqlite_shop(&dir);
+    shop.name = "bookshop".into();
+    let Err(error) = open(&dir, &[shop]).await else {
+        panic!("two schemas of one name");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("Can't attach bookshop: a .duckdb file of this connection is a schema"),
+        "{error}"
+    );
+}
+
 #[tokio::test]
 async fn an_attach_that_fails_says_which() {
     let dir = exports();
@@ -174,8 +191,64 @@ async fn an_attach_that_fails_says_which() {
     assert!(error.to_string().contains("Can't attach shop"), "{error}");
 }
 
-/// The test server's Bookshop: its `bookshop` database, the URL's login.
-fn server(variable: &str) -> Option<(ConnectSpec, Secrets)> {
+/// Loads PostgreSQL's Bookshop into a database of its own, `bookshop`,
+/// as the agent tests do: whichever runs first makes it.
+async fn load_postgres(url: &str) {
+    let admin = |database: Option<&'static str>| {
+        let mut config: tokio_postgres::Config = url.parse().unwrap();
+        config.ssl_mode(tokio_postgres::config::SslMode::Disable);
+        if let Some(database) = database {
+            config.dbname(database);
+        }
+        async move {
+            let (client, session) = config.connect(tokio_postgres::NoTls).await.unwrap();
+            tokio::spawn(session);
+            client
+        }
+    };
+    let server = admin(None).await;
+    let made = server
+        .query_opt("SELECT 1 FROM pg_database WHERE datname = 'bookshop'", &[])
+        .await
+        .unwrap()
+        .is_some();
+    if !made {
+        server
+            .batch_execute("CREATE DATABASE bookshop")
+            .await
+            .unwrap();
+    }
+    admin(Some("bookshop"))
+        .await
+        .batch_execute(tabletist_db::fixtures::BOOKSHOP_POSTGRES_SQL)
+        .await
+        .unwrap();
+}
+
+/// Loads MySQL's Bookshop into its `bookshop` database, which the
+/// server's first start makes (compose/mysql-init.sql).
+async fn load_mysql(url: &str) {
+    use mysql_async::prelude::Queryable;
+    let (server, _database) = url.rsplit_once('/').unwrap();
+    let opts =
+        mysql_async::Opts::from_url(&format!("{server}/bookshop?prefer_socket=false")).unwrap();
+    let mut conn = mysql_async::Conn::new(opts).await.unwrap();
+    for statement in tabletist_db::fixtures::BOOKSHOP_MYSQL_SQL.split(";\n") {
+        let statement: String = statement
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("--"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !statement.trim().is_empty() {
+            conn.query_drop(statement).await.unwrap();
+        }
+    }
+    conn.disconnect().await.unwrap();
+}
+
+/// The test server's Bookshop, loaded: its `bookshop` database, the URL's
+/// login.
+async fn server(variable: &str) -> Option<(ConnectSpec, Secrets)> {
     let url = std::env::var(variable)
         .ok()
         .filter(|url| !url.trim().is_empty());
@@ -183,6 +256,10 @@ fn server(variable: &str) -> Option<(ConnectSpec, Secrets)> {
         eprintln!("skipped: {variable} is not set");
         return None;
     };
+    match variable {
+        "TABLETIST_TEST_PG_URL" => load_postgres(&url).await,
+        _ => load_mysql(&url).await,
+    }
     let (mut spec, secrets) = ConnectSpec::from_url(&url).unwrap();
     spec.database = "bookshop".into();
     spec.tls = TlsMode::Disable;
@@ -287,7 +364,7 @@ async fn a_server_bookshop_is_attached(
 
 #[tokio::test]
 async fn a_postgres_bookshop_is_attached() {
-    let Some((spec, secrets)) = server("TABLETIST_TEST_PG_URL") else {
+    let Some((spec, secrets)) = server("TABLETIST_TEST_PG_URL").await else {
         return;
     };
     a_server_bookshop_is_attached(
@@ -308,7 +385,7 @@ async fn a_postgres_bookshop_is_attached() {
 
 #[tokio::test]
 async fn a_mysql_bookshop_is_attached() {
-    let Some((spec, secrets)) = server("TABLETIST_TEST_MYSQL_URL") else {
+    let Some((spec, secrets)) = server("TABLETIST_TEST_MYSQL_URL").await else {
         return;
     };
     a_server_bookshop_is_attached(
