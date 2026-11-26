@@ -160,6 +160,10 @@ pub struct Structure {
     /// The file a Files connection's table is read from; `None` for every
     /// other table.
     pub file: Option<crate::FileFacts>,
+    /// Why the table is not edited though its session may write, where a
+    /// Files connection says so: an Excel file's, a `.duckdb` file's, an
+    /// attached connection's.
+    pub unedited: Option<crate::Unedited>,
 }
 
 impl Structure {

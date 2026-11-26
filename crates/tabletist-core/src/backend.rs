@@ -2356,7 +2356,10 @@ impl Worker {
                         true => Connection::connect_with(&spec, &secrets, &host_keys, access).await,
                         false => match attach::attaching(attach, &keyring).await {
                             Ok(attaching) => {
-                                Connection::connect_files(&spec, &attaching, &host_keys, None).await
+                                Connection::connect_files(
+                                    &spec, &attaching, &host_keys, access, None,
+                                )
+                                .await
                             }
                             Err(error) => Err(error),
                         },

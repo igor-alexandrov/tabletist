@@ -385,7 +385,7 @@ async fn a_files_connection_attaches_through_tunnels() {
         },
     ];
     let spec = ConnectSpec::files(tabletist_db::files::Source::Folder(dir.path().to_owned()));
-    let connection = Connection::connect_files(&spec, &attaching, &keys, None)
+    let connection = Connection::connect_files(&spec, &attaching, &keys, Access::ReadOnly, None)
         .await
         .unwrap();
     let schemas = connection.list_schemas().await.unwrap();

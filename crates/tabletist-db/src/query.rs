@@ -120,4 +120,8 @@ pub struct RowPage {
     /// Whether rows are ordered by a key, so paging is stable.
     pub ordered_by_key: bool,
     pub elapsed: Duration,
+    /// Each row's place in its file, for a Files connection's table that
+    /// can be edited: what a save finds the row by, since a file has no
+    /// key. `None` for every other page.
+    pub positions: Option<Vec<i64>>,
 }

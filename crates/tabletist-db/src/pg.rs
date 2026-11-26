@@ -444,6 +444,7 @@ pub(crate) fn query_error(error: tokio_postgres::Error) -> Error {
             // language of its messages. It names a NOT NULL failure's
             // column, and the constraint of the others.
             named: Box::new(Named {
+                unsaved: None,
                 number: None,
                 constraint: db.constraint().map(str::to_owned),
                 columns: db.column().map(str::to_owned).into_iter().collect(),
@@ -1084,6 +1085,7 @@ impl Conn {
             Some(_) => self.primary_key(object).await?,
         };
         Ok(Structure {
+            unedited: None,
             columns,
             primary_key,
             indexes,
@@ -1196,6 +1198,7 @@ fn row_page(
     let has_more = rows.len() > limit;
     rows.truncate(limit);
     Ok(RowPage {
+        positions: None,
         columns,
         rows,
         has_more,

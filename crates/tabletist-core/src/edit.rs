@@ -4866,6 +4866,7 @@ mod tests {
 
     fn page(rows: Vec<Vec<Value>>) -> RowPage {
         RowPage {
+            positions: None,
             columns: vec![
                 meta("id", "INTEGER"),
                 meta("email", "TEXT"),

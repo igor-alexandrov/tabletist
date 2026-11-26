@@ -1,0 +1,1009 @@
+//! Editing a Files connection's files. A file's table is read into an
+//! in-memory copy the first time a page of it is read in a session that
+//! may write, each row with its place in the file beside it: what a save
+//! finds the row by, since a file has no key. A save checks first that
+//! the file is as it was read, then changes the copy, writes the whole
+//! file to a hidden one in its folder and renames that over it.
+//!
+//! A CSV or TSV file is written by Tabletist: every row the save does not
+//! change is copied as it was, byte for byte, and a changed or new row is
+//! written with the file's delimiter and quote. So its rows are read here
+//! as DuckDB reads them, and a file whose rows this reading does not count
+//! as DuckDB did is not edited at all. Parquet, JSON and NDJSON are written
+//! by DuckDB from the copy, Parquet with the compression it had.
+
+use std::collections::BTreeMap;
+use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::path::{Path, PathBuf};
+use std::time::{Instant, SystemTime};
+
+use super::{Opened, literal, map_error, path_text, reader_path, to_duckdb};
+use crate::files::{Format, Header, Reading};
+use crate::write::{Conflict, NewValue};
+use crate::{
+    ChangeSet, Dialect, Error, ObjectRef, Result, RowPage, RowQuery, StopFlag, Unsaved, Value,
+    WriteOutcome,
+};
+
+/// The in-memory database the copies are kept in, apart from the views.
+pub(super) const EDITS: &str = "tabletist_edits";
+
+/// The column of a copy that holds each row's place in the file.
+pub(super) const POSITION: &str = super::FILE_POSITION;
+
+/// The formats a save writes back.
+pub(super) fn editable(format: Format) -> bool {
+    format.rewritten()
+}
+
+/// The hidden file a save of `path` writes first, in its folder, which is
+/// then renamed over it.
+pub(super) fn temp_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    path.with_file_name(format!(".{name}.tabletist-save"))
+}
+
+/// A file as it was when it was read: what a save compares it with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Stamp {
+    size: u64,
+    modified: Option<SystemTime>,
+}
+
+impl Stamp {
+    fn of(path: &Path) -> std::io::Result<Self> {
+        let meta = std::fs::metadata(path)?;
+        Ok(Self {
+            size: meta.len(),
+            modified: meta.modified().ok(),
+        })
+    }
+}
+
+/// A file's table as a session that may write has read it.
+#[derive(Debug, Clone)]
+pub(super) enum Loaded {
+    Copy(Copy),
+    /// A CSV or TSV whose rows are not counted here as DuckDB counted
+    /// them, as it was when it was read: it cannot be written back row for
+    /// row, so it is not edited.
+    Unmatched(Stamp),
+}
+
+impl Loaded {
+    /// Whether the file at `path` changed on disk since it was read: the
+    /// next page reads it again.
+    pub(super) fn stale(&self, path: &Path) -> bool {
+        let stamp = match self {
+            Self::Copy(copy) => copy.stamp,
+            Self::Unmatched(stamp) => *stamp,
+        };
+        Stamp::of(path).ok() != Some(stamp)
+    }
+}
+
+/// A file's copy: where it is and what a save writes it back with.
+#[derive(Debug, Clone)]
+pub(super) struct Copy {
+    stamp: Stamp,
+    /// A CSV's or a TSV's own way of writing.
+    csv: Option<Layout>,
+    /// A Parquet file's compression, as `COPY` is told it.
+    compression: Option<String>,
+    /// The place the next new row takes.
+    next: i64,
+}
+
+impl Copy {
+    /// The rows in the copy, for the page's positions.
+    pub(super) fn object(name: &str) -> ObjectRef {
+        ObjectRef {
+            schema: EDITS.to_owned(),
+            name: name.to_owned(),
+        }
+    }
+}
+
+/// A page of a file's table, read from its copy, each row with its place:
+/// in the file's order, or that after the page's own sort.
+pub(super) fn page(
+    connection: &duckdb::Connection,
+    query: &RowQuery,
+    limit: usize,
+) -> Result<RowPage> {
+    let mut from = query.clone();
+    from.object = Copy::object(&query.object.name);
+    let catalog = super::columns(connection, &from.object, &[])?;
+    let binary = super::binary_of(&catalog);
+    let sql = Dialect::DuckDb.select_rows(&from, &[POSITION.to_owned()], &binary)?;
+    let started = Instant::now();
+    let params = sql.params.iter().map(to_duckdb).collect();
+    let (mut columns, mut rows, has_more) = super::rows_of(connection, &sql.text, params, limit)?;
+    let at = columns
+        .iter()
+        .position(|column| column.name == POSITION)
+        .ok_or_else(|| Error::query("the rows' places were not read"))?;
+    columns.remove(at);
+    let positions = rows
+        .iter_mut()
+        .map(|row| match row.remove(at) {
+            Value::Int(place) => Ok(place),
+            _ => Err(Error::query("a row's place was not read")),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    super::catalog_types(&mut columns, &catalog);
+    Ok(RowPage {
+        columns,
+        rows,
+        has_more,
+        ordered_by_key: true,
+        elapsed: started.elapsed(),
+        positions: Some(positions),
+    })
+}
+
+/// How a CSV or a TSV file writes its rows, as DuckDB's sniffer and the
+/// connection's Reading CSV say.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Layout {
+    pub(super) delimiter: u8,
+    pub(super) quote: Option<u8>,
+    pub(super) escape: Option<u8>,
+    pub(super) header: bool,
+    pub(super) newline: &'static [u8],
+    pub(super) columns: usize,
+    /// How its dates and timestamps are written, where the sniffer found
+    /// a way: `%d/%m/%Y`.
+    pub(super) date: Option<String>,
+    pub(super) timestamp: Option<String>,
+}
+
+/// Reads `file` into its copy, from its own view. `None` where it reads
+/// the file but cannot edit it ([`Loaded::Unmatched`]).
+pub(super) fn load(
+    connection: &duckdb::Connection,
+    file: &Opened,
+    reading: &Reading,
+) -> Result<Loaded> {
+    let path = &file.found.path;
+    // Before it is read: a change made while it is read is one since.
+    let stamp = Stamp::of(path).map_err(|error| Error::Io(error.to_string()))?;
+    let copy = Dialect::DuckDb.qualified(&Copy::object(&file.found.name));
+    let view = Dialect::DuckDb.qualified(&ObjectRef {
+        schema: super::MAIN.to_owned(),
+        name: file.found.name.clone(),
+    });
+    let position = Dialect::DuckDb.quote_ident(POSITION);
+    // DuckDB keeps the file's order in the copy's rows: `rowid` is each
+    // one's place in the file, and stays its own when a row before it is
+    // deleted.
+    connection
+        .execute_batch(&format!(
+            "CREATE OR REPLACE TABLE {copy} AS SELECT * FROM {view}; \
+             ALTER TABLE {copy} ADD COLUMN {position} BIGINT; \
+             UPDATE {copy} SET {position} = rowid;"
+        ))
+        .map_err(map_error)?;
+    let rows: i64 = connection
+        .query_row(&format!("SELECT count(*) FROM {copy}"), [], |row| {
+            row.get(0)
+        })
+        .map_err(map_error)?;
+    let (csv, compression) = match file.found.format {
+        Format::Csv | Format::Tsv => {
+            let columns: usize = connection
+                .query_row(
+                    "SELECT count(*) FROM information_schema.columns \
+                     WHERE table_catalog = ? AND table_name = ? AND column_name <> ?",
+                    [EDITS, file.found.name.as_str(), POSITION],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(map_error)?
+                .try_into()
+                .unwrap_or(0);
+            let layout = layout(connection, path, file.found.format, reading, columns)?;
+            let counted = std::fs::File::open(path)
+                .and_then(|opened| count(BufReader::new(opened), &layout))
+                .map_err(|error| Error::Io(error.to_string()))?;
+            if i64::try_from(counted).ok() != Some(rows) {
+                connection
+                    .execute_batch(&format!("DROP TABLE {copy}"))
+                    .map_err(map_error)?;
+                return Ok(Loaded::Unmatched(stamp));
+            }
+            (Some(layout), None)
+        }
+        Format::Parquet => {
+            let compression: Option<String> = connection
+                .query_row(
+                    &format!(
+                        "SELECT compression FROM parquet_metadata({}) LIMIT 1",
+                        literal(&reader_path(path)?)
+                    ),
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
+            (None, compression.and_then(|named| compression_of(&named)))
+        }
+        Format::Json | Format::Ndjson | Format::Excel | Format::DuckDb => (None, None),
+    };
+    Ok(Loaded::Copy(Copy {
+        stamp,
+        csv,
+        compression,
+        next: rows,
+    }))
+}
+
+/// A Parquet file's compression as `parquet_metadata` names it, as `COPY`
+/// is told it; `None` for one it does not take, which then writes its own.
+fn compression_of(named: &str) -> Option<String> {
+    let named = named.to_ascii_lowercase();
+    [
+        "uncompressed",
+        "snappy",
+        "gzip",
+        "zstd",
+        "brotli",
+        "lz4",
+        "lz4_raw",
+    ]
+    .contains(&named.as_str())
+    .then_some(named)
+}
+
+/// How `path` writes its rows: DuckDB's sniffer, then what the connection's
+/// Reading CSV sets instead of detecting.
+fn layout(
+    connection: &duckdb::Connection,
+    path: &Path,
+    format: Format,
+    reading: &Reading,
+    columns: usize,
+) -> Result<Layout> {
+    let sniffed = connection
+        .query_row(
+            &format!(
+                "SELECT Delimiter, Quote, Escape, NewLineDelimiter, HasHeader, DateFormat, \
+                 TimestampFormat FROM sniff_csv({})",
+                literal(&reader_path(path)?)
+            ),
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<bool>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                ))
+            },
+        )
+        .map_err(map_error)?;
+    let (delimiter, quote, escape, newline, header, date, timestamp) = sniffed;
+    // The sniffer writes a character it found none of as `(empty)`.
+    let byte = |text: Option<String>| -> Option<u8> {
+        let text = text?;
+        match text.as_str() {
+            "(empty)" | "" => None,
+            "\\t" => Some(b'\t'),
+            text => (text.len() == 1).then(|| text.as_bytes()[0]),
+        }
+    };
+    let delimiter = match (format, reading.delimiter.char()) {
+        (_, Some(set)) => u8::try_from(set).unwrap_or(b','),
+        (Format::Tsv, None) => b'\t',
+        _ => byte(delimiter).unwrap_or(b','),
+    };
+    let header = match reading.header {
+        Header::Yes => true,
+        Header::No => false,
+        Header::Detect => header.unwrap_or(true),
+    };
+    Ok(Layout {
+        delimiter,
+        quote: byte(quote),
+        escape: byte(escape),
+        header,
+        newline: match newline.as_deref() {
+            Some("\\r\\n") => b"\r\n",
+            _ => b"\n",
+        },
+        columns,
+        date: date.filter(|format| !format.is_empty()),
+        timestamp: timestamp.filter(|format| !format.is_empty()),
+    })
+}
+
+/// Reads a CSV file one record at a time, as DuckDB splits it: a line
+/// break inside quotes is part of the record.
+struct Records<R> {
+    reader: R,
+    quote: Option<u8>,
+    escape: Option<u8>,
+}
+
+impl<R: BufRead> Records<R> {
+    /// Puts the next record's bytes in `record` and the line break after
+    /// it in `brk` (none at the end of the file). `false` past the last.
+    fn next(&mut self, record: &mut Vec<u8>, brk: &mut Vec<u8>) -> std::io::Result<bool> {
+        record.clear();
+        brk.clear();
+        let (mut quoted, mut escaped, mut cr, mut any) = (false, false, false, false);
+        loop {
+            let buffer = self.reader.fill_buf()?;
+            if buffer.is_empty() {
+                if cr {
+                    brk.push(b'\r');
+                }
+                return Ok(any);
+            }
+            any = true;
+            let mut used = 0;
+            for &byte in buffer {
+                if cr {
+                    // A `\r` alone ends the record too; the byte after it is
+                    // the next record's.
+                    match byte {
+                        b'\n' => {
+                            brk.extend_from_slice(b"\r\n");
+                            used += 1;
+                        }
+                        _ => brk.push(b'\r'),
+                    }
+                    self.reader.consume(used);
+                    return Ok(true);
+                }
+                used += 1;
+                if quoted {
+                    record.push(byte);
+                    if escaped {
+                        escaped = false;
+                    } else if self.escape.is_some_and(|escape| escape == byte)
+                        && self.escape != self.quote
+                    {
+                        escaped = true;
+                    } else if self.quote == Some(byte) {
+                        // A doubled quote closes and opens again.
+                        quoted = false;
+                    }
+                    continue;
+                }
+                match byte {
+                    b'\n' => {
+                        brk.push(b'\n');
+                        self.reader.consume(used);
+                        return Ok(true);
+                    }
+                    b'\r' => cr = true,
+                    byte => {
+                        if self.quote == Some(byte) {
+                            quoted = true;
+                        }
+                        record.push(byte);
+                    }
+                }
+            }
+            self.reader.consume(used);
+        }
+    }
+}
+
+/// Whether DuckDB reads `record` as no row: an empty line, where a row has
+/// more than one column. With one column it is a row whose value is NULL.
+fn blank(record: &[u8], layout: &Layout) -> bool {
+    record.is_empty() && layout.columns > 1
+}
+
+/// Strips a UTF-8 byte-order mark off the start, which is written back as
+/// it was.
+fn mark<R: BufRead>(reader: &mut R) -> std::io::Result<&'static [u8]> {
+    let start = reader.fill_buf()?;
+    if start.starts_with(b"\xEF\xBB\xBF") {
+        reader.consume(3);
+        return Ok(b"\xEF\xBB\xBF");
+    }
+    Ok(b"")
+}
+
+/// The rows of a CSV file, counted as DuckDB counts them.
+fn count(mut reader: impl BufRead, layout: &Layout) -> std::io::Result<u64> {
+    mark(&mut reader)?;
+    let mut records = Records {
+        reader,
+        quote: layout.quote,
+        escape: layout.escape,
+    };
+    let (mut record, mut brk) = (Vec::new(), Vec::new());
+    let (mut header, mut rows) = (layout.header, 0);
+    while records.next(&mut record, &mut brk)? {
+        if blank(&record, layout) {
+            continue;
+        }
+        if header {
+            header = false;
+            continue;
+        }
+        rows += 1;
+    }
+    Ok(rows)
+}
+
+/// A save of a CSV file: by each changed row's place, what becomes of it.
+#[derive(Debug, Default)]
+struct Plan {
+    deleted: std::collections::BTreeSet<u64>,
+    /// Each changed row's fields, by their place, with their new text.
+    changed: BTreeMap<u64, Vec<(usize, String)>>,
+    /// The new rows, every field's text in the columns' order.
+    added: Vec<Vec<String>>,
+}
+
+/// Writes the CSV file `reader` reads to `to`, as `plan` changes it.
+fn rewrite(
+    mut reader: impl BufRead,
+    to: &mut impl Write,
+    layout: &Layout,
+    plan: &Plan,
+) -> Result<()> {
+    let io = |error: std::io::Error| Error::Io(error.to_string());
+    to.write_all(mark(&mut reader).map_err(io)?).map_err(io)?;
+    let mut records = Records {
+        reader,
+        quote: layout.quote,
+        escape: layout.escape,
+    };
+    let (mut record, mut brk) = (Vec::new(), Vec::new());
+    let (mut header, mut row, mut ended) = (layout.header, 0_u64, true);
+    while records.next(&mut record, &mut brk).map_err(io)? {
+        ended = !brk.is_empty();
+        if blank(&record, layout) || std::mem::take(&mut header) {
+            to.write_all(&record).map_err(io)?;
+            to.write_all(&brk).map_err(io)?;
+            continue;
+        }
+        let at = row;
+        row += 1;
+        if plan.deleted.contains(&at) {
+            continue;
+        }
+        match plan.changed.get(&at) {
+            Some(cells) => {
+                let mut fields: Vec<Vec<u8>> = split(&record, layout)
+                    .into_iter()
+                    .map(|field| record[field].to_vec())
+                    .collect();
+                for (place, text) in cells {
+                    let Some(field) = fields.get_mut(*place) else {
+                        return Err(Error::query(format!(
+                            "row {} has fewer fields than the file's columns",
+                            at + 1
+                        )));
+                    };
+                    *field = written(text, layout);
+                }
+                to.write_all(&fields.join(&layout.delimiter)).map_err(io)?;
+            }
+            None => to.write_all(&record).map_err(io)?,
+        }
+        to.write_all(&brk).map_err(io)?;
+    }
+    for (index, added) in plan.added.iter().enumerate() {
+        if index == 0 && !ended {
+            to.write_all(layout.newline).map_err(io)?;
+        }
+        let fields: Vec<Vec<u8>> = added.iter().map(|text| written(text, layout)).collect();
+        to.write_all(&fields.join(&layout.delimiter)).map_err(io)?;
+        to.write_all(layout.newline).map_err(io)?;
+    }
+    Ok(())
+}
+
+/// The places of `record`'s fields, split at the delimiter outside quotes.
+fn split(record: &[u8], layout: &Layout) -> Vec<std::ops::Range<usize>> {
+    let (mut fields, mut start, mut quoted, mut escaped) = (Vec::new(), 0, false, false);
+    for (at, &byte) in record.iter().enumerate() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if layout.escape == Some(byte) && layout.escape != layout.quote {
+                escaped = true;
+            } else if layout.quote == Some(byte) {
+                quoted = false;
+            }
+        } else if layout.quote == Some(byte) {
+            quoted = true;
+        } else if byte == layout.delimiter {
+            fields.push(start..at);
+            start = at + 1;
+        }
+    }
+    fields.push(start..record.len());
+    fields
+}
+
+/// `text` as a field of the file: quoted where it holds the delimiter, a
+/// quote or a line break, or starts or ends with a space.
+fn written(text: &str, layout: &Layout) -> Vec<u8> {
+    let quote = layout.quote.unwrap_or(b'"');
+    let bytes = text.as_bytes();
+    let needs = bytes
+        .iter()
+        .any(|&byte| byte == layout.delimiter || byte == quote || byte == b'\n' || byte == b'\r')
+        || text.starts_with(' ')
+        || text.ends_with(' ');
+    if !needs {
+        return bytes.to_vec();
+    }
+    let escape = layout.escape.unwrap_or(quote);
+    let mut out = Vec::with_capacity(bytes.len() + 2);
+    out.push(quote);
+    for &byte in bytes {
+        if byte == quote || (byte == escape && escape != quote) {
+            out.push(escape);
+        }
+        out.push(byte);
+    }
+    out.push(quote);
+    out
+}
+
+/// What became of `changes`, to the copy of `file` and the file itself.
+/// Nothing is written where the file changed since it was read, or its
+/// folder cannot be written to: the copy is as it was, and the save says
+/// why ([`Unsaved`]).
+pub(super) fn save(
+    connection: &duckdb::Connection,
+    file: &Opened,
+    copy: &mut Copy,
+    changes: &ChangeSet,
+    stop: &StopFlag,
+) -> Result<WriteOutcome> {
+    let started = Instant::now();
+    let path = &file.found.path;
+    let label = crate::files::file_name(path);
+    let unsaved = |why: Unsaved, message: String| {
+        let mut error = Error::query(message);
+        if let Error::Query { named, .. } = &mut error {
+            named.unsaved = Some(why);
+        }
+        error
+    };
+    if Stamp::of(path).ok() != Some(copy.stamp) {
+        return Err(unsaved(
+            Unsaved::Changed(label.clone()),
+            format!("{label} changed on disk since it was opened"),
+        ));
+    }
+    connection
+        .execute_batch("BEGIN TRANSACTION")
+        .map_err(map_error)?;
+    let outcome = changed(connection, file, copy, changes, stop).and_then(|outcome| {
+        if !matches!(outcome, WriteOutcome::Written { .. }) {
+            return Ok(outcome);
+        }
+        write_file(connection, file, copy, changes).map_err(|error| match error {
+            WriteError::Io(error) => unsaved(
+                Unsaved::Unwritable(label.clone()),
+                format!("{label} could not be written: {error}"),
+            ),
+            WriteError::Db(error) => error,
+        })?;
+        Ok(outcome)
+    });
+    match outcome {
+        Ok(WriteOutcome::Written {
+            inserted,
+            rows,
+            gone,
+            ..
+        }) => {
+            // Each row's place in the file as it is now: rows after a
+            // deleted one move up, and new rows are last.
+            let position = Dialect::DuckDb.quote_ident(POSITION);
+            let table = Dialect::DuckDb.qualified(&Copy::object(&file.found.name));
+            let renumbered = connection
+                .execute_batch(&format!(
+                    "UPDATE {table} SET {position} = placed.at FROM \
+                     (SELECT {position} AS was, row_number() OVER (ORDER BY {position}) - 1 AS at \
+                     FROM {table}) AS placed WHERE {table}.{position} = placed.was"
+                ))
+                .and_then(|()| connection.execute_batch("COMMIT"));
+            if let Err(error) = renumbered {
+                let _ = connection.execute_batch("ROLLBACK");
+                return Err(map_error(error));
+            }
+            copy.next = connection
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .map_err(map_error)?;
+            copy.stamp = Stamp::of(path).map_err(|error| Error::Io(error.to_string()))?;
+            Ok(WriteOutcome::Written {
+                inserted,
+                rows,
+                gone,
+                elapsed: started.elapsed(),
+            })
+        }
+        other => {
+            let _ = connection.execute_batch("ROLLBACK");
+            other
+        }
+    }
+}
+
+/// Changes the copy as `changes` say, in the transaction `save` began.
+fn changed(
+    connection: &duckdb::Connection,
+    file: &Opened,
+    copy: &Copy,
+    changes: &ChangeSet,
+    stop: &StopFlag,
+) -> Result<WriteOutcome> {
+    let object = Copy::object(&file.found.name);
+    let dialect = Dialect::DuckDb;
+    let stopped = || {
+        if stop.is_stopped() {
+            return Err(Error::Cancelled);
+        }
+        Ok(())
+    };
+    let run = |sql: &crate::Sql| -> Result<usize> {
+        let params = duckdb::params_from_iter(sql.params.iter().map(to_duckdb));
+        connection.execute(&sql.text, params).map_err(map_error)
+    };
+    for (insert, row) in changes.inserts.iter().enumerate() {
+        stopped()?;
+        let mut row = row.clone();
+        row.set.push(crate::InsertValue {
+            column: POSITION.to_owned(),
+            type_name: "BIGINT".to_owned(),
+            new: NewValue::Text((copy.next + insert as i64).to_string()),
+        });
+        let statement = dialect.insert_row(&object, &row);
+        let done = statement.and_then(|statement| {
+            let params = duckdb::params_from_iter(statement.sql.params.iter().map(to_duckdb));
+            let mut prepared = connection.prepare(&statement.sql.text).map_err(map_error)?;
+            let mut rows = prepared.query(params).map_err(map_error)?;
+            while rows.next().map_err(map_error)?.is_some() {}
+            Ok(())
+        });
+        if let Err(error) = done {
+            return Ok(WriteOutcome::FailedInsert { insert, error });
+        }
+    }
+    let mut conflicts = Vec::new();
+    for (row, change) in changes.rows.iter().enumerate() {
+        stopped()?;
+        match dialect
+            .update_row(&object, change)
+            .and_then(|update| run(&update.sql))
+        {
+            Ok(0) => conflicts.push(Conflict { row, server: None }),
+            Ok(_) => {}
+            Err(error) => return Ok(WriteOutcome::Failed { row, error }),
+        }
+    }
+    if !conflicts.is_empty() {
+        return Ok(WriteOutcome::Conflicts(conflicts));
+    }
+    let mut gone = Vec::new();
+    for (delete, row) in changes.deletes.iter().enumerate() {
+        stopped()?;
+        match dialect
+            .delete_row(&object, row)
+            .and_then(|deletion| run(&deletion.sql))
+        {
+            Ok(0) => gone.push(delete),
+            Ok(_) => {}
+            Err(error) => return Ok(WriteOutcome::FailedDelete { delete, error }),
+        }
+    }
+    stopped()?;
+    // Each changed row as the copy now holds it, in the page's columns.
+    let table = dialect.qualified(&object);
+    let position = dialect.quote_ident(POSITION);
+    let mut rows = Vec::with_capacity(changes.rows.len());
+    for change in &changes.rows {
+        let Some(at) = place_of(&change.key) else {
+            continue;
+        };
+        let sql = format!("SELECT * EXCLUDE ({position}) FROM {table} WHERE {position} = {at}");
+        let (_, mut found, _) = super::rows_of(connection, &sql, Vec::new(), 1)?;
+        rows.extend(found.pop());
+    }
+    Ok(WriteOutcome::Written {
+        inserted: vec![None; changes.inserts.len()],
+        rows,
+        gone,
+        elapsed: std::time::Duration::ZERO,
+    })
+}
+
+/// The place a row's key names, where it is the copy's own.
+fn place_of(key: &[(String, Value)]) -> Option<i64> {
+    match key {
+        [(column, Value::Int(at))] if column == POSITION => Some(*at),
+        _ => None,
+    }
+}
+
+enum WriteError {
+    /// The file or its folder could not be written.
+    Io(std::io::Error),
+    Db(Error),
+}
+
+/// Writes the copy, changed, to the hidden file beside `file`, then
+/// renames it over `file`. The hidden file is gone after, whatever came of
+/// it.
+fn write_file(
+    connection: &duckdb::Connection,
+    file: &Opened,
+    copy: &Copy,
+    changes: &ChangeSet,
+) -> std::result::Result<(), WriteError> {
+    let path = &file.found.path;
+    let temp = temp_path(path);
+    let written = match &copy.csv {
+        Some(layout) => write_csv(connection, file, layout, changes, &temp),
+        None => write_copy(connection, file, copy, &temp),
+    };
+    let renamed = written.and_then(|()| {
+        // The file keeps its own permissions.
+        if let Ok(meta) = std::fs::metadata(path) {
+            std::fs::set_permissions(&temp, meta.permissions()).map_err(WriteError::Io)?;
+        }
+        std::fs::rename(&temp, path).map_err(WriteError::Io)
+    });
+    if renamed.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    renamed
+}
+
+/// A Parquet, JSON or NDJSON file, written by DuckDB from the copy.
+fn write_copy(
+    connection: &duckdb::Connection,
+    file: &Opened,
+    copy: &Copy,
+    temp: &Path,
+) -> std::result::Result<(), WriteError> {
+    let options = match file.found.format {
+        Format::Parquet => match &copy.compression {
+            Some(compression) => format!("FORMAT parquet, COMPRESSION {compression}"),
+            None => "FORMAT parquet".to_owned(),
+        },
+        Format::Json => "FORMAT json, ARRAY true".to_owned(),
+        Format::Ndjson => "FORMAT json".to_owned(),
+        Format::Csv | Format::Tsv | Format::Excel | Format::DuckDb => {
+            return Err(WriteError::Db(Error::query(
+                "this file is not written by DuckDB",
+            )));
+        }
+    };
+    let position = Dialect::DuckDb.quote_ident(POSITION);
+    let table = Dialect::DuckDb.qualified(&Copy::object(&file.found.name));
+    let to = path_text(temp).map_err(WriteError::Db)?;
+    // DuckDB's own error for a folder it cannot write to.
+    connection
+        .execute_batch(&format!(
+            "COPY (SELECT * EXCLUDE ({position}) FROM {table} ORDER BY {position}) TO {} ({options})",
+            literal(&to)
+        ))
+        .map_err(|error| {
+            let error = map_error(error);
+            match error.to_string().contains("IO Error") || error.to_string().contains("Permission") {
+                true => WriteError::Io(std::io::Error::other(error.to_string())),
+                false => WriteError::Db(error),
+            }
+        })
+}
+
+/// A CSV or TSV file, written row for row as [`rewrite`] does: what a save
+/// changes is read from the copy, its dates as the file writes them.
+fn write_csv(
+    connection: &duckdb::Connection,
+    file: &Opened,
+    layout: &Layout,
+    changes: &ChangeSet,
+    temp: &Path,
+) -> std::result::Result<(), WriteError> {
+    let plan = plan(connection, file, layout, changes).map_err(WriteError::Db)?;
+    let source = std::fs::File::open(&file.found.path).map_err(WriteError::Io)?;
+    let target = std::fs::File::create(temp).map_err(WriteError::Io)?;
+    let mut target = BufWriter::new(target);
+    rewrite(BufReader::new(source), &mut target, layout, &plan).map_err(|error| match error {
+        Error::Io(message) => WriteError::Io(std::io::Error::other(message)),
+        error => WriteError::Db(error),
+    })?;
+    target.flush().map_err(WriteError::Io)?;
+    target
+        .into_inner()
+        .map_err(|error| WriteError::Io(error.into_error()))?
+        .sync_all()
+        .map_err(WriteError::Io)
+}
+
+/// What the save writes of each row it changes, deletes or adds. A cell
+/// set to text is written as it was typed, but for a date or a timestamp
+/// in a file that writes those its own way; NULL and a default are an
+/// empty field.
+fn plan(
+    connection: &duckdb::Connection,
+    file: &Opened,
+    layout: &Layout,
+    changes: &ChangeSet,
+) -> Result<Plan> {
+    let object = Copy::object(&file.found.name);
+    let table = Dialect::DuckDb.qualified(&object);
+    let position = Dialect::DuckDb.quote_ident(POSITION);
+    let columns = super::columns(connection, &object, &[])?;
+    let columns: Vec<_> = columns
+        .into_iter()
+        .filter(|column| column.name != POSITION)
+        .collect();
+    // The text the copy holds in a column for a row, in the file's way.
+    let text_at = |column: &crate::ColumnInfo, at: i64| -> Result<String> {
+        let name = Dialect::DuckDb.quote_ident(&column.name);
+        let kind = column.type_name.to_ascii_uppercase();
+        let expression = match (&layout.date, &layout.timestamp) {
+            (Some(date), _) if kind == "DATE" => format!("strftime({name}, {})", literal(date)),
+            (_, Some(stamp)) if kind.starts_with("TIMESTAMP") => {
+                format!("strftime({name}, {})", literal(stamp))
+            }
+            _ => format!("CAST({name} AS VARCHAR)"),
+        };
+        let text: Option<String> = connection
+            .query_row(
+                &format!("SELECT {expression} FROM {table} WHERE {position} = {at}"),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(map_error)?;
+        Ok(text.unwrap_or_default())
+    };
+    let own_way = |type_name: &str| {
+        let kind = type_name.to_ascii_uppercase();
+        (kind == "DATE" && layout.date.is_some())
+            || (kind.starts_with("TIMESTAMP") && layout.timestamp.is_some())
+    };
+    let cell = |column: &crate::ColumnInfo, new: &NewValue, at: i64| -> Result<String> {
+        match new {
+            NewValue::Null | NewValue::Default { .. } => Ok(String::new()),
+            NewValue::Text(text) if !own_way(&column.type_name) => Ok(text.clone()),
+            NewValue::Text(_) | NewValue::Now => text_at(column, at),
+        }
+    };
+    let mut plan = Plan::default();
+    for row in &changes.rows {
+        let at = place_of(&row.key).ok_or_else(|| Error::query("a row to save has no place"))?;
+        let mut cells = Vec::with_capacity(row.set.len());
+        for change in &row.set {
+            let place = columns
+                .iter()
+                .position(|column| column.name == change.column)
+                .ok_or_else(|| Error::query(format!("no such column: {}", change.column)))?;
+            cells.push((place, cell(&columns[place], &change.new, at)?));
+        }
+        plan.changed
+            .insert(u64::try_from(at).unwrap_or(u64::MAX), cells);
+    }
+    for row in &changes.deletes {
+        let at = place_of(&row.key).ok_or_else(|| Error::query("a row to delete has no place"))?;
+        plan.deleted.insert(u64::try_from(at).unwrap_or(u64::MAX));
+    }
+    // The new rows, last in the copy in their order.
+    let first: i64 = connection
+        .query_row(
+            &format!("SELECT coalesce(max({position}), -1) FROM {table}"),
+            [],
+            |row| row.get(0),
+        )
+        .map_err(map_error)?;
+    let first = first + 1 - changes.inserts.len() as i64;
+    for (index, insert) in changes.inserts.iter().enumerate() {
+        let at = first + index as i64;
+        let mut fields = Vec::with_capacity(columns.len());
+        for column in &columns {
+            let text = match insert.set.iter().find(|set| set.column == column.name) {
+                Some(set) => cell(column, &set.new, at)?,
+                None => String::new(),
+            };
+            fields.push(text);
+        }
+        plan.added.push(fields);
+    }
+    Ok(plan)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn layout(columns: usize) -> Layout {
+        Layout {
+            delimiter: b',',
+            quote: Some(b'"'),
+            escape: Some(b'"'),
+            header: true,
+            newline: b"\n",
+            columns,
+            date: None,
+            timestamp: None,
+        }
+    }
+
+    fn rewritten(text: &str, layout: &Layout, plan: &Plan) -> String {
+        let mut out = Vec::new();
+        rewrite(text.as_bytes(), &mut out, layout, plan).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn rows_are_counted_as_duckdb_reads_them() {
+        let cases = [
+            ("id,title\n1,Dune\n2,Emma\n", 2, 2),
+            ("id,title\n1,Dune\n\n2,Emma\n\n", 2, 2),
+            ("id,title\n1,\"Du\nne\"\n2,Emma\n", 2, 2),
+            ("id,title\r\n1,Dune\r\n2,Emma\r\n", 2, 2),
+            ("\u{feff}id,title\n1,Dune\n2,Emma", 2, 2),
+            ("\"id\",\"title\"\n\"1\",\"Dune, \"\"the\"\" book\"\n", 2, 1),
+            ("title\nDune\n\nEmma\n", 1, 3),
+        ];
+        for (text, columns, rows) in cases {
+            assert_eq!(
+                count(text.as_bytes(), &layout(columns)).unwrap(),
+                rows,
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_save_keeps_every_untouched_row_as_it_was_written() {
+        let text = "\u{feff}id,title,price\r\n1,\"Dune\",12.50\r\n\r\n2,Emma,9.00\r\n3,\"Ulysses, a novel\",15.00\r\n";
+        let mut layout = layout(3);
+        layout.newline = b"\r\n";
+        let mut plan = Plan::default();
+        plan.changed.insert(1, vec![(2, "8.5".into())]);
+        plan.deleted.insert(0);
+        plan.added
+            .push(vec!["4".into(), "Beloved, a novel".into(), String::new()]);
+        assert_eq!(
+            rewritten(text, &layout, &plan),
+            "\u{feff}id,title,price\r\n\r\n2,Emma,8.5\r\n3,\"Ulysses, a novel\",15.00\r\n\
+             4,\"Beloved, a novel\",\r\n"
+        );
+    }
+
+    #[test]
+    fn a_new_row_starts_on_a_line_of_its_own() {
+        let mut plan = Plan::default();
+        plan.added.push(vec!["3".into(), "Emma \"E\"".into()]);
+        assert_eq!(
+            rewritten("id,title\n1,Dune", &layout(2), &plan),
+            "id,title\n1,Dune\n3,\"Emma \"\"E\"\"\"\n"
+        );
+    }
+
+    #[test]
+    fn a_tsv_keeps_its_tabs_and_a_field_s_quotes() {
+        let mut layout = layout(2);
+        layout.delimiter = b'\t';
+        let mut plan = Plan::default();
+        plan.changed.insert(0, vec![(1, "Dune, Messiah".into())]);
+        assert_eq!(
+            rewritten("id\ttitle\n1\t\"Dune\"\n2\t\"Emma\"\n", &layout, &plan),
+            "id\ttitle\n1\tDune, Messiah\n2\t\"Emma\"\n"
+        );
+    }
+}

@@ -52,7 +52,14 @@ async fn open(
         .await;
     }
     let attaching = super::attach::attaching(open.attach.clone(), keyring).await?;
-    Connection::connect_files(&open.spec, &attaching, &open.host_keys, None).await
+    Connection::connect_files(
+        &open.spec,
+        &attaching,
+        &open.host_keys,
+        tabletist_db::Access::ReadOnly,
+        None,
+    )
+    .await
 }
 
 /// Where the rows come from.

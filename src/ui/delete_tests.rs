@@ -1008,6 +1008,7 @@ fn refused(code: &str, number: Option<u32>, constraint: Option<&str>) -> tableti
         detail: None,
         hint: None,
         named: Box::new(tabletist_db::Named {
+            unsaved: None,
             number,
             constraint: constraint.map(str::to_owned),
             columns: Vec::new(),

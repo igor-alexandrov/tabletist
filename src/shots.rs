@@ -145,6 +145,7 @@ fn page_of(rows: i64) -> RowPage {
         })
         .collect();
     RowPage {
+        positions: None,
         columns: vec![
             column("id", "int8", ValueKind::Numeric),
             column("book_id", "int8", ValueKind::Numeric),
@@ -181,6 +182,7 @@ fn structure() -> Structure {
         identity: name == "id",
     };
     Structure {
+        unedited: None,
         columns: vec![
             column(
                 "id",
@@ -1989,6 +1991,7 @@ pub(crate) mod mock {
             })
             .collect();
         RowPage {
+            positions: None,
             columns: vec![
                 column("id", "int8", ValueKind::Numeric),
                 column("book_id", "int8", ValueKind::Numeric),
@@ -2133,6 +2136,7 @@ pub(crate) mod mock {
             ],
         ];
         RowPage {
+            positions: None,
             columns: vec![
                 column("id", "int8", ValueKind::Numeric),
                 column("title", "text", ValueKind::Text),
@@ -2170,6 +2174,7 @@ pub(crate) mod mock {
                 .to_vec(),
         );
         Structure {
+            unedited: None,
             columns: vec![
                 column("id", "bigint", false),
                 column("title", "text", false),
@@ -2203,6 +2208,7 @@ pub(crate) mod mock {
             identity: false,
         };
         Structure {
+            unedited: None,
             columns: vec![
                 column("id", "bigint", false),
                 column("book_id", "bigint", false),

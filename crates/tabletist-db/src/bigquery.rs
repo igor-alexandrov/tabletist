@@ -705,6 +705,7 @@ impl Adapter for Conn {
         let has_more = rows.len() > limit;
         rows.truncate(limit);
         Ok(RowPage {
+            positions: None,
             columns,
             rows,
             has_more,

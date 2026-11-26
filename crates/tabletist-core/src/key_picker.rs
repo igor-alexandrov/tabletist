@@ -1313,6 +1313,7 @@ mod tests {
             ..Structure::default()
         };
         let page = RowPage {
+            positions: None,
             columns: vec![
                 meta("id", ValueKind::Numeric),
                 meta("parent_id", ValueKind::Numeric),

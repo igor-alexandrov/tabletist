@@ -325,6 +325,15 @@ impl Format {
             }
         }
     }
+
+    /// Whether a save of an edit writes the whole file again. An Excel
+    /// file is never written, and a `.duckdb` file is not yet.
+    pub fn rewritten(self) -> bool {
+        match self {
+            Self::Csv | Self::Tsv | Self::Parquet | Self::Json | Self::Ndjson => true,
+            Self::Excel | Self::DuckDb => false,
+        }
+    }
 }
 
 /// One file of a connection.

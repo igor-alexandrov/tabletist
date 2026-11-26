@@ -3124,6 +3124,7 @@ mod tests {
             kind,
         };
         RowPage {
+            positions: None,
             columns: vec![
                 column("id", "int8", ValueKind::Numeric),
                 column("book_id", "int8", ValueKind::Numeric),

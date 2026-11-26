@@ -8,12 +8,19 @@
 //! file, installing or loading an extension. And a read-only transaction
 //! around every page, count, lookup, script and agent's read.
 //!
+//! A session that may write saves edits to the files (`edit`): only a
+//! save writes, from Tabletist's own statements, which no script can run.
+//! Its fence also lets DuckDB write the hidden file each save of a
+//! Parquet, JSON or NDJSON file goes to first, and no other.
+//!
 //! Saved PostgreSQL, MySQL and SQLite connections it is told to attach are
 //! attached read-only before the fence (`attach`), and stay reachable
 //! after it: the fence keeps any other from being attached.
 
 mod attach;
+mod edit;
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -30,14 +37,19 @@ use crate::files::{
     Types,
 };
 use crate::{
-    CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, Ddl, Dialect, Error,
-    Lookup, LookupPage, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery,
-    ScriptMode, ScriptOutcome, StatementOutcome, StatementResult, StopFlag, Structure, Value,
-    ValueKind, WriteOutcome,
+    Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, Ddl,
+    Dialect, Error, Lookup, LookupPage, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Result,
+    RowPage, RowQuery, ScriptMode, ScriptOutcome, StatementOutcome, StatementResult, StopFlag,
+    Structure, Value, ValueKind, WriteOutcome,
 };
 
 /// The schema a connection's files are tables of.
 pub(crate) const MAIN: &str = "main";
+
+/// What a save finds a row of a file's table by, as a [`crate::RowChange`]'s
+/// key names it: the row's place in the file, from 0, as the page's
+/// `positions` say it.
+pub const FILE_POSITION: &str = "__tabletist_position";
 
 /// DuckDB's name for the in-memory database the views are in.
 const MEMORY: &str = "memory";
@@ -79,6 +91,18 @@ pub struct FileFacts {
     pub options: String,
 }
 
+/// Why a table of a Files connection is not edited, though its session
+/// may write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unedited {
+    /// An Excel file's: Excel files are never written.
+    Excel,
+    /// A `.duckdb` file's table or view.
+    DuckDb,
+    /// An attached connection's: those are attached read-only.
+    Attached,
+}
+
 /// An open Files connection.
 pub(crate) struct Conn {
     inner: Arc<Mutex<duckdb::Connection>>,
@@ -98,6 +122,13 @@ pub(crate) struct Conn {
     /// The saved connections it attached, in order.
     attached: Arc<Vec<Attached>>,
     version: String,
+    /// Whether a save may write the files.
+    access: Access,
+    /// How its CSV files are read, which a save writes them back by.
+    reading: Reading,
+    /// The files' tables read for editing so far, by name: those of a
+    /// session that may write whose page was read.
+    copies: Arc<Mutex<HashMap<String, edit::Loaded>>>,
 }
 
 /// A saved connection the session attached: the name SQL calls it by,
@@ -616,6 +647,7 @@ fn opened(
     past: bool,
     attaching: &[(Attaching, Option<u16>)],
     downloading: Option<&Downloading>,
+    writable: bool,
 ) -> Result<Made> {
     let files: Vec<&Found> = files
         .iter()
@@ -685,7 +717,8 @@ fn opened(
             }
             Types::Sample | Types::Text => reading,
         };
-        // A `.duckdb` file is attached read-only, as every session is.
+        // A `.duckdb` file is attached read-only, in a session that may
+        // write too: its tables are not edited yet.
         let made = make(&connection, file, reading).and_then(|(statement, options)| {
             run(&statement)?;
             Ok((statement, options))
@@ -758,6 +791,18 @@ fn opened(
         allowed.push(literal(&path));
     }
     allowed.extend(attached_files.iter().map(|path| literal(path)));
+    // A session that may write keeps its copies apart from the views, and
+    // may write the hidden file each save of a file DuckDB writes goes to
+    // first: none other.
+    if writable {
+        run(&format!("ATTACH ':memory:' AS {}", edit::EDITS))?;
+        for file in opened
+            .iter()
+            .filter(|file| edit::editable(file.found.format))
+        {
+            allowed.push(literal(&path_text(&edit::temp_path(&file.found.path))?));
+        }
+    }
     run(&format!("SET allowed_paths = [{}]", allowed.join(", ")))?;
     run("SET enable_external_access = false")?;
     run("SET lock_configuration = true")?;
@@ -1510,15 +1555,19 @@ impl Conn {
     /// listed file that is gone, are its failures. The saved connections
     /// in `attaching` are attached after, each through the tunnel port
     /// beside it where it has one; `downloading` is told of each reader
-    /// DuckDB downloads first.
+    /// DuckDB downloads first. A session whose `access` may write saves
+    /// edits to the files a save writes back.
     pub(crate) async fn open(
         source: &Source,
         reading: &Reading,
         past: bool,
         attaching: Vec<(Attaching, Option<u16>)>,
         downloading: Option<Downloading>,
+        access: Access,
     ) -> Result<Self> {
         let (source, reading) = (source.clone(), reading.clone());
+        let kept = reading.clone();
+        let writable = access == Access::Writable;
         let made = tokio::task::spawn_blocking(move || {
             // A skipped file is not looked at: one that is gone, or that
             // cannot be looked at, is no matter.
@@ -1557,6 +1606,7 @@ impl Conn {
                 past,
                 &attaching,
                 downloading.as_ref(),
+                writable,
             )
             .map(|(connection, files, mut failed, attached, version)| {
                 failed.extend(gone.iter().filter_map(|gone| {
@@ -1593,7 +1643,37 @@ impl Conn {
             order,
             attached: Arc::new(attached),
             version,
+            access,
+            reading: kept,
+            copies: Arc::new(Mutex::new(HashMap::new())),
         })
+    }
+
+    /// The file `object` is read from, where a save may write it back.
+    fn editing(&self, object: &ObjectRef) -> Option<Opened> {
+        (self.access == Access::Writable)
+            .then(|| self.file_of(object))
+            .flatten()
+            .filter(|file| edit::editable(file.found.format))
+            .cloned()
+    }
+
+    /// Why `object` is not edited in a session that may write, where its
+    /// connection says so.
+    fn unedited(&self, object: &ObjectRef) -> Option<Unedited> {
+        if self.access != Access::Writable {
+            return None;
+        }
+        if let Some(file) = self.file_of(object) {
+            return (file.found.format == Format::Excel).then_some(Unedited::Excel);
+        }
+        if self.attached.iter().any(|each| each.name == object.schema) {
+            return Some(Unedited::Attached);
+        }
+        self.files
+            .iter()
+            .any(|file| file.found.format.is_database() && file.found.name == object.schema)
+            .then_some(Unedited::DuckDb)
     }
 
     /// Runs `work` on the blocking pool with the session.
@@ -1902,6 +1982,7 @@ impl Adapter for Conn {
             format: file.found.format,
             options: file.options.clone(),
         });
+        let unedited = self.unedited(object);
         let object = object.clone();
         let attached = Arc::clone(&self.attached);
         self.run(move |connection| {
@@ -1917,6 +1998,7 @@ impl Adapter for Conn {
             Ok(Structure {
                 columns,
                 file,
+                unedited,
                 ..Structure::default()
             })
         })
@@ -1975,14 +2057,42 @@ impl Adapter for Conn {
         .await
     }
 
+    /// A page of a file's table. In a session that may write, the first
+    /// page of a file a save writes back reads the file into its copy,
+    /// and every page is read from the copy, each row with its place.
     async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
         check_raw_where(query)?;
         let object = query.object.clone();
         let query = query.clone();
         let limit = query.limit as usize;
         let attached = Arc::clone(&self.attached);
+        let editing = self.editing(&object);
+        let copies = Arc::clone(&self.copies);
+        let reading = self.reading.clone();
         self.run(move |connection| {
+            let copied = match &editing {
+                Some(file) => {
+                    let mut copies = copies.lock().map_err(|_| {
+                        Error::ConnectionLost("the DuckDB session was poisoned".into())
+                    })?;
+                    // Read again where the file changed on disk since: a page
+                    // shows the file as it is.
+                    let fresh = copies
+                        .get(&file.found.name)
+                        .is_some_and(|loaded| !loaded.stale(&file.found.path));
+                    if !fresh {
+                        copies.remove(&file.found.name);
+                        let loaded = edit::load(connection, file, &reading)?;
+                        copies.insert(file.found.name.clone(), loaded);
+                    }
+                    matches!(copies.get(&file.found.name), Some(edit::Loaded::Copy(_)))
+                }
+                None => false,
+            };
             read_only(connection, |connection| {
+                if copied {
+                    return edit::page(connection, &query, limit);
+                }
                 let catalog = columns(connection, &query.object, &attached)?;
                 let binary = binary_of(&catalog);
                 // A file has no key: rows come in the file's order.
@@ -1997,6 +2107,7 @@ impl Adapter for Conn {
                     has_more,
                     ordered_by_key: false,
                     elapsed: started.elapsed(),
+                    positions: None,
                 })
             })
         })
@@ -2121,9 +2232,11 @@ impl Adapter for Conn {
         mode: ScriptMode,
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
+        // A file is edited in its table and saved: a script reads, in a
+        // session that may write too.
         match mode {
             ScriptMode::ReadOnly => {}
-            // Editing files is not built: a Files session never writes.
+            ScriptMode::Write if self.access == Access::Writable => {}
             ScriptMode::Write => return Err(Error::ReadOnly),
         }
         let stop = stop.clone();
@@ -2174,9 +2287,27 @@ impl Adapter for Conn {
         Ok(Catalog::default())
     }
 
-    /// Editing files is not built.
-    async fn write(&self, _changes: &ChangeSet, _stop: &StopFlag) -> Result<WriteOutcome> {
-        Err(Error::ReadOnly)
+    /// Saves `changes` to the copy of the file their table reads, then to
+    /// the file (see `edit::save`). A table no save writes back is refused.
+    async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
+        let Some(file) = self.editing(&changes.object) else {
+            return Err(Error::ReadOnly);
+        };
+        let copies = Arc::clone(&self.copies);
+        let (changes, stop) = (changes.clone(), stop.clone());
+        self.run(move |connection| {
+            let mut copies = copies
+                .lock()
+                .map_err(|_| Error::ConnectionLost("the DuckDB session was poisoned".into()))?;
+            let Some(edit::Loaded::Copy(copy)) = copies.get_mut(&file.found.name) else {
+                return Err(Error::query(format!(
+                    "{} was not read for editing",
+                    file_label(&file.found)
+                )));
+            };
+            edit::save(connection, &file, copy, &changes, &stop)
+        })
+        .await
     }
 }
 
