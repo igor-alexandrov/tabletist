@@ -558,6 +558,8 @@ pub fn show(
                     name: None,
                     selected: false,
                     disabled: disabled.map(str::to_owned),
+                    badge: None,
+                    rule_before: false,
                 };
                 let mut rows = Vec::new();
                 if pending {

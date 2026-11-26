@@ -137,9 +137,13 @@ and DuckDB files (`.duckdb`). DuckDB reads them, inside Tabletist.
   database's (a SQLite file's name without its extension) and you can
   type over it: lowercase letters, digits and `_`, and not a schema the
   connection has already. In the sidebar each attached connection is a
-  schema, listing the tables of its default schema (PostgreSQL's
-  `public`, MySQL's database, SQLite's own); its other schemas are
-  reached in SQL, as `bookshop_development.billing.invoices`. An attached
+  schema with its environment's badge, listing the tables of its default
+  schema (PostgreSQL's `public`, MySQL's database, SQLite's own); its
+  other schemas are reached in SQL, as
+  `bookshop_development.billing.invoices`. The schema menu lists the
+  attached ones after the files' own. In the connections list the row
+  says what it joins: "Joins Bookshop · dev", with "+1", "+2" for the others
+  (`joins bookshop_development` in the Omarchy look). An attached
   connection is always read-only. Its password comes from the keyring as
   the Files connection opens, and its SSH tunnel, if it has one, is
   opened then too; a connection whose password is asked for on every
@@ -161,7 +165,14 @@ and DuckDB files (`.duckdb`). DuckDB reads them, inside Tabletist.
   another file on the computer, write a file or install anything is
   refused. Agents can query the files, never change them, and cannot
   hide tables or mask columns on a Files connection. Its **Agents**
-  section is closed, and says the access on one line.
+  section is closed, and says the access on one line. Agents reach an
+  attached connection only where its own **Agents** setting is **Read**
+  with no hidden tables and no masked columns (an administrator's rules
+  included): the others are left out of their session, and the section
+  names each one and why. Their session takes the least rows per answer
+  and statement timeout of the Files connection's and of each attached
+  connection it reaches, so agents read no more of one through the
+  files than they could directly.
 - **Test** reads each file's columns and its first rows, never a whole
   file to the end. With **Column types** from all rows, DuckDB reads a
   CSV in full to find its types, which takes longer on a large file.

@@ -213,6 +213,7 @@ pub fn show(
     let schemas = workspace
         .tree
         .visible_schemas(workspace.driver, show_system);
+    let attached = attached_schemas(workspace);
     let shown = workspace.tree.shown_schema(workspace.driver, show_system);
     let flat = workspace.tree.flat;
     let shown_loading = shown
@@ -343,6 +344,7 @@ pub fn show(
                 ui,
                 tab,
                 &schemas,
+                &attached,
                 shown.as_deref(),
                 flat,
                 shown_loading,
@@ -854,12 +856,58 @@ struct SchemaHeader<'a> {
     palette: &'a Palette,
 }
 
+/// The schemas a Files tab's session attached, each with its environment
+/// where it has one to badge: every attached one, badged or not.
+pub(crate) fn attached_schemas(
+    workspace: &Workspace,
+) -> Vec<(String, Option<crate::env::Environment>)> {
+    workspace
+        .attached
+        .iter()
+        .map(|to| {
+            let environment = to.saved.as_ref().map(|saved| saved.environment);
+            let badged = environment
+                .filter(|environment| environment.named(crate::env::Platform::Native).is_some());
+            (to.name.clone(), badged)
+        })
+        .collect()
+}
+
+/// The schema menu's rows: the connection's own schemas, then one rule,
+/// then the attached ones, each with its badge where it has one. The rule
+/// parts the two groups: it goes above the first attached schema after an
+/// own one, by what is attached, badged or not, and never between two
+/// attached schemas.
+pub(crate) fn schema_choices(
+    schemas: &[String],
+    shown: Option<&str>,
+    attached: &[(String, Option<crate::env::Environment>)],
+) -> Vec<menu::Choice> {
+    let found = |schema: &str| attached.iter().find(|(name, _)| name == schema);
+    schemas
+        .iter()
+        .enumerate()
+        .map(|(index, other)| {
+            let own_before = index > 0 && found(&schemas[index - 1]).is_none();
+            menu::Choice {
+                text: display_safe(other).into_owned(),
+                name: None,
+                selected: Some(other.as_str()) == shown,
+                disabled: None,
+                badge: found(other).and_then(|(_, environment)| *environment),
+                rule_before: found(other).is_some() && own_before,
+            }
+        })
+        .collect()
+}
+
 /// The schema picker, the tree/flat switch and Refresh.
 #[allow(clippy::too_many_arguments)] // one call site; the pieces are unrelated
 fn schema_header(
     ui: &mut egui::Ui,
     tab: ConnTabId,
     schemas: &[String],
+    attached: &[(String, Option<crate::env::Environment>)],
     shown: Option<&str>,
     flat: bool,
     loading: bool,
@@ -886,15 +934,55 @@ fn schema_header(
     let rect = Rect::from_min_size(pos2(band.left(), band.top() + above), vec2(width, row));
     let left = rect.left() + left_pad;
     let center = rect.center().y;
+    // An attached connection's schema shows its environment's badge.
+    let badge_of = |schema: &str| {
+        attached
+            .iter()
+            .find(|(name, _)| name == schema)
+            .and_then(|(_, environment)| *environment)
+    };
+    let badge_style = match look.terminal {
+        true => crate::ui::workspace::Badge::Plain,
+        false => crate::ui::workspace::Badge::Mac,
+    };
     // The schema: a menu of the others.
     if let Some(schema) = shown {
-        let label = widgets::section_label(&display_safe(schema), look, palette).layout(ui.ctx());
-        let text_width = label.width();
         let (glyph_width, gap) = if look.terminal {
             (8.0, 4.0)
         } else {
             (10.0, 4.0)
         };
+        // The name keeps clear of Reload and the tree/flat switch at the
+        // right, with its badge and chevron: cut to fit, and said whole.
+        let reload = if look.terminal { 0.0 } else { 28.0 + 2.0 };
+        let free = rect.right()
+            - 8.0
+            - reload
+            - switch_width(ui, look)
+            - 8.0
+            - left
+            - gap
+            - glyph_width
+            - 6.0;
+        let measure = |text: &str| {
+            widgets::section_label(text, look, palette)
+                .layout(ui.ctx())
+                .width()
+        };
+        let environment = badge_of(schema);
+        let wide = |environment| {
+            6.0 + crate::ui::workspace::env_badge_width(ui, environment, badge_style, look)
+        };
+        // The badge goes where at least an ellipsis of the name fits beside
+        // it. In a sidebar narrower than that, the menu's row and a screen
+        // reader still say the environment.
+        let badge = environment.filter(|environment| free - wide(*environment) >= measure("…"));
+        let badge_width = badge.map_or(0.0, wide);
+        let room = free - badge_width;
+        let named = display_safe(schema);
+        let fitted = crate::ui::grid::ellipsize(&named, room.max(0.0), false, measure);
+        let label = widgets::section_label(&fitted, look, palette).layout(ui.ctx());
+        let text_width = label.width() + badge_width;
         let hit = Rect::from_min_size(
             pos2(left - 6.0, center - 13.0),
             vec2(6.0 + text_width + gap + glyph_width + 6.0, 26.0),
@@ -906,11 +994,23 @@ fn schema_header(
             info.current_text_value = Some(display_safe(schema).into_owned());
             info
         });
+        if let Some(environment) = environment {
+            ui.ctx().accesskit_node_builder(response.id, |node| {
+                node.set_description(environment.label(crate::env::Platform::Native));
+            });
+        }
         if response.hovered() && !look.terminal {
             ui.painter()
                 .rect_filled(hit, CornerRadius::same(6), palette.surface);
         }
+        let label_width = label.width();
         label.paint_left(ui.painter(), left, center);
+        if let Some(environment) = badge {
+            let platform = crate::env::Platform::of(look);
+            let colors = crate::env::env_colors(environment, platform, palette);
+            let x = left + label_width + 6.0;
+            crate::ui::workspace::env_badge(ui, x, center, environment, &colors, badge_style, look);
+        }
         let glyph = pos2(left + text_width + gap + glyph_width / 2.0, center);
         if look.terminal {
             let mark = Text::one(look, TextRole::OCaption, "▾", palette.dim).layout(ui.ctx());
@@ -921,15 +1021,7 @@ fn schema_header(
                 .paint_at(ui, Rect::from_center_size(glyph, vec2(10.0, 10.0)));
         }
         let picked = menu::choices(&response, 160.0, look, palette, || {
-            schemas
-                .iter()
-                .map(|other| menu::Choice {
-                    text: display_safe(other).into_owned(),
-                    name: None,
-                    selected: Some(other.as_str()) == shown,
-                    disabled: None,
-                })
-                .collect()
+            schema_choices(schemas, shown, attached)
         });
         if let Some(schema) = picked.and_then(|index| schemas.get(index)) {
             actions.push(Action::ShowSchema {
@@ -984,17 +1076,8 @@ fn schema_header(
             vec2(26.0, 22.0),
         )
     };
-    // The switch's size, measured as `segmented` lays it out.
-    let cells: f32 = if look.terminal {
-        ["tree", "flat"]
-            .iter()
-            .map(|text| TextRole::OCaption.width(ui.ctx(), look.faces, text) + 12.0)
-            .sum()
-    } else {
-        2.0 * segment.x
-    };
     let pad = if look.terminal { 1.0 } else { 2.0 };
-    let total = vec2(cells + 2.0 * pad, segment.y + 2.0 * pad);
+    let total = vec2(switch_width(ui, look), segment.y + 2.0 * pad);
     let place = Rect::from_min_size(pos2(right - total.x, center - total.y / 2.0), total);
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(place));
     if let Some(index) = widgets::segmented(
@@ -1009,6 +1092,20 @@ fn schema_header(
     {
         actions.push(Action::ToggleFlatTree(tab));
     }
+}
+
+/// The tree/flat switch's width, measured as `segmented` lays it out.
+fn switch_width(ui: &egui::Ui, look: &Look) -> f32 {
+    let cells: f32 = if look.terminal {
+        ["tree", "flat"]
+            .iter()
+            .map(|text| TextRole::OCaption.width(ui.ctx(), look.faces, text) + 12.0)
+            .sum()
+    } else {
+        2.0 * 26.0
+    };
+    let pad = if look.terminal { 1.0 } else { 2.0 };
+    cells + 2.0 * pad
 }
 
 /// Which rows are highlighted: the open object and the keyboard cursor.

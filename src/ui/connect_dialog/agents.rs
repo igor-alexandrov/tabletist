@@ -13,6 +13,7 @@ use super::choice::{Choice, Group, choose};
 use super::{Skin, input};
 use tabletist_db::Driver;
 
+use crate::backend::LeftOut;
 use crate::connections::AgentAccess;
 use crate::i18n::{Msgid, msgid};
 use crate::model::{Action, ConnectionForm, TableFocus, TablesMode};
@@ -88,6 +89,28 @@ fn guards_tables(form: &ConnectionForm) -> bool {
         Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => true,
         Driver::Files => false,
     }
+}
+
+/// What a Files form's part says, under its note, of each saved
+/// connection it attaches that agents don't reach, while agents may read
+/// it: their session is opened without it.
+fn left_out(form: &ConnectionForm, skin: &Skin) -> Vec<String> {
+    match form.agents.access {
+        AgentAccess::Off => return Vec::new(),
+        AgentAccess::Read => {}
+    }
+    form.agents_left_out
+        .iter()
+        .map(|(name, why)| {
+            let words = match why {
+                LeftOut::Off => msgid("Agents don't reach {name}: its own agent access is Off."),
+                LeftOut::Guards => {
+                    msgid("Agents don't reach {name}: it hides tables or masks columns.")
+                }
+            };
+            crate::i18n::fill(&skin.say(words), &[("{name}", name)])
+        })
+        .collect()
 }
 
 /// The note under the part's rows.
@@ -1038,6 +1061,10 @@ fn sheet_rows(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut
     });
     ui.add_space(8.0);
     sentence(ui, small, &skin.say(note(form)), skin);
+    for line in left_out(form, skin) {
+        ui.add_space(4.0);
+        sentence(ui, small, &line, skin);
+    }
 }
 
 /// The terminal look: an "agents" section after Safety; on a Files form,
@@ -1121,6 +1148,9 @@ fn terminal_rows(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &
     }
     ui.add_space(4.0);
     sentence(ui, TextRole::OSecondary, &said, skin);
+    for line in left_out(form, skin) {
+        sentence(ui, TextRole::OSecondary, &line, skin);
+    }
 }
 
 /// The terminal look's Tables and Masked rows.

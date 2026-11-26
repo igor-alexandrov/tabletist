@@ -832,14 +832,79 @@ pub(crate) fn target(connection: &SavedConnection) -> (String, String) {
 pub(crate) struct FileRowText {
     pub second: String,
     pub middle: (String, String),
-    pub right: Option<(Msgid, Msgid)>,
+    pub right: Option<(Msgid, Joins)>,
+}
+
+/// What a Files connection joins, as its list row says it: the first of
+/// the saved connections it attaches that is still saved, and how many
+/// more there are.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Joins {
+    None,
+    Some {
+        /// Its name and environment, as the list names it: "Bookshop · dev".
+        first: String,
+        /// The name SQL calls it by: the terminal look's line says that.
+        sql: String,
+        more: usize,
+    },
+}
+
+impl Joins {
+    /// What `spec` attaches, of the connections in `store`.
+    fn of(spec: &tabletist_db::ConnectSpec, store: &SavedConnections) -> Self {
+        let mut saved = spec.attach.iter().filter_map(|each| {
+            let connection = store.get(&ConnectionId(each.connection.clone()))?;
+            Some((each, connection))
+        });
+        let Some((each, connection)) = saved.next() else {
+            return Self::None;
+        };
+        let first = match connection.environment.named(crate::env::Platform::Native) {
+            Some(environment) => format!("{} · {environment}", connection.name),
+            None => connection.name.clone(),
+        };
+        Self::Some {
+            first,
+            sql: each.name.clone(),
+            more: saved.count(),
+        }
+    }
+
+    /// The macOS row's words: "Joins Bookshop · dev +1", or "No joins".
+    pub(crate) fn say(&self, locale: crate::i18n::Locale) -> String {
+        match self {
+            Self::None => msgid("No joins").say(locale).into_owned(),
+            Self::Some { first, more, .. } => joins(first, *more, locale),
+        }
+    }
+
+    /// The terminal look's words after its line: "joins bookshop_dev +1",
+    /// or none.
+    fn terminal(&self, locale: crate::i18n::Locale) -> Option<String> {
+        match self {
+            Self::None => None,
+            Self::Some { sql, more, .. } => Some(joins(sql, *more, locale)),
+        }
+    }
+}
+
+/// "Joins {name}", and "+1", "+2" for the others.
+fn joins(name: &str, more: usize, locale: crate::i18n::Locale) -> String {
+    let name = match more {
+        0 => name.to_owned(),
+        more => format!("{name} +{more}"),
+    };
+    fill(&msgid("Joins {name}").say(locale), &[("{name}", &name)])
 }
 
 /// [`FileRowText`] of `connection`, with what a scan of its files found
-/// (`facts`, which may be on its way). `None` for a server's.
+/// (`facts`, which may be on its way), and the saved connections in
+/// `store`, which name what it joins. `None` for a server's.
 pub(crate) fn file_row_text(
     connection: &SavedConnection,
     facts: Option<&crate::model::SourceFacts>,
+    store: &SavedConnections,
 ) -> Option<FileRowText> {
     use crate::model::SourceFacts;
     use tabletist_db::Driver;
@@ -896,32 +961,40 @@ pub(crate) fn file_row_text(
                 second,
                 middle,
                 // Editing files is not built: every one reads only.
-                right: Some((msgid("Read-only"), msgid("No joins"))),
+                right: Some((msgid("Read-only"), Joins::of(spec, store))),
             })
         }
     }
 }
 
 /// The terminal look's line under a Files connection's name: `files ·
-/// ~/Data/bookshop-exports · 4 files · 2.5 gb`. `None` for any other.
+/// ~/Data/bookshop-exports · 4 files · 2.5 gb · joins bookshop_dev`.
+/// `None` for any other.
 pub(crate) fn terminal_files_line(
     connection: &SavedConnection,
     facts: Option<&crate::model::SourceFacts>,
+    store: &SavedConnections,
+    locale: crate::i18n::Locale,
 ) -> Option<String> {
     use tabletist_db::Driver;
     match connection.spec.driver {
         Driver::Files => {}
         Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => return None,
     }
-    let text = file_row_text(connection, facts)?;
+    let text = file_row_text(connection, facts, store)?;
     let source = match &connection.spec.files {
         Some(tabletist_db::files::Source::Folder(folder)) => tabletist_db::files::shown(folder),
         Some(source) => source.summary(),
         None => String::new(),
     };
     let counted = text.second.strip_prefix("Files").unwrap_or_default();
-    // The look's case for its words, and the path as it is.
-    Some(format!("files · {source}{}", counted.to_lowercase()))
+    let joins = text
+        .right
+        .and_then(|(_, joins)| joins.terminal(locale))
+        .map(|joins| format!(" · {}", joins.to_lowercase()))
+        .unwrap_or_default();
+    // The look's case for its words, and the path and names as they are.
+    Some(format!("files · {source}{}{joins}", counted.to_lowercase()))
 }
 
 /// The row's own response, answering a click by selecting and a double
@@ -1347,7 +1420,7 @@ fn mac_row(
         laid.paint_left(ui.painter(), tag.left() + 7.0, top);
         widgets::announce(ui, tag, &text);
     }
-    let files = file_row_text(connection, facts);
+    let files = file_row_text(connection, facts, store);
     let user = &connection.spec.user;
     let second = match &files {
         Some(files) => files.second.clone(),
@@ -1389,7 +1462,7 @@ fn mac_row(
     }
     // A Files connection says whether it writes and what it joins where a
     // server says its TLS and its tunnel.
-    if let Some((writes, joins)) = files.as_ref().and_then(|files| files.right) {
+    if let Some((writes, joins)) = files.as_ref().and_then(|files| files.right.clone()) {
         let writes = writes.say(locale);
         widgets::paint_label(
             ui,
@@ -1397,7 +1470,11 @@ fn mac_row(
             top,
             Text::one(look, small, &writes, palette.secondary),
         );
+        // Cut to the column: an attachment's name can be long.
         let joins = joins.say(locale);
+        let joins = crate::ui::grid::ellipsize(&joins, 150.0 - 12.0, false, |text| {
+            small.width(ui.ctx(), look.faces, text)
+        });
         widgets::paint_label(
             ui,
             security_x,
@@ -1656,7 +1733,7 @@ fn terminal_row(
     // "dev@localhost:5433/bookshop_development · tls verify-full · no ssh",
     // the separators kept with their neighbours as the design writes them.
     // A Files connection's line is its own: what it opens, and how much.
-    let said = match terminal_files_line(connection, facts) {
+    let said = match terminal_files_line(connection, facts, store, locale) {
         Some(files) => Text::new(look).add(small, &files, palette.dim),
         None => Text::new(look)
             .add(small, &format!("{line} ·"), palette.dim)
@@ -1779,7 +1856,8 @@ mod tests {
                 "returns.csv",
             ],
         );
-        let text = file_row_text(&folder, Some(&facts)).unwrap();
+        let none = SavedConnections::default();
+        let text = file_row_text(&folder, Some(&facts), &none).unwrap();
         assert_eq!(text.second, "Files · 4 files · 2.5 GB");
         assert_eq!(
             text.middle,
@@ -1790,11 +1868,12 @@ mod tests {
         );
         assert_eq!(
             text.right
-                .map(|(writes, joins)| (writes.english(), joins.english())),
-            Some(("Read-only", "No joins"))
+                .map(|(writes, joins)| (writes.english(), joins.say(crate::i18n::Locale::English))),
+            Some(("Read-only", "No joins".to_owned()))
         );
         assert_eq!(
-            terminal_files_line(&folder, Some(&facts)).as_deref(),
+            terminal_files_line(&folder, Some(&facts), &none, crate::i18n::Locale::English)
+                .as_deref(),
             Some("files · /data/bookshop-exports · 4 files · 2.5 gb")
         );
         // The path keeps its case in the terminal look's line.
@@ -1802,11 +1881,11 @@ mod tests {
             "/srv/Data/Bookshop-Exports".into(),
         )));
         assert_eq!(
-            terminal_files_line(&cased, None).as_deref(),
+            terminal_files_line(&cased, None, &none, crate::i18n::Locale::English).as_deref(),
             Some("files · /srv/Data/Bookshop-Exports")
         );
         // Before the files are read: the type alone.
-        assert_eq!(file_row_text(&folder, None).unwrap().second, "Files");
+        assert_eq!(file_row_text(&folder, None, &none).unwrap().second, "Files");
         // A list: its first files, then their folder.
         let list = saved(tabletist_db::ConnectSpec::files(Source::Files(vec![
             "/data/bookshop-exports/orders.csv".into(),
@@ -1816,7 +1895,7 @@ mod tests {
             "/data/bookshop-exports",
             &["orders.csv", "customers.parquet"],
         );
-        let text = file_row_text(&list, Some(&facts)).unwrap();
+        let text = file_row_text(&list, Some(&facts), &none).unwrap();
         assert_eq!(text.second, "Files · 2 files · 1.2 GB");
         assert_eq!(
             text.middle,
@@ -1832,9 +1911,11 @@ mod tests {
         let sqlite = saved(tabletist_db::ConnectSpec::sqlite(
             "/code/bookshop/storage/development.sqlite3",
         ));
+        let none = SavedConnections::default();
         let text = file_row_text(
             &sqlite,
             Some(&crate::model::SourceFacts::File { size: 12_400_000 }),
+            &none,
         )
         .unwrap();
         assert_eq!(text.second, "SQLite · 12.4 MB");
@@ -1847,9 +1928,68 @@ mod tests {
             )
         );
         assert_eq!(text.right, None);
-        assert_eq!(terminal_files_line(&sqlite, None), None);
+        assert_eq!(
+            terminal_files_line(&sqlite, None, &none, crate::i18n::Locale::English),
+            None
+        );
         // A server's row is its own.
         let (server, _) = tabletist_db::ConnectSpec::from_url("postgres://me@db/app").unwrap();
-        assert_eq!(file_row_text(&saved(server), None), None);
+        assert_eq!(file_row_text(&saved(server), None, &none), None);
+    }
+
+    #[test]
+    fn a_files_row_says_the_first_connection_it_joins_and_how_many_more() {
+        use tabletist_db::files::{Attach, Source};
+        let mut store = SavedConnections::default();
+        let mut dev = saved(tabletist_db::ConnectSpec::sqlite("/data/bookshop.db"));
+        dev.name = "Bookshop".into();
+        dev.environment = crate::env::Environment::Dev;
+        let mut scratch = saved(tabletist_db::ConnectSpec::sqlite("/data/scratch.db"));
+        scratch.name = "Scratch".into();
+        scratch.environment = crate::env::Environment::None;
+        let attach = |saved: &SavedConnection, name: &str| Attach {
+            connection: saved.id.0.clone(),
+            name: name.into(),
+        };
+        let mut spec =
+            tabletist_db::ConnectSpec::files(Source::Folder("/data/bookshop-exports".into()));
+        // A deleted one isn't counted.
+        spec.attach = vec![
+            Attach {
+                connection: "deleted".into(),
+                name: "gone".into(),
+            },
+            attach(&dev, "bookshop_development"),
+        ];
+        store.upsert(dev.clone());
+        store.upsert(scratch.clone());
+        let files = saved(spec.clone());
+        let said = |files: &SavedConnection| {
+            let text = file_row_text(files, None, &store).unwrap();
+            let line =
+                terminal_files_line(files, None, &store, crate::i18n::Locale::English).unwrap();
+            (
+                text.right.unwrap().1.say(crate::i18n::Locale::English),
+                line,
+            )
+        };
+        assert_eq!(
+            said(&files),
+            (
+                "Joins Bookshop · dev".to_owned(),
+                "files · /data/bookshop-exports · joins bookshop_development".to_owned()
+            )
+        );
+        spec.attach.push(attach(&scratch, "scratch"));
+        assert_eq!(
+            said(&saved(spec.clone())),
+            (
+                "Joins Bookshop · dev +1".to_owned(),
+                "files · /data/bookshop-exports · joins bookshop_development +1".to_owned()
+            )
+        );
+        // One of no environment is named alone.
+        spec.attach = vec![attach(&scratch, "scratch")];
+        assert_eq!(said(&saved(spec)).0, "Joins Scratch");
     }
 }

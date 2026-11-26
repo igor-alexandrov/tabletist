@@ -117,7 +117,11 @@ In the Omarchy look, `y` on the Agents pane copies Claude Code's command.
 
 Every connection starts with agents **Off**: they do not see it at all.
 A new Files connection is the exception: it starts with **Read**, or
-with **Off** on production. **Read** lets agents read a connection. Set
+with **Off** on production. Through a Files connection agents also read
+the saved connections it attaches, but only those whose own access is
+**Read** with no hidden tables and no masked columns, and under the
+least rows per answer and statement timeout of the Files connection's
+and theirs. **Read** lets agents read a connection. Set
 it in any of these places:
 
 - In Connections: a row's "…" menu, or `a` on a row in the Omarchy

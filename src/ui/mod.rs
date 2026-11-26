@@ -18,6 +18,8 @@ mod agent_settings_tests;
 #[cfg(test)]
 mod appearance_settings_tests;
 pub mod attach_list;
+#[cfg(test)]
+mod attached_tests;
 pub mod banner;
 pub mod calendar;
 #[cfg(test)]
@@ -263,7 +265,29 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             .and_then(|conn| app.loaded_tables(conn)),
         _ => None,
     };
+    // What agents reach of a Files form's attachments, by the policy the
+    // app gives them: worked out for a Files form alone.
+    let files_form = match &app.dialog {
+        Some(Dialog::Connection(form)) => match form.driver {
+            tabletist_db::Driver::Files => true,
+            tabletist_db::Driver::Sqlite
+            | tabletist_db::Driver::Postgres
+            | tabletist_db::Driver::MySql
+            | tabletist_db::Driver::BigQuery => false,
+        },
+        _ => false,
+    };
+    let agents_now = files_form.then(|| app.agents_connections());
     if let Some(Dialog::Connection(form)) = &mut app.dialog {
+        form.agents_left_out = match &agents_now {
+            Some((shown, connections)) => {
+                crate::backend::reaching(&form.files_attach, connections, shown)
+                    .into_iter()
+                    .filter_map(|(name, reached)| reached.err().map(|why| (name, why)))
+                    .collect()
+            }
+            None => Vec::new(),
+        };
         let groups = crate::connections::groups::Choices::of(
             &form.name,
             form.stays_local(),

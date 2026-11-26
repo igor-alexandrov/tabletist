@@ -378,6 +378,7 @@ fn a_test_sends_what_is_attached_and_says_the_download() {
                 name: "bookshop_development".into(),
                 saved: Some(AttachSaved {
                     id: dev.clone(),
+                    environment: Environment::Dev,
                     spec: saved.spec.clone(),
                     password: PasswordMode::Keyring,
                     ssh_secret: PasswordMode::None,

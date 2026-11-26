@@ -7,6 +7,7 @@ use tabletist_db::files::{Attach, Attaching};
 use tabletist_db::{ConnectSpec, Error, Secrets};
 
 use crate::connections::{ConnectionId, PasswordMode, SavedConnections};
+use crate::env::Environment;
 use crate::model::SecretKind;
 use crate::secrets::{Keyring, password_account, ssh_account};
 
@@ -18,11 +19,13 @@ pub struct AttachTo {
     pub saved: Option<AttachSaved>,
 }
 
-/// What a saved connection to attach is: how it is reached, and where
-/// its secrets are kept.
+/// What a saved connection to attach is: how it is reached, where its
+/// secrets are kept, and its environment, whose badge the sidebar shows on
+/// its schema.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AttachSaved {
     pub id: ConnectionId,
+    pub environment: Environment,
     pub spec: ConnectSpec,
     pub password: PasswordMode,
     pub ssh_secret: PasswordMode,
@@ -39,6 +42,7 @@ impl AttachTo {
                     .get(&ConnectionId(each.connection.clone()))
                     .map(|saved| AttachSaved {
                         id: saved.id.clone(),
+                        environment: saved.environment,
                         spec: saved.spec.clone(),
                         password: saved.password,
                         ssh_secret: saved.ssh_secret,
@@ -53,6 +57,24 @@ impl AttachTo {
 pub(super) async fn attaching(
     attach: Vec<AttachTo>,
     keyring: &Keyring,
+) -> Result<Vec<Attaching>, Error> {
+    read(attach, keyring, false).await
+}
+
+/// [`attaching`] for an agent's session: the keyring is read quietly,
+/// never with a prompt to unlock it, which an agent's call could fish for
+/// the person's password with.
+pub(super) async fn attaching_quietly(
+    attach: Vec<AttachTo>,
+    keyring: &Keyring,
+) -> Result<Vec<Attaching>, Error> {
+    read(attach, keyring, true).await
+}
+
+async fn read(
+    attach: Vec<AttachTo>,
+    keyring: &Keyring,
+    quietly: bool,
 ) -> Result<Vec<Attaching>, Error> {
     let mut each = Vec::with_capacity(attach.len());
     for to in attach {
@@ -95,7 +117,7 @@ pub(super) async fn attaching(
                 PasswordMode::Ask => {
                     return Err(cannot("its password is asked for on every connect"));
                 }
-                PasswordMode::Keyring => match keyring.read(&account).wait().await {
+                PasswordMode::Keyring => match read_one(keyring, &account, quietly).await {
                     Ok(Some(secret)) => *kind.slot(&mut secrets) = Some(secret),
                     Ok(None) => return Err(cannot("the keyring has no password for it")),
                     Err(error) => return Err(cannot(&error.to_string())),
@@ -111,6 +133,17 @@ pub(super) async fn attaching(
     Ok(each)
 }
 
+async fn read_one(
+    keyring: &Keyring,
+    account: &str,
+    quietly: bool,
+) -> Result<Option<String>, crate::secrets::SecretError> {
+    match quietly {
+        true => keyring.read_quietly(account).wait().await,
+        false => keyring.read(account).wait().await,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,6 +153,7 @@ mod tests {
             name: name.into(),
             saved: Some(AttachSaved {
                 id: ConnectionId(format!("id-{name}")),
+                environment: Environment::Dev,
                 spec,
                 password,
                 ssh_secret: PasswordMode::None,
@@ -162,6 +196,27 @@ mod tests {
         assert_eq!(each[0].name, "shop");
         assert_eq!(each[0].secrets.password.as_deref(), Some("s3cret"));
         assert_eq!(each[1].secrets, Secrets::default());
+    }
+
+    /// An agent's session reads the same password, without a prompt.
+    #[tokio::test]
+    async fn an_agent_s_read_is_quiet_and_reads_the_same() {
+        let keyring = Keyring::memory();
+        keyring
+            .write(
+                &password_account(&ConnectionId("id-shop".into())),
+                crate::secrets::SecretString("s3cret".into()),
+            )
+            .wait()
+            .await
+            .unwrap();
+        let each = attaching_quietly(
+            vec![to("shop", postgres(), PasswordMode::Keyring)],
+            &keyring,
+        )
+        .await
+        .unwrap();
+        assert_eq!(each[0].secrets.password.as_deref(), Some("s3cret"));
     }
 
     /// A file needs no SSH secret, whatever tunnel its spec still names.
