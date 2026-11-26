@@ -175,25 +175,36 @@ pub(super) fn terminal_footer(
     }
 }
 
-/// The terminal look: a label in the 150 pt column, then what `add` draws
-/// on the same line, 8 below the row before it. The row is as tall as a
-/// field.
 /// What a Files connection's read-only row says while it edits: that a
-/// save writes a whole file, and the largest it would.
-fn terminal_editing_note(form: &ConnectionForm, locale: crate::i18n::Locale) -> String {
+/// save writes a whole file, and the largest it would. `key` is the grid's
+/// Save changes, as the look writes it.
+fn terminal_editing_note(form: &ConnectionForm, key: &str, locale: crate::i18n::Locale) -> String {
     match super::largest_rewritten(form) {
         Some((file, size)) => crate::i18n::fill(
             &gettext(
                 locale,
-                "changes wait for :w, which rewrites the whole file ({file} {size})",
+                "changes wait for {key}, which rewrites the whole file ({file} {size})",
             ),
             // The size in the look's case, as its list rows write it.
-            &[("{file}", &file), ("{size}", &size.to_lowercase())],
+            &[
+                ("{key}", key),
+                ("{file}", &file),
+                ("{size}", &size.to_lowercase()),
+            ],
         ),
-        None => gettext(locale, "changes wait for :w, which rewrites the whole file").into_owned(),
+        None => crate::i18n::fill(
+            &gettext(
+                locale,
+                "changes wait for {key}, which rewrites the whole file",
+            ),
+            &[("{key}", key)],
+        ),
     }
 }
 
+/// The terminal look: a label in the 150 pt column, then what `add` draws
+/// on the same line, 8 below the row before it. The row is as tall as a
+/// field.
 pub(super) fn terminal_row(
     ui: &mut Ui,
     label: &str,
@@ -409,7 +420,20 @@ pub(super) fn terminal_body(
                     ),
                     (true, false) => (
                         look.label(&skin.say(msgid("Editing on"))),
-                        format!("· {}", terminal_editing_note(form, skin.locale)),
+                        format!(
+                            "· {}",
+                            terminal_editing_note(
+                                form,
+                                crate::ui::keys::written_in(
+                                    ui.ctx(),
+                                    look,
+                                    Command::SaveChanges,
+                                    crate::keymap::Scope::Grid,
+                                )
+                                .as_str(),
+                                skin.locale,
+                            )
+                        ),
                         palette.warning,
                     ),
                     (false, _) => (

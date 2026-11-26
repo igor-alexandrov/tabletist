@@ -17,7 +17,10 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
 
-use super::{Opened, literal, map_error, path_text, reader_path, to_duckdb};
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+
+use super::{FILE_COPY, Opened, literal, map_error, path_text, reader_path, to_duckdb};
 use crate::files::{Format, Header, Reading};
 use crate::write::{Conflict, NewValue};
 use crate::{
@@ -54,6 +57,13 @@ pub(super) struct Stamp {
 }
 
 impl Stamp {
+    /// None that a file on disk has: a copy whose file a save wrote, but
+    /// that the save could not set as it is now, is read again.
+    const UNKNOWN: Self = Self {
+        size: u64::MAX,
+        modified: None,
+    };
+
     fn of(path: &Path) -> std::io::Result<Self> {
         let meta = std::fs::metadata(path)?;
         Ok(Self {
@@ -67,9 +77,11 @@ impl Stamp {
 #[derive(Debug, Clone)]
 pub(super) enum Loaded {
     Copy(Copy),
-    /// A CSV or TSV whose rows are not counted here as DuckDB counted
-    /// them, as it was when it was read: it cannot be written back row for
-    /// row, so it is not edited.
+    /// A file a save could not write back as it is, as it was when it was
+    /// read: a CSV or TSV whose rows are not counted here as DuckDB counted
+    /// them, one with a column of its own named `rowid`, or a JSON or
+    /// NDJSON file whose records do not all have every key. It is not
+    /// edited.
     Unmatched(Stamp),
 }
 
@@ -95,6 +107,28 @@ pub(super) struct Copy {
     compression: Option<String>,
     /// The place the next new row takes.
     next: i64,
+    /// Which copy it is, of every one made in this run of the app: a
+    /// page's places are of one ([`crate::Positions::copy`]).
+    pub(super) generation: i64,
+}
+
+/// A number no copy made before has: each read of a file, and each save
+/// that numbers its rows again, takes the next.
+fn next_generation() -> i64 {
+    static NEXT: AtomicI64 = AtomicI64::new(1);
+    NEXT.fetch_add(1, Ordering::SeqCst)
+}
+
+/// What keeps two saves of the file at `path` apart in this app: two
+/// sessions over one file would write the same hidden file.
+fn save_lock(path: &Path) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<std::collections::HashMap<PathBuf, Arc<Mutex<()>>>>> =
+        OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    Arc::clone(locks.entry(path.to_owned()).or_default())
 }
 
 impl Copy {
@@ -113,6 +147,7 @@ pub(super) fn page(
     connection: &duckdb::Connection,
     query: &RowQuery,
     limit: usize,
+    generation: i64,
 ) -> Result<RowPage> {
     let mut from = query.clone();
     from.object = Copy::object(&query.object.name);
@@ -141,7 +176,10 @@ pub(super) fn page(
         has_more,
         ordered_by_key: true,
         elapsed: started.elapsed(),
-        positions: Some(positions),
+        positions: Some(crate::Positions {
+            copy: generation,
+            rows: positions,
+        }),
     })
 }
 
@@ -177,13 +215,36 @@ pub(super) fn load(
         name: file.found.name.clone(),
     });
     let position = Dialect::DuckDb.quote_ident(POSITION);
-    // DuckDB keeps the file's order in the copy's rows: `rowid` is each
-    // one's place in the file, and stays its own when a row before it is
-    // deleted.
     connection
         .execute_batch(&format!(
-            "CREATE OR REPLACE TABLE {copy} AS SELECT * FROM {view}; \
-             ALTER TABLE {copy} ADD COLUMN {position} BIGINT; \
+            "CREATE OR REPLACE TABLE {copy} AS SELECT * FROM {view}"
+        ))
+        .map_err(map_error)?;
+    let columns_named = |named: &str| -> Result<i64> {
+        connection
+            .query_row(
+                "SELECT count(*) FROM information_schema.columns \
+                 WHERE table_catalog = ? AND table_name = ? AND lower(column_name) = ?",
+                [EDITS, file.found.name.as_str(), named],
+                |row| row.get(0),
+            )
+            .map_err(map_error)
+    };
+    let unmatched = || -> Result<Loaded> {
+        connection
+            .execute_batch(&format!("DROP TABLE {copy}"))
+            .map_err(map_error)?;
+        Ok(Loaded::Unmatched(stamp))
+    };
+    // DuckDB keeps the file's order in the copy's rows: `rowid` is each
+    // one's place in the file, and stays its own when a row before it is
+    // deleted. A column of the file's own of that name would stand for it.
+    if columns_named("rowid")? > 0 || columns_named(POSITION)? > 0 {
+        return unmatched();
+    }
+    connection
+        .execute_batch(&format!(
+            "ALTER TABLE {copy} ADD COLUMN {position} BIGINT; \
              UPDATE {copy} SET {position} = rowid;"
         ))
         .map_err(map_error)?;
@@ -194,14 +255,7 @@ pub(super) fn load(
         .map_err(map_error)?;
     let (csv, compression) = match file.found.format {
         Format::Csv | Format::Tsv => {
-            let columns: usize = connection
-                .query_row(
-                    "SELECT count(*) FROM information_schema.columns \
-                     WHERE table_catalog = ? AND table_name = ? AND column_name <> ?",
-                    [EDITS, file.found.name.as_str(), POSITION],
-                    |row| row.get::<_, i64>(0),
-                )
-                .map_err(map_error)?
+            let columns: usize = file_columns(connection, &file.found.name)?
                 .try_into()
                 .unwrap_or(0);
             let layout = layout(connection, path, file.found.format, reading, columns)?;
@@ -209,12 +263,34 @@ pub(super) fn load(
                 .and_then(|opened| count(BufReader::new(opened), &layout))
                 .map_err(|error| Error::Io(error.to_string()))?;
             if i64::try_from(counted).ok() != Some(rows) {
-                connection
-                    .execute_batch(&format!("DROP TABLE {copy}"))
-                    .map_err(map_error)?;
-                return Ok(Loaded::Unmatched(stamp));
+                return unmatched();
             }
             (Some(layout), None)
+        }
+        // DuckDB writes every column of every record back, and a key a
+        // record did not have would come back as `null`: only a file whose
+        // records all have every key is edited.
+        Format::Json | Format::Ndjson => {
+            let columns = file_columns(connection, &file.found.name)?;
+            let format = match file.found.format {
+                Format::Json => "array",
+                _ => "newline_delimited",
+            };
+            let whole: Option<bool> = connection
+                .query_row(
+                    &format!(
+                        "SELECT bool_and(len(json_keys(json)) = {columns}) \
+                         FROM read_json_objects({}, format = '{format}')",
+                        literal(&reader_path(path)?)
+                    ),
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(map_error)?;
+            if whole == Some(false) {
+                return unmatched();
+            }
+            (None, None)
         }
         Format::Parquet => {
             let compression: Option<String> = connection
@@ -229,14 +305,28 @@ pub(super) fn load(
                 .ok();
             (None, compression.and_then(|named| compression_of(&named)))
         }
-        Format::Json | Format::Ndjson | Format::Excel | Format::DuckDb => (None, None),
+        Format::Excel | Format::DuckDb => (None, None),
     };
     Ok(Loaded::Copy(Copy {
         stamp,
         csv,
         compression,
         next: rows,
+        generation: next_generation(),
     }))
+}
+
+/// How many columns the copy of the file whose table is `name` has, its
+/// place apart.
+fn file_columns(connection: &duckdb::Connection, name: &str) -> Result<i64> {
+    connection
+        .query_row(
+            "SELECT count(*) FROM information_schema.columns \
+             WHERE table_catalog = ? AND table_name = ? AND column_name <> ?",
+            [EDITS, name, POSITION],
+            |row| row.get(0),
+        )
+        .map_err(map_error)
 }
 
 /// A Parquet file's compression as `parquet_metadata` names it, as `COPY`
@@ -296,9 +386,10 @@ fn layout(
             text => (text.len() == 1).then(|| text.as_bytes()[0]),
         }
     };
+    // A `.tsv` is read with a tab, whatever Reading CSV sets.
     let delimiter = match (format, reading.delimiter.char()) {
+        (Format::Tsv, _) => b'\t',
         (_, Some(set)) => u8::try_from(set).unwrap_or(b','),
-        (Format::Tsv, None) => b'\t',
         _ => byte(delimiter).unwrap_or(b','),
     };
     let header = match reading.header {
@@ -461,11 +552,13 @@ fn rewrite(
     };
     let (mut record, mut brk) = (Vec::new(), Vec::new());
     let (mut header, mut row, mut ended) = (layout.header, 0_u64, true);
+    // `ended` says whether the last record written ended its line: a new
+    // row after one that did not starts on a line of its own.
     while records.next(&mut record, &mut brk).map_err(io)? {
-        ended = !brk.is_empty();
         if blank(&record, layout) || std::mem::take(&mut header) {
             to.write_all(&record).map_err(io)?;
             to.write_all(&brk).map_err(io)?;
+            ended = !brk.is_empty();
             continue;
         }
         let at = row;
@@ -473,6 +566,7 @@ fn rewrite(
         if plan.deleted.contains(&at) {
             continue;
         }
+        ended = !brk.is_empty();
         match plan.changed.get(&at) {
             Some(cells) => {
                 let mut fields: Vec<Vec<u8>> = split(&record, layout)
@@ -555,9 +649,11 @@ fn written(text: &str, layout: &Layout) -> Vec<u8> {
 }
 
 /// What became of `changes`, to the copy of `file` and the file itself.
-/// Nothing is written where the file changed since it was read, or its
-/// folder cannot be written to: the copy is as it was, and the save says
-/// why ([`Unsaved`]).
+/// Nothing is written where the file changed since it was read, or was
+/// read again since the page the changes are of, or cannot be written: the
+/// copy is as it was, and the save says why ([`Unsaved`]). Once the file is
+/// written the save is: a copy that could not be brought up to it after is
+/// read again by the next page.
 pub(super) fn save(
     connection: &duckdb::Connection,
     file: &Opened,
@@ -575,6 +671,16 @@ pub(super) fn save(
         }
         error
     };
+    let lock = save_lock(path);
+    let _one_at_a_time = lock.lock().unwrap_or_else(PoisonError::into_inner);
+    // Rows found by their places in another copy may not be where they
+    // were: the file was read again, or a save numbered them again.
+    let Some(changes) = own_keys(changes, copy.generation) else {
+        return Err(unsaved(
+            Unsaved::Reread(label.clone()),
+            format!("{label} was read again since these rows were"),
+        ));
+    };
     if Stamp::of(path).ok() != Some(copy.stamp) {
         return Err(unsaved(
             Unsaved::Changed(label.clone()),
@@ -584,59 +690,98 @@ pub(super) fn save(
     connection
         .execute_batch("BEGIN TRANSACTION")
         .map_err(map_error)?;
-    let outcome = changed(connection, file, copy, changes, stop).and_then(|outcome| {
-        if !matches!(outcome, WriteOutcome::Written { .. }) {
-            return Ok(outcome);
-        }
-        write_file(connection, file, copy, changes).map_err(|error| match error {
-            WriteError::Io(error) => unsaved(
-                Unsaved::Unwritable(label.clone()),
-                format!("{label} could not be written: {error}"),
-            ),
-            WriteError::Db(error) => error,
-        })?;
-        Ok(outcome)
-    });
-    match outcome {
+    let rollback = || {
+        let _ = connection.execute_batch("ROLLBACK");
+    };
+    let (inserted, rows, gone) = match changed(connection, file, copy, &changes, stop) {
         Ok(WriteOutcome::Written {
             inserted,
             rows,
             gone,
             ..
-        }) => {
-            // Each row's place in the file as it is now: rows after a
-            // deleted one move up, and new rows are last.
-            let position = Dialect::DuckDb.quote_ident(POSITION);
-            let table = Dialect::DuckDb.qualified(&Copy::object(&file.found.name));
-            let renumbered = connection
-                .execute_batch(&format!(
-                    "UPDATE {table} SET {position} = placed.at FROM \
-                     (SELECT {position} AS was, row_number() OVER (ORDER BY {position}) - 1 AS at \
-                     FROM {table}) AS placed WHERE {table}.{position} = placed.was"
-                ))
-                .and_then(|()| connection.execute_batch("COMMIT"));
-            if let Err(error) = renumbered {
-                let _ = connection.execute_batch("ROLLBACK");
-                return Err(map_error(error));
-            }
-            copy.next = connection
-                .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
-                    row.get(0)
-                })
-                .map_err(map_error)?;
-            copy.stamp = Stamp::of(path).map_err(|error| Error::Io(error.to_string()))?;
-            Ok(WriteOutcome::Written {
-                inserted,
-                rows,
-                gone,
-                elapsed: started.elapsed(),
-            })
-        }
+        }) => (inserted, rows, gone),
         other => {
-            let _ = connection.execute_batch("ROLLBACK");
-            other
+            rollback();
+            return other;
+        }
+    };
+    let stamp = match write_file(connection, file, copy, &changes) {
+        Ok(stamp) => stamp,
+        Err(error) => {
+            rollback();
+            return Err(match error {
+                WriteError::Changed => unsaved(
+                    Unsaved::Changed(label.clone()),
+                    format!("{label} changed on disk while it was saved"),
+                ),
+                WriteError::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                    unsaved(
+                        Unsaved::Unwritable(label.clone()),
+                        format!("{label}'s folder cannot be written to: {error}"),
+                    )
+                }
+                WriteError::Io(error) => unsaved(
+                    Unsaved::Failed(label.clone(), error.to_string()),
+                    format!("{label} could not be written: {error}"),
+                ),
+                WriteError::Db(error) => error,
+            });
+        }
+    };
+    // The file is written. Each row's place in it as it is now: rows after
+    // a deleted one move up, and new rows are last.
+    let position = Dialect::DuckDb.quote_ident(POSITION);
+    let table = Dialect::DuckDb.qualified(&Copy::object(&file.found.name));
+    let brought = connection
+        .execute_batch(&format!(
+            "UPDATE {table} SET {position} = placed.at FROM \
+             (SELECT {position} AS was, row_number() OVER (ORDER BY {position}) - 1 AS at \
+             FROM {table}) AS placed WHERE {table}.{position} = placed.was; COMMIT"
+        ))
+        .and_then(|()| {
+            connection.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get::<_, i64>(0)
+            })
+        });
+    match brought {
+        Ok(rows) => {
+            copy.next = rows;
+            copy.stamp = stamp;
+        }
+        Err(_) => {
+            rollback();
+            copy.stamp = Stamp::UNKNOWN;
         }
     }
+    // The page's places are of the copy as it was.
+    copy.generation = next_generation();
+    Ok(WriteOutcome::Written {
+        inserted,
+        rows,
+        gone,
+        elapsed: started.elapsed(),
+    })
+}
+
+/// `changes` with each row's key as the copy finds it, its place alone.
+/// `None` where a key is not a place in the copy `generation`.
+fn own_keys(changes: &ChangeSet, generation: i64) -> Option<ChangeSet> {
+    let own = |key: &[(String, Value)]| match key {
+        [(place, Value::Int(at)), (of, Value::Int(copy))]
+            if place == POSITION && of == FILE_COPY && *copy == generation =>
+        {
+            Some(vec![(POSITION.to_owned(), Value::Int(*at))])
+        }
+        _ => None,
+    };
+    let mut own_set = changes.clone();
+    for row in &mut own_set.rows {
+        row.key = own(&row.key)?;
+    }
+    for row in &mut own_set.deletes {
+        row.key = own(&row.key)?;
+    }
+    Some(own_set)
 }
 
 /// Changes the copy as `changes` say, in the transaction `save` began.
@@ -738,18 +883,20 @@ fn place_of(key: &[(String, Value)]) -> Option<i64> {
 enum WriteError {
     /// The file or its folder could not be written.
     Io(std::io::Error),
+    /// The file changed on disk while the save wrote its hidden one.
+    Changed,
     Db(Error),
 }
 
 /// Writes the copy, changed, to the hidden file beside `file`, then
-/// renames it over `file`. The hidden file is gone after, whatever came of
-/// it.
+/// renames it over `file`, and returns the file as it is then. The hidden
+/// file is gone after, whatever came of it.
 fn write_file(
     connection: &duckdb::Connection,
     file: &Opened,
     copy: &Copy,
     changes: &ChangeSet,
-) -> std::result::Result<(), WriteError> {
+) -> std::result::Result<Stamp, WriteError> {
     let path = &file.found.path;
     let temp = temp_path(path);
     let written = match &copy.csv {
@@ -761,7 +908,15 @@ fn write_file(
         if let Ok(meta) = std::fs::metadata(path) {
             std::fs::set_permissions(&temp, meta.permissions()).map_err(WriteError::Io)?;
         }
-        std::fs::rename(&temp, path).map_err(WriteError::Io)
+        // Once more, right before it is replaced: another program's change
+        // while the hidden file was written is not written over. A rename
+        // keeps the hidden file's size and time, which are the file's next.
+        if Stamp::of(path).ok() != Some(copy.stamp) {
+            return Err(WriteError::Changed);
+        }
+        let stamp = Stamp::of(&temp).map_err(WriteError::Io)?;
+        std::fs::rename(&temp, path).map_err(WriteError::Io)?;
+        Ok(stamp)
     });
     if renamed.is_err() {
         let _ = std::fs::remove_file(&temp);
@@ -792,18 +947,19 @@ fn write_copy(
     let position = Dialect::DuckDb.quote_ident(POSITION);
     let table = Dialect::DuckDb.qualified(&Copy::object(&file.found.name));
     let to = path_text(temp).map_err(WriteError::Db)?;
-    // DuckDB's own error for a folder it cannot write to.
     connection
         .execute_batch(&format!(
             "COPY (SELECT * EXCLUDE ({position}) FROM {table} ORDER BY {position}) TO {} ({options})",
             literal(&to)
         ))
         .map_err(|error| {
-            let error = map_error(error);
-            match error.to_string().contains("IO Error") || error.to_string().contains("Permission") {
-                true => WriteError::Io(std::io::Error::other(error.to_string())),
-                false => WriteError::Db(error),
-            }
+            // DuckDB says the system's words of a file it cannot write.
+            let said = map_error(error).to_string();
+            let kind = match said.contains("Permission denied") {
+                true => std::io::ErrorKind::PermissionDenied,
+                false => std::io::ErrorKind::Other,
+            };
+            WriteError::Io(std::io::Error::new(kind, said))
         })
 }
 
@@ -992,6 +1148,26 @@ mod tests {
         assert_eq!(
             rewritten("id,title\n1,Dune", &layout(2), &plan),
             "id,title\n1,Dune\n3,\"Emma \"\"E\"\"\"\n"
+        );
+    }
+
+    #[test]
+    fn a_new_row_follows_the_last_row_written_not_the_last_read() {
+        // The last row, with no line break, is deleted: the row before it
+        // ended its line, and the new row goes right after.
+        let mut plan = Plan::default();
+        plan.deleted.insert(1);
+        plan.added.push(vec!["Cara".into()]);
+        assert_eq!(
+            rewritten("name\nAlice\nBob", &layout(1), &plan),
+            "name\nAlice\nCara\n"
+        );
+        // Kept, it still needs one.
+        let mut plan = Plan::default();
+        plan.added.push(vec!["Cara".into()]);
+        assert_eq!(
+            rewritten("name\nAlice\nBob", &layout(1), &plan),
+            "name\nAlice\nBob\nCara\n"
         );
     }
 

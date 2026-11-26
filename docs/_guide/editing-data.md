@@ -520,12 +520,15 @@ then takes the file's place:
 - A CSV or a TSV keeps every row you did not change as it was written,
   byte for byte. A changed or new row is written with the file's
   delimiter and quote, each value as you typed it. A date is written the
-  way the file writes its dates. A CSV whose rows Tabletist cannot match
-  one for one to the lines DuckDB read opens read-only, and its header
-  says why.
+  way the file writes its dates.
 - Parquet keeps its compression. JSON stays one array, and NDJSON one
   object per line. DuckDB writes these from the table, so a value can be
   written another way than it was: `12.50` as `12.5`.
+- A file a save could not write back as it is opens read-only, and its
+  header says why: a CSV whose rows Tabletist cannot match one for one to
+  the lines DuckDB read, a file with a column of its own named `rowid`,
+  or a JSON or NDJSON file whose records do not all have every key (a
+  save would give each the missing ones as `null`).
 - Excel files always open read-only, and so do `.duckdb` files for now.
   Their table's header says so.
 - An attached connection's tables open read-only here, even when the
@@ -535,8 +538,17 @@ Before it writes, a save checks that the file is as it was when its
 table was read: the same size and the same time it was changed. If
 another program changed it since, nothing is written: "orders.csv
 changed on disk since you opened it. Reload to see the new version;
-your 3 changes stay pending." If the folder can't be written to, nothing
-is written either, and your changes stay pending.
+your 3 changes stay pending." If the folder can't be written to, or the
+file can't be written for another reason, nothing is written either: the
+message says why, and your changes stay pending. Reloading the table
+lets them go, as with any pending edits: it asks first while **Ask
+before closing with unsaved edits** is on in Settings.
+
+A row is found by its place in the file as its page read it. If the file
+was read again since (it changed on disk, or a save moved rows up), a
+save of rows from the page before refuses: "orders.csv was read again
+since you changed these rows. Reload to see it as it is now; your 1
+change stays pending."
 
 The SQL editor reads a Files connection, whether it opens read-only or
 not: a statement that would write is refused, and its card says to edit

@@ -51,6 +51,10 @@ pub(crate) const MAIN: &str = "main";
 /// `positions` say it.
 pub const FILE_POSITION: &str = "__tabletist_position";
 
+/// The other part of that key: the copy of the file the place is of, as
+/// the page's `positions` say it. No column holds it: a save checks it.
+pub const FILE_COPY: &str = "__tabletist_copy";
+
 /// DuckDB's name for the in-memory database the views are in.
 const MEMORY: &str = "memory";
 
@@ -2085,13 +2089,16 @@ impl Adapter for Conn {
                         let loaded = edit::load(connection, file, &reading)?;
                         copies.insert(file.found.name.clone(), loaded);
                     }
-                    matches!(copies.get(&file.found.name), Some(edit::Loaded::Copy(_)))
+                    match copies.get(&file.found.name) {
+                        Some(edit::Loaded::Copy(copy)) => Some(copy.generation),
+                        Some(edit::Loaded::Unmatched(_)) | None => None,
+                    }
                 }
-                None => false,
+                None => None,
             };
             read_only(connection, |connection| {
-                if copied {
-                    return edit::page(connection, &query, limit);
+                if let Some(generation) = copied {
+                    return edit::page(connection, &query, limit, generation);
                 }
                 let catalog = columns(connection, &query.object, &attached)?;
                 let binary = binary_of(&catalog);

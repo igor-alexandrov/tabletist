@@ -1539,7 +1539,7 @@ pub fn lock_text(lock: Lock, table: &str, locale: Locale) -> String {
         Lock::Unmatched => fill(
             &gettext(
                 locale,
-                "{table} opens read-only: Tabletist couldn't match its rows to the file's lines",
+                "{table} opens read-only: a save couldn't write its rows back as they are",
             ),
             &[("{table}", table)],
         ),

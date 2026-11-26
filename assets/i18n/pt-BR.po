@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-26 15:06-0500\n"
+"POT-Creation-Date: 2026-11-26 17:12-0500\n"
 "PO-Revision-Date: 2026-11-19 16:11-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -3726,11 +3726,10 @@ msgstr ""
 #: src/ui/cell_editor.rs
 #, rust-format
 msgid ""
-"{table} opens read-only: Tabletist couldn't match its rows to the file's "
-"lines"
+"{table} opens read-only: a save couldn't write its rows back as they are"
 msgstr ""
-"{table} abre em somente leitura: o Tabletist não conseguiu associar as "
-"linhas dela às linhas do arquivo"
+"{table} abre em somente leitura: salvar não conseguiria gravar as linhas "
+"dela de volta como estão"
 
 #: src/ui/cell_editor.rs
 #, rust-format
@@ -4724,14 +4723,15 @@ msgid "Turn off to edit; saving rewrites the whole file"
 msgstr "Desative para editar; salvar regrava o arquivo inteiro"
 
 #: src/ui/connect_dialog/terminal.rs
-msgid "changes wait for :w, which rewrites the whole file"
-msgstr "as alterações esperam :w, que regrava o arquivo inteiro"
+#, rust-format
+msgid "changes wait for {key}, which rewrites the whole file"
+msgstr "as alterações esperam {key}, que regrava o arquivo inteiro"
 
 #: src/ui/connect_dialog/terminal.rs
 #, rust-format
-msgid "changes wait for :w, which rewrites the whole file ({file} {size})"
+msgid "changes wait for {key}, which rewrites the whole file ({file} {size})"
 msgstr ""
-"as alterações esperam :w, que regrava o arquivo inteiro ({file} {size})"
+"as alterações esperam {key}, que regrava o arquivo inteiro ({file} {size})"
 
 #: src/ui/connect_dialog/terminal.rs src/ui/export.rs src/ui/structure.rs
 #: src/ui/workspace.rs
@@ -7318,6 +7318,31 @@ msgstr[0] ""
 msgstr[1] ""
 "Não foi possível salvar {file}: não é possível gravar na pasta dele. Suas "
 "{n} alterações continuam pendentes."
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid "{file} couldn't be saved: {why}. Your {n} change stays pending."
+msgid_plural "{file} couldn't be saved: {why}. Your {n} changes stay pending."
+msgstr[0] ""
+"Não foi possível salvar {file}: {why}. Sua {n} alteração continua pendente."
+msgstr[1] ""
+"Não foi possível salvar {file}: {why}. Suas {n} alterações continuam "
+"pendentes."
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid ""
+"{file} was read again since you changed these rows. Reload to see it as it "
+"is now; your {n} change stays pending."
+msgid_plural ""
+"{file} was read again since you changed these rows. Reload to see it as it "
+"is now; your {n} changes stay pending."
+msgstr[0] ""
+"{file} foi lido de novo depois que você alterou estas linhas. Recarregue "
+"para vê-lo como está agora; sua {n} alteração continua pendente."
+msgstr[1] ""
+"{file} foi lido de novo depois que você alterou estas linhas. Recarregue "
+"para vê-lo como está agora; suas {n} alterações continuam pendentes."
 
 #: src/ui/pending_bar.rs
 #, rust-format

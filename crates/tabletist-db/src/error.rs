@@ -33,8 +33,14 @@ pub struct Named {
 pub enum Unsaved {
     /// The file changed on disk since its table was read.
     Changed(String),
-    /// The file, or its folder, could not be written to.
+    /// Its folder could not be written to.
     Unwritable(String),
+    /// It was read again since the rows to save were read: they may not
+    /// be where they were.
+    Reread(String),
+    /// It could not be written, for another reason: the file's name and
+    /// the system's words.
+    Failed(String, String),
 }
 
 /// Everything that can go wrong talking to a database. Messages are shown to

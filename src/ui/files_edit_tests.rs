@@ -68,7 +68,10 @@ fn orders_page(placed: bool) -> RowPage {
         has_more: false,
         ordered_by_key: placed,
         elapsed: std::time::Duration::from_millis(3),
-        positions: placed.then(|| vec![0, 1, 2]),
+        positions: placed.then(|| tabletist_db::Positions {
+            copy: 7,
+            rows: vec![0, 1, 2],
+        }),
     }
 }
 
@@ -103,8 +106,12 @@ fn sent(harness: &Harness) -> &tabletist_db::ChangeSet {
     .expect("a save was sent")
 }
 
+/// What finds the row at `at`, in the page's copy of the file.
 fn place(at: i64) -> Vec<(String, Value)> {
-    vec![(FILE_POSITION.to_owned(), Value::Int(at))]
+    vec![
+        (FILE_POSITION.to_owned(), Value::Int(at)),
+        (tabletist_db::FILE_COPY.to_owned(), Value::Int(7)),
+    ]
 }
 
 #[test]
@@ -196,6 +203,67 @@ fn a_folder_that_cannot_be_written_to_keeps_the_change() {
     ));
 }
 
+/// Answers the save just sent with a refusal the file made, `why`.
+fn refused(harness: &mut Harness, why: Unsaved) {
+    let mut error = tabletist_db::Error::query("refused");
+    if let tabletist_db::Error::Query { named, .. } = &mut error {
+        named.unsaved = Some(why);
+    }
+    harness.answer_written(Err(error));
+}
+
+#[test]
+fn a_save_of_rows_read_before_the_file_was_read_again_says_so() {
+    let (mut harness, tab, id) = orders(
+        Look::macos(),
+        orders_structure(Format::Csv, None),
+        orders_page(true),
+    );
+    super::insert_audit_tests::set(&mut harness, tab, id, (0, 2), "11.00");
+    harness.app.apply(Action::WriteEdits { tab, id });
+    refused(&mut harness, Unsaved::Reread("orders.csv".into()));
+    assert!(harness.has(
+        "orders.csv was read again since you changed these rows. Reload to see it as it is now; \
+         your 1 change stays pending."
+    ));
+}
+
+#[test]
+fn a_save_the_system_refused_says_the_system_s_words() {
+    let (mut harness, tab, id) = orders(
+        Look::macos(),
+        orders_structure(Format::Csv, None),
+        orders_page(true),
+    );
+    super::insert_audit_tests::set(&mut harness, tab, id, (0, 2), "11.00");
+    harness.app.apply(Action::WriteEdits { tab, id });
+    refused(
+        &mut harness,
+        Unsaved::Failed("orders.csv".into(), "Is a directory (os error 21)".into()),
+    );
+    assert!(harness.has(
+        "orders.csv couldn't be saved: Is a directory (os error 21). Your 1 change stays pending."
+    ));
+}
+
+#[test]
+fn a_header_with_no_room_for_the_reason_still_says_the_rest() {
+    let parts = ["Excel files open read-only", "120 rows", "5 columns"].map(String::from);
+    let width = |text: &str| text.len() as f32;
+    assert_eq!(
+        super::data_view::fit_header(&parts, true, 45.0, width).as_deref(),
+        Some("Excel files open read-only · 120 rows")
+    );
+    assert_eq!(
+        super::data_view::fit_header(&parts, true, 22.0, width).as_deref(),
+        Some("120 rows · 5 columns")
+    );
+    assert_eq!(
+        super::data_view::fit_header(&parts, false, 20.0, width),
+        None
+    );
+}
+
 #[test]
 fn an_excel_file_says_in_its_header_that_it_opens_read_only() {
     for look in looks() {
@@ -242,7 +310,7 @@ fn a_file_whose_rows_have_no_place_is_not_edited() {
             "orders",
             crate::i18n::Locale::English
         ),
-        "orders opens read-only: Tabletist couldn't match its rows to the file's lines"
+        "orders opens read-only: a save couldn't write its rows back as they are"
     );
 }
 

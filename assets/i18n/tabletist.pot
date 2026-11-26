@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-26 15:06-0500\n"
+"POT-Creation-Date: 2026-11-26 17:12-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -3622,8 +3622,7 @@ msgstr ""
 #: src/ui/cell_editor.rs
 #, rust-format
 msgid ""
-"{table} opens read-only: Tabletist couldn't match its rows to the file's "
-"lines"
+"{table} opens read-only: a save couldn't write its rows back as they are"
 msgstr ""
 
 #: src/ui/cell_editor.rs
@@ -4609,11 +4608,12 @@ msgstr ""
 
 #: src/ui/connect_dialog/terminal.rs
 #, rust-format
-msgid "changes wait for :w, which rewrites the whole file ({file} {size})"
+msgid "changes wait for {key}, which rewrites the whole file ({file} {size})"
 msgstr ""
 
 #: src/ui/connect_dialog/terminal.rs
-msgid "changes wait for :w, which rewrites the whole file"
+#, rust-format
+msgid "changes wait for {key}, which rewrites the whole file"
 msgstr ""
 
 #: src/ui/connect_dialog/terminal.rs src/ui/ddl.rs src/ui/picker.rs
@@ -7129,6 +7129,24 @@ msgid ""
 msgid_plural ""
 "{file} couldn't be saved: its folder can't be written to. Your {n} changes "
 "stay pending."
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid ""
+"{file} was read again since you changed these rows. Reload to see it as it "
+"is now; your {n} change stays pending."
+msgid_plural ""
+"{file} was read again since you changed these rows. Reload to see it as it "
+"is now; your {n} changes stay pending."
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid "{file} couldn't be saved: {why}. Your {n} change stays pending."
+msgid_plural "{file} couldn't be saved: {why}. Your {n} changes stay pending."
 msgstr[0] ""
 msgstr[1] ""
 

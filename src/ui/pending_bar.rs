@@ -295,6 +295,7 @@ fn unsaved_text(
 ) -> String {
     let counts = object.edits.counts();
     let n = counts.changes + counts.added + counts.deleted;
+    let mut why_said = String::new();
     let (words, file) = match why {
         tabletist_db::Unsaved::Changed(file) => (
             ngettext(
@@ -318,12 +319,37 @@ fn unsaved_text(
             ),
             file,
         ),
+        tabletist_db::Unsaved::Reread(file) => (
+            ngettext(
+                locale,
+                "{file} was read again since you changed these rows. Reload to see it as it is \
+                 now; your {n} change stays pending.",
+                "{file} was read again since you changed these rows. Reload to see it as it is \
+                 now; your {n} changes stay pending.",
+                n,
+            ),
+            file,
+        ),
+        // The system's own words of why, as a database's are said.
+        tabletist_db::Unsaved::Failed(file, said) => {
+            why_said = format::capped(said).trim_end_matches('.').to_owned();
+            (
+                ngettext(
+                    locale,
+                    "{file} couldn't be saved: {why}. Your {n} change stays pending.",
+                    "{file} couldn't be saved: {why}. Your {n} changes stay pending.",
+                    n,
+                ),
+                file,
+            )
+        }
     };
     crate::i18n::fill(
         &own(&words),
         &[
             ("{file}", &format::display_safe(file)),
             ("{n}", &crate::i18n::number(locale, n)),
+            ("{why}", &why_said),
         ],
     )
 }

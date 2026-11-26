@@ -31,8 +31,10 @@ pub enum Lock {
     /// its session may write: an Excel file's, a `.duckdb` file's, an
     /// attached connection's.
     Unedited(tabletist_db::Unedited),
-    /// A Files connection's CSV whose rows could not be read one for one
-    /// as DuckDB read them: a save could not write them back.
+    /// A Files connection's file a save could not write back as it is: a
+    /// CSV whose rows could not be read one for one as DuckDB read them,
+    /// one with a column named `rowid`, a JSON file whose records do not
+    /// all have every key.
     Unmatched,
     /// A view, a materialized view.
     NotATable,
@@ -189,12 +191,17 @@ impl Table<'_> {
     /// columns, or its place in its file. `None` where the page does not
     /// hold them.
     pub fn found_by(&self, row: usize, key: &[usize]) -> Option<Vec<(String, Value)>> {
+        // The place, and the copy of the file it is a place in: a save to
+        // another copy refuses it.
         if let Some(positions) = &self.page.positions {
-            let place = *positions.get(row)?;
-            return Some(vec![(
-                tabletist_db::FILE_POSITION.to_owned(),
-                Value::Int(place),
-            )]);
+            let place = *positions.rows.get(row)?;
+            return Some(vec![
+                (tabletist_db::FILE_POSITION.to_owned(), Value::Int(place)),
+                (
+                    tabletist_db::FILE_COPY.to_owned(),
+                    Value::Int(positions.copy),
+                ),
+            ]);
         }
         let values = self.page.rows.get(row)?;
         key.iter()

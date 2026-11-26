@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-26 15:06-0500\n"
+"POT-Creation-Date: 2026-11-26 17:12-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -3737,11 +3737,10 @@ msgstr "У {table} нет первичного ключа, поэтому стр
 #: src/ui/cell_editor.rs
 #, rust-format
 msgid ""
-"{table} opens read-only: Tabletist couldn't match its rows to the file's "
-"lines"
+"{table} opens read-only: a save couldn't write its rows back as they are"
 msgstr ""
-"{table} открывается только для чтения: Tabletist не смог сопоставить её "
-"строки со строками файла"
+"{table} открывается только для чтения: сохранение не смогло бы записать её "
+"строки обратно как есть"
 
 #: src/ui/cell_editor.rs
 #, rust-format
@@ -4744,13 +4743,15 @@ msgid "Turn off to edit; saving rewrites the whole file"
 msgstr "Выключите, чтобы изменять; сохранение перезаписывает файл целиком"
 
 #: src/ui/connect_dialog/terminal.rs
-msgid "changes wait for :w, which rewrites the whole file"
-msgstr "изменения ждут :w, которое перезаписывает файл целиком"
+#, rust-format
+msgid "changes wait for {key}, which rewrites the whole file"
+msgstr "изменения ждут {key}, которое перезаписывает файл целиком"
 
 #: src/ui/connect_dialog/terminal.rs
 #, rust-format
-msgid "changes wait for :w, which rewrites the whole file ({file} {size})"
-msgstr "изменения ждут :w, которое перезаписывает файл целиком ({file} {size})"
+msgid "changes wait for {key}, which rewrites the whole file ({file} {size})"
+msgstr ""
+"изменения ждут {key}, которое перезаписывает файл целиком ({file} {size})"
 
 #: src/ui/connect_dialog/terminal.rs src/ui/export.rs src/ui/structure.rs
 #: src/ui/workspace.rs
@@ -7383,6 +7384,38 @@ msgstr[1] ""
 msgstr[2] ""
 "Не удалось сохранить {file}: в его папку нельзя записывать. Ваши {n} "
 "изменений остаются в ожидании."
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid "{file} couldn't be saved: {why}. Your {n} change stays pending."
+msgid_plural "{file} couldn't be saved: {why}. Your {n} changes stay pending."
+msgstr[0] ""
+"Не удалось сохранить {file}: {why}. Ваше {n} изменение остаётся в ожидании."
+msgstr[1] ""
+"Не удалось сохранить {file}: {why}. Ваши {n} изменения остаются в ожидании."
+msgstr[2] ""
+"Не удалось сохранить {file}: {why}. Ваши {n} изменений остаются в ожидании."
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid ""
+"{file} was read again since you changed these rows. Reload to see it as it "
+"is now; your {n} change stays pending."
+msgid_plural ""
+"{file} was read again since you changed these rows. Reload to see it as it "
+"is now; your {n} changes stay pending."
+msgstr[0] ""
+"{file} был прочитан заново после того, как вы изменили эти строки. "
+"Перезагрузите, чтобы увидеть его как есть сейчас; ваше {n} изменение "
+"остаётся в ожидании."
+msgstr[1] ""
+"{file} был прочитан заново после того, как вы изменили эти строки. "
+"Перезагрузите, чтобы увидеть его как есть сейчас; ваши {n} изменения "
+"остаются в ожидании."
+msgstr[2] ""
+"{file} был прочитан заново после того, как вы изменили эти строки. "
+"Перезагрузите, чтобы увидеть его как есть сейчас; ваши {n} изменений "
+"остаются в ожидании."
 
 #: src/ui/pending_bar.rs
 #, rust-format

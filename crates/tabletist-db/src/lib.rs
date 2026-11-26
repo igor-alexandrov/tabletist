@@ -59,10 +59,10 @@ pub use dialect::{
     DeleteParts, Dialect, InsertParts, InsertStatement, RowDeletion, RowUpdate, Sql, UpdateParts,
     escape_like, quote_literal,
 };
-pub use duck::{FILE_POSITION, FileFacts, FilesRead, Unedited, set_extension_directory};
+pub use duck::{FILE_COPY, FILE_POSITION, FileFacts, FilesRead, Unedited, set_extension_directory};
 pub use error::{Error, Named, Result, SshStage, Unsaved};
 pub use lookup::{Lookup, LookupPage, LookupPart, LookupRow, Matched};
-pub use query::{Filter, FilterOp, RowPage, RowQuery, Sort, SortDir};
+pub use query::{Filter, FilterOp, Positions, RowPage, RowQuery, Sort, SortDir};
 pub use script::{
     ScriptEnd, ScriptMode, ScriptOutcome, StatementOutcome, StatementResult, StopFlag,
 };

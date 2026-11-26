@@ -155,6 +155,22 @@ fn fit_parts(parts: &[String], room: f32, width: impl Fn(&str) -> f32) -> Option
         .find(|text| width(text) <= room)
 }
 
+/// [`fit_parts`] of a header whose `parts` begin with why its table is not
+/// edited, where `reasoned`: the reason stays first while it fits, else the
+/// rest shows without it. Its node names the whole summary either way.
+pub(super) fn fit_header(
+    parts: &[String],
+    reasoned: bool,
+    room: f32,
+    width: impl Fn(&str) -> f32,
+) -> Option<String> {
+    fit_parts(parts, room, &width).or_else(|| {
+        reasoned
+            .then(|| fit_parts(parts.get(1..).unwrap_or_default(), room, &width))
+            .flatten()
+    })
+}
+
 /// Paints `text` from `x`, centred on `y`, and names it `name` for screen
 /// readers (the whole text, when the painted one is cut). Returns its width.
 pub fn paint_named(ui: &egui::Ui, x: f32, y: f32, text: Text, name: &str) -> f32 {
@@ -223,7 +239,11 @@ pub fn header(
     // A file's table its connection does not edit, though it may write,
     // says why first: "Excel files open read-only".
     let never = Table::of(workspace, object).and_then(|table| table.never());
-    if let Some(lock @ (crate::edit::Lock::Unedited(_) | crate::edit::Lock::Unmatched)) = never {
+    let reasoned = matches!(
+        never,
+        Some(crate::edit::Lock::Unedited(_) | crate::edit::Lock::Unmatched)
+    );
+    if let (true, Some(lock)) = (reasoned, never) {
         parts.insert(0, look.label(&cell_editor::lock_text(lock, &name, locale)));
     }
     let summary = parts.join(" · ");
@@ -321,9 +341,9 @@ pub fn header(
                     grid::ellipsize(&name, room.max(0.0), false, |text| width(title_role, text));
                 let x =
                     left + paint_named(ui, left, center, title(&shown, palette.text), &name) + 16.0;
-                if let Some(shown) =
-                    fit_parts(&parts, left + room - x, |text| width(sub_role, text))
-                {
+                if let Some(shown) = fit_header(&parts, reasoned, left + room - x, |text| {
+                    width(sub_role, text)
+                }) {
                     paint_named(ui, x, center, sub(&shown, palette.dim), &summary);
                 }
                 // `rows  structure  ddl`, the active one underlined, in
@@ -515,7 +535,7 @@ pub fn header(
                 widgets::announce(ui, named, env.label(platform));
                 title_width += 8.0 + width;
             }
-            let sub_width = fit_parts(&parts, room, |text| width(sub_role, text))
+            let sub_width = fit_header(&parts, reasoned, room, |text| width(sub_role, text))
                 .map_or(0.0, |shown| {
                     paint_named(ui, left, sub_y, sub(&shown, palette.dim), &summary)
                 });
