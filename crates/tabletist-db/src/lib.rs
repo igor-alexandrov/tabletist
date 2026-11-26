@@ -94,6 +94,9 @@ pub struct Connection {
     access: Access,
     /// Declared after `inner`, so the driver closes before its tunnel.
     tunnel: Option<ssh::Tunnel>,
+    /// The tunnels of the saved connections a Files connection attached,
+    /// closed after it too: held, never read.
+    _tunnels: Vec<ssh::Tunnel>,
 }
 
 enum Inner {
@@ -135,7 +138,7 @@ impl Inner {
                     .as_ref()
                     .ok_or_else(|| Error::InvalidSpec("choose a folder or files".into()))?;
                 Ok(Self::Files(Box::new(
-                    duck::Conn::open(source, &spec.csv, false).await?,
+                    duck::Conn::open(source, &spec.csv, false, Vec::new(), None).await?,
                 )))
             }
         }
@@ -177,6 +180,7 @@ impl Connection {
                 inner: Inner::connect(spec, secrets, None, access).await?,
                 access,
                 tunnel: None,
+                _tunnels: Vec::new(),
             });
         };
         let tunnel = ssh::Tunnel::open(ssh, &spec.host, spec.port, secrets, host_keys).await?;
@@ -185,6 +189,7 @@ impl Connection {
                 inner,
                 access,
                 tunnel: Some(tunnel),
+                _tunnels: Vec::new(),
             }),
             Err(error) => Err(tunnel.forward_error().unwrap_or(error)),
         }
@@ -625,16 +630,105 @@ impl Connection {
 
     /// A Files connection's session for its Test: every file it can open,
     /// those it cannot left out and said by [`Connection::read_files`],
-    /// where a session to browse does not open with one.
+    /// where a session to browse does not open with one. Nothing is
+    /// attached: see [`Connection::open_files_to_test_with`].
     pub async fn open_files_to_test(spec: &ConnectSpec) -> Result<Self> {
+        Self::open_files(spec, &[], &HostKeys::default(), true, None).await
+    }
+
+    /// [`Connection::open_files_to_test`], with the saved connections in
+    /// `attaching` attached as [`Connection::connect_files`] attaches them.
+    pub async fn open_files_to_test_with(
+        spec: &ConnectSpec,
+        attaching: &[files::Attaching],
+        host_keys: &HostKeys,
+        downloading: Option<files::Downloading>,
+    ) -> Result<Self> {
+        Self::open_files(spec, attaching, host_keys, true, downloading).await
+    }
+
+    /// A Files connection's session, read-only, with the saved
+    /// connections in `attaching` attached read-only under their names,
+    /// each through its own SSH tunnel where it has one (`host_keys` are
+    /// those the user trusts). One that cannot be attached fails it.
+    /// `downloading` is told of each reader DuckDB downloads first.
+    pub async fn connect_files(
+        spec: &ConnectSpec,
+        attaching: &[files::Attaching],
+        host_keys: &HostKeys,
+        downloading: Option<files::Downloading>,
+    ) -> Result<Self> {
+        Self::open_files(spec, attaching, host_keys, false, downloading).await
+    }
+
+    async fn open_files(
+        spec: &ConnectSpec,
+        attaching: &[files::Attaching],
+        host_keys: &HostKeys,
+        past: bool,
+        downloading: Option<files::Downloading>,
+    ) -> Result<Self> {
         let source = spec
             .files
             .as_ref()
             .ok_or_else(|| Error::InvalidSpec("choose a folder or files".into()))?;
+        let mut each = Vec::with_capacity(attaching.len());
+        let mut tunnels = Vec::new();
+        for attaching in attaching {
+            let ssh = match attaching.spec.driver {
+                Driver::Postgres | Driver::MySql => attaching.spec.ssh.as_ref(),
+                Driver::Sqlite | Driver::BigQuery | Driver::Files => None,
+            };
+            let via = match ssh {
+                Some(ssh) => {
+                    let spec = &attaching.spec;
+                    let tunnel = ssh::Tunnel::open(
+                        ssh,
+                        &spec.host,
+                        spec.port,
+                        &attaching.secrets,
+                        host_keys,
+                    )
+                    .await
+                    .map_err(|error| match error {
+                        // The stage stays, so an unknown host key can still
+                        // be trusted from where it was met.
+                        Error::Ssh { stage, message } => Error::Ssh {
+                            stage,
+                            message: format!("Can't attach {}: {message}", attaching.name),
+                        },
+                        error => {
+                            Error::Connect(format!("Can't attach {}: {error}", attaching.name))
+                        }
+                    })?;
+                    let port = tunnel.port;
+                    tunnels.push((attaching.name.clone(), tunnel));
+                    Some(port)
+                }
+                None => None,
+            };
+            each.push((attaching.clone(), via));
+        }
+        let opened = duck::Conn::open(source, &spec.csv, past, each, downloading).await;
+        let conn = match opened {
+            Ok(conn) => conn,
+            // Where an attach failed, a tunnel's own words say more than
+            // the server's refusal.
+            Err(Error::Connect(message)) if message.starts_with("Can't attach ") => {
+                let forwarded = tunnels.iter().find_map(|(name, tunnel)| {
+                    let error = tunnel.forward_error()?;
+                    Some(Error::Connect(format!("Can't attach {name}: {error}")))
+                });
+                return Err(forwarded.unwrap_or(Error::Connect(message)));
+            }
+            Err(error) => return Err(error),
+        };
+        let tunnels = tunnels.into_iter().map(|(_, tunnel)| tunnel).collect();
         Ok(Self {
-            inner: Inner::Files(Box::new(duck::Conn::open(source, &spec.csv, true).await?)),
+            inner: Inner::Files(Box::new(conn)),
             access: Access::ReadOnly,
             tunnel: None,
+            _tunnels: tunnels,
         })
     }
 

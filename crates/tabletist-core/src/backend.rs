@@ -19,6 +19,7 @@ use crate::connections::SavedConnections;
 use crate::secrets::{Keyring, SecretString};
 
 mod agents;
+pub mod attach;
 pub mod export;
 mod history;
 mod updates;
@@ -70,6 +71,9 @@ pub enum Command {
         host_keys: HostKeys,
         /// Whether the session may write.
         access: Access,
+        /// The saved connections a Files connection attaches: their
+        /// secrets are read from the keyring as it opens.
+        attach: Vec<attach::AttachTo>,
     },
     /// Connect and close again, for the dialog's Test button.
     Test {
@@ -77,6 +81,8 @@ pub enum Command {
         spec: ConnectSpec,
         secrets: Secrets,
         host_keys: HostKeys,
+        /// As a Connect's.
+        attach: Vec<attach::AttachTo>,
     },
     /// Stops the check in full that a Files connection's Test `request`
     /// started, where it still runs: the dialog closed, or what it tested
@@ -494,6 +500,12 @@ pub enum Event {
     SourceRead {
         request: RequestId,
         result: Result<tabletist_db::files::Scan, String>,
+    },
+    /// DuckDB is downloading `reader` for Test `request`: the Test's
+    /// status says so until it answers.
+    FilesDownloading {
+        request: RequestId,
+        reader: tabletist_db::files::Reader,
     },
     /// A Files connection's Test: what it read of every file.
     FilesTested {
@@ -2331,47 +2343,56 @@ impl Worker {
                 secrets,
                 host_keys,
                 access,
+                attach,
             } => {
                 self.connecting.insert(session);
                 let outbox = self.outbox.clone();
                 let ready = self.ready.clone();
+                let keyring = self.keyring.clone();
                 tokio::spawn(async move {
                     let started = tokio::time::Instant::now();
-                    let outcome = Connection::connect_with(&spec, &secrets, &host_keys, access)
-                        .await
-                        .map(|connection| {
-                            let driver = connection.driver();
-                            let encrypted = connection.is_encrypted();
-                            // What the session says it is, not what was
-                            // asked for: the UI shows and trusts this.
-                            let opened = connection.access();
-                            let cancel = connection.cancel_handle();
-                            let (queue, commands) = tokio_mpsc::unbounded_channel();
-                            let (stop, stopped) = tokio::sync::oneshot::channel();
-                            let running = Arc::new(Mutex::new(Running {
-                                grace: grace_after(started.elapsed()),
-                                ..Running::default()
-                            }));
-                            tokio::spawn(run_session(
-                                session,
-                                connection,
-                                commands,
-                                stopped,
-                                Arc::clone(&running),
-                                outbox,
-                            ));
-                            (
-                                driver,
-                                encrypted,
-                                opened,
-                                SessionHandle {
-                                    queue,
-                                    cancel,
-                                    running,
-                                    _stop: stop,
-                                },
-                            )
-                        });
+                    let connected = match attach.is_empty() {
+                        true => Connection::connect_with(&spec, &secrets, &host_keys, access).await,
+                        false => match attach::attaching(attach, &keyring).await {
+                            Ok(attaching) => {
+                                Connection::connect_files(&spec, &attaching, &host_keys, None).await
+                            }
+                            Err(error) => Err(error),
+                        },
+                    };
+                    let outcome = connected.map(|connection| {
+                        let driver = connection.driver();
+                        let encrypted = connection.is_encrypted();
+                        // What the session says it is, not what was
+                        // asked for: the UI shows and trusts this.
+                        let opened = connection.access();
+                        let cancel = connection.cancel_handle();
+                        let (queue, commands) = tokio_mpsc::unbounded_channel();
+                        let (stop, stopped) = tokio::sync::oneshot::channel();
+                        let running = Arc::new(Mutex::new(Running {
+                            grace: grace_after(started.elapsed()),
+                            ..Running::default()
+                        }));
+                        tokio::spawn(run_session(
+                            session,
+                            connection,
+                            commands,
+                            stopped,
+                            Arc::clone(&running),
+                            outbox,
+                        ));
+                        (
+                            driver,
+                            encrypted,
+                            opened,
+                            SessionHandle {
+                                queue,
+                                cancel,
+                                running,
+                                _stop: stop,
+                            },
+                        )
+                    });
                     let _ = ready.send(Ready {
                         session,
                         request,
@@ -2384,6 +2405,7 @@ impl Worker {
                 spec,
                 secrets,
                 host_keys,
+                attach,
             } => {
                 let outbox = self.outbox.clone();
                 // A Files connection's Test reads the start of every file
@@ -2398,8 +2420,25 @@ impl Worker {
                     | tabletist_db::Driver::BigQuery => false,
                 };
                 if files {
+                    let keyring = self.keyring.clone();
+                    let told = outbox.clone();
+                    let downloading: tabletist_db::files::Downloading = Arc::new(move |reader| {
+                        told.emit(Event::FilesDownloading { request, reader });
+                    });
                     let task = tokio::spawn(async move {
-                        let connection = match Connection::open_files_to_test(&spec).await {
+                        let opened = match attach::attaching(attach, &keyring).await {
+                            Ok(attaching) => {
+                                Connection::open_files_to_test_with(
+                                    &spec,
+                                    &attaching,
+                                    &host_keys,
+                                    Some(downloading),
+                                )
+                                .await
+                            }
+                            Err(error) => Err(error),
+                        };
+                        let connection = match opened {
                             Ok(connection) => connection,
                             Err(error) => {
                                 outbox.emit(Event::FilesTested {
@@ -2643,9 +2682,10 @@ impl Worker {
                 lock(&self.exports).insert(id, stopper.clone());
                 let exports = Arc::clone(&self.exports);
                 let outbox = self.outbox.clone();
+                let keyring = self.keyring.clone();
                 tokio::spawn(async move {
                     let told = outbox.clone();
-                    export::run(*job, stopper, move |state| {
+                    export::run(*job, stopper, &keyring, move |state| {
                         told.emit(Event::Export { job: id, state });
                     })
                     .await;
@@ -4054,6 +4094,7 @@ mod tests {
                 secrets: Secrets::default(),
                 host_keys: HostKeys::default(),
                 access,
+                attach: Vec::new(),
             });
             match backend.wait(WAIT) {
                 Some(Event::Connected { access: opened, .. }) => assert_eq!(opened, access),
@@ -4075,6 +4116,7 @@ mod tests {
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
             access: Access::ReadOnly,
+            attach: Vec::new(),
         });
         assert!(matches!(
             backend.wait(WAIT),
@@ -4236,6 +4278,7 @@ mod tests {
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
             access: Access::ReadOnly,
+            attach: Vec::new(),
         });
         assert!(matches!(
             backend.wait(WAIT),
@@ -4325,6 +4368,7 @@ mod tests {
             spec,
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
+            attach: Vec::new(),
         });
         let checks = match backend.wait(WAIT) {
             Some(Event::FilesTested {
@@ -4377,6 +4421,7 @@ mod tests {
                 spec,
                 secrets: Secrets::default(),
                 host_keys: HostKeys::default(),
+                attach: Vec::new(),
             });
             worker.handle(Command::StopCheck {
                 request: RequestId(8),
@@ -4401,6 +4446,7 @@ mod tests {
             spec,
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
+            attach: Vec::new(),
         });
         assert!(matches!(
             backend.wait(WAIT),
@@ -4423,6 +4469,7 @@ mod tests {
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
             access: Access::ReadOnly,
+            attach: Vec::new(),
         });
         assert!(matches!(backend.wait(WAIT), Some(Event::Connected { .. })));
         let mut slow = RowQuery::new(ObjectRef::new("main", "big"), 10);
@@ -4480,6 +4527,7 @@ mod tests {
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
             access: Access::ReadOnly,
+            attach: Vec::new(),
         });
         assert!(matches!(backend.wait(WAIT), Some(Event::Connected { .. })));
         (backend, session)
@@ -4968,6 +5016,7 @@ mod tests {
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
             access: Access::ReadOnly,
+            attach: Vec::new(),
         });
         for command in queued {
             worker.handle(command);
@@ -7446,6 +7495,7 @@ mod tests {
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
             access: Access::ReadOnly,
+            attach: Vec::new(),
         });
         assert!(matches!(backend.wait(WAIT), Some(Event::Connected { .. })));
         backend.send(Command::Close { session });
@@ -7473,6 +7523,7 @@ mod tests {
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
             access: Access::ReadOnly,
+            attach: Vec::new(),
         });
         assert!(matches!(backend.wait(WAIT), Some(Event::Connected { .. })));
         let mut slow = RowQuery::new(ObjectRef::new("main", "big"), 10);
@@ -7584,6 +7635,7 @@ mod tests {
                 ..Secrets::default()
             },
             host_keys: HostKeys::default(),
+            attach: Vec::new(),
         };
         assert!(!format!("{command:?}").contains("hunter2"));
     }
@@ -7665,6 +7717,7 @@ mod tests {
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
             access: Access::ReadOnly,
+            attach: Vec::new(),
         });
         assert!(matches!(backend.wait(WAIT), Some(Event::Connected { .. })));
         backend.send(Command::ListDatabases {
@@ -7718,6 +7771,7 @@ mod tests {
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
             access,
+            attach: Vec::new(),
         });
         assert!(matches!(backend.wait(WAIT), Some(Event::Connected { .. })));
         (dir, backend, session)

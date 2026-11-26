@@ -1,5 +1,6 @@
 //! Application state and the reducer.
 
+use crate::backend::attach::AttachTo;
 use crate::backend::{Backend, SessionId};
 use crate::connections::SavedConnections;
 use std::collections::HashMap;
@@ -3349,6 +3350,13 @@ impl App {
             Action::EditConnection(id) => {
                 if let Some(saved) = self.connections.get(&id) {
                     let mut form = ConnectionForm::from_saved(saved);
+                    // A connection deleted since it was attached, or no
+                    // longer one that can be (its type changed), is let
+                    // go: its row is no longer listed to untick.
+                    let joinable =
+                        crate::connections::join::joinable(&self.connections.connections);
+                    form.files_attach
+                        .retain(|each| joinable.iter().any(|row| row.id.0 == each.connection));
                     // What is in force, where a change made outside the
                     // app is held: what the person was shown.
                     form.agents.access = self.agents_access(saved);
@@ -3523,6 +3531,41 @@ impl App {
                     self.read_form_source();
                 }
             }
+            Action::ToggleAttach(id) => {
+                let Some(Dialog::Connection(form)) = &mut self.dialog else {
+                    return;
+                };
+                if let Some(at) = form
+                    .files_attach
+                    .iter()
+                    .position(|each| each.connection == id.0)
+                {
+                    form.files_attach.remove(at);
+                } else if let Some(saved) = self.connections.get(&id) {
+                    let blocked = crate::connections::join::joinable(std::slice::from_ref(saved))
+                        .first()
+                        .is_none_or(|each| each.blocked.is_some());
+                    if !blocked {
+                        let taken = form.own_schemas();
+                        let name = crate::connections::join::default_name(
+                            saved,
+                            &form.files_attach,
+                            &taken,
+                        );
+                        form.files_attach.push(tabletist_db::files::Attach {
+                            connection: id.0.clone(),
+                            name,
+                        });
+                    }
+                }
+                // A Test of what it attached before says nothing of this.
+                form.forget_test();
+            }
+            Action::AttachNameTyped => {
+                if let Some(Dialog::Connection(form)) = &mut self.dialog {
+                    form.forget_test();
+                }
+            }
             Action::SetFilesKind(kind) => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
                     form.files_kind = kind;
@@ -3639,6 +3682,7 @@ impl App {
                 // The clock starts when the Test is sent, not while a saved
                 // secret is read from the keyring.
                 form.test_started = None;
+                form.files_downloading = None;
                 form.test_took = None;
                 // Typed secrets are used as they are; unchanged saved ones
                 // are read from the keyring first, and the test runs once
@@ -3686,11 +3730,13 @@ impl App {
                 if loads.is_empty() {
                     form.test_started = Some(std::time::Instant::now());
                     hold_check(&mut self.files_check, &mut self.backend, &spec, request);
+                    let attach = AttachTo::of(&spec.attach, &self.connections);
                     self.backend.send(Command::Test {
                         request,
                         spec,
                         secrets,
                         host_keys: self.host_keys.clone(),
+                        attach,
                     });
                 } else {
                     for (kind, account) in loads {
@@ -4292,6 +4338,20 @@ impl App {
                 *slot = None;
             }
         }
+        // What a Files tab attaches: on a wake what its session attached
+        // before, as it keeps its access; on an open or a Reconnect, the
+        // saved connections as they are now.
+        let kept = self
+            .workspace(tab)
+            .filter(|workspace| workspace.keep_access)
+            .map(|workspace| workspace.attached.clone());
+        let attach = match kept {
+            Some(kept) => kept,
+            None => AttachTo::of(&spec.attach, &self.connections),
+        };
+        if let Some(workspace) = self.workspace_mut(tab) {
+            workspace.attached = attach.clone();
+        }
         self.backend.send(Command::Connect {
             session,
             request,
@@ -4299,6 +4359,7 @@ impl App {
             secrets,
             host_keys: self.host_keys.clone(),
             access,
+            attach,
         });
     }
 
@@ -4892,10 +4953,18 @@ impl App {
                     self.files_check = None;
                 }
             }
+            Event::FilesDownloading { request, reader } => {
+                if let Some(Dialog::Connection(form)) = &mut self.dialog
+                    && form.test == TestState::Running(request)
+                {
+                    form.files_downloading = Some(reader);
+                }
+            }
             Event::FilesTested { request, result } => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog
                     && form.test == TestState::Running(request)
                 {
+                    form.files_downloading = None;
                     let elapsed = form.test_started.take().map(|started| started.elapsed());
                     form.test_took = if result.is_ok() { elapsed } else { None };
                     form.test = match result {
@@ -4906,6 +4975,24 @@ impl App {
                                 (!read.checks.is_empty()).then_some((request, read.checks.len()));
                             form.files_tested = Some(read);
                             TestState::Passed
+                        }
+                        // An attached connection's SSH host whose key is not
+                        // trusted yet: trusted from here, as any Test's.
+                        Err(Error::Ssh {
+                            stage:
+                                SshStage::HostKeyUnknown {
+                                    host,
+                                    port,
+                                    fingerprint,
+                                },
+                            ..
+                        }) if self.host_keys_error.is_none() => {
+                            form.files_tested = None;
+                            TestState::Untrusted {
+                                host,
+                                port,
+                                fingerprint,
+                            }
                         }
                         // A file's or a folder's own words, which name it.
                         Err(Error::Connect(message)) => {
@@ -5248,11 +5335,13 @@ impl App {
                                         &spec,
                                         test,
                                     );
+                                    let attach = AttachTo::of(&spec.attach, &self.connections);
                                     self.backend.send(Command::Test {
                                         request: test,
                                         spec,
                                         secrets: form.test_secrets.clone(),
                                         host_keys: self.host_keys.clone(),
+                                        attach,
                                     });
                                 }
                             }

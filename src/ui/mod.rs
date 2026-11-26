@@ -17,6 +17,7 @@ mod agents_tests;
 mod agent_settings_tests;
 #[cfg(test)]
 mod appearance_settings_tests;
+pub mod attach_list;
 pub mod banner;
 pub mod calendar;
 #[cfg(test)]
@@ -96,6 +97,8 @@ pub mod host_key_prompt;
 mod indent_settings_tests;
 #[cfg(test)]
 mod insert_audit_tests;
+#[cfg(test)]
+mod join_tests;
 pub mod json_text;
 pub mod json_view;
 mod key_picker;
@@ -267,6 +270,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             form.editing.as_ref(),
             &app.connections.connections,
         );
+        form.joinable = crate::connections::join::joinable(&app.connections.connections);
         let asked =
             connect_dialog::show(&ui.ctx().clone(), paint, form, &app.keymap, loaded, groups);
         app.actions.extend(asked);

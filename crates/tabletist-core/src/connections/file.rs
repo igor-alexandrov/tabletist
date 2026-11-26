@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use tabletist_db::agent::{ColumnName, TableName, Tables};
-use tabletist_db::files::{Change, Delimiter, Header, Override, Reading, Source, Types};
+use tabletist_db::files::{Attach, Change, Delimiter, Header, Override, Reading, Source, Types};
 use tabletist_db::{ConnectSpec, Driver, SshAuth, SshSpec, TlsMode};
 
 use super::{
@@ -31,8 +31,12 @@ use crate::util::toml_string;
 /// know a key refuses only a file it would lose it from, and one that
 /// would read agents' tables as all of them, or a masked column's values
 /// as they are, never reads the file. 9 has the group the person put a
-/// connection in (`group`).
-pub(super) const VERSION: u32 = 9;
+/// connection in (`group`), and 10 the saved connections a Files
+/// connection attaches (`[[connections.attach]]`).
+pub(super) const VERSION: u32 = 10;
+
+/// The version that has groups and no connection a Files one attaches.
+const GROUPS_VERSION: u32 = 9;
 
 /// The version that has how Files connections read CSV and no group.
 const CSV_VERSION: u32 = 8;
@@ -132,6 +136,41 @@ struct Entry {
     csv: Option<CsvTable>,
     #[serde(default, rename = "override")]
     overrides: Vec<OverrideTable>,
+    #[serde(default)]
+    attach: Vec<AttachTable>,
+}
+
+/// A saved connection a Files connection attaches, as the file has it: by
+/// its id, which a rename leaves alone, and the name SQL calls it by.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttachTable {
+    connection: String,
+    #[serde(rename = "as")]
+    name: String,
+}
+
+impl AttachTable {
+    fn attach(self, connection: &str) -> Result<Attach, String> {
+        if self.connection.trim().is_empty() {
+            return Err(format!(
+                "connection {connection:?}: an attach names no connection"
+            ));
+        }
+        let name = self.name;
+        if tabletist_db::files::table_name(&name) != name
+            || tabletist_db::files::reserved_name(&name)
+        {
+            return Err(format!(
+                "connection {connection:?}: {name:?} cannot name an attached connection; \
+                 a name is lowercase letters, digits and _, and not one of DuckDB's own"
+            ));
+        }
+        Ok(Attach {
+            connection: self.connection,
+            name,
+        })
+    }
 }
 
 /// How a Files connection reads its CSV files, as the file has it: each
@@ -443,6 +482,31 @@ impl Entry {
                 Reading::default()
             }
         };
+        let attach = match self.driver {
+            Driver::Files => {
+                let mut attach: Vec<Attach> = Vec::with_capacity(self.attach.len());
+                for table in self.attach {
+                    let each = table.attach(&self.name)?;
+                    if attach.iter().any(|other| other.name == each.name) {
+                        return Err(format!(
+                            "connection {:?} attaches two connections as {:?}",
+                            self.name, each.name
+                        ));
+                    }
+                    attach.push(each);
+                }
+                attach
+            }
+            Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery
+                if !self.attach.is_empty() =>
+            {
+                return Err(format!(
+                    "connection {:?}: only a Files connection attaches others",
+                    self.name
+                ));
+            }
+            Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => Vec::new(),
+        };
         // A blank group is none: the connection goes by the rule.
         let group = self
             .group
@@ -469,6 +533,7 @@ impl Entry {
                 ssh,
                 files,
                 csv,
+                attach,
             },
             agents,
         })
@@ -719,14 +784,18 @@ pub(super) fn write(connections: &[SavedConnection]) -> std::io::Result<String> 
     let groups = connections
         .iter()
         .any(|saved| written_group(saved).is_some());
-    let version = match (groups, csv, files, masks, hides, agents) {
-        (true, _, _, _, _, _) => VERSION,
-        (false, true, _, _, _, _) => CSV_VERSION,
-        (false, false, true, _, _, _) => FILES_VERSION,
-        (false, false, false, true, _, _) => MASKED_VERSION,
-        (false, false, false, false, true, _) => TABLES_VERSION,
-        (false, false, false, false, false, true) => AGENTS_VERSION,
-        (false, false, false, false, false, false) => FIRST_VERSION,
+    let attaches = connections
+        .iter()
+        .any(|saved| saved.spec.files.is_some() && !saved.spec.attach.is_empty());
+    let version = match (attaches, groups, csv, files, masks, hides, agents) {
+        (true, _, _, _, _, _, _) => VERSION,
+        (false, true, _, _, _, _, _) => GROUPS_VERSION,
+        (false, false, true, _, _, _, _) => CSV_VERSION,
+        (false, false, false, true, _, _, _) => FILES_VERSION,
+        (false, false, false, false, true, _, _) => MASKED_VERSION,
+        (false, false, false, false, false, true, _) => TABLES_VERSION,
+        (false, false, false, false, false, false, true) => AGENTS_VERSION,
+        (false, false, false, false, false, false, false) => FIRST_VERSION,
     };
     let mut out = format!("{HEADER}version = {version}\n");
     for connection in connections {
@@ -803,6 +872,13 @@ pub(super) fn write(connections: &[SavedConnection]) -> std::io::Result<String> 
             out.push_str("\n[connections.source]\n");
             lines.write(&mut out);
             csv_tables(&spec.csv, &mut out);
+            for each in &spec.attach {
+                let mut lines = Lines::default();
+                lines.text("connection", &each.connection);
+                lines.text("as", &each.name);
+                out.push_str("\n[[connections.attach]]\n");
+                lines.write(&mut out);
+            }
         }
         if !connection.agents.is_default() {
             let mut lines = Lines::default();
@@ -1280,8 +1356,8 @@ auth = "key-file"
         let said = |text: &str| read(text).unwrap_err().to_string();
         assert!(said("").contains("missing field `version`"), "{}", said(""));
         assert_eq!(
-            said("version = 10\n"),
-            "it is version 10 of the file, written by a newer Tabletist; this one reads version 9"
+            said("version = 11\n"),
+            "it is version 11 of the file, written by a newer Tabletist; this one reads version 10"
         );
         assert_eq!(
             said("version = 2\n"),
@@ -1885,6 +1961,90 @@ sqlite_path = "/home/ada/bookshop.db"
             for value in ["maybe", ",;", "some", "date"] {
                 assert!(!problem.what.contains(value), "{text}\n{problem}");
             }
+        }
+    }
+
+    /// The saved connections a Files connection attaches, by id, after its
+    /// source and CSV tables, make the file version 10.
+    #[test]
+    fn what_a_files_connection_attaches_is_written_in_version_ten() {
+        let mut spec = ConnectSpec::files(Source::Folder("/srv/bookshop-exports".into()));
+        spec.attach = vec![
+            Attach {
+                connection: "dev".into(),
+                name: "bookshop_dev".into(),
+            },
+            Attach {
+                connection: "file".into(),
+                name: "development".into(),
+            },
+        ];
+        let exports = saved("exports", "Bookshop exports", spec);
+        let mut connections = bookshop();
+        connections.push(exports);
+        let text = write(&connections).unwrap();
+        assert!(text.contains("\nversion = 10\n"), "{text}");
+        assert!(
+            text.ends_with(
+                r#"[connections.source]
+folder = "/srv/bookshop-exports"
+
+[[connections.attach]]
+connection = "dev"
+as         = "bookshop_dev"
+
+[[connections.attach]]
+connection = "file"
+as         = "development"
+"#
+            ),
+            "{text}"
+        );
+        assert_eq!(read(&text).unwrap().connections, connections);
+        // Without one, the file is as it was.
+        connections.last_mut().unwrap().spec.attach.clear();
+        assert!(write(&connections).unwrap().contains("\nversion = 7\n"));
+    }
+
+    #[test]
+    fn an_attach_is_a_files_connection_s_with_a_plain_name_once() {
+        let entry = |driver: &str, more: &str| {
+            format!(
+                "version = 10\n[[connections]]\nid = \"a\"\nname = \"A\"\n\
+                 driver = \"{driver}\"\n{more}"
+            )
+        };
+        let source = "[connections.source]\nfolder = \"/a\"\n";
+        let attach = |connection: &str, name: &str| {
+            format!("[[connections.attach]]\nconnection = \"{connection}\"\nas = \"{name}\"\n")
+        };
+        for (text, says) in [
+            (
+                entry("sqlite", &attach("b", "shop")),
+                "only a Files connection attaches others",
+            ),
+            (
+                entry("files", &format!("{source}{}", attach(" ", "shop"))),
+                "an attach names no connection",
+            ),
+            (
+                entry("files", &format!("{source}{}", attach("b", "Shop-Dev"))),
+                "cannot name an attached connection",
+            ),
+            (
+                entry("files", &format!("{source}{}", attach("b", "memory"))),
+                "cannot name an attached connection",
+            ),
+            (
+                entry(
+                    "files",
+                    &format!("{source}{}{}", attach("b", "shop"), attach("c", "shop")),
+                ),
+                "attaches two connections as \"shop\"",
+            ),
+        ] {
+            let problem = read(&text).unwrap_err();
+            assert!(problem.what.contains(says), "{text}\n{problem}");
         }
     }
 

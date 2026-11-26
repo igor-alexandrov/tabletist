@@ -277,6 +277,8 @@ pub(super) fn body(
                         });
                         ui.add_space(12.0);
                         super::reading::section(ui, form, skin, actions);
+                        ui.add_space(12.0);
+                        super::join::section(ui, form, skin, actions);
                     }
                     Driver::Postgres | Driver::MySql => {
                         fieldset(ui, &skin.say(msgid("Server")), skin, |ui| {

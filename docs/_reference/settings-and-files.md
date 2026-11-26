@@ -585,6 +585,25 @@ override of a column the file does not have, or of a file the
 connection does not open, does nothing. A file that holds either table
 says `version = 8`.
 
+The saved connections a Files connection attaches are an
+`[[connections.attach]]` table each, in the order they were ticked:
+
+```toml
+[[connections.attach]]
+connection = "6f1c2a9e-…"
+as         = "bookshop_dev"
+```
+
+| Key | Values |
+| --- | --- |
+| `connection` | The `id` of a saved PostgreSQL, MySQL or SQLite connection: renaming it changes nothing here |
+| `as` | The name SQL calls it by: lowercase letters, digits and `_`, once in the connection, and none of DuckDB's own (`main`, `memory`, `system`, `temp`, `information_schema`, `pg_catalog`) |
+
+No password is kept here: each comes from the keyring when the Files
+connection opens. A connection the file attaches that was deleted since
+is said when the Files connection opens, and let go the next time it is
+edited. A file that holds one says `version = 10`.
+
 A tunnel is the connection's `[connections.ssh]` table: `host`, and
 optionally `port` and `user`, `auth` (`password`, `key-file` or `agent`),
 and with `key-file` the `key` to use.

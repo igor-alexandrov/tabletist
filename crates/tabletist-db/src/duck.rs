@@ -7,6 +7,12 @@
 //! connection's files and no other, which also keeps it from writing a
 //! file, installing or loading an extension. And a read-only transaction
 //! around every page, count, lookup, script and agent's read.
+//!
+//! Saved PostgreSQL, MySQL and SQLite connections it is told to attach are
+//! attached read-only before the fence (`attach`), and stay reachable
+//! after it: the fence keeps any other from being attached.
+
+mod attach;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,7 +25,10 @@ use duckdb::arrow::util::display::{ArrayFormatter, FormatOptions};
 
 use crate::adapter::Adapter;
 use crate::agent::{Catalog, ColumnName, Limits, Param, Read, Refusal, Sources};
-use crate::files::{Change, Format, Found, Header, Reading, SAMPLE_ROWS, Source, Types};
+use crate::files::{
+    Attaching, Change, Downloading, Format, Found, Header, Reader, Reading, SAMPLE_ROWS, Source,
+    Types,
+};
 use crate::{
     CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, Ddl, Dialect, Error,
     Lookup, LookupPage, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery,
@@ -86,7 +95,18 @@ pub(crate) struct Conn {
     /// Every file of the connection's, in its order: those it could not
     /// open among them.
     order: Vec<std::path::PathBuf>,
+    /// The saved connections it attached, in order.
+    attached: Arc<Vec<Attached>>,
     version: String,
+}
+
+/// A saved connection the session attached: the name SQL calls it by,
+/// which the sidebar lists it as, and the schema of its own whose tables
+/// are listed there and that `name.table` reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Attached {
+    name: String,
+    schema: String,
 }
 
 /// A file as the session opened it.
@@ -470,19 +490,133 @@ fn header_of(
 }
 
 /// What [`opened`] made: the session, its files, those it could not open
-/// (where it was told to go on past them) and DuckDB's version.
+/// (where it was told to go on past them), the saved connections it
+/// attached and DuckDB's version.
 type Made = (
     duckdb::Connection,
     Vec<Opened>,
     Vec<crate::files::Failure>,
+    Vec<Attached>,
     String,
 );
 
+/// Installs and loads `reader` in the session: from the folder it was
+/// installed into once, else downloaded from DuckDB's servers, which
+/// `downloading` is told of first.
+fn install(
+    connection: &duckdb::Connection,
+    reader: Reader,
+    downloading: Option<&Downloading>,
+) -> Result<()> {
+    // One install at a time in the app: two sessions that both found the
+    // reader missing would both download it, and on Windows the second
+    // cannot put its copy over the one the first has loaded.
+    static INSTALLING: Mutex<()> = Mutex::new(());
+    let installed = || -> Result<bool> {
+        connection
+            .query_row(
+                "SELECT coalesce(bool_or(installed), false) FROM duckdb_extensions() \
+                 WHERE extension_name = ?",
+                [reader.listed()],
+                |row| row.get(0),
+            )
+            .map_err(map_error)
+    };
+    let extension = reader.extension();
+    {
+        let _one = INSTALLING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !installed()? {
+            if let Some(downloading) = downloading {
+                downloading(reader);
+            }
+            let made = connection
+                .execute_batch(&format!("INSTALL {extension}"))
+                .map_err(map_error);
+            // Another Tabletist may have installed it meanwhile.
+            if let Err(error) = made
+                && !installed()?
+            {
+                return Err(error);
+            }
+        }
+    }
+    connection
+        .execute_batch(&format!("LOAD {extension}"))
+        .map_err(map_error)
+}
+
+/// Attaches `attaching`, reached through a tunnel's local port `via`
+/// where it has one, as the session's `at`th: the SQLite file it opens,
+/// which the fence lets in, where it is one.
+fn attached(
+    connection: &duckdb::Connection,
+    at: usize,
+    attaching: &Attaching,
+    via: Option<u16>,
+    downloading: Option<&Downloading>,
+) -> Result<(Attached, Option<String>)> {
+    let name = &attaching.name;
+    let reader = attach::reader(attaching)?;
+    install(connection, reader, downloading).map_err(|error| {
+        Error::Connect(format!(
+            "Can't attach {name}: the {} reader for DuckDB could not be installed ({})",
+            reader.label(),
+            plain(&error)
+        ))
+    })?;
+    let made = attach::statements(at, attaching, via)?;
+    if let Some(secret) = &made.secret {
+        // Never DuckDB's words: a parser error quotes the statement, and
+        // this one holds the password.
+        connection.execute_batch(secret).map_err(|_| {
+            Error::Connect(format!(
+                "Can't attach {name}: DuckDB did not take its login"
+            ))
+        })?;
+    }
+    let attached = connection.execute_batch(&made.attach).map_err(|error| {
+        let error = map_error(error);
+        // The reader's own words: should they ever repeat the password,
+        // it is not said.
+        let mut words = plain(&error);
+        if let Some(password) = attaching.secrets.password.as_deref()
+            && !password.is_empty()
+        {
+            words = words.replace(password, "********");
+        }
+        Error::Connect(format!("Can't attach {name}: {words}"))
+    });
+    // The login is let go whether it was taken or not: the attached
+    // database keeps its own.
+    if let Some(forget) = &made.forget {
+        connection.execute_batch(forget).map_err(map_error)?;
+    }
+    attached?;
+    Ok((
+        Attached {
+            name: name.clone(),
+            schema: crate::files::attached_schema(&attaching.spec),
+        },
+        made.file,
+    ))
+}
+
 /// Opens a session over `files`, read as `reading` says, a file it skips
-/// left out: views and attaches, then the fence. A file that cannot be
-/// opened stops it, unless `past` says to go on without it (a Test, which
-/// says which failed).
-fn opened(files: &[Found], reading: &Reading, past: bool) -> Result<Made> {
+/// left out: views and attaches, then the saved connections in
+/// `attaching`, each with the tunnel port it is reached through, then the
+/// fence. A file that cannot be opened stops it, unless `past` says to go
+/// on without it (a Test, which says which failed); a saved connection
+/// that cannot be attached always does. `downloading` is told of each
+/// reader DuckDB downloads first.
+fn opened(
+    files: &[Found],
+    reading: &Reading,
+    past: bool,
+    attaching: &[(Attaching, Option<u16>)],
+    downloading: Option<&Downloading>,
+) -> Result<Made> {
     let files: Vec<&Found> = files
         .iter()
         .filter(|file| !reading.skips(&file.path))
@@ -503,7 +637,7 @@ fn opened(files: &[Found], reading: &Reading, past: bool) -> Result<Made> {
     if files.iter().any(|file| file.format == Format::Excel) {
         // Installed once, then found in the folder: offline, a second open
         // still reads Excel files.
-        if let Err(error) = run("INSTALL excel; LOAD excel") {
+        if let Err(error) = install(&connection, Reader::Excel, downloading) {
             let why = format!(
                 "the Excel reader for DuckDB could not be installed ({})",
                 plain(&error)
@@ -591,11 +725,30 @@ fn opened(files: &[Found], reading: &Reading, past: bool) -> Result<Made> {
             rows,
         });
     }
+    // The saved connections, read-only, as every session is.
+    let mut joined = Vec::with_capacity(attaching.len());
+    let mut attached_files = Vec::new();
+    for (at, (attaching, via)) in attaching.iter().enumerate() {
+        // A `.duckdb` file of the connection's is a schema of that name.
+        let taken = opened
+            .iter()
+            .any(|file| file.found.format.is_database() && file.found.name == attaching.name);
+        if taken {
+            return Err(Error::Connect(format!(
+                "Can't attach {}: a .duckdb file of this connection is a schema of that name. \
+                 Name it another way.",
+                attaching.name
+            )));
+        }
+        let (each, file) = attached(&connection, at, attaching, *via, downloading)?;
+        joined.push(each);
+        attached_files.extend(file);
+    }
     // The fence: the files that opened and no other, then no setting
     // changed again. One a Test went on without is not read, and its path
     // may be one DuckDB cannot be given. A reader asks by its own spelling
-    // of a file, which names only it.
-    let mut allowed = Vec::with_capacity(opened.len());
+    // of a file, which names only it. An attached SQLite file too.
+    let mut allowed = Vec::with_capacity(opened.len() + attached_files.len());
     for file in &opened {
         let file = &file.found;
         let (path, read) = (path_text(&file.path)?, reader_path(&file.path)?);
@@ -604,6 +757,7 @@ fn opened(files: &[Found], reading: &Reading, past: bool) -> Result<Made> {
         }
         allowed.push(literal(&path));
     }
+    allowed.extend(attached_files.iter().map(|path| literal(path)));
     run(&format!("SET allowed_paths = [{}]", allowed.join(", ")))?;
     run("SET enable_external_access = false")?;
     run("SET lock_configuration = true")?;
@@ -614,6 +768,7 @@ fn opened(files: &[Found], reading: &Reading, past: bool) -> Result<Made> {
         connection,
         opened,
         failures,
+        joined,
         format!("DuckDB {}", version.trim_start_matches('v')),
     ))
 }
@@ -1227,17 +1382,25 @@ fn check_raw_where(query: &RowQuery) -> Result<()> {
 }
 
 /// The catalog and schema DuckDB keeps `object` in: a file's view in the
-/// in-memory database's `main`, a `.duckdb` file's table in its own.
-fn catalog_of(object: &ObjectRef) -> (&str, &str) {
+/// in-memory database's `main`, a `.duckdb` file's table in its own, an
+/// attached connection's in its schema the sidebar lists.
+fn catalog_of<'a>(object: &'a ObjectRef, attached: &'a [Attached]) -> (&'a str, &'a str) {
     match object.schema.as_str() {
         MAIN => (MEMORY, MAIN),
-        attached => (attached, MAIN),
+        schema => match attached.iter().find(|each| each.name == schema) {
+            Some(each) => (&each.name, &each.schema),
+            None => (schema, MAIN),
+        },
     }
 }
 
 /// The columns of `object`, as DuckDB's catalog has them.
-fn columns(connection: &duckdb::Connection, object: &ObjectRef) -> Result<Vec<ColumnInfo>> {
-    let (catalog, schema) = catalog_of(object);
+fn columns(
+    connection: &duckdb::Connection,
+    object: &ObjectRef,
+    attached: &[Attached],
+) -> Result<Vec<ColumnInfo>> {
+    let (catalog, schema) = catalog_of(object, attached);
     let mut statement = connection
         .prepare(
             "SELECT column_name, data_type, is_nullable, column_default \
@@ -1265,8 +1428,9 @@ fn columns(connection: &duckdb::Connection, object: &ObjectRef) -> Result<Vec<Co
 fn binary_columns(
     connection: &duckdb::Connection,
     object: &ObjectRef,
+    attached: &[Attached],
 ) -> Result<Vec<(String, ColumnClass)>> {
-    Ok(binary_of(&columns(connection, object)?))
+    Ok(binary_of(&columns(connection, object, attached)?))
 }
 
 /// The columns of `columns` that hold bytes, with their class: what the
@@ -1343,10 +1507,19 @@ impl Conn {
     /// Opens `source`'s files, read-only: every one is read far enough to
     /// know its columns, and an error names the first that cannot be. A
     /// Test goes on `past` them: those it cannot open or look at, and a
-    /// listed file that is gone, are its failures.
-    pub(crate) async fn open(source: &Source, reading: &Reading, past: bool) -> Result<Self> {
+    /// listed file that is gone, are its failures. The saved connections
+    /// in `attaching` are attached after, each through the tunnel port
+    /// beside it where it has one; `downloading` is told of each reader
+    /// DuckDB downloads first.
+    pub(crate) async fn open(
+        source: &Source,
+        reading: &Reading,
+        past: bool,
+        attaching: Vec<(Attaching, Option<u16>)>,
+        downloading: Option<Downloading>,
+    ) -> Result<Self> {
         let (source, reading) = (source.clone(), reading.clone());
-        let (connection, files, failed, version, order) = tokio::task::spawn_blocking(move || {
+        let made = tokio::task::spawn_blocking(move || {
             // A skipped file is not looked at: one that is gone, or that
             // cannot be looked at, is no matter.
             let scan = crate::files::scan_past(&source, |file| reading.skips(file), past)?;
@@ -1378,7 +1551,14 @@ impl Conn {
                     order
                 }
             };
-            opened(&scan.files, &reading, past).map(|(connection, files, mut failed, version)| {
+            opened(
+                &scan.files,
+                &reading,
+                past,
+                &attaching,
+                downloading.as_ref(),
+            )
+            .map(|(connection, files, mut failed, attached, version)| {
                 failed.extend(gone.iter().filter_map(|gone| {
                     Some(crate::files::Failure {
                         file: crate::files::file_name(gone),
@@ -1396,11 +1576,12 @@ impl Conn {
                         why: crate::files::Why::Other(why.clone()),
                     })
                 }));
-                (connection, files, failed, version, order)
+                (connection, files, failed, attached, version, order)
             })
         })
         .await
         .map_err(|error| Error::Io(error.to_string()))??;
+        let (connection, files, failed, attached, version, order) = made;
         let interrupt = connection.interrupt_handle();
         Ok(Self {
             inner: Arc::new(Mutex::new(connection)),
@@ -1410,6 +1591,7 @@ impl Conn {
             files: Arc::new(files),
             failed,
             order,
+            attached: Arc::new(attached),
             version,
         })
     }
@@ -1645,7 +1827,8 @@ impl Adapter for Conn {
         Ok(Vec::new())
     }
 
-    /// `main`, which holds the files' tables, then each `.duckdb` file.
+    /// `main`, which holds the files' tables, then each `.duckdb` file,
+    /// then each saved connection attached, by the name SQL calls it by.
     async fn list_schemas(&self) -> Result<Vec<String>> {
         Ok(std::iter::once(MAIN.to_owned())
             .chain(
@@ -1654,12 +1837,14 @@ impl Adapter for Conn {
                     .filter(|file| file.found.format.is_database())
                     .map(|file| file.found.name.clone()),
             )
+            .chain(self.attached.iter().map(|each| each.name.clone()))
             .take(MAX_LISTED as usize)
             .collect())
     }
 
     /// In `main`, a table for each file, in the files' order; in a
-    /// `.duckdb` file's schema, its tables and views by name.
+    /// `.duckdb` file's schema, its tables and views by name; in an
+    /// attached connection's, those of its schema `name.table` reads.
     async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>> {
         if schema == MAIN {
             return Ok(self
@@ -1674,18 +1859,23 @@ impl Adapter for Conn {
                 .take(MAX_LISTED as usize)
                 .collect());
         }
-        let catalog = schema.to_owned();
+        let object = ObjectRef {
+            schema: schema.to_owned(),
+            name: String::new(),
+        };
+        let (catalog, schema) = catalog_of(&object, &self.attached);
+        let (catalog, schema) = (catalog.to_owned(), schema.to_owned());
         self.run(move |connection| {
             read_only(connection, |connection| {
                 let mut statement = connection
                     .prepare(&format!(
                         "SELECT table_name, table_type FROM information_schema.tables \
-                         WHERE table_catalog = ? AND table_schema = 'main' \
+                         WHERE table_catalog = ? AND table_schema = ? \
                          ORDER BY table_name LIMIT {MAX_LISTED}"
                     ))
                     .map_err(map_error)?;
                 let objects = statement
-                    .query_map([catalog.as_str()], |row| {
+                    .query_map([catalog.as_str(), schema.as_str()], |row| {
                         let kind: String = row.get(1)?;
                         Ok(ObjectInfo {
                             name: row.get(0)?,
@@ -1713,8 +1903,11 @@ impl Adapter for Conn {
             options: file.options.clone(),
         });
         let object = object.clone();
+        let attached = Arc::clone(&self.attached);
         self.run(move |connection| {
-            let columns = read_only(connection, |connection| columns(connection, &object))?;
+            let columns = read_only(connection, |connection| {
+                columns(connection, &object, &attached)
+            })?;
             if columns.is_empty() {
                 return Err(Error::query(format!(
                     "no such table or view: {}",
@@ -1750,8 +1943,9 @@ impl Adapter for Conn {
             return Ok(ddl(file.made.clone()));
         }
         let object = object.clone();
+        let attached = Arc::clone(&self.attached);
         self.run(move |connection| {
-            let (catalog, schema) = catalog_of(&object);
+            let (catalog, schema) = catalog_of(&object, &attached);
             let sql: Option<String> = read_only(connection, |connection| {
                 connection
                     .query_row(
@@ -1786,9 +1980,10 @@ impl Adapter for Conn {
         let object = query.object.clone();
         let query = query.clone();
         let limit = query.limit as usize;
+        let attached = Arc::clone(&self.attached);
         self.run(move |connection| {
             read_only(connection, |connection| {
-                let catalog = columns(connection, &query.object)?;
+                let catalog = columns(connection, &query.object, &attached)?;
                 let binary = binary_of(&catalog);
                 // A file has no key: rows come in the file's order.
                 let sql = Dialect::DuckDb.select_rows(&query, &[], &binary)?;
@@ -1812,9 +2007,10 @@ impl Adapter for Conn {
     async fn export_statement(&self, query: &RowQuery, columns: &[String]) -> Result<String> {
         let query = query.clone();
         let chosen = columns.to_vec();
+        let attached = Arc::clone(&self.attached);
         self.run(move |connection| {
             read_only(connection, |connection| {
-                let binary = binary_columns(connection, &query.object)?;
+                let binary = binary_columns(connection, &query.object, &attached)?;
                 Dialect::DuckDb.shown_export(&query, &[], &binary, &chosen)
             })
         })
@@ -1837,9 +2033,10 @@ impl Adapter for Conn {
         let chosen = columns.to_vec();
         let to = to.clone();
         let stop = stop.clone();
+        let attached = Arc::clone(&self.attached);
         self.run(move |connection| {
             read_only(connection, |connection| {
-                let catalog = self::columns(connection, &query.object)?;
+                let catalog = self::columns(connection, &query.object, &attached)?;
                 let binary = binary_of(&catalog);
                 let sql = Dialect::DuckDb.export_rows(&query, &[], &binary, &chosen)?;
                 let mut statement = connection.prepare(&sql.text).map_err(map_error)?;
@@ -1883,9 +2080,10 @@ impl Adapter for Conn {
     async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
         check_raw_where(query)?;
         let query = query.clone();
+        let attached = Arc::clone(&self.attached);
         self.run(move |connection| {
             read_only(connection, |connection| {
-                let binary = binary_columns(connection, &query.object)?;
+                let binary = binary_columns(connection, &query.object, &attached)?;
                 let sql = Dialect::DuckDb.count_rows(&query, &binary)?;
                 let count: i64 = connection
                     .query_row(

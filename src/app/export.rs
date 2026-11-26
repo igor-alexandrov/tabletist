@@ -1123,6 +1123,8 @@ impl App {
             spec: workspace.spec.clone(),
             secrets,
             host_keys: self.host_keys.clone(),
+            // What the tab's session attached, as it connected.
+            attach: workspace.attached.clone(),
         }
     }
 

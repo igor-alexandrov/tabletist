@@ -578,6 +578,132 @@ pub fn table_name(stem: &str) -> String {
     name
 }
 
+/// A saved connection a Files connection attaches, as it is kept: the
+/// saved connection's id, and the name SQL calls it by
+/// (`bookshop_dev.orders`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attach {
+    pub connection: String,
+    pub name: String,
+}
+
+/// A saved connection to attach as a session opens: the name SQL calls
+/// it by, how it is reached, and its secrets, read from the keyring just
+/// before. Prints without them.
+#[derive(Clone)]
+pub struct Attaching {
+    pub name: String,
+    pub spec: crate::ConnectSpec,
+    pub secrets: crate::Secrets,
+}
+
+impl std::fmt::Debug for Attaching {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Attaching")
+            .field("name", &self.name)
+            .field("driver", &self.spec.driver)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The name SQL calls an attached connection by until it is changed: its
+/// database's name as it is (a SQLite file's stem), made a plain name as
+/// a file's table name is (see [`table_name`]). A PostgreSQL connection
+/// that names no database reads its user's.
+pub fn attach_name(spec: &crate::ConnectSpec) -> String {
+    use crate::Driver;
+    let named = match spec.driver {
+        Driver::Sqlite => spec
+            .sqlite_path
+            .as_deref()
+            .and_then(Path::file_stem)
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default()
+            .to_owned(),
+        Driver::Postgres if spec.database.is_empty() => spec.user.clone(),
+        Driver::Postgres | Driver::MySql | Driver::BigQuery | Driver::Files => {
+            spec.database.clone()
+        }
+    };
+    table_name(&named)
+}
+
+/// The schema of an attached database whose tables the sidebar lists,
+/// and that `name.table` reads: PostgreSQL's `public`, MySQL's database,
+/// SQLite's `main`.
+pub fn attached_schema(spec: &crate::ConnectSpec) -> String {
+    use crate::Driver;
+    match spec.driver {
+        Driver::Postgres => "public".into(),
+        Driver::MySql => spec.database.clone(),
+        Driver::Sqlite | Driver::BigQuery | Driver::Files => "main".into(),
+    }
+}
+
+/// Whether `name` is one an attached connection cannot take: one of
+/// DuckDB's own databases, or a schema every database has.
+pub fn reserved_name(name: &str) -> bool {
+    RESERVED.contains(&name)
+}
+
+/// A reader DuckDB installs the first time a connection needs it, from
+/// DuckDB's servers, and keeps for every open after: the Excel files',
+/// and those of the databases a Files connection attaches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reader {
+    Excel,
+    Postgres,
+    MySql,
+    Sqlite,
+}
+
+impl Reader {
+    /// The reader of a database `driver` names, where DuckDB has one.
+    pub fn of(driver: crate::Driver) -> Option<Self> {
+        use crate::Driver;
+        match driver {
+            Driver::Postgres => Some(Self::Postgres),
+            Driver::MySql => Some(Self::MySql),
+            Driver::Sqlite => Some(Self::Sqlite),
+            Driver::BigQuery | Driver::Files => None,
+        }
+    }
+
+    /// What `INSTALL` and `LOAD` are told.
+    pub(crate) fn extension(self) -> &'static str {
+        match self {
+            Self::Excel => "excel",
+            Self::Postgres => "postgres",
+            Self::MySql => "mysql",
+            Self::Sqlite => "sqlite",
+        }
+    }
+
+    /// The name `duckdb_extensions()` lists it by, installed or not.
+    pub(crate) fn listed(self) -> &'static str {
+        match self {
+            Self::Excel => "excel",
+            Self::Postgres => "postgres_scanner",
+            Self::MySql => "mysql_scanner",
+            Self::Sqlite => "sqlite_scanner",
+        }
+    }
+
+    /// What it reads, for a message.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Excel => "Excel",
+            Self::Postgres => "PostgreSQL",
+            Self::MySql => "MySQL",
+            Self::Sqlite => "SQLite",
+        }
+    }
+}
+
+/// Told, on the session's thread, each time DuckDB is about to download a
+/// reader: what a Test's status says while it waits.
+pub type Downloading = std::sync::Arc<dyn Fn(Reader) + Send + Sync>;
+
 /// The names DuckDB keeps for its own databases, which a `.duckdb` file
 /// cannot be attached under, and the schemas every catalog has: a file
 /// attached as `information_schema` makes `information_schema.columns`
@@ -950,6 +1076,24 @@ mod tests {
             message.ends_with("bookshop-exports: no such folder"),
             "{message}"
         );
+    }
+
+    /// What a session attaches prints its name and engine, never its
+    /// secrets.
+    #[test]
+    fn an_attaching_prints_without_its_secrets() {
+        let attaching = Attaching {
+            name: "bookshop_dev".into(),
+            spec: crate::ConnectSpec::default(),
+            secrets: crate::Secrets {
+                password: Some("hunter2".into()),
+                ssh_password: Some("hunter3".into()),
+                ssh_passphrase: Some("hunter4".into()),
+            },
+        };
+        let printed = format!("{attaching:?}");
+        assert!(printed.contains("bookshop_dev"), "{printed}");
+        assert!(!printed.contains("hunter"), "{printed}");
     }
 
     #[test]

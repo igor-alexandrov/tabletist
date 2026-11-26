@@ -357,3 +357,61 @@ async fn a_database_host_that_never_answers_times_out_like_a_direct_connect() {
         );
     }
 }
+
+/// A Files connection attaches PostgreSQL's and MySQL's test databases,
+/// each through a tunnel of its own, and reads both: their catalogs, which
+/// every job's servers have, loaded or not.
+#[tokio::test]
+async fn a_files_connection_attaches_through_tunnels() {
+    let Some((ssh, password)) = server() else {
+        return;
+    };
+    let keys = trusted(&ssh).await;
+    let dir = tempfile::tempdir().unwrap();
+    tabletist_db::fixtures::write_bookshop_files(dir.path()).unwrap();
+    let secrets = secrets_with_db(with_password(&password));
+    let postgres = pg_via(&ssh);
+    let mysql = mysql_via(&ssh);
+    let attaching = [
+        tabletist_db::files::Attaching {
+            name: "pg_shop".into(),
+            spec: postgres,
+            secrets: secrets.clone(),
+        },
+        tabletist_db::files::Attaching {
+            name: "my_shop".into(),
+            spec: mysql,
+            secrets,
+        },
+    ];
+    let spec = ConnectSpec::files(tabletist_db::files::Source::Folder(dir.path().to_owned()));
+    let connection = Connection::connect_files(&spec, &attaching, &keys, None)
+        .await
+        .unwrap();
+    let schemas = connection.list_schemas().await.unwrap();
+    assert!(
+        schemas.contains(&"pg_shop".to_owned()) && schemas.contains(&"my_shop".to_owned()),
+        "{schemas:?}"
+    );
+    for schema in ["pg_shop", "my_shop"] {
+        let text = format!("SELECT count(*) FROM {schema}.information_schema.tables");
+        let statements = tabletist_db::sql::statements(tabletist_db::Dialect::DuckDb, &text);
+        let outcome = connection
+            .run_script(
+                &statements,
+                10,
+                tabletist_db::ScriptMode::ReadOnly,
+                &tabletist_db::StopFlag::new(),
+            )
+            .await
+            .unwrap();
+        let read = match &outcome.results[0].outcome {
+            tabletist_db::StatementOutcome::Rows { rows, .. } => rows.clone(),
+            other => panic!("{schema}: {other:?}"),
+        };
+        assert!(
+            matches!(read.as_slice(), [row] if matches!(row.as_slice(), [tabletist_db::Value::Int(count)] if *count > 0)),
+            "{schema}: {read:?}"
+        );
+    }
+}

@@ -129,6 +129,33 @@ and DuckDB files (`.duckdb`). DuckDB reads them, inside Tabletist.
   A connection that is open keeps reading its files as it did when it
   opened, Reconnect included: close it and open it again from the
   connections list to read them with the new settings.
+- **Join with saved connections**, closed until you open it, lists your
+  saved PostgreSQL, MySQL and SQLite connections. Tick one to attach it:
+  its tables are then in the Files connection too, under a name of its
+  own, so one query can join a file to them (`SELECT … FROM returns r
+  JOIN bookshop_development.publishers p ON …`). The name is its
+  database's (a SQLite file's name without its extension) and you can
+  type over it: lowercase letters, digits and `_`, and not a schema the
+  connection has already. In the sidebar each attached connection is a
+  schema, listing the tables of its default schema (PostgreSQL's
+  `public`, MySQL's database, SQLite's own); its other schemas are
+  reached in SQL, as `bookshop_development.billing.invoices`. An attached
+  connection is always read-only. Its password comes from the keyring as
+  the Files connection opens, and its SSH tunnel, if it has one, is
+  opened then too; a connection whose password is asked for on every
+  connect, or a MySQL one that names no database, cannot be attached. If
+  one cannot be attached when the Files connection opens or is tested,
+  that says which and why; an SSH host whose key is not trusted yet can
+  be trusted from the Test. A MySQL connection reached through an SSH
+  tunnel with TLS **verify-full** checks the server's certificate against
+  the tunnel's end on this computer, `127.0.0.1`: it can't be attached
+  unless its certificate names `127.0.0.1`. PostgreSQL's still checks the
+  server's own name. In the Omarchy look each row is a Tab stop,
+  Space ticks it and Up and Down move between the rows.
+- The first time a Files connection needs DuckDB's reader for Excel,
+  PostgreSQL, MySQL or SQLite, DuckDB downloads it, and Test says so
+  while it does ("Downloading the PostgreSQL reader for DuckDB…"). Once
+  downloaded, it is used offline.
 - A new Files connection is **local**, and lets agents read. Files open
   read-only: nothing writes to them, and a statement that would read
   another file on the computer, write a file or install anything is

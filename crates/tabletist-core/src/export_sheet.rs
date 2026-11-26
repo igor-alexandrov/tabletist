@@ -1013,6 +1013,7 @@ mod tests {
                 spec: tabletist_db::ConnectSpec::sqlite("bookshop.db"),
                 secrets: tabletist_db::Secrets::default(),
                 host_keys: tabletist_db::HostKeys::default(),
+                attach: Vec::new(),
             },
             rows: crate::backend::export::ExportRows::Query(tabletist_db::RowQuery::new(
                 tabletist_db::ObjectRef::new("main", "books"),
