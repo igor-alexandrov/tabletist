@@ -323,6 +323,32 @@ async fn a_folder_that_cannot_be_written_to_keeps_the_file_as_it_was() {
     assert_eq!(page(&connection, "orders").await.rows.len(), 12);
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn a_file_that_cannot_be_read_back_is_not_blamed_on_its_folder() {
+    use std::os::unix::fs::PermissionsExt;
+    let (connection, dir) = editable().await;
+    let path = dir.path().join("orders.csv");
+    let orders = page(&connection, "orders").await;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o200)).unwrap();
+    // One who may read any file (root) can't be kept from this one.
+    if std::fs::read(&path).is_ok() {
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        return;
+    }
+    let mut changes = set("orders");
+    changes.deletes.push(RowDelete {
+        key: at(&orders, 0),
+    });
+    let error = save(&connection, &changes).await.unwrap_err();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(
+        matches!(unsaved(&error), Some(Unsaved::Failed(file, why)) if file == "orders.csv" && why.contains("ermission")),
+        "{error:?}"
+    );
+    assert!(names(dir.path()).iter().all(|name| !name.starts_with('.')));
+}
+
 #[tokio::test]
 async fn a_csv_whose_rows_are_not_counted_as_duckdb_reads_them_is_not_edited() {
     let dir = tempfile::tempdir().unwrap();
@@ -398,6 +424,32 @@ async fn a_json_file_whose_records_lack_a_key_is_not_edited() {
 }
 
 #[tokio::test]
+async fn a_json_file_whose_nested_objects_differ_in_keys_is_not_edited() {
+    let (connection, _dir) = over(
+        &[
+            (
+                "orders.json",
+                r#"[{"id":1,"meta":{"a":1}},{"id":2,"meta":{"a":2,"b":3}}]"#,
+            ),
+            (
+                "items.ndjson",
+                "{\"id\":1,\"lines\":[{\"sku\":\"A\"},{\"sku\":\"B\",\"qty\":2}]}\n",
+            ),
+            (
+                "even.json",
+                r#"[{"id":1,"meta":{"a":1},"tags":[{"t":"x"}]},{"id":2,"meta":null,"tags":[]}]"#,
+            ),
+        ],
+        None,
+    )
+    .await;
+    assert_eq!(page(&connection, "orders").await.positions, None);
+    assert_eq!(page(&connection, "items").await.positions, None);
+    // A null where another has an object adds no key.
+    assert!(page(&connection, "even").await.positions.is_some());
+}
+
+#[tokio::test]
 async fn a_tsv_is_split_on_its_tabs_whatever_reading_csv_sets() {
     let reading = tabletist_db::files::Reading {
         delimiter: tabletist_db::files::Delimiter::Semicolon,
@@ -466,6 +518,62 @@ async fn a_hidden_file_that_cannot_be_made_says_the_system_s_words() {
         matches!(unsaved(&error), Some(Unsaved::Failed(file, _)) if file == "orders.csv"),
         "{error:?}"
     );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    // What was in the way is left, and the copy is as it was.
+    assert!(dir.path().join(".orders.csv.tabletist-save").is_dir());
+    assert_eq!(page(&connection, "orders").await.rows, orders.rows);
+}
+
+#[tokio::test]
+async fn a_hidden_file_already_there_is_left_as_it_is() {
+    let (connection, dir) = editable().await;
+    let path = dir.path().join("events.ndjson");
+    let before = std::fs::read(&path).unwrap();
+    let hidden = dir.path().join(".events.ndjson.tabletist-save");
+    std::fs::write(&hidden, "another program's").unwrap();
+    let events = page(&connection, "events").await;
+    let mut changes = set("events");
+    changes.deletes.push(RowDelete {
+        key: at(&events, 0),
+    });
+    let error = save(&connection, &changes).await.unwrap_err();
+    assert!(
+        matches!(unsaved(&error), Some(Unsaved::Failed(file, _)) if file == "events.ndjson"),
+        "{error:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&hidden).unwrap(),
+        "another program's"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[tokio::test]
+async fn rows_read_before_a_reconnect_are_not_saved_after_it() {
+    let (connection, dir) = editable().await;
+    let path = dir.path().join("orders.csv");
+    let before = std::fs::read(&path).unwrap();
+    let orders = page(&connection, "orders").await;
+    // A session of its own, as a reconnect opens, that has read no page.
+    let again = open(dir.path(), Access::Writable).await;
+    let mut changes = set("orders");
+    changes.deletes.push(RowDelete {
+        key: at(&orders, 0),
+    });
+    changes.rows.push(change(
+        &orders,
+        1,
+        "email",
+        "VARCHAR",
+        orders.rows[1][2].clone(),
+        "reader@example.com",
+    ));
+    let error = save(&again, &changes).await.unwrap_err();
+    assert_eq!(unsaved(&error), Some(Unsaved::Reread("orders.csv".into())));
+    // Nor after it has read a page of its own.
+    page(&again, "orders").await;
+    let error = save(&again, &changes).await.unwrap_err();
+    assert_eq!(unsaved(&error), Some(Unsaved::Reread("orders.csv".into())));
     assert_eq!(std::fs::read(&path).unwrap(), before);
 }
 

@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-26 17:12-0500\n"
+"POT-Creation-Date: 2026-11-26 17:33-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -3588,6 +3588,12 @@ msgstr "Подключение только для чтения"
 #: src/ui/cell_editor.rs
 msgid "Restore the row to edit it."
 msgstr "Восстановите строку, чтобы изменить её."
+
+#: src/ui/cell_editor.rs
+msgid "Rows moved in the file since this page was read. Reload to edit."
+msgstr ""
+"Строки в файле сдвинулись с тех пор, как эта страница была прочитана. "
+"Перезагрузите, чтобы изменять."
 
 #: src/ui/cell_editor.rs
 #, rust-format

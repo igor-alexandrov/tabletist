@@ -31,6 +31,9 @@ pub enum Lock {
     /// its session may write: an Excel file's, a `.duckdb` file's, an
     /// attached connection's.
     Unedited(tabletist_db::Unedited),
+    /// A file's page read before a save that moved its rows: it takes no
+    /// edit until a page read after replaces it.
+    Moved,
     /// A Files connection's file a save could not write back as it is: a
     /// CSV whose rows could not be read one for one as DuckDB read them,
     /// one with a column named `rowid`, a JSON file whose records do not
@@ -85,6 +88,7 @@ impl Lock {
             Self::ReadOnly
                 | Self::Unedited(_)
                 | Self::Unmatched
+                | Self::Moved
                 | Self::NotATable
                 | Self::StructureLoading
                 | Self::NoKey
@@ -94,6 +98,10 @@ impl Lock {
         )
     }
 }
+
+/// The copy a file's page is marked with once a save moved its rows (see
+/// [`Lock::Moved`]): none a session numbers.
+pub const MOVED: i64 = i64::MIN;
 
 /// How many rows one action marks for deletion, at most.
 pub const MAX_ROWS_DELETED: usize = 1_000;
@@ -219,7 +227,11 @@ impl Table<'_> {
         if let Some(why) = structure.unedited {
             return Some(Lock::Unedited(why));
         }
-        (structure.file.is_some() && self.page.positions.is_none()).then_some(Lock::Unmatched)
+        match &self.page.positions {
+            Some(positions) if positions.copy == MOVED => Some(Lock::Moved),
+            Some(_) => None,
+            None => structure.file.is_some().then_some(Lock::Unmatched),
+        }
     }
 
     /// The one column of the page called `name`. Two of that name are none:

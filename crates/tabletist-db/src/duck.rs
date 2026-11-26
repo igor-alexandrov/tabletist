@@ -2306,11 +2306,16 @@ impl Adapter for Conn {
             let mut copies = copies
                 .lock()
                 .map_err(|_| Error::ConnectionLost("the DuckDB session was poisoned".into()))?;
+            // No copy in this session: its rows were read in another, a
+            // session before a reconnect, and may not be where they were.
             let Some(edit::Loaded::Copy(copy)) = copies.get_mut(&file.found.name) else {
-                return Err(Error::query(format!(
-                    "{} was not read for editing",
-                    file_label(&file.found)
-                )));
+                let label = file_label(&file.found);
+                let mut error =
+                    Error::query(format!("{label} was read again since these rows were"));
+                if let Error::Query { named, .. } = &mut error {
+                    named.unsaved = Some(crate::Unsaved::Reread(label));
+                }
+                return Err(error);
             };
             edit::save(connection, &file, copy, &changes, &stop)
         })

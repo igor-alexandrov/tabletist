@@ -267,28 +267,29 @@ pub(super) fn load(
             }
             (Some(layout), None)
         }
-        // DuckDB writes every column of every record back, and a key a
-        // record did not have would come back as `null`: only a file whose
-        // records all have every key is edited.
+        // DuckDB writes every key of every object back, and a key an
+        // object did not have would come back as `null`: only a file whose
+        // objects at each place have the same keys is edited.
         Format::Json | Format::Ndjson => {
-            let columns = file_columns(connection, &file.found.name)?;
             let format = match file.found.format {
                 Format::Json => "array",
                 _ => "newline_delimited",
             };
-            let whole: Option<bool> = connection
-                .query_row(
-                    &format!(
-                        "SELECT bool_and(len(json_keys(json)) = {columns}) \
-                         FROM read_json_objects({}, format = '{format}')",
-                        literal(&reader_path(path)?)
-                    ),
-                    [],
-                    |row| row.get(0),
-                )
+            let mut statement = connection
+                .prepare(&format!(
+                    "SELECT json::VARCHAR FROM read_json_objects({}, format = '{format}')",
+                    literal(&reader_path(path)?)
+                ))
                 .map_err(map_error)?;
-            if whole == Some(false) {
-                return unmatched();
+            let mut records = statement.query([]).map_err(map_error)?;
+            let mut seen = std::collections::HashMap::new();
+            while let Some(record) = records.next().map_err(map_error)? {
+                let text: String = record.get(0).map_err(map_error)?;
+                let parsed = serde_json::from_str::<serde_json::Value>(&text);
+                if !parsed.is_ok_and(|value| same_keys(&value, &mut String::new(), &mut seen)) {
+                    drop(records);
+                    return unmatched();
+                }
             }
             (None, None)
         }
@@ -314,6 +315,44 @@ pub(super) fn load(
         next: rows,
         generation: next_generation(),
     }))
+}
+
+/// Whether every object in `value` has the keys `seen` has for its place
+/// (`.meta`, `.items[]`), each place's first keeping its keys there.
+fn same_keys(
+    value: &serde_json::Value,
+    place: &mut String,
+    seen: &mut std::collections::HashMap<String, Vec<String>>,
+) -> bool {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<String> = map.keys().cloned().collect();
+            keys.sort();
+            match seen.get(place.as_str()) {
+                Some(known) if *known != keys => return false,
+                Some(_) => {}
+                None => {
+                    seen.insert(place.clone(), keys);
+                }
+            }
+            map.iter().all(|(key, inner)| {
+                let at = place.len();
+                place.push('.');
+                place.push_str(key);
+                let same = same_keys(inner, place, seen);
+                place.truncate(at);
+                same
+            })
+        }
+        serde_json::Value::Array(items) => items.iter().all(|item| {
+            let at = place.len();
+            place.push_str("[]");
+            let same = same_keys(item, place, seen);
+            place.truncate(at);
+            same
+        }),
+        _ => true,
+    }
 }
 
 /// How many columns the copy of the file whose table is `name` has, its
@@ -714,12 +753,10 @@ pub(super) fn save(
                     Unsaved::Changed(label.clone()),
                     format!("{label} changed on disk while it was saved"),
                 ),
-                WriteError::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-                    unsaved(
-                        Unsaved::Unwritable(label.clone()),
-                        format!("{label}'s folder cannot be written to: {error}"),
-                    )
-                }
+                WriteError::Folder(error) => unsaved(
+                    Unsaved::Unwritable(label.clone()),
+                    format!("{label}'s folder cannot be written to: {error}"),
+                ),
                 WriteError::Io(error) => unsaved(
                     Unsaved::Failed(label.clone(), error.to_string()),
                     format!("{label} could not be written: {error}"),
@@ -732,17 +769,10 @@ pub(super) fn save(
     // a deleted one move up, and new rows are last.
     let position = Dialect::DuckDb.quote_ident(POSITION);
     let table = Dialect::DuckDb.qualified(&Copy::object(&file.found.name));
-    let brought = connection
-        .execute_batch(&format!(
-            "UPDATE {table} SET {position} = placed.at FROM \
-             (SELECT {position} AS was, row_number() OVER (ORDER BY {position}) - 1 AS at \
-             FROM {table}) AS placed WHERE {table}.{position} = placed.was; COMMIT"
-        ))
-        .and_then(|()| {
-            connection.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
-                row.get::<_, i64>(0)
-            })
-        });
+    let brought = match fails_after_rename() {
+        true => Err(duckdb::Error::QueryReturnedNoRows),
+        false => bring_up(connection, &table, &position),
+    };
     match brought {
         Ok(rows) => {
             copy.next = rows;
@@ -761,6 +791,35 @@ pub(super) fn save(
         gone,
         elapsed: started.elapsed(),
     })
+}
+
+/// Numbers the copy's rows again from 0 in their order, commits, and says
+/// how many rows it has.
+fn bring_up(connection: &duckdb::Connection, table: &str, position: &str) -> duckdb::Result<i64> {
+    connection
+        .execute_batch(&format!(
+            "UPDATE {table} SET {position} = placed.at FROM \
+             (SELECT {position} AS was, row_number() OVER (ORDER BY {position}) - 1 AS at \
+             FROM {table}) AS placed WHERE {table}.{position} = placed.was; COMMIT"
+        ))
+        .and_then(|()| {
+            connection.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get::<_, i64>(0)
+            })
+        })
+}
+
+/// A test's way to make a save fail after its file is written.
+#[cfg(test)]
+static FAIL_AFTER_RENAME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether this save fails after its file is written: only where a test
+/// says so.
+fn fails_after_rename() -> bool {
+    #[cfg(test)]
+    return FAIL_AFTER_RENAME.load(Ordering::SeqCst);
+    #[cfg(not(test))]
+    false
 }
 
 /// `changes` with each row's key as the copy finds it, its place alone.
@@ -881,7 +940,10 @@ fn place_of(key: &[(String, Value)]) -> Option<i64> {
 }
 
 enum WriteError {
-    /// The file or its folder could not be written.
+    /// The hidden file could not be made in the folder, or put in the
+    /// file's place, for want of permission: the folder is not writable.
+    Folder(std::io::Error),
+    /// Anything else that could not be read or written.
     Io(std::io::Error),
     /// The file changed on disk while the save wrote its hidden one.
     Changed,
@@ -889,8 +951,10 @@ enum WriteError {
 }
 
 /// Writes the copy, changed, to the hidden file beside `file`, then
-/// renames it over `file`, and returns the file as it is then. The hidden
-/// file is gone after, whatever came of it.
+/// renames it over `file`, and returns the file as it is then. A hidden
+/// file of that name already there is no save's of this one: it is left as
+/// it is, and nothing is written. The hidden file this save made is gone
+/// after, whatever came of it.
 fn write_file(
     connection: &duckdb::Connection,
     file: &Opened,
@@ -899,6 +963,13 @@ fn write_file(
 ) -> std::result::Result<Stamp, WriteError> {
     let path = &file.found.path;
     let temp = temp_path(path);
+    if std::fs::symlink_metadata(&temp).is_ok() {
+        let name = crate::files::file_name(&temp);
+        return Err(WriteError::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("a file named {name} is in its folder"),
+        )));
+    }
     let written = match &copy.csv {
         Some(layout) => write_csv(connection, file, layout, changes, &temp),
         None => write_copy(connection, file, copy, &temp),
@@ -915,13 +986,25 @@ fn write_file(
             return Err(WriteError::Changed);
         }
         let stamp = Stamp::of(&temp).map_err(WriteError::Io)?;
-        std::fs::rename(&temp, path).map_err(WriteError::Io)?;
+        std::fs::rename(&temp, path).map_err(in_folder)?;
         Ok(stamp)
     });
-    if renamed.is_err() {
+    // Made by this save, unless another took the name since: the CSV
+    // writer makes it only where none is.
+    let ours = !matches!(&renamed, Err(WriteError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists);
+    if renamed.is_err() && ours {
         let _ = std::fs::remove_file(&temp);
     }
     renamed
+}
+
+/// `error` from making the hidden file or putting it in the file's place:
+/// the folder's want of permission where it is one.
+fn in_folder(error: std::io::Error) -> WriteError {
+    match error.kind() {
+        std::io::ErrorKind::PermissionDenied => WriteError::Folder(error),
+        _ => WriteError::Io(error),
+    }
 }
 
 /// A Parquet, JSON or NDJSON file, written by DuckDB from the copy.
@@ -959,7 +1042,7 @@ fn write_copy(
                 true => std::io::ErrorKind::PermissionDenied,
                 false => std::io::ErrorKind::Other,
             };
-            WriteError::Io(std::io::Error::new(kind, said))
+            in_folder(std::io::Error::new(kind, said))
         })
 }
 
@@ -974,7 +1057,11 @@ fn write_csv(
 ) -> std::result::Result<(), WriteError> {
     let plan = plan(connection, file, layout, changes).map_err(WriteError::Db)?;
     let source = std::fs::File::open(&file.found.path).map_err(WriteError::Io)?;
-    let target = std::fs::File::create(temp).map_err(WriteError::Io)?;
+    let target = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(temp)
+        .map_err(in_folder)?;
     let mut target = BufWriter::new(target);
     rewrite(BufReader::new(source), &mut target, layout, &plan).map_err(|error| match error {
         Error::Io(message) => WriteError::Io(std::io::Error::other(message)),
@@ -1084,6 +1171,59 @@ fn plan(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_save_that_wrote_the_file_says_so_though_its_copy_fails_after() {
+        use crate::adapter::Adapter;
+        let dir = tempfile::tempdir().unwrap();
+        crate::fixtures::write_bookshop_files(dir.path()).unwrap();
+        let source = crate::files::Source::Folder(dir.path().to_owned());
+        let conn = super::super::Conn::open(
+            &source,
+            &Reading::default(),
+            false,
+            Vec::new(),
+            None,
+            crate::Access::Writable,
+        )
+        .await
+        .unwrap();
+        let query = RowQuery::new(ObjectRef::new("main", "orders"), 100);
+        let page = conn.fetch_rows(&query).await.unwrap();
+        let copy = page.positions.as_ref().unwrap().copy;
+        let key = |at: i64| {
+            vec![
+                (POSITION.to_owned(), Value::Int(at)),
+                (FILE_COPY.to_owned(), Value::Int(copy)),
+            ]
+        };
+        let delete = |at| ChangeSet {
+            object: query.object.clone(),
+            inserts: Vec::new(),
+            rows: Vec::new(),
+            deletes: vec![crate::RowDelete { key: key(at) }],
+        };
+        FAIL_AFTER_RENAME.store(true, Ordering::SeqCst);
+        let outcome = conn.write(&delete(0), &StopFlag::new()).await;
+        FAIL_AFTER_RENAME.store(false, Ordering::SeqCst);
+        // The file is written, and the save says so.
+        assert!(
+            matches!(outcome, Ok(WriteOutcome::Written { .. })),
+            "{outcome:?}"
+        );
+        let text = std::fs::read_to_string(dir.path().join("orders.csv")).unwrap();
+        assert_eq!(text.lines().count(), 12);
+        // The next page reads it again, a copy of its own.
+        let again = conn.fetch_rows(&query).await.unwrap();
+        assert_eq!(again.rows.len(), 11);
+        assert_ne!(again.positions.unwrap().copy, copy);
+        // And the old page's rows are refused.
+        let error = conn.write(&delete(1), &StopFlag::new()).await.unwrap_err();
+        let Error::Query { named, .. } = &error else {
+            panic!("{error:?}");
+        };
+        assert_eq!(named.unsaved, Some(Unsaved::Reread("orders.csv".into())));
+    }
 
     fn layout(columns: usize) -> Layout {
         Layout {

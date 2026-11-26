@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-26 17:12-0500\n"
+"POT-Creation-Date: 2026-11-26 17:33-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -3623,6 +3623,10 @@ msgstr ""
 #, rust-format
 msgid ""
 "{table} opens read-only: a save couldn't write its rows back as they are"
+msgstr ""
+
+#: src/ui/cell_editor.rs
+msgid "Rows moved in the file since this page was read. Reload to edit."
 msgstr ""
 
 #: src/ui/cell_editor.rs

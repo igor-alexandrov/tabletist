@@ -2499,6 +2499,17 @@ impl App {
                     // reached rows the save did not name: read it again. A
                     // new row is nowhere until the page says where.
                     object.off_new_rows();
+                    // A file's rows have moved: its page takes no edit
+                    // until the one read next replaces it, whatever comes
+                    // of that read.
+                    if let Some(positions) = object
+                        .rows
+                        .value
+                        .as_mut()
+                        .and_then(|page| page.positions.as_mut())
+                    {
+                        positions.copy = crate::edit::MOVED;
+                    }
                     // How many rows the table has now is not known for
                     // sure on this path: a trigger may have written too, a
                     // delete may have reached rows the save did not name.

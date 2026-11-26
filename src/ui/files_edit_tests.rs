@@ -152,6 +152,50 @@ fn a_save_finds_each_row_of_a_file_by_its_place() {
 }
 
 #[test]
+fn a_page_whose_rows_a_save_moved_takes_no_edit_until_read_again() {
+    let (mut harness, tab, id) = orders(
+        Look::macos(),
+        orders_structure(Format::Csv, None),
+        orders_page(true),
+    );
+    super::insert_audit_tests::select(&mut harness, tab, id, (0, 1));
+    harness.app.apply(Action::DeleteRow { tab, id });
+    harness.settle();
+    harness.app.apply(Action::WriteEdits { tab, id });
+    harness.answer_written(Ok(tabletist_db::WriteOutcome::Written {
+        inserted: Vec::new(),
+        rows: Vec::new(),
+        gone: Vec::new(),
+        elapsed: std::time::Duration::from_millis(14),
+    }));
+    harness.settle();
+    let lock = |harness: &Harness| {
+        let workspace = harness.app.workspace(tab).unwrap();
+        let object = workspace.object_tab(id).unwrap();
+        crate::edit::Table::of(workspace, object).unwrap().never()
+    };
+    // Whatever comes of the read sent after it, the old page takes none.
+    assert_eq!(lock(&harness), Some(crate::edit::Lock::Moved));
+    assert_eq!(
+        super::cell_editor::lock_text(
+            crate::edit::Lock::Moved,
+            "orders",
+            crate::i18n::Locale::English
+        ),
+        "Rows moved in the file since this page was read. Reload to edit."
+    );
+    // A page read after it does.
+    let mut fresh = orders_page(true);
+    fresh.positions = Some(tabletist_db::Positions {
+        copy: 8,
+        rows: vec![0, 1, 2],
+    });
+    harness.answer_rows(fresh);
+    harness.settle();
+    assert_eq!(lock(&harness), None);
+}
+
+#[test]
 fn a_file_changed_on_disk_keeps_every_change_and_says_how_many() {
     for look in looks() {
         let (mut harness, tab, id) =

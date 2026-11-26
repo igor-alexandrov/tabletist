@@ -1543,6 +1543,9 @@ pub fn lock_text(lock: Lock, table: &str, locale: Locale) -> String {
             ),
             &[("{table}", table)],
         ),
+        Lock::Moved => say(msgid(
+            "Rows moved in the file since this page was read. Reload to edit.",
+        )),
         Lock::NotATable => say(msgid("Views cannot be edited")),
         Lock::StructureLoading => say(msgid("The table's structure is still loading")),
         Lock::NoKey => fill(
@@ -1596,6 +1599,7 @@ pub fn delete_text(lock: Lock, table: &str, locale: Locale) -> String {
         ),
         Lock::Unedited(_)
         | Lock::Unmatched
+        | Lock::Moved
         | Lock::StructureLoading
         | Lock::KeyType
         | Lock::Saving
