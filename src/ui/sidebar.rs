@@ -856,7 +856,6 @@ struct SchemaHeader<'a> {
     palette: &'a Palette,
 }
 
-/// The schema picker, the tree/flat switch and Refresh.
 /// The schemas a Files tab's session attached, each with its environment
 /// where it has one to badge: every attached one, badged or not.
 pub(crate) fn attached_schemas(
@@ -900,6 +899,7 @@ pub(crate) fn schema_choices(
         .collect()
 }
 
+/// The schema picker, the tree/flat switch and Refresh.
 #[allow(clippy::too_many_arguments)] // one call site; the pieces are unrelated
 fn schema_header(
     ui: &mut egui::Ui,
