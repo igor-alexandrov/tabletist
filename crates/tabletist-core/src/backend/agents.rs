@@ -13,14 +13,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tabletist_db::agent::{Answer, Hidden, Limits, Read, Sources};
+use tabletist_db::files::Attach;
 use tabletist_db::{
-    Access, CancelHandle, ConnectSpec, Connection, Error, HostKeys, ObjectInfo, ObjectRef, Secrets,
-    StopFlag, Structure,
+    Access, CancelHandle, ConnectSpec, Connection, Driver, Error, HostKeys, ObjectInfo, ObjectRef,
+    Secrets, StopFlag, Structure,
 };
 use tabletist_mcp::{Failure, Gateway, Listed, Log, Schemas, Session};
 use tokio::sync::OwnedMutexGuard;
 use tokio_util::sync::CancellationToken;
 
+use super::attach::{AttachSaved, AttachTo};
 use super::{CANCEL_AGAIN, Outbox, lock, longer, send_cancel};
 use crate::connections::{AgentAccess, ConnectionId, PasswordMode, SavedConnection};
 use crate::env::Platform;
@@ -49,6 +51,22 @@ pub struct Agentable {
     /// get masked: the person's, and each matching rule's of the
     /// administrator's policy.
     pub sources: Sources,
+    /// A Files connection's: the saved connections its agents' session
+    /// attaches, those whose own setting lets agents read them whole (see
+    /// [`reaching`]). Empty for any other connection.
+    pub attach: Vec<AttachTo>,
+}
+
+/// Why agents don't reach a saved connection a Files connection
+/// attaches: its agents' session is opened without it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeftOut {
+    /// Its own agent access is Off, or the administrator's policy holds
+    /// it Off.
+    Off,
+    /// It hides tables or masks columns, by the person's settings or a
+    /// rule's: an attached database is read with no such check.
+    Guards,
 }
 
 /// The connections of `saved` that agents may use, in its order. One that
@@ -80,8 +98,67 @@ pub fn agentable(saved: &[SavedConnection]) -> Vec<Agentable> {
                 timeout: Duration::from_secs(u64::from(saved.agents.timeout_secs)),
             },
             sources: Sources::person(saved.agents.tables.clone(), saved.agents.masked.clone()),
+            attach: Vec::new(),
         })
         .collect()
+}
+
+/// How agents reach each of a Files connection's `attach`: the name SQL
+/// calls it by, and what its agents' session attaches for it, or why that
+/// leaves it out. `connections` are those agents may use ([`agentable`],
+/// with the administrator's sources); `saved` is every saved connection.
+///
+/// One that can't be attached at all is not among them: deleted, of a
+/// type that can't be attached, or one the Join section says can't be
+/// ticked. The person's own open fails on it, and says why.
+pub fn reaching(
+    attach: &[Attach],
+    connections: &[Agentable],
+    saved: &[SavedConnection],
+) -> Vec<(String, Result<AttachTo, LeftOut>)> {
+    let joinable = crate::connections::join::joinable(saved);
+    attach
+        .iter()
+        .filter_map(|each| {
+            let id = ConnectionId(each.connection.clone());
+            let row = joinable
+                .iter()
+                .find(|row| row.id == id && row.blocked.is_none())?;
+            let reached = match connections.iter().find(|agentable| agentable.id == id) {
+                None => Err(LeftOut::Off),
+                Some(agentable) if agentable.sources.guards_anything() => Err(LeftOut::Guards),
+                Some(agentable) => Ok(AttachTo {
+                    name: each.name.clone(),
+                    saved: Some(AttachSaved {
+                        id,
+                        environment: row.environment,
+                        spec: agentable.spec.clone(),
+                        password: agentable.password,
+                        ssh_secret: agentable.ssh_secret,
+                    }),
+                }),
+            };
+            Some((each.name.clone(), reached))
+        })
+        .collect()
+}
+
+/// Gives each Files connection among `connections` what its agents'
+/// session attaches, by [`reaching`].
+pub fn reach_attachments(connections: &mut [Agentable], saved: &[SavedConnection]) {
+    let reached: Vec<Vec<AttachTo>> = connections
+        .iter()
+        .map(|files| match files.spec.driver {
+            Driver::Files => reaching(&files.spec.attach, connections, saved)
+                .into_iter()
+                .filter_map(|(_, reached)| reached.ok())
+                .collect(),
+            Driver::Sqlite | Driver::Postgres | Driver::MySql | Driver::BigQuery => Vec::new(),
+        })
+        .collect();
+    for (files, attach) in connections.iter_mut().zip(reached) {
+        files.attach = attach;
+    }
 }
 
 /// What an agent calls each of `saved`, in its order, Off or not, by the
@@ -930,6 +1007,19 @@ async fn opened(
     agentable: &Agentable,
     host_keys: &HostKeys,
 ) -> Result<Connection, Failure> {
+    // A Files connection keeps no secret of its own: those of the saved
+    // connections its agents' session attaches, quietly as the rest.
+    match agentable.spec.driver {
+        Driver::Files => {
+            let attaching = super::attach::attaching_quietly(agentable.attach.clone(), keyring)
+                .await
+                .map_err(|error| unavailable(&error.to_string()))?;
+            return Connection::connect_files(&agentable.spec, &attaching, host_keys, None)
+                .await
+                .map_err(|error| unavailable(&error.to_string()));
+        }
+        Driver::Sqlite | Driver::Postgres | Driver::MySql | Driver::BigQuery => {}
+    }
     let mut secrets = Secrets::default();
     let needed = [
         (
@@ -2223,5 +2313,188 @@ mod tests {
              information_schema.columns c",
         )
         .await;
+    }
+
+    /// A Files connection attaching the Bookshop four ways: as it is, Off,
+    /// with a table hidden, and with a column an administrator's rule
+    /// masks. And two that can't be attached: one whose password is asked
+    /// for on every connect, and one deleted.
+    fn attaching_four() -> Vec<SavedConnection> {
+        let postgres = |database: &str| ConnectSpec {
+            driver: Driver::Postgres,
+            host: "db.bookshop.test".into(),
+            user: "reader".into(),
+            database: database.into(),
+            ..ConnectSpec::default()
+        };
+        let mut shown = saved(
+            "dev",
+            "Bookshop",
+            Environment::Dev,
+            postgres("bookshop_development"),
+        );
+        shown.password = PasswordMode::Keyring;
+        let mut off = saved(
+            "prod",
+            "Bookshop",
+            Environment::Production,
+            postgres("bookshop_production"),
+        );
+        off.agents.access = AgentAccess::Off;
+        let mut hides = saved(
+            "staging",
+            "Bookshop",
+            Environment::Staging,
+            postgres("bookshop_staging"),
+        );
+        hides.agents.tables = Tables::AllExcept(vec!["customers".parse().unwrap()]);
+        let ruled = saved("ruled", "Reports", Environment::Dev, postgres("reports"));
+        let mut asks = saved("asks", "Shop", Environment::Dev, postgres("shop"));
+        asks.password = PasswordMode::Ask;
+        let mut spec = ConnectSpec::files(tabletist_db::files::Source::Folder(
+            "/data/bookshop-exports".into(),
+        ));
+        let attach = |connection: &str, name: &str| Attach {
+            connection: connection.into(),
+            name: name.into(),
+        };
+        spec.attach = vec![
+            attach("dev", "bookshop_development"),
+            attach("prod", "bookshop_production"),
+            attach("staging", "bookshop_staging"),
+            attach("ruled", "reports"),
+            attach("asks", "shop"),
+            attach("gone", "gone"),
+        ];
+        let files = saved("files", "Bookshop exports", Environment::Local, spec);
+        vec![shown, off, hides, ruled, asks, files]
+    }
+
+    #[test]
+    fn agents_reach_an_attachment_only_where_its_own_setting_lets_them_read_it_whole() {
+        let saved = attaching_four();
+        let mut connections = agentable(&saved);
+        for agentable in &mut connections {
+            if agentable.id.0 == "ruled" {
+                agentable.sources.administrator = vec![tabletist_db::agent::Source {
+                    tables: Tables::All,
+                    masked: vec!["orders.email".parse().unwrap()],
+                }];
+            }
+        }
+        let files = connections
+            .iter()
+            .find(|each| each.id.0 == "files")
+            .unwrap();
+        let reached: Vec<(String, Result<String, LeftOut>)> =
+            reaching(&files.spec.attach, &connections, &saved)
+                .into_iter()
+                .map(|(name, reached)| {
+                    let id = reached.map(|to| to.saved.unwrap().id.0);
+                    (name, id)
+                })
+                .collect();
+        let pair = |name: &str, reached| (name.to_owned(), reached);
+        // The one asked for on every connect and the deleted one can't be
+        // attached at all: the Join section says so, not the Agents part.
+        assert_eq!(
+            reached,
+            [
+                pair("bookshop_development", Ok("dev".to_owned())),
+                pair("bookshop_production", Err(LeftOut::Off)),
+                pair("bookshop_staging", Err(LeftOut::Guards)),
+                pair("reports", Err(LeftOut::Guards)),
+            ]
+        );
+        reach_attachments(&mut connections, &saved);
+        let attached: Vec<(&str, Vec<&str>)> = connections
+            .iter()
+            .map(|each| {
+                let names = each.attach.iter().map(|to| to.name.as_str()).collect();
+                (each.id.0.as_str(), names)
+            })
+            .collect();
+        assert_eq!(
+            attached,
+            [
+                ("dev", vec![]),
+                ("staging", vec![]),
+                ("ruled", vec![]),
+                ("asks", vec![]),
+                ("files", vec!["bookshop_development"]),
+            ]
+        );
+        // What it attaches is the saved connection as agents get it, with
+        // where its password is kept, never the password.
+        let files = connections
+            .iter()
+            .find(|each| each.id.0 == "files")
+            .unwrap();
+        let dev = files.attach[0].saved.as_ref().unwrap();
+        assert_eq!(dev.password, PasswordMode::Keyring);
+        assert_eq!(dev.environment, Environment::Dev);
+        assert_eq!(dev.spec.database, "bookshop_development");
+    }
+
+    #[tokio::test]
+    async fn an_agent_s_files_session_attaches_only_what_agents_may_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let exports = dir.path().join("exports");
+        std::fs::create_dir(&exports).unwrap();
+        tabletist_db::fixtures::write_bookshop_files(&exports).unwrap();
+        let shop = saved(
+            "shop",
+            "Bookshop",
+            Environment::Dev,
+            ConnectSpec::sqlite(bookshop(dir.path(), "shop.sqlite3")),
+        );
+        let mut off = saved(
+            "archive",
+            "Archive",
+            Environment::Production,
+            ConnectSpec::sqlite(bookshop(dir.path(), "archive.sqlite3")),
+        );
+        off.agents.access = AgentAccess::Off;
+        let mut spec = ConnectSpec::files(tabletist_db::files::Source::Folder(exports));
+        spec.attach = vec![
+            Attach {
+                connection: "shop".into(),
+                name: "shop".into(),
+            },
+            Attach {
+                connection: "archive".into(),
+                name: "archive".into(),
+            },
+        ];
+        let files = saved("files", "Bookshop exports", Environment::Local, spec);
+        let all = [shop, off, files];
+        let mut connections = agentable(&all);
+        reach_attachments(&mut connections, &all);
+        let gateway = AppGateway::new(Keyring::memory());
+        gateway.set_policy(connections, HostKeys::default());
+        let stop = CancellationToken::new();
+        let session = gateway.open("files", &stop).await.unwrap();
+        assert_eq!(session.connection().unwrap().access(), Access::ReadOnly);
+        let schemas = session.schemas().await.unwrap();
+        assert_eq!(schemas.names, ["main", "bookshop", "shop"]);
+        // A file's table and the attached database's, in one read.
+        let joined = read(
+            &session,
+            Dialect::DuckDb,
+            "SELECT count(*) FROM bookshop.order_items i JOIN shop.books b ON b.id = i.book_id",
+        )
+        .await;
+        assert!(the_int(&joined.unwrap()) > 0);
+        // The one agents may not read isn't in the session at all.
+        let refused = read(
+            &session,
+            Dialect::DuckDb,
+            "SELECT count(*) FROM archive.books",
+        )
+        .await;
+        assert!(
+            matches!(&refused, Err(Failure::Database(error)) if error.to_string().contains("archive")),
+            "{refused:?}"
+        );
     }
 }

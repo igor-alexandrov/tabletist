@@ -25,7 +25,8 @@ mod history;
 mod updates;
 
 pub use agents::{
-    Agentable, AgentsCommand, AgentsEvent, AppGateway, LOG_PAGE, agent_names, agentable,
+    Agentable, AgentsCommand, AgentsEvent, AppGateway, LOG_PAGE, LeftOut, agent_names, agentable,
+    reach_attachments, reaching,
 };
 pub use history::{HistoryCommand, HistoryEvent};
 pub use updates::{UpdatesCommand, UpdatesEvent};

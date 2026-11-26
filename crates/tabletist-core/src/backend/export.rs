@@ -869,6 +869,7 @@ mod tests {
                 name: "shop".into(),
                 saved: Some(super::super::attach::AttachSaved {
                     id: crate::connections::ConnectionId("bookshop".into()),
+                    environment: crate::env::Environment::Local,
                     spec: ConnectSpec::sqlite(dir.path().join("bookshop.db")),
                     password: crate::connections::PasswordMode::None,
                     ssh_secret: crate::connections::PasswordMode::None,

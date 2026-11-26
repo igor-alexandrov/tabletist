@@ -6238,8 +6238,23 @@ impl App {
         if !self.serves_agents {
             return;
         }
-        // What a change made outside the app holds back is not sent, and
-        // nothing above the administrator's policy.
+        let (shown, mut connections) = self.agents_connections();
+        // A Files connection's agents' session attaches what each of its
+        // attachments' own settings let agents read.
+        crate::backend::reach_attachments(&mut connections, &shown);
+        self.backend.send(Command::Agents(AgentsCommand::Policy {
+            connections,
+            host_keys: self.host_keys.clone(),
+        }));
+    }
+
+    /// The saved connections as agents get them now, and those agents may
+    /// use, with the administrator's sources: what a change made outside
+    /// the app holds back is not given, and nothing above the
+    /// administrator's policy.
+    pub(crate) fn agents_connections(
+        &self,
+    ) -> (Vec<SavedConnection>, Vec<crate::backend::Agentable>) {
         let home = self.dirs.home.as_deref();
         let shown: Vec<SavedConnection> = self
             .connections
@@ -6260,10 +6275,7 @@ impl App {
         for agentable in &mut connections {
             agentable.sources.administrator = self.managed.sources(&agentable.spec, home);
         }
-        self.backend.send(Command::Agents(AgentsCommand::Policy {
-            connections,
-            host_keys: self.host_keys.clone(),
-        }));
+        (shown, connections)
     }
 
     fn start_agents(&mut self) {
