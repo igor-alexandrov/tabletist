@@ -2378,6 +2378,9 @@ impl App {
                 let fits = object.rows.value.as_ref().is_some_and(|page| {
                     let wide = |row: &Vec<tabletist_db::Value>| row.len() == page.columns.len();
                     !reaches_its_own
+                        // A file's rows each move to their place in the
+                        // file as written: the page is read again.
+                        && page.positions.is_none()
                         && rows.len() == saving.rows.len()
                         && rows.iter().all(wide)
                         && saving.rows.iter().all(|&at| at < page.rows.len())

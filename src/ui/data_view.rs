@@ -1643,7 +1643,9 @@ pub fn show(
     // A deleted row's minus stands where the row's key begins.
     let delete_marker = crate::edit::Table::of(workspace, object)
         .and_then(|table| table.key())
-        .and_then(|key| key.into_iter().min());
+        // A file's row is found by its place, not a column: the minus
+        // stands at its start.
+        .map(|key| key.into_iter().min().unwrap_or(0));
     let (unset, lacking) = new_row_columns(workspace, object);
     let target = object.edits.editor.as_ref().and_then(|editor| {
         let how = (hold, &editor_keys, calendar.as_ref());

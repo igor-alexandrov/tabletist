@@ -134,21 +134,42 @@ impl SavedConnection {
     /// environment's default. A user who never chose follows the
     /// environment when it changes.
     pub fn read_only(&self) -> bool {
-        self.read_only
-            .unwrap_or(self.environment.read_only_by_default())
+        read_only_of(self.spec.driver, self.read_only, self.environment)
     }
 
     /// The access its sessions open with.
     pub fn access(&self) -> tabletist_db::Access {
-        access(self.read_only, self.environment)
+        access(self.spec.driver, self.read_only, self.environment)
     }
 }
 
-/// The access a session opens with: read-only as the box says, else as
-/// `environment` has it by default. An open tab asks with its own
-/// environment, which a relabelled saved entry does not change.
-pub fn access(read_only: Option<bool>, environment: Environment) -> tabletist_db::Access {
-    if read_only.unwrap_or(environment.read_only_by_default()) {
+/// Whether a connection of `driver` is read-only: as the box says, else as
+/// `environment` has it by default. Files are read-only until the box is
+/// turned off, whatever the environment.
+fn read_only_of(
+    driver: tabletist_db::Driver,
+    read_only: Option<bool>,
+    environment: Environment,
+) -> bool {
+    use tabletist_db::Driver;
+    read_only.unwrap_or(match driver {
+        Driver::Files => true,
+        Driver::Sqlite | Driver::Postgres | Driver::MySql | Driver::BigQuery => {
+            environment.read_only_by_default()
+        }
+    })
+}
+
+/// The access a session of `driver` opens with: read-only as the box
+/// says, else by default: Files read-only, others as `environment` has it
+/// (see `SavedConnection::read_only`). An open tab asks with its
+/// own environment, which a relabelled saved entry does not change.
+pub fn access(
+    driver: tabletist_db::Driver,
+    read_only: Option<bool>,
+    environment: Environment,
+) -> tabletist_db::Access {
+    if read_only_of(driver, read_only, environment) {
         tabletist_db::Access::ReadOnly
     } else {
         tabletist_db::Access::Writable
@@ -1314,5 +1335,25 @@ mod tests {
         assert_eq!(connection.access(), tabletist_db::Access::ReadOnly);
         connection.read_only = Some(false);
         assert_eq!(connection.access(), tabletist_db::Access::Writable);
+    }
+
+    #[test]
+    fn files_open_read_only_whatever_the_environment_until_the_box_is_off() {
+        let mut files = saved("Bookshop exports", "/bookshop.db");
+        files.spec = tabletist_db::ConnectSpec::files(tabletist_db::files::Source::Folder(
+            "/data/bookshop-exports".into(),
+        ));
+        files.read_only = None;
+        for environment in [Environment::Local, Environment::Dev, Environment::None] {
+            files.environment = environment;
+            assert_eq!(
+                files.access(),
+                tabletist_db::Access::ReadOnly,
+                "{environment:?}"
+            );
+            assert!(files.read_only());
+        }
+        files.read_only = Some(false);
+        assert_eq!(files.access(), tabletist_db::Access::Writable);
     }
 }

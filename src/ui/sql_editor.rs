@@ -563,6 +563,7 @@ fn mode_does(mode: RunMode) -> Msgid {
 /// says where it cannot be picked.
 fn no_writes(no: NoWrites) -> Msgid {
     match no {
+        NoWrites::Files => msgid("A file is edited in its table, then saved."),
         NoWrites::ReadOnlyConnection => msgid("This connection opens read-only."),
         NoWrites::Unconfirmed => UNCONFIRMED,
     }
@@ -575,7 +576,7 @@ fn switch_tip(bar: &Bar<'_>) -> String {
     let does = say(mode_does(bar.mode));
     match bar.writes {
         Ok(()) => does.into_owned(),
-        Err(no @ NoWrites::ReadOnlyConnection) => format!(
+        Err(no @ (NoWrites::Files | NoWrites::ReadOnlyConnection)) => format!(
             "{}. {}",
             say(msgid(
                 "Every query runs in a read-only transaction that is rolled back"
@@ -657,7 +658,9 @@ fn switch(ui: &mut Ui, rect: Rect, bar: &Bar<'_>) -> Option<RunMode> {
     // A control that is off, as the design's: all of it at 45 %.
     let fade = |color: Color32| match writes {
         Ok(()) => color,
-        Err(NoWrites::ReadOnlyConnection | NoWrites::Unconfirmed) => color.gamma_multiply(0.45),
+        Err(NoWrites::Files | NoWrites::ReadOnlyConnection | NoWrites::Unconfirmed) => {
+            color.gamma_multiply(0.45)
+        }
     };
     let painter = ui.painter().clone();
     let (pad, gap) = if look.terminal {

@@ -145,7 +145,6 @@ fn page_of(rows: i64) -> RowPage {
         })
         .collect();
     RowPage {
-        positions: None,
         columns: vec![
             column("id", "int8", ValueKind::Numeric),
             column("book_id", "int8", ValueKind::Numeric),
@@ -158,6 +157,7 @@ fn page_of(rows: i64) -> RowPage {
         has_more: false,
         ordered_by_key: true,
         elapsed: Duration::from_millis(3),
+        positions: None,
     }
 }
 
@@ -339,7 +339,7 @@ fn production_beside(harness: &mut Harness, own: ConnTabId) -> ConnTabId {
     workspace.name = "Bookshop".into();
     workspace.environment = Environment::Production;
     // Its box never set: production's default.
-    workspace.access = crate::connections::access(None, workspace.environment);
+    workspace.access = crate::connections::access(workspace.driver, None, workspace.environment);
     workspace.spec = spec;
     workspace.driver = Driver::Postgres;
     harness.app.apply(Action::ActivateConnTab(own));
@@ -933,7 +933,8 @@ fn edit_to_production(harness: &mut Harness) {
     let tab = production_beside(harness, own);
     harness.app.apply(Action::ActivateConnTab(tab));
     let workspace = harness.app.workspace_mut(tab).unwrap();
-    workspace.access = crate::connections::access(Some(false), workspace.environment);
+    workspace.access =
+        crate::connections::access(workspace.driver, Some(false), workspace.environment);
     workspace.databases.value = Some(vec!["bookshop_production".into(), "postgres".into()]);
     tables(harness, tab);
     harness.answer_structure(structure());
@@ -1991,7 +1992,6 @@ pub(crate) mod mock {
             })
             .collect();
         RowPage {
-            positions: None,
             columns: vec![
                 column("id", "int8", ValueKind::Numeric),
                 column("book_id", "int8", ValueKind::Numeric),
@@ -2004,6 +2004,7 @@ pub(crate) mod mock {
             has_more: false,
             ordered_by_key: true,
             elapsed: Duration::from_millis(2),
+            positions: None,
         }
     }
 
@@ -2136,7 +2137,6 @@ pub(crate) mod mock {
             ],
         ];
         RowPage {
-            positions: None,
             columns: vec![
                 column("id", "int8", ValueKind::Numeric),
                 column("title", "text", ValueKind::Text),
@@ -2153,6 +2153,7 @@ pub(crate) mod mock {
             has_more: false,
             ordered_by_key: true,
             elapsed: Duration::from_millis(2),
+            positions: None,
         }
     }
 

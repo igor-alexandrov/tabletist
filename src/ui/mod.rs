@@ -78,6 +78,8 @@ pub mod export_toast;
 mod export_ways_tests;
 pub mod file_list;
 #[cfg(test)]
+mod files_edit_tests;
+#[cfg(test)]
 mod files_tests;
 pub mod filter_bar;
 pub mod focus;

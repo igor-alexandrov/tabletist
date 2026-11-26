@@ -4319,7 +4319,8 @@ impl App {
             return;
         };
         if let Some(read_only) = boxed {
-            workspace.access = crate::connections::access(read_only, workspace.environment);
+            workspace.access =
+                crate::connections::access(workspace.driver, read_only, workspace.environment);
         }
         if forced {
             workspace.access = tabletist_db::Access::ReadOnly;

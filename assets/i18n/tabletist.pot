@@ -3608,6 +3608,25 @@ msgid "This connection opens read-only"
 msgstr ""
 
 #: src/ui/cell_editor.rs
+msgid "Excel files open read-only"
+msgstr ""
+
+#: src/ui/cell_editor.rs
+msgid ".duckdb files open read-only"
+msgstr ""
+
+#: src/ui/cell_editor.rs
+msgid "Attached connections open read-only"
+msgstr ""
+
+#: src/ui/cell_editor.rs
+#, rust-format
+msgid ""
+"{table} opens read-only: Tabletist couldn't match its rows to the file's "
+"lines"
+msgstr ""
+
+#: src/ui/cell_editor.rs
 msgid "Views cannot be edited"
 msgstr ""
 
@@ -9814,6 +9833,10 @@ msgid "A run that changes data is committed when every statement succeeds."
 msgstr ""
 
 #: src/ui/sql_editor.rs
+msgid "A file is edited in its table, then saved."
+msgstr ""
+
+#: src/ui/sql_editor.rs
 msgid "This connection opens read-only."
 msgstr ""
 
@@ -10008,6 +10031,20 @@ msgstr ""
 
 #: src/ui/sql_results.rs
 msgid "Nothing changed."
+msgstr ""
+
+#: src/ui/sql_results.rs
+msgid "Files are edited in their tables"
+msgstr ""
+
+#: src/ui/sql_results.rs
+#, rust-format
+msgid ""
+"A Files connection's scripts only read, so {database} refused {statement}."
+msgstr ""
+
+#: src/ui/sql_results.rs
+msgid "Change the rows in the file's table, then save them."
 msgstr ""
 
 #: src/ui/sql_results.rs

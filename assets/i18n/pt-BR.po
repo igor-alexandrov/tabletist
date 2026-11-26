@@ -3514,6 +3514,10 @@ msgid "{n} running"
 msgstr "{n} em andamento"
 
 #: src/ui/cell_editor.rs
+msgid ".duckdb files open read-only"
+msgstr "Arquivos .duckdb abrem em somente leitura"
+
+#: src/ui/cell_editor.rs
 msgid "A save is running"
 msgstr "Um salvamento está em andamento"
 
@@ -3536,12 +3540,20 @@ msgstr[0] "No máximo {n} dígito antes do ponto decimal"
 msgstr[1] "No máximo {n} dígitos antes do ponto decimal"
 
 #: src/ui/cell_editor.rs
+msgid "Attached connections open read-only"
+msgstr "Conexões anexadas abrem em somente leitura"
+
+#: src/ui/cell_editor.rs
 msgid "Binary values cannot be edited yet"
 msgstr "Valores binários ainda não podem ser editados"
 
 #: src/ui/cell_editor.rs
 msgid "Computed by the database"
 msgstr "Calculado pelo banco de dados"
+
+#: src/ui/cell_editor.rs
+msgid "Excel files open read-only"
+msgstr "Arquivos do Excel abrem em somente leitura"
 
 #: src/ui/cell_editor.rs
 msgid "No decimals."
@@ -3710,6 +3722,15 @@ msgstr ""
 msgid "{table} has no primary key, so rows can't be deleted here"
 msgstr ""
 "{table} não tem chave primária, então as linhas não podem ser excluídas aqui"
+
+#: src/ui/cell_editor.rs
+#, rust-format
+msgid ""
+"{table} opens read-only: Tabletist couldn't match its rows to the file's "
+"lines"
+msgstr ""
+"{table} abre em somente leitura: o Tabletist não conseguiu associar as "
+"linhas dela às linhas do arquivo"
 
 #: src/ui/cell_editor.rs
 #, rust-format
@@ -9983,6 +10004,10 @@ msgid "schema"
 msgstr "esquema"
 
 #: src/ui/sql_editor.rs
+msgid "A file is edited in its table, then saved."
+msgstr "Um arquivo é editado na tabela dele e depois salvo."
+
+#: src/ui/sql_editor.rs
 msgid "A read-write run is still going in this tab. Cancel it or wait for it."
 msgstr ""
 "Uma execução de leitura e gravação ainda está em andamento nesta aba. "
@@ -10108,8 +10133,20 @@ msgid "{seconds} s"
 msgstr "{seconds} s"
 
 #: src/ui/sql_results.rs
+#, rust-format
+msgid ""
+"A Files connection's scripts only read, so {database} refused {statement}."
+msgstr ""
+"Os scripts de uma conexão de arquivos só leem, então {database} recusou "
+"{statement}."
+
+#: src/ui/sql_results.rs
 msgid "Allow writes in this tab"
 msgstr "Permitir gravações nesta aba"
+
+#: src/ui/sql_results.rs
+msgid "Change the rows in the file's table, then save them."
+msgstr "Altere as linhas na tabela do arquivo e depois salve-as."
 
 #: src/ui/sql_results.rs
 msgid "Committed"
@@ -10122,6 +10159,10 @@ msgid ""
 msgstr ""
 "Toda execução aqui é uma transação somente leitura, então {database} recusou "
 "{statement}."
+
+#: src/ui/sql_results.rs
+msgid "Files are edited in their tables"
+msgstr "Os arquivos são editados nas tabelas deles"
 
 #: src/ui/sql_results.rs
 #, rust-format
