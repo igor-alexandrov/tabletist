@@ -485,6 +485,8 @@ fn menus(
                     name: Some(limit_name(*choice, locale)),
                     selected: *choice == bar.limit,
                     disabled: None,
+                    badge: None,
+                    rule_before: false,
                 })
                 .collect()
         },
@@ -513,6 +515,8 @@ fn menus(
                     name: Some(timeout_name(*choice, locale)),
                     selected: *choice == bar.secs,
                     disabled: None,
+                    badge: None,
+                    rule_before: false,
                 })
                 .collect()
         },

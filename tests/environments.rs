@@ -199,6 +199,10 @@ fn only_the_environment_surfaces_ask_for_its_colours() {
         // A Files connection's Join section: each saved connection's
         // stripe and badge.
         "src/ui/attach_list.rs",
+        // An attached connection's schema: its badge in the sidebar's
+        // header and in the schema menu's row.
+        "src/ui/sidebar.rs",
+        "src/ui/menu.rs",
     ];
     let mut found = Vec::new();
     for (path, text) in sources() {

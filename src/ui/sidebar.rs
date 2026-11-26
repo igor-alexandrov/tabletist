@@ -213,6 +213,18 @@ pub fn show(
     let schemas = workspace
         .tree
         .visible_schemas(workspace.driver, show_system);
+    // The schemas a Files tab's session attached, with each one's
+    // environment: those of no environment have no badge.
+    let attached: Vec<(String, crate::env::Environment)> = workspace
+        .attached
+        .iter()
+        .filter_map(|to| {
+            let environment = to.saved.as_ref()?.environment;
+            environment
+                .named(crate::env::Platform::Native)
+                .map(|_| (to.name.clone(), environment))
+        })
+        .collect();
     let shown = workspace.tree.shown_schema(workspace.driver, show_system);
     let flat = workspace.tree.flat;
     let shown_loading = shown
@@ -343,6 +355,7 @@ pub fn show(
                 ui,
                 tab,
                 &schemas,
+                &attached,
                 shown.as_deref(),
                 flat,
                 shown_loading,
@@ -860,6 +873,7 @@ fn schema_header(
     ui: &mut egui::Ui,
     tab: ConnTabId,
     schemas: &[String],
+    attached: &[(String, crate::env::Environment)],
     shown: Option<&str>,
     flat: bool,
     loading: bool,
@@ -886,15 +900,30 @@ fn schema_header(
     let rect = Rect::from_min_size(pos2(band.left(), band.top() + above), vec2(width, row));
     let left = rect.left() + left_pad;
     let center = rect.center().y;
+    // An attached connection's schema shows its environment's badge.
+    let badge_of = |schema: &str| {
+        attached
+            .iter()
+            .find(|(name, _)| name == schema)
+            .map(|(_, environment)| *environment)
+    };
+    let badge_style = match look.terminal {
+        true => crate::ui::workspace::Badge::Plain,
+        false => crate::ui::workspace::Badge::Mac,
+    };
     // The schema: a menu of the others.
     if let Some(schema) = shown {
         let label = widgets::section_label(&display_safe(schema), look, palette).layout(ui.ctx());
-        let text_width = label.width();
         let (glyph_width, gap) = if look.terminal {
             (8.0, 4.0)
         } else {
             (10.0, 4.0)
         };
+        let badge = badge_of(schema);
+        let badge_width = badge.map_or(0.0, |environment| {
+            6.0 + crate::ui::workspace::env_badge_width(ui, environment, badge_style, look)
+        });
+        let text_width = label.width() + badge_width;
         let hit = Rect::from_min_size(
             pos2(left - 6.0, center - 13.0),
             vec2(6.0 + text_width + gap + glyph_width + 6.0, 26.0),
@@ -906,11 +935,23 @@ fn schema_header(
             info.current_text_value = Some(display_safe(schema).into_owned());
             info
         });
+        if let Some(environment) = badge {
+            ui.ctx().accesskit_node_builder(response.id, |node| {
+                node.set_description(environment.label(crate::env::Platform::Native));
+            });
+        }
         if response.hovered() && !look.terminal {
             ui.painter()
                 .rect_filled(hit, CornerRadius::same(6), palette.surface);
         }
+        let label_width = label.width();
         label.paint_left(ui.painter(), left, center);
+        if let Some(environment) = badge {
+            let platform = crate::env::Platform::of(look);
+            let colors = crate::env::env_colors(environment, platform, palette);
+            let x = left + label_width + 6.0;
+            crate::ui::workspace::env_badge(ui, x, center, environment, &colors, badge_style, look);
+        }
         let glyph = pos2(left + text_width + gap + glyph_width / 2.0, center);
         if look.terminal {
             let mark = Text::one(look, TextRole::OCaption, "▾", palette.dim).layout(ui.ctx());
@@ -920,14 +961,23 @@ fn schema_header(
                 .image(palette.secondary, 10.0)
                 .paint_at(ui, Rect::from_center_size(glyph, vec2(10.0, 10.0)));
         }
+        // The connection's own schemas, then after a rule the attached
+        // ones, each with its badge.
         let picked = menu::choices(&response, 160.0, look, palette, || {
             schemas
                 .iter()
-                .map(|other| menu::Choice {
-                    text: display_safe(other).into_owned(),
-                    name: None,
-                    selected: Some(other.as_str()) == shown,
-                    disabled: None,
+                .enumerate()
+                .map(|(index, other)| {
+                    let badge = badge_of(other);
+                    let after_own = index > 0 && badge_of(&schemas[index - 1]).is_none();
+                    menu::Choice {
+                        text: display_safe(other).into_owned(),
+                        name: None,
+                        selected: Some(other.as_str()) == shown,
+                        disabled: None,
+                        badge,
+                        rule_before: badge.is_some() && after_own,
+                    }
                 })
                 .collect()
         });

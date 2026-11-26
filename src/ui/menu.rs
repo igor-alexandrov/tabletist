@@ -111,6 +111,7 @@ pub struct Item<'a> {
     disabled: Option<&'a str>,
     note: Option<&'a str>,
     lit: Option<bool>,
+    badge: Option<crate::env::Environment>,
 }
 
 impl<'a> Item<'a> {
@@ -127,6 +128,7 @@ impl<'a> Item<'a> {
             disabled: None,
             note: None,
             lit: None,
+            badge: None,
         }
     }
 
@@ -192,6 +194,13 @@ impl<'a> Item<'a> {
         self
     }
 
+    /// An environment's badge at the row's right, in the environment's
+    /// colours: the schema of an attached connection.
+    pub fn badge(mut self, environment: crate::env::Environment) -> Self {
+        self.badge = Some(environment);
+        self
+    }
+
     /// Shown, and not to be picked: `reason` says why, to a screen reader,
     /// under the pointer and while the keyboard is on the row. A row that
     /// cannot be picked stays in its menu, so the menu says what there is
@@ -239,7 +248,14 @@ impl<'a> Item<'a> {
         let after = self
             .note
             .map_or(0.0, |words| shape.gap + measure(note, words));
-        let wanted = lead + own + after + noted + hinted + shape.inset;
+        let badge_style = match look.terminal {
+            true => super::workspace::Badge::Plain,
+            false => super::workspace::Badge::Mac,
+        };
+        let badged = self.badge.map_or(0.0, |environment| {
+            DETAIL_GAP + super::workspace::env_badge_width(ui, environment, badge_style, look)
+        });
+        let wanted = lead + own + after + noted + hinted + badged + shape.inset;
         // A row that cannot be picked answers no press, and still takes
         // the keyboard, as a button that cannot be pressed does: the
         // keyboard can then read why. In a menu the keyboard never comes
@@ -262,6 +278,11 @@ impl<'a> Item<'a> {
         if let Some(detail) = self.detail {
             ui.ctx().accesskit_node_builder(response.id, |node| {
                 node.set_description(detail);
+            });
+        }
+        if let Some(environment) = self.badge {
+            ui.ctx().accesskit_node_builder(response.id, |node| {
+                node.set_description(environment.label(crate::env::Platform::Native));
             });
         }
         if let Some((words, key)) = self.hint {
@@ -336,6 +357,13 @@ impl<'a> Item<'a> {
             Text::one(look, note, detail, palette.dim)
                 .layout(ui.ctx())
                 .paint_right(painter, rect.right() - shape.inset, center);
+        }
+        if let Some(environment) = self.badge {
+            let platform = crate::env::Platform::of(look);
+            let colors = crate::env::env_colors(environment, platform, palette);
+            let width = super::workspace::env_badge_width(ui, environment, badge_style, look);
+            let left = rect.right() - shape.inset - width;
+            super::workspace::env_badge(ui, left, center, environment, &colors, badge_style, look);
         }
         let hint_shown = self.hint_shown.unwrap_or(lit);
         if let Some((words, key)) = self.hint.filter(|_| hint_shown) {
@@ -475,6 +503,10 @@ pub struct Choice {
     /// Why the choice cannot be picked: it is shown all the same, so the
     /// menu says what there is to choose (see [`Item::disabled`]).
     pub disabled: Option<String>,
+    /// An environment's badge at its right (see [`Item::badge`]).
+    pub badge: Option<crate::env::Environment>,
+    /// A rule above it: the choices after it are of another kind.
+    pub rule_before: bool,
 }
 
 /// The menu that `button` opens when clicked: `choices` under it, at least
@@ -518,6 +550,9 @@ fn pick(
     let mut picked = None;
     let open = under(button, min_width, look, palette, |ui| {
         for (index, choice) in choices().into_iter().enumerate() {
+            if choice.rule_before {
+                separator(ui, palette);
+            }
             let item = if marked {
                 Item::choice(&choice.text, choice.selected)
             } else {
@@ -529,6 +564,10 @@ fn pick(
             };
             let item = match &choice.disabled {
                 Some(reason) => item.disabled(reason),
+                None => item,
+            };
+            let item = match choice.badge {
+                Some(environment) => item.badge(environment),
                 None => item,
             };
             if item.show(ui, look, palette).clicked() {
