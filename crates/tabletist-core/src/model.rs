@@ -3022,6 +3022,7 @@ impl ConnectionForm {
                     ssh,
                     files: None,
                     csv: tabletist_db::files::Reading::default(),
+                    attach: Vec::new(),
                 })
             }
         }

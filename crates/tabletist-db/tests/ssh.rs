@@ -357,3 +357,40 @@ async fn a_database_host_that_never_answers_times_out_like_a_direct_connect() {
         );
     }
 }
+
+/// A Files connection attaches PostgreSQL's and MySQL's Bookshops, each
+/// through a tunnel of its own, and reads both.
+#[tokio::test]
+async fn a_files_connection_attaches_through_tunnels() {
+    let Some((ssh, password)) = server() else {
+        return;
+    };
+    let keys = trusted(&ssh).await;
+    let dir = tempfile::tempdir().unwrap();
+    tabletist_db::fixtures::write_bookshop_files(dir.path()).unwrap();
+    let secrets = secrets_with_db(with_password(&password));
+    let mut postgres = pg_via(&ssh);
+    postgres.database = "bookshop".into();
+    let mut mysql = mysql_via(&ssh);
+    mysql.database = "bookshop".into();
+    let attaching = [
+        tabletist_db::files::Attaching {
+            name: "pg_shop".into(),
+            spec: postgres,
+            secrets: secrets.clone(),
+        },
+        tabletist_db::files::Attaching {
+            name: "my_shop".into(),
+            spec: mysql,
+            secrets,
+        },
+    ];
+    let spec = ConnectSpec::files(tabletist_db::files::Source::Folder(dir.path().to_owned()));
+    let connection = Connection::connect_files(&spec, &attaching, &keys, None)
+        .await
+        .unwrap();
+    for schema in ["pg_shop", "my_shop"] {
+        let books = RowQuery::new(ObjectRef::new(schema, "books"), 100);
+        assert_eq!(connection.count_rows(&books).await.unwrap(), 12, "{schema}");
+    }
+}

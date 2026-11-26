@@ -469,6 +469,7 @@ impl Entry {
                 ssh,
                 files,
                 csv,
+                attach: Vec::new(),
             },
             agents,
         })

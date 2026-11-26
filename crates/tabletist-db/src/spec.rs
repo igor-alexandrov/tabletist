@@ -125,6 +125,10 @@ pub struct ConnectSpec {
     /// How a Files connection reads its CSV and TSV files.
     #[serde(skip_serializing_if = "crate::files::Reading::is_default")]
     pub csv: crate::files::Reading,
+    /// The saved connections a Files connection attaches, in order; none
+    /// for every other driver.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub attach: Vec<crate::files::Attach>,
 }
 
 impl Default for ConnectSpec {
@@ -142,6 +146,7 @@ impl Default for ConnectSpec {
             ssh: None,
             files: None,
             csv: crate::files::Reading::default(),
+            attach: Vec::new(),
         }
     }
 }

@@ -165,6 +165,13 @@ codegen-units = 256
 [profile.dev.package."*"]
 opt-level = 2
 
+# DuckDB's PostgreSQL, MySQL, SQLite and Excel readers are release builds it
+# downloads. A DuckDB built with its own debug checks, which debug info turns
+# on (`DEBUG`), counts their allocations as its own and aborts: it is built
+# as a release is, in every profile.
+[profile.dev.package.libduckdb-sys]
+debug = false
+
 [patch.crates-io]
 # crmne/egui apps-0.36.2, the revision fastframe's getting-started guide
 # names, shared with spotifast: bidi shaping, Wayland frame-callback pacing,
