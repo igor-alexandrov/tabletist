@@ -9,6 +9,7 @@ mod files;
 #[cfg(test)]
 pub(crate) use files::source_line_id;
 mod group;
+mod join;
 mod reading;
 mod sheet;
 mod terminal;
@@ -484,6 +485,12 @@ pub fn show(
         // The override whose row has the keyboard, which `R` resets (the
         // terminal look's key).
         let mut reset = reading::focused_override(ctx, form);
+        // The attach list's row whose box has the keyboard, and the row
+        // the arrows move it to.
+        let attaching = is_files(form)
+            .then(|| crate::ui::attach_list::focused(ctx, form.joinable.len()))
+            .flatten();
+        let mut moved_to = None;
         let toggle_url = ctx.input_mut(|input| {
             // The form's cancel closes the dialog, unless it is closing an
             // open list first.
@@ -562,8 +569,16 @@ pub fn show(
                         _ => true,
                     }
                 });
-                // The arrows move through the list of files.
-                if is_files(form) && form.files_kind == FilesKind::Files {
+                // The arrows move through the attach list while one of its
+                // boxes has the keyboard, else through the list of files.
+                if let Some(at) = attaching {
+                    let step = moves(input, keymap, layout);
+                    let rows = form.joinable.len() as isize;
+                    let next = (at as isize + step).clamp(0, rows - 1) as usize;
+                    if next != at {
+                        moved_to = Some(crate::ui::attach_list::toggle_id(next));
+                    }
+                } else if is_files(form) && form.files_kind == FilesKind::Files {
                     let rows = form.files_list.len();
                     let step = moves(input, keymap, layout);
                     if rows > 0 && step != 0 {
@@ -578,6 +593,9 @@ pub fn show(
         // memory, which sits behind the same lock.
         if toggle_url {
             show_url(ctx, form, !form.url_mode);
+        }
+        if let Some(id) = moved_to {
+            ctx.memory_mut(|memory| memory.request_focus(id));
         }
     }
     resets_once(&mut actions);
@@ -1451,9 +1469,24 @@ enum Status {
     Partial(String),
 }
 
+/// What the footer says while DuckDB downloads `reader`.
+fn downloading(reader: tabletist_db::files::Reader) -> Msgid {
+    use tabletist_db::files::Reader;
+    match reader {
+        Reader::Excel => msgid("Downloading the Excel reader for DuckDB…"),
+        Reader::Postgres => msgid("Downloading the PostgreSQL reader for DuckDB…"),
+        Reader::MySql => msgid("Downloading the MySQL reader for DuckDB…"),
+        Reader::Sqlite => msgid("Downloading the SQLite reader for DuckDB…"),
+    }
+}
+
 fn status(form: &ConnectionForm, skin: &Skin) -> Option<Status> {
     match form.test {
-        TestState::Running(_) => Some(Status::Running(skin.say(msgid("Testing…")))),
+        // DuckDB downloads a reader the first time a connection needs it.
+        TestState::Running(_) => Some(Status::Running(match form.files_downloading {
+            None => skin.say(msgid("Testing…")),
+            Some(reader) => skin.say(downloading(reader)),
+        })),
         TestState::Passed => {
             let driver = form
                 .test_spec

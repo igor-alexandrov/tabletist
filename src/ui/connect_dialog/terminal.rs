@@ -362,6 +362,7 @@ pub(super) fn terminal_body(
                 Driver::Files => {
                     super::files::terminal(ui, form, skin, actions);
                     super::reading::section(ui, form, skin, actions);
+                    super::join::section(ui, form, skin, actions);
                 }
                 Driver::Postgres | Driver::MySql => {
                     terminal_section(ui, &skin.say(msgid("Server")), skin);

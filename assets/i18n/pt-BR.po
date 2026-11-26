@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-25 14:27-0500\n"
+"POT-Creation-Date: 2026-11-25 19:33-0500\n"
 "PO-Revision-Date: 2026-11-19 16:11-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -3386,6 +3386,27 @@ msgstr[1] "{n} tabelas descritas"
 msgid "{what} returned"
 msgstr "retornou {what}"
 
+#: src/ui/attach_list.rs src/ui/connect_dialog/join.rs
+msgid "Attach"
+msgstr "Anexar"
+
+#: src/ui/attach_list.rs
+msgid "SQL name"
+msgstr "Nome no SQL"
+
+#: src/ui/attach_list.rs
+msgid "as"
+msgstr "como"
+
+#: src/ui/attach_list.rs
+msgid "not attached"
+msgstr "não anexada"
+
+#: src/ui/attach_list.rs src/ui/data_view.rs src/ui/ddl.rs src/ui/export.rs
+#: src/ui/row_panel.rs src/ui/settings/mod.rs src/ui/workspace.rs
+msgid "read-only"
+msgstr "somente leitura"
+
 #: src/ui/calendar.rs src/ui/filter_bar.rs
 msgid "Apply"
 msgstr "Aplicar"
@@ -4039,6 +4060,52 @@ msgstr "Nome do grupo"
 msgid "New group…"
 msgstr "Novo grupo…"
 
+#: src/ui/connect_dialog/join.rs
+msgid "Asks for its password on every connect"
+msgstr "Pede a senha a cada conexão"
+
+#: src/ui/connect_dialog/join.rs
+msgid ""
+"Attach a saved connection to join a file to its live tables in one query. "
+"Optional."
+msgstr ""
+"Anexe uma conexão salva para cruzar um arquivo com as tabelas dela em uma só "
+"consulta. Opcional."
+
+#: src/ui/connect_dialog/join.rs
+#, rust-format
+msgid "Attached as {names}"
+msgstr "Anexadas como {names}"
+
+#: src/ui/connect_dialog/join.rs
+msgid "Attached connections open read-only here, as the files do."
+msgstr ""
+"As conexões anexadas abrem aqui somente para leitura, como os arquivos."
+
+#: src/ui/connect_dialog/join.rs
+msgid "Join with saved connections"
+msgstr "Cruzar com conexões salvas"
+
+#: src/ui/connect_dialog/join.rs
+msgid "Names no database"
+msgstr "Não informa um banco de dados"
+
+#: src/ui/connect_dialog/join.rs
+msgid "No saved PostgreSQL, MySQL or SQLite connection to attach."
+msgstr "Nenhuma conexão salva de PostgreSQL, MySQL ou SQLite para anexar."
+
+#: src/ui/connect_dialog/join.rs
+msgid "None attached · optional"
+msgstr "Nenhuma anexada · opcional"
+
+#: src/ui/connect_dialog/join.rs
+msgid "Saved connections to attach"
+msgstr "Conexões salvas para anexar"
+
+#: src/ui/connect_dialog/join.rs
+msgid "optional"
+msgstr "opcional"
+
 #: src/ui/connect_dialog/mod.rs
 msgid "Changes the fields below"
 msgstr "Altera os campos abaixo"
@@ -4054,6 +4121,22 @@ msgstr "Escolher um arquivo de banco de dados"
 #: src/ui/connect_dialog/mod.rs src/ui/workspace.rs
 msgid "Connected"
 msgstr "Conectado"
+
+#: src/ui/connect_dialog/mod.rs
+msgid "Downloading the Excel reader for DuckDB…"
+msgstr "Baixando o leitor de Excel do DuckDB…"
+
+#: src/ui/connect_dialog/mod.rs
+msgid "Downloading the MySQL reader for DuckDB…"
+msgstr "Baixando o leitor de MySQL do DuckDB…"
+
+#: src/ui/connect_dialog/mod.rs
+msgid "Downloading the PostgreSQL reader for DuckDB…"
+msgstr "Baixando o leitor de PostgreSQL do DuckDB…"
+
+#: src/ui/connect_dialog/mod.rs
+msgid "Downloading the SQLite reader for DuckDB…"
+msgstr "Baixando o leitor de SQLite do DuckDB…"
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Files connections have no URL. Choose a folder or files under Source."
@@ -4835,11 +4918,6 @@ msgstr[1] "linhas novas descartadas"
 #: src/ui/data_view.rs
 msgid "open rows"
 msgstr "abrir linhas"
-
-#: src/ui/data_view.rs src/ui/ddl.rs src/ui/export.rs src/ui/row_panel.rs
-#: src/ui/settings/mod.rs src/ui/workspace.rs
-msgid "read-only"
-msgstr "somente leitura"
 
 #: src/ui/data_view.rs src/ui/pending_bar.rs
 msgid "row deleted"

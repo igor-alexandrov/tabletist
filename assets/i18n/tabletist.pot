@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-25 14:27-0500\n"
+"POT-Creation-Date: 2026-11-25 19:33-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -3339,6 +3339,27 @@ msgstr ""
 msgid "No calls on this connection yet."
 msgstr ""
 
+#: src/ui/attach_list.rs src/ui/connect_dialog/join.rs
+msgid "Attach"
+msgstr ""
+
+#: src/ui/attach_list.rs src/ui/data_view.rs src/ui/ddl.rs src/ui/export.rs
+#: src/ui/row_panel.rs src/ui/settings/mod.rs src/ui/workspace.rs
+msgid "read-only"
+msgstr ""
+
+#: src/ui/attach_list.rs
+msgid "not attached"
+msgstr ""
+
+#: src/ui/attach_list.rs
+msgid "as"
+msgstr ""
+
+#: src/ui/attach_list.rs
+msgid "SQL name"
+msgstr ""
+
 #: src/ui/calendar.rs src/ui/date_line.rs
 msgid "no zone"
 msgstr ""
@@ -3967,6 +3988,49 @@ msgstr ""
 msgid "New group…"
 msgstr ""
 
+#: src/ui/connect_dialog/join.rs
+msgid ""
+"Attach a saved connection to join a file to its live tables in one query. "
+"Optional."
+msgstr ""
+
+#: src/ui/connect_dialog/join.rs
+msgid "Attached connections open read-only here, as the files do."
+msgstr ""
+
+#: src/ui/connect_dialog/join.rs
+msgid "None attached · optional"
+msgstr ""
+
+#: src/ui/connect_dialog/join.rs
+#, rust-format
+msgid "Attached as {names}"
+msgstr ""
+
+#: src/ui/connect_dialog/join.rs
+msgid "Asks for its password on every connect"
+msgstr ""
+
+#: src/ui/connect_dialog/join.rs
+msgid "Names no database"
+msgstr ""
+
+#: src/ui/connect_dialog/join.rs
+msgid "Join with saved connections"
+msgstr ""
+
+#: src/ui/connect_dialog/join.rs
+msgid "optional"
+msgstr ""
+
+#: src/ui/connect_dialog/join.rs
+msgid "No saved PostgreSQL, MySQL or SQLite connection to attach."
+msgstr ""
+
+#: src/ui/connect_dialog/join.rs
+msgid "Saved connections to attach"
+msgstr ""
+
 #: src/ui/connect_dialog/mod.rs
 msgid "One database file on this computer"
 msgstr ""
@@ -4092,6 +4156,22 @@ msgstr ""
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Trust and test"
+msgstr ""
+
+#: src/ui/connect_dialog/mod.rs
+msgid "Downloading the Excel reader for DuckDB…"
+msgstr ""
+
+#: src/ui/connect_dialog/mod.rs
+msgid "Downloading the PostgreSQL reader for DuckDB…"
+msgstr ""
+
+#: src/ui/connect_dialog/mod.rs
+msgid "Downloading the MySQL reader for DuckDB…"
+msgstr ""
+
+#: src/ui/connect_dialog/mod.rs
+msgid "Downloading the SQLite reader for DuckDB…"
 msgstr ""
 
 #: src/ui/connect_dialog/mod.rs
@@ -4533,11 +4613,6 @@ msgstr ""
 
 #: src/ui/copy_as.rs
 msgid "Export selection…"
-msgstr ""
-
-#: src/ui/data_view.rs src/ui/ddl.rs src/ui/export.rs src/ui/row_panel.rs
-#: src/ui/settings/mod.rs src/ui/workspace.rs
-msgid "read-only"
 msgstr ""
 
 #: src/ui/data_view.rs
