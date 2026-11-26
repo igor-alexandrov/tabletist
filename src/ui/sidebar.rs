@@ -873,9 +873,11 @@ pub(crate) fn attached_schemas(
         .collect()
 }
 
-/// The schema menu's rows: the connection's own schemas, then after a rule
-/// the attached ones, each with its badge where it has one. The rule goes
-/// by what is attached, badged or not.
+/// The schema menu's rows: the connection's own schemas, then one rule,
+/// then the attached ones, each with its badge where it has one. The rule
+/// parts the two groups: it goes above the first attached schema after an
+/// own one, by what is attached, badged or not, and never between two
+/// attached schemas.
 pub(crate) fn schema_choices(
     schemas: &[String],
     shown: Option<&str>,

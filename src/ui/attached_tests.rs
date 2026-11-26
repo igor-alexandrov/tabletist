@@ -226,10 +226,11 @@ fn a_long_attached_name_keeps_clear_of_the_header_s_buttons() {
     }
 }
 
-/// The rule goes above the first attached schema, one of no environment
-/// included, which has no badge.
+/// One rule parts the own schemas from the attached ones: above the first
+/// attached schema, one of no environment included, which has no badge,
+/// and none between two attached schemas.
 #[test]
-fn the_schema_menu_s_rule_comes_before_every_attached_schema() {
+fn one_rule_parts_the_own_schemas_from_the_attached_ones() {
     let schemas: Vec<String> = ["main", "sales_archive", "scratch", "bookshop_development"]
         .map(str::to_owned)
         .to_vec();
