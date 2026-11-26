@@ -2682,9 +2682,10 @@ impl Worker {
                 lock(&self.exports).insert(id, stopper.clone());
                 let exports = Arc::clone(&self.exports);
                 let outbox = self.outbox.clone();
+                let keyring = self.keyring.clone();
                 tokio::spawn(async move {
                     let told = outbox.clone();
-                    export::run(*job, stopper, move |state| {
+                    export::run(*job, stopper, &keyring, move |state| {
                         told.emit(Event::Export { job: id, state });
                     })
                     .await;

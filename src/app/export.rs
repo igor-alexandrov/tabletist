@@ -1123,6 +1123,7 @@ impl App {
             spec: workspace.spec.clone(),
             secrets,
             host_keys: self.host_keys.clone(),
+            attach: crate::backend::attach::AttachTo::of(&workspace.spec.attach, &self.connections),
         }
     }
 

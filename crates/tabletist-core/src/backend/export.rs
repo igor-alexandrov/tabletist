@@ -31,6 +31,28 @@ pub struct Opener {
     pub spec: ConnectSpec,
     pub secrets: Secrets,
     pub host_keys: HostKeys,
+    /// What a Files connection attaches, as the tab opened it: their
+    /// secrets are read from the keyring as the export's session opens.
+    pub attach: Vec<super::attach::AttachTo>,
+}
+
+/// The export's own session, opened as the tab's was: a Files connection's
+/// with what it attaches.
+async fn open(
+    open: &Opener,
+    keyring: &crate::secrets::Keyring,
+) -> tabletist_db::Result<Connection> {
+    if open.attach.is_empty() {
+        return Connection::connect_with(
+            &open.spec,
+            &open.secrets,
+            &open.host_keys,
+            tabletist_db::Access::ReadOnly,
+        )
+        .await;
+    }
+    let attaching = super::attach::attaching(open.attach.clone(), keyring).await?;
+    Connection::connect_files(&open.spec, &attaching, &open.host_keys, None).await
 }
 
 /// Where the rows come from.
@@ -222,19 +244,18 @@ fn folder_of(path: &Path) -> &Path {
 }
 
 /// Runs `job` to its end, telling `report` each state as it goes, and
-/// returns the last. Every path out of it leaves no temporary file.
-pub async fn run(job: ExportJob, stopper: Stopper, report: impl Fn(ExportState)) -> ExportState {
+/// returns the last. Every path out of it leaves no temporary file. The
+/// secrets of what a Files connection attaches come from `keyring`.
+pub async fn run(
+    job: ExportJob,
+    stopper: Stopper,
+    keyring: &crate::secrets::Keyring,
+    report: impl Fn(ExportState),
+) -> ExportState {
     let started = Instant::now();
     let reading = match &job.rows {
         ExportRows::Loaded { .. } if !creates(&job) => None,
-        _ => match Connection::connect_with(
-            &job.open.spec,
-            &job.open.secrets,
-            &job.open.host_keys,
-            tabletist_db::Access::ReadOnly,
-        )
-        .await
-        {
+        _ => match open(&job.open, keyring).await {
             Ok(connection) => Some(connection),
             Err(error) => {
                 return failed(&report, ExportFailure::Other(first_line(&error)));
@@ -792,6 +813,7 @@ mod tests {
                 spec: ConnectSpec::sqlite(&path),
                 secrets: Secrets::default(),
                 host_keys: HostKeys::default(),
+                attach: Vec::new(),
             },
             rows: ExportRows::Query(RowQuery::new(object.clone(), 0)),
             columns: vec!["id".into(), "title".into()],
@@ -811,7 +833,8 @@ mod tests {
     /// Runs `job`, keeping each state it told.
     async fn ran(job: ExportJob) -> (ExportState, Vec<ExportState>) {
         let told = StdMutex::new(Vec::new());
-        let last = run(job, Stopper::default(), |state| {
+        let keyring = crate::secrets::Keyring::memory();
+        let last = run(job, Stopper::default(), &keyring, |state| {
             told.lock().unwrap().push(state)
         })
         .await;
@@ -827,6 +850,41 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    /// A table of what a Files connection attaches: the export's own
+    /// session attaches it too.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_attached_table_is_exported() {
+        let (dir, mut job) = bookshop(0);
+        let exports = dir.path().join("exports");
+        std::fs::create_dir(&exports).unwrap();
+        tabletist_db::fixtures::write_bookshop_files(&exports).unwrap();
+        let object = ObjectRef::new("shop", "books");
+        job.open = Opener {
+            spec: ConnectSpec::files(tabletist_db::files::Source::Folder(exports)),
+            secrets: Secrets::default(),
+            host_keys: HostKeys::default(),
+            attach: vec![super::super::attach::AttachTo {
+                name: "shop".into(),
+                saved: Some(super::super::attach::AttachSaved {
+                    id: crate::connections::ConnectionId("bookshop".into()),
+                    spec: ConnectSpec::sqlite(dir.path().join("bookshop.db")),
+                    password: crate::connections::PasswordMode::None,
+                    ssh_secret: crate::connections::PasswordMode::None,
+                }),
+            }],
+        };
+        job.rows = ExportRows::Query(RowQuery::new(object.clone(), 0));
+        job.object = Some(object);
+        job.dialect = Dialect::DuckDb;
+        let (last, _) = ran(job).await;
+        let ExportState::Done { rows, .. } = last else {
+            panic!("{last:?}");
+        };
+        assert_eq!(rows, 12);
+        let text = std::fs::read_to_string(dir.path().join("books.csv")).unwrap();
+        assert!(text.starts_with("id,title\n1,"), "{text}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1037,7 +1095,7 @@ mod tests {
         let stopper = Stopper::default();
         let stopping = stopper.clone();
         let told = StdMutex::new(Vec::new());
-        let last = run(job, stopper, |state| {
+        let last = run(job, stopper, &crate::secrets::Keyring::memory(), |state| {
             if matches!(state, ExportState::Started { .. }) {
                 stopping.stop.stop();
             }
