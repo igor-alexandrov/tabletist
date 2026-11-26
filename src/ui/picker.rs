@@ -1470,7 +1470,11 @@ fn mac_row(
             top,
             Text::one(look, small, &writes, palette.secondary),
         );
+        // Cut to the column: an attachment's name can be long.
         let joins = joins.say(locale);
+        let joins = crate::ui::grid::ellipsize(&joins, 150.0 - 12.0, false, |text| {
+            small.width(ui.ctx(), look.faces, text)
+        });
         widgets::paint_label(
             ui,
             security_x,

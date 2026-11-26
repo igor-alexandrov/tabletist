@@ -105,13 +105,20 @@ fn opened(harness: &mut Harness, id: &ConnectionId) -> crate::model::ConnTabId {
     tab
 }
 
-/// Where the last frame painted `text`, in any case: macOS's section
-/// labels are capitals.
+/// Where the last frame painted the schema `text` in the sidebar's header:
+/// in any case, as macOS's section labels are capitals, and cut where the
+/// header has no room for all of it.
 fn painted(harness: &Harness, text: &str) -> Option<egui::Rect> {
     harness
         .text_rects
         .iter()
-        .find(|(painted, _)| painted.eq_ignore_ascii_case(text))
+        .find(|(painted, _)| {
+            let painted = painted.to_lowercase();
+            painted == text
+                || painted
+                    .strip_suffix('…')
+                    .is_some_and(|cut| text.starts_with(cut))
+        })
         .map(|(_, rect)| *rect)
 }
 
@@ -159,6 +166,92 @@ fn an_attached_schema_shows_its_environment_s_badge() {
             "{name}"
         );
     }
+}
+
+/// A long attached name is cut to keep its badge and chevron clear of
+/// Reload and the tree/flat switch at the header's right.
+#[test]
+fn a_long_attached_name_keeps_clear_of_the_header_s_buttons() {
+    for look in looks() {
+        let name = look.name;
+        let mut harness = Harness::with_size(egui::vec2(1200.0, 800.0));
+        harness.set_look(look);
+        let id = bookshop(&mut harness);
+        let tab = opened(&mut harness, &id);
+        let long = "bookshop_development_reports_archive_2026";
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.attached[0].name = long.into();
+        if let Some(schemas) = &mut workspace.tree.schemas.value {
+            schemas[1] = long.into();
+        }
+        harness.app.apply(Action::ShowSchema {
+            tab,
+            schema: long.into(),
+        });
+        // Its tables answered: Reload is drawn where a spinner was.
+        let asked = match last_sent(&harness.app) {
+            Command::ListObjects {
+                session,
+                request,
+                schema,
+            } => Some((*session, *request, schema.clone())),
+            _ => None,
+        };
+        if let Some((session, request, schema)) = asked {
+            harness.app.apply(Action::Backend(Event::Objects {
+                session,
+                request,
+                schema,
+                result: Ok(Vec::new()),
+            }));
+        }
+        let tree = harness.settle();
+        let cut =
+            painted(&harness, long).unwrap_or_else(|| panic!("{name}: the name is not drawn"));
+        assert!(
+            harness.painted_rect(long).is_none(),
+            "{name}: the name is not cut"
+        );
+        let badge = harness
+            .painted_rect(Environment::Dev.label(Platform::of(&look)))
+            .unwrap_or_else(|| panic!("{name}: no badge"));
+        assert!(badge.left() > cut.right(), "{name}");
+        let buttons = match look.terminal {
+            true => harness.painted_rect("tree").unwrap().left(),
+            false => crate::testing::bounds(&tree, "Reload objects", egui::accesskit::Role::Button)
+                .unwrap()
+                .left(),
+        };
+        assert!(badge.right() < buttons, "{name}: {badge:?} under {buttons}");
+    }
+}
+
+/// The rule goes above the first attached schema, one of no environment
+/// included, which has no badge.
+#[test]
+fn the_schema_menu_s_rule_comes_before_every_attached_schema() {
+    let schemas: Vec<String> = ["main", "sales_archive", "scratch", "bookshop_development"]
+        .map(str::to_owned)
+        .to_vec();
+    let attached = [
+        ("scratch".to_owned(), None),
+        ("bookshop_development".to_owned(), Some(Environment::Dev)),
+    ];
+    let rows: Vec<(String, bool, Option<Environment>)> =
+        crate::ui::sidebar::schema_choices(&schemas, Some("main"), &attached)
+            .into_iter()
+            .map(|choice| (choice.text, choice.rule_before, choice.badge))
+            .collect();
+    let row = |name: &str, rule, badge| (name.to_owned(), rule, badge);
+    assert_eq!(
+        rows,
+        [
+            row("main", false, None),
+            row("sales_archive", false, None),
+            row("scratch", true, None),
+            row("bookshop_development", false, Some(Environment::Dev)),
+        ]
+    );
 }
 
 #[test]
