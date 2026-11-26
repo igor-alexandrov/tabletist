@@ -952,20 +952,15 @@ fn schema_header(
         } else {
             (10.0, 4.0)
         };
-        let badge = badge_of(schema);
-        let badge_width = badge.map_or(0.0, |environment| {
-            6.0 + crate::ui::workspace::env_badge_width(ui, environment, badge_style, look)
-        });
         // The name keeps clear of Reload and the tree/flat switch at the
         // right, with its badge and chevron: cut to fit, and said whole.
         let reload = if look.terminal { 0.0 } else { 28.0 + 2.0 };
-        let room = rect.right()
+        let free = rect.right()
             - 8.0
             - reload
             - switch_width(ui, look)
             - 8.0
             - left
-            - badge_width
             - gap
             - glyph_width
             - 6.0;
@@ -974,6 +969,16 @@ fn schema_header(
                 .layout(ui.ctx())
                 .width()
         };
+        let environment = badge_of(schema);
+        let wide = |environment| {
+            6.0 + crate::ui::workspace::env_badge_width(ui, environment, badge_style, look)
+        };
+        // The badge goes where at least an ellipsis of the name fits beside
+        // it. In a sidebar narrower than that, the menu's row and a screen
+        // reader still say the environment.
+        let badge = environment.filter(|environment| free - wide(*environment) >= measure("…"));
+        let badge_width = badge.map_or(0.0, wide);
+        let room = free - badge_width;
         let named = display_safe(schema);
         let fitted = crate::ui::grid::ellipsize(&named, room.max(0.0), false, measure);
         let label = widgets::section_label(&fitted, look, palette).layout(ui.ctx());
@@ -989,7 +994,7 @@ fn schema_header(
             info.current_text_value = Some(display_safe(schema).into_owned());
             info
         });
-        if let Some(environment) = badge {
+        if let Some(environment) = environment {
             ui.ctx().accesskit_node_builder(response.id, |node| {
                 node.set_description(environment.label(crate::env::Platform::Native));
             });

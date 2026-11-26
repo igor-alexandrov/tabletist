@@ -216,13 +216,81 @@ fn a_long_attached_name_keeps_clear_of_the_header_s_buttons() {
             .painted_rect(Environment::Dev.label(Platform::of(&look)))
             .unwrap_or_else(|| panic!("{name}: no badge"));
         assert!(badge.left() > cut.right(), "{name}");
-        let buttons = match look.terminal {
-            true => harness.painted_rect("tree").unwrap().left(),
-            false => crate::testing::bounds(&tree, "Reload objects", egui::accesskit::Role::Button)
-                .unwrap()
-                .left(),
+        // The leftmost of the buttons: the switch's first segment.
+        let segment = if look.terminal { "tree" } else { "Tree" };
+        let buttons = crate::testing::bounds(&tree, segment, egui::accesskit::Role::RadioButton)
+            .unwrap_or_else(|| panic!("{name}: no tree/flat switch"))
+            .left();
+        let role = egui::accesskit::Role::ComboBox;
+        let picker = crate::testing::bounds(&tree, "Schema", role).unwrap();
+        assert!(
+            picker.right() < buttons,
+            "{name}: {picker:?} under {buttons}"
+        );
+    }
+}
+
+/// At the sidebar's narrowest, 160 points, the schema's picker keeps
+/// clear of Reload and the tree/flat switch: the name is cut, and the badge
+/// goes where even an ellipsis would not fit beside it. The picker still
+/// says the environment to a screen reader.
+#[test]
+fn at_the_narrowest_the_schema_picker_keeps_clear_of_the_header_s_buttons() {
+    for look in looks() {
+        let name = look.name;
+        let mut harness = Harness::with_size(egui::vec2(1200.0, 800.0));
+        harness.set_look(look);
+        let id = bookshop(&mut harness);
+        let tab = opened(&mut harness, &id);
+        let narrowest = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(160.0, 800.0));
+        harness.ctx.data_mut(|data| {
+            data.insert_persisted(
+                egui::Id::new(("sidebar", tab.0)),
+                egui::containers::panel::PanelState {
+                    outer_rect: narrowest,
+                },
+            );
+        });
+        harness.app.apply(Action::ShowSchema {
+            tab,
+            schema: "bookshop_development".into(),
+        });
+        let asked = match last_sent(&harness.app) {
+            Command::ListObjects {
+                session,
+                request,
+                schema,
+            } => Some((*session, *request, schema.clone())),
+            _ => None,
         };
-        assert!(badge.right() < buttons, "{name}: {badge:?} under {buttons}");
+        if let Some((session, request, schema)) = asked {
+            harness.app.apply(Action::Backend(Event::Objects {
+                session,
+                request,
+                schema,
+                result: Ok(Vec::new()),
+            }));
+        }
+        let tree = harness.settle();
+        let role = egui::accesskit::Role::ComboBox;
+        let picker = crate::testing::bounds(&tree, "Schema", role)
+            .unwrap_or_else(|| panic!("{name}: no schema picker"));
+        // The leftmost of the buttons: the switch's first segment.
+        let segment = if look.terminal { "tree" } else { "Tree" };
+        let buttons = crate::testing::bounds(&tree, segment, egui::accesskit::Role::RadioButton)
+            .unwrap_or_else(|| panic!("{name}: no tree/flat switch"))
+            .left();
+        assert!(
+            buttons < 160.0,
+            "{name}: the sidebar is {buttons} wide or more"
+        );
+        assert!(
+            picker.right() < buttons,
+            "{name}: {picker:?} under {buttons}"
+        );
+        let node = crate::testing::node(&tree, "Schema", role).unwrap();
+        let (_, picker) = tree.nodes.iter().find(|(id, _)| *id == node).unwrap();
+        assert_eq!(picker.description(), Some("dev"), "{name}");
     }
 }
 
