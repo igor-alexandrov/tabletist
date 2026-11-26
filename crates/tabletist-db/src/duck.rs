@@ -508,20 +508,42 @@ fn install(
     reader: Reader,
     downloading: Option<&Downloading>,
 ) -> Result<()> {
-    let installed: bool = connection
-        .query_row(
-            "SELECT coalesce(bool_or(installed), false) FROM duckdb_extensions() \
-             WHERE extension_name = ?",
-            [reader.listed()],
-            |row| row.get(0),
-        )
-        .map_err(map_error)?;
-    if !installed && let Some(downloading) = downloading {
-        downloading(reader);
-    }
+    // One install at a time in the app: two sessions that both found the
+    // reader missing would both download it, and on Windows the second
+    // cannot put its copy over the one the first has loaded.
+    static INSTALLING: Mutex<()> = Mutex::new(());
+    let installed = || -> Result<bool> {
+        connection
+            .query_row(
+                "SELECT coalesce(bool_or(installed), false) FROM duckdb_extensions() \
+                 WHERE extension_name = ?",
+                [reader.listed()],
+                |row| row.get(0),
+            )
+            .map_err(map_error)
+    };
     let extension = reader.extension();
+    {
+        let _one = INSTALLING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !installed()? {
+            if let Some(downloading) = downloading {
+                downloading(reader);
+            }
+            let made = connection
+                .execute_batch(&format!("INSTALL {extension}"))
+                .map_err(map_error);
+            // Another Tabletist may have installed it meanwhile.
+            if let Err(error) = made
+                && !installed()?
+            {
+                return Err(error);
+            }
+        }
+    }
     connection
-        .execute_batch(&format!("INSTALL {extension}; LOAD {extension}"))
+        .execute_batch(&format!("LOAD {extension}"))
         .map_err(map_error)
 }
 
