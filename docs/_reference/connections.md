@@ -169,7 +169,10 @@ and DuckDB files (`.duckdb`). DuckDB reads them, inside Tabletist.
   attached connection only where its own **Agents** setting is **Read**
   with no hidden tables and no masked columns (an administrator's rules
   included): the others are left out of their session, and the section
-  names each one and why.
+  names each one and why. Their session takes the least rows per answer
+  and statement timeout of the Files connection's and of each attached
+  connection it reaches, so agents read no more of one through the
+  files than they could directly.
 - **Test** reads each file's columns and its first rows, never a whole
   file to the end. With **Column types** from all rows, DuckDB reads a
   CSV in full to find its types, which takes longer on a large file.

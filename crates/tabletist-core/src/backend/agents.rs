@@ -144,20 +144,39 @@ pub fn reaching(
 }
 
 /// Gives each Files connection among `connections` what its agents'
-/// session attaches, by [`reaching`].
+/// session attaches, by [`reaching`], and caps that session by the least
+/// rows per answer and statement timeout of its own and of each one it
+/// attaches: an agent reads no more of a connection through a Files
+/// connection than it could directly, the administrator's caps included.
 pub fn reach_attachments(connections: &mut [Agentable], saved: &[SavedConnection]) {
-    let reached: Vec<Vec<AttachTo>> = connections
+    let reached: Vec<(Vec<AttachTo>, Limits)> = connections
         .iter()
         .map(|files| match files.spec.driver {
-            Driver::Files => reaching(&files.spec.attach, connections, saved)
-                .into_iter()
-                .filter_map(|(_, reached)| reached.ok())
-                .collect(),
-            Driver::Sqlite | Driver::Postgres | Driver::MySql | Driver::BigQuery => Vec::new(),
+            Driver::Files => {
+                let attach: Vec<AttachTo> = reaching(&files.spec.attach, connections, saved)
+                    .into_iter()
+                    .filter_map(|(_, reached)| reached.ok())
+                    .collect();
+                let limits = attach
+                    .iter()
+                    .filter_map(|to| {
+                        let id = &to.saved.as_ref()?.id;
+                        connections.iter().find(|each| each.id == *id)
+                    })
+                    .fold(files.limits, |least, each| Limits {
+                        rows: least.rows.min(each.limits.rows),
+                        timeout: least.timeout.min(each.limits.timeout),
+                    });
+                (attach, limits)
+            }
+            Driver::Sqlite | Driver::Postgres | Driver::MySql | Driver::BigQuery => {
+                (Vec::new(), files.limits)
+            }
         })
         .collect();
-    for (files, attach) in connections.iter_mut().zip(reached) {
+    for (files, (attach, limits)) in connections.iter_mut().zip(reached) {
         files.attach = attach;
+        files.limits = limits;
     }
 }
 
@@ -2434,6 +2453,44 @@ mod tests {
         assert_eq!(dev.password, PasswordMode::Keyring);
         assert_eq!(dev.environment, Environment::Dev);
         assert_eq!(dev.spec.database, "bookshop_development");
+    }
+
+    #[test]
+    fn a_files_session_reads_under_the_least_caps_of_what_it_attaches() {
+        let saved = attaching_four();
+        let mut connections = agentable(&saved);
+        let caps = |rows, secs| Limits {
+            rows,
+            timeout: Duration::from_secs(secs),
+        };
+        for agentable in &mut connections {
+            match agentable.id.0.as_str() {
+                // The one reached caps rows lower, as an administrator's
+                // rule on its host would have it.
+                "dev" => agentable.limits = caps(100, 30),
+                // Those left out don't count: agents don't read them here.
+                "staging" => agentable.limits = caps(1, 1),
+                "ruled" => {
+                    agentable.limits = caps(1, 1);
+                    agentable.sources.administrator = vec![tabletist_db::agent::Source {
+                        tables: Tables::All,
+                        masked: vec!["orders.email".parse().unwrap()],
+                    }];
+                }
+                "files" => agentable.limits = caps(10_000, 20),
+                _ => {}
+            }
+        }
+        reach_attachments(&mut connections, &saved);
+        let limits = |id: &str| {
+            connections
+                .iter()
+                .find(|each| each.id.0 == id)
+                .unwrap()
+                .limits
+        };
+        assert_eq!(limits("files"), caps(100, 20));
+        assert_eq!(limits("dev"), caps(100, 30));
     }
 
     #[tokio::test]
