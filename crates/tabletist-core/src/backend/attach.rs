@@ -62,7 +62,15 @@ pub(super) async fn attaching(
             return Err(cannot("its saved connection was deleted"));
         };
         let mut secrets = Secrets::default();
-        let ssh = SecretKind::for_ssh(&saved.spec);
+        // A file is opened here, whatever tunnel its spec still names.
+        let ssh = match saved.spec.driver {
+            tabletist_db::Driver::Postgres | tabletist_db::Driver::MySql => {
+                SecretKind::for_ssh(&saved.spec)
+            }
+            tabletist_db::Driver::Sqlite
+            | tabletist_db::Driver::BigQuery
+            | tabletist_db::Driver::Files => None,
+        };
         let needed = [
             (
                 Some(SecretKind::Database),
@@ -154,6 +162,24 @@ mod tests {
         assert_eq!(each[0].name, "shop");
         assert_eq!(each[0].secrets.password.as_deref(), Some("s3cret"));
         assert_eq!(each[1].secrets, Secrets::default());
+    }
+
+    /// A file needs no SSH secret, whatever tunnel its spec still names.
+    #[tokio::test]
+    async fn a_file_reads_no_ssh_secret() {
+        let mut spec = ConnectSpec::sqlite("/data/bookshop.db");
+        spec.ssh = Some(tabletist_db::SshSpec {
+            host: "bastion".into(),
+            port: None,
+            user: "reader".into(),
+            auth: tabletist_db::SshAuth::Password,
+        });
+        let mut file = to("lite", spec, PasswordMode::None);
+        if let Some(saved) = &mut file.saved {
+            saved.ssh_secret = PasswordMode::Keyring;
+        }
+        let each = attaching(vec![file], &Keyring::memory()).await.unwrap();
+        assert_eq!(each[0].secrets, Secrets::default());
     }
 
     #[tokio::test]

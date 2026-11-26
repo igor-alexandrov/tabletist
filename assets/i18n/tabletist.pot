@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-25 19:33-0500\n"
+"POT-Creation-Date: 2026-11-25 20:50-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -3339,8 +3339,9 @@ msgstr ""
 msgid "No calls on this connection yet."
 msgstr ""
 
-#: src/ui/attach_list.rs src/ui/connect_dialog/join.rs
-msgid "Attach"
+#: src/ui/attach_list.rs
+#, rust-format
+msgid "Attach {name} {environment}"
 msgstr ""
 
 #: src/ui/attach_list.rs src/ui/data_view.rs src/ui/ddl.rs src/ui/export.rs
@@ -4029,6 +4030,10 @@ msgstr ""
 
 #: src/ui/connect_dialog/join.rs
 msgid "Saved connections to attach"
+msgstr ""
+
+#: src/ui/connect_dialog/join.rs
+msgid "Attach"
 msgstr ""
 
 #: src/ui/connect_dialog/mod.rs

@@ -55,7 +55,11 @@ pub fn show(
     (look, palette, locale): (&Look, &Palette, Locale),
 ) -> Option<usize> {
     let mut toggled = None;
-    ui.scope_builder(egui::UiBuilder::new().id_salt(name), |ui| {
+    // Under one another, whatever the layout of the cell it is put in.
+    let builder = egui::UiBuilder::new()
+        .id_salt(name)
+        .layout(egui::Layout::top_down(egui::Align::Min));
+    ui.scope_builder(builder, |ui| {
         ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
             node.set_role(egui::accesskit::Role::List);
             node.set_label(name);
@@ -90,12 +94,12 @@ pub fn show(
 /// The words "Attach Bookshop dev": what the box is named for a screen
 /// reader, the environment after the name, as the boards write it.
 fn named(row: &Row<'_>, locale: Locale) -> String {
-    format!(
-        "{} {} {}",
-        gettext(locale, "Attach"),
-        row.name,
-        row.environment.label(Platform::Native)
-    )
+    // One pass: a name that reads "{environment}" stays as it is.
+    let words = gettext(locale, "Attach {name} {environment}");
+    let environment = row.environment.label(Platform::Native);
+    let (before, after) = words.split_once("{name}").unwrap_or((&words, ""));
+    let put = |part: &str| part.replace("{environment}", environment);
+    format!("{}{}{}", put(before), row.name, put(after))
 }
 
 /// The box, as a stop of its own: whether a press of it (the pointer,

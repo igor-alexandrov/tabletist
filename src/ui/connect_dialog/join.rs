@@ -56,6 +56,8 @@ fn blocked(why: Blocked, locale: Locale) -> String {
 
 /// The sample query, for the first attached connection's `name`.
 fn sample(name: &str) -> String {
+    // Quoted where SQL would read it as a keyword: `select`.
+    let name = tabletist_db::Dialect::DuckDb.ident(name);
     format!(
         "SELECT r.order_id, p.name\n  FROM returns r\n  JOIN {name}.publishers p ON p.id = r.publisher_id"
     )
@@ -167,7 +169,7 @@ fn rows(
             .map(|each| &each.name)
             .eq(typed.iter())
         {
-            form.forget_test();
+            actions.push(Action::AttachNameTyped);
         }
         if let Some(at) = toggled {
             actions.push(Action::ToggleAttach(joinable[at].id.clone()));
@@ -228,5 +230,6 @@ mod tests {
             "SELECT r.order_id, p.name\n  FROM returns r\n  JOIN bookshop_dev.publishers p ON \
              p.id = r.publisher_id"
         );
+        assert!(sample("select").contains("JOIN \"select\".publishers"));
     }
 }

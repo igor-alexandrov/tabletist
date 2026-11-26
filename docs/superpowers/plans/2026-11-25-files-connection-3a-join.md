@@ -1720,7 +1720,7 @@ diff --git a/crates/tabletist-db/tests/ssh.rs b/crates/tabletist-db/tests/ssh.rs
 
 - [ ] **Step 4: Run them to see them pass**
 
-Run: `TABLETIST_TEST_PG_URL=postgres://tabletist:tabletist@localhost:55432/tabletist TABLETIST_TEST_MYSQL_URL=mysql://tabletist:tabletist@localhost:53306/tabletist ~/.cargo/bin/cargo test -q -p tabletist-db --test files_attach --lib attach`
+Run: `~/.cargo/bin/cargo test -q -p tabletist-db --lib attach`, then, unfiltered, `TABLETIST_TEST_PG_URL=postgres://tabletist:tabletist@localhost:55432/tabletist TABLETIST_TEST_MYSQL_URL=mysql://tabletist:tabletist@localhost:53306/tabletist ~/.cargo/bin/cargo test -q -p tabletist-db --test files_attach`
 
 Expected: 6 pass in the lib: the four `duck::attach` tests, `files::tests::an_attaching_prints_without_its_secrets`, and the existing `sqlite::tests::schemas_are_main_and_attached_databases_without_temp`, which the filter takes too. The five `files_attach` tests pass; without the URLs, the server ones say they're skipped. Then `~/.cargo/bin/cargo test -q -p tabletist-db --test files` passes unchanged, and `~/.cargo/bin/cargo test -q -p tabletist-db --test ssh a_files_connection` says it's skipped without `TABLETIST_TEST_SSH_URL`.
 

@@ -707,6 +707,17 @@ fn opened(
     let mut joined = Vec::with_capacity(attaching.len());
     let mut attached_files = Vec::new();
     for (at, (attaching, via)) in attaching.iter().enumerate() {
+        // A `.duckdb` file of the connection's is a schema of that name.
+        let taken = opened
+            .iter()
+            .any(|file| file.found.format.is_database() && file.found.name == attaching.name);
+        if taken {
+            return Err(Error::Connect(format!(
+                "Can't attach {}: a .duckdb file of this connection is a schema of that name. \
+                 Name it another way.",
+                attaching.name
+            )));
+        }
         let (each, file) = attached(&connection, at, attaching, *via, downloading)?;
         joined.push(each);
         attached_files.extend(file);

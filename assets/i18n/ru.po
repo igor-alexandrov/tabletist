@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-25 19:33-0500\n"
+"POT-Creation-Date: 2026-11-25 20:50-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -3393,9 +3393,10 @@ msgstr[2] "описано {n} таблиц"
 msgid "{what} returned"
 msgstr "в ответе: {what}"
 
-#: src/ui/attach_list.rs src/ui/connect_dialog/join.rs
-msgid "Attach"
-msgstr "Присоединить"
+#: src/ui/attach_list.rs
+#, rust-format
+msgid "Attach {name} {environment}"
+msgstr "Присоединить {name} {environment}"
 
 #: src/ui/attach_list.rs
 msgid "SQL name"
@@ -4072,6 +4073,10 @@ msgstr "Новая группа…"
 #: src/ui/connect_dialog/join.rs
 msgid "Asks for its password on every connect"
 msgstr "Спрашивает пароль при каждом подключении"
+
+#: src/ui/connect_dialog/join.rs
+msgid "Attach"
+msgstr "Присоединить"
 
 #: src/ui/connect_dialog/join.rs
 msgid ""

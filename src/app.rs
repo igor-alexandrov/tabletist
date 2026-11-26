@@ -3561,6 +3561,11 @@ impl App {
                 // A Test of what it attached before says nothing of this.
                 form.forget_test();
             }
+            Action::AttachNameTyped => {
+                if let Some(Dialog::Connection(form)) = &mut self.dialog {
+                    form.forget_test();
+                }
+            }
             Action::SetFilesKind(kind) => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
                     form.files_kind = kind;
@@ -4957,6 +4962,24 @@ impl App {
                                 (!read.checks.is_empty()).then_some((request, read.checks.len()));
                             form.files_tested = Some(read);
                             TestState::Passed
+                        }
+                        // An attached connection's SSH host whose key is not
+                        // trusted yet: trusted from here, as any Test's.
+                        Err(Error::Ssh {
+                            stage:
+                                SshStage::HostKeyUnknown {
+                                    host,
+                                    port,
+                                    fingerprint,
+                                },
+                            ..
+                        }) if self.host_keys_error.is_none() => {
+                            form.files_tested = None;
+                            TestState::Untrusted {
+                                host,
+                                port,
+                                fingerprint,
+                            }
                         }
                         // A file's or a folder's own words, which name it.
                         Err(Error::Connect(message)) => {

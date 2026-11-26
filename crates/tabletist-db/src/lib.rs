@@ -690,8 +690,16 @@ impl Connection {
                         host_keys,
                     )
                     .await
-                    .map_err(|error| {
-                        Error::Connect(format!("Can't attach {}: {error}", attaching.name))
+                    .map_err(|error| match error {
+                        // The stage stays, so an unknown host key can still
+                        // be trusted from where it was met.
+                        Error::Ssh { stage, message } => Error::Ssh {
+                            stage,
+                            message: format!("Can't attach {}: {message}", attaching.name),
+                        },
+                        error => {
+                            Error::Connect(format!("Can't attach {}: {error}", attaching.name))
+                        }
                     })?;
                     let port = tunnel.port;
                     tunnels.push((attaching.name.clone(), tunnel));

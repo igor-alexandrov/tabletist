@@ -119,6 +119,9 @@ pub enum Action {
     /// Attach the saved connection to the Files connection in the dialog,
     /// under its database's name, or let it go where it is attached.
     ToggleAttach(crate::connections::ConnectionId),
+    /// A name SQL calls an attached connection by was typed over: a Test
+    /// of the names before says nothing of it.
+    AttachNameTyped,
     /// One of the partial Test's fixes for the first file it could not
     /// read: saved as an override in the form, and the Test run again.
     FixFile(FileFix),

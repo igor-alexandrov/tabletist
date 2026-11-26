@@ -54,10 +54,14 @@ pub fn joinable(connections: &[SavedConnection]) -> Vec<Joinable> {
                     .unwrap_or_default(),
                 Driver::BigQuery | Driver::Files => return None,
             };
-            // An SSH secret counts only where there is a tunnel.
-            let ssh_secret = match spec.ssh {
-                Some(_) => saved.ssh_secret,
-                None => PasswordMode::None,
+            // An SSH secret counts only where there is a tunnel: a server's.
+            let tunnelled = match spec.driver {
+                Driver::Postgres | Driver::MySql => spec.ssh.is_some(),
+                Driver::Sqlite | Driver::BigQuery | Driver::Files => false,
+            };
+            let ssh_secret = match tunnelled {
+                true => saved.ssh_secret,
+                false => PasswordMode::None,
             };
             let asks = [saved.password, ssh_secret]
                 .into_iter()

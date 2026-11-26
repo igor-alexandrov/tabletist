@@ -291,6 +291,34 @@ fn a_test_s_download_goes_with_it() {
     assert_eq!(form(&harness).test, TestState::Idle);
 }
 
+/// An attached connection's SSH host whose key is not trusted yet: the
+/// Test offers to trust it, as any Test does.
+#[test]
+fn an_attached_host_s_unknown_key_can_be_trusted_from_the_test() {
+    let (mut harness, _) = joining(Look::macos());
+    harness.click("Attach Bookshop dev");
+    harness.app.apply(Action::TestConnection);
+    let TestState::Running(request) = form(&harness).test else {
+        panic!("no test");
+    };
+    harness.app.apply(Action::Backend(Event::FilesTested {
+        request,
+        result: Err(Error::Ssh {
+            stage: tabletist_db::SshStage::HostKeyUnknown {
+                host: "bastion.bookshop.test".into(),
+                port: 22,
+                fingerprint: "SHA256:abc".into(),
+            },
+            message: "Can't attach bookshop_development: unknown host key".into(),
+        }),
+    }));
+    assert!(
+        matches!(&form(&harness).test, TestState::Untrusted { host, .. } if host == "bastion.bookshop.test"),
+        "{:?}",
+        form(&harness).test
+    );
+}
+
 #[test]
 fn a_name_is_typed_over_and_checked_on_save() {
     let (mut harness, [dev, ..]) = joining(Look::macos());
@@ -449,6 +477,18 @@ fn an_open_sends_what_is_attached() {
 #[test]
 fn omarchy_space_ticks_a_row_and_the_arrows_move_in_the_list() {
     let (mut harness, [dev, ..]) = joining(Look::omarchy());
+    // The rows are under one another, in the dialog's room.
+    let rect = |harness: &Harness, at: usize| {
+        harness
+            .ctx
+            .read_response(crate::ui::attach_list::toggle_id(at))
+            .expect("the row's box")
+            .rect
+    };
+    let (top, next) = (rect(&harness, 0), rect(&harness, 1));
+    assert!(next.top() >= top.bottom(), "{top:?} {next:?}");
+    assert!((next.left() - top.left()).abs() < 1.0, "{top:?} {next:?}");
+    assert!(harness.ctx.content_rect().contains_rect(rect(&harness, 3)));
     let first = crate::ui::attach_list::toggle_id(0);
     harness.ctx.memory_mut(|memory| memory.request_focus(first));
     harness.settle();
@@ -469,4 +509,34 @@ fn omarchy_space_ticks_a_row_and_the_arrows_move_in_the_list() {
     harness.press(Key::ArrowUp, Modifiers::NONE);
     harness.settle();
     assert!(harness.ctx.memory(|memory| memory.has_focus(first)));
+}
+
+/// A name typed over while a Test runs stops that Test's check in full:
+/// it tests names no longer asked for.
+#[test]
+fn a_name_typed_during_a_test_stops_its_check() {
+    let (mut harness, _) = joining(Look::macos());
+    harness.click("Attach Bookshop dev");
+    harness.app.apply(Action::TestConnection);
+    let TestState::Running(request) = form(&harness).test else {
+        panic!("no test");
+    };
+    let field = crate::ui::attach_list::name_id(0);
+    harness.ctx.memory_mut(|memory| memory.request_focus(field));
+    harness.settle();
+    harness.frame(vec![
+        crate::testing::key(Key::A, Modifiers::COMMAND),
+        egui::Event::Text("dev".into()),
+    ]);
+    harness.settle();
+    assert_eq!(form(&harness).test, TestState::Idle);
+    assert!(
+        harness
+            .app
+            .backend
+            .sent
+            .iter()
+            .any(|command| matches!(command, Command::StopCheck { request: stopped } if *stopped == request)),
+        "no StopCheck for the Test"
+    );
 }

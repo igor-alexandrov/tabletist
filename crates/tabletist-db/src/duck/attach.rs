@@ -91,7 +91,7 @@ pub(super) fn statements(at: usize, attaching: &Attaching, via: Option<u16>) -> 
                 )),
                 attach: format!(
                     "ATTACH {} AS {name} (TYPE postgres, SECRET {secret}, READ_ONLY)",
-                    literal(&conninfo(&path))
+                    literal(&conninfo(&path, Quote::Single))
                 ),
                 forget: Some(format!("DROP SECRET {secret}")),
                 file: None,
@@ -122,7 +122,7 @@ pub(super) fn statements(at: usize, attaching: &Attaching, via: Option<u16>) -> 
                 )),
                 attach: format!(
                     "ATTACH {} AS {name} (TYPE mysql, SECRET {secret}, READ_ONLY)",
-                    literal(&conninfo(&path))
+                    literal(&conninfo(&path, Quote::Double))
                 ),
                 forget: Some(format!("DROP SECRET {secret}")),
                 file: None,
@@ -180,10 +180,19 @@ fn mysql_ssl_mode(mode: TlsMode) -> &'static str {
     }
 }
 
+/// How a connection string quotes a value that is not plain: libpq's in
+/// single quotes, MySQL's in double. Either puts a backslash before the
+/// quote or a backslash in it.
+#[derive(Clone, Copy)]
+enum Quote {
+    Single,
+    Double,
+}
+
 /// `key=value` pairs as a connection string has them, a space between: a
-/// plain value as it is, any other in quotes, a quote or a backslash in it
+/// plain value as it is, any other in `quote`s, a quote or a backslash in it
 /// after a backslash.
-fn conninfo(pairs: &[(&str, String)]) -> String {
+fn conninfo(pairs: &[(&str, String)], quote: Quote) -> String {
     let plain = |value: &str| {
         !value.is_empty()
             && value
@@ -195,8 +204,14 @@ fn conninfo(pairs: &[(&str, String)]) -> String {
         .map(|(key, value)| match plain(value) {
             true => format!("{key}={value}"),
             false => {
-                let value = value.replace('\\', "\\\\").replace('\'', "\\'");
-                format!("{key}='{value}'")
+                let mark = match quote {
+                    Quote::Single => '\'',
+                    Quote::Double => '"',
+                };
+                let value = value
+                    .replace('\\', "\\\\")
+                    .replace(mark, &format!("\\{mark}"));
+                format!("{key}={mark}{value}{mark}")
             }
         })
         .collect::<Vec<_>>()
@@ -333,12 +348,18 @@ mod tests {
     /// A value with a space, a quote or a backslash stays one value.
     #[test]
     fn a_connection_string_value_is_quoted_where_it_must_be() {
+        let pairs = [
+            ("sslmode", "verify-full".to_owned()),
+            ("sslrootcert", r#"C:\My certs\o'ne"il.pem"#.to_owned()),
+        ];
         assert_eq!(
-            conninfo(&[
-                ("sslmode", "verify-full".into()),
-                ("sslrootcert", r"C:\My certs\o'neil.pem".into()),
-            ]),
-            r"sslmode=verify-full sslrootcert='C:\\My certs\\o\'neil.pem'"
+            conninfo(&pairs, Quote::Single),
+            r#"sslmode=verify-full sslrootcert='C:\\My certs\\o\'ne"il.pem'"#
+        );
+        // MySQL's: in double quotes, as its reader takes them.
+        assert_eq!(
+            conninfo(&pairs, Quote::Double),
+            r#"sslmode=verify-full sslrootcert="C:\\My certs\\o'ne\"il.pem""#
         );
     }
 }
