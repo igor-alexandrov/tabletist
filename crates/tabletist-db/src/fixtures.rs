@@ -54,8 +54,8 @@ pub const BOOKSHOP_FILES: [&str; 7] = [
 /// export them: `orders.csv`, `returns.csv`, `authors.tsv` (tab
 /// separated), `customers.parquet`, `books.json` (an array),
 /// `events.ndjson` (an order placed, a line each), and `bookshop.duckdb`
-/// holding `book_covers` and `order_items`. Refuses a folder that holds
-/// any of them already.
+/// holding `book_covers` (no primary key) and `order_items` (keyed by
+/// `id`). Refuses a folder that holds any of them already.
 pub fn write_bookshop_files(dir: &Path) -> Result<()> {
     let io = |error: &dyn std::fmt::Display| Error::Io(error.to_string());
     if let Some(there) = BOOKSHOP_FILES.iter().find(|name| dir.join(name).exists()) {
@@ -125,6 +125,7 @@ pub fn write_bookshop_files(dir: &Path) -> Result<()> {
          ATTACH {} AS shop;
          CREATE TABLE shop.book_covers AS SELECT * FROM book_covers;
          CREATE TABLE shop.order_items AS SELECT * FROM order_items;
+         ALTER TABLE shop.order_items ADD PRIMARY KEY (id);
          DETACH shop;",
         path("orders.csv"),
         path("returns.csv"),

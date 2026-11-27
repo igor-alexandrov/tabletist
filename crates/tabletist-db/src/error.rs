@@ -41,6 +41,13 @@ pub enum Unsaved {
     /// It was read again since the rows to save were read: they may not
     /// be where they were.
     Reread(String),
+    /// Another program has it open: a `.duckdb` file it holds can't be
+    /// opened to write.
+    Busy(String),
+    /// Another session of this app has it open, which on Windows keeps a
+    /// `.duckdb` file from being opened to write: an export, an agent, a
+    /// second window.
+    OpenHere(String),
     /// It could not be written, for another reason: the file's name and
     /// the system's words.
     Failed(String, String),

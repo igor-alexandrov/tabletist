@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-26 17:50-0500\n"
+"POT-Creation-Date: 2026-11-27 11:04-0500\n"
 "PO-Revision-Date: 2026-11-19 16:11-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -3512,10 +3512,6 @@ msgstr "uma tecla escolhe"
 #, rust-format
 msgid "{n} running"
 msgstr "{n} em andamento"
-
-#: src/ui/cell_editor.rs
-msgid ".duckdb files open read-only"
-msgstr "Arquivos .duckdb abrem em somente leitura"
 
 #: src/ui/cell_editor.rs
 msgid "A save is running"
@@ -7309,6 +7305,36 @@ msgstr[0] ""
 msgstr[1] ""
 "{file} mudou no disco desde que você o abriu. Recarregue para ver a nova "
 "versão; suas {n} alterações continuam pendentes."
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid ""
+"{file} couldn't be saved: another program has it open. Your {n} change stays "
+"pending."
+msgid_plural ""
+"{file} couldn't be saved: another program has it open. Your {n} changes stay "
+"pending."
+msgstr[0] ""
+"Não foi possível salvar {file}: outro programa está com ele aberto. Sua {n} "
+"alteração continua pendente."
+msgstr[1] ""
+"Não foi possível salvar {file}: outro programa está com ele aberto. Suas {n} "
+"alterações continuam pendentes."
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid ""
+"{file} couldn't be saved: another tab, export or agent of Tabletist has it "
+"open. Your {n} change stays pending."
+msgid_plural ""
+"{file} couldn't be saved: another tab, export or agent of Tabletist has it "
+"open. Your {n} changes stay pending."
+msgstr[0] ""
+"Não foi possível salvar {file}: outra aba, exportação ou agente do Tabletist "
+"está com ele aberto. Sua {n} alteração continua pendente."
+msgstr[1] ""
+"Não foi possível salvar {file}: outra aba, exportação ou agente do Tabletist "
+"está com ele aberto. Suas {n} alterações continuam pendentes."
 
 #: src/ui/pending_bar.rs
 #, rust-format

@@ -64,7 +64,7 @@ impl Stamp {
         modified: None,
     };
 
-    fn of(path: &Path) -> std::io::Result<Self> {
+    pub(super) fn of(path: &Path) -> std::io::Result<Self> {
         std::fs::metadata(path).map(|meta| Self::from(&meta))
     }
 
@@ -149,16 +149,20 @@ impl Copy {
     }
 }
 
-/// A page of a file's table, read from its copy, each row with its place:
-/// in the file's order, or that after the page's own sort.
+/// A page of a table, read from `from`, which holds each row's place
+/// beside it (a file's copy, or a view of a `.duckdb` file's table): in
+/// the file's order, or that after the page's own sort.
 pub(super) fn page(
     connection: &duckdb::Connection,
     query: &RowQuery,
+    from: &ObjectRef,
     limit: usize,
     generation: i64,
 ) -> Result<RowPage> {
-    let mut from = query.clone();
-    from.object = Copy::object(&query.object.name);
+    let from = RowQuery {
+        object: from.clone(),
+        ..query.clone()
+    };
     let catalog = super::columns(connection, &from.object, &[])?;
     let binary = super::binary_of(&catalog);
     let sql = Dialect::DuckDb.select_rows(&from, &[POSITION.to_owned()], &binary)?;
@@ -750,7 +754,7 @@ pub(super) fn save(
     let _one_at_a_time = lock.lock().unwrap_or_else(PoisonError::into_inner);
     // Rows found by their places in another copy may not be where they
     // were: the file was read again, or a save numbered them again.
-    let Some(changes) = own_keys(changes, copy.generation) else {
+    let Some(changes) = own_keys(changes, copy.generation, POSITION) else {
         return Err(unsaved(
             Unsaved::Reread(label.clone()),
             format!("{label} was read again since these rows were"),
@@ -766,12 +770,7 @@ pub(super) fn save(
     // would replace it all the same where its folder is writable.
     // Its permissions say so, or this user may not write it: opened to
     // write, and not truncated, it says which.
-    let protected = std::fs::metadata(path).is_ok_and(|meta| meta.permissions().readonly())
-        || std::fs::OpenOptions::new()
-            .write(true)
-            .open(path)
-            .is_err_and(|error| error.kind() == std::io::ErrorKind::PermissionDenied);
-    if protected {
+    if protected(path) {
         return Err(unsaved(
             Unsaved::Protected(label.clone()),
             format!("{label} is read-only"),
@@ -945,14 +944,25 @@ fn fails_after_rename(path: &Path) -> bool {
     }
 }
 
-/// `changes` with each row's key as the copy finds it, its place alone.
+/// Whether the file at `path` is one its owner made read-only, or this
+/// user may not write: its permissions say so, or, opened to write and not
+/// truncated, it says which.
+pub(super) fn protected(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|meta| meta.permissions().readonly())
+        || std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::PermissionDenied)
+}
+
+/// `changes` with each row's key as `column` finds it, its place alone.
 /// `None` where a key is not a place in the copy `generation`.
-fn own_keys(changes: &ChangeSet, generation: i64) -> Option<ChangeSet> {
+pub(super) fn own_keys(changes: &ChangeSet, generation: i64, column: &str) -> Option<ChangeSet> {
     let own = |key: &[(String, Value)]| match key {
         [(place, Value::Int(at)), (of, Value::Int(copy))]
             if place == POSITION && of == FILE_COPY && *copy == generation =>
         {
-            Some(vec![(POSITION.to_owned(), Value::Int(*at))])
+            Some(vec![(column.to_owned(), Value::Int(*at))])
         }
         _ => None,
     };
