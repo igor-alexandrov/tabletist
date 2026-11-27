@@ -610,8 +610,14 @@ another program can read it, but not write it. A save opens it to write
 for as long as the save takes. If another program has the file open
 then, nothing is written: "bookshop.duckdb couldn't be saved: another
 program has it open. Your 3 changes stay pending." Close it there and
-save again. A file another program replaced since it was opened, or one
-made read-only, isn't written either, as with any file.
+save again. A file made read-only isn't written either, nor one another
+program replaced since Tabletist last read it, as with any file. Once a
+tab has read the replaced file, its tables are saved as they are now: a
+table with a primary key finds its rows by it, as a database's table
+does, so a change to a row the other program changed is a conflict, and
+a delete removes the row with that key. A table without one says "Rows
+moved in the file since this page was read. Reload to edit." until its
+page is read again.
 
 Other tabs, an export or an agent reading the same file wait while a
 save runs, then read the file as the save left it. On Windows they keep
