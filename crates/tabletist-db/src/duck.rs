@@ -1645,7 +1645,7 @@ impl Conn {
             .filter(|file| file.found.format.is_database())
             .map(|file| database::Held::new(&file.found.name, &file.found.path))
             .collect();
-        databases.sort_by(|one, other| one.path().cmp(other.path()));
+        databases.sort_by(|one, other| one.own().cmp(other.own()));
         Ok(Self {
             inner: Arc::new(Mutex::new(connection)),
             interrupt,

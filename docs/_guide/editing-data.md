@@ -596,7 +596,8 @@ nothing is written.
 A table with a primary key finds its rows by it, as a database's table
 does, and its page can be edited again right after a save. A table
 without one finds a row by DuckDB's `rowid`, its row's place in the
-file. A save that deletes rows moves those after them, so after every
+file. A save that deletes rows moves those after them, and one that
+changes a list or a unique column puts that row last, so after every
 save its page is read again, and until it is an edit says "Rows moved in
 the file since this page was read. Reload to edit." A view in the file
 isn't edited.

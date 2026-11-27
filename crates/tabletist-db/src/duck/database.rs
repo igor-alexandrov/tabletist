@@ -35,17 +35,16 @@ struct Shared {
     saves: AtomicI64,
 }
 
-/// The `.duckdb` file at `path`, as this app's sessions share it: by its
-/// own path, however a connection spells it.
-fn shared(path: &Path) -> Arc<Shared> {
-    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+/// The `.duckdb` file at `path`, its own path (`own`, however a
+/// connection spells it), as this app's sessions share it.
+fn shared(own: &Path) -> Arc<Shared> {
     static FILES: OnceLock<Mutex<std::collections::HashMap<PathBuf, Arc<Shared>>>> =
         OnceLock::new();
     let mut files = FILES
         .get_or_init(Default::default)
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    Arc::clone(files.entry(path).or_insert_with(|| {
+    Arc::clone(files.entry(own.to_owned()).or_insert_with(|| {
         Arc::new(Shared {
             gate: RwLock::new(()),
             saves: AtomicI64::new(1),
@@ -58,6 +57,10 @@ pub(super) struct Held {
     /// The schema it is attached as.
     pub(super) name: String,
     path: PathBuf,
+    /// Its own path, which its gate is the file's by: what sessions sort
+    /// their files by, so two that spell one file two ways take its gate
+    /// in the same order.
+    own: PathBuf,
     shared: Arc<Shared>,
     /// The save the session's attachment is of. 0 until the first call
     /// attaches it again, under the gate: the session opened without it.
@@ -68,18 +71,20 @@ pub(super) struct Held {
 
 impl Held {
     pub(super) fn new(name: &str, path: &Path) -> Self {
+        let own = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
         Self {
             name: name.to_owned(),
             path: path.to_owned(),
-            shared: shared(path),
+            shared: shared(&own),
+            own,
             seen: AtomicI64::new(0),
             stamp: Mutex::new(None),
         }
     }
 
-    /// The path the file is attached from, which sessions sort theirs by.
-    pub(super) fn path(&self) -> &Path {
-        &self.path
+    /// The file's own path, which sessions sort theirs by.
+    pub(super) fn own(&self) -> &Path {
+        &self.own
     }
 
     /// The save the session's attachment is of: what a page's rows found
@@ -105,7 +110,7 @@ fn attach(connection: &duckdb::Connection, held: &Held, write: bool) -> Result<(
     Ok(())
 }
 
-/// Holds each of `databases`, in their order (their paths'), for reading
+/// Holds each of `databases`, in their order (their own paths'), for reading
 /// while a call runs: no save writes one meanwhile. One another session
 /// saved since this one attached it is attached again first. One that
 /// cannot be is left as it is, and tried again on the next call.
@@ -287,7 +292,7 @@ pub(super) fn save(
     let done = connection
         .execute_batch("BEGIN TRANSACTION")
         .map_err(map_error)
-        .and_then(|()| changed(connection, &changes, stop));
+        .and_then(|()| changed(connection, &changes, !key.is_empty(), stop));
     let outcome = match done {
         Ok(outcome @ WriteOutcome::Written { .. }) => {
             match connection.execute_batch("COMMIT").map_err(map_error) {
@@ -353,10 +358,14 @@ fn held_by(said: &str, pid: u32) -> Option<Holder> {
 }
 
 /// Changes the table as `changes` say, in the transaction `save` began,
-/// and reads each changed row back by its key.
+/// and reads each changed row back by its key where the table is `keyed`.
+/// A table found by `rowid` hands none back: DuckDB moves a row it updates
+/// a list or a unique column of to another `rowid` until the commit, and
+/// the page is read again after every save of it.
 fn changed(
     connection: &duckdb::Connection,
     changes: &ChangeSet,
+    keyed: bool,
     stop: &StopFlag,
 ) -> Result<WriteOutcome> {
     let object = &changes.object;
@@ -413,7 +422,7 @@ fn changed(
     }
     stopped()?;
     let mut rows = Vec::with_capacity(changes.rows.len());
-    for change in &changes.rows {
+    for change in changes.rows.iter().filter(|_| keyed) {
         let select = dialect.select_row(object, &change.key, false);
         let params = select.params.iter().map(to_duckdb).collect();
         let (_, mut found, _) = super::rows_of(connection, &select.text, params, 2)?;

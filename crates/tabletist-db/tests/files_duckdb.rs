@@ -208,6 +208,52 @@ async fn a_table_with_no_key_is_found_by_rowid_and_read_again_after_a_save() {
     );
 }
 
+#[tokio::test]
+async fn a_list_of_a_table_with_no_key_is_saved_though_duckdb_moves_its_row() {
+    let dir = tempfile::tempdir().unwrap();
+    tabletist_db::fixtures::write_bookshop_files(dir.path()).unwrap();
+    // DuckDB updates a list column, or a unique one, as a delete and an
+    // insert: the row has another `rowid` until the commit.
+    {
+        let duck = duckdb::Connection::open(dir.path().join("bookshop.duckdb")).unwrap();
+        duck.execute_batch(
+            "CREATE TABLE book_tags AS \
+             SELECT book_id, [kind] AS tags FROM book_covers ORDER BY id",
+        )
+        .unwrap();
+    }
+    let connection = open(dir.path(), Access::Writable).await;
+    let before = page(&connection, "book_tags").await;
+    let tags = column(&before, "tags")[1].clone();
+    let mut changes = set("book_tags");
+    changes.rows.push(change(
+        at(&before, 1),
+        "tags",
+        "VARCHAR[]",
+        tags,
+        "['spine']",
+    ));
+    let outcome = save(&connection, &changes).await.unwrap();
+    let WriteOutcome::Written { rows, .. } = &outcome else {
+        panic!("{outcome:?}");
+    };
+    // No row handed back: the page is read again.
+    assert!(rows.is_empty());
+    // The row moved: DuckDB puts the row it wrote last.
+    let after = page(&connection, "book_tags").await;
+    let book = column(&before, "book_id")[1].clone();
+    let at = column(&after, "book_id")
+        .iter()
+        .rposition(|id| *id == book)
+        .unwrap();
+    // A list reads as text.
+    assert_eq!(
+        column(&after, "tags")[at],
+        Value::Text("[\"spine\"]".into())
+    );
+    assert_eq!(after.rows.len(), before.rows.len());
+}
+
 // On Windows another session's hold keeps a save from opening the file
 // to write: see `on_windows_a_file_another_session_has_open_is_not_written`.
 #[cfg(not(windows))]
