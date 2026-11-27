@@ -2739,13 +2739,27 @@ impl ConnectionForm {
         })
     }
 
+    /// Makes the form one of `driver`. Files open read-only until their own
+    /// box is turned off: another type's choice is not theirs, nor theirs
+    /// another's, so the box goes back to its default between them.
+    pub fn retype(&mut self, driver: Driver) {
+        let files = |driver: Driver| match driver {
+            Driver::Files => true,
+            Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => false,
+        };
+        if files(self.driver) != files(driver) {
+            self.read_only = None;
+        }
+        self.driver = driver;
+    }
+
     /// Whether the connection is saved read-only: as set, else the
     /// environment's default, which for production is
-    /// [`Self::production_read_only`].
+    /// [`Self::production_read_only`]. Files open read-only until the box
+    /// is turned off, whatever the environment.
     pub fn read_only(&self) -> bool {
-        // Editing files is not built: a Files connection opens read-only.
         match self.driver {
-            Driver::Files => return true,
+            Driver::Files => return self.read_only.unwrap_or(true),
             Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => {}
         }
         self.read_only.unwrap_or_else(|| {
@@ -2759,9 +2773,9 @@ impl ConnectionForm {
     /// settings said when it was made; else not set, and the environment's
     /// rule applies.
     fn saved_read_only(&self) -> Option<bool> {
-        // A Files connection is saved read-only, as its box shows.
+        // A Files connection is saved as its box shows.
         match self.driver {
-            Driver::Files => return Some(true),
+            Driver::Files => return Some(self.read_only()),
             Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => {}
         }
         let new_production = self.editing.is_none() && self.environment().read_only_by_default();
@@ -5827,7 +5841,10 @@ impl RunMode {
     pub fn of_new_tab(writes: Result<(), NoWrites>, environment: crate::env::Environment) -> Self {
         match writes {
             Ok(()) if !environment.read_only_by_default() => Self::ReadWrite,
-            Ok(()) | Err(NoWrites::ReadOnlyConnection | NoWrites::Unconfirmed) => Self::ReadOnly,
+            Ok(())
+            | Err(NoWrites::Files | NoWrites::ReadOnlyConnection | NoWrites::Unconfirmed) => {
+                Self::ReadOnly
+            }
         }
     }
 }
@@ -5835,6 +5852,9 @@ impl RunMode {
 /// Why no SQL editor of a workspace runs read-write, whatever its mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoWrites {
+    /// A Files connection: its scripts read, and its files are edited in
+    /// their tables and saved.
+    Files,
     /// The session was opened read-only.
     ReadOnlyConnection,
     /// The connection's environment asks before a write, and the question
@@ -6704,6 +6724,13 @@ impl Workspace {
     /// Whether a SQL editor of this workspace can run read-write, or why
     /// none can.
     pub fn sql_writes(&self) -> Result<(), NoWrites> {
+        match self.driver {
+            tabletist_db::Driver::Files => return Err(NoWrites::Files),
+            tabletist_db::Driver::Sqlite
+            | tabletist_db::Driver::Postgres
+            | tabletist_db::Driver::MySql
+            | tabletist_db::Driver::BigQuery => {}
+        }
         if self.access != tabletist_db::Access::Writable {
             return Err(NoWrites::ReadOnlyConnection);
         }

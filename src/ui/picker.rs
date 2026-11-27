@@ -960,8 +960,13 @@ pub(crate) fn file_row_text(
             Some(FileRowText {
                 second,
                 middle,
-                // Editing files is not built: every one reads only.
-                right: Some((msgid("Read-only"), Joins::of(spec, store))),
+                right: Some((
+                    match connection.read_only() {
+                        true => msgid("Read-only"),
+                        false => msgid("Editable"),
+                    },
+                    Joins::of(spec, store),
+                )),
             })
         }
     }
@@ -1870,6 +1875,14 @@ mod tests {
             text.right
                 .map(|(writes, joins)| (writes.english(), joins.say(crate::i18n::Locale::English))),
             Some(("Read-only", "No joins".to_owned()))
+        );
+        // With its box off, its files are edited.
+        let mut editable = folder.clone();
+        editable.read_only = Some(false);
+        let text = file_row_text(&editable, Some(&facts), &none).unwrap();
+        assert_eq!(
+            text.right.map(|(writes, _)| writes.english()),
+            Some("Editable")
         );
         assert_eq!(
             terminal_files_line(&folder, Some(&facts), &none, crate::i18n::Locale::English)

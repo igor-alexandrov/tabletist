@@ -78,6 +78,8 @@ pub mod export_toast;
 mod export_ways_tests;
 pub mod file_list;
 #[cfg(test)]
+mod files_edit_tests;
+#[cfg(test)]
 mod files_tests;
 pub mod filter_bar;
 pub mod focus;
@@ -8822,6 +8824,7 @@ value_tags   = true
         let tab = with_page(&mut harness);
         harness.click("Structure");
         let structure = tabletist_db::Structure {
+            unedited: None,
             columns: vec![tabletist_db::ColumnInfo {
                 name: "email".into(),
                 type_name: "TEXT".into(),
@@ -13113,6 +13116,7 @@ value_tags   = true
             .chain((1..12).map(|index| format!("a_rather_long_column_{index}")))
             .collect();
         harness.answer_structure(Structure {
+            unedited: None,
             columns: names
                 .iter()
                 .map(|name| ColumnInfo {
@@ -13134,6 +13138,7 @@ value_tags   = true
             file: None,
         });
         harness.answer_rows(RowPage {
+            positions: None,
             columns: names
                 .iter()
                 .map(|name| ColumnMeta {

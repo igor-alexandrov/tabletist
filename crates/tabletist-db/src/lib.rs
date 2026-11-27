@@ -59,10 +59,10 @@ pub use dialect::{
     DeleteParts, Dialect, InsertParts, InsertStatement, RowDeletion, RowUpdate, Sql, UpdateParts,
     escape_like, quote_literal,
 };
-pub use duck::{FileFacts, FilesRead, set_extension_directory};
-pub use error::{Error, Named, Result, SshStage};
+pub use duck::{FILE_COPY, FILE_POSITION, FileFacts, FilesRead, Unedited, set_extension_directory};
+pub use error::{Error, Named, Result, SshStage, Unsaved};
 pub use lookup::{Lookup, LookupPage, LookupPart, LookupRow, Matched};
-pub use query::{Filter, FilterOp, RowPage, RowQuery, Sort, SortDir};
+pub use query::{Filter, FilterOp, Positions, RowPage, RowQuery, Sort, SortDir};
 pub use script::{
     ScriptEnd, ScriptMode, ScriptOutcome, StatementOutcome, StatementResult, StopFlag,
 };
@@ -138,7 +138,7 @@ impl Inner {
                     .as_ref()
                     .ok_or_else(|| Error::InvalidSpec("choose a folder or files".into()))?;
                 Ok(Self::Files(Box::new(
-                    duck::Conn::open(source, &spec.csv, false, Vec::new(), None).await?,
+                    duck::Conn::open(source, &spec.csv, false, Vec::new(), None, access).await?,
                 )))
             }
         }
@@ -169,11 +169,9 @@ impl Connection {
         // BigQuery has no transactions or row locks to save rows with,
         // and no read-only one to fence a script's writes: a session is
         // read-only whatever was asked, and its adapter runs only reads.
-        // Editing files is not built: a Files session reads, whatever
-        // access it is asked for, and says so.
         let access = match spec.driver {
-            Driver::BigQuery | Driver::Files => Access::ReadOnly,
-            Driver::Sqlite | Driver::Postgres | Driver::MySql => access,
+            Driver::BigQuery => Access::ReadOnly,
+            Driver::Sqlite | Driver::Postgres | Driver::MySql | Driver::Files => access,
         };
         let Some(ssh) = ssh else {
             return Ok(Self {
@@ -633,7 +631,15 @@ impl Connection {
     /// where a session to browse does not open with one. Nothing is
     /// attached: see [`Connection::open_files_to_test_with`].
     pub async fn open_files_to_test(spec: &ConnectSpec) -> Result<Self> {
-        Self::open_files(spec, &[], &HostKeys::default(), true, None).await
+        Self::open_files(
+            spec,
+            &[],
+            &HostKeys::default(),
+            true,
+            None,
+            Access::ReadOnly,
+        )
+        .await
     }
 
     /// [`Connection::open_files_to_test`], with the saved connections in
@@ -644,21 +650,32 @@ impl Connection {
         host_keys: &HostKeys,
         downloading: Option<files::Downloading>,
     ) -> Result<Self> {
-        Self::open_files(spec, attaching, host_keys, true, downloading).await
+        Self::open_files(
+            spec,
+            attaching,
+            host_keys,
+            true,
+            downloading,
+            Access::ReadOnly,
+        )
+        .await
     }
 
-    /// A Files connection's session, read-only, with the saved
-    /// connections in `attaching` attached read-only under their names,
-    /// each through its own SSH tunnel where it has one (`host_keys` are
-    /// those the user trusts). One that cannot be attached fails it.
-    /// `downloading` is told of each reader DuckDB downloads first.
+    /// A Files connection's session, with the saved connections in
+    /// `attaching` attached read-only under their names, each through its
+    /// own SSH tunnel where it has one (`host_keys` are those the user
+    /// trusts). One that cannot be attached fails it. `access` says whether
+    /// a save may write the files; an attached connection is read-only
+    /// either way. `downloading` is told of each reader DuckDB downloads
+    /// first.
     pub async fn connect_files(
         spec: &ConnectSpec,
         attaching: &[files::Attaching],
         host_keys: &HostKeys,
+        access: Access,
         downloading: Option<files::Downloading>,
     ) -> Result<Self> {
-        Self::open_files(spec, attaching, host_keys, false, downloading).await
+        Self::open_files(spec, attaching, host_keys, false, downloading, access).await
     }
 
     async fn open_files(
@@ -667,6 +684,7 @@ impl Connection {
         host_keys: &HostKeys,
         past: bool,
         downloading: Option<files::Downloading>,
+        access: Access,
     ) -> Result<Self> {
         let source = spec
             .files
@@ -709,7 +727,7 @@ impl Connection {
             };
             each.push((attaching.clone(), via));
         }
-        let opened = duck::Conn::open(source, &spec.csv, past, each, downloading).await;
+        let opened = duck::Conn::open(source, &spec.csv, past, each, downloading, access).await;
         let conn = match opened {
             Ok(conn) => conn,
             // Where an attach failed, a tunnel's own words say more than
@@ -726,7 +744,7 @@ impl Connection {
         let tunnels = tunnels.into_iter().map(|(_, tunnel)| tunnel).collect();
         Ok(Self {
             inner: Inner::Files(Box::new(conn)),
-            access: Access::ReadOnly,
+            access,
             tunnel: None,
             _tunnels: tunnels,
         })

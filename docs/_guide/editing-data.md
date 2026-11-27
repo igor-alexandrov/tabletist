@@ -505,11 +505,92 @@ yours. Then you choose:
 If someone deleted the row, there is nothing to reload or overwrite:
 **Discard my changes** drops your change, and Esc leaves it pending.
 
+## Edit files
+
+A Files connection opens read-only until you turn **Open read-only** off
+in its form. Then a file's table is edited like any other: change values,
+add rows and delete rows, then save. The first time a file's table opens,
+Tabletist reads the file into memory, so a large file takes as long to
+open as it takes to read, and each row keeps its place in the file.
+That place is what a save finds the row by: a file has no key.
+
+Saving writes the whole file again, to a hidden file in its folder that
+then takes the file's place:
+
+- A CSV or a TSV keeps every row you did not change as it was written,
+  byte for byte. A changed or new row is written with the file's
+  delimiter and quote, each value as you typed it. A date is written the
+  way the file writes its dates.
+- Parquet keeps its compression. JSON stays one array, and NDJSON one
+  object per line. DuckDB writes these from the table, so a value can be
+  written another way than it was: `12.50` as `12.5`.
+- A file a save could not write back as it is opens read-only, and its
+  header says why: a CSV whose rows Tabletist cannot match one for one to
+  the lines DuckDB read, a file with a column of its own named `rowid`,
+  or a JSON or NDJSON file whose objects at one place (the records, a
+  nested object, the items of a list) do not all have the same keys: a
+  save would give each the missing ones as `null`. So does a file that
+  can't be read whole, such as one with a bad value far past its first
+  page: its rows still show a page at a time, as with the box on.
+- Excel files always open read-only, and so do `.duckdb` files for now.
+  Their table's header says so.
+- An attached connection's tables open read-only here, even when the
+  files are editable.
+
+Before it writes, a save checks that the file is as it was when its
+table was read: the same size and the same time it was changed. It
+checks again right before the hidden file takes the file's place. If
+another program changed it, nothing is written: "orders.csv changed on
+disk since you opened it. Reload to see the new version; your 3 changes
+stay pending." A program that replaces the file in the moment between
+that last check and the rename isn't caught, and its version is written
+over: don't save a file another program is writing. A file made
+read-only (its permissions, or Windows' read-only attribute) isn't
+written over either: "orders.csv couldn't be saved: the file itself is
+read-only." If the folder can't be written to, or the file can't be read
+or written for another reason,
+nothing is written either: the message says why, and your changes stay
+pending. Reloading the table
+lets them go, as with any pending edits: it asks first while **Ask
+before closing with unsaved edits** is on in Settings.
+
+A row is found by its place in the file as its page read it. If the file
+was read again since (it changed on disk, or a save moved rows up), a
+save of rows from the page before refuses: "orders.csv was read again
+since you changed these rows. Reload to see it as it is now; your 1
+change stays pending." After a save the page is read again, and until it
+is, its rows take no edit: "Rows moved in the file since this page was
+read. Reload to edit."
+
+A save writes a hidden file first, `.orders.csv.tabletist-save` beside
+`orders.csv`. If a file of that name is already there, the save leaves
+it as it is and writes nothing, and says so. If another program replaces
+the hidden file, or writes into it after the save wrote it, the save
+notices and writes nothing, except in the cases below. On Windows no
+other program can touch a CSV or TSV file's hidden file until the save
+is about to put it in place; a Parquet, JSON or NDJSON file's it can,
+and the save knows the one it wrote by its size and the time it was
+changed. These aren't caught:
+
+- a program that writes into a Parquet, JSON or NDJSON file's hidden
+  file while it is being written, or in the moment just after, before
+  the save takes its size and time;
+- on Windows, a file another program puts at that name with the same
+  size and time;
+- a program that puts its own file at that name in the moment between
+  the save's last look and the rename.
+
+The SQL editor reads a Files connection, whether it opens read-only or
+not: a statement that would write is refused, and its card says to edit
+the file's table instead.
+
 ## What cannot be edited
 
 A cell that cannot be edited says why when you try. The common reasons:
 
 - The connection opens read-only.
+- The file is an Excel or a `.duckdb` file, or its table is an attached
+  connection's (see [Edit files](#edit-files)).
 - The object is a view.
 - The table has no primary key or unique index, so a row cannot be
   targeted safely.

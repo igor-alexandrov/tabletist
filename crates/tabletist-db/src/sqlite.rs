@@ -1081,6 +1081,7 @@ impl Adapter for Conn {
                 )));
             }
             Ok(Structure {
+                unedited: None,
                 columns,
                 primary_key: primary_key(connection, &object)?,
                 indexes: indexes(connection, &object)?,
@@ -1201,6 +1202,7 @@ impl Adapter for Conn {
             values.truncate(limit);
             let columns = column_metas(declared, &values);
             Ok(RowPage {
+                positions: None,
                 columns,
                 rows: values,
                 has_more,

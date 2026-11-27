@@ -26,7 +26,14 @@ fn exports() -> tempfile::TempDir {
 /// A session over `dir`'s files with `attaching` attached.
 async fn open(dir: &tempfile::TempDir, attaching: &[Attaching]) -> Result<Connection, Error> {
     let spec = ConnectSpec::files(Source::Folder(dir.path().to_owned()));
-    Connection::connect_files(&spec, attaching, &HostKeys::default(), None).await
+    Connection::connect_files(
+        &spec,
+        attaching,
+        &HostKeys::default(),
+        tabletist_db::Access::ReadOnly,
+        None,
+    )
+    .await
 }
 
 /// The SQLite Bookshop in `dir`, attached as `shop`.

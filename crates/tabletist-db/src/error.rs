@@ -23,6 +23,27 @@ pub struct Named {
     /// The file a Files connection's table could not be read from, and
     /// why, where DuckDB's words name a row, a value or a line of it.
     pub file: Option<crate::files::Failure>,
+    /// Why a save to a Files connection's file wrote nothing, where it is
+    /// the file's own doing: the person's changes stay as they were.
+    pub unsaved: Option<Unsaved>,
+}
+
+/// Why a save to a file wrote nothing, by the file's name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unsaved {
+    /// The file changed on disk since its table was read.
+    Changed(String),
+    /// Its folder could not be written to.
+    Unwritable(String),
+    /// The file itself is read-only: its permissions, or Windows' read-only
+    /// attribute, keep it from being written.
+    Protected(String),
+    /// It was read again since the rows to save were read: they may not
+    /// be where they were.
+    Reread(String),
+    /// It could not be written, for another reason: the file's name and
+    /// the system's words.
+    Failed(String, String),
 }
 
 /// Everything that can go wrong talking to a database. Messages are shown to

@@ -155,6 +155,22 @@ fn fit_parts(parts: &[String], room: f32, width: impl Fn(&str) -> f32) -> Option
         .find(|text| width(text) <= room)
 }
 
+/// [`fit_parts`] of a header whose `parts` begin with why its table is not
+/// edited, where `reasoned`: the reason stays first while it fits, else the
+/// rest shows without it. Its node names the whole summary either way.
+pub(super) fn fit_header(
+    parts: &[String],
+    reasoned: bool,
+    room: f32,
+    width: impl Fn(&str) -> f32,
+) -> Option<String> {
+    fit_parts(parts, room, &width).or_else(|| {
+        reasoned
+            .then(|| fit_parts(parts.get(1..).unwrap_or_default(), room, &width))
+            .flatten()
+    })
+}
+
 /// Paints `text` from `x`, centred on `y`, and names it `name` for screen
 /// readers (the whole text, when the painted one is cut). Returns its width.
 pub fn paint_named(ui: &egui::Ui, x: f32, y: f32, text: Text, name: &str) -> f32 {
@@ -216,10 +232,20 @@ pub fn header(
     // pointer: the terminal's bar says it in its own tag.
     let production =
         Some(workspace.environment).filter(|env| env.is_production() && !look.terminal);
-    let parts = match (look.terminal, view) {
+    let mut parts = match (look.terminal, view) {
         (true, ObjectView::Ddl) => super::ddl::subtitle(object, locale),
         _ => subtitle(object, &look, locale),
     };
+    // A file's table its connection does not edit, though it may write,
+    // says why first: "Excel files open read-only".
+    let never = Table::of(workspace, object).and_then(|table| table.never());
+    let reasoned = matches!(
+        never,
+        Some(crate::edit::Lock::Unedited(_) | crate::edit::Lock::Unmatched)
+    );
+    if let (true, Some(lock)) = (reasoned, never) {
+        parts.insert(0, look.label(&cell_editor::lock_text(lock, &name, locale)));
+    }
     let summary = parts.join(" · ");
     // Why Add row cannot be pressed, where it cannot: the table takes no
     // row, or its page is not there yet.
@@ -315,9 +341,9 @@ pub fn header(
                     grid::ellipsize(&name, room.max(0.0), false, |text| width(title_role, text));
                 let x =
                     left + paint_named(ui, left, center, title(&shown, palette.text), &name) + 16.0;
-                if let Some(shown) =
-                    fit_parts(&parts, left + room - x, |text| width(sub_role, text))
-                {
+                if let Some(shown) = fit_header(&parts, reasoned, left + room - x, |text| {
+                    width(sub_role, text)
+                }) {
                     paint_named(ui, x, center, sub(&shown, palette.dim), &summary);
                 }
                 // `rows  structure  ddl`, the active one underlined, in
@@ -509,7 +535,7 @@ pub fn header(
                 widgets::announce(ui, named, env.label(platform));
                 title_width += 8.0 + width;
             }
-            let sub_width = fit_parts(&parts, room, |text| width(sub_role, text))
+            let sub_width = fit_header(&parts, reasoned, room, |text| width(sub_role, text))
                 .map_or(0.0, |shown| {
                     paint_named(ui, left, sub_y, sub(&shown, palette.dim), &summary)
                 });
@@ -1643,7 +1669,9 @@ pub fn show(
     // A deleted row's minus stands where the row's key begins.
     let delete_marker = crate::edit::Table::of(workspace, object)
         .and_then(|table| table.key())
-        .and_then(|key| key.into_iter().min());
+        // A file's row is found by its place, not a column: the minus
+        // stands at its start.
+        .map(|key| key.into_iter().min().unwrap_or(0));
     let (unset, lacking) = new_row_columns(workspace, object);
     let target = object.edits.editor.as_ref().and_then(|editor| {
         let how = (hold, &editor_keys, calendar.as_ref());
@@ -3124,6 +3152,7 @@ mod tests {
             kind,
         };
         RowPage {
+            positions: None,
             columns: vec![
                 column("id", "int8", ValueKind::Numeric),
                 column("book_id", "int8", ValueKind::Numeric),

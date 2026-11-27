@@ -950,6 +950,7 @@ mod tests {
             ..Structure::default()
         });
         let page = || RowPage {
+            positions: None,
             columns: Vec::new(),
             rows: Vec::new(),
             has_more: false,

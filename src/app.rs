@@ -3230,7 +3230,7 @@ impl App {
                     if form.driver != driver {
                         form.forget_test();
                     }
-                    form.driver = driver;
+                    form.retype(driver);
                     // A type changed again is asked about again.
                     form.retype_asked = false;
                     // A new Files connection lets agents read, until the
@@ -4319,7 +4319,8 @@ impl App {
             return;
         };
         if let Some(read_only) = boxed {
-            workspace.access = crate::connections::access(read_only, workspace.environment);
+            workspace.access =
+                crate::connections::access(workspace.driver, read_only, workspace.environment);
         }
         if forced {
             workspace.access = tabletist_db::Access::ReadOnly;
@@ -9649,7 +9650,7 @@ fn apply_url(form: &mut ConnectionForm) -> Result<(), String> {
         if form.name.trim().is_empty() {
             form.name = crate::model::file_name(&name.display().to_string());
         }
-        form.driver = Driver::Files;
+        form.retype(Driver::Files);
         match source {
             tabletist_db::files::Source::Folder(folder) => {
                 form.files_kind = crate::model::FilesKind::Folder;
@@ -9690,14 +9691,14 @@ fn apply_url(form: &mut ConnectionForm) -> Result<(), String> {
             if form.name.trim().is_empty() {
                 form.name = crate::model::file_name(&path);
             }
-            form.driver = Driver::Sqlite;
+            form.retype(Driver::Sqlite);
             form.sqlite_path = path;
         }
         Driver::BigQuery => {
             if form.name.trim().is_empty() {
                 form.name = spec.database.clone();
             }
-            form.driver = Driver::BigQuery;
+            form.retype(Driver::BigQuery);
             form.database = spec.database;
             form.bigquery_key = spec
                 .bigquery_key
@@ -9710,7 +9711,7 @@ fn apply_url(form: &mut ConnectionForm) -> Result<(), String> {
             if form.name.trim().is_empty() {
                 form.name = spec.summary();
             }
-            form.driver = spec.driver;
+            form.retype(spec.driver);
             form.host = spec.host;
             form.port = spec.port.to_string();
             form.user = spec.user;

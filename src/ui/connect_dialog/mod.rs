@@ -25,7 +25,8 @@ use crate::env::{EnvColors, Environment, Platform, env_colors};
 use crate::i18n::{Locale, Msgid, fill, gettext, msgid, ngettext};
 use crate::keymap::{Command, Keymap, Scope};
 use crate::model::{
-    Action, ConnectionForm, FilesKind, LoadedTables, SourceNames, SshAuthKind, SshHints, TestState,
+    Action, ConnectionForm, FilesFound, FilesKind, LoadedTables, SourceNames, SshAuthKind,
+    SshHints, TestState,
 };
 use crate::style::Icon;
 use crate::theme::{self, Look, Palette};
@@ -65,14 +66,50 @@ fn is_files(form: &ConnectionForm) -> bool {
     }
 }
 
-/// Whether the read-only box is on and cannot be turned off: a Files
-/// connection's, until editing files is built.
-fn read_only_fixed(form: &ConnectionForm) -> bool {
-    is_files(form)
+/// What a Files connection's read-only box says while it is on.
+const FILES_READ_ONLY_NOTE: Msgid = msgid(
+    "Files open read-only. Turn off to edit: changes are kept until you save, and saving \
+     rewrites the whole file.",
+);
+
+/// The largest of the form's files a save writes again whole, with its
+/// size as the found line says it: what the note of a Files connection
+/// that edits names. `None` until the Source is read, or where it has none.
+fn largest_rewritten(form: &ConnectionForm) -> Option<(String, String)> {
+    let FilesFound::Read(scan) = &form.files_found else {
+        return None;
+    };
+    let reading = &form.files_csv;
+    let file = scan
+        .files
+        .iter()
+        .filter(|file| file.format.rewritten() && !reading.skips(&file.path))
+        .max_by_key(|file| file.size)?;
+    Some((
+        tabletist_db::files::file_name(&file.path),
+        tabletist_db::files::size_text(file.size),
+    ))
 }
 
-/// What a Files connection's read-only box says.
-const FILES_READ_ONLY_NOTE: Msgid = msgid("Files open read-only.");
+/// What a Files connection's read-only box says while it is off: that a
+/// save writes a whole file, and the largest it would.
+fn files_editing_note(form: &ConnectionForm, locale: Locale) -> String {
+    match largest_rewritten(form) {
+        Some((file, size)) => crate::i18n::fill(
+            &gettext(
+                locale,
+                "Editing is on. Changes are kept until you save; saving rewrites the whole file, \
+                 so {file} ({size}) is written again in full.",
+            ),
+            &[("{file}", &file), ("{size}", &size)],
+        ),
+        None => gettext(
+            locale,
+            "Editing is on. Changes are kept until you save; saving rewrites the whole file.",
+        )
+        .into_owned(),
+    }
+}
 
 /// Why a Files connection's URL tab is off, as its tooltip says it.
 const NO_URL: Msgid =

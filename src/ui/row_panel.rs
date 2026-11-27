@@ -3575,6 +3575,7 @@ mod tests {
             .chain(std::iter::repeat_n(0, 96))
             .collect();
         harness.answer_rows(RowPage {
+            positions: None,
             columns: vec![
                 column("title", "text", ValueKind::Text),
                 column("subtitle", "text", ValueKind::Text),

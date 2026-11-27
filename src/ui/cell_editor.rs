@@ -1529,6 +1529,23 @@ pub fn lock_text(lock: Lock, table: &str, locale: Locale) -> String {
     let say = |text: Msgid| text.say(locale).into_owned();
     match lock {
         Lock::ReadOnly => say(msgid("This connection opens read-only")),
+        Lock::Unedited(tabletist_db::Unedited::Excel) => say(msgid("Excel files open read-only")),
+        Lock::Unedited(tabletist_db::Unedited::DuckDb) => {
+            say(msgid(".duckdb files open read-only"))
+        }
+        Lock::Unedited(tabletist_db::Unedited::Attached) => {
+            say(msgid("Attached connections open read-only"))
+        }
+        Lock::Unmatched => fill(
+            &gettext(
+                locale,
+                "{table} opens read-only: a save couldn't write its rows back as they are",
+            ),
+            &[("{table}", table)],
+        ),
+        Lock::Moved => say(msgid(
+            "Rows moved in the file since this page was read. Reload to edit.",
+        )),
         Lock::NotATable => say(msgid("Views cannot be edited")),
         Lock::StructureLoading => say(msgid("The table's structure is still loading")),
         Lock::NoKey => fill(
@@ -1580,7 +1597,10 @@ pub fn delete_text(lock: Lock, table: &str, locale: Locale) -> String {
             ),
             &[("{table}", table)],
         ),
-        Lock::StructureLoading
+        Lock::Unedited(_)
+        | Lock::Unmatched
+        | Lock::Moved
+        | Lock::StructureLoading
         | Lock::KeyType
         | Lock::Saving
         | Lock::Refreshing

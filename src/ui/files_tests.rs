@@ -505,24 +505,125 @@ fn a_test_of_another_source_is_not_said_of_this_one() {
 }
 
 #[test]
-fn files_open_read_only_and_the_box_cannot_be_turned_off() {
+fn files_open_read_only_until_the_box_is_turned_off() {
     for look in looks() {
         let mut harness = new_files(look);
         let name = "Open read-only";
         let tree = harness.settle();
         let check = node(&tree, name, Role::CheckBox).expect("the read-only box");
         let found = &tree.nodes.iter().find(|(id, _)| *id == check).unwrap().1;
-        assert!(found.is_disabled(), "{}", look.name);
-        harness.click(name);
-        assert_eq!(form(&harness).read_only, None, "{}", look.name);
-        pick_folder(&mut harness, "/data/bookshop-exports");
-        assert_eq!(form(&harness).to_saved().unwrap().read_only, Some(true));
-        // The terminal look paints its promise beside the box.
+        assert!(!found.is_disabled(), "{}", look.name);
+        assert!(form(&harness).read_only(), "{}", look.name);
+        // On, it says that editing rewrites a whole file.
         match look.terminal {
-            true => assert!(harness.painted_rect("[x] files open read-only").is_some()),
-            false => assert!(harness.has("Files open read-only.")),
+            true => {
+                assert!(harness.painted_rect("[x] files open read-only").is_some());
+                assert!(says(
+                    &mut harness,
+                    "· turn off to edit; saving rewrites the whole file"
+                ));
+            }
+            false => assert!(says(
+                &mut harness,
+                "Files open read-only. Turn off to edit: changes are kept until you save, and \
+                 saving rewrites the whole file."
+            )),
+        }
+        pick_folder(&mut harness, "/data/bookshop-exports");
+        source_read(&mut harness, Ok(exports("/data/bookshop-exports")));
+        assert_eq!(form(&harness).to_saved().unwrap().read_only, Some(true));
+        harness.click(name);
+        harness.settle();
+        assert_eq!(form(&harness).read_only, Some(false), "{}", look.name);
+        assert_eq!(form(&harness).to_saved().unwrap().read_only, Some(false));
+        // Off, it names the largest file a save would write again.
+        match look.terminal {
+            true => {
+                assert!(harness.painted_rect("[ ] editing on").is_some());
+                assert!(says(
+                    &mut harness,
+                    "· changes wait for :w, which rewrites the whole file (orders.csv 1.6 gb)"
+                ));
+            }
+            false => assert!(says(
+                &mut harness,
+                "Editing is on. Changes are kept until you save; saving rewrites the whole \
+                 file, so orders.csv (1.6 GB) is written again in full."
+            )),
         }
     }
+}
+
+#[test]
+fn another_type_s_box_left_off_does_not_make_files_editable() {
+    let mut harness = new_files(Look::macos());
+    harness.click("PostgreSQL");
+    form_mut(&mut harness).read_only = Some(false);
+    harness.click("Files");
+    assert!(form(&harness).read_only());
+    assert_eq!(form(&harness).read_only, None);
+    // Nor does the Files box left off carry to another type.
+    form_mut(&mut harness).read_only = Some(false);
+    harness.click("SQLite");
+    assert_eq!(form(&harness).read_only, None);
+    // A switch within the other types keeps the person's choice.
+    form_mut(&mut harness).read_only = Some(false);
+    harness.click("PostgreSQL");
+    assert_eq!(form(&harness).read_only, Some(false));
+}
+
+#[test]
+fn a_path_pasted_into_a_form_with_its_box_off_opens_read_only() {
+    let mut harness = Harness::new();
+    harness.app.apply(Action::NewConnection);
+    harness.settle();
+    form_mut(&mut harness).read_only = Some(false);
+    form_mut(&mut harness).url = "/data/bookshop-exports".into();
+    harness.app.apply(Action::ApplyUrl);
+    assert_eq!(form(&harness).driver, Driver::Files);
+    assert!(form(&harness).read_only());
+    // Nor does a Files box left off carry to the type a URL names.
+    form_mut(&mut harness).read_only = Some(false);
+    form_mut(&mut harness).url = "postgres://reader@db.bookshop.test/bookshop".into();
+    harness.app.apply(Action::ApplyUrl);
+    assert_eq!(form(&harness).read_only, None);
+}
+
+#[test]
+fn a_files_note_names_the_largest_file_a_save_writes_again() {
+    let mut harness = new_files(Look::macos());
+    form_mut(&mut harness).read_only = Some(false);
+    harness.settle();
+    // Before the Source is read, no file.
+    assert!(says(
+        &mut harness,
+        "Editing is on. Changes are kept until you save; saving rewrites the whole file."
+    ));
+    // An Excel file is never written, and a skipped one is not read.
+    let mut scan = exports("/data/bookshop-exports");
+    scan.files.insert(
+        0,
+        Found {
+            path: PathBuf::from("/data/bookshop-exports/stock.xlsx"),
+            format: Format::Excel,
+            size: 9_000_000_000,
+            name: "stock".into(),
+        },
+    );
+    form_mut(&mut harness).files_found = FilesFound::Read(scan);
+    form_mut(&mut harness)
+        .files_csv
+        .overrides
+        .push(tabletist_db::files::Override {
+            file: "orders.csv".into(),
+            change: tabletist_db::files::Change::Skip,
+        });
+    harness.settle();
+    assert!(says(
+        &mut harness,
+        "Editing is on. Changes are kept until you save; saving rewrites the whole file, so \
+         events.ndjson (450 MB) is written again in full."
+    ));
 }
 
 #[test]

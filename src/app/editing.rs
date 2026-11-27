@@ -2378,6 +2378,9 @@ impl App {
                 let fits = object.rows.value.as_ref().is_some_and(|page| {
                     let wide = |row: &Vec<tabletist_db::Value>| row.len() == page.columns.len();
                     !reaches_its_own
+                        // A file's rows each move to their place in the
+                        // file as written: the page is read again.
+                        && page.positions.is_none()
                         && rows.len() == saving.rows.len()
                         && rows.iter().all(wide)
                         && saving.rows.iter().all(|&at| at < page.rows.len())
@@ -2496,6 +2499,17 @@ impl App {
                     // reached rows the save did not name: read it again. A
                     // new row is nowhere until the page says where.
                     object.off_new_rows();
+                    // A file's rows have moved: its page takes no edit
+                    // until the one read next replaces it, whatever comes
+                    // of that read.
+                    if let Some(positions) = object
+                        .rows
+                        .value
+                        .as_mut()
+                        .and_then(|page| page.positions.as_mut())
+                    {
+                        positions.copy = crate::edit::MOVED;
+                    }
                     // How many rows the table has now is not known for
                     // sure on this path: a trigger may have written too, a
                     // delete may have reached rows the save did not name.

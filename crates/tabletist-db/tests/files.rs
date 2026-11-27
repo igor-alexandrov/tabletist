@@ -1,7 +1,8 @@
 //! Files connections through the public `Connection` API, on the
 //! Bookshop's exports (`fixtures::write_bookshop_files`): a view for each
 //! file, a `.duckdb` file as a schema, and a session that reads those
-//! files and nothing else, and writes nothing.
+//! files and nothing else. A read-only one writes nothing; editing is in
+//! `files_edit.rs`.
 
 // `allow-unwrap-in-tests` does not cover helpers in an integration-test crate.
 #![allow(clippy::unwrap_used)]
@@ -477,7 +478,7 @@ async fn an_explain_that_would_run_a_copy_is_refused_and_the_file_kept() {
 }
 
 #[tokio::test]
-async fn a_session_asked_to_write_still_reads_only() {
+async fn a_session_that_may_write_still_runs_scripts_read_only() {
     let dir = tempfile::tempdir().unwrap();
     tabletist_db::fixtures::write_bookshop_files(dir.path()).unwrap();
     let shop = dir.path().join("bookshop.duckdb");
@@ -490,7 +491,9 @@ async fn a_session_asked_to_write_still_reads_only() {
     )
     .await
     .unwrap();
-    assert_eq!(connection.access(), tabletist_db::Access::ReadOnly);
+    // It saves edits to the files; a script reads, and a `.duckdb` file
+    // stays attached read-only.
+    assert_eq!(connection.access(), tabletist_db::Access::Writable);
     let error = refused(
         &connection,
         "INSERT INTO bookshop.book_covers SELECT * FROM bookshop.book_covers",

@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-26 08:30-0500\n"
+"POT-Creation-Date: 2026-11-26 17:50-0500\n"
 "PO-Revision-Date: 2026-11-19 16:11-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -3514,6 +3514,10 @@ msgid "{n} running"
 msgstr "{n} em andamento"
 
 #: src/ui/cell_editor.rs
+msgid ".duckdb files open read-only"
+msgstr "Arquivos .duckdb abrem em somente leitura"
+
+#: src/ui/cell_editor.rs
 msgid "A save is running"
 msgstr "Um salvamento está em andamento"
 
@@ -3536,12 +3540,20 @@ msgstr[0] "No máximo {n} dígito antes do ponto decimal"
 msgstr[1] "No máximo {n} dígitos antes do ponto decimal"
 
 #: src/ui/cell_editor.rs
+msgid "Attached connections open read-only"
+msgstr "Conexões anexadas abrem em somente leitura"
+
+#: src/ui/cell_editor.rs
 msgid "Binary values cannot be edited yet"
 msgstr "Valores binários ainda não podem ser editados"
 
 #: src/ui/cell_editor.rs
 msgid "Computed by the database"
 msgstr "Calculado pelo banco de dados"
+
+#: src/ui/cell_editor.rs
+msgid "Excel files open read-only"
+msgstr "Arquivos do Excel abrem em somente leitura"
 
 #: src/ui/cell_editor.rs
 msgid "No decimals."
@@ -3567,6 +3579,12 @@ msgstr "Conexão somente leitura"
 #: src/ui/cell_editor.rs
 msgid "Restore the row to edit it."
 msgstr "Restaure a linha para editá-la."
+
+#: src/ui/cell_editor.rs
+msgid "Rows moved in the file since this page was read. Reload to edit."
+msgstr ""
+"As linhas mudaram de lugar no arquivo desde que esta página foi lida. "
+"Recarregue para editar."
 
 #: src/ui/cell_editor.rs
 #, rust-format
@@ -3710,6 +3728,14 @@ msgstr ""
 msgid "{table} has no primary key, so rows can't be deleted here"
 msgstr ""
 "{table} não tem chave primária, então as linhas não podem ser excluídas aqui"
+
+#: src/ui/cell_editor.rs
+#, rust-format
+msgid ""
+"{table} opens read-only: a save couldn't write its rows back as they are"
+msgstr ""
+"{table} abre em somente leitura: salvar não conseguiria gravar as linhas "
+"dela de volta como estão"
 
 #: src/ui/cell_editor.rs
 #, rust-format
@@ -4099,6 +4125,13 @@ msgstr ""
 "As conexões anexadas abrem aqui somente para leitura, como os arquivos."
 
 #: src/ui/connect_dialog/join.rs
+msgid ""
+"Attached connections open read-only here, even when the files are editable."
+msgstr ""
+"Conexões anexadas abrem em somente leitura aqui, mesmo quando os arquivos "
+"são editáveis."
+
+#: src/ui/connect_dialog/join.rs
 msgid "Join with saved connections"
 msgstr "Cruzar com conexões salvas"
 
@@ -4155,13 +4188,35 @@ msgid "Downloading the SQLite reader for DuckDB…"
 msgstr "Baixando o leitor de SQLite do DuckDB…"
 
 #: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid ""
+"Editing is on. Changes are kept until you save; saving rewrites the whole "
+"file, so {file} ({size}) is written again in full."
+msgstr ""
+"A edição está ativada. As alterações ficam guardadas até você salvar; salvar "
+"regrava o arquivo inteiro, então {file} ({size}) é gravado de novo por "
+"completo."
+
+#: src/ui/connect_dialog/mod.rs
+msgid ""
+"Editing is on. Changes are kept until you save; saving rewrites the whole "
+"file."
+msgstr ""
+"A edição está ativada. As alterações ficam guardadas até você salvar; salvar "
+"regrava o arquivo inteiro."
+
+#: src/ui/connect_dialog/mod.rs
 msgid "Files connections have no URL. Choose a folder or files under Source."
 msgstr ""
 "Conexões de arquivos não têm URL. Escolha uma pasta ou arquivos em Origem."
 
 #: src/ui/connect_dialog/mod.rs
-msgid "Files open read-only."
-msgstr "Os arquivos abrem em somente leitura."
+msgid ""
+"Files open read-only. Turn off to edit: changes are kept until you save, and "
+"saving rewrites the whole file."
+msgstr ""
+"Os arquivos abrem em somente leitura. Desative para editar: as alterações "
+"ficam guardadas até você salvar, e salvar regrava o arquivo inteiro."
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Hosts from ~/.ssh/config"
@@ -4637,6 +4692,10 @@ msgid "Default for production"
 msgstr "Padrão para production"
 
 #: src/ui/connect_dialog/terminal.rs
+msgid "Editing on"
+msgstr "Edição ativada"
+
+#: src/ui/connect_dialog/terminal.rs
 msgid "Files open read-only"
 msgstr "Os arquivos abrem em somente leitura"
 
@@ -4664,6 +4723,21 @@ msgstr "Host SSH : Porta"
 #: src/ui/connect_dialog/terminal.rs
 msgid "SSH tunnel"
 msgstr "Túnel SSH"
+
+#: src/ui/connect_dialog/terminal.rs
+msgid "Turn off to edit; saving rewrites the whole file"
+msgstr "Desative para editar; salvar regrava o arquivo inteiro"
+
+#: src/ui/connect_dialog/terminal.rs
+#, rust-format
+msgid "changes wait for {key}, which rewrites the whole file"
+msgstr "as alterações esperam {key}, que regrava o arquivo inteiro"
+
+#: src/ui/connect_dialog/terminal.rs
+#, rust-format
+msgid "changes wait for {key}, which rewrites the whole file ({file} {size})"
+msgstr ""
+"as alterações esperam {key}, que regrava o arquivo inteiro ({file} {size})"
 
 #: src/ui/connect_dialog/terminal.rs src/ui/export.rs src/ui/structure.rs
 #: src/ui/workspace.rs
@@ -7223,6 +7297,76 @@ msgstr "{column} é obrigatória"
 
 #: src/ui/pending_bar.rs
 #, rust-format
+msgid ""
+"{file} changed on disk since you opened it. Reload to see the new version; "
+"your {n} change stays pending."
+msgid_plural ""
+"{file} changed on disk since you opened it. Reload to see the new version; "
+"your {n} changes stay pending."
+msgstr[0] ""
+"{file} mudou no disco desde que você o abriu. Recarregue para ver a nova "
+"versão; sua {n} alteração continua pendente."
+msgstr[1] ""
+"{file} mudou no disco desde que você o abriu. Recarregue para ver a nova "
+"versão; suas {n} alterações continuam pendentes."
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid ""
+"{file} couldn't be saved: its folder can't be written to. Your {n} change "
+"stays pending."
+msgid_plural ""
+"{file} couldn't be saved: its folder can't be written to. Your {n} changes "
+"stay pending."
+msgstr[0] ""
+"Não foi possível salvar {file}: não é possível gravar na pasta dele. Sua {n} "
+"alteração continua pendente."
+msgstr[1] ""
+"Não foi possível salvar {file}: não é possível gravar na pasta dele. Suas "
+"{n} alterações continuam pendentes."
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid ""
+"{file} couldn't be saved: the file itself is read-only. Your {n} change "
+"stays pending."
+msgid_plural ""
+"{file} couldn't be saved: the file itself is read-only. Your {n} changes "
+"stay pending."
+msgstr[0] ""
+"Não foi possível salvar {file}: o próprio arquivo está em somente leitura. "
+"Sua {n} alteração continua pendente."
+msgstr[1] ""
+"Não foi possível salvar {file}: o próprio arquivo está em somente leitura. "
+"Suas {n} alterações continuam pendentes."
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid "{file} couldn't be saved: {why}. Your {n} change stays pending."
+msgid_plural "{file} couldn't be saved: {why}. Your {n} changes stay pending."
+msgstr[0] ""
+"Não foi possível salvar {file}: {why}. Sua {n} alteração continua pendente."
+msgstr[1] ""
+"Não foi possível salvar {file}: {why}. Suas {n} alterações continuam "
+"pendentes."
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid ""
+"{file} was read again since you changed these rows. Reload to see it as it "
+"is now; your {n} change stays pending."
+msgid_plural ""
+"{file} was read again since you changed these rows. Reload to see it as it "
+"is now; your {n} changes stay pending."
+msgstr[0] ""
+"{file} foi lido de novo depois que você alterou estas linhas. Recarregue "
+"para vê-lo como está agora; sua {n} alteração continua pendente."
+msgstr[1] ""
+"{file} foi lido de novo depois que você alterou estas linhas. Recarregue "
+"para vê-lo como está agora; suas {n} alterações continuam pendentes."
+
+#: src/ui/pending_bar.rs
+#, rust-format
 msgid "{n} can't be deleted."
 msgid_plural "{n} can't be deleted."
 msgstr[0] "{n} não pode ser excluída."
@@ -7298,6 +7442,10 @@ msgstr "Excluir {connection}? Isso não pode ser desfeito."
 #: src/ui/picker.rs src/ui/row_panel.rs
 msgid "Duplicate"
 msgstr "Duplicar"
+
+#: src/ui/picker.rs
+msgid "Editable"
+msgstr "Editável"
 
 #: src/ui/picker.rs
 msgid "Edit…"
@@ -9983,6 +10131,10 @@ msgid "schema"
 msgstr "esquema"
 
 #: src/ui/sql_editor.rs
+msgid "A file is edited in its table, then saved."
+msgstr "Um arquivo é editado na tabela dele e depois salvo."
+
+#: src/ui/sql_editor.rs
 msgid "A read-write run is still going in this tab. Cancel it or wait for it."
 msgstr ""
 "Uma execução de leitura e gravação ainda está em andamento nesta aba. "
@@ -10108,8 +10260,20 @@ msgid "{seconds} s"
 msgstr "{seconds} s"
 
 #: src/ui/sql_results.rs
+#, rust-format
+msgid ""
+"A Files connection's scripts only read, so {database} refused {statement}."
+msgstr ""
+"Os scripts de uma conexão de arquivos só leem, então {database} recusou "
+"{statement}."
+
+#: src/ui/sql_results.rs
 msgid "Allow writes in this tab"
 msgstr "Permitir gravações nesta aba"
+
+#: src/ui/sql_results.rs
+msgid "Change the rows in the file's table, then save them."
+msgstr "Altere as linhas na tabela do arquivo e depois salve-as."
 
 #: src/ui/sql_results.rs
 msgid "Committed"
@@ -10122,6 +10286,10 @@ msgid ""
 msgstr ""
 "Toda execução aqui é uma transação somente leitura, então {database} recusou "
 "{statement}."
+
+#: src/ui/sql_results.rs
+msgid "Files are edited in their tables"
+msgstr "Os arquivos são editados nas tabelas deles"
 
 #: src/ui/sql_results.rs
 #, rust-format

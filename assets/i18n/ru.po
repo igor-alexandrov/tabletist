@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-26 08:30-0500\n"
+"POT-Creation-Date: 2026-11-26 17:50-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -3521,6 +3521,10 @@ msgid "{n} running"
 msgstr "выполняется: {n}"
 
 #: src/ui/cell_editor.rs
+msgid ".duckdb files open read-only"
+msgstr "Файлы .duckdb открываются только для чтения"
+
+#: src/ui/cell_editor.rs
 msgid "A save is running"
 msgstr "Идёт сохранение"
 
@@ -3545,12 +3549,20 @@ msgstr[1] "Не более {n} цифр до запятой"
 msgstr[2] "Не более {n} цифр до запятой"
 
 #: src/ui/cell_editor.rs
+msgid "Attached connections open read-only"
+msgstr "Присоединённые подключения открываются только для чтения"
+
+#: src/ui/cell_editor.rs
 msgid "Binary values cannot be edited yet"
 msgstr "Двоичные значения пока нельзя изменять"
 
 #: src/ui/cell_editor.rs
 msgid "Computed by the database"
 msgstr "Вычисляется базой данных"
+
+#: src/ui/cell_editor.rs
+msgid "Excel files open read-only"
+msgstr "Файлы Excel открываются только для чтения"
 
 #: src/ui/cell_editor.rs
 msgid "No decimals."
@@ -3576,6 +3588,12 @@ msgstr "Подключение только для чтения"
 #: src/ui/cell_editor.rs
 msgid "Restore the row to edit it."
 msgstr "Восстановите строку, чтобы изменить её."
+
+#: src/ui/cell_editor.rs
+msgid "Rows moved in the file since this page was read. Reload to edit."
+msgstr ""
+"Строки в файле сдвинулись с тех пор, как эта страница была прочитана. "
+"Перезагрузите, чтобы изменять."
 
 #: src/ui/cell_editor.rs
 #, rust-format
@@ -3721,6 +3739,14 @@ msgstr ""
 #, rust-format
 msgid "{table} has no primary key, so rows can't be deleted here"
 msgstr "У {table} нет первичного ключа, поэтому строки здесь нельзя удалять"
+
+#: src/ui/cell_editor.rs
+#, rust-format
+msgid ""
+"{table} opens read-only: a save couldn't write its rows back as they are"
+msgstr ""
+"{table} открывается только для чтения: сохранение не смогло бы записать её "
+"строки обратно как есть"
 
 #: src/ui/cell_editor.rs
 #, rust-format
@@ -4109,6 +4135,13 @@ msgstr ""
 "Присоединённые подключения открываются здесь только для чтения, как и файлы."
 
 #: src/ui/connect_dialog/join.rs
+msgid ""
+"Attached connections open read-only here, even when the files are editable."
+msgstr ""
+"Присоединённые подключения здесь открываются только для чтения, даже когда "
+"файлы можно изменять."
+
+#: src/ui/connect_dialog/join.rs
 msgid "Join with saved connections"
 msgstr "Соединение с сохранёнными подключениями"
 
@@ -4167,14 +4200,36 @@ msgid "Downloading the SQLite reader for DuckDB…"
 msgstr "Загрузка модуля чтения SQLite для DuckDB…"
 
 #: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid ""
+"Editing is on. Changes are kept until you save; saving rewrites the whole "
+"file, so {file} ({size}) is written again in full."
+msgstr ""
+"Изменение включено. Изменения хранятся до сохранения; сохранение "
+"перезаписывает файл целиком, так что {file} ({size}) записывается заново "
+"полностью."
+
+#: src/ui/connect_dialog/mod.rs
+msgid ""
+"Editing is on. Changes are kept until you save; saving rewrites the whole "
+"file."
+msgstr ""
+"Изменение включено. Изменения хранятся до сохранения; сохранение "
+"перезаписывает файл целиком."
+
+#: src/ui/connect_dialog/mod.rs
 msgid "Files connections have no URL. Choose a folder or files under Source."
 msgstr ""
 "У подключений к файлам нет URL. Выберите папку или файлы в разделе "
 "«Источник»."
 
 #: src/ui/connect_dialog/mod.rs
-msgid "Files open read-only."
-msgstr "Файлы открываются только для чтения."
+msgid ""
+"Files open read-only. Turn off to edit: changes are kept until you save, and "
+"saving rewrites the whole file."
+msgstr ""
+"Файлы открываются только для чтения. Выключите, чтобы изменять: изменения "
+"хранятся до сохранения, а сохранение перезаписывает файл целиком."
 
 #: src/ui/connect_dialog/mod.rs
 msgid "Hosts from ~/.ssh/config"
@@ -4657,6 +4712,10 @@ msgid "Default for production"
 msgstr "По умолчанию для production"
 
 #: src/ui/connect_dialog/terminal.rs
+msgid "Editing on"
+msgstr "Изменение включено"
+
+#: src/ui/connect_dialog/terminal.rs
 msgid "Files open read-only"
 msgstr "Файлы открываются только для чтения"
 
@@ -4684,6 +4743,21 @@ msgstr "Хост SSH : Порт"
 #: src/ui/connect_dialog/terminal.rs
 msgid "SSH tunnel"
 msgstr "Туннель SSH"
+
+#: src/ui/connect_dialog/terminal.rs
+msgid "Turn off to edit; saving rewrites the whole file"
+msgstr "Выключите, чтобы изменять; сохранение перезаписывает файл целиком"
+
+#: src/ui/connect_dialog/terminal.rs
+#, rust-format
+msgid "changes wait for {key}, which rewrites the whole file"
+msgstr "изменения ждут {key}, которое перезаписывает файл целиком"
+
+#: src/ui/connect_dialog/terminal.rs
+#, rust-format
+msgid "changes wait for {key}, which rewrites the whole file ({file} {size})"
+msgstr ""
+"изменения ждут {key}, которое перезаписывает файл целиком ({file} {size})"
 
 #: src/ui/connect_dialog/terminal.rs src/ui/export.rs src/ui/structure.rs
 #: src/ui/workspace.rs
@@ -7283,6 +7357,92 @@ msgstr "Столбец {column} обязателен"
 
 #: src/ui/pending_bar.rs
 #, rust-format
+msgid ""
+"{file} changed on disk since you opened it. Reload to see the new version; "
+"your {n} change stays pending."
+msgid_plural ""
+"{file} changed on disk since you opened it. Reload to see the new version; "
+"your {n} changes stay pending."
+msgstr[0] ""
+"{file} изменился на диске после того, как вы его открыли. Перезагрузите, "
+"чтобы увидеть новую версию; ваше {n} изменение остаётся в ожидании."
+msgstr[1] ""
+"{file} изменился на диске после того, как вы его открыли. Перезагрузите, "
+"чтобы увидеть новую версию; ваши {n} изменения остаются в ожидании."
+msgstr[2] ""
+"{file} изменился на диске после того, как вы его открыли. Перезагрузите, "
+"чтобы увидеть новую версию; ваши {n} изменений остаются в ожидании."
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid ""
+"{file} couldn't be saved: its folder can't be written to. Your {n} change "
+"stays pending."
+msgid_plural ""
+"{file} couldn't be saved: its folder can't be written to. Your {n} changes "
+"stay pending."
+msgstr[0] ""
+"Не удалось сохранить {file}: в его папку нельзя записывать. Ваше {n} "
+"изменение остаётся в ожидании."
+msgstr[1] ""
+"Не удалось сохранить {file}: в его папку нельзя записывать. Ваши {n} "
+"изменения остаются в ожидании."
+msgstr[2] ""
+"Не удалось сохранить {file}: в его папку нельзя записывать. Ваши {n} "
+"изменений остаются в ожидании."
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid ""
+"{file} couldn't be saved: the file itself is read-only. Your {n} change "
+"stays pending."
+msgid_plural ""
+"{file} couldn't be saved: the file itself is read-only. Your {n} changes "
+"stay pending."
+msgstr[0] ""
+"Не удалось сохранить {file}: сам файл только для чтения. Ваше {n} изменение "
+"остаётся в ожидании."
+msgstr[1] ""
+"Не удалось сохранить {file}: сам файл только для чтения. Ваши {n} изменения "
+"остаются в ожидании."
+msgstr[2] ""
+"Не удалось сохранить {file}: сам файл только для чтения. Ваши {n} изменений "
+"остаются в ожидании."
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid "{file} couldn't be saved: {why}. Your {n} change stays pending."
+msgid_plural "{file} couldn't be saved: {why}. Your {n} changes stay pending."
+msgstr[0] ""
+"Не удалось сохранить {file}: {why}. Ваше {n} изменение остаётся в ожидании."
+msgstr[1] ""
+"Не удалось сохранить {file}: {why}. Ваши {n} изменения остаются в ожидании."
+msgstr[2] ""
+"Не удалось сохранить {file}: {why}. Ваши {n} изменений остаются в ожидании."
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid ""
+"{file} was read again since you changed these rows. Reload to see it as it "
+"is now; your {n} change stays pending."
+msgid_plural ""
+"{file} was read again since you changed these rows. Reload to see it as it "
+"is now; your {n} changes stay pending."
+msgstr[0] ""
+"{file} был прочитан заново после того, как вы изменили эти строки. "
+"Перезагрузите, чтобы увидеть его как есть сейчас; ваше {n} изменение "
+"остаётся в ожидании."
+msgstr[1] ""
+"{file} был прочитан заново после того, как вы изменили эти строки. "
+"Перезагрузите, чтобы увидеть его как есть сейчас; ваши {n} изменения "
+"остаются в ожидании."
+msgstr[2] ""
+"{file} был прочитан заново после того, как вы изменили эти строки. "
+"Перезагрузите, чтобы увидеть его как есть сейчас; ваши {n} изменений "
+"остаются в ожидании."
+
+#: src/ui/pending_bar.rs
+#, rust-format
 msgid "{n} can't be deleted."
 msgid_plural "{n} can't be deleted."
 msgstr[0] "Нельзя удалить: {n}."
@@ -7363,6 +7523,10 @@ msgstr "Удалить {connection}? Это нельзя отменить."
 #: src/ui/picker.rs src/ui/row_panel.rs
 msgid "Duplicate"
 msgstr "Дублировать"
+
+#: src/ui/picker.rs
+msgid "Editable"
+msgstr "Можно изменять"
 
 #: src/ui/picker.rs
 msgid "Edit…"
@@ -10069,6 +10233,10 @@ msgid "schema"
 msgstr "схема"
 
 #: src/ui/sql_editor.rs
+msgid "A file is edited in its table, then saved."
+msgstr "Файл изменяют в его таблице, затем сохраняют."
+
+#: src/ui/sql_editor.rs
 msgid "A read-write run is still going in this tab. Cancel it or wait for it."
 msgstr "В этой вкладке ещё идёт запуск с записью. Отмените его или дождитесь."
 
@@ -10192,8 +10360,20 @@ msgid "{seconds} s"
 msgstr "{seconds} с"
 
 #: src/ui/sql_results.rs
+#, rust-format
+msgid ""
+"A Files connection's scripts only read, so {database} refused {statement}."
+msgstr ""
+"Скрипты подключения к файлам только читают, поэтому {database} отклонил "
+"{statement}."
+
+#: src/ui/sql_results.rs
 msgid "Allow writes in this tab"
 msgstr "Разрешить запись в этой вкладке"
+
+#: src/ui/sql_results.rs
+msgid "Change the rows in the file's table, then save them."
+msgstr "Измените строки в таблице файла, затем сохраните их."
 
 #: src/ui/sql_results.rs
 msgid "Committed"
@@ -10206,6 +10386,10 @@ msgid ""
 msgstr ""
 "Каждый запуск здесь выполняется в транзакции только для чтения, поэтому "
 "{database} отклонил {statement}."
+
+#: src/ui/sql_results.rs
+msgid "Files are edited in their tables"
+msgstr "Файлы изменяют в их таблицах"
 
 #: src/ui/sql_results.rs
 #, rust-format

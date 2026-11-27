@@ -27,6 +27,18 @@ pub const MAX_EDIT_BYTES: usize = 256 * 1024;
 pub enum Lock {
     /// The connection opens read-only.
     ReadOnly,
+    /// A Files connection's table that its connection never edits, though
+    /// its session may write: an Excel file's, a `.duckdb` file's, an
+    /// attached connection's.
+    Unedited(tabletist_db::Unedited),
+    /// A file's page read before a save that moved its rows: it takes no
+    /// edit until a page read after replaces it.
+    Moved,
+    /// A Files connection's file a save could not write back as it is: a
+    /// CSV whose rows could not be read one for one as DuckDB read them,
+    /// one with a column named `rowid`, a JSON file whose records do not
+    /// all have every key.
+    Unmatched,
     /// A view, a materialized view.
     NotATable,
     /// The row key, the columns' types and what is generated are not known
@@ -74,6 +86,9 @@ impl Lock {
         matches!(
             self,
             Self::ReadOnly
+                | Self::Unedited(_)
+                | Self::Unmatched
+                | Self::Moved
                 | Self::NotATable
                 | Self::StructureLoading
                 | Self::NoKey
@@ -83,6 +98,10 @@ impl Lock {
         )
     }
 }
+
+/// The copy a file's page is marked with once a save moved its rows (see
+/// [`Lock::Moved`]): none a session numbers.
+pub const MOVED: i64 = i64::MIN;
 
 /// How many rows one action marks for deletion, at most.
 pub const MAX_ROWS_DELETED: usize = 1_000;
@@ -163,12 +182,56 @@ impl<'a> Table<'a> {
 impl Table<'_> {
     /// The page's columns that make the row key, by their place. `None`
     /// when the table has no key, or the page does not hold all of it.
+    /// None for a file's page that says where each row is: a row is found
+    /// by its place ([`Table::found_by`]), which is no column of the page.
     pub fn key(&self) -> Option<Vec<usize>> {
+        if self.page.positions.is_some() {
+            return Some(Vec::new());
+        }
         self.structure?
             .row_key()?
             .iter()
             .map(|name| self.place(name))
             .collect()
+    }
+
+    /// What finds the page's row `row` for a save: the values of its key's
+    /// columns, or its place in its file. `None` where the page does not
+    /// hold them.
+    pub fn found_by(&self, row: usize, key: &[usize]) -> Option<Vec<(String, Value)>> {
+        // The place, and the copy of the file it is a place in: a save to
+        // another copy refuses it.
+        if let Some(positions) = &self.page.positions {
+            let place = *positions.rows.get(row)?;
+            return Some(vec![
+                (tabletist_db::FILE_POSITION.to_owned(), Value::Int(place)),
+                (
+                    tabletist_db::FILE_COPY.to_owned(),
+                    Value::Int(positions.copy),
+                ),
+            ]);
+        }
+        let values = self.page.rows.get(row)?;
+        key.iter()
+            .map(|&place| {
+                let name = self.page.columns.get(place)?.name.clone();
+                Some((name, values.get(place)?.clone()))
+            })
+            .collect()
+    }
+
+    /// Why a Files connection's table is not edited, where it is one: what
+    /// its connection says, or a file whose rows have no place.
+    fn file_lock(&self) -> Option<Lock> {
+        let structure = self.structure?;
+        if let Some(why) = structure.unedited {
+            return Some(Lock::Unedited(why));
+        }
+        match &self.page.positions {
+            Some(positions) if positions.copy == MOVED => Some(Lock::Moved),
+            Some(_) => None,
+            None => structure.file.is_some().then_some(Lock::Unmatched),
+        }
     }
 
     /// The one column of the page called `name`. Two of that name are none:
@@ -333,6 +396,9 @@ impl Table<'_> {
         if self.structure.is_none() {
             return Some(Lock::StructureLoading);
         }
+        if let Some(lock) = self.file_lock() {
+            return Some(lock);
+        }
         let Some(key) = self.key() else {
             return Some(Lock::NoKey);
         };
@@ -354,6 +420,9 @@ impl Table<'_> {
         }
         if self.structure.is_none() {
             return Some(Lock::StructureLoading);
+        }
+        if let Some(lock) = self.file_lock() {
+            return Some(lock);
         }
         if self.saving {
             return Some(Lock::Saving);
@@ -3029,15 +3098,8 @@ pub fn change_set(
     } else {
         Vec::new()
     };
-    // What finds the row whose values are `values`.
-    let key_of = |values: &Vec<Value>| -> Option<Vec<(String, Value)>> {
-        key.iter()
-            .map(|&place| {
-                let name = table.page.columns.get(place)?.name.clone();
-                Some((name, values.get(place)?.clone()))
-            })
-            .collect()
-    };
+    // What finds the page's row `row`.
+    let key_of = |row: usize| table.found_by(row, &key);
     let mut rows: Vec<RowChange> = Vec::new();
     // The map is ordered by row, then column, so a row's cells are together.
     for (&(row, col), pending) in changed {
@@ -3046,7 +3108,7 @@ pub fn change_set(
         if sent.rows.last() != Some(&row) {
             sent.rows.push(row);
             rows.push(RowChange {
-                key: key_of(values)?,
+                key: key_of(row)?,
                 set: Vec::new(),
             });
         }
@@ -3061,9 +3123,7 @@ pub fn change_set(
     // page's order.
     let mut deletes = Vec::new();
     for row in delete_order(object, table) {
-        deletes.push(RowDelete {
-            key: key_of(table.page.rows.get(row)?)?,
-        });
+        deletes.push(RowDelete { key: key_of(row)? });
         sent.deletes.push(row);
     }
     (!rows.is_empty() || !inserts.is_empty() || !deletes.is_empty()).then(|| {
@@ -4866,6 +4926,7 @@ mod tests {
 
     fn page(rows: Vec<Vec<Value>>) -> RowPage {
         RowPage {
+            positions: None,
             columns: vec![
                 meta("id", "INTEGER"),
                 meta("email", "TEXT"),

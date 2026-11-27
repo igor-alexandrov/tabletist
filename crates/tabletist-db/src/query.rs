@@ -120,4 +120,20 @@ pub struct RowPage {
     /// Whether rows are ordered by a key, so paging is stable.
     pub ordered_by_key: bool,
     pub elapsed: Duration,
+    /// Each row's place in its file, for a Files connection's table that
+    /// can be edited: what a save finds the row by, since a file has no
+    /// key. `None` for every other page.
+    pub positions: Option<Positions>,
+}
+
+/// Where each row of a page is in its file, in the copy of it the page
+/// was read from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Positions {
+    /// The copy the places are of (see [`crate::FILE_COPY`]): a save to
+    /// another refuses them, since the file was read again in between, or
+    /// a save numbered its rows again.
+    pub copy: i64,
+    /// Each row's place, from 0, in the page's order.
+    pub rows: Vec<i64>,
 }

@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-26 08:30-0500\n"
+"POT-Creation-Date: 2026-11-26 17:50-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -3608,6 +3608,28 @@ msgid "This connection opens read-only"
 msgstr ""
 
 #: src/ui/cell_editor.rs
+msgid "Excel files open read-only"
+msgstr ""
+
+#: src/ui/cell_editor.rs
+msgid ".duckdb files open read-only"
+msgstr ""
+
+#: src/ui/cell_editor.rs
+msgid "Attached connections open read-only"
+msgstr ""
+
+#: src/ui/cell_editor.rs
+#, rust-format
+msgid ""
+"{table} opens read-only: a save couldn't write its rows back as they are"
+msgstr ""
+
+#: src/ui/cell_editor.rs
+msgid "Rows moved in the file since this page was read. Reload to edit."
+msgstr ""
+
+#: src/ui/cell_editor.rs
 msgid "Views cannot be edited"
 msgstr ""
 
@@ -4010,6 +4032,11 @@ msgid "Attached connections open read-only here, as the files do."
 msgstr ""
 
 #: src/ui/connect_dialog/join.rs
+msgid ""
+"Attached connections open read-only here, even when the files are editable."
+msgstr ""
+
+#: src/ui/connect_dialog/join.rs
 msgid "None attached · optional"
 msgstr ""
 
@@ -4059,7 +4086,22 @@ msgid "Changes the fields below"
 msgstr ""
 
 #: src/ui/connect_dialog/mod.rs
-msgid "Files open read-only."
+msgid ""
+"Files open read-only. Turn off to edit: changes are kept until you save, and "
+"saving rewrites the whole file."
+msgstr ""
+
+#: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid ""
+"Editing is on. Changes are kept until you save; saving rewrites the whole "
+"file, so {file} ({size}) is written again in full."
+msgstr ""
+
+#: src/ui/connect_dialog/mod.rs
+msgid ""
+"Editing is on. Changes are kept until you save; saving rewrites the whole "
+"file."
 msgstr ""
 
 #: src/ui/connect_dialog/mod.rs
@@ -4568,6 +4610,16 @@ msgstr ""
 msgid "connect"
 msgstr ""
 
+#: src/ui/connect_dialog/terminal.rs
+#, rust-format
+msgid "changes wait for {key}, which rewrites the whole file ({file} {size})"
+msgstr ""
+
+#: src/ui/connect_dialog/terminal.rs
+#, rust-format
+msgid "changes wait for {key}, which rewrites the whole file"
+msgstr ""
+
 #: src/ui/connect_dialog/terminal.rs src/ui/ddl.rs src/ui/picker.rs
 #: src/ui/sql_editor.rs src/ui/start.rs src/ui/workspace.rs
 msgid "Read-only"
@@ -4575,6 +4627,14 @@ msgstr ""
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "Files open read-only"
+msgstr ""
+
+#: src/ui/connect_dialog/terminal.rs
+msgid "Turn off to edit; saving rewrites the whole file"
+msgstr ""
+
+#: src/ui/connect_dialog/terminal.rs
+msgid "Editing on"
 msgstr ""
 
 #: src/ui/connect_dialog/terminal.rs
@@ -7056,6 +7116,57 @@ msgstr ""
 
 #: src/ui/pending_bar.rs
 #, rust-format
+msgid ""
+"{file} changed on disk since you opened it. Reload to see the new version; "
+"your {n} change stays pending."
+msgid_plural ""
+"{file} changed on disk since you opened it. Reload to see the new version; "
+"your {n} changes stay pending."
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid ""
+"{file} couldn't be saved: its folder can't be written to. Your {n} change "
+"stays pending."
+msgid_plural ""
+"{file} couldn't be saved: its folder can't be written to. Your {n} changes "
+"stay pending."
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid ""
+"{file} couldn't be saved: the file itself is read-only. Your {n} change "
+"stays pending."
+msgid_plural ""
+"{file} couldn't be saved: the file itself is read-only. Your {n} changes "
+"stay pending."
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid ""
+"{file} was read again since you changed these rows. Reload to see it as it "
+"is now; your {n} change stays pending."
+msgid_plural ""
+"{file} was read again since you changed these rows. Reload to see it as it "
+"is now; your {n} changes stay pending."
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid "{file} couldn't be saved: {why}. Your {n} change stays pending."
+msgid_plural "{file} couldn't be saved: {why}. Your {n} changes stay pending."
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/pending_bar.rs
+#, rust-format
 msgid "written {what}"
 msgstr ""
 
@@ -7200,6 +7311,10 @@ msgstr ""
 #: src/ui/picker.rs
 #, rust-format
 msgid "Joins {name}"
+msgstr ""
+
+#: src/ui/picker.rs
+msgid "Editable"
 msgstr ""
 
 #: src/ui/picker.rs
@@ -9814,6 +9929,10 @@ msgid "A run that changes data is committed when every statement succeeds."
 msgstr ""
 
 #: src/ui/sql_editor.rs
+msgid "A file is edited in its table, then saved."
+msgstr ""
+
+#: src/ui/sql_editor.rs
 msgid "This connection opens read-only."
 msgstr ""
 
@@ -10008,6 +10127,20 @@ msgstr ""
 
 #: src/ui/sql_results.rs
 msgid "Nothing changed."
+msgstr ""
+
+#: src/ui/sql_results.rs
+msgid "Files are edited in their tables"
+msgstr ""
+
+#: src/ui/sql_results.rs
+#, rust-format
+msgid ""
+"A Files connection's scripts only read, so {database} refused {statement}."
+msgstr ""
+
+#: src/ui/sql_results.rs
+msgid "Change the rows in the file's table, then save them."
 msgstr ""
 
 #: src/ui/sql_results.rs

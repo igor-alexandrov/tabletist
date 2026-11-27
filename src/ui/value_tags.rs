@@ -245,6 +245,7 @@ mod tests {
     fn free_text_is_plain_however_its_values_repeat() {
         let structure = structure(&[("kind", None)]);
         let page = RowPage {
+            positions: None,
             columns: vec![meta("kind", ValueKind::Text)],
             rows: ["bug", "bug", "task", "task", "bug"]
                 .iter()

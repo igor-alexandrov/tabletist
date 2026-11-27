@@ -120,6 +120,7 @@ pub fn workspace() -> Workspace {
 /// A page shaped like the fixture's users table.
 pub fn page(rows: usize, has_more: bool) -> RowPage {
     RowPage {
+        positions: None,
         columns: vec![
             ColumnMeta {
                 name: "id".into(),
@@ -221,6 +222,7 @@ pub fn book_covers_page(rows: usize) -> RowPage {
         kind,
     };
     RowPage {
+        positions: None,
         columns: vec![
             meta("id", "INTEGER", ValueKind::Numeric),
             meta("publisher_id", "INTEGER", ValueKind::Numeric),
@@ -332,6 +334,7 @@ pub fn publishers_page() -> RowPage {
         kind,
     };
     RowPage {
+        positions: None,
         columns: vec![
             meta("id", "INTEGER", ValueKind::Numeric),
             meta("name", "TEXT", ValueKind::Text),
@@ -408,6 +411,7 @@ pub fn genres_page() -> RowPage {
         kind,
     };
     RowPage {
+        positions: None,
         columns: vec![
             meta("id", "INTEGER", ValueKind::Numeric),
             meta("parent_id", "INTEGER", ValueKind::Numeric),
@@ -485,6 +489,7 @@ pub fn editions_page() -> RowPage {
         ]
     };
     RowPage {
+        positions: None,
         columns: vec![
             meta("id", "INTEGER", ValueKind::Numeric),
             meta("isbn", "TEXT", ValueKind::Text),

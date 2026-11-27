@@ -1033,9 +1033,15 @@ async fn opened(
             let attaching = super::attach::attaching_quietly(agentable.attach.clone(), keyring)
                 .await
                 .map_err(|error| unavailable(&error.to_string()))?;
-            return Connection::connect_files(&agentable.spec, &attaching, host_keys, None)
-                .await
-                .map_err(|error| unavailable(&error.to_string()));
+            return Connection::connect_files(
+                &agentable.spec,
+                &attaching,
+                host_keys,
+                tabletist_db::Access::ReadOnly,
+                None,
+            )
+            .await
+            .map_err(|error| unavailable(&error.to_string()));
         }
         Driver::Sqlite | Driver::Postgres | Driver::MySql | Driver::BigQuery => {}
     }

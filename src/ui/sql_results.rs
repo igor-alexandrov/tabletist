@@ -1538,6 +1538,8 @@ fn messages(
 /// its card says and offers follows from it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Why {
+    /// A Files connection: its scripts read (see `NoWrites::Files`).
+    Files,
     /// The connection opens read-only. `unconfirmed`: and turning its box
     /// off would not let a tab write here either (see
     /// `NoWrites::Unconfirmed`).
@@ -1617,6 +1619,7 @@ fn blocked<'a>(workspace: &'a Workspace, sql: &'a SqlTab) -> Option<Blocked<'a>>
         kind(driver.dialect(), &statement.text) == StatementKind::Write
     };
     let why = match workspace.sql_writes() {
+        Err(NoWrites::Files) => Why::Files,
         Err(NoWrites::ReadOnlyConnection) => Why::Connection {
             unconfirmed: workspace.environment.confirms_writes(),
         },
@@ -1647,7 +1650,9 @@ impl Blocked<'_> {
             Why::Tab { unconfirmed: false } => Some(Offer::AllowWrites),
             // Neither the connection's box nor the tab's switch is a way
             // on here yet.
-            Why::Connection { unconfirmed: true } | Why::Tab { unconfirmed: true } => None,
+            Why::Files | Why::Connection { unconfirmed: true } | Why::Tab { unconfirmed: true } => {
+                None
+            }
             Why::TakenForRead | Why::SentBefore => self.again.then_some(Offer::RunAgain),
         }
     }
@@ -1696,6 +1701,18 @@ impl Blocked<'_> {
             format!("{why} {nothing}")
         };
         match self.why {
+            Why::Files => (
+                words.say(msgid("Files are edited in their tables")),
+                refused(
+                    msgid(
+                        "A Files connection's scripts only read, so {database} refused {statement}.",
+                    ),
+                    "",
+                ),
+                Some(words.say(msgid(
+                    "Change the rows in the file's table, then save them.",
+                ))),
+            ),
             Why::Connection { unconfirmed } => (
                 words.say(msgid("This connection opens read-only")),
                 refused(

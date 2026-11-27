@@ -575,6 +575,7 @@ impl Described {
             }
         }
         Structure {
+            unedited: None,
             columns,
             primary_key: self.primary_key,
             indexes,
@@ -1309,6 +1310,7 @@ impl Conn {
         let has_more = rows.len() > limit;
         rows.truncate(limit);
         RowPage {
+            positions: None,
             columns,
             rows,
             has_more,
@@ -3261,6 +3263,7 @@ pub(crate) fn named(number: u32, message: &str) -> Named {
         _ => (None, Vec::new()),
     };
     Named {
+        unsaved: None,
         number: Some(number),
         constraint,
         columns,

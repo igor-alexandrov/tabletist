@@ -2694,6 +2694,7 @@ mod tests {
             detail: None,
             hint: None,
             named: Box::new(crate::Named {
+                unsaved: None,
                 number,
                 constraint: None,
                 columns: Vec::new(),
