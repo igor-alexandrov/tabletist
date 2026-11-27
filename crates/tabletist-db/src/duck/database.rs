@@ -64,6 +64,7 @@ pub(super) struct Held {
     shared: Arc<Shared>,
     /// The save the session's attachment is of. 0 until the first call
     /// attaches it again, under the gate: the session opened without it.
+    /// 0 again where attaching it read-only again failed.
     seen: AtomicI64,
     /// The file as it was when the session last attached it.
     stamp: Mutex<Option<Stamp>>,
@@ -110,6 +111,17 @@ fn attach(connection: &duckdb::Connection, held: &Held, write: bool) -> Result<(
     Ok(())
 }
 
+/// Attaches `held` read-only again, as the file was after save `saves`.
+/// Where that fails the file is left detached, so the attachment is of no
+/// save: the next call tries again.
+fn read_only_again(connection: &duckdb::Connection, held: &Held, saves: i64) {
+    let seen = match attach(connection, held, false) {
+        Ok(()) => saves,
+        Err(_) => 0,
+    };
+    held.seen.store(seen, Ordering::SeqCst);
+}
+
 /// Holds each of `databases`, in their order (their own paths'), for reading
 /// while a call runs: no save writes one meanwhile. A file the session
 /// reaches by two names has its gate taken once: a second read of one lock
@@ -140,8 +152,8 @@ pub(super) fn reading<'a>(
         if seen == saves && was.is_some() && Stamp::of(&held.path).ok() != was {
             saves = held.shared.saves.fetch_add(1, Ordering::SeqCst) + 1;
         }
-        if seen != saves && attach(connection, held, false).is_ok() {
-            held.seen.store(saves, Ordering::SeqCst);
+        if seen != saves {
+            read_only_again(connection, held, saves);
         }
     }
     guards
@@ -304,11 +316,7 @@ pub(super) fn save(
         ));
     }
     // Read-only again whatever comes of it.
-    let back = || {
-        if attach(connection, held, false).is_ok() {
-            held.seen.store(saves, Ordering::SeqCst);
-        }
-    };
+    let back = || read_only_again(connection, held, saves);
     if let Err(error) = attach(connection, held, true) {
         back();
         let said = super::plain(&error);
@@ -352,9 +360,7 @@ pub(super) fn save(
     };
     // Written: every session, this one too, reads the file as it is now.
     let next = held.shared.saves.fetch_add(1, Ordering::SeqCst) + 1;
-    if attach(connection, held, false).is_ok() {
-        held.seen.store(next, Ordering::SeqCst);
-    }
+    read_only_again(connection, held, next);
     Ok(match outcome {
         WriteOutcome::Written {
             inserted,
@@ -507,6 +513,18 @@ fn changed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_that_cannot_be_attached_again_is_tried_again_on_the_next_call() {
+        let connection = duckdb::Connection::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let held = Held::new("shop", &dir.path().join("missing.duckdb"));
+        held.seen.store(3, Ordering::SeqCst);
+        // A save refused, and the file then not attached read-only either:
+        // not attached as of the save it was, so the next call attaches it.
+        read_only_again(&connection, &held, 3);
+        assert_eq!(held.generation(), 0);
+    }
 
     #[test]
     fn a_file_another_process_holds_is_told_from_one_this_app_holds() {
