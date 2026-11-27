@@ -293,6 +293,39 @@ async fn on_windows_a_file_another_session_has_open_is_not_written() {
     ));
 }
 
+// On Windows another session's hold keeps a save from opening the file.
+#[cfg(not(windows))]
+#[tokio::test]
+async fn a_row_another_session_saved_since_it_was_loaded_is_a_conflict() {
+    let (one, dir) = editable().await;
+    let other = open(dir.path(), Access::Writable).await;
+    let loaded = page(&one, "order_items").await;
+    let quantity = column(&loaded, "quantity")[1].clone();
+    let mut theirs = set("order_items");
+    theirs.rows.push(change(
+        by_id(2),
+        "quantity",
+        "INTEGER",
+        quantity.clone(),
+        "9",
+    ));
+    save(&other, &theirs).await.unwrap();
+    let mut mine = set("order_items");
+    mine.rows
+        .push(change(by_id(2), "quantity", "INTEGER", quantity, "5"));
+    let outcome = save(&one, &mine).await.unwrap();
+    let WriteOutcome::Conflicts(conflicts) = &outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(conflicts.len(), 1);
+    assert_eq!(conflicts[0].row, 0);
+    // The row as the file holds it, with the other session's value.
+    let server = conflicts[0].server.as_ref().unwrap();
+    assert!(server.contains(&Value::Int(9)));
+    let after = page(&one, "order_items").await;
+    assert_eq!(column(&after, "quantity")[1], Value::Int(9));
+}
+
 #[tokio::test]
 async fn a_failed_change_writes_nothing() {
     let (connection, dir) = editable().await;

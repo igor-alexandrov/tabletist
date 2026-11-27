@@ -393,6 +393,31 @@ fn changed(
         let params = duckdb::params_from_iter(sql.params.iter().map(to_duckdb));
         connection.execute(&sql.text, params).map_err(map_error)
     };
+    // A keyed row is read first, before anything is written, and compared
+    // with what its page loaded in each column the save changes: another
+    // session of this app may have saved it since. A row found by `rowid`
+    // is of the save its page was read after, which `save` checked.
+    if keyed {
+        let mut conflicts = Vec::new();
+        for (row, change) in changes.rows.iter().enumerate() {
+            stopped()?;
+            let select = dialect.select_row(object, &change.key, false);
+            let params = select.params.iter().map(to_duckdb).collect();
+            let (columns, mut found, _) = super::rows_of(connection, &select.text, params, 2)?;
+            let names: Vec<String> = columns.into_iter().map(|column| column.name).collect();
+            let server = found.pop();
+            let differs = match &server {
+                None => true,
+                Some(server) => crate::write::changed_since_loaded(change, &names, server)?,
+            };
+            if differs {
+                conflicts.push(Conflict { row, server });
+            }
+        }
+        if !conflicts.is_empty() {
+            return Ok(WriteOutcome::Conflicts(conflicts));
+        }
+    }
     for (insert, row) in changes.inserts.iter().enumerate() {
         stopped()?;
         let done = dialect.insert_row(object, row).and_then(|statement| {
