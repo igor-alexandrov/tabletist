@@ -564,7 +564,12 @@ read. Reload to edit."
 
 A save writes a hidden file first, `.orders.csv.tabletist-save` beside
 `orders.csv`. If a file of that name is already there, the save leaves it
-as it is and writes nothing, and says so.
+as it is and writes nothing, and says so. If another program replaces
+the hidden file while the save writes it, the save notices on macOS and
+Linux and writes nothing; on Windows no other program can remove or
+rename it until the save is about to put it in place. In the moment
+between that last look and the rename, a program that puts its own file
+at that name isn't caught.
 
 The SQL editor reads a Files connection, whether it opens read-only or
 not: a statement that would write is refused, and its card says to edit

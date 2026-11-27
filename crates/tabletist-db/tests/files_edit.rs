@@ -363,6 +363,8 @@ async fn a_file_made_read_only_is_not_written_over() {
         key: at(&orders, 0),
     });
     let error = save(&connection, &changes).await.unwrap_err();
+    // Puts the test's own file back so its folder can be removed: who may
+    // write it after doesn't matter.
     #[allow(clippy::permissions_set_readonly_false)]
     read_only.set_readonly(false);
     std::fs::set_permissions(&path, read_only).unwrap();

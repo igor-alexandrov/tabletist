@@ -871,7 +871,8 @@ static FAIL_AFTER_RENAME: Mutex<Option<PathBuf>> = Mutex::new(None);
 #[cfg(test)]
 static REPLACE_HIDDEN: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-/// Whether the hook's other program could take the hidden file away.
+/// Whether the hook's other program could take the hidden file away, or
+/// write it.
 #[cfg(test)]
 static REPLACED: Mutex<Option<bool>> = Mutex::new(None);
 
@@ -1048,9 +1049,14 @@ fn write_file(
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     // Windows lets no other program delete or rename it while this save
-    // holds it: shared to read and write (DuckDB writes it), not to delete.
+    // holds it, nor write it where this save writes it itself (a CSV):
+    // shared to read, and to write only where DuckDB writes it, never to
+    // delete.
     #[cfg(windows)]
-    std::os::windows::fs::OpenOptionsExt::share_mode(&mut options, 0x1 | 0x2);
+    std::os::windows::fs::OpenOptionsExt::share_mode(
+        &mut options,
+        if copy.csv.is_some() { 0x1 } else { 0x1 | 0x2 },
+    );
     // Windows answers "access is denied" where a folder has the name: what
     // is there is what says it is taken.
     let claimed = options.open(&temp).map_err(|error| {
@@ -1075,17 +1081,20 @@ fn write_file(
     };
     #[cfg(test)]
     if hooked(&REPLACE_HIDDEN, path) {
-        let replaced = std::fs::remove_file(&temp).is_ok();
-        let _ = std::fs::write(&temp, "another program's");
-        *REPLACED.lock().unwrap_or_else(PoisonError::into_inner) = Some(replaced);
+        let removed = std::fs::remove_file(&temp).is_ok();
+        let wrote = std::fs::write(&temp, "another program's").is_ok();
+        *REPLACED.lock().unwrap_or_else(PoisonError::into_inner) = Some(removed || wrote);
     }
     let checked = written.and_then(|()| {
         if !same_file(&claimed, &temp) {
             return Err(WriteError::Taken);
         }
-        // The file keeps its own permissions.
+        // The file keeps its own permissions, given to the file this save
+        // holds, whatever is at its name.
         if let Ok(meta) = std::fs::metadata(path) {
-            std::fs::set_permissions(&temp, meta.permissions()).map_err(WriteError::Io)?;
+            claimed
+                .set_permissions(meta.permissions())
+                .map_err(WriteError::Io)?;
         }
         // Once more, right before it is replaced: another program's change
         // while the hidden file was written is not written over. A rename
@@ -1097,6 +1106,8 @@ fn write_file(
     });
     let ours = same_file(&claimed, &temp);
     // On Windows this save's own hold keeps it from renaming the file too.
+    // From here to the rename, another program could take the name: std
+    // renames no file by its handle.
     drop(claimed);
     let renamed = checked.and_then(|stamp| {
         // Refused for permission, a rename is not the folder's doing alone
@@ -1113,8 +1124,8 @@ fn write_file(
 }
 
 /// Whether the file at `path` is `claimed`, the one this save made. On
-/// Windows it is: while this save holds it no other program can delete or
-/// rename it.
+/// Windows it is taken to be: while this save holds it no other program
+/// can delete or rename it.
 fn same_file(claimed: &std::fs::File, path: &Path) -> bool {
     #[cfg(unix)]
     {
