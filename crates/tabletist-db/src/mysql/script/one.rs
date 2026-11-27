@@ -229,6 +229,16 @@ pub(super) async fn run(
             return Ok(One::Again { lossy: false });
         }
         Err(error) if error.is_connection_lost() => return Err(error),
+        // A cancel that landed on InnoDB's question, which is asked only
+        // where the guard kept the statement from running: a stop, as on
+        // the open the other way.
+        Err(Error::Cancelled) => {
+            outcome.stopped = true;
+            stop.finish();
+            return end(conn, Ended::Unopened, kind)
+                .await
+                .map(|unfinished| One::Ran(Box::new(outcome), unfinished));
+        }
         fence => {
             let error = fence.err().unwrap_or_else(|| {
                 Error::query("the server ran the statement in a session it said was read-write")
@@ -879,6 +889,55 @@ mod tests {
         assert!(outcome.stopped, "{outcome:?}");
         assert!(outcome.results.is_empty(), "{outcome:?}");
         assert_eq!(settings(&conn).await, connected);
+    }
+
+    /// A cancel that lands on InnoDB's question, which the open asks where
+    /// the session's setting says read-write (see `Fence`), stops the run
+    /// as one on the open does, one statement or two: no results, and the
+    /// session as it connected. The proxy has the open's question answer 0,
+    /// and sends a sleep in place of InnoDB's.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cancel_on_innodbs_question_runs_no_statement() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let mut admin = admin(&url).await;
+        let full: &'static str = sent("SELECT 1").leak();
+        let reader: &'static str = full.replace("@@session.transaction_read_only", "0").leak();
+        let open = "START TRANSACTION READ ONLY; SET SESSION sql_select_limit = 11; \
+                    SELECT @@session.transaction_read_only LIMIT 1";
+        let open_reader =
+            "START TRANSACTION READ ONLY; SET SESSION sql_select_limit = 11; SELECT 0";
+        for (script, swapped, sleep) in [
+            (&["SELECT 1"][..], (full, reader), "SLEEP(53)"),
+            (
+                &["SELECT 1", "SELECT 2"][..],
+                (open, open_reader),
+                "SLEEP(54)",
+            ),
+        ] {
+            let slow: &'static str = format!("SELECT 1 FROM DUAL WHERE {sleep} = 0").leak();
+            let swaps = [swapped, (super::super::INNODB, slow)];
+            let (conn, _) =
+                super::super::super::tests::swapping_each(&url, Access::ReadOnly, &swaps).await;
+            if on_mariadb(&conn) && conn.conn.lock().await.server_version() < (11, 1, 0) {
+                return;
+            }
+            let conn = std::sync::Arc::new(conn);
+            let connected = settings(&conn).await;
+            let running = {
+                let conn = std::sync::Arc::clone(&conn);
+                tokio::spawn(async move { past_the_refusal(&conn, script, &StopFlag::new()).await })
+            };
+            runs_on_the_server(&mut admin, sleep).await;
+            super::super::super::cancel(&conn.opts, conn.id, &conn.server, &conn.spare)
+                .await
+                .unwrap();
+            let outcome = running.await.unwrap().unwrap();
+            assert!(outcome.stopped, "{sleep}: {outcome:?}");
+            assert!(outcome.results.is_empty(), "{sleep}: {outcome:?}");
+            assert_eq!(settings(&conn).await, connected, "{sleep}");
+        }
     }
 
     /// A cancel that lands on the statement stops it: the message stops
