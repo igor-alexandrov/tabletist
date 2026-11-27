@@ -467,6 +467,22 @@ async fn over(
 }
 
 #[tokio::test]
+async fn a_file_that_can_t_be_read_whole_still_shows_read_only() {
+    // A bad value far past the first page and DuckDB's sample.
+    let mut text = String::from("id,title\n");
+    for id in 1..=30_000 {
+        text.push_str(&format!("{id},Book {id}\n"));
+    }
+    text.push_str("not a number,Dune\n");
+    let (connection, _dir) = over(&[("books.csv", &text)], None).await;
+    let books = page(&connection, "books").await;
+    assert_eq!(books.rows.len(), 100);
+    assert_eq!(books.positions, None);
+    // And again: what it was found to be is kept.
+    assert_eq!(page(&connection, "books").await.positions, None);
+}
+
+#[tokio::test]
 async fn a_file_with_a_column_named_rowid_is_not_edited() {
     let (connection, _dir) = over(&[("ranks.csv", "rowid,name\n1,Dune\n0,Emma\n")], None).await;
     let ranks = page(&connection, "ranks").await;

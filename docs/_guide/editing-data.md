@@ -529,7 +529,9 @@ then takes the file's place:
   the lines DuckDB read, a file with a column of its own named `rowid`,
   or a JSON or NDJSON file whose objects at one place (the records, a
   nested object, the items of a list) do not all have the same keys: a
-  save would give each the missing ones as `null`.
+  save would give each the missing ones as `null`. So does a file that
+  can't be read whole, such as one with a bad value far past its first
+  page: its rows still show a page at a time, as with the box on.
 - Excel files always open read-only, and so do `.duckdb` files for now.
   Their table's header says so.
 - An attached connection's tables open read-only here, even when the

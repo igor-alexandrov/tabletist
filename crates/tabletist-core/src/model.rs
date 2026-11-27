@@ -2739,6 +2739,20 @@ impl ConnectionForm {
         })
     }
 
+    /// Makes the form one of `driver`. Files open read-only until their own
+    /// box is turned off: another type's choice is not theirs, nor theirs
+    /// another's, so the box goes back to its default between them.
+    pub fn retype(&mut self, driver: Driver) {
+        let files = |driver: Driver| match driver {
+            Driver::Files => true,
+            Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => false,
+        };
+        if files(self.driver) != files(driver) {
+            self.read_only = None;
+        }
+        self.driver = driver;
+    }
+
     /// Whether the connection is saved read-only: as set, else the
     /// environment's default, which for production is
     /// [`Self::production_read_only`]. Files open read-only until the box

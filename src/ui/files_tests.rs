@@ -573,6 +573,23 @@ fn another_type_s_box_left_off_does_not_make_files_editable() {
 }
 
 #[test]
+fn a_path_pasted_into_a_form_with_its_box_off_opens_read_only() {
+    let mut harness = Harness::new();
+    harness.app.apply(Action::NewConnection);
+    harness.settle();
+    form_mut(&mut harness).read_only = Some(false);
+    form_mut(&mut harness).url = "/data/bookshop-exports".into();
+    harness.app.apply(Action::ApplyUrl);
+    assert_eq!(form(&harness).driver, Driver::Files);
+    assert!(form(&harness).read_only());
+    // Nor does a Files box left off carry to the type a URL names.
+    form_mut(&mut harness).read_only = Some(false);
+    form_mut(&mut harness).url = "postgres://reader@db.bookshop.test/bookshop".into();
+    harness.app.apply(Action::ApplyUrl);
+    assert_eq!(form(&harness).read_only, None);
+}
+
+#[test]
 fn a_files_note_names_the_largest_file_a_save_writes_again() {
     let mut harness = new_files(Look::macos());
     form_mut(&mut harness).read_only = Some(false);

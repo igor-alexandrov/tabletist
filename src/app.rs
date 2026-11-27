@@ -3230,19 +3230,7 @@ impl App {
                     if form.driver != driver {
                         form.forget_test();
                     }
-                    // Files open read-only until their own box is turned
-                    // off: another type's choice is not theirs, nor theirs
-                    // another's.
-                    let files = |driver: Driver| match driver {
-                        Driver::Files => true,
-                        Driver::Postgres | Driver::MySql | Driver::Sqlite | Driver::BigQuery => {
-                            false
-                        }
-                    };
-                    if files(form.driver) != files(driver) {
-                        form.read_only = None;
-                    }
-                    form.driver = driver;
+                    form.retype(driver);
                     // A type changed again is asked about again.
                     form.retype_asked = false;
                     // A new Files connection lets agents read, until the
@@ -9662,7 +9650,7 @@ fn apply_url(form: &mut ConnectionForm) -> Result<(), String> {
         if form.name.trim().is_empty() {
             form.name = crate::model::file_name(&name.display().to_string());
         }
-        form.driver = Driver::Files;
+        form.retype(Driver::Files);
         match source {
             tabletist_db::files::Source::Folder(folder) => {
                 form.files_kind = crate::model::FilesKind::Folder;
@@ -9703,14 +9691,14 @@ fn apply_url(form: &mut ConnectionForm) -> Result<(), String> {
             if form.name.trim().is_empty() {
                 form.name = crate::model::file_name(&path);
             }
-            form.driver = Driver::Sqlite;
+            form.retype(Driver::Sqlite);
             form.sqlite_path = path;
         }
         Driver::BigQuery => {
             if form.name.trim().is_empty() {
                 form.name = spec.database.clone();
             }
-            form.driver = Driver::BigQuery;
+            form.retype(Driver::BigQuery);
             form.database = spec.database;
             form.bigquery_key = spec
                 .bigquery_key
@@ -9723,7 +9711,7 @@ fn apply_url(form: &mut ConnectionForm) -> Result<(), String> {
             if form.name.trim().is_empty() {
                 form.name = spec.summary();
             }
-            form.driver = spec.driver;
+            form.retype(spec.driver);
             form.host = spec.host;
             form.port = spec.port.to_string();
             form.user = spec.user;

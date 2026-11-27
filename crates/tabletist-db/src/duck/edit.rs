@@ -209,6 +209,29 @@ pub(super) fn load(
     let path = &file.found.path;
     // Before it is read: a change made while it is read is one since.
     let stamp = Stamp::of(path).map_err(|error| Error::Io(error.to_string()))?;
+    // A file read whole for its copy that can't be (a bad line past the
+    // first page, one too big for memory) is still read as before, a page
+    // at a time: it is not edited. A read given up on is no such file.
+    match copied(connection, file, reading, stamp) {
+        Err(Error::Cancelled) => Err(Error::Cancelled),
+        Err(_) => {
+            let copy = Dialect::DuckDb.qualified(&Copy::object(&file.found.name));
+            let _ = connection.execute_batch(&format!("DROP TABLE IF EXISTS {copy}"));
+            Ok(Loaded::Unmatched(stamp))
+        }
+        loaded => loaded,
+    }
+}
+
+/// [`load`]'s work, which may fail anywhere: the copy, its places, and
+/// what the save writes the file back with.
+fn copied(
+    connection: &duckdb::Connection,
+    file: &Opened,
+    reading: &Reading,
+    stamp: Stamp,
+) -> Result<Loaded> {
+    let path = &file.found.path;
     let copy = Dialect::DuckDb.qualified(&Copy::object(&file.found.name));
     let view = Dialect::DuckDb.qualified(&ObjectRef {
         schema: super::MAIN.to_owned(),
@@ -848,6 +871,10 @@ static FAIL_AFTER_RENAME: Mutex<Option<PathBuf>> = Mutex::new(None);
 #[cfg(test)]
 static REPLACE_HIDDEN: Mutex<Option<PathBuf>> = Mutex::new(None);
 
+/// Whether the hook's other program could take the hidden file away.
+#[cfg(test)]
+static REPLACED: Mutex<Option<bool>> = Mutex::new(None);
+
 /// Whether a test set `hook` for the file at `path`.
 #[cfg(test)]
 fn hooked(hook: &Mutex<Option<PathBuf>>, path: &Path) -> bool {
@@ -1020,6 +1047,10 @@ fn write_file(
     // may be one others can't read.
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    // Windows lets no other program delete or rename it while this save
+    // holds it: shared to read and write (DuckDB writes it), not to delete.
+    #[cfg(windows)]
+    std::os::windows::fs::OpenOptionsExt::share_mode(&mut options, 0x1 | 0x2);
     // Windows answers "access is denied" where a folder has the name: what
     // is there is what says it is taken.
     let claimed = options.open(&temp).map_err(|error| {
@@ -1044,10 +1075,11 @@ fn write_file(
     };
     #[cfg(test)]
     if hooked(&REPLACE_HIDDEN, path) {
-        let _ = std::fs::remove_file(&temp);
+        let replaced = std::fs::remove_file(&temp).is_ok();
         let _ = std::fs::write(&temp, "another program's");
+        *REPLACED.lock().unwrap_or_else(PoisonError::into_inner) = Some(replaced);
     }
-    let renamed = written.and_then(|()| {
+    let checked = written.and_then(|()| {
         if !same_file(&claimed, &temp) {
             return Err(WriteError::Taken);
         }
@@ -1061,7 +1093,12 @@ fn write_file(
         if Stamp::of(path).ok() != Some(copy.stamp) {
             return Err(WriteError::Changed);
         }
-        let stamp = Stamp::of(&temp).map_err(WriteError::Io)?;
+        Stamp::of(&temp).map_err(WriteError::Io)
+    });
+    let ours = same_file(&claimed, &temp);
+    // On Windows this save's own hold keeps it from renaming the file too.
+    drop(claimed);
+    let renamed = checked.and_then(|stamp| {
         // Refused for permission, a rename is not the folder's doing alone
         // (a folder with its sticky bit, a file another user owns): the
         // system's words say which.
@@ -1069,14 +1106,15 @@ fn write_file(
         settle(path);
         Ok(stamp)
     });
-    if renamed.is_err() && same_file(&claimed, &temp) {
+    if renamed.is_err() && ours {
         let _ = std::fs::remove_file(&temp);
     }
     renamed
 }
 
-/// Whether the file at `path` is `claimed`, the one this save made. Where
-/// the system names no file by its number (Windows), it is taken to be.
+/// Whether the file at `path` is `claimed`, the one this save made. On
+/// Windows it is: while this save holds it no other program can delete or
+/// rename it.
 fn same_file(claimed: &std::fs::File, path: &Path) -> bool {
     #[cfg(unix)]
     {
@@ -1282,6 +1320,7 @@ mod tests {
         assert!(matches!(copy_failed(said), WriteError::Io(error) if error.to_string() == said));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_hidden_file_another_program_replaced_is_neither_put_in_place_nor_removed() {
         use crate::adapter::Adapter;
@@ -1327,6 +1366,49 @@ mod tests {
             std::fs::read_to_string(&hidden).unwrap(),
             "another program's"
         );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn on_windows_no_other_program_takes_the_hidden_file_mid_save() {
+        use crate::adapter::Adapter;
+        let dir = tempfile::tempdir().unwrap();
+        crate::fixtures::write_bookshop_files(dir.path()).unwrap();
+        let path = dir.path().join("orders.csv");
+        let source = crate::files::Source::Folder(dir.path().to_owned());
+        let conn = super::super::Conn::open(
+            &source,
+            &Reading::default(),
+            false,
+            Vec::new(),
+            None,
+            crate::Access::Writable,
+        )
+        .await
+        .unwrap();
+        let query = RowQuery::new(ObjectRef::new("main", "orders"), 100);
+        let page = conn.fetch_rows(&query).await.unwrap();
+        let copy = page.positions.as_ref().unwrap().copy;
+        let changes = ChangeSet {
+            object: query.object.clone(),
+            inserts: Vec::new(),
+            rows: Vec::new(),
+            deletes: vec![crate::RowDelete {
+                key: vec![
+                    (POSITION.to_owned(), Value::Int(0)),
+                    (FILE_COPY.to_owned(), Value::Int(copy)),
+                ],
+            }],
+        };
+        *REPLACE_HIDDEN.lock().unwrap() = Some(path.clone());
+        let outcome = conn.write(&changes, &StopFlag::new()).await;
+        *REPLACE_HIDDEN.lock().unwrap() = None;
+        assert_eq!(*REPLACED.lock().unwrap(), Some(false));
+        assert!(
+            matches!(outcome, Ok(WriteOutcome::Written { .. })),
+            "{outcome:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 12);
     }
 
     #[tokio::test]
