@@ -463,6 +463,12 @@ Tabletist: the session itself is read-only on PostgreSQL and MySQL, and a
 SQLite file is opened read-only. A BigQuery connection is read-only with
 the box off too: see [BigQuery](#bigquery).
 
+An Amazon Aurora MySQL reader whose cluster does not forward writes keeps
+the session read-write whatever it is told, and refuses every write
+itself. There the SQL editor's Read-only runs and agents' reads go ahead
+on the reader's word (`innodb_read_only`), and a run fails if a failover
+makes the instance the writer while it runs.
+
 The box is ticked by default for production, and not for the other
 environments. Turn it off to edit. A change applies from the next time
 you connect. Where a new production connection's box starts is

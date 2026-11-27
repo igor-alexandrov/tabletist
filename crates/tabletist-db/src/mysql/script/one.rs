@@ -14,12 +14,12 @@ use mysql_async::prelude::Queryable;
 use mysql_async::{QueryResult, TextProtocol};
 
 use super::super::{
-    LONGEST, UNKNOWN_SYSTEM_VARIABLE, WRONG_ARGUMENTS, column_metas, from_row, hex_literal, lossy,
+    LONGEST, UNKNOWN_SYSTEM_VARIABLE, WRONG_ARGUMENTS, column_metas, hex_literal, lossy,
     query_error, status, text_values,
 };
 use super::{
-    Ended, SessionKind, Standing, Unfinished, closing, counts_rows, driver_parameter, end, opened,
-    opening, parameter, settle, stands,
+    Ended, Fence, SessionKind, Standing, Unfinished, closing, counts_rows, driver_parameter, end,
+    opened, opening, parameter, said, settle, stands,
 };
 use crate::script::{cannot_start, cleanup_failed, statement_failed};
 use crate::{
@@ -63,9 +63,12 @@ struct Message {
 /// and run, and the close's check and rollback (`closing`).
 ///
 /// The guard sets the variable to the statement's text where the session
-/// says it is read-only, and to NULL otherwise, which the `PREPARE` then
-/// refuses: the server checks the session before the statement runs, as
-/// the open's answer is checked before a statement runs the other way.
+/// says it is read-only, or where InnoDB is read-only on the whole server
+/// (nothing of the statement's has run since the fence, so that is a
+/// server that left the session's setting read-write: see `Fence`), and to
+/// NULL otherwise, which the `PREPARE` then refuses: the server checks the
+/// session before the statement runs, as the open's answer is checked
+/// before a statement runs the other way.
 /// The text goes as hex (see `hex_literal`), so nothing in it can end the
 /// literal early or reach the message: the server's `PREPARE` reads it as
 /// one statement, and refuses a text of two, as the binary protocol's
@@ -76,7 +79,7 @@ fn message(kind: SessionKind, limit: u32, read_only: &str, text: &str) -> Messag
     let asked = steps.len() - 1;
     let guard = steps.len();
     steps.push(format!(
-        "SET @{RUN} = IF(@@session.{read_only} = 1, {}, NULL)",
+        "SET @{RUN} = IF(@@session.{read_only} = 1 OR @@global.innodb_read_only = 1, {}, NULL)",
         hex_literal("_utf8mb4", text.as_bytes())
     ));
     steps.push(format!("PREPARE {RUN} FROM @{RUN}"));
@@ -212,23 +215,24 @@ pub(super) async fn run(
     let read_only = std::mem::take(&mut answers[message.asked].rows)
         .into_iter()
         .next()
-        .map(from_row)
+        .map(said)
         .transpose();
-    if let Err(error) =
-        read_only.and_then(|read_only| opened(read_only, answers[message.guard].status))
-    {
-        stop.finish();
-        let ended = Ended::Broken(cannot_start(ScriptMode::ReadOnly, &error));
-        return end(conn, ended, kind)
-            .await
-            .map(|unfinished| One::Ran(Box::new(outcome), unfinished));
-    }
+    let fence = match read_only.and_then(|said| opened(said, answers[message.guard].status)) {
+        Ok(fence) => fence,
+        Err(error) => {
+            stop.finish();
+            let ended = Ended::Broken(cannot_start(ScriptMode::ReadOnly, &error));
+            return end(conn, ended, kind)
+                .await
+                .map(|unfinished| One::Ran(Box::new(outcome), unfinished));
+        }
+    };
     // Where the close's check answered, its answers are the message's
     // last three, however many the statement gave.
     let ended = if complete {
-        closed(&answers[count - 3..])
+        closed(&answers[count - 3..], fence)
     } else {
-        Ended::Unconfirmed
+        Ended::Unconfirmed(fence)
     };
     let result = if count <= message.ran {
         // The prepare or the run failed.
@@ -254,7 +258,7 @@ pub(super) async fn run(
             Some(result) => result,
             // Its text lost digits: it runs again the other way, once the
             // run ended cleanly and unless the run is stopped.
-            None if ended == Ended::Unconfirmed && complete && !stop.is_stopped() => {
+            None if ended == Ended::Unconfirmed(fence) && complete && !stop.is_stopped() => {
                 return Ok(One::Again { lossy: true });
             }
             None => StatementOutcome::Cancelled,
@@ -270,27 +274,28 @@ pub(super) async fn run(
     let unfinished = if complete {
         settle(conn, ended, Some(Ok(())), kind).await?
     } else {
-        end(conn, Ended::Unconfirmed, kind).await?
+        end(conn, Ended::Unconfirmed(fence), kind).await?
     };
     Ok(One::Ran(Box::new(outcome), unfinished))
 }
 
 /// Where the session stands, from the close's three answers (see
-/// `confirm`): `DO 0`'s status, the read-only setting, the rollback.
-fn closed(answers: &[Heard]) -> Ended {
+/// `confirm`): `DO 0`'s status, the read-only settings, of which `fence`
+/// says which to read, the rollback.
+fn closed(answers: &[Heard], fence: Fence) -> Ended {
     let standing = match answers {
         [found, asked, _] => asked
             .rows
             .first()
             .cloned()
-            .map(from_row)
+            .map(said)
             .transpose()
-            .and_then(|read_only| stands(read_only, found.status)),
+            .and_then(|said| stands(said, fence, found.status)),
         _ => Err(missing()),
     };
     match standing {
         Ok(Standing::Left) => Ended::Left,
-        Ok(Standing::Inside | Standing::Outside) => Ended::Unconfirmed,
+        Ok(Standing::Inside | Standing::Outside) => Ended::Unconfirmed(fence),
         Err(error) => Ended::Broken(cleanup_failed(ScriptMode::ReadOnly, &error)),
     }
 }
@@ -411,11 +416,12 @@ mod tests {
         assert_eq!(
             sent("SELECT 'é'"),
             "START TRANSACTION READ ONLY; SET SESSION sql_select_limit = 11; \
-             SELECT @@session.transaction_read_only LIMIT 1; \
-             SET @tabletist_run = IF(@@session.transaction_read_only = 1, \
+             SELECT @@session.transaction_read_only, @@global.innodb_read_only LIMIT 1; \
+             SET @tabletist_run = IF(@@session.transaction_read_only = 1 \
+             OR @@global.innodb_read_only = 1, \
              _utf8mb4 X'53454c4543542027c3a927', NULL); \
              PREPARE tabletist_run FROM @tabletist_run; EXECUTE tabletist_run; \
-             DO 0; SELECT @@session.transaction_read_only LIMIT 1; \
+             DO 0; SELECT @@session.transaction_read_only, @@global.innodb_read_only LIMIT 1; \
              ROLLBACK AND NO CHAIN NO RELEASE"
         );
         // A writable session's fence comes first; MariaDB before 11.1 is
@@ -428,12 +434,11 @@ mod tests {
         assert_eq!(message.steps[0], "SET SESSION TRANSACTION READ ONLY");
         assert_eq!(
             message.steps[message.asked],
-            "SELECT @@session.tx_read_only LIMIT 1"
+            "SELECT @@session.tx_read_only, @@global.innodb_read_only LIMIT 1"
         );
-        assert!(
-            message.steps[message.guard]
-                .starts_with("SET @tabletist_run = IF(@@session.tx_read_only = 1, ")
-        );
+        assert!(message.steps[message.guard].starts_with(
+            "SET @tabletist_run = IF(@@session.tx_read_only = 1 OR @@global.innodb_read_only = 1, "
+        ));
         assert_eq!(message.steps[message.ran], "EXECUTE tabletist_run");
         assert_eq!(message.steps.len(), message.ran + 4);
     }
@@ -732,6 +737,39 @@ mod tests {
         assert!(stop.is_finishing());
     }
 
+    /// An Amazon Aurora MySQL reader in a cluster that does not forward
+    /// writes leaves the session's setting read-write whatever the fence
+    /// says, and is read-only by InnoDB (see `Fence`). The proxy swaps the
+    /// message for one in which the server answers as that reader does:
+    /// the guard lets the statement run, the close's check reads InnoDB's
+    /// setting, and the run ends cleanly.
+    #[tokio::test]
+    async fn a_reader_that_ignores_the_fence_runs_the_statement() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let full: &'static str = sent("SELECT 7").leak();
+        let reader = full
+            .replace("@@session.transaction_read_only", "0")
+            .replace("@@global.innodb_read_only", "1");
+        let (conn, _) = swapping_session(&url, Access::ReadOnly, (full, reader.leak())).await;
+        if on_mariadb(&conn) && conn.conn.lock().await.server_version() < (11, 1, 0) {
+            return;
+        }
+        let connected = settings(&conn).await;
+        let outcome = past_the_refusal(&conn, &["SELECT 7"], &StopFlag::new())
+            .await
+            .unwrap();
+        let [result] = outcome.results.as_slice() else {
+            panic!("{outcome:?}");
+        };
+        let StatementOutcome::Rows { rows, .. } = &result.outcome else {
+            panic!("{result:?}");
+        };
+        assert_eq!(rows, &[vec![Value::Int(7)]]);
+        assert_eq!(settings(&conn).await, connected);
+    }
+
     /// An open in the message that fails, or whose answer does not say the
     /// session is inside a read-only transaction, fails the run, as the
     /// open the other way does, and the close leaves the session as it
@@ -761,8 +799,8 @@ mod tests {
             ),
             (
                 full.replacen(
-                    "SELECT @@session.transaction_read_only LIMIT 1",
-                    "SELECT 0",
+                    "SELECT @@session.transaction_read_only, @@global.innodb_read_only LIMIT 1",
+                    "SELECT 0, 0",
                     1,
                 ),
                 "the server did not say that the session is read-only",
@@ -797,7 +835,7 @@ mod tests {
         let mut admin = admin(&url).await;
         let full: &'static str = sent("SELECT 1").leak();
         let slow = full.replacen(
-            "SELECT @@session.transaction_read_only LIMIT 1",
+            "SELECT @@session.transaction_read_only, @@global.innodb_read_only LIMIT 1",
             "SELECT 1 FROM DUAL WHERE SLEEP(38) = 0",
             1,
         );

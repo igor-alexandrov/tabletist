@@ -199,7 +199,7 @@ async fn read_only(
     let ended = match open(conn, limit, kind, sent).await {
         // A lost session ends the run here: nothing to close. The views'
         // question failing is the statement's error, in an open session.
-        Ok(candidates) => {
+        Ok((fence, candidates)) => {
             let checked = match candidates {
                 Ok(candidates) => refused(conn, texts, &candidates, hiding).await?,
                 Err(error) => Err(error),
@@ -211,13 +211,14 @@ async fn read_only(
                         elapsed: Duration::ZERO,
                         outcome: statement_failed(error, None)?,
                     });
-                    Ended::Unconfirmed
+                    Ended::Unconfirmed(fence)
                 }
                 Ok(columns) => {
                     masked = columns;
                     let params = sent.map(|sent| sent.params);
                     let limit = limit as usize;
-                    statements(conn, texts, limit, names, stop, params, &mut outcome).await?
+                    let checks = Checks { names, fence };
+                    statements(conn, texts, limit, checks, stop, params, &mut outcome).await?
                 }
             }
         }
@@ -290,12 +291,69 @@ enum Standing {
     Left,
 }
 
+/// What the read-only question (`question`) hears: the session's own
+/// setting, and InnoDB's on the whole server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Said {
+    /// `@@session.transaction_read_only`, or its older name.
+    session: i64,
+    /// `@@global.innodb_read_only`, which only the server's start sets.
+    innodb: i64,
+}
+
+/// What a run's checks read to know that its session is read-only, as the
+/// open found it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fence {
+    /// The session's own setting, which the fence or the connect-time
+    /// settings made read-only: on every server but the ones below.
+    Session,
+    /// InnoDB's, where the server left the session's setting read-write
+    /// although it was told otherwise, and InnoDB is read-only on the
+    /// whole server: an Amazon Aurora MySQL reader in a cluster that does
+    /// not forward writes. Only a cluster that does lets a session change
+    /// its setting, and there the fence holds, so a run of such a cluster
+    /// is `Session`. The reader refuses every write and every DDL itself.
+    /// A failover makes it the writer, and InnoDB then says read-write:
+    /// the run fails as one that left read-only.
+    Server,
+}
+
+impl Fence {
+    /// The fence `said` shows: `Server` only where the session's setting is
+    /// read-write and InnoDB's is read-only.
+    fn of(said: Said) -> Self {
+        if said.session == 0 && said.innodb != 0 {
+            Self::Server
+        } else {
+            Self::Session
+        }
+    }
+
+    /// The setting of `said` that says whether the session is read-only.
+    fn read_only(self, said: Said) -> i64 {
+        match self {
+            Self::Session => said.session,
+            Self::Server => said.innodb,
+        }
+    }
+}
+
+/// What a run's checks ask the server and read of its answer: the
+/// session's read-only setting under `names` (the server's first), and the
+/// `fence` the open found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Checks {
+    names: [&'static str; 2],
+    fence: Fence,
+}
+
 /// What a run knows of its session once no more statements run.
 #[derive(Debug, PartialEq)]
 enum Ended {
     /// Nothing the run saw says the session left read-only. The close asks
-    /// the server before it trusts this.
-    Unconfirmed,
+    /// the server before it trusts this, reading what the fence says.
+    Unconfirmed(Fence),
     /// A cancel landed on the opening queries: no statement of the script
     /// ran, so there is nothing to confirm. On a writable session the
     /// cancel may have landed before the fence, where the session is
@@ -362,7 +420,8 @@ fn started(status: StatusFlags) -> Result<()> {
 /// views may call a function an agent may not call (`super::views`), so
 /// the limit holds that question too: `Ok(Ok)` holds those views, none for
 /// a script's run, and `Ok(Err)` the question's own error, in a session
-/// that is open all the same.
+/// that is open all the same. Both come with what the run's checks read
+/// (`Fence`).
 ///
 /// The steps go as one message, one round trip (`opening`). A failed step
 /// stops the rest; where a setting the message names is unknown to the
@@ -372,7 +431,10 @@ async fn open(
     limit: u32,
     kind: SessionKind,
     sent: Option<Sent<'_>>,
-) -> Result<std::result::Result<Vec<super::views::Candidate>, Error>> {
+) -> Result<(
+    Fence,
+    std::result::Result<Vec<super::views::Candidate>, Error>,
+)> {
     let names = kind.read_only_names(conn.server_version());
     let [own_limit, other_limit] = match sent {
         Some(sent) => kind.time_limits(sent.timeout_ms()).map(Some),
@@ -393,11 +455,12 @@ async fn open(
     let time_step = at(own_limit.as_deref());
     if step == steps.len() {
         let last = &answers[step - 1];
-        let read_only = last.rows.first().cloned().map(from_row).transpose()?;
-        opened(read_only, last.status)?;
-        return Ok(views_step.map_or(Ok(Vec::new()), |at| {
+        let said = last.rows.first().cloned().map(said).transpose()?;
+        let fence = opened(said, last.status)?;
+        let views = views_step.map_or(Ok(Vec::new()), |at| {
             super::views::listed(std::mem::take(&mut answers[at].rows))
-        }));
+        });
+        return Ok((fence, views));
     }
     let failure = failure.ok_or_else(|| Error::query("the server did not answer the open"))?;
     let unknown = matches!(&failure, mysql_async::Error::Server(error)
@@ -428,9 +491,9 @@ async fn open(
     } else {
         names
     };
-    let read_only = read_only_setting(conn, asked).await?;
-    opened(read_only, status(conn))?;
-    Ok(views_answer)
+    let said = read_only_setting(conn, asked).await?;
+    let fence = opened(said, status(conn))?;
+    Ok((fence, views_answer))
 }
 
 /// Which of the open's steps failed, and so what the open does next.
@@ -514,11 +577,14 @@ fn opening(
 
 /// Whether the open's last answer says what it must: the server marks the
 /// session as inside a transaction, and that one as read-only (`started`),
-/// and the session's own setting is not read-write.
-fn opened(read_only: Option<i64>, status: StatusFlags) -> Result<()> {
+/// and the session's own setting is not read-write, or, where the server
+/// left it read-write, InnoDB is read-only (see `Fence`). With the fence
+/// the run's checks then read.
+fn opened(said: Option<Said>, status: StatusFlags) -> Result<Fence> {
     started(status)?;
-    match stands(read_only, status)? {
-        Standing::Inside => Ok(()),
+    let fence = said.map_or(Fence::Session, Fence::of);
+    match stands(said, fence, status)? {
+        Standing::Inside => Ok(fence),
         Standing::Outside | Standing::Left => Err(Error::query(
             "the server did not say that the session is read-only",
         )),
@@ -598,7 +664,7 @@ fn time_limits(ms: u32) -> [String; 2] {
 
 /// Runs the statements in order, up to the first that fails or is
 /// stopped, and says what that showed of the session. `Err` is a lost
-/// session. `names` are the read-only setting's, the server's first.
+/// session. `checks` say what the check before a statement reads.
 /// `params` are an agent's values for its one statement: a script has
 /// none.
 ///
@@ -612,7 +678,7 @@ async fn statements(
     conn: &mut mysql_async::Conn,
     texts: &[String],
     limit: usize,
-    names: [&str; 2],
+    checks: Checks,
     stop: &StopFlag,
     params: Option<&[Param]>,
     outcome: &mut ScriptOutcome,
@@ -623,7 +689,7 @@ async fn statements(
         } else if index == 0 {
             Ok(Standing::Inside)
         } else {
-            ready(conn, names).await
+            ready(conn, checks).await
         };
         match checked {
             Ok(Standing::Left) => return Ok(Ended::Left),
@@ -637,7 +703,7 @@ async fn statements(
                     elapsed: Duration::ZERO,
                     outcome: StatementOutcome::Cancelled,
                 });
-                return Ok(Ended::Unconfirmed);
+                return Ok(Ended::Unconfirmed(checks.fence));
             }
             Err(error) if error.is_connection_lost() => return Err(error),
             // Not known to be read-only: nothing more runs.
@@ -662,7 +728,7 @@ async fn statements(
             break;
         }
     }
-    Ok(Ended::Unconfirmed)
+    Ok(Ended::Unconfirmed(checks.fence))
 }
 
 /// The check before every statement: where the session stands, back
@@ -678,8 +744,8 @@ async fn statements(
 ///
 /// `Err` is a cancel that landed on the check, a lost session, or a check
 /// that could not be made.
-async fn ready(conn: &mut mysql_async::Conn, names: [&str; 2]) -> Result<Standing> {
-    match standing(conn, names).await? {
+async fn ready(conn: &mut mysql_async::Conn, checks: Checks) -> Result<Standing> {
+    match standing(conn, checks).await? {
         Standing::Outside => {
             begin(conn).await?;
             Ok(Standing::Inside)
@@ -688,30 +754,30 @@ async fn ready(conn: &mut mysql_async::Conn, names: [&str; 2]) -> Result<Standin
     }
 }
 
-/// Asks the server where the session stands: its read-only setting, under
-/// `names` (the server's first), and the transaction status that comes
-/// with the answer.
-async fn standing(conn: &mut mysql_async::Conn, names: [&str; 2]) -> Result<Standing> {
-    let read_only = read_only_setting(conn, names).await?;
-    stands(read_only, status(conn))
+/// Asks the server where the session stands: the read-only setting
+/// `checks` reads, and the transaction status that comes with the answer.
+async fn standing(conn: &mut mysql_async::Conn, checks: Checks) -> Result<Standing> {
+    let said = read_only_setting(conn, checks.names).await?;
+    stands(said, checks.fence, status(conn))
 }
 
-/// The session's read-only setting, asked for under `name`, or under
-/// `older` when the server does not know `name`.
+/// The read-only settings (see `question`), the session's asked for under
+/// `name`, or under `older` when the server does not know `name`.
 async fn read_only_setting(
     conn: &mut mysql_async::Conn,
     [name, older]: [&str; 2],
-) -> Result<Option<i64>> {
+) -> Result<Option<Said>> {
     let row = match setting(conn, name).await {
         Err(mysql_async::Error::Server(error)) if error.code == UNKNOWN_SYSTEM_VARIABLE => {
             setting(conn, older).await
         }
         answer => answer,
     };
-    row.map_err(query_error)?.map(from_row).transpose()
+    row.map_err(query_error)?.map(said).transpose()
 }
 
-/// A session setting's value (see `question`).
+/// The read-only settings' values, the session's under `name` (see
+/// `question`).
 async fn setting(
     conn: &mut mysql_async::Conn,
     name: &str,
@@ -719,24 +785,30 @@ async fn setting(
     conn.query_first(question(name)).await
 }
 
-/// The question for a session setting's value. With a `LIMIT` of its own:
-/// a script can set `sql_select_limit` to 0, and the answer must still
-/// come.
+/// The question whether the session is read-only: its own setting, under
+/// `name`, and InnoDB's (see `Fence`). With a `LIMIT` of its own: a script
+/// can set `sql_select_limit` to 0, and the answer must still come.
 fn question(name: &str) -> String {
-    format!("SELECT @@session.{name} LIMIT 1")
+    format!("SELECT @@session.{name}, @@global.innodb_read_only LIMIT 1")
 }
 
-/// Where a session stands, from its read-only setting and the server's
-/// status. Only an explicit 0 says the session is read-write. A
+/// The answer to `question`.
+fn said(row: mysql_async::Row) -> Result<Said> {
+    let (session, innodb) = from_row(row)?;
+    Ok(Said { session, innodb })
+}
+
+/// Where a session stands, from the read-only setting `fence` names and the
+/// server's status. Only an explicit 0 says the session is read-write. A
 /// transaction is the script's kind only when the server marks it
 /// read-only, as it marked the script's own (`begin`).
-fn stands(read_only: Option<i64>, status: StatusFlags) -> Result<Standing> {
-    let Some(read_only) = read_only else {
+fn stands(said: Option<Said>, fence: Fence, status: StatusFlags) -> Result<Standing> {
+    let Some(said) = said else {
         return Err(Error::query(
             "the server did not say whether the session is read-only",
         ));
     };
-    Ok(if read_only == 0 {
+    Ok(if fence.read_only(said) == 0 {
         Standing::Left
     } else if !status.contains(StatusFlags::SERVER_STATUS_IN_TRANS) {
         Standing::Outside
@@ -760,7 +832,10 @@ fn stands(read_only: Option<i64>, status: StatusFlags) -> Result<Standing> {
 /// to the caller (`Unfinished`). Otherwise they run here, before the error.
 async fn end(conn: &mut mysql_async::Conn, ended: Ended, kind: SessionKind) -> Result<Unfinished> {
     let (ended, rolled_back) = match ended {
-        Ended::Unconfirmed => confirm(conn, kind.read_only_names(conn.server_version())).await,
+        Ended::Unconfirmed(fence) => {
+            let names = kind.read_only_names(conn.server_version());
+            confirm(conn, Checks { names, fence }).await
+        }
         known => (known, None),
     };
     settle(conn, ended, rolled_back, kind).await
@@ -783,12 +858,12 @@ async fn settle(
         None => retry_cancelled!(execute(conn, ROLLBACK)),
     };
     let error = match (ended, rolled_back) {
-        (Ended::Unconfirmed | Ended::Unopened, Ok(())) => {
+        (Ended::Unconfirmed(_) | Ended::Unopened, Ok(())) => {
             return Ok(Unfinished {
                 access: kind.access,
             });
         }
-        (Ended::Unconfirmed | Ended::Unopened, Err(error)) => {
+        (Ended::Unconfirmed(_) | Ended::Unopened, Err(error)) => {
             cleanup_failed(ScriptMode::ReadOnly, &error)
         }
         (Ended::Left, _) => Error::LeftReadOnly,
@@ -900,18 +975,18 @@ async fn close(conn: &mut mysql_async::Conn, ended: Ended, kind: SessionKind) ->
 /// one, and its answer comes back with the rest (`None` where the message
 /// did not reach it). Where the check did not answer, it runs on its own,
 /// once more after a cancel.
-async fn confirm(conn: &mut mysql_async::Conn, names: [&str; 2]) -> (Ended, Option<Result<()>>) {
-    let (answers, failure) = answers(conn, &closing(names[0])).await;
+async fn confirm(conn: &mut mysql_async::Conn, checks: Checks) -> (Ended, Option<Result<()>>) {
+    let (answers, failure) = answers(conn, &closing(checks.names[0])).await;
     let standing = match answers.as_slice() {
-        [found, asked, ..] => match asked.rows.first().cloned().map(from_row).transpose() {
-            Ok(read_only) => stands(read_only, found.status),
+        [found, asked, ..] => match asked.rows.first().cloned().map(said).transpose() {
+            Ok(said) => stands(said, checks.fence, found.status),
             Err(error) => Err(error),
         },
-        _ => retry_cancelled!(standing(conn, names)),
+        _ => retry_cancelled!(standing(conn, checks)),
     };
     let ended = match standing {
         Ok(Standing::Left) => Ended::Left,
-        Ok(Standing::Inside | Standing::Outside) => Ended::Unconfirmed,
+        Ok(Standing::Inside | Standing::Outside) => Ended::Unconfirmed(checks.fence),
         Err(error) => Ended::Broken(cleanup_failed(ScriptMode::ReadOnly, &error)),
     };
     let rolled_back = match (answers.len(), failure) {
@@ -1145,6 +1220,18 @@ mod tests {
     use super::*;
     use crate::adapter::Adapter;
 
+    /// The checks of a run whose fence held, on a server that knows the
+    /// read-only setting under its newer name.
+    const ON_SESSION: Checks = Checks {
+        names: READ_ONLY_SETTINGS,
+        fence: Fence::Session,
+    };
+
+    /// An answer to the read-only question.
+    fn answer(session: i64, innodb: i64) -> Option<Said> {
+        Some(Said { session, innodb })
+    }
+
     /// The session's time limit in milliseconds, asked as its server names
     /// it (`time_limits`): MariaDB has no `max_execution_time`, and counts
     /// its `max_statement_time` in seconds.
@@ -1287,24 +1374,81 @@ mod tests {
         let autocommit = StatusFlags::SERVER_STATUS_AUTOCOMMIT;
         let in_transaction = autocommit | StatusFlags::SERVER_STATUS_IN_TRANS;
         let read_only = in_transaction | StatusFlags::SERVER_STATUS_IN_TRANS_READONLY;
-        assert_eq!(stands(Some(1), read_only), Ok(Standing::Inside));
-        assert_eq!(stands(Some(2), read_only), Ok(Standing::Inside));
-        // No transaction: a statement ended it.
-        assert_eq!(stands(Some(1), autocommit), Ok(Standing::Outside));
-        assert_eq!(stands(Some(1), StatusFlags::empty()), Ok(Standing::Outside));
-        // Only an explicit 0 is read-write, whatever the transaction.
-        for status in [read_only, in_transaction, autocommit] {
-            assert_eq!(stands(Some(0), status), Ok(Standing::Left));
+        // Each fence reads its own setting, and the same rules.
+        let session_at: fn(i64) -> Option<Said> = |value| answer(value, 0);
+        for (fence, said) in [
+            (Fence::Session, session_at),
+            (Fence::Session, |value| answer(value, 1)),
+            (Fence::Server, |value| answer(0, value)),
+            (Fence::Server, |value| answer(1, value)),
+        ] {
+            let stands = |value, status| stands(said(value), fence, status);
+            assert_eq!(stands(1, read_only), Ok(Standing::Inside));
+            assert_eq!(stands(2, read_only), Ok(Standing::Inside));
+            // No transaction: a statement ended it.
+            assert_eq!(stands(1, autocommit), Ok(Standing::Outside));
+            assert_eq!(stands(1, StatusFlags::empty()), Ok(Standing::Outside));
+            // Only an explicit 0 is read-write, whatever the transaction.
+            for status in [read_only, in_transaction, autocommit] {
+                assert_eq!(stands(0, status), Ok(Standing::Left), "{fence:?}");
+            }
+            // A transaction without the read-only mark is not the
+            // script's: a missing mark is never taken for a read-only
+            // transaction.
+            assert_eq!(stands(1, in_transaction), Ok(Standing::Left));
+            assert_eq!(
+                stands(1, StatusFlags::SERVER_STATUS_IN_TRANS_READONLY),
+                Ok(Standing::Outside)
+            );
         }
-        // A transaction without the read-only mark is not the script's:
-        // a missing mark is never taken for a read-only transaction.
-        assert_eq!(stands(Some(1), in_transaction), Ok(Standing::Left));
-        assert_eq!(
-            stands(Some(1), StatusFlags::SERVER_STATUS_IN_TRANS_READONLY),
-            Ok(Standing::Outside)
-        );
         // No answer is not a yes.
-        assert!(matches!(stands(None, read_only), Err(Error::Query { .. })));
+        for fence in [Fence::Session, Fence::Server] {
+            assert!(matches!(
+                stands(None, fence, read_only),
+                Err(Error::Query { .. })
+            ));
+        }
+    }
+
+    /// The open takes InnoDB's word only where the server left the
+    /// session's setting read-write (an Aurora reader that does not forward
+    /// writes). Where the fence held, a read-only InnoDB does not stand in
+    /// for the session's setting: a script that makes the session
+    /// read-write is still caught on a server started with InnoDB
+    /// read-only, whose other engines write.
+    #[test]
+    fn the_open_reads_innodb_only_where_the_server_left_the_session_read_write() {
+        let read_only = StatusFlags::SERVER_STATUS_AUTOCOMMIT
+            | StatusFlags::SERVER_STATUS_IN_TRANS
+            | StatusFlags::SERVER_STATUS_IN_TRANS_READONLY;
+        assert_eq!(opened(answer(1, 0), read_only), Ok(Fence::Session));
+        assert_eq!(opened(answer(1, 1), read_only), Ok(Fence::Session));
+        assert_eq!(opened(answer(0, 1), read_only), Ok(Fence::Server));
+        let refused = Err(Error::query(
+            "the server did not say that the session is read-only",
+        ));
+        assert_eq!(opened(answer(0, 0), read_only), refused);
+        // What the checks then make of a session that left: a session
+        // setting that went read-write, InnoDB that did (a failover).
+        assert_eq!(
+            stands(answer(0, 1), Fence::Session, read_only),
+            Ok(Standing::Left)
+        );
+        assert_eq!(
+            stands(answer(0, 0), Fence::Server, read_only),
+            Ok(Standing::Left)
+        );
+        // Neither fence takes a missing mark for a read-only transaction.
+        let in_transaction = StatusFlags::SERVER_STATUS_IN_TRANS;
+        for said in [answer(1, 0), answer(0, 1)] {
+            assert_eq!(
+                opened(said, in_transaction),
+                Err(Error::query(
+                    "the server did not mark the transaction read-only"
+                ))
+            );
+        }
+        assert!(matches!(opened(None, read_only), Err(Error::Query { .. })));
     }
 
     /// A server (or a proxy in front of one) that does not mark the
@@ -1512,8 +1656,8 @@ mod tests {
     /// limit of 10 rows, and the close's check and rollback, as the server
     /// gets them: what a test proxy swaps.
     const OPEN: &str = "START TRANSACTION READ ONLY; SET SESSION sql_select_limit = 11; \
-                        SELECT @@session.transaction_read_only LIMIT 1";
-    const CLOSE: &str = "DO 0; SELECT @@session.transaction_read_only LIMIT 1; \
+                        SELECT @@session.transaction_read_only, @@global.innodb_read_only LIMIT 1";
+    const CLOSE: &str = "DO 0; SELECT @@session.transaction_read_only, @@global.innodb_read_only LIMIT 1; \
                          ROLLBACK AND NO CHAIN NO RELEASE";
 
     #[test]
@@ -1558,7 +1702,7 @@ mod tests {
                 "SET SESSION sql_select_limit = 6",
                 "SET SESSION max_statement_time = 1.500",
                 "SELECT 1",
-                "SELECT @@session.tx_read_only LIMIT 1",
+                "SELECT @@session.tx_read_only, @@global.innodb_read_only LIMIT 1",
             ]
         );
         assert_eq!(
@@ -1581,21 +1725,21 @@ mod tests {
         for (instead, said) in [
             (
                 "START TRANSACTION READ ONLY; SET SESSION sql_select_limit = 'x'; \
-                 SELECT @@session.transaction_read_only LIMIT 1",
+                 SELECT @@session.transaction_read_only, @@global.innodb_read_only LIMIT 1",
                 "Incorrect argument type",
             ),
             (
                 "SET SESSION sql_select_limit = 11; \
-                 SELECT @@session.transaction_read_only LIMIT 1",
+                 SELECT @@session.transaction_read_only, @@global.innodb_read_only LIMIT 1",
                 "the server did not start a transaction",
             ),
             (
                 "START TRANSACTION READ WRITE; SET SESSION sql_select_limit = 11; \
-                 SELECT @@session.transaction_read_only LIMIT 1",
+                 SELECT @@session.transaction_read_only, @@global.innodb_read_only LIMIT 1",
                 "the server did not mark the transaction read-only",
             ),
             (
-                "START TRANSACTION READ ONLY; SET SESSION sql_select_limit = 11; SELECT 0",
+                "START TRANSACTION READ ONLY; SET SESSION sql_select_limit = 11; SELECT 0, 0",
                 "the server did not say that the session is read-only",
             ),
         ] {
@@ -1614,6 +1758,30 @@ mod tests {
             assert!(stop.is_finishing());
             assert_eq!(settings(&conn).await, connected, "{instead}");
         }
+    }
+
+    /// An Amazon Aurora MySQL reader in a cluster that does not forward
+    /// writes leaves the session's setting read-write whatever the fence
+    /// says, and is read-only by InnoDB (see `Fence`). The proxy swaps the
+    /// open's answer for that reader's: the open lets the script run, and
+    /// the checks read InnoDB's setting from then on. The test server's
+    /// InnoDB is read-write, as a reader's is once a failover made it the
+    /// writer, so the check before the second statement fails the run,
+    /// although the session's own setting is read-only.
+    #[tokio::test]
+    async fn a_reader_that_ignores_the_fence_runs_on_innodbs_word() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let reader = "START TRANSACTION READ ONLY; SET SESSION sql_select_limit = 11; SELECT 0, 1";
+        let (conn, _) =
+            super::super::tests::swapping_session(&url, Access::ReadOnly, (OPEN, reader)).await;
+        let connected = settings(&conn).await;
+        let stop = StopFlag::new();
+        let ran = past_the_refusal(&conn, &["SELECT 1", "SELECT 2"], &stop).await;
+        assert_eq!(ran, Err(Error::LeftReadOnly));
+        assert!(stop.is_finishing());
+        assert_eq!(settings(&conn).await, connected);
     }
 
     /// A cancel that lands on the open stops the run before its first
@@ -1663,7 +1831,7 @@ mod tests {
         let mut admin = admin(&url).await;
         let slow_check = "DO 0; SELECT 1 FROM DUAL WHERE SLEEP(47) = 0; \
                           ROLLBACK AND NO CHAIN NO RELEASE";
-        let slow_rollback = "DO 0; SELECT @@session.transaction_read_only LIMIT 1; \
+        let slow_rollback = "DO 0; SELECT @@session.transaction_read_only, @@global.innodb_read_only LIMIT 1; \
                              SELECT 1 FROM DUAL WHERE SLEEP(48) = 0";
         // The run's nine, and the steps that ran again: the check and the
         // rollback, or the rollback.
@@ -2176,41 +2344,24 @@ mod tests {
         let connected = settings(&conn).await;
         {
             let mut conn = conn.conn.lock().await;
-            assert_eq!(
-                standing(&mut conn, READ_ONLY_SETTINGS).await,
-                Ok(Standing::Outside)
-            );
+            assert_eq!(standing(&mut conn, ON_SESSION).await, Ok(Standing::Outside));
             // The server marks the transaction read-only, or this fails.
-            open(&mut conn, 10, on_mysql(Access::ReadOnly), None)
+            let (fence, views) = open(&mut conn, 10, on_mysql(Access::ReadOnly), None)
                 .await
-                .unwrap()
                 .unwrap();
-            assert_eq!(
-                standing(&mut conn, READ_ONLY_SETTINGS).await,
-                Ok(Standing::Inside)
-            );
-            assert_eq!(
-                ready(&mut conn, READ_ONLY_SETTINGS).await,
-                Ok(Standing::Inside)
-            );
+            assert_eq!(fence, Fence::Session);
+            assert!(views.unwrap().is_empty());
+            assert_eq!(standing(&mut conn, ON_SESSION).await, Ok(Standing::Inside));
+            assert_eq!(ready(&mut conn, ON_SESSION).await, Ok(Standing::Inside));
 
             // What a statement that commits would have done, and one that
             // makes the next transaction read-write: the session's setting
             // does not show that, and a statement on its own would write.
             conn.query_drop("COMMIT").await.unwrap();
             conn.query_drop("SET TRANSACTION READ WRITE").await.unwrap();
-            assert_eq!(
-                standing(&mut conn, READ_ONLY_SETTINGS).await,
-                Ok(Standing::Outside)
-            );
-            assert_eq!(
-                ready(&mut conn, READ_ONLY_SETTINGS).await,
-                Ok(Standing::Inside)
-            );
-            assert_eq!(
-                standing(&mut conn, READ_ONLY_SETTINGS).await,
-                Ok(Standing::Inside)
-            );
+            assert_eq!(standing(&mut conn, ON_SESSION).await, Ok(Standing::Outside));
+            assert_eq!(ready(&mut conn, ON_SESSION).await, Ok(Standing::Inside));
+            assert_eq!(standing(&mut conn, ON_SESSION).await, Ok(Standing::Inside));
             let written = conn.query_drop(INSERT).await.map_err(query_error);
             assert!(
                 matches!(&written, Err(Error::Query { code: Some(code), .. }) if code == "25006"),
@@ -2222,44 +2373,40 @@ mod tests {
             conn.query_drop("START TRANSACTION READ WRITE")
                 .await
                 .unwrap();
+            assert_eq!(standing(&mut conn, ON_SESSION).await, Ok(Standing::Left));
+            assert_eq!(ready(&mut conn, ON_SESSION).await, Ok(Standing::Left));
             assert_eq!(
-                standing(&mut conn, READ_ONLY_SETTINGS).await,
-                Ok(Standing::Left)
-            );
-            assert_eq!(
-                ready(&mut conn, READ_ONLY_SETTINGS).await,
-                Ok(Standing::Left)
-            );
-            assert_eq!(
-                close(&mut conn, Ended::Unconfirmed, on_mysql(Access::ReadOnly)).await,
+                close(
+                    &mut conn,
+                    Ended::Unconfirmed(Fence::Session),
+                    on_mysql(Access::ReadOnly)
+                )
+                .await,
                 Err(Error::LeftReadOnly)
             );
-            assert_eq!(
-                standing(&mut conn, READ_ONLY_SETTINGS).await,
-                Ok(Standing::Outside)
-            );
+            assert_eq!(standing(&mut conn, ON_SESSION).await, Ok(Standing::Outside));
 
             // A script's own sql_select_limit does not blind the check.
-            open(&mut conn, 10, on_mysql(Access::ReadOnly), None)
+            let (fence, views) = open(&mut conn, 10, on_mysql(Access::ReadOnly), None)
                 .await
-                .unwrap()
                 .unwrap();
+            assert_eq!(fence, Fence::Session);
+            assert!(views.unwrap().is_empty());
             conn.query_drop("SET SESSION sql_select_limit = 0")
                 .await
                 .unwrap();
-            assert_eq!(
-                standing(&mut conn, READ_ONLY_SETTINGS).await,
-                Ok(Standing::Inside)
-            );
+            assert_eq!(standing(&mut conn, ON_SESSION).await, Ok(Standing::Inside));
             conn.query_drop("SET SESSION TRANSACTION READ WRITE")
                 .await
                 .unwrap();
+            assert_eq!(standing(&mut conn, ON_SESSION).await, Ok(Standing::Left));
             assert_eq!(
-                standing(&mut conn, READ_ONLY_SETTINGS).await,
-                Ok(Standing::Left)
-            );
-            assert_eq!(
-                close(&mut conn, Ended::Unconfirmed, on_mysql(Access::ReadOnly)).await,
+                close(
+                    &mut conn,
+                    Ended::Unconfirmed(Fence::Session),
+                    on_mysql(Access::ReadOnly)
+                )
+                .await,
                 Err(Error::LeftReadOnly)
             );
         }
@@ -2281,10 +2428,11 @@ mod tests {
         let connected = settings(&conn).await;
         {
             let mut conn = conn.conn.lock().await;
-            open(&mut conn, 10, on_mysql(Access::ReadOnly), None)
+            let (fence, views) = open(&mut conn, 10, on_mysql(Access::ReadOnly), None)
                 .await
-                .unwrap()
                 .unwrap();
+            assert_eq!(fence, Fence::Session);
+            assert!(views.unwrap().is_empty());
             // What the first statement of the script would have done.
             conn.query_drop("SET SESSION TRANSACTION READ WRITE")
                 .await
@@ -2294,22 +2442,19 @@ mod tests {
             stop.stop();
             let mut outcome = ScriptOutcome::default();
             let texts = ["SELECT 1".to_owned()];
-            let ended = statements(
-                &mut conn,
-                &texts,
-                10,
-                READ_ONLY_SETTINGS,
-                &stop,
-                None,
-                &mut outcome,
-            )
-            .await;
-            assert_eq!(ended, Ok(Ended::Unconfirmed));
+            let ended =
+                statements(&mut conn, &texts, 10, ON_SESSION, &stop, None, &mut outcome).await;
+            assert_eq!(ended, Ok(Ended::Unconfirmed(Fence::Session)));
             assert_eq!(outcome.results.len(), 1);
             assert_eq!(outcome.results[0].outcome, StatementOutcome::Cancelled);
             assert!(outcome.stopped);
             assert_eq!(
-                close(&mut conn, Ended::Unconfirmed, on_mysql(Access::ReadOnly)).await,
+                close(
+                    &mut conn,
+                    Ended::Unconfirmed(Fence::Session),
+                    on_mysql(Access::ReadOnly)
+                )
+                .await,
                 Err(Error::LeftReadOnly)
             );
         }
@@ -2509,15 +2654,15 @@ mod tests {
         let [name, older] = READ_ONLY_SETTINGS;
         assert_eq!(
             read_only_setting(&mut conn, [name, older]).await,
-            Ok(Some(1))
+            Ok(answer(1, 0))
         );
         assert_eq!(
             read_only_setting(&mut conn, [older, name]).await,
-            Ok(Some(1))
+            Ok(answer(1, 0))
         );
         assert_eq!(
             read_only_setting(&mut conn, ["tabletist_no_such_setting", name]).await,
-            Ok(Some(1))
+            Ok(answer(1, 0))
         );
         // Unknown under both names: the server's error, not a guess.
         let unknown = ["tabletist_no_such_setting", "tabletist_nor_this"];
@@ -2550,7 +2695,7 @@ mod tests {
         let read_only = read_only_setting(&mut conn, READ_ONLY_SETTINGS)
             .await
             .unwrap();
-        assert_eq!(read_only, Some(0));
+        assert_eq!(read_only, answer(0, 0));
     }
 
     /// A run that left read-only on a writable session does not make it
@@ -2573,7 +2718,7 @@ mod tests {
         );
         assert_eq!(
             read_only_setting(&mut conn, READ_ONLY_SETTINGS).await,
-            Ok(Some(1))
+            Ok(answer(1, 0))
         );
     }
 

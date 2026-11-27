@@ -9,6 +9,10 @@
 //! Rows are read inside a read-only transaction. A SQL editor script runs
 //! its statements the same way, in one read-only transaction, and the
 //! session is reset afterwards: MySQL session state is not transactional.
+//! An Amazon Aurora MySQL reader that does not forward writes keeps the
+//! session's read-only setting read-write; a run there reads InnoDB's
+//! (`script`'s `Fence`). Nothing here has met a real one: the tests swap
+//! the server's answers for one's.
 //!
 //! MariaDB too: the tests run against MariaDB 11.4 as well as MySQL. What
 //! is written for an older MariaDB alone (in `script`) has not met one
