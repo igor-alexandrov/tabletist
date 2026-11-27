@@ -366,11 +366,17 @@ async fn a_file_replaced_on_disk_is_not_written() {
         unsaved(&error),
         Some(Unsaved::Changed("bookshop.duckdb".into()))
     );
-    drop(connection);
     assert_eq!(
         std::fs::read(dir.path().join("bookshop.duckdb")).unwrap(),
         replaced
     );
+    // Read again, as Reload does: the new file is read, and saved to.
+    let covers = page(&connection, "book_covers").await;
+    assert_eq!(covers.rows.len(), 6);
+    assert!(matches!(
+        save(&connection, &changes).await.unwrap(),
+        WriteOutcome::Written { .. }
+    ));
 }
 
 #[cfg(unix)]

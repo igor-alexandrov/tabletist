@@ -111,29 +111,40 @@ fn attach(connection: &duckdb::Connection, held: &Held, write: bool) -> Result<(
 }
 
 /// Holds each of `databases`, in their order (their own paths'), for reading
-/// while a call runs: no save writes one meanwhile. One another session
-/// saved since this one attached it is attached again first. One that
-/// cannot be is left as it is, and tried again on the next call.
+/// while a call runs: no save writes one meanwhile. A file the session
+/// reaches by two names has its gate taken once: a second read of one lock
+/// in one thread can wait for good behind a save. One another session
+/// saved since this one attached it is attached again first, and so is one
+/// another program changed since (replaced it, most often): that counts as
+/// a save, so every session reads it again and no page of it before is
+/// saved. One that cannot be attached is left as it is, and tried again on
+/// the next call.
 pub(super) fn reading<'a>(
     connection: &duckdb::Connection,
     databases: &'a [Held],
 ) -> Vec<RwLockReadGuard<'a, ()>> {
-    databases
-        .iter()
-        .map(|held| {
-            let guard = held
-                .shared
-                .gate
-                .read()
-                .unwrap_or_else(PoisonError::into_inner);
-            let saves = held.shared.saves.load(Ordering::SeqCst);
-            if held.seen.load(Ordering::SeqCst) != saves && attach(connection, held, false).is_ok()
-            {
-                held.seen.store(saves, Ordering::SeqCst);
-            }
-            guard
-        })
-        .collect()
+    let mut guards = Vec::with_capacity(databases.len());
+    for (at, held) in databases.iter().enumerate() {
+        let taken = at > 0 && databases[at - 1].own == held.own;
+        if !taken {
+            guards.push(
+                held.shared
+                    .gate
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner),
+            );
+        }
+        let mut saves = held.shared.saves.load(Ordering::SeqCst);
+        let seen = held.seen.load(Ordering::SeqCst);
+        let was = *held.stamp.lock().unwrap_or_else(PoisonError::into_inner);
+        if seen == saves && was.is_some() && Stamp::of(&held.path).ok() != was {
+            saves = held.shared.saves.fetch_add(1, Ordering::SeqCst) + 1;
+        }
+        if seen != saves && attach(connection, held, false).is_ok() {
+            held.seen.store(saves, Ordering::SeqCst);
+        }
+    }
+    guards
 }
 
 /// The columns of the primary key of the table `table` of the `.duckdb`
@@ -274,7 +285,9 @@ pub(super) fn save(
     if let Err(error) = attach(connection, held, true) {
         back();
         let said = super::plain(&error);
-        return Err(match held_by(&said, std::process::id()) {
+        // DuckDB's whole words: on Windows the holder's PID is on a line
+        // after the first.
+        return Err(match held_by(&error.to_string(), std::process::id()) {
             Some(Holder::Other) => unsaved(
                 Unsaved::Busy(label.clone()),
                 format!("{label} is open in another program"),
@@ -456,5 +469,26 @@ mod tests {
         assert_eq!(held_by(windows, 6212), Some(Holder::Here));
         assert_eq!(held_by(windows, 1), Some(Holder::Other));
         assert_eq!(held_by("IO Error: No space left on device", 1), None);
+        // A save reads the error's whole words: its first line has no PID.
+        let error = Error::query(windows);
+        assert_eq!(held_by(&error.to_string(), 6212), Some(Holder::Here));
+        assert_eq!(
+            held_by(&super::super::plain(&error), 6212),
+            Some(Holder::Other)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_reached_by_two_names_has_its_gate_taken_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bookshop.duckdb");
+        duckdb::Connection::open(&path).unwrap();
+        let alias = dir.path().join("alias.duckdb");
+        std::os::unix::fs::symlink(&path, &alias).unwrap();
+        let databases = [Held::new("alias", &alias), Held::new("bookshop", &path)];
+        assert_eq!(databases[0].own(), databases[1].own());
+        let connection = duckdb::Connection::open_in_memory().unwrap();
+        assert_eq!(reading(&connection, &databases).len(), 1);
     }
 }
