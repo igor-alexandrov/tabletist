@@ -65,11 +65,19 @@ impl Stamp {
     };
 
     fn of(path: &Path) -> std::io::Result<Self> {
-        let meta = std::fs::metadata(path)?;
-        Ok(Self {
+        std::fs::metadata(path).map(|meta| Self::from(&meta))
+    }
+
+    /// The open file's, whatever is at its name.
+    fn held(file: &std::fs::File) -> std::io::Result<Self> {
+        file.metadata().map(|meta| Self::from(&meta))
+    }
+
+    fn from(meta: &std::fs::Metadata) -> Self {
+        Self {
             size: meta.len(),
             modified: meta.modified().ok(),
-        })
+        }
     }
 }
 
@@ -798,7 +806,7 @@ pub(super) fn save(
                 ),
                 WriteError::Taken => {
                     let why = format!(
-                        "another program replaced {} while it was written",
+                        "another program changed {} while it was written",
                         crate::files::file_name(&temp_path(path))
                     );
                     unsaved(
@@ -864,25 +872,65 @@ fn bring_up(connection: &duckdb::Connection, table: &str, position: &str) -> duc
 
 /// A test's way to make a save of one file fail after it is written.
 #[cfg(test)]
-static FAIL_AFTER_RENAME: Mutex<Option<PathBuf>> = Mutex::new(None);
+static FAIL_AFTER_RENAME: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
 /// A test's way to have another program replace one file's hidden file
 /// mid-save.
 #[cfg(test)]
-static REPLACE_HIDDEN: Mutex<Option<PathBuf>> = Mutex::new(None);
+static REPLACE_HIDDEN: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
 /// Whether the hook's other program could take the hidden file away, or
 /// write it.
 #[cfg(test)]
-static REPLACED: Mutex<Option<bool>> = Mutex::new(None);
+static REPLACED: Mutex<Vec<(PathBuf, bool)>> = Mutex::new(Vec::new());
+
+/// What the hook's other program could do to the hidden file of the file
+/// at `path`, the last time.
+#[cfg(test)]
+fn replaced(path: &Path) -> Option<bool> {
+    let done = REPLACED.lock().unwrap_or_else(PoisonError::into_inner);
+    done.iter()
+        .rev()
+        .find(|(at, _)| at == path)
+        .map(|&(_, could)| could)
+}
+
+/// A test's way to have another program write into one file's hidden file
+/// once the save has written it, as Windows lets a program write one that
+/// DuckDB writes.
+#[cfg(test)]
+static WRITE_HIDDEN: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
 /// Whether a test set `hook` for the file at `path`.
 #[cfg(test)]
-fn hooked(hook: &Mutex<Option<PathBuf>>, path: &Path) -> bool {
+fn hooked(hook: &Mutex<Vec<PathBuf>>, path: &Path) -> bool {
     hook.lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .as_deref()
-        == Some(path)
+        .iter()
+        .any(|at| at == path)
+}
+
+/// Sets `hook` for the file at `path` until the guard is dropped, beside
+/// any other test's.
+#[cfg(test)]
+fn hook(hook: &'static Mutex<Vec<PathBuf>>, path: &Path) -> Hooked {
+    hook.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(path.to_owned());
+    Hooked(hook, path.to_owned())
+}
+
+#[cfg(test)]
+struct Hooked(&'static Mutex<Vec<PathBuf>>, PathBuf);
+
+#[cfg(test)]
+impl Drop for Hooked {
+    fn drop(&mut self) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|at| *at != self.1);
+    }
 }
 
 /// Whether this save of `path` fails after its file is written: only where
@@ -1022,7 +1070,8 @@ enum WriteError {
     Io(std::io::Error),
     /// The file changed on disk while the save wrote its hidden one.
     Changed,
-    /// Another program put a file of its own at the hidden file's name.
+    /// Another program put a file of its own at the hidden file's name, or
+    /// wrote the one this save wrote.
     Taken,
     Db(Error),
 }
@@ -1048,14 +1097,18 @@ fn write_file(
     // may be one others can't read.
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    // Windows lets no other program delete or rename it while this save
-    // holds it, nor write it where this save writes it itself (a CSV):
-    // shared to read, and to write only where DuckDB writes it, never to
-    // delete.
+    // On Windows a CSV's, which this save writes itself, no other program
+    // may write, delete or rename while this save holds it: it is shared to
+    // read only. DuckDB opens a Parquet, JSON or NDJSON one to write and
+    // delete, so that one is shared for all three.
     #[cfg(windows)]
     std::os::windows::fs::OpenOptionsExt::share_mode(
         &mut options,
-        if copy.csv.is_some() { 0x1 } else { 0x1 | 0x2 },
+        if copy.csv.is_some() {
+            0x1
+        } else {
+            0x1 | 0x2 | 0x4
+        },
     );
     // Windows answers "access is denied" where a folder has the name: what
     // is there is what says it is taken.
@@ -1079,16 +1132,27 @@ fn write_file(
         // DuckDB writes over the file this save made, as it is.
         None => write_copy(connection, file, copy, &temp),
     };
+    // The hidden file as this save left it. Windows lets another program
+    // write one DuckDB writes: a write after this is caught below. One while
+    // DuckDB writes it is not.
+    let written = written.and_then(|()| Stamp::held(&claimed).map_err(WriteError::Io));
+    #[cfg(test)]
+    if hooked(&WRITE_HIDDEN, path) {
+        let _ = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&temp)
+            .and_then(|mut other| std::io::Write::write_all(&mut other, b"another program's"));
+    }
     #[cfg(test)]
     if hooked(&REPLACE_HIDDEN, path) {
         let removed = std::fs::remove_file(&temp).is_ok();
         let wrote = std::fs::write(&temp, "another program's").is_ok();
-        *REPLACED.lock().unwrap_or_else(PoisonError::into_inner) = Some(removed || wrote);
+        REPLACED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((path.to_owned(), removed || wrote));
     }
-    let checked = written.and_then(|()| {
-        if !same_file(&claimed, &temp) {
-            return Err(WriteError::Taken);
-        }
+    let checked = written.and_then(|staged| {
         // The file keeps its own permissions, given to the file this save
         // holds, whatever is at its name.
         if let Ok(meta) = std::fs::metadata(path) {
@@ -1102,7 +1166,13 @@ fn write_file(
         if Stamp::of(path).ok() != Some(copy.stamp) {
             return Err(WriteError::Changed);
         }
-        Stamp::of(&temp).map_err(WriteError::Io)
+        // What goes in the file's place is what this save wrote, and is
+        // still at the hidden file's name.
+        let now = Stamp::held(&claimed).map_err(WriteError::Io)?;
+        if now != staged || !same_file(&claimed, &temp) {
+            return Err(WriteError::Taken);
+        }
+        Ok(now)
     });
     let ours = same_file(&claimed, &temp);
     // On Windows this save's own hold keeps it from renaming the file too.
@@ -1124,21 +1194,22 @@ fn write_file(
 }
 
 /// Whether the file at `path` is `claimed`, the one this save made. On
-/// Windows it is taken to be: while this save holds it no other program
-/// can delete or rename it.
+/// Unix it is the same file. Windows gives std no file's number: there it
+/// is a file of the same size and modified time, which a file another
+/// program put there instead would rarely be.
 fn same_file(claimed: &std::fs::File, path: &Path) -> bool {
+    let (Ok(ours), Ok(there)) = (claimed.metadata(), std::fs::symlink_metadata(path)) else {
+        return false;
+    };
+    let alike = Stamp::from(&ours) == Stamp::from(&there);
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        match (claimed.metadata(), std::fs::symlink_metadata(path)) {
-            (Ok(ours), Ok(there)) => ours.dev() == there.dev() && ours.ino() == there.ino(),
-            _ => false,
-        }
+        alike && ours.dev() == there.dev() && ours.ino() == there.ino()
     }
     #[cfg(not(unix))]
     {
-        let _ = (claimed, path);
-        true
+        alike
     }
 }
 
@@ -1364,9 +1435,9 @@ mod tests {
                 ],
             }],
         };
-        *REPLACE_HIDDEN.lock().unwrap() = Some(path.clone());
+        let hooked = hook(&REPLACE_HIDDEN, &path);
         let error = conn.write(&changes, &StopFlag::new()).await.unwrap_err();
-        *REPLACE_HIDDEN.lock().unwrap() = None;
+        drop(hooked);
         let Error::Query { named, .. } = &error else {
             panic!("{error:?}");
         };
@@ -1411,15 +1482,112 @@ mod tests {
                 ],
             }],
         };
-        *REPLACE_HIDDEN.lock().unwrap() = Some(path.clone());
+        let hooked = hook(&REPLACE_HIDDEN, &path);
         let outcome = conn.write(&changes, &StopFlag::new()).await;
-        *REPLACE_HIDDEN.lock().unwrap() = None;
-        assert_eq!(*REPLACED.lock().unwrap(), Some(false));
+        drop(hooked);
+        assert_eq!(replaced(&path), Some(false));
         assert!(
             matches!(outcome, Ok(WriteOutcome::Written { .. })),
             "{outcome:?}"
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 12);
+    }
+
+    #[tokio::test]
+    async fn a_parquet_file_s_hidden_file_another_program_replaced_is_not_put_in_place() {
+        use crate::adapter::Adapter;
+        let dir = tempfile::tempdir().unwrap();
+        crate::fixtures::write_bookshop_files(dir.path()).unwrap();
+        let path = dir.path().join("customers.parquet");
+        let before = std::fs::read(&path).unwrap();
+        let source = crate::files::Source::Folder(dir.path().to_owned());
+        let conn = super::super::Conn::open(
+            &source,
+            &Reading::default(),
+            false,
+            Vec::new(),
+            None,
+            crate::Access::Writable,
+        )
+        .await
+        .unwrap();
+        let query = RowQuery::new(ObjectRef::new("main", "customers"), 100);
+        let page = conn.fetch_rows(&query).await.unwrap();
+        let copy = page.positions.as_ref().unwrap().copy;
+        let changes = ChangeSet {
+            object: query.object.clone(),
+            inserts: Vec::new(),
+            rows: Vec::new(),
+            deletes: vec![crate::RowDelete {
+                key: vec![
+                    (POSITION.to_owned(), Value::Int(0)),
+                    (FILE_COPY.to_owned(), Value::Int(copy)),
+                ],
+            }],
+        };
+        let hooked = hook(&REPLACE_HIDDEN, &path);
+        let error = conn.write(&changes, &StopFlag::new()).await.unwrap_err();
+        drop(hooked);
+        assert_eq!(replaced(&path), Some(true));
+        let Error::Query { named, .. } = &error else {
+            panic!("{error:?}");
+        };
+        assert!(
+            matches!(&named.unsaved, Some(Unsaved::Failed(file, _)) if file == "customers.parquet"),
+            "{error:?}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn a_hidden_file_another_program_wrote_after_the_save_is_not_put_in_place() {
+        use crate::adapter::Adapter;
+        let dir = tempfile::tempdir().unwrap();
+        crate::fixtures::write_bookshop_files(dir.path()).unwrap();
+        let path = dir.path().join("customers.parquet");
+        let before = std::fs::read(&path).unwrap();
+        let source = crate::files::Source::Folder(dir.path().to_owned());
+        let conn = super::super::Conn::open(
+            &source,
+            &Reading::default(),
+            false,
+            Vec::new(),
+            None,
+            crate::Access::Writable,
+        )
+        .await
+        .unwrap();
+        let query = RowQuery::new(ObjectRef::new("main", "customers"), 100);
+        let page = conn.fetch_rows(&query).await.unwrap();
+        let copy = page.positions.as_ref().unwrap().copy;
+        let changes = ChangeSet {
+            object: query.object.clone(),
+            inserts: Vec::new(),
+            rows: Vec::new(),
+            deletes: vec![crate::RowDelete {
+                key: vec![
+                    (POSITION.to_owned(), Value::Int(0)),
+                    (FILE_COPY.to_owned(), Value::Int(copy)),
+                ],
+            }],
+        };
+        let hooked = hook(&WRITE_HIDDEN, &path);
+        let error = conn.write(&changes, &StopFlag::new()).await.unwrap_err();
+        drop(hooked);
+        let Error::Query { named, .. } = &error else {
+            panic!("{error:?}");
+        };
+        assert!(
+            matches!(&named.unsaved, Some(Unsaved::Failed(file, why))
+                if file == "customers.parquet" && why.contains("another program changed")),
+            "{error:?}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(
+            !dir.path()
+                .join(".customers.parquet.tabletist-save")
+                .exists()
+        );
     }
 
     #[tokio::test]
@@ -1453,9 +1621,9 @@ mod tests {
             rows: Vec::new(),
             deletes: vec![crate::RowDelete { key: key(at) }],
         };
-        *FAIL_AFTER_RENAME.lock().unwrap() = Some(dir.path().join("orders.csv"));
+        let hooked = hook(&FAIL_AFTER_RENAME, &dir.path().join("orders.csv"));
         let outcome = conn.write(&delete(0), &StopFlag::new()).await;
-        *FAIL_AFTER_RENAME.lock().unwrap() = None;
+        drop(hooked);
         // The file is written, and the save says so.
         assert!(
             matches!(outcome, Ok(WriteOutcome::Written { .. })),
