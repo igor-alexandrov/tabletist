@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-27 11:04-0500\n"
+"POT-Creation-Date: 2026-11-27 11:14-0500\n"
 "PO-Revision-Date: 2026-11-19 16:11-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -4184,6 +4184,14 @@ msgid "Downloading the SQLite reader for DuckDB…"
 msgstr "Baixando o leitor de SQLite do DuckDB…"
 
 #: src/ui/connect_dialog/mod.rs
+msgid ""
+"Editing is on. Changes are kept until you save; .duckdb files are changed in "
+"place, in a transaction."
+msgstr ""
+"A edição está ativada. As alterações ficam guardadas até você salvar; os "
+"arquivos .duckdb são alterados no lugar, em uma transação."
+
+#: src/ui/connect_dialog/mod.rs
 #, rust-format
 msgid ""
 "Editing is on. Changes are kept until you save; saving rewrites the whole "
@@ -4192,6 +4200,17 @@ msgstr ""
 "A edição está ativada. As alterações ficam guardadas até você salvar; salvar "
 "regrava o arquivo inteiro, então {file} ({size}) é gravado de novo por "
 "completo."
+
+#: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid ""
+"Editing is on. Changes are kept until you save; saving rewrites the whole "
+"file, so {file} ({size}) is written again in full; .duckdb files are changed "
+"in place."
+msgstr ""
+"A edição está ativada. As alterações ficam guardadas até você salvar; salvar "
+"regrava o arquivo inteiro, então {file} ({size}) é gravado de novo por "
+"completo; os arquivos .duckdb são alterados no lugar."
 
 #: src/ui/connect_dialog/mod.rs
 msgid ""
@@ -4734,6 +4753,22 @@ msgstr "as alterações esperam {key}, que regrava o arquivo inteiro"
 msgid "changes wait for {key}, which rewrites the whole file ({file} {size})"
 msgstr ""
 "as alterações esperam {key}, que regrava o arquivo inteiro ({file} {size})"
+
+#: src/ui/connect_dialog/terminal.rs
+#, rust-format
+msgid ""
+"changes wait for {key}, which rewrites the whole file ({file} "
+"{size}); .duckdb files change in place"
+msgstr ""
+"as alterações esperam {key}, que regrava o arquivo inteiro ({file} {size}); "
+"os arquivos .duckdb mudam no lugar"
+
+#: src/ui/connect_dialog/terminal.rs
+#, rust-format
+msgid "changes wait for {key}; .duckdb files change in place, in a transaction"
+msgstr ""
+"as alterações esperam {key}; os arquivos .duckdb mudam no lugar, em uma "
+"transação"
 
 #: src/ui/connect_dialog/terminal.rs src/ui/export.rs src/ui/structure.rs
 #: src/ui/workspace.rs

@@ -532,8 +532,9 @@ then takes the file's place:
   save would give each the missing ones as `null`. So does a file that
   can't be read whole, such as one with a bad value far past its first
   page: its rows still show a page at a time, as with the box on.
-- Excel files always open read-only, and so do `.duckdb` files for now.
-  Their table's header says so.
+- Excel files always open read-only. Their table's header says so.
+- A `.duckdb` file isn't written again: its tables are changed in place
+  (see [Edit a .duckdb file](#edit-a-duckdb-file)).
 - An attached connection's tables open read-only here, even when the
   files are editable.
 
@@ -582,15 +583,46 @@ changed. These aren't caught:
 
 The SQL editor reads a Files connection, whether it opens read-only or
 not: a statement that would write is refused, and its card says to edit
-the file's table instead.
+the file's table instead. That goes for a `.duckdb` file too.
+
+### Edit a .duckdb file
+
+A `.duckdb` file's tables are edited like a file's: change values, add
+rows and delete rows, then save. Nothing is read into memory first, and
+a save doesn't write the whole file again: it changes the tables in the
+file, in one transaction. A change that fails undoes the others, and
+nothing is written.
+
+A table with a primary key finds its rows by it, as a database's table
+does, and its page can be edited again right after a save. A table
+without one finds a row by DuckDB's `rowid`, its row's place in the
+file. A save that deletes rows moves those after them, so after every
+save its page is read again, and until it is an edit says "Rows moved in
+the file since this page was read. Reload to edit." A view in the file
+isn't edited.
+
+While the connection is open, Tabletist holds the file read-only:
+another program can read it, but not write it. A save opens it to write
+for as long as the save takes. If another program has the file open
+then, nothing is written: "bookshop.duckdb couldn't be saved: another
+program has it open. Your 3 changes stay pending." Close it there and
+save again. A file another program replaced since it was opened, or one
+made read-only, isn't written either, as with any file.
+
+Other tabs, an export or an agent reading the same file wait while a
+save runs, then read the file as the save left it. On Windows they keep
+the save from opening the file at all while they have it open, as
+another program does: "bookshop.duckdb couldn't be saved: another tab,
+export or agent of Tabletist has it open. Your 1 change stays pending."
+Let the export finish, or close the other window, and save again.
 
 ## What cannot be edited
 
 A cell that cannot be edited says why when you try. The common reasons:
 
 - The connection opens read-only.
-- The file is an Excel or a `.duckdb` file, or its table is an attached
-  connection's (see [Edit files](#edit-files)).
+- The file is an Excel file, or its table is an attached connection's
+  (see [Edit files](#edit-files)).
 - The object is a view.
 - The table has no primary key or unique index, so a row cannot be
   targeted safely.

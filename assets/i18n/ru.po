@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-27 11:04-0500\n"
+"POT-Creation-Date: 2026-11-27 11:14-0500\n"
 "PO-Revision-Date: 2026-11-17 22:38-0500\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -4196,6 +4196,14 @@ msgid "Downloading the SQLite reader for DuckDB…"
 msgstr "Загрузка модуля чтения SQLite для DuckDB…"
 
 #: src/ui/connect_dialog/mod.rs
+msgid ""
+"Editing is on. Changes are kept until you save; .duckdb files are changed in "
+"place, in a transaction."
+msgstr ""
+"Изменение включено. Изменения хранятся до сохранения; файлы .duckdb "
+"изменяются на месте, в одной транзакции."
+
+#: src/ui/connect_dialog/mod.rs
 #, rust-format
 msgid ""
 "Editing is on. Changes are kept until you save; saving rewrites the whole "
@@ -4204,6 +4212,17 @@ msgstr ""
 "Изменение включено. Изменения хранятся до сохранения; сохранение "
 "перезаписывает файл целиком, так что {file} ({size}) записывается заново "
 "полностью."
+
+#: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid ""
+"Editing is on. Changes are kept until you save; saving rewrites the whole "
+"file, so {file} ({size}) is written again in full; .duckdb files are changed "
+"in place."
+msgstr ""
+"Изменение включено. Изменения хранятся до сохранения; сохранение "
+"перезаписывает файл целиком, так что {file} ({size}) записывается заново "
+"полностью; файлы .duckdb изменяются на месте."
 
 #: src/ui/connect_dialog/mod.rs
 msgid ""
@@ -4754,6 +4773,21 @@ msgstr "изменения ждут {key}, которое перезаписыв
 msgid "changes wait for {key}, which rewrites the whole file ({file} {size})"
 msgstr ""
 "изменения ждут {key}, которое перезаписывает файл целиком ({file} {size})"
+
+#: src/ui/connect_dialog/terminal.rs
+#, rust-format
+msgid ""
+"changes wait for {key}, which rewrites the whole file ({file} "
+"{size}); .duckdb files change in place"
+msgstr ""
+"изменения ждут {key}, которое перезаписывает файл целиком ({file} {size}); "
+"файлы .duckdb изменяются на месте"
+
+#: src/ui/connect_dialog/terminal.rs
+#, rust-format
+msgid "changes wait for {key}; .duckdb files change in place, in a transaction"
+msgstr ""
+"изменения ждут {key}; файлы .duckdb изменяются на месте, в одной транзакции"
 
 #: src/ui/connect_dialog/terminal.rs src/ui/export.rs src/ui/structure.rs
 #: src/ui/workspace.rs

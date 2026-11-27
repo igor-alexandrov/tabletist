@@ -91,11 +91,37 @@ fn largest_rewritten(form: &ConnectionForm) -> Option<(String, String)> {
     ))
 }
 
+/// Whether the form's files read so far hold a `.duckdb` file a save
+/// would change in place: one not skipped.
+fn changes_in_place(form: &ConnectionForm) -> bool {
+    let FilesFound::Read(scan) = &form.files_found else {
+        return false;
+    };
+    scan.files
+        .iter()
+        .any(|file| file.format.is_database() && !form.files_csv.skips(&file.path))
+}
+
 /// What a Files connection's read-only box says while it is off: that a
-/// save writes a whole file, and the largest it would.
+/// save writes a whole file, and the largest it would, and that a
+/// `.duckdb` file is changed in place.
 fn files_editing_note(form: &ConnectionForm, locale: Locale) -> String {
-    match largest_rewritten(form) {
-        Some((file, size)) => crate::i18n::fill(
+    match (largest_rewritten(form), changes_in_place(form)) {
+        (Some((file, size)), true) => crate::i18n::fill(
+            &gettext(
+                locale,
+                "Editing is on. Changes are kept until you save; saving rewrites the whole file, \
+                 so {file} ({size}) is written again in full; .duckdb files are changed in place.",
+            ),
+            &[("{file}", &file), ("{size}", &size)],
+        ),
+        (None, true) => gettext(
+            locale,
+            "Editing is on. Changes are kept until you save; .duckdb files are changed in place, \
+             in a transaction.",
+        )
+        .into_owned(),
+        (Some((file, size)), false) => crate::i18n::fill(
             &gettext(
                 locale,
                 "Editing is on. Changes are kept until you save; saving rewrites the whole file, \
@@ -103,7 +129,7 @@ fn files_editing_note(form: &ConnectionForm, locale: Locale) -> String {
             ),
             &[("{file}", &file), ("{size}", &size)],
         ),
-        None => gettext(
+        (None, false) => gettext(
             locale,
             "Editing is on. Changes are kept until you save; saving rewrites the whole file.",
         )

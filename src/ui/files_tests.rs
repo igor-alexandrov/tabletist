@@ -555,6 +555,51 @@ fn files_open_read_only_until_the_box_is_turned_off() {
 }
 
 #[test]
+fn a_files_note_says_a_duckdb_file_is_changed_in_place() {
+    for look in looks() {
+        let mut harness = new_files(look);
+        form_mut(&mut harness).read_only = Some(false);
+        let duckdb = Found {
+            path: PathBuf::from("/data/bookshop-exports/bookshop.duckdb"),
+            format: Format::DuckDb,
+            // Never the file the note names, however large.
+            size: 9_000_000_000,
+            name: "bookshop".into(),
+        };
+        // Beside files a save writes again.
+        let mut scan = exports("/data/bookshop-exports");
+        scan.files.push(duckdb.clone());
+        form_mut(&mut harness).files_found = FilesFound::Read(scan);
+        let both = match look.terminal {
+            true => {
+                "· changes wait for :w, which rewrites the whole file (orders.csv 1.6 gb); \
+                     .duckdb files change in place"
+            }
+            false => {
+                "Editing is on. Changes are kept until you save; saving rewrites the whole \
+                      file, so orders.csv (1.6 GB) is written again in full; .duckdb files are \
+                      changed in place."
+            }
+        };
+        assert!(says(&mut harness, both), "{}", look.name);
+        // Alone.
+        form_mut(&mut harness).files_found = FilesFound::Read(Scan {
+            files: vec![duckdb],
+            missing: Vec::new(),
+            unreadable: Vec::new(),
+        });
+        let alone = match look.terminal {
+            true => "· changes wait for :w; .duckdb files change in place, in a transaction",
+            false => {
+                "Editing is on. Changes are kept until you save; .duckdb files are changed \
+                      in place, in a transaction."
+            }
+        };
+        assert!(says(&mut harness, alone), "{}", look.name);
+    }
+}
+
+#[test]
 fn another_type_s_box_left_off_does_not_make_files_editable() {
     let mut harness = new_files(Look::macos());
     harness.click("PostgreSQL");

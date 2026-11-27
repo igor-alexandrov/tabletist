@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-27 11:04-0500\n"
+"POT-Creation-Date: 2026-11-27 11:14-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -4091,6 +4091,20 @@ msgstr ""
 #, rust-format
 msgid ""
 "Editing is on. Changes are kept until you save; saving rewrites the whole "
+"file, so {file} ({size}) is written again in full; .duckdb files are changed "
+"in place."
+msgstr ""
+
+#: src/ui/connect_dialog/mod.rs
+msgid ""
+"Editing is on. Changes are kept until you save; .duckdb files are changed in "
+"place, in a transaction."
+msgstr ""
+
+#: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid ""
+"Editing is on. Changes are kept until you save; saving rewrites the whole "
 "file, so {file} ({size}) is written again in full."
 msgstr ""
 
@@ -4604,6 +4618,18 @@ msgstr ""
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "connect"
+msgstr ""
+
+#: src/ui/connect_dialog/terminal.rs
+#, rust-format
+msgid ""
+"changes wait for {key}, which rewrites the whole file ({file} "
+"{size}); .duckdb files change in place"
+msgstr ""
+
+#: src/ui/connect_dialog/terminal.rs
+#, rust-format
+msgid "changes wait for {key}; .duckdb files change in place, in a transaction"
 msgstr ""
 
 #: src/ui/connect_dialog/terminal.rs
