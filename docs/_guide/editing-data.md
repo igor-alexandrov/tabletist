@@ -563,16 +563,22 @@ is, its rows take no edit: "Rows moved in the file since this page was
 read. Reload to edit."
 
 A save writes a hidden file first, `.orders.csv.tabletist-save` beside
-`orders.csv`. If a file of that name is already there, the save leaves it
-as it is and writes nothing, and says so. If another program
-replaces the hidden file, or writes into it after the save wrote it, the
-save notices and writes nothing. On Windows no other program can touch a
-CSV or TSV file's hidden file until the save is about to put it in
-place; a Parquet, JSON or NDJSON file's it can, and the save knows the
-one it wrote by its size and the time it was changed. A program that
-writes into a Parquet, JSON or NDJSON file's hidden file while it is
-being written, or puts its own file at that name in the moment between
-the save's last look and the rename, isn't caught.
+`orders.csv`. If a file of that name is already there, the save leaves
+it as it is and writes nothing, and says so. If another program replaces
+the hidden file, or writes into it after the save wrote it, the save
+notices and writes nothing, except in the cases below. On Windows no
+other program can touch a CSV or TSV file's hidden file until the save
+is about to put it in place; a Parquet, JSON or NDJSON file's it can,
+and the save knows the one it wrote by its size and the time it was
+changed. These aren't caught:
+
+- a program that writes into a Parquet, JSON or NDJSON file's hidden
+  file while it is being written, or in the moment just after, before
+  the save takes its size and time;
+- on Windows, a file another program puts at that name with the same
+  size and time;
+- a program that puts its own file at that name in the moment between
+  the save's last look and the rename.
 
 The SQL editor reads a Files connection, whether it opens read-only or
 not: a statement that would write is refused, and its card says to edit
