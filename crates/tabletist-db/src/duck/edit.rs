@@ -1099,17 +1099,24 @@ fn write_file(
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     // On Windows a CSV's, which this save writes itself, no other program
     // may write, delete or rename while this save holds it: it is shared to
-    // read only. DuckDB opens a Parquet, JSON or NDJSON one to write and
-    // delete, so that one is shared for all three.
+    // read only. DuckDB opens a Parquet, JSON or NDJSON one itself, and
+    // opens no file another handle may write: that one this save holds
+    // only to read and set its size, time and permissions (attributes,
+    // which Windows doesn't share or refuse), shared for all of reading,
+    // writing and deleting.
     #[cfg(windows)]
-    std::os::windows::fs::OpenOptionsExt::share_mode(
-        &mut options,
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_READ_ATTRIBUTES: u32 = 0x80;
+        const FILE_WRITE_ATTRIBUTES: u32 = 0x100;
         if copy.csv.is_some() {
-            0x1
+            options.share_mode(0x1);
         } else {
-            0x1 | 0x2 | 0x4
-        },
-    );
+            options
+                .access_mode(FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES)
+                .share_mode(0x1 | 0x2 | 0x4);
+        }
+    }
     // Windows answers "access is denied" where a folder has the name: what
     // is there is what says it is taken.
     let claimed = options.open(&temp).map_err(|error| {
