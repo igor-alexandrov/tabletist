@@ -730,6 +730,11 @@ mod tests {
         // numbered anew.
         assert_eq!(quantity(&connection, 1), Some(4));
         assert!(quantity(&connection, 2).is_some());
+        assert!(
+            connection
+                .execute_batch("DELETE FROM bookshop.order_items")
+                .is_err()
+        );
         assert_ne!(held.shared.saves.load(Ordering::SeqCst), saves);
         assert_eq!(held.generation(), held.shared.saves.load(Ordering::SeqCst));
     }

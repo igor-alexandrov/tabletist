@@ -1420,8 +1420,6 @@ fn script(
     Ok(outcome)
 }
 
-/// A WHERE typed in the filter bar is one condition: a `;` or a NUL in
-/// it is refused before DuckDB reads it.
 /// The key `object`'s rows are read in, as a page reads them: a `.duckdb`
 /// file's table's primary key (`database` is where the session holds the
 /// file), none elsewhere.
@@ -1438,6 +1436,8 @@ fn key_of(
     })
 }
 
+/// A WHERE typed in the filter bar is one condition: a `;` or a NUL in
+/// it is refused before DuckDB reads it.
 fn check_raw_where(query: &RowQuery) -> Result<()> {
     let Some(raw) = query.raw_where.as_deref() else {
         return Ok(());
