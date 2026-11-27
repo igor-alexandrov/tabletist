@@ -16,13 +16,15 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock, RwLockReadGuard};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock, RwLockReadGuard, Weak};
 use std::time::Instant;
 
-use super::edit::{self, EDITS, POSITION, Stamp};
-use super::{literal, map_error, path_text, to_duckdb};
+use super::edit::{self, POSITION, Stamp};
+use super::{Attached, literal, map_error, path_text, to_duckdb};
 use crate::write::Conflict;
-use crate::{ChangeSet, Dialect, Error, ObjectRef, Result, StopFlag, Unsaved, WriteOutcome};
+use crate::{
+    ChangeSet, Dialect, Error, Result, RowPage, RowQuery, StopFlag, Unsaved, WriteOutcome,
+};
 
 /// The column DuckDB numbers a table's rows by, which no `SELECT *` reads.
 const ROWID: &str = "rowid";
@@ -31,25 +33,60 @@ const ROWID: &str = "rowid";
 struct Shared {
     /// Held by each call together, and by a save alone.
     gate: RwLock<()>,
-    /// The number of the save that wrote the file last, from 1.
+    /// The number of the file as the sessions read it: taken anew (from
+    /// [`edit::next_generation`], so no number comes twice) by each save,
+    /// and by each change another program made that a session found.
     saves: AtomicI64,
 }
 
 /// The `.duckdb` file at `path`, its own path (`own`, however a
-/// connection spells it), as this app's sessions share it.
+/// connection spells it), as this app's sessions share it. One no session
+/// holds any more is shared afresh, with a number of its own: another
+/// program may have changed it since, and a page read before is of the
+/// file as it was.
 fn shared(own: &Path) -> Arc<Shared> {
-    static FILES: OnceLock<Mutex<std::collections::HashMap<PathBuf, Arc<Shared>>>> =
+    static FILES: OnceLock<Mutex<std::collections::HashMap<PathBuf, Weak<Shared>>>> =
         OnceLock::new();
     let mut files = FILES
         .get_or_init(Default::default)
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    Arc::clone(files.entry(own.to_owned()).or_insert_with(|| {
-        Arc::new(Shared {
-            gate: RwLock::new(()),
-            saves: AtomicI64::new(1),
-        })
-    }))
+    if let Some(shared) = files.get(own).and_then(Weak::upgrade) {
+        return shared;
+    }
+    let shared = Arc::new(Shared {
+        gate: RwLock::new(()),
+        saves: AtomicI64::new(edit::next_generation()),
+    });
+    files.retain(|_, file| file.strong_count() > 0);
+    files.insert(own.to_owned(), Arc::downgrade(&shared));
+    shared
+}
+
+/// The path a file's gate is kept by: its own, however it is spelled.
+fn own_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned())
+}
+
+/// The `.duckdb` files a session opens, held for reading while it attaches
+/// them: one another session is saving is attached once that save is done.
+pub(super) struct Opening(Vec<Arc<Shared>>);
+
+impl Opening {
+    pub(super) fn of<'a>(paths: impl Iterator<Item = &'a Path>) -> Self {
+        let mut owns: Vec<PathBuf> = paths.map(own_path).collect();
+        // In their own paths' order, each once, as `reading` takes them.
+        owns.sort();
+        owns.dedup();
+        Self(owns.iter().map(|own| shared(own)).collect())
+    }
+
+    pub(super) fn hold(&self) -> Vec<RwLockReadGuard<'_, ()>> {
+        self.0
+            .iter()
+            .map(|file| file.gate.read().unwrap_or_else(PoisonError::into_inner))
+            .collect()
+    }
 }
 
 /// A `.duckdb` file as a session attached it.
@@ -72,7 +109,7 @@ pub(super) struct Held {
 
 impl Held {
     pub(super) fn new(name: &str, path: &Path) -> Self {
-        let own = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+        let own = own_path(path);
         Self {
             name: name.to_owned(),
             path: path.to_owned(),
@@ -113,11 +150,18 @@ fn attach(connection: &duckdb::Connection, held: &Held, write: bool) -> Result<(
 
 /// Attaches `held` read-only again, as the file was after save `saves`.
 /// Where that fails the file is left detached, so the attachment is of no
-/// save: the next call tries again.
+/// save: the next call tries again. The file is numbered anew too: what
+/// is at its name by then may be another file, which no page read before,
+/// its rows found by `rowid`, is saved to.
 fn read_only_again(connection: &duckdb::Connection, held: &Held, saves: i64) {
     let seen = match attach(connection, held, false) {
         Ok(()) => saves,
-        Err(_) => 0,
+        Err(_) => {
+            held.shared
+                .saves
+                .store(edit::next_generation(), Ordering::SeqCst);
+            0
+        }
     };
     held.seen.store(seen, Ordering::SeqCst);
 }
@@ -150,7 +194,17 @@ pub(super) fn reading<'a>(
         let seen = held.seen.load(Ordering::SeqCst);
         let was = *held.stamp.lock().unwrap_or_else(PoisonError::into_inner);
         if seen == saves && was.is_some() && Stamp::of(&held.path).ok() != was {
-            saves = held.shared.saves.fetch_add(1, Ordering::SeqCst) + 1;
+            // Another session may have found it first: its number holds.
+            let fresh = edit::next_generation();
+            saves = match held.shared.saves.compare_exchange(
+                saves,
+                fresh,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => fresh,
+                Err(now) => now,
+            };
         }
         if seen != saves {
             read_only_again(connection, held, saves);
@@ -234,25 +288,18 @@ fn primary_key(
     })
 }
 
-/// Where a page of `object`, a `.duckdb` file's table with no primary
-/// key, is read from: a view of it in the edits database that reads each
-/// row's `rowid` as its place. Made outside the page's read-only
-/// transaction, which may make nothing.
-pub(super) fn placed(connection: &duckdb::Connection, object: &ObjectRef) -> Result<ObjectRef> {
-    let from = ObjectRef {
-        schema: EDITS.to_owned(),
-        name: format!("{}.{}", object.schema, object.name),
-    };
-    let dialect = Dialect::DuckDb;
-    connection
-        .execute_batch(&format!(
-            "CREATE OR REPLACE VIEW {} AS SELECT {ROWID} AS {}, * FROM {}",
-            dialect.qualified(&from),
-            dialect.quote_ident(POSITION),
-            dialect.qualified(object),
-        ))
-        .map_err(map_error)?;
-    Ok(from)
+/// A page of `query`'s table, a `.duckdb` file's with no primary key,
+/// each row with its `rowid` as its place: the rows of the file as the
+/// session's attachment of it is (`held`).
+pub(super) fn page(
+    connection: &duckdb::Connection,
+    query: &RowQuery,
+    attached: &[Attached],
+    held: &Held,
+    limit: usize,
+) -> Result<RowPage> {
+    let catalog = super::columns(connection, &query.object, attached)?;
+    edit::page_with(connection, query, catalog, ROWID, limit, held.generation())
 }
 
 /// Saves `changes` to `held`'s table `changes.object` in place, alone:
@@ -285,6 +332,22 @@ pub(super) fn save(
         held.seen.store(saves, Ordering::SeqCst);
     }
     let key = primary_key(connection, &held.name, &changes.object.name)?;
+    // A keyed row found by its key alone: one found by other columns may
+    // be more than one row.
+    let by_key = |found: &[(String, crate::Value)]| {
+        found.len() == key.len() && found.iter().all(|(column, _)| key.contains(column))
+    };
+    let keys = changes.rows.iter().map(|row| &row.key);
+    if !key.is_empty()
+        && !keys
+            .chain(changes.deletes.iter().map(|row| &row.key))
+            .all(|found| by_key(found))
+    {
+        return Err(Error::query(format!(
+            "{} finds its rows by its primary key, which these rows aren't found by",
+            changes.object.name
+        )));
+    }
     // Rows found by `rowid` are of the file as one save left it: another
     // save since may have numbered them again.
     if key.is_empty() && !by_rowid(connection, &held.name, &changes.object.name)? {
@@ -337,11 +400,27 @@ pub(super) fn save(
             ),
         });
     }
+    // Replaced between the check and the attach: not written, and every
+    // session reads the file again.
+    if Stamp::of(&held.path).ok() != was {
+        let next = edit::next_generation();
+        held.shared.saves.store(next, Ordering::SeqCst);
+        read_only_again(connection, held, next);
+        return Err(unsaved(
+            Unsaved::Changed(label.clone()),
+            format!("{label} changed on disk since it was opened"),
+        ));
+    }
     let done = connection
         .execute_batch("BEGIN TRANSACTION")
         .map_err(map_error)
         .and_then(|()| changed(connection, &changes, !key.is_empty(), stop));
     let outcome = match done {
+        Ok(WriteOutcome::Written { .. }) if stop.is_stopped() => {
+            let _ = connection.execute_batch("ROLLBACK");
+            back();
+            return Err(Error::Cancelled);
+        }
         Ok(outcome @ WriteOutcome::Written { .. }) => {
             match connection.execute_batch("COMMIT").map_err(map_error) {
                 Ok(()) => outcome,
@@ -359,7 +438,8 @@ pub(super) fn save(
         }
     };
     // Written: every session, this one too, reads the file as it is now.
-    let next = held.shared.saves.fetch_add(1, Ordering::SeqCst) + 1;
+    let next = edit::next_generation();
+    held.shared.saves.store(next, Ordering::SeqCst);
     read_only_again(connection, held, next);
     Ok(match outcome {
         WriteOutcome::Written {
@@ -472,7 +552,11 @@ fn changed(
             .and_then(|update| run(&update.sql))
         {
             Ok(0) => conflicts.push(Conflict { row, server: None }),
-            Ok(_) => {}
+            Ok(1) => {}
+            Ok(many) => {
+                let error = Error::query(format!("{many} rows have this row's key"));
+                return Ok(WriteOutcome::Failed { row, error });
+            }
             Err(error) => return Ok(WriteOutcome::Failed { row, error }),
         }
     }
@@ -487,13 +571,18 @@ fn changed(
             .and_then(|deletion| run(&deletion.sql))
         {
             Ok(0) => gone.push(delete),
-            Ok(_) => {}
+            Ok(1) => {}
+            Ok(many) => {
+                let error = Error::query(format!("{many} rows have this row's key"));
+                return Ok(WriteOutcome::FailedDelete { delete, error });
+            }
             Err(error) => return Ok(WriteOutcome::FailedDelete { delete, error }),
         }
     }
     stopped()?;
     let mut rows = Vec::with_capacity(changes.rows.len());
     for change in changes.rows.iter().filter(|_| keyed) {
+        stopped()?;
         let select = dialect.select_row(object, &change.key, false);
         let params = select.params.iter().map(to_duckdb).collect();
         let (_, mut found, _) = super::rows_of(connection, &select.text, params, 2)?;
@@ -515,6 +604,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_session_opening_a_file_waits_for_a_save_of_it_however_it_spells_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bookshop.duckdb");
+        std::fs::write(&path, b"").unwrap();
+        let spelled = dir.path().join(".").join("bookshop.duckdb");
+        let opening = Opening::of([spelled.as_path(), path.as_path()].into_iter());
+        let held = opening.hold();
+        // Once, though it is named twice.
+        assert_eq!(held.len(), 1);
+        let file = Held::new("shop", &path);
+        assert!(file.shared.gate.try_write().is_err());
+        drop(held);
+        assert!(file.shared.gate.try_write().is_ok());
+    }
+
+    #[test]
+    fn a_file_no_session_holds_is_shared_afresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bookshop.duckdb");
+        let one = Held::new("shop", &path);
+        let saves = one.shared.saves.load(Ordering::SeqCst);
+        let two = Held::new("shop", &path);
+        assert_eq!(two.shared.saves.load(Ordering::SeqCst), saves);
+        drop((one, two));
+        let again = Held::new("shop", &path);
+        assert_ne!(again.shared.saves.load(Ordering::SeqCst), saves);
+    }
+
+    #[test]
     fn a_file_that_cannot_be_attached_again_is_tried_again_on_the_next_call() {
         let connection = duckdb::Connection::open_in_memory().unwrap();
         let dir = tempfile::tempdir().unwrap();
@@ -522,8 +640,13 @@ mod tests {
         held.seen.store(3, Ordering::SeqCst);
         // A save refused, and the file then not attached read-only either:
         // not attached as of the save it was, so the next call attaches it.
-        read_only_again(&connection, &held, 3);
+        let saves = held.shared.saves.load(Ordering::SeqCst);
+        read_only_again(&connection, &held, saves);
         assert_eq!(held.generation(), 0);
+        // And the file numbered anew: what is at its name when it is
+        // attached again may be another file, and a page of it before, found
+        // by `rowid`, is not saved to it.
+        assert_ne!(held.shared.saves.load(Ordering::SeqCst), saves);
     }
 
     #[test]

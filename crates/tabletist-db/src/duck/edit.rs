@@ -24,8 +24,8 @@ use super::{FILE_COPY, Opened, literal, map_error, path_text, reader_path, to_du
 use crate::files::{Format, Header, Reading};
 use crate::write::{Conflict, NewValue};
 use crate::{
-    ChangeSet, Dialect, Error, ObjectRef, Result, RowPage, RowQuery, StopFlag, Unsaved, Value,
-    WriteOutcome,
+    ChangeSet, ColumnInfo, Dialect, Error, ObjectRef, Result, RowPage, RowQuery, StopFlag, Unsaved,
+    Value, WriteOutcome,
 };
 
 /// The in-memory database the copies are kept in, apart from the views.
@@ -121,8 +121,9 @@ pub(super) struct Copy {
 }
 
 /// A number no copy made before has: each read of a file, and each save
-/// that numbers its rows again, takes the next.
-fn next_generation() -> i64 {
+/// that numbers its rows again, takes the next, and so does each change
+/// of a `.duckdb` file (`database`).
+pub(super) fn next_generation() -> i64 {
     static NEXT: AtomicI64 = AtomicI64::new(1);
     NEXT.fetch_add(1, Ordering::SeqCst)
 }
@@ -150,8 +151,8 @@ impl Copy {
 }
 
 /// A page of a table, read from `from`, which holds each row's place
-/// beside it (a file's copy, or a view of a `.duckdb` file's table): in
-/// the file's order, or that after the page's own sort.
+/// beside it (a file's copy): in the file's order, or that after the
+/// page's own sort.
 pub(super) fn page(
     connection: &duckdb::Connection,
     query: &RowQuery,
@@ -166,6 +167,43 @@ pub(super) fn page(
     let catalog = super::columns(connection, &from.object, &[])?;
     let binary = super::binary_of(&catalog);
     let sql = Dialect::DuckDb.select_rows(&from, &[POSITION.to_owned()], &binary)?;
+    placed_page(connection, sql, catalog, limit, generation)
+}
+
+/// A page of `query`'s table, each row's place read from `column` beside
+/// it (a `.duckdb` file's `rowid`), the table itself what it is read from:
+/// a filter that names it still finds it.
+pub(super) fn page_with(
+    connection: &duckdb::Connection,
+    query: &RowQuery,
+    catalog: Vec<ColumnInfo>,
+    column: &str,
+    limit: usize,
+    generation: i64,
+) -> Result<RowPage> {
+    let binary = super::binary_of(&catalog);
+    let mut sql = Dialect::DuckDb.select_rows(query, &[POSITION.to_owned()], &binary)?;
+    let rest = sql
+        .text
+        .strip_prefix("SELECT * FROM ")
+        .ok_or_else(|| Error::query("the rows' places could not be read"))?;
+    let dialect = Dialect::DuckDb;
+    sql.text = format!(
+        "SELECT {} AS {}, * FROM {rest}",
+        dialect.quote_ident(column),
+        dialect.quote_ident(POSITION)
+    );
+    placed_page(connection, sql, catalog, limit, generation)
+}
+
+/// The page `sql` reads, its rows' places in the column [`POSITION`].
+fn placed_page(
+    connection: &duckdb::Connection,
+    sql: crate::Sql,
+    catalog: Vec<ColumnInfo>,
+    limit: usize,
+    generation: i64,
+) -> Result<RowPage> {
     let started = Instant::now();
     let params = sql.params.iter().map(to_duckdb).collect();
     let (mut columns, mut rows, has_more) = super::rows_of(connection, &sql.text, params, limit)?;

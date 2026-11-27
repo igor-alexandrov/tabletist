@@ -659,6 +659,15 @@ fn opened(
         .iter()
         .filter(|file| !reading.skips(&file.path))
         .collect();
+    // Held while they are attached: a save another session runs is waited
+    // for, and the file attached as it left it.
+    let opening = database::Opening::of(
+        files
+            .iter()
+            .filter(|file| file.format.is_database())
+            .map(|file| file.path.as_path()),
+    );
+    let _opening = opening.hold();
     let config = duckdb::Config::default()
         .enable_autoload_extension(false)
         .map_err(map_error)?;
@@ -1413,6 +1422,22 @@ fn script(
 
 /// A WHERE typed in the filter bar is one condition: a `;` or a NUL in
 /// it is refused before DuckDB reads it.
+/// The key `object`'s rows are read in, as a page reads them: a `.duckdb`
+/// file's table's primary key (`database` is where the session holds the
+/// file), none elsewhere.
+fn key_of(
+    connection: &duckdb::Connection,
+    object: &ObjectRef,
+    database: Option<usize>,
+) -> Result<Vec<String>> {
+    Ok(match database {
+        Some(_) => {
+            database::table_key(connection, &object.schema, &object.name)?.unwrap_or_default()
+        }
+        None => Vec::new(),
+    })
+}
+
 fn check_raw_where(query: &RowQuery) -> Result<()> {
     let Some(raw) = query.raw_where.as_deref() else {
         return Ok(());
@@ -2136,10 +2161,8 @@ impl Adapter for Conn {
                     database::by_rowid(connection, &query.object.schema, &query.object.name)
                 })?
             {
-                let from = database::placed(connection, &query.object)?;
-                let generation = databases[at].generation();
                 return read_only(connection, |connection| {
-                    edit::page(connection, &query, &from, limit, generation)
+                    database::page(connection, &query, &attached, &databases[at], limit)
                 });
             }
             let key = keyed.unwrap_or_default();
@@ -2172,7 +2195,8 @@ impl Adapter for Conn {
                 }
                 let catalog = columns(connection, &query.object, &attached)?;
                 let binary = binary_of(&catalog);
-                // A file has no key: rows come in the file's order.
+                // A `.duckdb` file's table in its key's order; another
+                // file's rows, with no key, in the file's.
                 let sql = Dialect::DuckDb.select_rows(&query, &key, &binary)?;
                 let started = Instant::now();
                 let params = sql.params.iter().map(to_duckdb).collect();
@@ -2196,10 +2220,12 @@ impl Adapter for Conn {
         let query = query.clone();
         let chosen = columns.to_vec();
         let attached = Arc::clone(&self.attached);
+        let database = self.database_of(&query.object);
         self.run(move |connection| {
             read_only(connection, |connection| {
+                let key = key_of(connection, &query.object, database)?;
                 let binary = binary_columns(connection, &query.object, &attached)?;
-                Dialect::DuckDb.shown_export(&query, &[], &binary, &chosen)
+                Dialect::DuckDb.shown_export(&query, &key, &binary, &chosen)
             })
         })
         .await
@@ -2207,7 +2233,7 @@ impl Adapter for Conn {
 
     /// An export's rows, read as DuckDB's chunks in one blocking job and
     /// sent on a batch at a time: the job waits while the receiver holds
-    /// the batch before. A file has no key: rows come in the file's order.
+    /// the batch before. Rows come in the order a page reads them in.
     async fn stream_rows(
         &self,
         query: &RowQuery,
@@ -2222,11 +2248,13 @@ impl Adapter for Conn {
         let to = to.clone();
         let stop = stop.clone();
         let attached = Arc::clone(&self.attached);
+        let database = self.database_of(&query.object);
         self.run(move |connection| {
             read_only(connection, |connection| {
+                let key = key_of(connection, &query.object, database)?;
                 let catalog = self::columns(connection, &query.object, &attached)?;
                 let binary = binary_of(&catalog);
-                let sql = Dialect::DuckDb.export_rows(&query, &[], &binary, &chosen)?;
+                let sql = Dialect::DuckDb.export_rows(&query, &key, &binary, &chosen)?;
                 let mut statement = connection.prepare(&sql.text).map_err(map_error)?;
                 let chunks = statement
                     .stream_arrow(duckdb::params_from_iter(sql.params.iter().map(to_duckdb)))

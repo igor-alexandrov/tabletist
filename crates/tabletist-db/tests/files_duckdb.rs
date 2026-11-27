@@ -284,6 +284,71 @@ async fn a_table_with_a_column_named_rowid_is_not_found_by_it() {
     );
 }
 
+#[tokio::test]
+async fn a_table_with_no_key_is_filtered_by_its_own_name() {
+    let (connection, _dir) = editable().await;
+    let mut query = RowQuery::new(shop("book_covers"), 100);
+    query.raw_where = Some("book_covers.id > 1".to_owned());
+    let filtered = connection.fetch_rows(&query).await.unwrap();
+    assert!(filtered.positions.is_some());
+    let ids = column(&filtered, "id");
+    assert!(!ids.is_empty());
+    assert!(ids.iter().all(|id| matches!(id, Value::Int(id) if *id > 1)));
+}
+
+#[tokio::test]
+async fn a_change_found_by_other_than_the_key_is_not_saved() {
+    let (connection, _dir) = editable().await;
+    let before = page(&connection, "order_items").await;
+    // An order of more than one item: two rows of one order_id.
+    let orders = column(&before, "order_id");
+    let order = orders
+        .iter()
+        .find(|order| orders.iter().filter(|other| other == order).count() > 1)
+        .unwrap()
+        .clone();
+    let mut changes = set("order_items");
+    changes.deletes.push(RowDelete {
+        key: vec![("order_id".to_owned(), order)],
+    });
+    assert!(save(&connection, &changes).await.is_err());
+    assert_eq!(page(&connection, "order_items").await.rows.len(), 40);
+}
+
+#[tokio::test]
+async fn a_page_read_before_the_file_was_closed_is_not_saved_after() {
+    let (connection, dir) = editable().await;
+    let before = page(&connection, "book_covers").await;
+    drop(connection);
+    // Another program deletes the first row: the others move up a place.
+    {
+        let duck = duckdb::Connection::open(dir.path().join("bookshop.duckdb")).unwrap();
+        duck.execute_batch("DELETE FROM book_covers WHERE rowid = 0; CHECKPOINT")
+            .unwrap();
+    }
+    let connection = open(dir.path(), Access::Writable).await;
+    let mut changes = set("book_covers");
+    changes.deletes.push(RowDelete {
+        key: at(&before, 1),
+    });
+    let error = save(&connection, &changes).await.unwrap_err();
+    assert_eq!(
+        unsaved(&error),
+        Some(Unsaved::Reread("bookshop.duckdb".into()))
+    );
+    assert_eq!(page(&connection, "book_covers").await.rows.len(), 2);
+}
+
+#[tokio::test]
+async fn a_keyed_table_is_exported_in_its_key_order() {
+    let (connection, _dir) = editable().await;
+    let statement = connection
+        .export_statement(&RowQuery::new(shop("order_items"), 100), &[])
+        .await
+        .unwrap();
+    assert!(statement.contains("ORDER BY \"id\""), "{statement}");
+}
+
 // On Windows another session's hold keeps a save from opening the file
 // to write: see `on_windows_a_file_another_session_has_open_is_not_written`.
 #[cfg(not(windows))]
@@ -360,24 +425,29 @@ async fn a_row_another_session_saved_since_it_was_loaded_is_a_conflict() {
 async fn a_failed_change_writes_nothing() {
     let (connection, dir) = editable().await;
     let before = std::fs::read(dir.path().join("bookshop.duckdb")).unwrap();
-    // id 1 is taken: the insert fails, and the update before it is undone.
+    // id 1 is taken: the second insert fails, and the first, written
+    // before it, is undone.
     let mut changes = set("order_items");
+    for id in ["200", "1"] {
+        changes.inserts.push(RowInsert {
+            set: vec![InsertValue {
+                column: "id".to_owned(),
+                type_name: String::new(),
+                new: NewValue::Text(id.to_owned()),
+            }],
+        });
+    }
     changes
         .rows
         .push(change(by_id(2), "quantity", "INTEGER", Value::Int(3), "7"));
-    changes.inserts.push(RowInsert {
-        set: vec![InsertValue {
-            column: "id".to_owned(),
-            type_name: String::new(),
-            new: NewValue::Text("1".to_owned()),
-        }],
-    });
     let outcome = save(&connection, &changes).await.unwrap();
     assert!(
-        matches!(outcome, WriteOutcome::FailedInsert { insert: 0, .. }),
+        matches!(outcome, WriteOutcome::FailedInsert { insert: 1, .. }),
         "{outcome:?}"
     );
+    // Undone in this session, before it lets go of the file.
     let after = page(&connection, "order_items").await;
+    assert!(!column(&after, "id").contains(&Value::Int(200)));
     let at = column(&after, "id")
         .iter()
         .position(|id| *id == Value::Int(2))
@@ -467,6 +537,7 @@ fn hold_the_file() {
     let Ok(path) = std::env::var("TABLETIST_HOLD") else {
         return;
     };
+    let path = path.replace('\'', "''");
     let duck = duckdb::Connection::open_in_memory().unwrap();
     duck.execute_batch(&format!("ATTACH '{path}' AS held (READ_ONLY)"))
         .unwrap();
