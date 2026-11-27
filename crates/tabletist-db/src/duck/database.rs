@@ -132,6 +132,39 @@ impl Held {
     }
 }
 
+/// Where a save is, for a test to step in at (`tests::stepping_in`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Moment {
+    /// Checked, about to attach the file to write.
+    WriteAttach,
+    /// Written, about to read a changed row back.
+    ReadBack,
+    /// About to commit.
+    Commit,
+}
+
+/// What a test runs where a save is.
+#[cfg(test)]
+type Step = Box<dyn FnMut(Moment)>;
+
+#[cfg(test)]
+thread_local! {
+    static STEP_IN: std::cell::RefCell<Option<Step>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A save at `moment`: a test may step in there, nothing else does.
+fn at(moment: Moment) {
+    #[cfg(test)]
+    STEP_IN.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook(moment);
+        }
+    });
+    #[cfg(not(test))]
+    let _ = moment;
+}
+
 /// Attaches `held` again under its name: read-only, or to write.
 fn attach(connection: &duckdb::Connection, held: &Held, write: bool) -> Result<()> {
     let name = Dialect::DuckDb.ident(&held.name);
@@ -380,6 +413,7 @@ pub(super) fn save(
     }
     // Read-only again whatever comes of it.
     let back = || read_only_again(connection, held, saves);
+    at(Moment::WriteAttach);
     if let Err(error) = attach(connection, held, true) {
         back();
         let said = super::plain(&error);
@@ -415,6 +449,7 @@ pub(super) fn save(
         .execute_batch("BEGIN TRANSACTION")
         .map_err(map_error)
         .and_then(|()| changed(connection, &changes, !key.is_empty(), stop));
+    at(Moment::Commit);
     let outcome = match done {
         Ok(WriteOutcome::Written { .. }) if stop.is_stopped() => {
             let _ = connection.execute_batch("ROLLBACK");
@@ -582,6 +617,7 @@ fn changed(
     stopped()?;
     let mut rows = Vec::with_capacity(changes.rows.len());
     for change in changes.rows.iter().filter(|_| keyed) {
+        at(Moment::ReadBack);
         stopped()?;
         let select = dialect.select_row(object, &change.key, false);
         let params = select.params.iter().map(to_duckdb).collect();
@@ -602,6 +638,134 @@ fn changed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Bookshop's `bookshop.duckdb` in a folder of its own, attached
+    /// read-only as `bookshop` by a session of its own.
+    fn bookshop() -> (duckdb::Connection, Held, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        crate::fixtures::write_bookshop_files(dir.path()).unwrap();
+        let connection = duckdb::Connection::open_in_memory().unwrap();
+        let held = Held::new("bookshop", &dir.path().join("bookshop.duckdb"));
+        read_only_again(&connection, &held, held.shared.saves.load(Ordering::SeqCst));
+        assert_ne!(held.generation(), 0);
+        (connection, held, dir)
+    }
+
+    /// A save that runs `step` wherever it is.
+    fn stepping_in(step: impl FnMut(Moment) + 'static) -> impl Drop {
+        struct Out;
+        impl Drop for Out {
+            fn drop(&mut self) {
+                STEP_IN.with(|hook| *hook.borrow_mut() = None);
+            }
+        }
+        STEP_IN.with(|hook| *hook.borrow_mut() = Some(Box::new(step)));
+        Out
+    }
+
+    /// Order item `id`'s quantity, as the session reads the file.
+    fn quantity(connection: &duckdb::Connection, id: i64) -> Option<i64> {
+        connection
+            .query_row(
+                "SELECT quantity FROM bookshop.order_items WHERE id = ?",
+                [id],
+                |row| row.get(0),
+            )
+            .ok()
+    }
+
+    /// Order item 1's quantity set to 9, and order item 2 deleted.
+    fn changes(connection: &duckdb::Connection) -> ChangeSet {
+        let key = |id: i64| vec![("id".to_owned(), crate::Value::Int(id))];
+        ChangeSet {
+            object: crate::ObjectRef::new("bookshop", "order_items"),
+            inserts: Vec::new(),
+            rows: vec![crate::RowChange {
+                key: key(1),
+                set: vec![crate::CellChange {
+                    column: "quantity".to_owned(),
+                    type_name: "INTEGER".to_owned(),
+                    loaded: crate::Value::Int(quantity(connection, 1).unwrap()),
+                    new: crate::NewValue::Text("9".to_owned()),
+                }],
+            }],
+            deletes: vec![crate::RowDelete { key: key(2) }],
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_replaced_just_before_a_save_opens_it_to_write_is_not_written() {
+        let (connection, held, dir) = bookshop();
+        let path = dir.path().join("bookshop.duckdb");
+        let changes = changes(&connection);
+        let saves = held.shared.saves.load(Ordering::SeqCst);
+        // Another program puts a file of its own at the name: the same
+        // rows, order item 1's quantity 4.
+        let replace = {
+            let (path, dir) = (path.clone(), dir.path().to_owned());
+            move |moment| {
+                if moment != Moment::WriteAttach {
+                    return;
+                }
+                let other = dir.join("other.duckdb");
+                std::fs::copy(&path, &other).unwrap();
+                let duck = duckdb::Connection::open(&other).unwrap();
+                duck.execute_batch("UPDATE order_items SET quantity = 4 WHERE id = 1; CHECKPOINT")
+                    .unwrap();
+                drop(duck);
+                std::fs::rename(&other, &path).unwrap();
+            }
+        };
+        let _in = stepping_in(replace);
+        let error = save(&connection, &held, &changes, &StopFlag::new()).unwrap_err();
+        let Error::Query { named, .. } = &error else {
+            panic!("{error:?}");
+        };
+        assert_eq!(
+            named.unsaved,
+            Some(Unsaved::Changed("bookshop.duckdb".into()))
+        );
+        // The other program's file, unwritten, attached read-only again and
+        // numbered anew.
+        assert_eq!(quantity(&connection, 1), Some(4));
+        assert!(quantity(&connection, 2).is_some());
+        assert_ne!(held.shared.saves.load(Ordering::SeqCst), saves);
+        assert_eq!(held.generation(), held.shared.saves.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_save_stopped_after_its_changes_ran_writes_nothing() {
+        for stopped_at in [Moment::ReadBack, Moment::Commit] {
+            let (connection, held, _dir) = bookshop();
+            let changes = changes(&connection);
+            let before = quantity(&connection, 1);
+            let stop = StopFlag::new();
+            let _in = stepping_in({
+                let stop = stop.clone();
+                move |moment| {
+                    if moment == stopped_at {
+                        stop.stop();
+                    }
+                }
+            });
+            let outcome = save(&connection, &held, &changes, &stop);
+            assert!(
+                matches!(outcome, Err(Error::Cancelled)),
+                "{stopped_at:?}: {outcome:?}"
+            );
+            // Undone, and the file attached read-only again.
+            assert_eq!(quantity(&connection, 1), before, "{stopped_at:?}");
+            assert!(quantity(&connection, 2).is_some(), "{stopped_at:?}");
+            assert!(
+                connection
+                    .execute_batch("DELETE FROM bookshop.order_items")
+                    .is_err(),
+                "{stopped_at:?}"
+            );
+            assert_ne!(held.generation(), 0);
+        }
+    }
 
     #[test]
     fn a_session_opening_a_file_waits_for_a_save_of_it_however_it_spells_it() {
