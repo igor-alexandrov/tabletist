@@ -601,8 +601,9 @@ without one finds a row by DuckDB's `rowid`, its row's place in the
 file. A save that deletes rows moves those after them, and one that
 changes a list or a unique column puts that row last, so after every
 save its page is read again, and until it is an edit says "Rows moved in
-the file since this page was read. Reload to edit." A view in the file
-isn't edited.
+the file since this page was read. Reload to edit." A table with no
+primary key and a column of its own named `rowid` isn't edited: that
+column is what `rowid` would read. Nor is a view in the file.
 
 While the connection is open, Tabletist holds the file read-only:
 another program can read it, but not write it. A save opens it to write

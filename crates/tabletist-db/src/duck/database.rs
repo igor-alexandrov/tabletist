@@ -169,6 +169,27 @@ pub(super) fn table_key(
     primary_key(connection, database, table).map(Some)
 }
 
+/// Whether the table `table` of the `.duckdb` file attached as `database`
+/// can be found by DuckDB's `rowid`: not where a column of its own is
+/// named `rowid`, which `rowid` would read instead (two rows could then be
+/// one place), or is named as the place its page reads it as.
+pub(super) fn by_rowid(
+    connection: &duckdb::Connection,
+    database: &str,
+    table: &str,
+) -> Result<bool> {
+    let shadowing: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM information_schema.columns \
+             WHERE table_catalog = ? AND table_schema = 'main' AND table_name = ? \
+             AND lower(column_name) IN (?, ?)",
+            [database, table, ROWID, &POSITION.to_lowercase()],
+            |row| row.get(0),
+        )
+        .map_err(map_error)?;
+    Ok(shadowing == 0)
+}
+
 /// The columns of the primary key of the table `table` of the `.duckdb`
 /// file attached as `database`, in its order: none where it has none.
 fn primary_key(
@@ -254,6 +275,12 @@ pub(super) fn save(
     let key = primary_key(connection, &held.name, &changes.object.name)?;
     // Rows found by `rowid` are of the file as one save left it: another
     // save since may have numbered them again.
+    if key.is_empty() && !by_rowid(connection, &held.name, &changes.object.name)? {
+        return Err(Error::query(format!(
+            "{} has a column of its own named rowid: its rows can't be found",
+            changes.object.name
+        )));
+    }
     let changes = match key.is_empty() {
         true => edit::own_keys(changes, saves, ROWID).ok_or_else(|| {
             unsaved(

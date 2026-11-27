@@ -2128,8 +2128,13 @@ impl Adapter for Conn {
                 })?,
                 None => None,
             };
+            // Not where a column of its own is named `rowid`: that reads
+            // it instead, and its page says it has no key.
             if let (Some(at), Some(key), true) = (database, &keyed, writable)
                 && key.is_empty()
+                && read_only(connection, |connection| {
+                    database::by_rowid(connection, &query.object.schema, &query.object.name)
+                })?
             {
                 let from = database::placed(connection, &query.object)?;
                 let generation = databases[at].generation();

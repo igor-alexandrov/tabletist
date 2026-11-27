@@ -254,6 +254,36 @@ async fn a_list_of_a_table_with_no_key_is_saved_though_duckdb_moves_its_row() {
     assert_eq!(after.rows.len(), before.rows.len());
 }
 
+#[tokio::test]
+async fn a_table_with_a_column_named_rowid_is_not_found_by_it() {
+    let dir = tempfile::tempdir().unwrap();
+    tabletist_db::fixtures::write_bookshop_files(dir.path()).unwrap();
+    // Its own `rowid` is what `rowid` reads: two rows of one value.
+    {
+        let duck = duckdb::Connection::open(dir.path().join("bookshop.duckdb")).unwrap();
+        duck.execute_batch("CREATE TABLE cover_kinds AS SELECT 7 AS rowid, kind FROM book_covers")
+            .unwrap();
+    }
+    let before = std::fs::read(dir.path().join("bookshop.duckdb")).unwrap();
+    let connection = open(dir.path(), Access::Writable).await;
+    let kinds = page(&connection, "cover_kinds").await;
+    assert!(kinds.positions.is_none());
+    // Nor is a save of rows by places.
+    let mut changes = set("cover_kinds");
+    changes.deletes.push(RowDelete {
+        key: vec![
+            (FILE_POSITION.to_owned(), Value::Int(7)),
+            (FILE_COPY.to_owned(), Value::Int(1)),
+        ],
+    });
+    assert!(save(&connection, &changes).await.is_err());
+    drop(connection);
+    assert_eq!(
+        std::fs::read(dir.path().join("bookshop.duckdb")).unwrap(),
+        before
+    );
+}
+
 // On Windows another session's hold keeps a save from opening the file
 // to write: see `on_windows_a_file_another_session_has_open_is_not_written`.
 #[cfg(not(windows))]
