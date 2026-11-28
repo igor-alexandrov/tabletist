@@ -13,12 +13,14 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
   <a href="rust-toolchain.toml"><img src="https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Figor-alexandrov%2Ftabletist%2Fmain%2FCargo.toml&query=%24.workspace.package.rust-version&label=rust&logo=rust&color=orange" alt="Rust version"></a>
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey" alt="Platforms: Linux, macOS, Windows">
-  <img src="https://img.shields.io/badge/databases-PostgreSQL%20%7C%20MySQL%20%7C%20SQLite%20%7C%20BigQuery-336791" alt="Databases: PostgreSQL, MySQL, SQLite, BigQuery">
+  <img src="https://img.shields.io/badge/databases-PostgreSQL%20%7C%20MySQL%20%7C%20MariaDB%20%7C%20SQLite%20%7C%20BigQuery%20%7C%20files-336791" alt="Databases: PostgreSQL, MySQL, MariaDB, SQLite, BigQuery, files">
 </p>
 
 A fast, native database client for **PostgreSQL**, **MySQL** (and
-**MariaDB**), **SQLite** and **BigQuery**. Written in Rust with egui; runs on
-Linux (Omarchy and Hyprland first), macOS and Windows. BigQuery
+**MariaDB**), **SQLite** and **BigQuery**, and for folders of **CSV**,
+**Parquet**, **JSON** and **Excel** files, which it opens as tables through
+DuckDB. Written in Rust with egui; runs on Linux (Omarchy and Hyprland
+first), macOS and Windows, in English, Português (Brasil) or Русский. BigQuery
 connections sign in with a service-account key file or Google Cloud's
 default credentials, and open read-only (browse, filter and run SELECTs;
 BigQuery has no transactions to edit rows with).
@@ -40,10 +42,21 @@ The guide and the reference are on the website:
 
 ## What it does
 
-- Saved connections grouped in a picker, each tagged with its environment
-  (dev, staging, production) and when it was last used.
+- Saved connections in a picker, in groups you name, each tagged with its
+  environment (dev, staging, production) and when it was last used.
   Open more than one and each is a chip in the window's header: click one
-  to switch.
+  to switch. A second database of one connection opens in a window of its
+  own (Cmd/Ctrl+Enter in the database menu).
+- Files connections: a folder, or a list, of data files, read by DuckDB
+  inside the app. Each CSV, TSV, Parquet, JSON, NDJSON and Excel file is a
+  table, and each `.duckdb` file is a schema holding its tables. Saved PostgreSQL, MySQL and SQLite connections can be attached
+  read-only, so one query joins a file to their live tables. A CSV value
+  that doesn't fit its column is named with its row and column, with three
+  fixes: read the column as text, read the value as empty, or skip the
+  file. A file that fails another way can be skipped.
+  With "Open read-only" off the files are edited in the grid: a save
+  rewrites a CSV, Parquet or JSON file, and changes a `.duckdb` file in
+  place, in one transaction. Excel files always open read-only.
 - Direct connections, TLS (libpq's `sslmode` values, with `allow` read as
   `prefer`; `verify-ca` needs a CA file, and MySQL has no `verify-ca` yet),
   and SSH tunnels (password, key file or agent) with host keys trusted on
@@ -104,6 +117,9 @@ The guide and the reference are on the website:
   Omarchy look (square, keyboard first, vim keys, the desktop's monospace
   font throughout). It follows the Omarchy theme live on Omarchy, and the
   system light/dark setting elsewhere.
+- The interface in English, Português (Brasil) or Русский: Settings ›
+  General › Language, or the system's language. See
+  [Translating](https://igor.works/tabletist/translating/) to add one.
 
 ## Performance
 
