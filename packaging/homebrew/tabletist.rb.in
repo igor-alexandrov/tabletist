@@ -4,7 +4,7 @@ cask "tabletist" do
 
   url "https://github.com/igor-alexandrov/tabletist/releases/download/v#{version}/tabletist-v#{version}-macos-universal.dmg"
   name "Tabletist"
-  desc "Native database client for PostgreSQL, MySQL, SQLite and BigQuery"
+  desc "Native database client for PostgreSQL, MySQL, SQLite, BigQuery and data files"
   homepage "https://igor.works/tabletist/"
 
   livecheck do

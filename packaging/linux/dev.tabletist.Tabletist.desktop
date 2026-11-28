@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=Tabletist
-Comment=Browse PostgreSQL, MySQL and SQLite databases
+Comment=Browse PostgreSQL, MySQL, SQLite and BigQuery databases, and data files
 Exec=tabletist
 Icon=dev.tabletist.Tabletist
 Terminal=false

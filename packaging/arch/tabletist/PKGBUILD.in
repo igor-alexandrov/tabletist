@@ -2,7 +2,7 @@
 pkgname=tabletist
 pkgver=@VERSION@
 pkgrel=@PKGREL@
-pkgdesc="Native database client for PostgreSQL, MySQL and SQLite"
+pkgdesc="Native database client for PostgreSQL, MySQL, SQLite, BigQuery and data files"
 arch=('x86_64' 'aarch64')
 url="https://github.com/igor-alexandrov/tabletist"
 license=('MIT')

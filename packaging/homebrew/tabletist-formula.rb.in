@@ -1,5 +1,5 @@
 class Tabletist < Formula
-  desc "Native database client for PostgreSQL, MySQL, SQLite and BigQuery"
+  desc "Native database client for PostgreSQL, MySQL, SQLite, BigQuery and data files"
   homepage "https://igor.works/tabletist/"
   url "https://github.com/igor-alexandrov/tabletist/releases/download/v@VERSION@/tabletist-v@VERSION@-source.tar.gz"
   sha256 "@SOURCE_SHA256@"
