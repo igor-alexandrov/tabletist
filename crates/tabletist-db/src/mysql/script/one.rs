@@ -18,8 +18,8 @@ use super::super::{
     query_error, status, text_values,
 };
 use super::{
-    Ended, SessionKind, Standing, Unfinished, closing, counts_rows, driver_parameter, end, opened,
-    opening, parameter, settle, stands,
+    Ended, Fence, SessionKind, Standing, Unfinished, closing, counts_rows, driver_parameter, end,
+    fenced, opening, parameter, question, settle, stands,
 };
 use crate::script::{cannot_start, cleanup_failed, statement_failed};
 use crate::{
@@ -82,7 +82,7 @@ fn message(kind: SessionKind, limit: u32, read_only: &str, text: &str) -> Messag
     steps.push(format!("PREPARE {RUN} FROM @{RUN}"));
     let ran = steps.len();
     steps.push(format!("EXECUTE {RUN}"));
-    steps.extend(closing(read_only));
+    steps.extend(closing(question(read_only)));
     Message {
         steps,
         asked,
@@ -159,8 +159,10 @@ async fn heard(
 /// [`message`]), and closes the run as `end` would. `Again` where the
 /// statement is to run the other way: one that is too long, has a
 /// parameter the driver would read, or whose answer lost digits in text;
-/// and where the server does not know the read-only setting under the name
-/// the message used. `Err` is a lost session, or a run that closes it.
+/// where the server does not know the read-only setting under the name the
+/// message used; and where the server left the session's setting
+/// read-write and InnoDB is read-only (`Fence::Server`), which the guard
+/// does not know of: the checks the other way read InnoDB's. `Err` is a lost session, or a run that closes it.
 pub(super) async fn run(
     conn: &mut mysql_async::Conn,
     text: &str,
@@ -214,21 +216,46 @@ pub(super) async fn run(
         .next()
         .map(from_row)
         .transpose();
-    if let Err(error) =
-        read_only.and_then(|read_only| opened(read_only, answers[message.guard].status))
-    {
-        stop.finish();
-        let ended = Ended::Broken(cannot_start(ScriptMode::ReadOnly, &error));
-        return end(conn, ended, kind)
-            .await
-            .map(|unfinished| One::Ran(Box::new(outcome), unfinished));
+    let fence = match read_only {
+        Ok(read_only) => fenced(conn, read_only, answers[message.guard].status).await,
+        Err(error) => Err(error),
+    };
+    match fence {
+        Ok(Fence::Session) => {}
+        // The guard saw the session's setting read-write and kept the
+        // statement from running.
+        Ok(Fence::Server) if count <= message.ran => {
+            drop(end(conn, Ended::Unopened, kind).await?);
+            return Ok(One::Again { lossy: false });
+        }
+        Err(error) if error.is_connection_lost() => return Err(error),
+        // A cancel that landed on InnoDB's question, which is asked only
+        // where the guard kept the statement from running: a stop, as on
+        // the open the other way.
+        Err(Error::Cancelled) => {
+            outcome.stopped = true;
+            stop.finish();
+            return end(conn, Ended::Unopened, kind)
+                .await
+                .map(|unfinished| One::Ran(Box::new(outcome), unfinished));
+        }
+        fence => {
+            let error = fence.err().unwrap_or_else(|| {
+                Error::query("the server ran the statement in a session it said was read-write")
+            });
+            stop.finish();
+            let ended = Ended::Broken(cannot_start(ScriptMode::ReadOnly, &error));
+            return end(conn, ended, kind)
+                .await
+                .map(|unfinished| One::Ran(Box::new(outcome), unfinished));
+        }
     }
     // Where the close's check answered, its answers are the message's
     // last three, however many the statement gave.
     let ended = if complete {
         closed(&answers[count - 3..])
     } else {
-        Ended::Unconfirmed
+        Ended::Unconfirmed(Fence::Session)
     };
     let result = if count <= message.ran {
         // The prepare or the run failed.
@@ -254,7 +281,10 @@ pub(super) async fn run(
             Some(result) => result,
             // Its text lost digits: it runs again the other way, once the
             // run ended cleanly and unless the run is stopped.
-            None if ended == Ended::Unconfirmed && complete && !stop.is_stopped() => {
+            None if ended == Ended::Unconfirmed(Fence::Session)
+                && complete
+                && !stop.is_stopped() =>
+            {
                 return Ok(One::Again { lossy: true });
             }
             None => StatementOutcome::Cancelled,
@@ -270,7 +300,7 @@ pub(super) async fn run(
     let unfinished = if complete {
         settle(conn, ended, Some(Ok(())), kind).await?
     } else {
-        end(conn, Ended::Unconfirmed, kind).await?
+        end(conn, Ended::Unconfirmed(Fence::Session), kind).await?
     };
     Ok(One::Ran(Box::new(outcome), unfinished))
 }
@@ -290,7 +320,7 @@ fn closed(answers: &[Heard]) -> Ended {
     };
     match standing {
         Ok(Standing::Left) => Ended::Left,
-        Ok(Standing::Inside | Standing::Outside) => Ended::Unconfirmed,
+        Ok(Standing::Inside | Standing::Outside) => Ended::Unconfirmed(Fence::Session),
         Err(error) => Ended::Broken(cleanup_failed(ScriptMode::ReadOnly, &error)),
     }
 }
@@ -732,6 +762,44 @@ mod tests {
         assert!(stop.is_finishing());
     }
 
+    /// An Amazon Aurora MySQL reader in a cluster that does not forward
+    /// writes leaves the session's setting read-write whatever the fence
+    /// says, and is read-only by InnoDB (see `Fence`). The proxy has the
+    /// server answer the message and InnoDB's question as that reader
+    /// does: the guard keeps the statement from running, InnoDB says
+    /// read-only, and the statement runs the other way, whose checks read
+    /// InnoDB's setting (the test server's other way answers as it is).
+    #[tokio::test]
+    async fn a_reader_that_ignores_the_fence_runs_the_statement_the_other_way() {
+        use std::sync::atomic::Ordering;
+        let Some(url) = test_url() else {
+            return;
+        };
+        let full: &'static str = sent("SELECT 7").leak();
+        let reader = full.replace("@@session.transaction_read_only", "0");
+        let swaps = [(full, &*reader.leak()), (super::super::READER, "SELECT 1")];
+        let (conn, asked) =
+            super::super::super::tests::swapping_each(&url, Access::ReadOnly, &swaps).await;
+        if on_mariadb(&conn) && conn.conn.lock().await.server_version() < (11, 1, 0) {
+            return;
+        }
+        let connected = settings(&conn).await;
+        let before = asked.load(Ordering::SeqCst);
+        let outcome = past_the_refusal(&conn, &["SELECT 7"], &StopFlag::new())
+            .await
+            .unwrap();
+        // More than the one message: InnoDB's question and the other way.
+        assert!(asked.load(Ordering::SeqCst) - before > 2);
+        let [result] = outcome.results.as_slice() else {
+            panic!("{outcome:?}");
+        };
+        let StatementOutcome::Rows { rows, .. } = &result.outcome else {
+            panic!("{result:?}");
+        };
+        assert_eq!(rows, &[vec![Value::Int(7)]]);
+        assert_eq!(settings(&conn).await, connected);
+    }
+
     /// An open in the message that fails, or whose answer does not say the
     /// session is inside a read-only transaction, fails the run, as the
     /// open the other way does, and the close leaves the session as it
@@ -821,6 +889,55 @@ mod tests {
         assert!(outcome.stopped, "{outcome:?}");
         assert!(outcome.results.is_empty(), "{outcome:?}");
         assert_eq!(settings(&conn).await, connected);
+    }
+
+    /// A cancel that lands on InnoDB's question, which the open asks where
+    /// the session's setting says read-write (see `Fence`), stops the run
+    /// as one on the open does, one statement or two: no results, and the
+    /// session as it connected. The proxy has the open's question answer 0,
+    /// and sends a sleep in place of InnoDB's.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cancel_on_innodbs_question_runs_no_statement() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let mut admin = admin(&url).await;
+        let full: &'static str = sent("SELECT 1").leak();
+        let reader: &'static str = full.replace("@@session.transaction_read_only", "0").leak();
+        let open = "START TRANSACTION READ ONLY; SET SESSION sql_select_limit = 11; \
+                    SELECT @@session.transaction_read_only LIMIT 1";
+        let open_reader =
+            "START TRANSACTION READ ONLY; SET SESSION sql_select_limit = 11; SELECT 0";
+        for (script, swapped, sleep) in [
+            (&["SELECT 1"][..], (full, reader), "SLEEP(53)"),
+            (
+                &["SELECT 1", "SELECT 2"][..],
+                (open, open_reader),
+                "SLEEP(54)",
+            ),
+        ] {
+            let slow: &'static str = format!("SELECT 1 FROM DUAL WHERE {sleep} = 0").leak();
+            let swaps = [swapped, (super::super::READER, slow)];
+            let (conn, _) =
+                super::super::super::tests::swapping_each(&url, Access::ReadOnly, &swaps).await;
+            if on_mariadb(&conn) && conn.conn.lock().await.server_version() < (11, 1, 0) {
+                return;
+            }
+            let conn = std::sync::Arc::new(conn);
+            let connected = settings(&conn).await;
+            let running = {
+                let conn = std::sync::Arc::clone(&conn);
+                tokio::spawn(async move { past_the_refusal(&conn, script, &StopFlag::new()).await })
+            };
+            runs_on_the_server(&mut admin, sleep).await;
+            super::super::super::cancel(&conn.opts, conn.id, &conn.server, &conn.spare)
+                .await
+                .unwrap();
+            let outcome = running.await.unwrap().unwrap();
+            assert!(outcome.stopped, "{sleep}: {outcome:?}");
+            assert!(outcome.results.is_empty(), "{sleep}: {outcome:?}");
+            assert_eq!(settings(&conn).await, connected, "{sleep}");
+        }
     }
 
     /// A cancel that lands on the statement stops it: the message stops

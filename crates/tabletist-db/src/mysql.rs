@@ -9,6 +9,10 @@
 //! Rows are read inside a read-only transaction. A SQL editor script runs
 //! its statements the same way, in one read-only transaction, and the
 //! session is reset afterwards: MySQL session state is not transactional.
+//! An Amazon Aurora MySQL reader that does not forward writes keeps the
+//! session's read-only setting read-write; a run there reads InnoDB's
+//! (`script`'s `Fence`). Nothing here has met a real one: the tests swap
+//! the server's answers for one's.
 //!
 //! MariaDB too: the tests run against MariaDB 11.4 as well as MySQL. What
 //! is written for an older MariaDB alone (in `script`) has not met one
@@ -4836,7 +4840,7 @@ mod tests {
         url: &str,
         access: Access,
     ) -> (Conn, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
-        proxy(url, access, None, None).await
+        proxy(url, access, None, Vec::new()).await
     }
 
     /// [`counted_session`], whose proxy cuts the connection at the first
@@ -4846,7 +4850,7 @@ mod tests {
         access: Access,
         cut: Option<&'static str>,
     ) -> (Conn, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
-        proxy(url, access, cut, None).await
+        proxy(url, access, cut, Vec::new()).await
     }
 
     /// [`counted_session`], whose proxy sends the server `instead` for the
@@ -4859,15 +4863,27 @@ mod tests {
         access: Access,
         swap: (&'static str, &'static str),
     ) -> (Conn, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
-        proxy(url, access, None, Some(swap)).await
+        proxy(url, access, None, vec![swap]).await
     }
 
-    /// The proxy of [`proxied_session`] and [`swapping_session`].
+    /// [`swapping_session`] for each of `swaps`: the first query whose
+    /// text is exactly a swap's `sql` goes to the server as its `instead`,
+    /// once for each swap.
+    pub(super) async fn swapping_each(
+        url: &str,
+        access: Access,
+        swaps: &[(&'static str, &'static str)],
+    ) -> (Conn, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        proxy(url, access, None, swaps.to_vec()).await
+    }
+
+    /// The proxy of [`proxied_session`], [`swapping_session`] and
+    /// [`swapping_each`].
     async fn proxy(
         url: &str,
         access: Access,
         cut: Option<&'static str>,
-        swap: Option<(&'static str, &'static str)>,
+        swaps: Vec<(&'static str, &'static str)>,
     ) -> (Conn, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -4886,13 +4902,13 @@ mod tests {
         spec.port = listener.local_addr().unwrap().port();
         let asked = Arc::new(AtomicUsize::new(0));
         let count = Arc::clone(&asked);
-        let mut swap = swap;
+        let mut swaps = swaps;
         tokio::spawn(async move {
             let (client, _) = listener.accept().await.unwrap();
             let upstream = tokio::net::TcpStream::connect(server.clone())
                 .await
                 .unwrap();
-            if swap.is_some() {
+            if !swaps.is_empty() {
                 tokio::spawn(async move {
                     while let Ok((mut other, _)) = listener.accept().await {
                         let Ok(mut upstream) = tokio::net::TcpStream::connect(server.clone()).await
@@ -4942,12 +4958,15 @@ mod tests {
                     answers.abort();
                     return;
                 }
-                if let Some((sql, instead)) = swap
-                    && header[3] == 0
-                    && body.first() == Some(&QUERY)
-                    && &body[1..] == sql.as_bytes()
-                {
-                    swap = None;
+                let swapped = (header[3] == 0 && body.first() == Some(&QUERY))
+                    .then(|| {
+                        swaps
+                            .iter()
+                            .position(|(sql, _)| &body[1..] == sql.as_bytes())
+                    })
+                    .flatten();
+                if let Some(at) = swapped {
+                    let (_, instead) = swaps.remove(at);
                     body = [&[QUERY][..], instead.as_bytes()].concat();
                     let length = (body.len() as u32).to_le_bytes();
                     header[..3].copy_from_slice(&length[..3]);
