@@ -50,8 +50,10 @@ The guide and the reference are on the website:
 - Files connections: a folder, or a list, of CSV, TSV, Parquet, JSON,
   NDJSON, Excel and `.duckdb` files, each read as a table by DuckDB inside
   the app. Saved PostgreSQL, MySQL and SQLite connections can be attached
-  read-only, so one query joins a file to their live tables. A CSV that
-  doesn't read says which row and value stopped it, with a fix to pick.
+  read-only, so one query joins a file to their live tables. A CSV value
+  that doesn't fit its column is named with its row and column, with three
+  fixes: read the column as text, read the value as empty, or skip the
+  file. A file that fails another way can be skipped.
   With "Open read-only" off the files are edited in the grid: a save
   rewrites a CSV, Parquet or JSON file, and changes a `.duckdb` file in
   place, in one transaction.
