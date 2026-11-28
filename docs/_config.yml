@@ -1,5 +1,5 @@
 title: Tabletist
-description: A fast, native database client for PostgreSQL, MySQL, MariaDB, SQLite and BigQuery.
+description: A fast, native database client for PostgreSQL, MySQL, MariaDB, SQLite and BigQuery, and for your CSV, Parquet and JSON files.
 lang: en-US
 url: https://igor.works
 baseurl: /tabletist
@@ -51,7 +51,8 @@ jekyll_vitepress:
     title: Tabletist
     description: >-
       Documentation for a native database client for PostgreSQL, MySQL,
-      MariaDB, SQLite and BigQuery that runs on Linux, macOS and Windows.
+      MariaDB, SQLite and BigQuery, and for CSV, Parquet, JSON and Excel
+      files, that runs on Linux, macOS and Windows.
     full: true
     details: >-
       Covers installation, speed and security, connections, browsing and

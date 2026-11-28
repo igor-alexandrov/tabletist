@@ -1,12 +1,12 @@
 ---
 layout: home
 title: Tabletist
-description: A fast, native database client for PostgreSQL, MySQL, MariaDB, SQLite and BigQuery.
+description: A fast, native database client for PostgreSQL, MySQL, MariaDB, SQLite and BigQuery, and for your CSV, Parquet and JSON files.
 permalink: /
 hero:
   name: Tabletist
   text: Your databases, native and fast
-  tagline: A database client for PostgreSQL, MySQL, MariaDB, SQLite and BigQuery. Written in Rust, for Linux, macOS and Windows.
+  tagline: A database client for PostgreSQL, MySQL, MariaDB, SQLite and BigQuery, and for your CSV, Parquet and JSON files. Written in Rust, for Linux, macOS and Windows.
   actions:
     - theme: brand
       text: Download
@@ -31,8 +31,10 @@ features:
     link: /speed-and-security/
     link_text: Why it is fast
   - icon: 🗄️
-    title: Four databases
-    details: PostgreSQL, MySQL (MariaDB too), SQLite and BigQuery, with the same grid, row panel and SQL editor for each.
+    title: Databases and files
+    details: PostgreSQL, MySQL (MariaDB too), SQLite and BigQuery, and folders of CSV, Parquet, JSON and Excel files, with the same grid, row panel and SQL editor for each. One query joins a file to a database's live tables.
+    link: /connections/#files
+    link_text: Open files as tables
   - icon: 🔐
     title: Secure connections
     details: TLS that checks the certificate when you choose verify-full, SSH tunnels (through ProxyJump and ProxyCommand too) that check the SSH server's key, and passwords kept in the system keyring, never in a file.
@@ -75,7 +77,9 @@ it. On Linux, Tabletist takes the Omarchy look: square, keyboard first,
 with vim keys and the desktop's monospace font throughout. On Omarchy it
 follows the desktop's theme and recolors when you switch themes. Each
 system can have the other look too: **Settings › Appearance › Interface**
-switches between the classic look and the Omarchy one at once.
+switches between the classic look and the Omarchy one at once, and
+**Settings › General › Language** between English, Português (Brasil)
+and Русский.
 Read about [the Omarchy look]({% link _guide/omarchy.md %}) and
 [Tabletist on macOS]({% link _guide/macos.md %}).
 

@@ -7,7 +7,8 @@ nav_order: 0
 ## Why Tabletist
 
 **A fast, native database client.** Tabletist connects to PostgreSQL, MySQL
-(and MariaDB), SQLite and BigQuery. It is written in Rust and draws its own
+(and MariaDB), SQLite and BigQuery, and opens folders of CSV, Parquet, JSON
+and Excel files as tables. It is written in Rust and draws its own
 window, so there is no browser inside. It runs on Linux (Omarchy and
 Hyprland first), macOS and Windows.
 
@@ -20,9 +21,11 @@ Hyprland first), macOS and Windows.
   read-only `SELECT` usually wait on the server once. On every database
   the window keeps answering while the database works.
   [Read about speed and security]({% link _guide/speed-and-security.md %}).
-- **Keeps your connections.** Saved connections sit in a picker, each tagged
-  with its environment (local, dev, staging, production) and when it was
-  last used. Open more than one and each is a chip in the window's header.
+- **Keeps your connections.** Saved connections sit in a picker, in groups
+  you name, each tagged with its environment (local, dev, staging,
+  production) and when it was last used. Open more than one and each is a
+  chip in the window's header, and a second database of one connection
+  opens in a window of its own.
 - **Connects the way your servers need.** Direct connections, TLS
   (`verify-full` checks the certificate), and SSH tunnels with a password, a key file or
   your agent, through the `ProxyJump` and `ProxyCommand` hosts of your
@@ -36,6 +39,15 @@ Hyprland first), macOS and Windows.
   paging done by the server, a row panel that shows every field of a row,
   and Structure and DDL views.
   [Browse a table]({% link _guide/browsing-data.md %}).
+- **Opens data files as tables.** A Files connection reads a folder, or a
+  list, of CSV, TSV, Parquet, JSON, NDJSON, Excel and DuckDB files. It can
+  attach your saved PostgreSQL, MySQL and SQLite connections, so one query
+  joins a file to their live tables. When a value in a CSV does not fit
+  its column, it names the row, the column and the value, and offers to
+  read the column as text, read the value as empty, or skip the file. A
+  file that fails another way can be skipped. Turn off **Open read-only**
+  to edit the files.
+  [Read about Files connections]({% link _reference/connections.md %}#files).
 - **Edits data safely.** Change values, and add, duplicate and delete
   rows. Dates have a calendar, and a foreign key of one column searches
   the table it points at as you type. Changes stay pending until you
@@ -67,6 +79,9 @@ Hyprland first), macOS and Windows.
   changes the keys.
   Read about [the Omarchy look]({% link _guide/omarchy.md %}) and
   [Tabletist on macOS]({% link _guide/macos.md %}).
+- **Speaks your language.** The app is in English, Português (Brasil) and
+  Русский: **Settings › General › Language**, or your system's language.
+  [Help translate it]({% link _reference/translating.md %}).
 - **Keeps itself up to date.** It checks GitHub for a new version. On
   macOS from Applications, and on Linux from the AppImage or the unpacked
   archive, it installs the new version when you restart, once the
@@ -87,7 +102,10 @@ Tabletist is young. These are the limits you are most likely to meet:
 - A BigQuery connection is read-only: BigQuery has no transactions to
   edit rows with. It has no DDL view, and agents cannot read it once it
   hides a table or masks a column.
-- The app is in English only.
+- On a Files connection the SQL editor only reads: edit the files in the
+  grid. Excel files open read-only, and only their first sheet.
+- The Brazilian Portuguese translation has not had a native speaker's
+  review yet.
 
 ## Open source
 
