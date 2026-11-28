@@ -47,16 +47,16 @@ The guide and the reference are on the website:
   Open more than one and each is a chip in the window's header: click one
   to switch. A second database of one connection opens in a window of its
   own (Cmd/Ctrl+Enter in the database menu).
-- Files connections: a folder, or a list, of CSV, TSV, Parquet, JSON,
-  NDJSON, Excel and `.duckdb` files, each read as a table by DuckDB inside
-  the app. Saved PostgreSQL, MySQL and SQLite connections can be attached
+- Files connections: a folder, or a list, of data files, read by DuckDB
+  inside the app. Each CSV, TSV, Parquet, JSON, NDJSON and Excel file is a
+  table, and each `.duckdb` file is a schema holding its tables. Saved PostgreSQL, MySQL and SQLite connections can be attached
   read-only, so one query joins a file to their live tables. A CSV value
   that doesn't fit its column is named with its row and column, with three
   fixes: read the column as text, read the value as empty, or skip the
   file. A file that fails another way can be skipped.
   With "Open read-only" off the files are edited in the grid: a save
   rewrites a CSV, Parquet or JSON file, and changes a `.duckdb` file in
-  place, in one transaction.
+  place, in one transaction. Excel files always open read-only.
 - Direct connections, TLS (libpq's `sslmode` values, with `allow` read as
   `prefer`; `verify-ca` needs a CA file, and MySQL has no `verify-ca` yet),
   and SSH tunnels (password, key file or agent) with host keys trusted on
