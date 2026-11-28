@@ -42,9 +42,11 @@ Hyprland first), macOS and Windows.
 - **Opens data files as tables.** A Files connection reads a folder, or a
   list, of CSV, TSV, Parquet, JSON, NDJSON, Excel and DuckDB files. It can
   attach your saved PostgreSQL, MySQL and SQLite connections, so one query
-  joins a file to their live tables. When a CSV does not read, it says
-  which row and value stopped it and offers a fix. Turn off **Open
-  read-only** to edit the files.
+  joins a file to their live tables. When a value in a CSV does not fit
+  its column, it names the row, the column and the value, and offers to
+  read the column as text, read the value as empty, or skip the file. A
+  file that fails another way can be skipped. Turn off **Open read-only**
+  to edit the files.
   [Read about Files connections]({% link _reference/connections.md %}#files).
 - **Edits data safely.** Change values, and add, duplicate and delete
   rows. Dates have a calendar, and a foreign key of one column searches
