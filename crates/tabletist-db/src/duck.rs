@@ -18,6 +18,7 @@
 //! after it: the fence keeps any other from being attached.
 
 mod attach;
+mod database;
 mod edit;
 
 use std::collections::HashMap;
@@ -101,8 +102,6 @@ pub struct FileFacts {
 pub enum Unedited {
     /// An Excel file's: Excel files are never written.
     Excel,
-    /// A `.duckdb` file's table or view.
-    DuckDb,
     /// An attached connection's: those are attached read-only.
     Attached,
 }
@@ -133,6 +132,9 @@ pub(crate) struct Conn {
     /// The files' tables read for editing so far, by name: those of a
     /// session that may write whose page was read.
     copies: Arc<Mutex<HashMap<String, edit::Loaded>>>,
+    /// Its `.duckdb` files, by their paths: each call holds them for
+    /// reading, and a save one alone.
+    databases: Arc<Vec<database::Held>>,
 }
 
 /// A saved connection the session attached: the name SQL calls it by,
@@ -657,6 +659,15 @@ fn opened(
         .iter()
         .filter(|file| !reading.skips(&file.path))
         .collect();
+    // Held while they are attached: a save another session runs is waited
+    // for, and the file attached as it left it.
+    let opening = database::Opening::of(
+        files
+            .iter()
+            .filter(|file| file.format.is_database())
+            .map(|file| file.path.as_path()),
+    );
+    let _opening = opening.hold();
     let config = duckdb::Config::default()
         .enable_autoload_extension(false)
         .map_err(map_error)?;
@@ -722,7 +733,8 @@ fn opened(
             Types::Sample | Types::Text => reading,
         };
         // A `.duckdb` file is attached read-only, in a session that may
-        // write too: its tables are not edited yet.
+        // write too: a save attaches it to write for as long as it runs
+        // (`database`).
         let made = make(&connection, file, reading).and_then(|(statement, options)| {
             run(&statement)?;
             Ok((statement, options))
@@ -1408,6 +1420,22 @@ fn script(
     Ok(outcome)
 }
 
+/// The key `object`'s rows are read in, as a page reads them: a `.duckdb`
+/// file's table's primary key (`database` is where the session holds the
+/// file), none elsewhere.
+fn key_of(
+    connection: &duckdb::Connection,
+    object: &ObjectRef,
+    database: Option<usize>,
+) -> Result<Vec<String>> {
+    Ok(match database {
+        Some(_) => {
+            database::table_key(connection, &object.schema, &object.name)?.unwrap_or_default()
+        }
+        None => Vec::new(),
+    })
+}
+
 /// A WHERE typed in the filter bar is one condition: a `;` or a NUL in
 /// it is refused before DuckDB reads it.
 fn check_raw_where(query: &RowQuery) -> Result<()> {
@@ -1637,6 +1665,12 @@ impl Conn {
         .map_err(|error| Error::Io(error.to_string()))??;
         let (connection, files, failed, attached, version, order) = made;
         let interrupt = connection.interrupt_handle();
+        let mut databases: Vec<database::Held> = files
+            .iter()
+            .filter(|file| file.found.format.is_database())
+            .map(|file| database::Held::new(&file.found.name, &file.found.path))
+            .collect();
+        databases.sort_by(|one, other| one.own().cmp(other.own()));
         Ok(Self {
             inner: Arc::new(Mutex::new(connection)),
             interrupt,
@@ -1650,6 +1684,7 @@ impl Conn {
             access,
             reading: kept,
             copies: Arc::new(Mutex::new(HashMap::new())),
+            databases: Arc::new(databases),
         })
     }
 
@@ -1671,20 +1706,38 @@ impl Conn {
         if let Some(file) = self.file_of(object) {
             return (file.found.format == Format::Excel).then_some(Unedited::Excel);
         }
-        if self.attached.iter().any(|each| each.name == object.schema) {
-            return Some(Unedited::Attached);
-        }
-        self.files
+        self.attached
             .iter()
-            .any(|file| file.found.format.is_database() && file.found.name == object.schema)
-            .then_some(Unedited::DuckDb)
+            .any(|each| each.name == object.schema)
+            .then_some(Unedited::Attached)
     }
 
-    /// Runs `work` on the blocking pool with the session.
+    /// Where `object` is a table or a view of one of the session's
+    /// `.duckdb` files, which of `databases` it is.
+    fn database_of(&self, object: &ObjectRef) -> Option<usize> {
+        self.databases
+            .iter()
+            .position(|held| held.name == object.schema)
+    }
+
+    /// Runs `work` on the blocking pool with the session, holding its
+    /// `.duckdb` files for reading.
     async fn run<T: Send + 'static>(
         &self,
         work: impl FnOnce(&duckdb::Connection) -> Result<T> + Send + 'static,
     ) -> Result<T> {
+        self.run_gated(true, work).await
+    }
+
+    /// Runs `work` as [`Conn::run`] does; `reading` says whether it holds
+    /// the `.duckdb` files for reading meanwhile. A save holds its own
+    /// alone instead, and reads no other.
+    async fn run_gated<T: Send + 'static>(
+        &self,
+        reading: bool,
+        work: impl FnOnce(&duckdb::Connection) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let databases = Arc::clone(&self.databases);
         let inner = Arc::clone(&self.inner);
         let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
         let given_up = Arc::new(AtomicBool::new(false));
@@ -1703,6 +1756,12 @@ impl Conn {
             // Said to be running first, then asked whether it was given up
             // on, as the guard says it gives up first, then asks: one of
             // the two always sees the other. Given up on: nothing runs.
+            // Held first: a save may keep the call waiting, and a call
+            // given up on meanwhile is asked about after.
+            let _held = match reading {
+                true => database::reading(&connection, &databases),
+                false => Vec::new(),
+            };
             running.store(call, Ordering::SeqCst);
             if given_up.load(Ordering::SeqCst) {
                 running.store(0, Ordering::SeqCst);
@@ -1987,11 +2046,19 @@ impl Adapter for Conn {
             options: file.options.clone(),
         });
         let unedited = self.unedited(object);
+        let in_database = self.database_of(object).is_some();
         let object = object.clone();
         let attached = Arc::clone(&self.attached);
         self.run(move |connection| {
-            let columns = read_only(connection, |connection| {
-                columns(connection, &object, &attached)
+            let (columns, primary_key) = read_only(connection, |connection| {
+                let columns = columns(connection, &object, &attached)?;
+                // A `.duckdb` file's table finds its rows by its own key.
+                let primary_key = match in_database {
+                    true => database::table_key(connection, &object.schema, &object.name)?
+                        .unwrap_or_default(),
+                    false => Vec::new(),
+                };
+                Ok((columns, primary_key))
             })?;
             if columns.is_empty() {
                 return Err(Error::query(format!(
@@ -2001,6 +2068,7 @@ impl Adapter for Conn {
             }
             Ok(Structure {
                 columns,
+                primary_key,
                 file,
                 unedited,
                 ..Structure::default()
@@ -2073,7 +2141,31 @@ impl Adapter for Conn {
         let editing = self.editing(&object);
         let copies = Arc::clone(&self.copies);
         let reading = self.reading.clone();
+        let database = self.database_of(&object);
+        let writable = self.access == Access::Writable;
+        let databases = Arc::clone(&self.databases);
         self.run(move |connection| {
+            // A `.duckdb` file's table: read in its key's order, or, with
+            // none, where a save may write it, each row with its `rowid`.
+            let keyed = match database {
+                Some(_) => read_only(connection, |connection| {
+                    database::table_key(connection, &query.object.schema, &query.object.name)
+                })?,
+                None => None,
+            };
+            // Not where a column of its own is named `rowid`: that reads
+            // it instead, and its page says it has no key.
+            if let (Some(at), Some(key), true) = (database, &keyed, writable)
+                && key.is_empty()
+                && read_only(connection, |connection| {
+                    database::by_rowid(connection, &query.object.schema, &query.object.name)
+                })?
+            {
+                return read_only(connection, |connection| {
+                    database::page(connection, &query, &attached, &databases[at], limit)
+                });
+            }
+            let key = keyed.unwrap_or_default();
             let copied = match &editing {
                 Some(file) => {
                     let mut copies = copies.lock().map_err(|_| {
@@ -2098,12 +2190,14 @@ impl Adapter for Conn {
             };
             read_only(connection, |connection| {
                 if let Some(generation) = copied {
-                    return edit::page(connection, &query, limit, generation);
+                    let from = edit::Copy::object(&query.object.name);
+                    return edit::page(connection, &query, &from, limit, generation);
                 }
                 let catalog = columns(connection, &query.object, &attached)?;
                 let binary = binary_of(&catalog);
-                // A file has no key: rows come in the file's order.
-                let sql = Dialect::DuckDb.select_rows(&query, &[], &binary)?;
+                // A `.duckdb` file's table in its key's order; another
+                // file's rows, with no key, in the file's.
+                let sql = Dialect::DuckDb.select_rows(&query, &key, &binary)?;
                 let started = Instant::now();
                 let params = sql.params.iter().map(to_duckdb).collect();
                 let (mut columns, rows, has_more) = rows_of(connection, &sql.text, params, limit)?;
@@ -2112,7 +2206,7 @@ impl Adapter for Conn {
                     columns,
                     rows,
                     has_more,
-                    ordered_by_key: false,
+                    ordered_by_key: !key.is_empty(),
                     elapsed: started.elapsed(),
                     positions: None,
                 })
@@ -2126,10 +2220,12 @@ impl Adapter for Conn {
         let query = query.clone();
         let chosen = columns.to_vec();
         let attached = Arc::clone(&self.attached);
+        let database = self.database_of(&query.object);
         self.run(move |connection| {
             read_only(connection, |connection| {
+                let key = key_of(connection, &query.object, database)?;
                 let binary = binary_columns(connection, &query.object, &attached)?;
-                Dialect::DuckDb.shown_export(&query, &[], &binary, &chosen)
+                Dialect::DuckDb.shown_export(&query, &key, &binary, &chosen)
             })
         })
         .await
@@ -2137,7 +2233,7 @@ impl Adapter for Conn {
 
     /// An export's rows, read as DuckDB's chunks in one blocking job and
     /// sent on a batch at a time: the job waits while the receiver holds
-    /// the batch before. A file has no key: rows come in the file's order.
+    /// the batch before. Rows come in the order a page reads them in.
     async fn stream_rows(
         &self,
         query: &RowQuery,
@@ -2152,11 +2248,13 @@ impl Adapter for Conn {
         let to = to.clone();
         let stop = stop.clone();
         let attached = Arc::clone(&self.attached);
+        let database = self.database_of(&query.object);
         self.run(move |connection| {
             read_only(connection, |connection| {
+                let key = key_of(connection, &query.object, database)?;
                 let catalog = self::columns(connection, &query.object, &attached)?;
                 let binary = binary_of(&catalog);
-                let sql = Dialect::DuckDb.export_rows(&query, &[], &binary, &chosen)?;
+                let sql = Dialect::DuckDb.export_rows(&query, &key, &binary, &chosen)?;
                 let mut statement = connection.prepare(&sql.text).map_err(map_error)?;
                 let chunks = statement
                     .stream_arrow(duckdb::params_from_iter(sql.params.iter().map(to_duckdb)))
@@ -2297,6 +2395,16 @@ impl Adapter for Conn {
     /// Saves `changes` to the copy of the file their table reads, then to
     /// the file (see `edit::save`). A table no save writes back is refused.
     async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
+        // A `.duckdb` file's table is saved in place, the file held alone.
+        if let (Some(at), Access::Writable) = (self.database_of(&changes.object), self.access) {
+            let databases = Arc::clone(&self.databases);
+            let (changes, stop) = (changes.clone(), stop.clone());
+            return self
+                .run_gated(false, move |connection| {
+                    database::save(connection, &databases[at], &changes, &stop)
+                })
+                .await;
+        }
         let Some(file) = self.editing(&changes.object) else {
             return Err(Error::ReadOnly);
         };

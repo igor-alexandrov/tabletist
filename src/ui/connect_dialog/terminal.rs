@@ -176,11 +176,34 @@ pub(super) fn terminal_footer(
 }
 
 /// What a Files connection's read-only row says while it edits: that a
-/// save writes a whole file, and the largest it would. `key` is the grid's
-/// Save changes, as the look writes it.
+/// save writes a whole file, and the largest it would, and that a
+/// `.duckdb` file changes in place. `key` is the grid's Save changes, as
+/// the look writes it.
 fn terminal_editing_note(form: &ConnectionForm, key: &str, locale: crate::i18n::Locale) -> String {
-    match super::largest_rewritten(form) {
-        Some((file, size)) => crate::i18n::fill(
+    match (
+        super::largest_rewritten(form),
+        super::changes_in_place(form),
+    ) {
+        (Some((file, size)), true) => crate::i18n::fill(
+            &gettext(
+                locale,
+                "changes wait for {key}, which rewrites the whole file ({file} {size}); .duckdb \
+                 files change in place",
+            ),
+            &[
+                ("{key}", key),
+                ("{file}", &file),
+                ("{size}", &size.to_lowercase()),
+            ],
+        ),
+        (None, true) => crate::i18n::fill(
+            &gettext(
+                locale,
+                "changes wait for {key}; .duckdb files change in place, in a transaction",
+            ),
+            &[("{key}", key)],
+        ),
+        (Some((file, size)), false) => crate::i18n::fill(
             &gettext(
                 locale,
                 "changes wait for {key}, which rewrites the whole file ({file} {size})",
@@ -192,7 +215,7 @@ fn terminal_editing_note(form: &ConnectionForm, key: &str, locale: crate::i18n::
                 ("{size}", &size.to_lowercase()),
             ],
         ),
-        None => crate::i18n::fill(
+        (None, false) => crate::i18n::fill(
             &gettext(
                 locale,
                 "changes wait for {key}, which rewrites the whole file",

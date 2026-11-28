@@ -1530,9 +1530,6 @@ pub fn lock_text(lock: Lock, table: &str, locale: Locale) -> String {
     match lock {
         Lock::ReadOnly => say(msgid("This connection opens read-only")),
         Lock::Unedited(tabletist_db::Unedited::Excel) => say(msgid("Excel files open read-only")),
-        Lock::Unedited(tabletist_db::Unedited::DuckDb) => {
-            say(msgid(".duckdb files open read-only"))
-        }
         Lock::Unedited(tabletist_db::Unedited::Attached) => {
             say(msgid("Attached connections open read-only"))
         }

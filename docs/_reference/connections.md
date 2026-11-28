@@ -171,7 +171,14 @@ and DuckDB files (`.duckdb`). DuckDB reads them, inside Tabletist.
   are kept until you save; saving rewrites the whole file, so orders.csv
   (1.6 GB) is written again in full." The Omarchy look says it on one
   line in the warning colour: `[ ] editing on · changes wait for :w,
-  which rewrites the whole file (orders.csv 1.6 gb)`. Agents can query
+  which rewrites the whole file (orders.csv 1.6 gb)`. A `.duckdb` file
+  is never written again in full: its tables are changed in place
+  ([Edit a .duckdb file]({% link _guide/editing-data.md %}#edit-a-duckdb-file)),
+  so with one the note adds "; .duckdb files are changed in place." (on
+  Omarchy `; .duckdb files change in place`), and with only those it
+  says "Editing is on. Changes are kept until you save; .duckdb files
+  are changed in place, in a transaction." (`[ ] editing on · changes
+  wait for :w; .duckdb files change in place, in a transaction`). Agents can query
   the files, never change them, and cannot
   hide tables or mask columns on a Files connection. Its **Agents**
   section is closed, and says the access on one line. Agents reach an

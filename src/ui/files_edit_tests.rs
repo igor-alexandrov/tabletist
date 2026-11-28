@@ -1,7 +1,8 @@
 //! Editing a Files connection's table, in both looks: a save finds each
 //! row by its place in the file, a save the file keeps from writing says
 //! why and keeps every change, and a table its connection does not edit
-//! says why in its header. On the Bookshop's `orders.csv`.
+//! says why in its header. On the Bookshop's `orders.csv`, and the
+//! `order_items` of its `.duckdb` file, saved in place by its key.
 
 use tabletist_db::files::Format;
 use tabletist_db::{
@@ -225,6 +226,115 @@ fn a_page_whose_rows_a_save_moved_takes_no_edit_until_read_again() {
     harness.answer_rows(fresh);
     harness.settle();
     assert_eq!(lock(&harness), None);
+}
+
+/// The Bookshop `.duckdb` file's `order_items`, keyed by `id`, open in a
+/// Files connection that may write.
+fn order_items(look: Look) -> (Harness, ConnTabId, TabId) {
+    let mut harness = Harness::new();
+    harness.set_look(look);
+    let tab = harness.connect_fake_as(false);
+    harness.app.workspace_mut(tab).unwrap().driver = Driver::Files;
+    harness.app.apply(Action::OpenObject {
+        tab,
+        object: ObjectRef::new("bookshop", "order_items"),
+        kind: ObjectKind::Table,
+        pin: true,
+    });
+    let column = |name: &str| ColumnInfo {
+        name: name.into(),
+        type_name: "INTEGER".into(),
+        nullable: name != "id",
+        ..ColumnInfo::default()
+    };
+    harness.answer_structure(Structure {
+        columns: vec![column("id"), column("quantity")],
+        primary_key: vec!["id".into()],
+        ..Structure::default()
+    });
+    let meta = |name: &str| ColumnMeta {
+        name: name.into(),
+        type_name: "INTEGER".into(),
+        kind: ValueKind::Numeric,
+    };
+    harness.answer_rows(RowPage {
+        columns: vec![meta("id"), meta("quantity")],
+        rows: (1..=3)
+            .map(|id| vec![Value::Int(id), Value::Int(id + 1)])
+            .collect(),
+        has_more: false,
+        ordered_by_key: true,
+        elapsed: std::time::Duration::from_millis(3),
+        positions: None,
+    });
+    let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    harness.app.workspace_mut(tab).unwrap().pane = Pane::Grid;
+    harness.settle();
+    (harness, tab, id)
+}
+
+#[test]
+fn a_duckdb_file_s_table_is_saved_by_its_key_and_says_nothing_of_read_only() {
+    for look in looks() {
+        let (mut harness, tab, id) = order_items(look);
+        assert!(
+            !harness
+                .painted
+                .iter()
+                .any(|(text, _)| text.to_lowercase().contains("open read-only")),
+            "{}: {:?}",
+            look.name,
+            harness.painted
+        );
+        super::insert_audit_tests::set(&mut harness, tab, id, (1, 1), "5");
+        harness.app.apply(Action::WriteEdits { tab, id });
+        let changes = sent(&harness);
+        assert_eq!(changes.object, ObjectRef::new("bookshop", "order_items"));
+        assert_eq!(
+            changes.rows[0].key,
+            vec![("id".to_owned(), Value::Int(2))],
+            "{}",
+            look.name
+        );
+    }
+}
+
+#[test]
+fn a_duckdb_file_another_program_has_open_keeps_every_change() {
+    for look in looks() {
+        let (mut harness, tab, id) = order_items(look);
+        super::insert_audit_tests::set(&mut harness, tab, id, (0, 1), "4");
+        super::insert_audit_tests::set(&mut harness, tab, id, (2, 1), "6");
+        harness.app.apply(Action::WriteEdits { tab, id });
+        refused(&mut harness, Unsaved::Busy("bookshop.duckdb".into()));
+        harness.settle();
+        let edits = super::insert_audit_tests::edits(&harness, tab, id);
+        assert_eq!(edits.counts().changes, 2, "{}", look.name);
+        let said = "bookshop.duckdb couldn't be saved: another program has it open. Your 2 \
+                    changes stay pending.";
+        let painted = harness
+            .painted
+            .iter()
+            .any(|(text, _)| text.to_lowercase().contains(&said.to_lowercase()));
+        assert!(
+            harness.has(said) || painted,
+            "{}: {:?}",
+            look.name,
+            harness.painted
+        );
+    }
+}
+
+#[test]
+fn a_duckdb_file_another_session_of_the_app_has_open_says_so() {
+    let (mut harness, tab, id) = order_items(Look::macos());
+    super::insert_audit_tests::set(&mut harness, tab, id, (0, 1), "4");
+    harness.app.apply(Action::WriteEdits { tab, id });
+    refused(&mut harness, Unsaved::OpenHere("bookshop.duckdb".into()));
+    assert!(harness.has(
+        "bookshop.duckdb couldn't be saved: another tab, export or agent of Tabletist has it \
+         open. Your 1 change stays pending."
+    ));
 }
 
 #[test]

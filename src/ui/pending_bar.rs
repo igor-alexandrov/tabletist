@@ -341,6 +341,28 @@ fn unsaved_text(
             ),
             file,
         ),
+        tabletist_db::Unsaved::Busy(file) => (
+            ngettext(
+                locale,
+                "{file} couldn't be saved: another program has it open. Your {n} change stays \
+                 pending.",
+                "{file} couldn't be saved: another program has it open. Your {n} changes stay \
+                 pending.",
+                n,
+            ),
+            file,
+        ),
+        tabletist_db::Unsaved::OpenHere(file) => (
+            ngettext(
+                locale,
+                "{file} couldn't be saved: another tab, export or agent of Tabletist has it open. \
+                 Your {n} change stays pending.",
+                "{file} couldn't be saved: another tab, export or agent of Tabletist has it open. \
+                 Your {n} changes stay pending.",
+                n,
+            ),
+            file,
+        ),
         // The system's own words of why, as a database's are said.
         tabletist_db::Unsaved::Failed(file, said) => {
             why_said = format::capped(said).trim_end_matches('.').to_owned();

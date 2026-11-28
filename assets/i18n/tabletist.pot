@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Tabletist\n"
 "Report-Msgid-Bugs-To: https://github.com/igor-alexandrov/tabletist/issues\n"
-"POT-Creation-Date: 2026-11-26 17:50-0500\n"
+"POT-Creation-Date: 2026-11-27 11:14-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -3612,10 +3612,6 @@ msgid "Excel files open read-only"
 msgstr ""
 
 #: src/ui/cell_editor.rs
-msgid ".duckdb files open read-only"
-msgstr ""
-
-#: src/ui/cell_editor.rs
 msgid "Attached connections open read-only"
 msgstr ""
 
@@ -4089,6 +4085,20 @@ msgstr ""
 msgid ""
 "Files open read-only. Turn off to edit: changes are kept until you save, and "
 "saving rewrites the whole file."
+msgstr ""
+
+#: src/ui/connect_dialog/mod.rs
+#, rust-format
+msgid ""
+"Editing is on. Changes are kept until you save; saving rewrites the whole "
+"file, so {file} ({size}) is written again in full; .duckdb files are changed "
+"in place."
+msgstr ""
+
+#: src/ui/connect_dialog/mod.rs
+msgid ""
+"Editing is on. Changes are kept until you save; .duckdb files are changed in "
+"place, in a transaction."
 msgstr ""
 
 #: src/ui/connect_dialog/mod.rs
@@ -4608,6 +4618,18 @@ msgstr ""
 
 #: src/ui/connect_dialog/terminal.rs
 msgid "connect"
+msgstr ""
+
+#: src/ui/connect_dialog/terminal.rs
+#, rust-format
+msgid ""
+"changes wait for {key}, which rewrites the whole file ({file} "
+"{size}); .duckdb files change in place"
+msgstr ""
+
+#: src/ui/connect_dialog/terminal.rs
+#, rust-format
+msgid "changes wait for {key}; .duckdb files change in place, in a transaction"
 msgstr ""
 
 #: src/ui/connect_dialog/terminal.rs
@@ -7155,6 +7177,28 @@ msgid ""
 msgid_plural ""
 "{file} was read again since you changed these rows. Reload to see it as it "
 "is now; your {n} changes stay pending."
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid ""
+"{file} couldn't be saved: another program has it open. Your {n} change stays "
+"pending."
+msgid_plural ""
+"{file} couldn't be saved: another program has it open. Your {n} changes stay "
+"pending."
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/ui/pending_bar.rs
+#, rust-format
+msgid ""
+"{file} couldn't be saved: another tab, export or agent of Tabletist has it "
+"open. Your {n} change stays pending."
+msgid_plural ""
+"{file} couldn't be saved: another tab, export or agent of Tabletist has it "
+"open. Your {n} changes stay pending."
 msgstr[0] ""
 msgstr[1] ""
 

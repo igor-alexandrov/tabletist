@@ -24,8 +24,8 @@ use super::{FILE_COPY, Opened, literal, map_error, path_text, reader_path, to_du
 use crate::files::{Format, Header, Reading};
 use crate::write::{Conflict, NewValue};
 use crate::{
-    ChangeSet, Dialect, Error, ObjectRef, Result, RowPage, RowQuery, StopFlag, Unsaved, Value,
-    WriteOutcome,
+    ChangeSet, ColumnInfo, Dialect, Error, ObjectRef, Result, RowPage, RowQuery, StopFlag, Unsaved,
+    Value, WriteOutcome,
 };
 
 /// The in-memory database the copies are kept in, apart from the views.
@@ -64,7 +64,7 @@ impl Stamp {
         modified: None,
     };
 
-    fn of(path: &Path) -> std::io::Result<Self> {
+    pub(super) fn of(path: &Path) -> std::io::Result<Self> {
         std::fs::metadata(path).map(|meta| Self::from(&meta))
     }
 
@@ -121,8 +121,9 @@ pub(super) struct Copy {
 }
 
 /// A number no copy made before has: each read of a file, and each save
-/// that numbers its rows again, takes the next.
-fn next_generation() -> i64 {
+/// that numbers its rows again, takes the next, and so does each change
+/// of a `.duckdb` file (`database`).
+pub(super) fn next_generation() -> i64 {
     static NEXT: AtomicI64 = AtomicI64::new(1);
     NEXT.fetch_add(1, Ordering::SeqCst)
 }
@@ -149,19 +150,60 @@ impl Copy {
     }
 }
 
-/// A page of a file's table, read from its copy, each row with its place:
-/// in the file's order, or that after the page's own sort.
+/// A page of a table, read from `from`, which holds each row's place
+/// beside it (a file's copy): in the file's order, or that after the
+/// page's own sort.
 pub(super) fn page(
     connection: &duckdb::Connection,
     query: &RowQuery,
+    from: &ObjectRef,
     limit: usize,
     generation: i64,
 ) -> Result<RowPage> {
-    let mut from = query.clone();
-    from.object = Copy::object(&query.object.name);
+    let from = RowQuery {
+        object: from.clone(),
+        ..query.clone()
+    };
     let catalog = super::columns(connection, &from.object, &[])?;
     let binary = super::binary_of(&catalog);
     let sql = Dialect::DuckDb.select_rows(&from, &[POSITION.to_owned()], &binary)?;
+    placed_page(connection, sql, catalog, limit, generation)
+}
+
+/// A page of `query`'s table, each row's place read from `column` beside
+/// it (a `.duckdb` file's `rowid`), the table itself what it is read from:
+/// a filter that names it still finds it.
+pub(super) fn page_with(
+    connection: &duckdb::Connection,
+    query: &RowQuery,
+    catalog: Vec<ColumnInfo>,
+    column: &str,
+    limit: usize,
+    generation: i64,
+) -> Result<RowPage> {
+    let binary = super::binary_of(&catalog);
+    let mut sql = Dialect::DuckDb.select_rows(query, &[POSITION.to_owned()], &binary)?;
+    let rest = sql
+        .text
+        .strip_prefix("SELECT * FROM ")
+        .ok_or_else(|| Error::query("the rows' places could not be read"))?;
+    let dialect = Dialect::DuckDb;
+    sql.text = format!(
+        "SELECT {} AS {}, * FROM {rest}",
+        dialect.quote_ident(column),
+        dialect.quote_ident(POSITION)
+    );
+    placed_page(connection, sql, catalog, limit, generation)
+}
+
+/// The page `sql` reads, its rows' places in the column [`POSITION`].
+fn placed_page(
+    connection: &duckdb::Connection,
+    sql: crate::Sql,
+    catalog: Vec<ColumnInfo>,
+    limit: usize,
+    generation: i64,
+) -> Result<RowPage> {
     let started = Instant::now();
     let params = sql.params.iter().map(to_duckdb).collect();
     let (mut columns, mut rows, has_more) = super::rows_of(connection, &sql.text, params, limit)?;
@@ -750,7 +792,7 @@ pub(super) fn save(
     let _one_at_a_time = lock.lock().unwrap_or_else(PoisonError::into_inner);
     // Rows found by their places in another copy may not be where they
     // were: the file was read again, or a save numbered them again.
-    let Some(changes) = own_keys(changes, copy.generation) else {
+    let Some(changes) = own_keys(changes, copy.generation, POSITION) else {
         return Err(unsaved(
             Unsaved::Reread(label.clone()),
             format!("{label} was read again since these rows were"),
@@ -766,12 +808,7 @@ pub(super) fn save(
     // would replace it all the same where its folder is writable.
     // Its permissions say so, or this user may not write it: opened to
     // write, and not truncated, it says which.
-    let protected = std::fs::metadata(path).is_ok_and(|meta| meta.permissions().readonly())
-        || std::fs::OpenOptions::new()
-            .write(true)
-            .open(path)
-            .is_err_and(|error| error.kind() == std::io::ErrorKind::PermissionDenied);
-    if protected {
+    if protected(path) {
         return Err(unsaved(
             Unsaved::Protected(label.clone()),
             format!("{label} is read-only"),
@@ -945,14 +982,25 @@ fn fails_after_rename(path: &Path) -> bool {
     }
 }
 
-/// `changes` with each row's key as the copy finds it, its place alone.
+/// Whether the file at `path` is one its owner made read-only, or this
+/// user may not write: its permissions say so, or, opened to write and not
+/// truncated, it says which.
+pub(super) fn protected(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|meta| meta.permissions().readonly())
+        || std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::PermissionDenied)
+}
+
+/// `changes` with each row's key as `column` finds it, its place alone.
 /// `None` where a key is not a place in the copy `generation`.
-fn own_keys(changes: &ChangeSet, generation: i64) -> Option<ChangeSet> {
+pub(super) fn own_keys(changes: &ChangeSet, generation: i64, column: &str) -> Option<ChangeSet> {
     let own = |key: &[(String, Value)]| match key {
         [(place, Value::Int(at)), (of, Value::Int(copy))]
             if place == POSITION && of == FILE_COPY && *copy == generation =>
         {
-            Some(vec![(POSITION.to_owned(), Value::Int(*at))])
+            Some(vec![(column.to_owned(), Value::Int(*at))])
         }
         _ => None,
     };

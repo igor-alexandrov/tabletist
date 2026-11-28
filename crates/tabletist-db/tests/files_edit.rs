@@ -13,7 +13,7 @@ use tabletist_db::files::Source;
 use tabletist_db::{
     Access, CellChange, ChangeSet, ConnectSpec, Connection, Error, FILE_COPY, FILE_POSITION,
     HostKeys, InsertValue, NewValue, ObjectRef, RowChange, RowDelete, RowInsert, RowPage, RowQuery,
-    Secrets, StopFlag, Unedited, Unsaved, Value, WriteOutcome,
+    Secrets, StopFlag, Unsaved, Value, WriteOutcome,
 };
 
 /// The Bookshop's exports in a folder of their own, and a session over it
@@ -679,29 +679,6 @@ async fn rows_read_before_a_reconnect_are_not_saved_after_it() {
     let error = save(&again, &changes).await.unwrap_err();
     assert_eq!(unsaved(&error), Some(Unsaved::Reread("orders.csv".into())));
     assert_eq!(std::fs::read(&path).unwrap(), before);
-}
-
-#[tokio::test]
-async fn a_duckdb_file_s_tables_say_why_they_are_not_edited() {
-    let (connection, _dir) = editable().await;
-    let covers = connection
-        .describe(&ObjectRef::new("bookshop", "book_covers"))
-        .await
-        .unwrap();
-    assert_eq!(covers.unedited, Some(Unedited::DuckDb));
-    let orders = connection.describe(&table("orders")).await.unwrap();
-    assert_eq!(orders.unedited, None);
-    // A save to one is refused, as on a session that reads.
-    let mut changes = set("orders");
-    changes.object = ObjectRef::new("bookshop", "book_covers");
-    let orders = page(&connection, "orders").await;
-    changes.deletes.push(RowDelete {
-        key: at(&orders, 0),
-    });
-    assert_eq!(
-        save(&connection, &changes).await.unwrap_err(),
-        Error::ReadOnly
-    );
 }
 
 #[tokio::test]
