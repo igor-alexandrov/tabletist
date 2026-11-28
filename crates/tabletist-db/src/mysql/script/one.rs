@@ -777,7 +777,7 @@ mod tests {
         };
         let full: &'static str = sent("SELECT 7").leak();
         let reader = full.replace("@@session.transaction_read_only", "0");
-        let swaps = [(full, &*reader.leak()), (super::super::INNODB, "SELECT 1")];
+        let swaps = [(full, &*reader.leak()), (super::super::READER, "SELECT 1")];
         let (conn, asked) =
             super::super::super::tests::swapping_each(&url, Access::ReadOnly, &swaps).await;
         if on_mariadb(&conn) && conn.conn.lock().await.server_version() < (11, 1, 0) {
@@ -917,7 +917,7 @@ mod tests {
             ),
         ] {
             let slow: &'static str = format!("SELECT 1 FROM DUAL WHERE {sleep} = 0").leak();
-            let swaps = [swapped, (super::super::INNODB, slow)];
+            let swaps = [swapped, (super::super::READER, slow)];
             let (conn, _) =
                 super::super::super::tests::swapping_each(&url, Access::ReadOnly, &swaps).await;
             if on_mariadb(&conn) && conn.conn.lock().await.server_version() < (11, 1, 0) {

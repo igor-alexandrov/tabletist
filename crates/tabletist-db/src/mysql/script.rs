@@ -304,6 +304,9 @@ enum Fence {
     /// not forward writes. Only a cluster that does lets a session change
     /// its setting, and there the fence holds, so a run of such a cluster
     /// is `Session`. The reader refuses every write and every DDL itself.
+    /// Only a server that knows `aurora_version` is taken at InnoDB's word
+    /// (`READER`): elsewhere a read-only InnoDB still lets a write to a
+    /// table of another engine through, MyISAM's say.
     /// A failover makes it the writer, and InnoDB then says read-write:
     /// the run fails as one that left read-only.
     Server,
@@ -572,18 +575,19 @@ fn opened(read_only: Option<i64>, status: StatusFlags) -> Result<()> {
 /// The fence the run's checks read (`Fence`), once the open's answer is in:
 /// `read_only` is the session's setting, and `flags` the server's status
 /// with it. Only where the setting says read-write (0), and the
-/// transaction started as it must, is InnoDB asked: `Server` where it is
-/// read-only on the whole server. Otherwise, and on a server without
-/// InnoDB, the answer is held to what the open must say (`opened`), and the
-/// fence is `Session`. `Err` is the open's failure, a cancel that landed on
-/// InnoDB's question, or a lost session.
+/// transaction started as it must, is InnoDB asked (`READER`): `Server`
+/// where it is read-only on the whole server of Aurora. Otherwise, and on a
+/// server that is not Aurora or has no InnoDB, the answer is held to what
+/// the open must say (`opened`), and the fence is `Session`. `Err` is the
+/// open's failure, a cancel that landed on InnoDB's question, or a lost
+/// session.
 async fn fenced(
     conn: &mut mysql_async::Conn,
     read_only: Option<i64>,
     flags: StatusFlags,
 ) -> Result<Fence> {
     if read_only == Some(0) && started(flags).is_ok() {
-        let innodb = innodb_setting(conn).await?;
+        let innodb = innodb_setting(conn, READER).await?;
         if innodb.is_some_and(|innodb| innodb != 0) {
             opened(innodb, status(conn))?;
             return Ok(Fence::Server);
@@ -761,16 +765,16 @@ async fn ready(conn: &mut mysql_async::Conn, checks: Checks) -> Result<Standing>
 async fn standing(conn: &mut mysql_async::Conn, checks: Checks) -> Result<Standing> {
     let read_only = match checks.fence {
         Fence::Session => read_only_setting(conn, checks.names).await?,
-        Fence::Server => innodb_setting(conn).await?,
+        Fence::Server => innodb_setting(conn, INNODB).await?,
     };
     stands(read_only, status(conn))
 }
 
 /// Whether InnoDB is read-only on the whole server, which only the
-/// server's start sets; `None` where the server has no InnoDB to ask
-/// about.
-async fn innodb_setting(conn: &mut mysql_async::Conn) -> Result<Option<i64>> {
-    let answer: mysql_async::Result<Option<mysql_async::Row>> = conn.query_first(INNODB).await;
+/// server's start sets, asked with `question` (`INNODB` or `READER`);
+/// `None` where the server does not know a setting the question names.
+async fn innodb_setting(conn: &mut mysql_async::Conn, question: &str) -> Result<Option<i64>> {
+    let answer: mysql_async::Result<Option<mysql_async::Row>> = conn.query_first(question).await;
     match answer {
         Err(mysql_async::Error::Server(error)) if error.code == UNKNOWN_SYSTEM_VARIABLE => Ok(None),
         answer => answer.map_err(query_error)?.map(from_row).transpose(),
@@ -780,6 +784,11 @@ async fn innodb_setting(conn: &mut mysql_async::Conn) -> Result<Option<i64>> {
 /// The question whether InnoDB is read-only (see `innodb_setting`). With a
 /// `LIMIT` of its own, as `question`.
 const INNODB: &str = "SELECT @@global.innodb_read_only LIMIT 1";
+
+/// InnoDB's question at the open (`fenced`), which only Amazon Aurora
+/// answers: any other server does not know `aurora_version`, and says so.
+const READER: &str =
+    "SELECT @@global.innodb_read_only FROM DUAL WHERE @@aurora_version IS NOT NULL LIMIT 1";
 
 /// The session's read-only setting, asked for under `name`, or under
 /// `older` when the server does not know `name`.
@@ -1726,7 +1735,7 @@ mod tests {
             return;
         };
         let reader = "START TRANSACTION READ ONLY; SET SESSION sql_select_limit = 11; SELECT 0";
-        let swaps = [(OPEN, reader), (INNODB, "SELECT 1")];
+        let swaps = [(OPEN, reader), (READER, "SELECT 1")];
         let (conn, _) = super::super::tests::swapping_each(&url, Access::ReadOnly, &swaps).await;
         let connected = settings(&conn).await;
         let stop = StopFlag::new();
@@ -1737,9 +1746,10 @@ mod tests {
     }
 
     /// InnoDB is asked only where the session's setting says read-write,
-    /// and its word counts only where it says read-only: where it does not,
-    /// or where the server has no InnoDB to ask about, the open fails as it
-    /// did before InnoDB was asked.
+    /// and its word counts only where it says read-only on Aurora: where it
+    /// does not, where the server has no InnoDB to ask about, or where the
+    /// server is not Aurora, the open fails as it did before InnoDB was
+    /// asked.
     #[tokio::test]
     async fn a_session_left_read_write_without_a_read_only_innodb_fails_the_open() {
         let Some(url) = test_url() else {
@@ -1749,8 +1759,10 @@ mod tests {
         for innodb in [
             "SELECT 0",
             "SELECT @@global.tabletist_no_such_setting LIMIT 1",
+            // A read-only InnoDB on a server that is not Aurora.
+            "SELECT 1 FROM DUAL WHERE @@aurora_version IS NOT NULL LIMIT 1",
         ] {
-            let swaps = [(OPEN, reader), (INNODB, innodb)];
+            let swaps = [(OPEN, reader), (READER, innodb)];
             let (conn, _) =
                 super::super::tests::swapping_each(&url, Access::ReadOnly, &swaps).await;
             let connected = settings(&conn).await;
@@ -2657,6 +2669,19 @@ mod tests {
             read_only_setting(&mut conn, ["sql_mode + nope", name]).await,
             Err(Error::Query { .. })
         ));
+    }
+
+    /// The test servers, MySQL and MariaDB, have InnoDB and are not Aurora:
+    /// InnoDB's word is theirs to give, but not at the open.
+    #[tokio::test]
+    async fn only_aurora_answers_innodbs_question_at_the_open() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        let mut conn = conn.conn.lock().await;
+        assert_eq!(innodb_setting(&mut conn, INNODB).await, Ok(Some(0)));
+        assert_eq!(innodb_setting(&mut conn, READER).await, Ok(None));
     }
 
     /// A cancel that landed on a writable session's opening queries: the
